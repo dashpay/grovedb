@@ -433,6 +433,16 @@ impl FlushState {
         self.segments_failed.load(Ordering::Acquire)
     }
 
+    /// Notes that a sync of a segment failed where write-back did not
+    /// make it: of the segment the cleaner was moving blocks into. It is
+    /// counted with write-back's own, and a table checkpoint that begins
+    /// after this is refused ([`Self::segments_not_durable`]). One that
+    /// had begun is not taken back by it.
+    pub(crate) fn segment_sync_failed(&self) {
+        self.segments_failed.store(true, Ordering::Release);
+        super::config::count(&self.counters.segment_syncs_failed, 1);
+    }
+
     /// The table checkpoint that write-back knows to be in force: the
     /// version it covers and the place of its sample. `None` until
     /// write-back was told of the session's start

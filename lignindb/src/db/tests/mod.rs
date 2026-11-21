@@ -4,12 +4,15 @@
 
 mod backup;
 mod beside;
+mod check;
+mod clean;
 mod ended;
 mod filling;
 mod full;
 mod guards;
 mod kept;
 mod open;
+mod power;
 mod reads;
 mod reclaim;
 mod reopen;
@@ -623,6 +626,39 @@ impl Merk {
     pub(super) fn len(&self) -> usize {
         self.nodes.len()
     }
+
+    /// The keys and the values of the nodes, in key order.
+    pub(super) fn items(&self) -> Items {
+        let items = self.nodes.iter();
+        let mut items: Items = items
+            .map(|node| (node.key.clone(), node.value.clone()))
+            .collect();
+        items.sort();
+        items
+    }
+}
+
+/// The keys and the values of the nodes of a Merk, in key order.
+pub(super) type Items = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// The nodes of the Merk of `subtree` as a reader walks them: each key
+/// with the bytes of its value. `None` if the subtree is not entered.
+pub(super) fn items_of(operation: &Operation<'_>, subtree: Subtree) -> Option<Items> {
+    let opened = operation.open(subtree).expect("a lookup")?;
+    let mut walk = opened.walk();
+    let mut items = Items::new();
+    walk.seek_to_first(operation).expect("a move");
+    while let Some(key) = walk.key().map(<[u8]>::to_vec) {
+        let mut children = crate::txn::ChildKeys::new();
+        let value = walk.node_with_children(operation, &mut children, |view| {
+            let view = view.expect("the node the cursor stands on");
+            let mut value = lignin_tree::value::ValueBuf::new();
+            view.value(&mut value).expect("a value").to_vec()
+        });
+        items.push((key, value.expect("a read")));
+        walk.next(operation).expect("a move");
+    }
+    Some(items)
 }
 
 /// A subtree to enter, with the subtree and the key of the node that
@@ -709,10 +745,39 @@ impl Writes {
 
     /// Commits these writes with no transaction, and returns the commit.
     pub(super) fn commit(&self, db: &Db) -> Box<Published> {
-        match self.with(|batch| db.write(batch, &mut NoStaleHashes)) {
+        let before = db.version();
+        let published = match self.with(|batch| db.write(batch, &mut NoStaleHashes)) {
             Ok(Committed::Published(published)) => published,
             other => panic!("the writes are committed, and not {other:?}"),
+        };
+        assert!(published.version > before, "a commit takes a later version");
+        assert!(published.miscounted.is_none(), "a value is miscounted");
+        if !published.dropped.is_empty() {
+            // The handle the commit hands on is the directory of the
+            // version that was published: it leaves out what one that is
+            // loaded from the pages of that version leaves out.
+            // A round of the reclaiming takes entries out of the pages
+            // of the latest version, so the comparison is made with the
+            // reclaiming held, and left out where a round is running or
+            // the caller is inside one. It is left out as well where a
+            // commit came before the version was sampled: it was the
+            // latest then, and the guard keeps its pages for the
+            // comparison.
+            let store = &*db.shared.store;
+            let held = store.reclaiming.try_lock();
+            let guard = db.shared.versions.guard();
+            let poisoned = matches!(held, Err(std::sync::TryLockError::Poisoned(_)));
+            if (held.is_ok() || poisoned) && guard.latest() == published.version {
+                let pages = store.committed(&guard, published.version);
+                let fresh = store.catalog().load_directory(&pages);
+                let fresh = fresh.expect("the directory of the version");
+                let mut entries = fresh.entries();
+                while let Some((_, entry)) = entries.next(&pages).expect("an entry") {
+                    assert_eq!(published.directory.is_live(&entry), fresh.is_live(&entry));
+                }
+            }
         }
+        published
     }
 }
 
@@ -778,49 +843,34 @@ pub(super) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
 /// a store keeps beside its pages: for a database whose background work
 /// has ended and that nobody writes to.
 pub(super) fn checked(db: &Db) -> crate::verify::Report {
-    use crate::verify;
-
-    let store = &*db.shared.store;
-    let catalog = store.catalog();
-    let columns = catalog.keyspaces.columns();
-    let beside = [lignin_tree::flat::FlatTree::open(
-        crate::db::open::CATALOG_PAGE,
-        store.config(),
-    )];
-    let view = verify::Store {
-        loader: store.loader(),
-        table: &store.table,
-        segments: &store.segments,
-        values: &store.values,
-        page_size: store.page_size,
-        ids: Some(&store.ids),
-        grove: verify::Grove::Directory {
-            tree: catalog.directory,
-            columns: &columns,
-        },
-        flat_drops: Some(catalog.flat_drops),
-        flat: &beside,
-        values_counted: true,
-    };
-    let guard = db.shared.versions.guard();
     let at = db.shared.versions.latest();
-    let options = verify::Options::new(at, verify::Scope::Still);
-    verify::check(&view, &guard, options, None)
+    db.check(at, crate::verify::Scope::Still, None)
 }
 
 /// Waits until the reclaiming of `db` is as `done` says, and says what it
 /// is and what the store holds if that takes more than a minute.
 pub(super) fn reclaimed(db: &Db, what: &str, done: impl Fn(&ReclaimStats) -> bool) {
+    stats_until(db, what, |stats| &stats.reclaimed, done);
+}
+
+/// Waits until a part of the counts of `db` is as `done` says, and says
+/// what it is and what the store holds if that takes more than a minute.
+pub(super) fn stats_until<T: std::fmt::Debug>(
+    db: &Db,
+    what: &str,
+    part: impl Fn(&crate::db::DbStats) -> &T,
+    done: impl Fn(&T) -> bool,
+) {
     let began = Instant::now();
     loop {
         let stats = db.stats();
-        if done(&stats.reclaimed) {
+        if done(part(&stats)) {
             return;
         }
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "{what}: {:?}\n{stats}",
-            stats.reclaimed
+            part(&stats)
         );
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -837,27 +887,30 @@ impl Drop for Ending<'_> {
     }
 }
 
-/// Ends the two background threads of `db` and leaves the handle open: a
+/// Ends the background threads of `db` and leaves the handle open: a
 /// session in which nothing is written back and nothing is reclaimed but
 /// what the test asks for, and one that ends, when the handle is dropped,
 /// as a process that is killed ends.
+///
+/// A loop that is ended here may have made turns since the open: see
+/// [`open_at_rest`] for a session in which none is made.
 pub(super) fn halt_background(db: &Db) {
     let threads = crate::db::store::lock(&db.threads).take();
     let threads = threads.expect("the threads of the database");
-    db.shared.store.signal.stop();
-    db.shared.write_back().stop();
+    db.shared.stop_background();
     threads.reclaim.join().expect("the reclaimer ends");
+    threads.cleaner.join().expect("the cleaner ends");
     threads.write_back.join().expect("write-back ends");
 }
 
-/// Opens the database in `dir` as [`Db::open`] does, and starts neither of
-/// its two threads: a session in which no thread but the test's own
-/// writes back or reclaims, from the open on.
+/// Opens the database in `dir` as [`Db::open`] does, and starts none of
+/// its three threads: a session in which no thread but the test's own
+/// writes back, reclaims or cleans, from the open on.
 ///
 /// [`halt_background`] does not give that. A thread that [`Db::open`]
 /// started can have made its first turn before it is told to end, and
-/// whether it has is the schedule's to say. Either turn shows in what the
-/// session does next:
+/// whether it has is the schedule's to say. A turn of any of them shows
+/// in what the session does next:
 ///
 /// - The reclaimer's first round takes the allocator's step
 ///   (`Versions::reclaim`). An open has a page id that an earlier session
@@ -868,6 +921,8 @@ pub(super) fn halt_background(db: &Db) {
 /// - Write-back's first turn makes the file operations that the first
 ///   turn of the test would have made, and meets what the device refuses
 ///   of them in the test's place.
+/// - The cleaner's first turn is a pass over the segments and one over
+///   the value log, with the file operations of both.
 ///
 /// This is [`Db::open`] up to the start of its threads, step for step, and
 /// has to be kept so. The handle ends as one that [`halt_background`] was
@@ -884,6 +939,8 @@ pub(super) fn open_at_rest(dir: impl AsRef<Path>, options: &Options) -> Result<D
         threads: Mutex::new(None),
         created: opened.created,
         opening: crate::db::Opening::default(),
+        unchecked: std::sync::atomic::AtomicBool::new(false),
+        hash_rules: Mutex::new(None),
         guard: opened.lock,
     })
 }

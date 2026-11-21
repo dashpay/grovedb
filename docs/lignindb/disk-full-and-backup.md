@@ -684,9 +684,9 @@ syncs every commit. It is run with no fault, and then once for each file
 operation that a device can refuse for room, with the device full at that
 operation.
 
-A database of the sweep is opened with neither of its two background
-threads, and the script makes every turn of write-back and of the
-reclaimer. Nothing but the script and the device then decides what a run
+A database of the sweep is opened with none of its background threads,
+and the script makes every turn of write-back and of the reclaimer; the
+cleaner makes none. Nothing but the script and the device then decides what a run
 does: each run makes the file operations of the run with no fault up to
 the one that is refused, so the operation that is refused is the one at
 its place in that run. A run that came to its refusal by other operations
@@ -764,7 +764,8 @@ At each of the 3,269 operations:
 | Test | What it shows |
 | --- | --- |
 | `db::tests::full` (6 tests, 9 sweeps) | the above, at every operation |
-| `db::tests::ended` | each of the two states of DF8, met by a step that is no commit and no flush, ends the session; a `flush()` still makes durable what was published; the look waits for no commit, makes no operation on a file and settles nothing; a session gives the first reason it had, also where the commit path stops it while the store's reason is being kept; a manifest in doubt is settled by a commit and by a close, and ends no session; a table checkpoint is installed though the replacement for its turn of the log was refused; a commit that cannot have it settled is refused and can be made again; a commit beside a holder of the manifest is made (DF8a) |
+| `db::tests::ended` | each of the two states of DF8, met by a step that is no commit and no flush, ends the session; a `flush()` still makes durable what was published; the look waits for no commit, makes no operation on a file and settles nothing; a session gives the first reason it had, also where the commit path stops it while the store's reason is being kept; a manifest in doubt is settled by a commit and by a close, and ends no session; a table checkpoint is installed though the replacement for its turn of the log was refused; a close whose table checkpoint is refused the start record of the log's next file once does all a close does, whether the device kept the record or not; a commit that cannot have it settled is refused and can be made again; a commit beside a holder of the manifest is made (DF8a) |
+| `db::tests::clean` (two of its tests) | a sync of the cleaner's segment that was refused in a pass ends the session, which says so before a close or write-back has met the segment (DF8); a close that is the first to be refused the sync of the cleaner's segment answers with the cleaner's error, which has the device's refusal |
 | `db::tests::room` (ignored until `STORE-06-F3`, D-209) | DF10 and DF11 on a device with a capacity in bytes: nothing comes back while nothing is released, and with the reserve released write-back and the cleaner give back what is dead, the session takes the next commit, and the reserve is filled again; the least reserve that is enough (section 5.3) |
 | `db::tests::filling` | random fills under a database whose background threads run, with the same model: 12 seeds of 40 rounds, in which the device fills in each of the four ways and has room again |
 | `db::tests::backup` | a backup from a checkpoint of a database that is written meanwhile is the database at the checkpoint's version (BK2): the copy waits, with every file measured and none copied, until 5 commits were made beside it; a restore of it takes writes |

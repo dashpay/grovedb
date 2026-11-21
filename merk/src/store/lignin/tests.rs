@@ -14,17 +14,16 @@ use grovedb_storage::{
     error::WriteScopeError, rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch,
 };
 use grovedb_version::version::GroveVersion;
+use lignin_format::{CommitVersion, PageSize};
+use lignin_io::{StdVfs, Vfs};
 use lignin_tree::{
     hash::{HashRules, Refusal},
     node::NodeRef,
 };
 use lignindb::{
-    commit::{CommitError, Committed},
-    snapshot::Versions,
-    txn::{
-        testing::{Db, Outcome},
-        BatchError, Subtree, WritePath, WriteTxn,
-    },
+    commit::{Committed, NoStaleHashes},
+    txn::{Batch, BatchError, Subtree, SubtreeWrite, WriteTxn},
+    Db, Options,
 };
 
 use super::{
@@ -100,11 +99,76 @@ impl HashRules for RawValues {
     }
 }
 
-/// A LigninDB store on disk, with the stand-in commit of the engine's own
-/// transaction tests.
+/// The size of the pages of the databases of these tests.
+pub(super) const SIZE: PageSize = PageSize::MIN;
+
+/// The tree type the Merks of a database of these tests are entered with
+/// when it is made.
+const TREE_TYPE: &[u8] = b"merk";
+
+/// The subtrees that every database of these tests has entered when it is
+/// made, as Merks that stand alone: those whose 32 bytes are all one byte
+/// below this. A test that enters a subtree itself names another.
+const ENTERED: u8 = 200;
+
+/// How a commit of a write transaction ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Outcome {
+    /// The transaction wrote nothing: no version was taken.
+    Empty,
+    /// A commit outside the transaction wrote a key after the transaction
+    /// first wrote it.
+    Conflict,
+    /// The commit was published as this version.
+    Committed(CommitVersion),
+}
+
+/// A LigninDB database in a directory of its own, opened as a user of the
+/// engine opens one (`lignindb::Db`), with the subtrees of these tests
+/// entered.
+///
+/// It is closed when it is dropped, and the engine checks it then, in a
+/// debug build, with the rules of [`RawValues`]. Then it is opened once
+/// more, as the next session would open it: the open lands on the version
+/// the session ended at, and what it opens is sound by the same rules.
 pub(super) struct Lignin {
-    db: Arc<Db>,
-    versions: Versions,
+    /// The database, until the wrapper is dropped.
+    db: Option<Db>,
+    options: Options,
+    stated: bool,
+    dir: tempfile::TempDir,
+}
+
+impl Drop for Lignin {
+    fn drop(&mut self) {
+        let Some(db) = self.db.take() else { return };
+        // A test that is failing says why itself, and a session that ended
+        // for writes can have left a commit in the log that it did not
+        // publish.
+        if std::thread::panicking() || db.reopen().is_some() {
+            return;
+        }
+        let ended_at = db.version();
+        db.close().expect("the database is closed");
+        let again = Db::open(self.dir.path(), &self.options);
+        let again = again.expect("the database is opened again");
+        assert_eq!(
+            again.version(),
+            ended_at,
+            "the version the next open lands on"
+        );
+        let rules = MerkHashRules::for_check(version());
+        let mut rules = RawValues {
+            rules,
+            stated: self.stated,
+        };
+        let report = again.close_and_verify(Some(&mut rules));
+        let report = report.expect("the database is closed again");
+        assert!(
+            report.is_sound(),
+            "the database is not sound when it is opened again:\n{report}"
+        );
+    }
 }
 
 impl Lignin {
@@ -119,35 +183,92 @@ impl Lignin {
     }
 
     fn checked(stated: bool) -> Self {
-        let (db, versions) = Db::new(512);
+        Self::on(Arc::new(StdVfs), stated)
+    }
+
+    /// A database whose files are `vfs`'s, in a new directory of the file
+    /// system.
+    pub(super) fn on(vfs: Arc<dyn Vfs>, stated: bool) -> Self {
+        let dir = tempfile::tempdir().expect("a directory");
+        let options = Options {
+            page_size: Some(SIZE),
+            cache_size: 512 * (SIZE.get() + 512),
+            vfs,
+            ..Options::default()
+        };
+        let db = Db::open(dir.path(), &options).expect("a new database");
         let rules = MerkHashRules::for_check(version());
         db.check_hashes_by(Box::new(RawValues { rules, stated }));
-        Self { db, versions }
-    }
-
-    pub(super) fn path(&self) -> WritePath<'_> {
-        self.db.path(&self.versions)
-    }
-
-    pub(super) fn commit(&self, transaction: &WriteTxn<'_>) -> Outcome {
-        self.db
-            .commit(&self.versions, transaction)
-            .expect("the transaction commits")
-    }
-
-    /// The key of the root of the Merk under `subtree`, as the subtree
-    /// directory of the latest commit has it.
-    fn root_in_directory(&self, subtree: Prefix) -> Option<Vec<u8>> {
-        let guard = self.versions.guard();
-        let pages = self.db.committed(&guard, self.versions.latest());
-        let directory = self.db.directory_at(&pages);
-        let mut entries = directory.entries();
-        while let Some((prefix, entry)) = entries.next(&pages).expect("an entry") {
-            if prefix == subtree && directory.is_live(&entry) {
-                return entry.root().map(|root| root.key.to_vec());
-            }
+        let entered: Vec<SubtreeWrite<'_>> = (0..ENTERED)
+            .map(|name| SubtreeWrite::Enter {
+                subtree: Subtree::new([name; 32]),
+                tree_type: TREE_TYPE,
+                host: None,
+            })
+            .collect();
+        let batch = Batch {
+            subtrees: &entered,
+            ..Batch::default()
+        };
+        let made = db.write(&batch, &mut NoStaleHashes);
+        assert!(matches!(made, Ok(Committed::Published(_))), "{made:?}");
+        Self {
+            db: Some(db),
+            options,
+            stated,
+            dir,
         }
-        None
+    }
+
+    /// The database: a write transaction is begun from it.
+    pub(super) fn path(&self) -> &Db {
+        self.db.as_ref().expect("the database is open")
+    }
+
+    /// Closes the database and opens it again. A close writes back what
+    /// the session had to write, so the next session begins with every
+    /// value that was out of line in the value log, whatever the
+    /// background threads of the first had got to.
+    pub(super) fn reopened(mut self) -> Self {
+        let db = self.db.take().expect("the database is open");
+        let ended_at = db.version();
+        db.close().expect("the database is closed");
+        let db = Db::open(self.dir.path(), &self.options);
+        let db = db.expect("the database is opened again");
+        assert_eq!(db.version(), ended_at, "the version the open lands on");
+        let rules = MerkHashRules::for_check(version());
+        let stated = self.stated;
+        db.check_hashes_by(Box::new(RawValues { rules, stated }));
+        self.db = Some(db);
+        self
+    }
+
+    /// Commits `transaction` as GroveDB does on existing GroveVersions:
+    /// with Merk's rules for the hashes a writer left out.
+    pub(super) fn commit(&self, transaction: &WriteTxn<'_>) -> Outcome {
+        let stale = transaction.stats().stale_nodes;
+        let before = self.path().version();
+        match (self.path()).commit(transaction, &mut MerkHashRules::new(version())) {
+            Ok(Committed::Empty) => Outcome::Empty,
+            Ok(Committed::Published(published)) => {
+                assert_eq!(published.evaluated, stale);
+                assert!(published.version > before, "a commit takes a later version");
+                assert!(published.miscounted.is_none(), "a value is miscounted");
+                Outcome::Committed(published.version)
+            }
+            Err(error) if error.is_conflict() => Outcome::Conflict,
+            Err(error) => panic!("the transaction commits: {error}"),
+        }
+    }
+
+    /// The key of the root of the Merk under `subtree`, as a reader of
+    /// the latest version finds it in the subtree's entry.
+    fn root_in_directory(&self, subtree: Prefix) -> Option<Vec<u8>> {
+        let snapshot = self.path().snapshot();
+        let operation = snapshot.operation();
+        let opened = operation.open(Subtree::new(subtree)).expect("a lookup")?;
+        let root = opened.entry().root();
+        root.map(|root| root.key.to_vec())
     }
 }
 
@@ -2141,8 +2262,7 @@ fn a_kept_value_beside_a_modified_link_names_the_first_load_of_its_node() {
         writer.into_scope().merge();
         // The commit makes the hash that the root's link was left without
         // by Merk's rules, which the check of the store recomputes it by.
-        let committer = lignin.db.committer(&lignin.versions);
-        let outcome = committer.commit(&transaction, &mut MerkHashRules::new(version()));
+        let outcome = (lignin.path()).commit(&transaction, &mut MerkHashRules::new(version()));
         match between {
             "no commit between" => {
                 let published = match outcome {
@@ -2156,7 +2276,7 @@ fn a_kept_value_beside_a_modified_link_names_the_first_load_of_its_node() {
             }
             _ => {
                 assert!(
-                    matches!(outcome, Err(CommitError::Conflict)),
+                    matches!(&outcome, Err(error) if error.is_conflict()),
                     "{between}: {outcome:?}"
                 );
                 assert_eq!(committed_node(&lignin, 4).encode(), theirs.encode());

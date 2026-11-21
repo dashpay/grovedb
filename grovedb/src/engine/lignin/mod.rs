@@ -71,8 +71,9 @@ use grovedb_costs::{
 };
 use grovedb_merk::{
     store::lignin::{
-        tree_type_bytes, LigninApplied, LigninBatch, LigninCursor, LigninHost, LigninKeyspace,
-        LigninNodeStore, LigninSettled, LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
+        hash::MerkHashRules, tree_type_bytes, LigninApplied, LigninBatch, LigninCursor, LigninHost,
+        LigninKeyspace, LigninNodeStore, LigninSettled, LigninSnapshot, LigninSubtree, LigninView,
+        LigninWriter,
     },
     TreeType,
 };
@@ -85,6 +86,7 @@ use grovedb_storage::{
     prefix::build_prefix,
     Error, RawIterator,
 };
+use grovedb_version::version::GroveVersion;
 use lignindb::{
     commit::NoStaleHashes,
     snapshot::Snapshot,
@@ -107,7 +109,19 @@ pub struct LigninEngine {
 impl LigninEngine {
     /// The engine on an open LigninDB database. The root Merk of the grove
     /// is entered in the subtree directory if it is not.
+    ///
+    /// The check that a close of the database makes in a debug build is
+    /// given Merk's rules for a check ([`MerkHashRules::for_check`]), so
+    /// that it holds the stored hashes of the nodes of every Merk in use
+    /// to them: each is made again and compared, but for the value
+    /// hashes that those rules take as they are stored. Elements are
+    /// read as the latest GroveVersion reads them, as the engine reads a
+    /// host.
     pub fn new(db: Db) -> Result<Self, Error> {
+        if cfg!(debug_assertions) {
+            let rules = MerkHashRules::for_check(GroveVersion::latest());
+            db.check_hashes_by(Box::new(rules));
+        }
         let engine = Self { db };
         engine.enter_hostless()?;
         Ok(engine)

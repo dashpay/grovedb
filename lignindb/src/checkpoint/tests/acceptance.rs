@@ -136,6 +136,8 @@ fn a_checkpoint_stays_readable_while_the_live_database_writes_and_cleans() {
     for file in store_files(&StdVfs, &db.dir) {
         std::fs::remove_file(db.dir.join(file)).expect("a live file is deleted");
     }
+    // No recovery finds the live store in what is left.
+    db.files_are_gone();
     opened.check(&captured);
     drop(opened);
     let again = open(&db, &target);

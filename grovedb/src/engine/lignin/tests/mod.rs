@@ -10,7 +10,11 @@
 //!
 //! The tests that call `check` close the database they leave, open it
 //! again and have the physical checker of the engine read every page of
-//! it, with every hash of every Merk node made again by Merk's rules.
+//! it, with the stored hashes of the nodes of every Merk in use checked
+//! by Merk's rules for a check (`MerkHashRules::for_check`): each is made
+//! again and compared, but for the value hashes that those rules take as
+//! they are stored. In a debug build every database of these tests is
+//! checked so when it is closed, by the database itself.
 
 mod append_only;
 mod axes;
@@ -30,7 +34,7 @@ use grovedb_storage::{
     Error as StorageError, FlatStore, RawIterator,
 };
 use grovedb_version::version::GroveVersion;
-use lignindb::{verify::Scope, Db, Options};
+use lignindb::{Db, Options};
 
 use self::cases::{Grove, A, B};
 use super::{error, LigninEngine};
@@ -54,15 +58,15 @@ macro_rules! path {
     };
 }
 
-/// Opens the database in `dir` again, which nothing has open, and has
-/// the physical checker read it: every rule of the layout, and every
-/// stored hash of every Merk node against the hash that Merk's rules make.
+/// Opens the database in `dir` again, which nothing has open, closes it,
+/// and has the physical checker read it as a store that is still: every
+/// rule of the layout, and the stored hashes of the nodes of every Merk
+/// in use by Merk's rules, as the module documentation says.
 fn check(dir: &std::path::Path) {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
     let mut rules = MerkHashRules::for_check(version());
-    let report = db.check(Scope::Still, Some(&mut rules));
+    let report = db.close_and_verify(Some(&mut rules)).expect("a close");
     assert!(report.is_sound(), "{:#?}", report.findings);
-    db.close().expect("a close");
 }
 
 fn compare(name: &str, seen: Vec<(&'static str, String)>, expected: &[(&str, &str)]) {
@@ -1306,7 +1310,7 @@ fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
     // The physical checker reads the open database.
     let sound = || {
         let mut rules = MerkHashRules::for_check(v);
-        let report = engine.database().check(Scope::Reader, Some(&mut rules));
+        let report = engine.database().verify(Some(&mut rules));
         assert!(report.is_sound(), "{:#?}", report.findings);
     };
     // Under an element that is no tree the directory keeps no tree type,
@@ -1576,5 +1580,76 @@ fn the_element_of_a_subtree_is_the_one_its_group_states_last() {
     assert_eq!(
         group_of(Element::empty_provable_count_indexed_tree()).expect("a group"),
         TreeType::ProvableCountIndexedTree
+    );
+}
+
+/// The engine gives Merk's rules to the check that a close of its
+/// database makes in a debug build (`lignindb::Db::check_hashes_by`), so
+/// that check holds the stored hashes of the nodes of every Merk in use
+/// to those rules. A node of the root Merk is written with a key-value
+/// hash that is not its own, by a write of one node through the engine's
+/// handle, and no rule of the layout is
+/// broken by it: the close finds it, as a hash that differs from its
+/// recomputation. A grove that GroveDB wrote is closed with nothing
+/// found.
+#[cfg(debug_assertions)]
+#[test]
+fn a_close_in_a_debug_build_makes_the_hashes_of_a_grove_again() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use grovedb_merk::{
+        store::NodeChange,
+        tree::{kv::ValueDefinedCostType, TreeNode},
+    };
+
+    const NO_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> = None;
+    let v = version();
+    let grove = || {
+        let (dir, engine) = engine();
+        let db = GroveDb::from_engine(engine);
+        for n in 0..5u8 {
+            (db.insert(
+                ROOT,
+                &[b'k', n],
+                Element::new_item(vec![n; 20]),
+                None,
+                None,
+                v,
+            ))
+            .unwrap()
+            .expect("an item under the root");
+        }
+        (dir, db)
+    };
+    let (_dir, db) = grove();
+    drop(db);
+
+    let (_dir, db) = grove();
+    {
+        let engine = db.engine();
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+        let root = handle.root_key().unwrap().expect("a read");
+        let root = root.expect("the root Merk has a root");
+        let node = handle.get_node(&root, NO_COST, v).unwrap();
+        let node = node.expect("a read").expect("the root is stored");
+        let value = node.value_as_slice().to_vec();
+        let (left, right) = (node.link(true).cloned(), node.link(false).cloned());
+        let feature = node.feature_type();
+        let wrong = TreeNode::from_fields(root, value, [0xee; 32], left, right, feature).unwrap();
+        let written = handle.write_node(&wrong, NodeChange::HashOnly);
+        written.unwrap().expect("the node is written");
+        drop(handle);
+        (engine.apply_batch(batch, &tx).unwrap()).expect("the batch is applied");
+        (engine.commit_transaction(tx).unwrap()).expect("the commit");
+    }
+    let closed = catch_unwind(AssertUnwindSafe(move || drop(db)));
+    let panic = closed.expect_err("the grove holds a hash that is not its node's");
+    let said = panic.downcast_ref::<String>().expect("a text");
+    assert!(
+        said.contains("is left unsound at version")
+            && said.contains("the stored hash differs from its recomputation"),
+        "{said}"
     );
 }

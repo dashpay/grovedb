@@ -118,8 +118,7 @@ fn check_database(fs: &SimVfs, dir: &str, state: &State, context: &str) {
         create_if_missing: false,
         ..on(fs)
     };
-    let db = Db::open(dir, &options).unwrap_or_else(|error| panic!("{context}: {error}"));
-    halt_background(&db);
+    let db = open_at_rest(dir, &options).unwrap_or_else(|error| panic!("{context}: {error}"));
     check_reads(&db, state, context);
     sound(&db, context);
 }

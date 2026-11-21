@@ -8,7 +8,9 @@ use std::{
 };
 
 use lignin_format::{CommitVersion, PageSize};
-use lignin_store::{flush::FlushError, recovery::RecoveryError, segment::SegmentStoreError};
+use lignin_store::{
+    cleaner::CleanerError, flush::FlushError, recovery::RecoveryError, segment::SegmentStoreError,
+};
 
 use crate::commit::{CommitError, Failure, Published, Stopped};
 
@@ -105,6 +107,24 @@ pub enum OpenError {
     },
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
+    /// The directory holds an entry named `MANIFEST.deleting`: the name
+    /// that a removal gives the manifest of what it removes
+    /// (`lignindb::checkpoint::delete`). Nothing opens such a directory
+    /// and no database is made in it, whatever else it holds. The name
+    /// alone is what the open goes by: it does not read the entry.
+    ///
+    /// `lignindb::checkpoint::delete` goes by what the files hold and not
+    /// by the name (its documentation says what it takes for a database).
+    /// It finishes a removal that was cut short. **It also removes a
+    /// database whose `MANIFEST` is whole beside a file of that name that
+    /// something else made**: whoever wants to keep such a database
+    /// removes the entry and nothing else. Where no file of either name
+    /// holds a manifest, that call refuses the directory, and whoever
+    /// made the entry removes it.
+    Deleting {
+        /// The directory.
+        dir: PathBuf,
+    },
     /// A look of this open found a database of this engine in the
     /// directory, and there was no lock file to lock, before that look
     /// and after it. A database has its `LOCK` from the open that made
@@ -198,8 +218,9 @@ impl OpenError {
     /// Whether the directory is not one this build opens, and was left
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
-    /// lost its manifest or its lock file, its pages are of another size,
-    /// or it was removed or put in the place of another while it was
+    /// lost its manifest or its lock file, it holds an entry with the
+    /// name of a removal's mark, its pages are of another size, or it was
+    /// removed or put in the place of another while it was
     /// being opened ([`Self::Replaced`]). Each of these was found with no
     /// file made: before the lock, or under the lock of a lock file that
     /// was there. That holds for a directory that nobody else changes
@@ -217,6 +238,7 @@ impl OpenError {
                 | Self::FormatVersion { .. }
                 | Self::NoManifest { .. }
                 | Self::NoLockFile { .. }
+                | Self::Deleting { .. }
                 | Self::Replaced { .. }
                 | Self::PageSize { .. }
         )
@@ -250,6 +272,12 @@ impl fmt::Display for OpenError {
                 "{} was changed while it was being opened: the database that was seen there \
                  is gone, or the lock file that was taken is not the one at the path any \
                  more. No database is opened or made there",
+                dir.display()
+            ),
+            Self::Deleting { dir } => write!(
+                f,
+                "{} holds an entry named MANIFEST.deleting, the name a removal gives the manifest \
+                 of what it removes: no database is opened or made beside it",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(
@@ -303,7 +331,10 @@ impl Error for OpenError {
             Self::Recovery(source) => Some(&**source),
             Self::Create { source, .. } => Some(&**source),
             Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
-            Self::NoLockFile { .. } | Self::Replaced { .. } | Self::Changed { .. } => None,
+            Self::NoLockFile { .. }
+            | Self::Deleting { .. }
+            | Self::Replaced { .. }
+            | Self::Changed { .. } => None,
             Self::NoDatabase { .. }
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }
@@ -514,6 +545,16 @@ pub enum DbError {
     /// manifest had been left in doubt and the manifest could not be
     /// opened again.
     Flush(FlushError),
+    /// The cleaner could not close the files it was moving blocks and
+    /// values into. What it had moved stands, and the rest of the close
+    /// was made. Where write-back failed as well, the close answers with
+    /// write-back's error ([`Self::Flush`]), with one exception: a segment
+    /// of the cleaner that could not be made durable at the close
+    /// (`CleanerError::SegmentNotDurable`), after which write-back says
+    /// only that no table checkpoint is installed. The close answers that
+    /// with this, which names the segment and has what the file layer
+    /// said where the cleaner's own call met the refusal.
+    Clean(CleanerError),
     /// A thread of the background work panicked. Its work is not done, and
     /// what it held is as a crash would leave it: the next open recovers.
     Panicked(&'static str),
@@ -531,6 +572,7 @@ impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Flush(source) => write!(f, "write-back: {source}"),
+            Self::Clean(source) => write!(f, "the cleaner: {source}"),
             Self::Panicked(thread) => write!(f, "the {thread} thread panicked"),
             Self::Removed { dir } => write!(
                 f,
@@ -546,6 +588,7 @@ impl Error for DbError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Flush(source) => Some(source),
+            Self::Clean(source) => Some(source),
             Self::Panicked(_) | Self::Removed { .. } => None,
         }
     }

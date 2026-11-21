@@ -676,8 +676,7 @@ impl<'s> Cleaner<'s> {
                 // store still makes it durable. The next block goes to
                 // another segment.
                 let writer = work.segment.take().expect("the segment that failed");
-                self.segment_failed(work, writer)?;
-                Err(error.into())
+                Err(self.segment_failed(work, writer, error))
             }
         }
     }
@@ -690,8 +689,7 @@ impl<'s> Cleaner<'s> {
         mut writer: SegmentWriter,
     ) -> Result<(), CleanerError> {
         if let Err(error) = writer.seal() {
-            self.segment_failed(work, writer)?;
-            return Err(error.into());
+            return Err(self.segment_failed(work, writer, error));
         }
         Ok(())
     }
@@ -701,17 +699,30 @@ impl<'s> Cleaner<'s> {
     /// and not dropped: dropping it would cut the segment at what was
     /// synced, and the blocks behind that, which chains point to, could no
     /// longer be read.
+    ///
+    /// Returns the error of the append or the seal, which is `first`, or
+    /// the error of the sync that failed. Where the segment answers that
+    /// sync only with the fact that one failed before, `first` is kept,
+    /// as it is. That is what the file layer said of the sealing's own
+    /// sync where that was the one refused, and what it said of the
+    /// append where somebody else's sync failed the segment in between.
+    /// It is that same bare fact where the segment had been failed
+    /// before the append or the seal was tried.
     fn segment_failed(
         &self,
         work: &mut Work,
         mut writer: SegmentWriter,
-    ) -> Result<(), CleanerError> {
-        let Err(source) = writer.sync() else {
-            return Ok(());
+        first: SegmentStoreError,
+    ) -> CleanerError {
+        let source = match writer.sync() {
+            Ok(_) => return first.into(),
+            Err(SegmentStoreError::SegmentFailed { .. }) => first,
+            Err(source) => source,
         };
         let file = writer.file_id();
+        self.write_back.state().segment_sync_failed();
         work.failed.push(writer);
-        Err(CleanerError::SegmentNotDurable { file, source })
+        CleanerError::SegmentNotDurable { file, source }
     }
 
     /// Takes out of the store the retired segments that nothing needs any

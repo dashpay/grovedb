@@ -2,9 +2,9 @@
 //!
 //! A [`Db`] is a database directory, opened: the store that
 //! [recovery](lignin_store::recovery) brought to one committed version, its
-//! write-back and its reclaimers running on two threads, and the versions
-//! its readers pin. Everything a caller does to a database goes through
-//! it:
+//! write-back, its cleaner and its reclaimers running on three threads,
+//! and the versions its readers pin. Everything a caller does to a
+//! database goes through it:
 //!
 //! | Call | What it does | Rule |
 //! | --- | --- | --- |
@@ -124,6 +124,7 @@
 //! | The directory | The open |
 //! | --- | --- |
 //! | is not there, or holds nothing of any engine | makes the database, or fails with [`OpenError::NoDatabase`] if [`Options::create_if_missing`] is off |
+//! | has an entry named `MANIFEST.deleting`, whatever else it holds | [`OpenError::Deleting`] |
 //! | has an entry that RocksDB makes (`CURRENT`, `IDENTITY`, `MANIFEST-…`, `OPTIONS-…`, an `.sst` file), or a `MANIFEST` that is no LigninDB file | [`OpenError::OtherEngine`] |
 //! | has a manifest of a format version this build does not read | [`OpenError::FormatVersion`] |
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
@@ -169,6 +170,33 @@
 //! open, and by the session after it. So nobody puts another directory at
 //! the path of a database that is being opened or is open, as with the
 //! close below.
+//!
+//! **Where a database is made** ([`Options::create_if_missing`]): in a
+//! directory that is not there, and in one that holds none of these: an
+//! entry named `MANIFEST.deleting`, an entry that RocksDB makes, a
+//! `MANIFEST`, and an entry with the name of a directory of a store's
+//! files (`seg`, `val`, `wal`, `table`). So an empty directory is such a
+//! place, one that holds only entries that are not the engine's is, and
+//! so is what an open leaves that failed before it made its first
+//! manifest: a `LOCK`, a `MANIFEST.tmp`, or both.
+//!
+//! A directory that holds the mark of a removal gets no database while
+//! the mark is there ([`OpenError::Deleting`] says what
+//! `lignindb::checkpoint::delete` does with it). Once the mark is gone
+//! the directory is looked at as any other, by the table above: what a
+//! removal leaves that was cut short after its mark went and before the
+//! directory itself did is a place. What a creation of a
+//! checkpoint left with a directory of a store's files in it is looked
+//! at by the same table, its rows in their order: where no row before
+//! refuses it, it gets no database while it has no manifest
+//! ([`OpenError::NoManifest`]), and with its manifest it is a database,
+//! and is opened. What such a creation left
+//! empty, or with its lock file alone, the open cannot tell from a place
+//! and makes a database in: a checkpoint is to be built under another
+//! name and renamed into place, so that a cut creation leaves nothing
+//! under the name it was for (D-128 B). Until it is, whoever makes
+//! checkpoints removes a target that a failed or cut creation left before
+//! anything opens it.
 //!
 //! # A new database
 //!
@@ -268,7 +296,7 @@
 //!
 //! # Background work
 //!
-//! Two threads belong to an open database, and both end with its handle.
+//! Three threads belong to an open database, and all end with its handle.
 //!
 //! - **Write-back** ([`lignin_store::flush`]): page versions go from the
 //!   buffer pool to segments, values that commits carried in their groups
@@ -290,8 +318,15 @@
 //!   When a reclaiming is done, the handle on the directory of the latest
 //!   version is loaded again, under the commit lock, so that the id of the
 //!   Merk leaves the handles.
+//! - **The cleaner** ([`lignin_store::cleaner`]): live blocks are moved
+//!   out of segments that are mostly dead, and live values out of such
+//!   files of the value log, and the files are given back, by the policy
+//!   in [`Options::cleaner`]. The pointers to moved values are rewritten
+//!   in page steps of the tree layer's owners of values. A close ends its
+//!   loop and has it close the files that took its copies, before
+//!   write-back's last checkpoint names them.
 //!
-//! An error of either changes nothing that is committed. It is counted
+//! An error of any of them changes nothing that is committed. It is counted
 //! and kept as text ([`DbStats::background`]).
 //!
 //! **Closing waits for a reclaiming that holds cells.** From the moment
@@ -305,7 +340,7 @@
 //!
 //! **A close writes only into a directory that is this database's
 //! still** (P-18). Platform removes the directory of a checkpoint while
-//! its handle is open. A close ends the two threads first and then looks:
+//! its handle is open. A close ends the three threads first and then looks:
 //! the lock file in the directory has to be the file this handle's guard
 //! is on (`VfsLock::is_at`), and the manifest has to be the one this
 //! session wrote last. Where one of the two fails, or cannot be found
@@ -362,6 +397,33 @@
 //! like what any drop leaves. No file is deleted by a wipe, and no entry
 //! of the directory that is not the engine's is touched.
 //!
+//! # The check at a close
+//!
+//! **In a debug build a close checks the store with the physical
+//! invariant checker** ([`crate::verify`], D-126): at its latest version,
+//! with what a store keeps beside its pages
+//! ([`Scope::Still`](verify::Scope::Still)), after the background work
+//! has ended and what could be written back was. A finding is a panic
+//! with the report's text, so a test that closes a database, or drops its
+//! handle, ends with the check. A release build makes no check at a
+//! close.
+//!
+//! The check is left out where there is nothing to say or nobody to say
+//! it to: on a thread that is panicking already; for a session that ended
+//! for writes ([`Db::reopen`]), whose store the next recovery makes
+//! whole; for a close that did not do all of its work (a directory that
+//! was removed, a failed checkpoint); and for a handle that was taken out
+//! ([`Db::unchecked_at_close`]). No stored hash is recomputed unless the
+//! caller gave the rules that make them ([`Db::check_hashes_by`]): the
+//! engine knows no Merk rule.
+//!
+//! In any build, [`Db::verify`] checks the latest version as a reader
+//! sees it, beside writers, at a version it pins under the commit lock
+//! with the reclaiming held back for the run, and
+//! [`Db::close_and_verify`] closes and returns the report of
+//! the full check with no panic: a tool that checks a database calls
+//! these.
+//!
 //! # Choices made here that the plan left open
 //!
 //! 1. **The roots of the keyspaces are in a catalog in page 1**, written
@@ -374,8 +436,8 @@
 //!    They become options when they are recorded (PERF-08).
 //! 3. **A wipe finds the subtrees to drop by a walk of the directory's
 //!    entries**, which reads every entry, under the commit lock. A wipe of
-//!    a database in which no subtree is entered writes nothing and takes
-//!    no version (CV2).
+//!    a database in which no subtree is entered is a commit all the same,
+//!    with a version and the key set of a wipe ([`Db::wipe`]).
 //! 4. **A wipe is made under one hold of the commit lock**, and not as a
 //!    transaction that is made again when a commit lands beside it: a
 //!    commit that entered a subtree between the walk and the wipe's commit
@@ -410,7 +472,10 @@ use std::{
     ffi::OsString,
     fmt,
     path::Path,
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -418,16 +483,17 @@ use std::{
 use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
-    flush::{Stores, WriteBack},
+    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats},
+    flush::{FlushError, Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
     table::LogDurable,
 };
 use lignin_tree::{
-    flat::FlatTree,
+    flat::{FlatOwners, FlatTree},
     hash::{HashRules, Refusal},
     node::NodeRef,
-    value::{RegroupPolicy, Regrouping},
+    value::{RegroupPolicy, Regrouping, TreeOwners},
 };
 
 use self::store::{lock, Shared};
@@ -463,7 +529,9 @@ pub struct Background {
     pub write_back_errors: u64,
     /// Calls of the reclaimer that failed.
     pub reclaim_errors: u64,
-    /// The last of either, as text.
+    /// Passes of the cleaner that failed. Its loop goes on after one.
+    pub cleaner_errors: u64,
+    /// The last of these, as text.
     pub last_error: Option<String>,
 }
 
@@ -484,7 +552,7 @@ pub struct Opening {
     /// directory, or the first commit of a new database, and reading what
     /// earlier drops left.
     pub keyspaces: Duration,
-    /// Starting the two threads of the background work.
+    /// Starting the threads of the background work.
     pub threads: Duration,
 }
 
@@ -528,6 +596,9 @@ pub struct DbStats {
     pub opening: Opening,
     /// What the reclaiming of dropped subtrees has done, and what waits.
     pub reclaimed: ReclaimStats,
+    /// What the cleaner has moved and given back in this session
+    /// (`lignin_store::cleaner`).
+    pub cleaner: CleanerStats,
     /// Page ids that reclaims gave back to the allocator.
     pub ids_released: u64,
     /// Version pins and operation guards that are held.
@@ -566,6 +637,15 @@ impl fmt::Display for DbStats {
         )?;
         writeln!(
             f,
+            "cleaner: {} blocks moved and {} segments dropped, {} values moved and {} value-log \
+             files dropped",
+            self.cleaner.blocks_moved,
+            self.cleaner.segments_dropped,
+            self.cleaner.values_moved,
+            self.cleaner.value_files_dropped
+        )?;
+        writeln!(
+            f,
             "readers: {} pins, {} guards, {} directory handles kept",
             self.pins, self.guards, self.directories
         )?;
@@ -579,10 +659,11 @@ impl fmt::Display for DbStats {
     }
 }
 
-/// The two threads of an open database.
+/// The three threads of an open database.
 struct Threads {
     write_back: JoinHandle<()>,
     reclaim: JoinHandle<()>,
+    cleaner: JoinHandle<()>,
 }
 
 /// An open database. See the [module documentation](self).
@@ -595,6 +676,11 @@ pub struct Db {
     threads: Mutex<Option<Threads>>,
     created: bool,
     opening: Opening,
+    /// Whether the check that a close makes in a debug build is left out.
+    unchecked: AtomicBool,
+    /// The rules that the check of a close recomputes the hashes by, if
+    /// the caller gave some.
+    hash_rules: Mutex<Option<Box<dyn HashRules + Send>>>,
     /// The lock of the directory. It is the last field, so that it is
     /// released when everything else of the handle is gone.
     guard: Box<dyn VfsLock>,
@@ -688,15 +774,29 @@ impl Db {
                 return Err(error);
             }
         };
+        let cleaning = shared.clone();
+        let cleaner = match spawn("lignindb-cleaner", move || clean(&cleaning)) {
+            Ok(cleaner) => cleaner,
+            Err(error) => {
+                shared.store.signal.stop();
+                shared.write_back().stop();
+                let _ = reclaim.join();
+                let _ = write_back.join();
+                return Err(error);
+            }
+        };
         opening.threads = started.elapsed();
         Ok(Self {
             shared,
             threads: Mutex::new(Some(Threads {
                 write_back,
                 reclaim,
+                cleaner,
             })),
             created: opened.created,
             opening,
+            unchecked: AtomicBool::new(false),
+            hash_rules: Mutex::new(None),
             guard: opened.lock,
         })
     }
@@ -706,7 +806,9 @@ impl Db {
     /// taken, the session's files are closed and the log is made durable,
     /// so that the next open has little to replay.
     ///
-    /// Dropping the handle does the same and reports nothing. Either way
+    /// Dropping the handle does the same and returns no error of it; in a
+    /// debug build both run the check at a close, which panics on a
+    /// finding (see the module documentation). Either way
     /// every commit that was published is in the log, and the next open
     /// recovers what was durable or more (DU2). An error here says that
     /// something of the above was not done: the database is closed all the
@@ -790,30 +892,225 @@ impl Db {
     /// any more. A close does not wait for it: what it holds back from
     /// being reclaimed is reclaimed by the next session.
     pub fn close(self) -> Result<(), DbError> {
-        self.shut()
+        self.shut_and_check()
     }
 
-    fn shut(&self) -> Result<(), DbError> {
+    /// Ends the session and, where this call ended it, makes the check of
+    /// a debug build.
+    fn shut_and_check(&self) -> Result<(), DbError> {
+        if self.shut()? {
+            self.check_at_close();
+        }
+        Ok(())
+    }
+
+    /// Ends the session as [`Self::close`] does and then checks the store
+    /// with the physical invariant checker ([`crate::verify`]), in every
+    /// build: at its latest version, with what a store keeps beside its
+    /// pages ([`Scope::Still`](verify::Scope::Still)), which can be
+    /// compared because nothing of the session writes any more. `rules`
+    /// are the functions that make the hashes of the nodes; with `None` no
+    /// stored hash is recomputed.
+    ///
+    /// The report is returned and nothing panics: a finding is the
+    /// caller's to act on. An error says that the close did not do all of
+    /// its work, and then nothing is checked.
+    ///
+    /// A session that ended for writes ([`WriteError::Reopen`]) is
+    /// checked here like any other, and its findings can be what it left
+    /// half done: the next open's recovery makes that whole, and the check
+    /// of the database it opens is the one that counts.
+    pub fn close_and_verify(
+        self,
+        rules: Option<&mut dyn HashRules>,
+    ) -> Result<verify::Report, DbError> {
+        self.shut()?;
+        let at = self.shared.versions.latest();
+        Ok(self.check(at, verify::Scope::Still, rules))
+    }
+
+    /// Checks the latest version of the database as a reader sees it
+    /// ([`Scope::Reader`](verify::Scope::Reader)): its pages, its trees,
+    /// its directory and its values. It runs beside writers, write-back
+    /// and the cleaner, pins its version for the run, and changes nothing.
+    /// `rules` are the functions that make the hashes of the nodes; with
+    /// `None` no stored hash is recomputed.
+    ///
+    /// **The version is pinned under the commit lock, with the reclaiming
+    /// of what drops left held back, and the reclaiming stays held back
+    /// until the check has ended.** A step of the reclaimer takes cells
+    /// and records out of the newest version of a page, and a Merk goes
+    /// in several steps on several pages. A version reads such a step on
+    /// the pages of which it is the newest version and not on the
+    /// others, so a check of a sound store beside a reclaiming can find a
+    /// flat record whose entry is gone, which is also what damage looks
+    /// like. Under the commit lock no commit is on its way from its
+    /// installs to its publication, so every step that was made is in
+    /// the pinned version. (A commit that stopped between the two ended
+    /// the session, and its pages are of no version: no step is made on
+    /// a page it installed, and a step on another page is in the pinned
+    /// version, which is the newest of that page.) No step is made
+    /// during the run, so what this check reads of the version is what
+    /// the version holds from the pin to the end of the check.
+    ///
+    /// Before it pins, the check waits for a round of the reclaiming that
+    /// is running, and for whoever holds the commit lock: a commit that
+    /// is being made, a wipe, the sample of a checkpoint. The commit lock
+    /// is given back once the version is pinned: commits and readers go
+    /// on beside the check, and so do write-back and the cleaner, for
+    /// whom the check is one reader more. So what waits for the end of a
+    /// check is what waits for any reader's pin and operation guard (the
+    /// reuse of page ids, the links of a chain, a file that was emptied),
+    /// and two things more: a round of the reclaiming that is due, with
+    /// any call of [`Self::reclaim`], so that the pages and values of
+    /// dropped subtrees are given back later; and a second check on
+    /// demand.
+    ///
+    /// `rules` are called with the reclaiming held back, so they call
+    /// neither this function nor [`Self::reclaim`] on this handle. What
+    /// the rules of a commit must not call is said at [`Self::commit`].
+    ///
+    /// In a session that has ended ([`Self::reopen`]) it checks what the
+    /// readers of that session read on: the latest version that was
+    /// published.
+    ///
+    /// What a store keeps beside its pages (the page ids, the counts of
+    /// live values, the page table against its segments) can be compared
+    /// only in a store that is still: [`Self::close_and_verify`].
+    pub fn verify(&self, rules: Option<&mut dyn HashRules>) -> verify::Report {
+        let shared = &*self.shared;
+        // Every round of the reclaiming is made under this lock. It is
+        // taken before the pin and given back after the check, so no step
+        // is made from the pin to the end of the check.
+        let _held_back = lock(&shared.store.reclaiming);
+        // The pin is taken under the commit lock: no commit is on its
+        // way from its installs to its publication, so every step the
+        // reclaimer has made is in the version (also after a commit that
+        // stopped between the two: see the documentation above). The
+        // order is the one a round of the
+        // reclaiming has when it loads the directory again: its lock,
+        // then the commit lock. The other order would wait for such a
+        // round for ever.
+        let pin = {
+            let _commit = shared.store.committing.lock();
+            #[cfg(test)]
+            store::at_verify(store::VerifyStage::Locked);
+            let pin = shared.versions.pin();
+            #[cfg(test)]
+            store::at_verify(store::VerifyStage::Pinned);
+            pin
+        };
+        #[cfg(test)]
+        store::at_verify(store::VerifyStage::Reading);
+        let report = self.check(pin.version(), verify::Scope::Reader, rules);
+        #[cfg(test)]
+        store::at_verify(store::VerifyStage::Checked);
+        report
+    }
+
+    /// Leaves this handle out of the check that a close makes in a debug
+    /// build ("The check at a close" in the [module documentation](self)):
+    /// for a test that damages its store on purpose.
+    pub fn unchecked_at_close(&self) {
+        self.unchecked.store(true, Ordering::Relaxed);
+    }
+
+    /// Gives the check that a close makes in a debug build the rules by
+    /// which it makes stored hashes again. It makes those that the checker
+    /// does ([`crate::verify`]): of the cells of the Merks in use. The
+    /// cells that a dropped Merk left, and those that nothing reaches, are
+    /// no state, and their hashes are not made again. With no rules given
+    /// it recomputes none.
+    pub fn check_hashes_by(&self, rules: Box<dyn HashRules + Send>) {
+        *lock(&self.hash_rules) = Some(rules);
+    }
+
+    /// The structures of this store as the checker reads them, checked at
+    /// the version `at`.
+    fn check(
+        &self,
+        at: CommitVersion,
+        scope: verify::Scope,
+        rules: Option<&mut dyn HashRules>,
+    ) -> verify::Report {
+        let shared = &*self.shared;
+        let store = &*shared.store;
+        let catalog = store.catalog();
+        let columns = catalog.keyspaces.columns();
+        // The catalog is the one flat keyspace that holds no record of a
+        // subtree.
+        let beside = [FlatTree::open(open::CATALOG_PAGE, store.config())];
+        let view = verify::Store {
+            loader: store.loader(),
+            table: &store.table,
+            segments: &store.segments,
+            values: &store.values,
+            page_size: store.page_size,
+            ids: Some(&store.ids),
+            grove: verify::Grove::Directory {
+                tree: catalog.directory,
+                columns: &columns,
+            },
+            flat_drops: Some(catalog.flat_drops),
+            flat: &beside,
+            values_counted: true,
+        };
+        let guard = shared.versions.guard();
+        verify::check(&view, &guard, verify::Options::new(at, scope), rules)
+    }
+
+    /// The check of a close, in a debug build: the store is still, and
+    /// every physical rule of it is checked at its latest version. A
+    /// finding is a panic with the report's text.
+    ///
+    /// It is left out where the test is failing already, where the handle
+    /// was taken out ([`Self::unchecked_at_close`]), and for a session
+    /// that ended for writes: what such a session leaves is the next
+    /// recovery's to make whole.
+    fn check_at_close(&self) {
+        if !cfg!(debug_assertions) || thread::panicking() {
+            return;
+        }
+        let store = &*self.shared.store;
+        if self.unchecked.load(Ordering::Relaxed) || store.refusal().is_some() {
+            return;
+        }
+        let at = self.shared.versions.latest();
+        let mut given = lock(&self.hash_rules);
+        let rules = given
+            .as_mut()
+            .map(|rules| &mut **rules as &mut dyn HashRules);
+        let report = self.check(at, verify::Scope::Still, rules);
+        assert!(
+            report.findings.is_empty() && report.more_findings == 0,
+            "the database in {} is left unsound at version {at}:\n{report}",
+            store.dir.display()
+        );
+    }
+
+    /// Ends the session. `false` if it had ended before.
+    fn shut(&self) -> Result<bool, DbError> {
         let Some(threads) = lock(&self.threads).take() else {
-            return Ok(());
+            return Ok(false);
         };
         let shared = &*self.shared;
-        // Both threads end after the turn they are in, which is still
-        // made as any turn of the session was.
-        shared.store.signal.stop();
-        shared.write_back().stop();
+        // Each thread ends after the turn it is in, which is still made
+        // as any turn of the session was.
+        shared.stop_background();
         let reclaimed = threads.reclaim.join();
+        let cleaned = threads.cleaner.join();
         let written = threads.write_back.join();
         let finished = self.finish();
         reclaimed.map_err(|_| DbError::Panicked("reclaim"))?;
+        cleaned.map_err(|_| DbError::Panicked("cleaner"))?;
         written.map_err(|_| DbError::Panicked("write-back"))?;
-        finished
+        finished.map(|()| true)
     }
 
-    /// What a close does for the next session, with the two threads
-    /// ended: only in a directory that is found to be this database's
-    /// still. One that was removed under the handle, or that holds
-    /// another database now, is written to no more (P-18).
+    /// What a close does for the next session, with the background
+    /// threads ended: only in a directory that is found to be this
+    /// database's still. One that was removed under the handle, or that
+    /// holds another database now, is written to no more (P-18).
     fn finish(&self) -> Result<(), DbError> {
         let shared = &*self.shared;
         let ours = match shared.store.ours(&*self.guard) {
@@ -834,10 +1131,27 @@ impl Db {
             });
         }
         // The reclaimings that hold cells first: their steps go to the log
-        // that the finish makes durable.
+        // that the finish makes durable. Then the cleaner closes the files
+        // that took its copies, so that the manifest of write-back's
+        // finish names them as they are.
         shared.finish_reclaiming();
-        shared.write_back().finish()?;
-        Ok(())
+        let cleaned = shared.cleaner().finish();
+        let written = shared.write_back().finish();
+        match (cleaned, written) {
+            // The cleaner could not make its segment durable, and
+            // write-back answers with what follows from that: it installs
+            // no table checkpoint. The cleaner's error is the one that
+            // names the segment, and has what the file layer said where
+            // the cleaner's own call met the refusal.
+            (
+                Err(cause @ CleanerError::SegmentNotDurable { .. }),
+                Err(FlushError::SegmentsNotDurable),
+            ) => Err(DbError::Clean(cause)),
+            (cleaned, written) => {
+                written?;
+                cleaned.map_err(DbError::Clean)
+            }
+        }
     }
 
     /// The directory of the database.
@@ -893,6 +1207,14 @@ impl Db {
     ///
     /// A session that takes no write any more refuses with
     /// [`WriteError::Reopen`] and leaves the transaction as it was.
+    ///
+    /// `rules` are called under the commit lock. They call nothing of
+    /// this database that waits for a commit or for the reclaiming, on
+    /// their own thread or by waiting for another: no commit and no
+    /// write, and neither [`Self::verify`] nor [`Self::reclaim`]. A check
+    /// on demand that holds the reclaiming back waits for this commit,
+    /// and a rule that waited for the reclaiming would wait for that
+    /// check for ever.
     pub fn commit<R: HashRules>(
         &self,
         txn: &WriteTxn<'_>,
@@ -925,6 +1247,9 @@ impl Db {
     /// keep a committed value: with no handle named the batch is refused
     /// ([`BatchError::NoRead`](crate::txn::BatchError::NoRead)), and with
     /// a handle of another transaction the write fails with a conflict.
+    ///
+    /// `rules` are called under the commit lock, as those of
+    /// [`Self::commit`] are, and what is said of them there holds here.
     pub fn write<R: HashRules>(
         &self,
         batch: &Batch<'_>,
@@ -1071,6 +1396,7 @@ impl Db {
             recovery: store.recovery,
             opening: self.opening,
             reclaimed: *lock(&store.reclaimed),
+            cleaner: store.cleaner.stats(),
             ids_released: store.ids_released.load(Ordering::Relaxed),
             pins: shared.versions.pins_held(),
             guards: shared.versions.guards_held(),
@@ -1078,6 +1404,7 @@ impl Db {
             background: Background {
                 write_back_errors: troubles.write_back.load(Ordering::Relaxed),
                 reclaim_errors: troubles.reclaim.load(Ordering::Relaxed),
+                cleaner_errors: troubles.cleaner.load(Ordering::Relaxed),
                 last_error: lock(&troubles.last).clone(),
             },
             reopen: store.refusal(),
@@ -1104,42 +1431,6 @@ impl Db {
     /// nothing else has to.
     pub fn reclaim(&self) -> Round {
         self.shared.reclaim_round(false)
-    }
-
-    /// Runs the physical checker on the latest version of the database
-    /// ([`crate::verify::check`]): every rule of the layout that a store
-    /// keeps, and with `rules` every stored hash, made again.
-    ///
-    /// Under [`verify::Scope::Reader`] it may run beside writers. Under
-    /// [`verify::Scope::Still`] the caller vouches for what that scope
-    /// asks: nothing commits meanwhile, no write transaction holds a page
-    /// id, and write-back is at rest, as in a database that was just
-    /// opened after a close. The reclaiming of what drops left is held
-    /// back for the run under either scope.
-    pub fn check(&self, scope: verify::Scope, rules: Option<&mut dyn HashRules>) -> verify::Report {
-        let shared = &*self.shared;
-        let store = &*shared.store;
-        let catalog = store.catalog();
-        let _reclaiming = lock(&store.reclaiming);
-        let guard = shared.versions.guard();
-        let columns = catalog.keyspaces.columns();
-        let parts = verify::Store {
-            loader: store.loader(),
-            table: &store.table,
-            segments: &store.segments,
-            values: &store.values,
-            page_size: store.page_size,
-            ids: Some(&store.ids),
-            grove: verify::Grove::Directory {
-                tree: catalog.directory,
-                columns: &columns,
-            },
-            flat_drops: Some(catalog.flat_drops),
-            flat: &[FlatTree::open(open::CATALOG_PAGE, store.config())],
-            values_counted: true,
-        };
-        let options = verify::Options::new(guard.latest(), scope);
-        verify::check(&parts, &guard, options, rules)
     }
 
     /// The entries of the database directory that are not the engine's,
@@ -1214,9 +1505,10 @@ impl Db {
 
 impl Drop for Db {
     fn drop(&mut self) {
-        // What a close reports is dropped here: a handle whose directory
-        // was removed under it closes without a word (P-18).
-        let _ = self.shut();
+        // The error a close returns is dropped here: a handle whose
+        // directory was removed under it closes without a word (P-18).
+        // The check of a debug build is made as at a close.
+        let _ = self.shut_and_check();
     }
 }
 
@@ -1226,13 +1518,12 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> Result<JoinHandle<
     builder.spawn(work).map_err(OpenError::Thread)
 }
 
-/// The background loop of write-back, for as long as the session lives
-/// (`lignin_store::flush`). Its view of the store has the tree layer's
-/// word on the values of a page: their scan order, and the regrouping
-/// before a base image. The page steps of a regrouping append their
-/// records through a view that has no such word, since the two refer to
-/// each other.
-fn write_back(shared: &Shared) {
+/// Runs `work` with the view of write-back that the background threads
+/// use. It has the tree layer's word on the values of a page: their scan
+/// order, and the regrouping before a base image. The page steps of a
+/// regrouping append their records through a view that has no such word,
+/// since the two refer to each other.
+fn with_page_values<R>(shared: &Shared, work: impl FnOnce(WriteBack<'_>) -> R) -> R {
     let store = &*shared.store;
     let plain = shared.write_back();
     let regrouping = Regrouping::new(
@@ -1247,6 +1538,48 @@ fn write_back(shared: &Shared) {
         page_values: Some(&regrouping),
         ..plain.stores()
     };
-    let write_back = WriteBack::new(stores, &store.flush, store.page_size).unwrap_or(plain);
-    write_back.run(|error| store.troubles.write_back_failed(&error));
+    work(WriteBack::new(stores, &store.flush, store.page_size).unwrap_or(plain))
+}
+
+/// The background loop of write-back, for as long as the session lives
+/// (`lignin_store::flush`).
+fn write_back(shared: &Shared) {
+    let troubles = &shared.store.troubles;
+    with_page_values(shared, |write_back| {
+        write_back.run(|error| troubles.write_back_failed(&error));
+    });
+}
+
+/// The owners of values that the engine gives its cleaner: the cells of
+/// tree pages, and the entries of flat leaves.
+type Owners<'a> = BothOwners<TreeOwners<'a, store::Steps<'a>>, FlatOwners<'a, store::Steps<'a>>>;
+
+/// Runs `work` with the cleaner of the session as its thread has it, and
+/// with the owners of values. The owners are the tree layer's, made on
+/// this thread: the cells of tree pages and the entries of flat leaves,
+/// whose pointers a pass over the value log rewrites in page steps. The
+/// table checkpoints the cleaner asks for make passes of write-back, so
+/// it has the view that write-back's own thread has.
+fn with_cleaner<R>(shared: &Shared, work: impl FnOnce(&Cleaner<'_>, &Owners<'_>) -> R) -> R {
+    let store = &*shared.store;
+    let owners = BothOwners(
+        TreeOwners::new(store.loader(), &store.pool, store.page_size, shared.steps()),
+        FlatOwners::new(store.loader(), &store.pool, store.config(), shared.steps()),
+    );
+    with_page_values(shared, |write_back| {
+        work(&shared.cleaner_on(write_back), &owners)
+    })
+}
+
+/// The background loop of the cleaner, for as long as the session lives
+/// (`lignin_store::cleaner`): a pass over the segments and one over the
+/// value log, again and again.
+fn clean(shared: &Shared) {
+    let troubles = &shared.store.troubles;
+    with_cleaner(shared, |cleaner, owners| {
+        cleaner.run(
+            |cleaner| cleaner.pass_values(owners),
+            |error| troubles.cleaner_failed(&error),
+        );
+    });
 }

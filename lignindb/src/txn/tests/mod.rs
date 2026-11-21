@@ -15,6 +15,7 @@ mod readers;
 mod reads;
 
 mod rebase;
+mod recovered;
 mod savepoints;
 #[path = "../../scope/tests/engine.rs"]
 mod scopes;

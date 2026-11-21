@@ -36,7 +36,7 @@ use grovedb_merk::{
 };
 use grovedb_storage::RawIterator;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
-use lignindb::{verify::Scope, Db, Options};
+use lignindb::{Db, Options};
 
 use super::LigninEngine;
 use crate::{
@@ -418,17 +418,17 @@ pub(super) fn open<E: Engine>(dir: &Path) -> GroveDb<E> {
     GroveDb::<E>::open_with_engine(dir).expect("a database")
 }
 
-/// Opens the database in `dir` again, which nothing has open, and has
-/// the physical checker read it: the hashes of its Merk nodes are made
+/// Opens the database in `dir` again, which nothing has open, closes it,
+/// and has the physical checker read it as a store that is still: the
+/// hashes of its Merk nodes are made
 /// again by Merk's rules as `version` has them and compared with the
 /// stored ones, a value hash that only its writer can make being taken as
 /// stored.
 pub(super) fn check(dir: &Path, version: &GroveVersion) {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
     let mut rules = MerkHashRules::for_check(version);
-    let report = db.check(Scope::Still, Some(&mut rules));
+    let report = db.close_and_verify(Some(&mut rules)).expect("a close");
     assert!(report.is_sound(), "{:#?}", report.findings);
-    db.close().expect("a close");
 }
 
 fn assert_same(lignin: &Log, rocksdb: &Log) {

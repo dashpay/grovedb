@@ -61,11 +61,22 @@ pub enum CleanerError {
     },
     /// A sync of the segment that takes the moved blocks failed. The blocks
     /// in it that were not durable stay readable until the session ends,
-    /// and no table checkpoint is installed in it any more.
+    /// and write-back is told: a table checkpoint that begins afterwards
+    /// is refused until the store is opened again
+    /// ([`FlushState::segments_not_durable`](crate::flush::FlushState::segments_not_durable)).
     SegmentNotDurable {
         /// The segment.
         file: FileId,
-        /// What the segment store reported.
+        /// What the segment store answered the sync that the cleaner
+        /// makes after an append or a sealing that failed. Where it
+        /// answered only that a sync of the segment had failed before
+        /// ([`SegmentStoreError::SegmentFailed`]), this is the error of
+        /// that append or sealing instead, as it was: the file layer's
+        /// refusal of the sealing's own sync where that was the one
+        /// that failed, its refusal of the append where somebody else's
+        /// sync, a table checkpoint's for one, failed the segment in
+        /// between, and the same bare fact where the segment had been
+        /// failed before the cleaner's call.
         source: SegmentStoreError,
     },
 }

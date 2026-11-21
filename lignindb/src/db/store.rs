@@ -14,6 +14,7 @@ use lignin_io::{Vfs, VfsLock};
 use lignin_store::{
     alloc::PageAllocator,
     cache::BufferPool,
+    cleaner::{Cleaner, CleanerError, CleanerState},
     flush::{FlushError, FlushState, Stores, WriteBack},
     load::PageLoader,
     recovery::RecoveryReport,
@@ -108,7 +109,9 @@ pub(super) struct Troubles {
     pub(super) write_back: AtomicU64,
     /// Calls of the reclaimer that failed.
     pub(super) reclaim: AtomicU64,
-    /// The last of either, as text.
+    /// Passes of the cleaner that failed.
+    pub(super) cleaner: AtomicU64,
+    /// The last of these, as text.
     pub(super) last: Mutex<Option<String>>,
     /// Why the session takes no write any more: the first reason that was
     /// seen where the session is answered for ([`Store::refusal`]), the
@@ -121,6 +124,11 @@ impl Troubles {
     pub(super) fn write_back_failed(&self, error: &FlushError) {
         self.write_back.fetch_add(1, Ordering::Relaxed);
         *lock(&self.last) = Some(format!("write-back: {error}"));
+    }
+
+    pub(super) fn cleaner_failed(&self, error: &CleanerError) {
+        self.cleaner.fetch_add(1, Ordering::Relaxed);
+        *lock(&self.last) = Some(format!("the cleaner: {error}"));
     }
 
     pub(super) fn reclaim_failed(&self, error: &dyn std::fmt::Display) {
@@ -145,6 +153,8 @@ pub(super) struct Store {
     pub(super) manifest: Mutex<ManifestStore>,
     /// What write-back keeps of the session, as recovery made it.
     pub(super) flush: FlushState,
+    /// What the cleaner keeps of the session between its passes.
+    pub(super) cleaner: CleanerState,
     /// The counts of the store.
     pub(super) stats: Stats,
     /// The key sets of the session's commits.
@@ -454,6 +464,27 @@ impl Shared {
         }
     }
 
+    /// The cleaner of the session, to stop its loop and to close its
+    /// files. The loop itself runs with a view of write-back that has the
+    /// tree layer's word on the values of a page ([`Self::cleaner_on`]).
+    pub(super) fn cleaner(&self) -> Cleaner<'_> {
+        self.cleaner_on(self.write_back())
+    }
+
+    /// The cleaner of the session over `write_back`, with the store's
+    /// counts.
+    pub(super) fn cleaner_on<'a>(&'a self, write_back: WriteBack<'a>) -> Cleaner<'a> {
+        Cleaner::new(write_back, &self.store.cleaner).with_stats(&self.store.stats)
+    }
+
+    /// Tells the three background threads to end after the turn each is
+    /// in.
+    pub(super) fn stop_background(&self) {
+        self.store.signal.stop();
+        self.cleaner().stop();
+        self.write_back().stop();
+    }
+
     /// The write path: what a write transaction is begun from.
     pub(super) fn path(&self) -> WritePath<'_> {
         let store = &*self.store;
@@ -530,6 +561,45 @@ thread_local! {
     /// one of the reclaimer's reads.
     pub(super) static AT_THE_LATEST: std::cell::RefCell<Option<AtTheLatest>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Where a check on demand ([`Db::verify`](super::Db::verify)) is when it
+/// runs what a test gave it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VerifyStage {
+    /// It holds what it pins its version under, and has not pinned it.
+    Locked,
+    /// It has just pinned its version and still holds what it pinned it
+    /// under.
+    Pinned,
+    /// It has pinned its version and has not read a page yet.
+    Reading,
+    /// The checker has returned, and the check has not.
+    Checked,
+}
+
+/// What a test runs at the stages of a check on demand.
+#[cfg(test)]
+pub(super) type AtVerify = Box<dyn FnMut(VerifyStage)>;
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has run at each stage of a check on demand on this
+    /// thread.
+    pub(super) static AT_VERIFY: std::cell::RefCell<Option<AtVerify>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs what a test gave for `stage`, if it gave something.
+#[cfg(test)]
+pub(super) fn at_verify(stage: VerifyStage) {
+    if let Some(mut hook) = AT_VERIFY.with(|hook| hook.borrow_mut().take()) {
+        // The hook is out of its place while it runs: what it does can
+        // come here again.
+        hook(stage);
+        AT_VERIFY.with(|place| *place.borrow_mut() = Some(hook));
+    }
 }
 
 impl StepLog for Steps<'_> {

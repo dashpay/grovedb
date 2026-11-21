@@ -8,8 +8,9 @@
 //! then once for each of them with the simulated device full at that
 //! operation: for that operation alone, from it on with syncs refused as
 //! well, and from it on with syncs that succeed. A database of the sweep
-//! is opened with neither of its threads (`open_at_rest`), and the script
-//! makes every turn of write-back and of the reclaimer. So nothing but the
+//! is opened with none of its threads (`open_at_rest`), and the script
+//! makes every turn of write-back and of the reclaimer; the cleaner makes
+//! none. So nothing but the
 //! script and the device decides what a run does, and each run makes the
 //! file operations of the run with no fault up to the one that is refused:
 //! a run that does not is a failure of the sweep, which names the first
@@ -57,10 +58,7 @@ use lignin_store::{
     segment::{read_manifest, SegmentStoreError},
     wal::{LogError, SyncPolicy},
 };
-use lignin_tree::{
-    flat::FlatTree,
-    value::{RegroupPolicy, Regrouping},
-};
+use lignin_tree::value::{RegroupPolicy, Regrouping};
 
 use super::*;
 use crate::{
@@ -209,7 +207,7 @@ pub(super) struct Session {
     pub(super) told: Told,
     /// Whether the background work of the database is at rest, and the
     /// session makes its turns. A database that is opened while it is, is
-    /// opened with neither of its threads.
+    /// opened with none of its threads.
     halted: bool,
     /// The state that a checkpoint in [`CHECKPOINT`] holds if there is
     /// one, and whether its creation returned: one that was refused may
@@ -254,36 +252,9 @@ pub(super) fn tick(db: &Db) -> Result<Tick, FlushError> {
 /// The physical check of a database in which nothing runs, with every
 /// stored hash made again by the rules of the tests' model.
 pub(super) fn check_still(db: &Db) -> verify::Report {
-    let shared = &*db.shared;
-    let store = &*shared.store;
-    let catalog = store.catalog();
-    let columns = catalog.keyspaces.columns();
-    let beside = [FlatTree::open(lignin_format::PageId::MIN, store.config())];
-    let view = verify::Store {
-        loader: store.loader(),
-        table: &store.table,
-        segments: &store.segments,
-        values: &store.values,
-        page_size: store.page_size,
-        ids: Some(&store.ids),
-        grove: verify::Grove::Directory {
-            tree: catalog.directory,
-            columns: &columns,
-        },
-        flat_drops: Some(catalog.flat_drops),
-        flat: &beside,
-        values_counted: true,
-    };
-    let guard = shared.versions.guard();
-    let at = guard.latest();
+    let at = db.shared.versions.latest();
     let calls = AtomicU64::new(0);
-    let mut rules = Rules(&calls);
-    verify::check(
-        &view,
-        &guard,
-        verify::Options::new(at, verify::Scope::Still),
-        Some(&mut rules),
-    )
+    db.check(at, verify::Scope::Still, Some(&mut Rules(&calls)))
 }
 
 /// Fails if the checker finds anything in a store at rest.
@@ -695,7 +666,7 @@ impl Session {
         self.after_step();
     }
 
-    /// Ends the session by the steps of [`Db::close`]: the two threads end
+    /// Ends the session by the steps of [`Db::close`]: the threads end
     /// after the turn they are in, and then the close finishes what it
     /// can. The session is asked whether it has ended between the two.
     /// Asked while its threads run, it can say nothing and its close can
@@ -915,7 +886,7 @@ impl Session {
 }
 
 /// Opens what a power cut left, in the file system of `options`, with
-/// neither of its threads.
+/// none of its threads.
 fn open_after_a_cut(options: &Options, context: &str) -> Db {
     open_at_rest(DIR, options).unwrap_or_else(|error| panic!("{context}: {error}"))
 }

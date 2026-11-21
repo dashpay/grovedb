@@ -24,7 +24,7 @@ use grovedb_commitment_tree::{
 use grovedb_costs::{CostResult, OperationCost};
 use grovedb_merk::{proofs::Query, store::lignin::hash::MerkHashRules};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
-use lignindb::{verify::Scope, Db, Options};
+use lignindb::{Db, Options};
 
 use super::Lignin;
 use crate::{
@@ -148,16 +148,15 @@ pub(super) fn sound(answers: &[Answer]) -> bool {
     checks.all(|(.., found)| found == "Ok([])")
 }
 
-/// Opens the database in `dir` again, which nothing has open, and has
-/// the physical checker read it: every rule of the layout, and every
-/// stored hash of every Merk node against the hash that Merk's rules make
-/// on the grove version `v`.
+/// Opens the database in `dir` again, which nothing has open, closes it,
+/// and has the physical checker read it as a store that is still: every
+/// rule of the layout, and every stored hash of every Merk node against
+/// the hash that Merk's rules make on the grove version `v`.
 pub(super) fn check(dir: &std::path::Path, v: &GroveVersion) {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
     let mut rules = MerkHashRules::for_check(v);
-    let report = db.check(Scope::Still, Some(&mut rules));
+    let report = db.close_and_verify(Some(&mut rules)).expect("a close");
     assert!(report.is_sound(), "{:#?}", report.findings);
-    db.close().expect("a close");
 }
 
 /// Runs `$history` on LigninDB and on RocksDB on every grove version, and

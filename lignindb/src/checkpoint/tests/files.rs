@@ -130,6 +130,8 @@ fn where_no_link_can_be_made_the_files_are_copied() {
                 for file in store_files(&StdVfs, &db.dir) {
                     std::fs::remove_file(db.dir.join(file)).expect("a live file is deleted");
                 }
+                // No recovery finds the live store in what is left.
+                db.files_are_gone();
             }
         };
         let created = checkpointer(&db, &versions)

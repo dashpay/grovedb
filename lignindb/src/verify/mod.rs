@@ -149,26 +149,50 @@
 //!
 //! - **The caller holds an operation guard** for the whole run, and gives
 //!   a version it has pinned, or the latest version read under the guard
-//!   (`transactions.md` PN5). A run reads every page, so it is one long
+//!   (`transactions.md` PN5), behind which no reclaimer has worked (the
+//!   fourth point says when that is). A run reads every page, so it is one long
 //!   operation: it holds back the reuse of page ids and the deletion of
 //!   files for as long as it takes.
 //! - **[`Scope::Still`] is a promise.** Nothing commits, no page step is
 //!   made and no write-back runs while the check does, the version is the
 //!   latest one, and no write transaction holds a page id. A database that
 //!   was just opened, a checkpoint, and a store at the end of a test are
-//!   still. Under [`Scope::Reader`] the run asks nothing of the store that
-//!   a reader does not ask, and can run beside writers.
+//!   still. Under [`Scope::Reader`] the run can go beside commits,
+//!   write-back and the cleaner, and asks one thing more of the store
+//!   than a reader does: the reclaimer's rest, which is the fourth point.
 //! - **The rules that make a hash answer for every node.** A value hash
 //!   that no rule can make from the pages, as a reference's is, is the
 //!   rules' to return as it is stored. A rule that refuses is a finding
 //!   ([`Rule::HashUnchecked`]). With no rules, no hash is recomputed.
-//! - **No reclaimer of dropped subtrees works under a run.** A step of the
-//!   reclaimer takes cells and records out of the pages of the version
-//!   itself (`lignin_tree::drop`), so a run beside one can read the record
-//!   of a dropped Merk and then find its cells gone, and reports that.
-//!   Whoever runs background work holds the reclaimer back for the run.
-//!   Write-back may run under [`Scope::Reader`]: what a run reads of one
-//!   cell, it reads from one frame.
+//! - **No reclaimer of dropped subtrees works under a run, and none has
+//!   worked behind the version.** A step of the reclaimer takes cells and
+//!   records out of the newest version of a page (`lignin_tree::drop`),
+//!   and a Merk goes in several steps on several pages. So a run beside
+//!   one can read the record of a dropped Merk and then find its cells
+//!   gone, and reports that. And a version reads a step only on the pages
+//!   of which it is the newest version: once a later commit has installed
+//!   a page, published or not, a step on that page is not in the version,
+//!   and a step on another page is. Such a version can hold a flat record
+//!   whose entry is gone ([`Rule::FlatRecordWithoutEntry`]), with every
+//!   read of it right and no byte wrong. **A version is sound to check
+//!   when every step of the reclaimer that was made is in it, and none
+//!   is made during the run**, and [`Scope::Reader`] counts on the
+//!   caller for that as [`Scope::Still`] does. It is so when no step was
+//!   made since a later commit first installed a page. A caller has it
+//!   by pinning the latest version under the commit lock, with the
+//!   reclaimer held back from before that until the run has ended: the
+//!   engine's check on demand does (`Db::verify`). No commit is on its
+//!   way from its installs to its publication there. One that stopped
+//!   between the two has ended its session with pages installed that
+//!   are of no version: a step is refused on such a page, whose newest
+//!   frame is not the latest version's, and a step on any other page is
+//!   in the latest version, which is the newest of that page. Write-back and the cleaner may run under
+//!   [`Scope::Reader`]: what a run reads of one cell, it reads from one
+//!   frame, and a value that the cleaner moved is read whole under the
+//!   pointer that the frame holds, the old one or the new: the file that
+//!   the old one leads into is not deleted before every operation that
+//!   was running when it emptied has ended, and the run is one operation
+//!   under its guard.
 //! - **The pool has room for a few pages beside what is pinned.** The run
 //!   holds the pages of the step it is in, and a few of the steps before.
 //!
@@ -184,11 +208,11 @@
 //! 3. **A store with no directory is checked from the roots it is given**
 //!    ([`Grove::Roots`]): the pages a bulk load wrote (TREE-10) are a
 //!    grove before any directory exists.
-//! 4. **Two scopes** ([`Scope`]). What a reader can see is checked at any
-//!    version beside writers. The page ids, the counts of live values and
-//!    the page table are compared with the pages only where the caller
-//!    says the store is still, since each of them is of the latest moment
-//!    and not of a version.
+//! 4. **Two scopes** ([`Scope`]). What a reader can see is checked beside
+//!    writers, at a version that no reclaimer has worked behind. The page
+//!    ids, the counts of live values and the page table are compared with
+//!    the pages only where the caller says the store is still, since each
+//!    of them is of the latest moment and not of a version.
 //! 5. **Cells that nothing reaches are reported apart**, and so are tree
 //!    pages with no cell.
 //! 6. **The heights in a link are checked against the child's links, and
@@ -294,7 +318,10 @@ pub enum Grove<'c> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Scope {
     /// What a reader of the version sees: the pages, the trees, the
-    /// directory, the values. It may run beside writers.
+    /// directory, the values. It may run beside writers, and not beside a
+    /// reclaimer of dropped subtrees nor at a version that one has worked
+    /// behind (see the [module documentation](self), "What the callers
+    /// do").
     #[default]
     Reader,
     /// Also what the store keeps beside its pages: the page ids, the counts
@@ -308,7 +335,9 @@ pub enum Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Options {
     /// The version to check: one the caller has pinned, or the latest
-    /// version read under its guard.
+    /// version read under its guard, and one that no reclaimer of dropped
+    /// subtrees has worked behind (the [module documentation](self), "What
+    /// the callers do").
     pub at: CommitVersion,
     /// How much of the store the run may look at.
     pub scope: Scope,

@@ -765,8 +765,8 @@ fn a_step_that_the_log_refuses_is_made_again() {
 /// dropped.
 ///
 /// Afterwards a writer enters Merks of the same shape, each after a
-/// reclaim round that gives pages and cells back, and every such commit
-/// is taken. Where one of them puts a root in a cell that a left-behind
+/// reclaim round, which gives back what pages and cells it has to give,
+/// and every such commit is taken. Where one of them puts a root in a cell that a left-behind
 /// root record names, it is refused (`RootTaken`); where none does, the
 /// checker finds the record.
 ///
@@ -874,9 +874,9 @@ fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
             stats.background
         );
         // The writer's side: Merks of the same shape are entered, each
-        // after a reclaim round that gives pages and cells back. A root
-        // record that was left behind names such a cell, and a commit
-        // that puts a root there is refused for it (`RootTaken`).
+        // after a reclaim round. A root record that was left behind names
+        // a cell that was given back, and a commit that puts a root there
+        // is refused for it (`RootTaken`).
         for again in 0..8 {
             db.reclaim();
             let (outer, inner) = (numbered(40_000 + again), numbered(50_000 + again));

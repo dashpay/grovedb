@@ -30,6 +30,7 @@ use super::{
     store::{Catalog, Shared},
 };
 use crate::{
+    checkpoint::DELETING_FILE_NAME,
     options::Options,
     txn::{KeySet, Keyspaces, WritePath},
 };
@@ -78,9 +79,10 @@ fn is_own_dir(name: &OsStr) -> bool {
 
 /// Looks at the directory `dir` and says what it holds, reading only.
 ///
-/// A directory of another engine, a database of a format version this
-/// build does not read and files of a database with no manifest are each
-/// refused here, before anything is written (P-02).
+/// A directory that holds the mark of a removal, a directory of another
+/// engine, a database of a format version this build does not read and
+/// files of a database with no manifest are each refused here, before
+/// anything is written (P-02).
 fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
     let entries = match vfs.read_dir(dir) {
         Ok(entries) => entries,
@@ -94,6 +96,15 @@ fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
         engine,
         entry: entry.to_os_string(),
     };
+    // The name that a removal gives the manifest of what it removes
+    // (`crate::checkpoint`, D-128 B, D-168): nothing is opened and nothing
+    // is made beside it, whatever else the directory holds, a manifest or
+    // the files of another engine.
+    if (entries.iter()).any(|entry| entry.name == DELETING_FILE_NAME) {
+        return Err(OpenError::Deleting {
+            dir: dir.to_path_buf(),
+        });
+    }
     if let Some(entry) = entries.iter().find(|entry| is_rocksdb(&entry.name)) {
         return Err(foreign("RocksDB", &entry.name));
     }
@@ -413,6 +424,7 @@ pub(super) fn open_store(
         ids: recovered.allocator,
         manifest: std::sync::Mutex::new(recovered.manifest),
         flush: recovered.flush,
+        cleaner: lignin_store::cleaner::CleanerState::new(options.cleaner.unwrap_or_default()),
         stats: lignin_store::stats::Stats::new(),
         commits: crate::txn::Commits::new(landed),
         committing: crate::commit::CommitState::reporting(move |error| {
@@ -618,6 +630,7 @@ pub(super) fn foreign_entries(vfs: &dyn Vfs, dir: &Path) -> std::io::Result<Vec<
             || name == LOCK_FILE
             || name == ManifestStore::FILE_NAME
             || name == ManifestStore::TEMP_FILE_NAME
+            || name == DELETING_FILE_NAME
     };
     let entries = vfs.read_dir(dir)?;
     let mut names: Vec<OsString> = (entries.into_iter())

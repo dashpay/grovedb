@@ -214,6 +214,8 @@ pub struct Db {
     hash_rules: Mutex<Option<Box<dyn HashRules + Send>>>,
     /// Whether the check of its drop recomputes no hash.
     unhashed: AtomicBool,
+    /// Whether its drop leaves the recovery of its files out.
+    files_gone: AtomicBool,
     _dir: Option<tempfile::TempDir>,
 }
 
@@ -356,6 +358,7 @@ impl Db {
             unchecked: AtomicBool::new(keep.is_none()),
             hash_rules: Mutex::new(None),
             unhashed: AtomicBool::new(false),
+            files_gone: AtomicBool::new(false),
             _dir: keep,
         });
         let versions = Versions::with_reclaim(CommitVersion::EMPTY, Box::new(Hook(db.clone())));
@@ -432,6 +435,7 @@ impl Db {
             unchecked: AtomicBool::new(false),
             hash_rules: Mutex::new(None),
             unhashed: AtomicBool::new(false),
+            files_gone: AtomicBool::new(false),
             _dir: None,
         });
         let versions = Versions::with_reclaim(landed, Box::new(Hook(db.clone())));
@@ -1075,6 +1079,15 @@ impl Db {
         self.unchecked.store(true, Ordering::Relaxed);
     }
 
+    /// Leaves the recovery of this store's files out of the check that its
+    /// drop makes (the comparison with what a recovery makes of the
+    /// files, D-108 item 3): for a test that removes
+    /// files of its store while the session goes on with what it has in
+    /// memory and open. The physical check is made all the same.
+    pub fn files_are_gone(&self) {
+        self.files_gone.store(true, Ordering::Relaxed);
+    }
+
     /// The rules that the check at the drop of this store recomputes the
     /// hashes by: for a store whose nodes were not written with the hashes
     /// of the model of these tests ([`Rules`]).
@@ -1116,6 +1129,11 @@ impl Db {
 /// and where the test is failing already. The hashes are recomputed by the
 /// rules of the store ([`Db::check_hashes_by`], [`Db::unhashed`]). What
 /// counts as unsound is [`Db::unsound`].
+///
+/// A store that passes is then recovered from the files it leaves, and
+/// what the recovery makes is compared with what the session had
+/// (D-108 item 3). The drop has the store to itself, so nothing commits
+/// beside the recovery, which writes to the directory.
 #[cfg(debug_assertions)]
 impl Drop for Db {
     fn drop(&mut self) {
@@ -1125,12 +1143,210 @@ impl Drop for Db {
         if self.keyspaces.get().is_none() || self.directory.get().is_none() {
             return;
         }
+        let at = self.left_sound();
+        if let Err(differs) = self.recovered_as_left() {
+            panic!(
+                "the store of a test is not recovered as it was left at version {at}: {differs}"
+            );
+        }
+    }
+}
+
+/// What the store's recovery made of the files a store of the tests left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveredAsLeft {
+    /// The store is not one whose files a recovery may be run on: it has
+    /// no directory of its own, its test said that files of it are gone
+    /// ([`Db::files_are_gone`]), or its session ended for writes.
+    NotAsked,
+    /// The recovery landed on the store's latest version with the same
+    /// pages, page ids and counts of values.
+    Same {
+        /// The pages that are in use.
+        live: usize,
+    },
+}
+
+impl Db {
+    /// The physical check that the drop of a store makes, at the latest
+    /// version, which is returned. A finding that counts as unsound
+    /// ([`Self::unsound`]) is a panic with the report, and so are more
+    /// findings than a report keeps.
+    fn left_sound(&self) -> CommitVersion {
         let at = self.commits.newest();
         let report = self.verify_by_own_rules(at, Scope::Still);
         assert!(
             self.unsound(&report).is_empty() && report.more_findings == 0,
             "the store of a test is left unsound at version {at}:\n{report}"
         );
+        at
+    }
+
+    /// Ends the life of a store with what its drop does: the physical
+    /// check, which `sound` leaves out for a store whose test changed a
+    /// page behind the log's back, and the comparison, whose finding is
+    /// returned. It takes the store and its
+    /// versions: a recovery writes to the directory, so nothing may commit
+    /// beside it or after it, and nothing holds the store any more. The
+    /// drop that follows makes no check of the files the recovery wrote.
+    #[cfg(test)]
+    pub(crate) fn into_recovered(
+        db: Arc<Self>,
+        versions: Versions,
+        sound: bool,
+    ) -> Result<RecoveredAsLeft, String> {
+        drop(versions);
+        let db = Arc::try_unwrap(db).unwrap_or_else(|_| panic!("the store has another holder"));
+        if sound {
+            db.left_sound();
+        }
+        let compared = db.recovered_as_left();
+        db.unchecked.store(true, Ordering::Relaxed);
+        compared
+    }
+
+    /// Recovers the store from the files it leaves, with the store's own
+    /// recovery (`lignin_store::recovery`), and compares what comes out
+    /// with what the session has: the version it lands on, the image of
+    /// every page in use, which page ids are in use, and the counts of
+    /// live values (D-108 item 3). The drop of a store does this in a
+    /// debug build, after the physical check.
+    ///
+    /// **Only whoever has the store to itself calls this**: the drop, and
+    /// `Db::into_recovered` of the tests. A recovery makes a manifest, writes what
+    /// it replays and begins a log file in the directory of the session,
+    /// and the comparison reads the session's latest version and its
+    /// pages one after the other: a commit beside it would be compared
+    /// half.
+    ///
+    /// It is asked only of a store in a directory of its own
+    /// ([`Self::new`]): such a directory is nobody else's and goes with
+    /// the store. A store whose test removed files of it is not asked
+    /// ([`Self::files_are_gone`]), and a session that ended for writes is
+    /// not asked either: a commit of it that was not published can be in
+    /// the log, and the recovery lands on it (DU2).
+    #[cfg_attr(
+        not(any(test, debug_assertions)),
+        expect(dead_code, reason = "the drop that calls it is of debug builds")
+    )]
+    fn recovered_as_left(&self) -> Result<RecoveredAsLeft, String> {
+        use lignin_format::{flat_page::FlatPageKind, tree_page::TreePage};
+        use lignin_store::load::FRAME_FORMAT;
+
+        let asked = self._dir.is_some() && !self.files_gone.load(Ordering::Relaxed);
+        if !asked || self.committing.stopped().is_some() {
+            return Ok(RecoveredAsLeft::NotAsked);
+        }
+        let latest = self.commits.newest();
+        let manifest = ManifestStore::open(self.vfs.clone(), &self.dir)
+            .map_err(|error| format!("the manifest: {error}"))?;
+        // Every other store is replayed with one page kept in memory, so
+        // that replay's own write-back is on the way as well.
+        let options = RecoveryOptions {
+            pool_capacity: 256 * (SIZE.get() + 512),
+            max_replay_pages: (latest.get() % 2 == 1).then_some(1),
+            ..RecoveryOptions::default()
+        };
+        let store = recover(manifest, &options).map_err(|error| format!("recovery: {error}"))?;
+        let landed = store.landed();
+        if landed != latest {
+            return Err(format!(
+                "it landed on {landed}, and the session's latest version is {latest}: {:?}",
+                store.report
+            ));
+        }
+        // A tree page is compared by its image: a frame also holds what a
+        // session attached to it.
+        let image = |frame: &[u8]| -> Vec<u8> {
+            if FlatPageKind::from_code(frame[0], FRAME_FORMAT).is_ok() {
+                return frame.to_vec();
+            }
+            match TreePage::from_validated(frame, FRAME_FORMAT) {
+                Ok(tree) => tree.to_image(),
+                Err(_) => frame.to_vec(),
+            }
+        };
+        let scan = |ids: &PageAllocator| {
+            let (mut all, mut next) = (Vec::new(), Some(PageId::MIN));
+            while let Some(from) = next {
+                next = ids.scan(from, &mut all);
+            }
+            all
+        };
+        let (had, has) = (scan(&self.ids), scan(&store.allocator));
+        let old = self.loader();
+        let new = PageLoader::new(&store.pool, &store.table, &store.segments, SIZE)
+            .map_err(|error| format!("a loader: {error}"))?;
+        let mut buffers = LoadBuffers::new();
+        let mut live = 0;
+        for &(id, state) in &had {
+            let found = match new.get(id, landed, &mut buffers) {
+                Ok(frame) => Some(image(&frame)),
+                Err(lignin_store::load::LoadError::NoPage { .. }) => None,
+                Err(error) => return Err(format!("page {id} after recovery: {error}")),
+            };
+            let now = store.allocator.state(id);
+            if state != PageState::Live {
+                if found.is_some() || now == PageState::Live {
+                    return Err(format!(
+                        "page {id} was {state:?}, and is {now:?} after recovery"
+                    ));
+                }
+                continue;
+            }
+            let session = old.get(id, latest, &mut buffers);
+            let session = session.map_err(|error| format!("page {id} of the session: {error}"))?;
+            if found.as_ref() != Some(&image(&session)) {
+                return Err(format!(
+                    "page {id} at {landed} is not the page the session had ({} bytes recovered): \
+                     {:?}",
+                    found.map_or(0, |bytes| bytes.len()),
+                    store.report
+                ));
+            }
+            if now != PageState::Live {
+                return Err(format!(
+                    "page {id} is {now:?} after recovery, and was in use"
+                ));
+            }
+            live += 1;
+        }
+        let in_use = |ids: &[(PageId, PageState)]| {
+            let live = ids.iter().filter(|(_, state)| *state == PageState::Live);
+            live.map(|(id, _)| *id).collect::<Vec<_>>()
+        };
+        if in_use(&had) != in_use(&has) {
+            return Err(format!(
+                "the pages in use were {:?} and are {:?}",
+                in_use(&had),
+                in_use(&has)
+            ));
+        }
+        let counts = |values: &ValueStore| {
+            let counts = values.counts().into_iter();
+            let mut counts: Vec<_> = counts
+                .filter(|count| count.values > 0 || count.bytes > 0 || count.miscounted)
+                .map(|count| {
+                    (
+                        count.file.get(),
+                        count.values,
+                        count.bytes,
+                        count.miscounted,
+                    )
+                })
+                .collect();
+            counts.sort_unstable();
+            counts
+        };
+        if counts(&self.values) != counts(&store.values) {
+            return Err(format!(
+                "the counts of values were {:?} and are {:?}: {:?}",
+                counts(&self.values),
+                counts(&store.values),
+                store.report
+            ));
+        }
+        Ok(RecoveredAsLeft::Same { live })
     }
 }
 

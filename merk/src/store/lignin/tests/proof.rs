@@ -14,6 +14,7 @@ use std::{
         atomic::{AtomicU64, Ordering::Relaxed},
         Arc, Mutex,
     },
+    thread::{self, ThreadId},
 };
 
 use ed::Encode;
@@ -21,8 +22,6 @@ use grovedb_element::{reference_path::ReferencePathType, BackwardReferences, Ele
 use grovedb_query::QueryItem;
 use grovedb_version::version::GROVE_VERSIONS;
 use lignin_io::{DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock};
-use lignin_store::{flush::FlushConfig, wal::LogOptions};
-use lignindb::txn::testing::SIZE;
 
 use super::{
     cursor::{act, walked, with_both, Act, Both},
@@ -1037,21 +1036,37 @@ fn a_write_that_is_refused_a_read_fails_and_leaves_its_merk_with_no_tree() {
 }
 
 /// The files of the operating system, with a count of the reads of the
-/// value log: every read of a file in the directory `val`.
-#[derive(Debug, Default)]
+/// value log that the thread of the test makes: every read of a file in
+/// the directory `val` on the thread that made this. The threads of the
+/// database's background work read there too, when the cleaner copies
+/// values, and those are no reads of a call of the test.
+#[derive(Debug)]
 struct CountingVfs {
     value_reads: Arc<AtomicU64>,
+    counted: ThreadId,
+}
+
+impl CountingVfs {
+    fn new() -> Self {
+        Self {
+            value_reads: Arc::default(),
+            counted: thread::current().id(),
+        }
+    }
 }
 
 #[derive(Debug)]
 struct CountedFile {
     file: Box<dyn VfsFile>,
     reads: Option<Arc<AtomicU64>>,
+    counted: ThreadId,
 }
 
 impl CountedFile {
     fn count(&self) {
-        if let Some(reads) = &self.reads {
+        if let Some(reads) = &self.reads
+            && thread::current().id() == self.counted
+        {
             reads.fetch_add(1, Relaxed);
         }
     }
@@ -1063,6 +1078,7 @@ impl Vfs for CountingVfs {
         Ok(Box::new(CountedFile {
             file: StdVfs.open(path, mode)?,
             reads: in_value_log.then(|| self.value_reads.clone()),
+            counted: self.counted,
         }))
     }
 
@@ -1159,26 +1175,11 @@ pub(super) fn long_value(n: u64) -> Vec<u8> {
 
 impl Counted {
     pub(super) fn new(tree_type: TreeType, nodes: u64) -> Self {
-        let vfs = CountingVfs::default();
+        let vfs = CountingVfs::new();
         let value_reads = vfs.value_reads.clone();
-        let dir = tempfile::tempdir().expect("a directory");
-        let path = dir.path().to_path_buf();
-        let (db, versions) = Db::on(
-            Arc::new(vfs),
-            &path,
-            512,
-            LogOptions::default(),
-            FlushConfig::new(SIZE),
-            Some(dir),
-        );
-        // The store is checked at its drop as every store of these tests
-        // is: its values are put plainly.
-        let rules = MerkHashRules::for_check(version());
-        db.check_hashes_by(Box::new(RawValues {
-            rules,
-            stated: false,
-        }));
-        let lignin = Lignin { db, versions };
+        // The database is checked at its close as every one of these
+        // tests is: its values are put plainly.
+        let lignin = Lignin::on(Arc::new(vfs), false);
         let rocks = TempStorage::new();
 
         let batch: Vec<(Vec<u8>, Op)> = (0..nodes)
@@ -1216,15 +1217,9 @@ impl Counted {
             .unwrap()
             .expect("the transaction commits");
 
-        // Write-back places every value in the value log.
-        let write_back = lignin.db.write_back(&lignin.versions);
-        loop {
-            let pass = write_back.pass().expect("a pass of write-back");
-            if pass.waiting == 0 {
-                break;
-            }
-            assert!(pass.progressed(), "write-back stands still: {pass:?}");
-        }
+        // The close of the session places every value in the value log,
+        // and the reads are counted in the session after it.
+        let lignin = lignin.reopened();
         Counted {
             lignin,
             value_reads,

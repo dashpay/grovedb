@@ -5,6 +5,7 @@ use std::{fmt, sync::Arc, time::Duration};
 use lignin_format::PageSize;
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
+    cleaner::CleanerConfig,
     flush::FlushConfig,
     recovery::{RecoveryOptions, DEFAULT_POOL_CAPACITY},
     wal::{LogOptions, SyncPolicy},
@@ -74,6 +75,12 @@ pub struct Options {
     /// before committers are slowed. `None` is [`FlushConfig::new`] of the
     /// page size.
     pub flush: Option<FlushConfig>,
+    /// The policy of the cleaner, which moves what is live out of
+    /// segments and value-log files that are mostly dead and gives the
+    /// files back: what [`CleanerConfig`] says of each of its fields.
+    /// `None` is [`CleanerConfig::new`]. None of it changes what a reader
+    /// is given.
+    pub cleaner: Option<CleanerConfig>,
     /// How long the reclaiming thread sleeps when nobody wakes it. A
     /// reclaim that a reader held back, and a step of the reclaimer that a
     /// write transaction held back, are tried again after this long at
@@ -115,6 +122,7 @@ impl Default for Options {
             sync: SyncPolicy::Never,
             log_file_len: None,
             flush: None,
+            cleaner: None,
             idle: Self::DEFAULT_IDLE,
             vfs: Arc::new(StdVfs),
         }
@@ -130,7 +138,87 @@ impl fmt::Debug for Options {
             .field("sync", &self.sync)
             .field("log_file_len", &self.log_file_len)
             .field("flush", &self.flush)
+            .field("cleaner", &self.cleaner)
             .field("idle", &self.idle)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defaults are the ones the documentation states.
+    #[test]
+    fn the_defaults_are_as_documented() {
+        let options = Options::default();
+        assert!(options.create_if_missing);
+        assert_eq!(options.page_size, None);
+        assert_eq!(options.cache_size, DEFAULT_POOL_CAPACITY);
+        assert_eq!(options.cache_size, 256 << 20);
+        assert_eq!(options.sync, SyncPolicy::Never);
+        assert_eq!(options.log_file_len, None);
+        assert_eq!(options.flush, None);
+        assert_eq!(options.cleaner, None);
+        assert_eq!(options.idle, Duration::from_millis(100));
+    }
+
+    /// What the store's recovery is told is what the options say: the
+    /// pool's size, the sync policy, the thresholds of write-back, and the
+    /// length of a log file only where one is given.
+    #[test]
+    fn the_recovery_is_told_what_the_options_say() {
+        let told = Options::default().recovery();
+        assert_eq!(told.pool_capacity, DEFAULT_POOL_CAPACITY);
+        assert_eq!(told.log.sync, SyncPolicy::Never);
+        assert_eq!(
+            told.log.target_file_len,
+            LogOptions::default().target_file_len
+        );
+        assert_eq!(told.flush, None);
+        let rest = RecoveryOptions::default();
+        assert_eq!(told.max_replay_pages, rest.max_replay_pages);
+
+        let flush = FlushConfig::new(PageSize::MIN);
+        let given = Options {
+            cache_size: 16 << 20,
+            sync: SyncPolicy::Interval(Duration::from_secs(1)),
+            log_file_len: Some(1 << 20),
+            flush: Some(flush),
+            ..Options::default()
+        };
+        let told = given.recovery();
+        assert_eq!(told.pool_capacity, 16 << 20);
+        assert_eq!(told.log.sync, SyncPolicy::Interval(Duration::from_secs(1)));
+        assert_eq!(told.log.target_file_len, 1 << 20);
+        assert_eq!(told.flush, Some(flush));
+    }
+
+    /// The options print every field but the file system, and a clone is
+    /// of the same file system.
+    #[test]
+    fn the_options_print_what_they_hold() {
+        let options = Options {
+            create_if_missing: false,
+            page_size: Some(PageSize::MIN),
+            cleaner: Some(CleanerConfig::new()),
+            ..Options::default()
+        };
+        let text = format!("{options:?}");
+        for field in [
+            "create_if_missing: false",
+            "page_size: Some(",
+            "cache_size: 268435456",
+            "sync: Never",
+            "log_file_len: None",
+            "flush: None",
+            "cleaner: Some(",
+            "idle: 100ms",
+            "..",
+        ] {
+            assert!(text.contains(field), "{field} in {text}");
+        }
+        assert!(!text.contains("vfs"));
+        assert!(Arc::ptr_eq(&options.vfs, &options.clone().vfs));
     }
 }

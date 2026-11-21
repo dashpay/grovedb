@@ -72,6 +72,10 @@ fn a_database_that_was_not_closed_is_recovered_from_its_log() {
     };
     let dir = Path::new("/db");
     let db = Db::open(dir, &options).expect("a new database");
+    // The background work is ended first, so that no table checkpoint
+    // covers a commit: write-back takes one when it is due, and the
+    // cleaner asks for one.
+    halt_background(&db);
     plant(&db, subtree(1), Merk::sized(b'k', 30, 400));
     plant(&db, subtree(2), Merk::sized(b'k', 30, 8));
     db.flush().expect("the log is synced");
@@ -382,10 +386,12 @@ fn entries_that_are_not_the_engines_are_left_alone() {
     db.close().expect("the session ends");
     assert_eq!(foreign(path), before, "after a close");
 
-    // A session that is not closed, so that the next one recovers.
+    // A session that is not closed, so that the next one recovers: its
+    // background work is ended before its commit, which no table
+    // checkpoint covers then.
     let db = Db::open(path, &options()).expect("the database is opened again");
-    plant(&db, subtree(9), Merk::sized(b'k', 50, 300));
     halt_background(&db);
+    plant(&db, subtree(9), Merk::sized(b'k', 50, 300));
     drop(db);
     let db = Db::open(path, &options()).expect("the database is recovered");
     assert!(db.stats().recovery.commits > 0);
@@ -939,6 +945,123 @@ fn a_place_that_is_replaced_after_its_lock_file_was_made_gets_no_database() {
     assert_eq!(moved.get(Path::new("LOCK")), Some(&Some(Vec::new())));
 }
 
+/// A directory with an entry named `MANIFEST.deleting`, which is what a
+/// removal that was begun and cut short leaves of a database, is opened
+/// by nobody, and no open makes a database in it, whatever it is told
+/// about creating; the directory is left as it is. The same holds with a
+/// manifest beside the mark, and with a file of another engine beside
+/// it: the mark is what the open says. `checkpoint::delete` finishes the
+/// removal, and the path is a place for a new database again.
+#[test]
+fn a_directory_with_the_mark_of_a_removal_is_not_opened_and_gets_no_database() {
+    use crate::checkpoint::{delete, DELETING_FILE_NAME};
+
+    for (beside_a_manifest, beside_rocksdb) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let dir = temp();
+        let path = dir.path().join("db");
+        let db = Db::open(&path, &options()).expect("a new database");
+        plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+        db.close().expect("the session ends");
+        let manifest = path.join(ManifestStore::FILE_NAME);
+        match beside_a_manifest {
+            true => fs::copy(&manifest, path.join(DELETING_FILE_NAME)).map(drop),
+            false => fs::rename(&manifest, path.join(DELETING_FILE_NAME)),
+        }
+        .expect("the mark of a removal");
+        if beside_rocksdb {
+            fs::write(path.join("CURRENT"), b"MANIFEST-000001\n").expect("a file of RocksDB");
+        }
+        let before = image(&path);
+
+        for create_if_missing in [true, false] {
+            let watched = Watched::default();
+            let opening = Options {
+                create_if_missing,
+                vfs: Arc::new(watched.clone()),
+                ..options()
+            };
+            let error = Db::open(&path, &opening).expect_err("the mark of a removal");
+            let what = format!(
+                "beside a manifest {beside_a_manifest}, beside RocksDB {beside_rocksdb}, create \
+                 {create_if_missing}"
+            );
+            assert!(
+                matches!(&error, OpenError::Deleting { dir } if *dir == path),
+                "{what}: {error:?}"
+            );
+            assert!(error.left_untouched() && error.source().is_none());
+            assert!(error.to_string().contains("MANIFEST.deleting"), "{error}");
+            assert_eq!(watched.changes(), 0, "{what}: the open wrote");
+            assert_eq!(image(&path), before, "{what}");
+        }
+
+        delete(&StdVfs, &path).expect("the removal is finished");
+        assert!(!path.exists());
+        let db = Db::open(&path, &options()).expect("a new database in its place");
+        assert!(db.created());
+        assert_eq!(seen(&db.snapshot().operation(), subtree(1), b"k"), None);
+    }
+}
+
+/// The mark of a removal that comes between an open's first look and its
+/// lock is found by the look under the lock. A database that was there at
+/// the first look is not opened, and the open has written nothing. In a
+/// directory with no lock file, where the open makes one before it looks
+/// again, no database is made, and the open says that the directory was
+/// changed under it.
+#[test]
+fn the_mark_of_a_removal_that_comes_before_the_lock_is_found_under_it() {
+    use crate::checkpoint::DELETING_FILE_NAME;
+
+    let dir = temp();
+    let path = dir.path().join("db");
+    let db = Db::open(&path, &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+    db.close().expect("the session ends");
+    let watched = Watched::default();
+    let (manifest, mark) = (
+        path.join(ManifestStore::FILE_NAME),
+        path.join(DELETING_FILE_NAME),
+    );
+    watched.at_the_next_lock(move || fs::rename(&manifest, &mark).expect("the mark"));
+    let opening = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let error = Db::open(&path, &opening).expect_err("the mark of a removal");
+    assert!(
+        matches!(&error, OpenError::Deleting { dir } if *dir == path),
+        "{error:?}"
+    );
+    assert!(error.left_untouched());
+    assert_eq!(watched.changes(), 0, "the open wrote");
+    assert!(path.join(DELETING_FILE_NAME).exists() && path.join("seg").exists());
+
+    let place = dir.path().join("place");
+    fs::create_dir(&place).expect("a directory");
+    let watched = Watched::default();
+    let mark = place.join(DELETING_FILE_NAME);
+    watched.at_the_next_lock_that_makes(move || fs::write(&mark, b"").expect("the mark"));
+    let opening = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let error = Db::open(&place, &opening).expect_err("the mark of a removal");
+    assert!(
+        matches!(&error, OpenError::Changed { dir, found }
+            if *dir == place && found.contains("MANIFEST.deleting")),
+        "{error:?}"
+    );
+    assert!(!error.left_untouched());
+    let left = image(&place);
+    assert!(
+        !left.contains_key(Path::new("MANIFEST")) && !left.contains_key(Path::new("seg")),
+        "{left:?}"
+    );
+}
+
 /// A database that was copied without its lock file is refused and left
 /// as it is: the lock file is made in no directory that holds a database,
 /// so that no directory which is put in the place of one, at any moment of
@@ -1104,9 +1227,10 @@ fn the_errors_say_what_failed() {
 ///
 /// The states that are tried: nothing kept that was not synced, all of
 /// it, all of it up to each operation, each change of a name alone with
-/// what it builds on, and four states drawn from the seed. The changes of
-/// names alone are every way a later name can survive an earlier one;
-/// the contents of files are not gone through.
+/// what it builds on, and four states drawn from the seed. With the
+/// changes of names alone, each later name is tried as the one that
+/// survives without any earlier name it does not build on. Several names
+/// surviving together, and the contents of files, are not gone through.
 ///
 /// The creation begins in no directory, and in one that an open which
 /// failed left with a lock file whose name is not synced: the name is
