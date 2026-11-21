@@ -159,6 +159,19 @@ impl Reads {
         }
     }
 
+    /// Whether `of` holds of the key set of a commit that the transaction
+    /// took in and still keeps: of one after the read that was made under
+    /// `lease`, or of any where no lease is named or the lease is not
+    /// remembered. It is for telling a refusal that such a commit
+    /// explains, and not for taking a write: what is not kept is not
+    /// found.
+    pub(crate) fn any_since(&self, lease: Option<Lease>, of: impl Fn(&KeySet) -> bool) -> bool {
+        let read = lease.and_then(|lease| self.leases.get(&lease).copied());
+        let since = |version: &CommitVersion| read.is_none_or(|read| *version > read);
+        let mut sets = self.sets.iter().filter(|(version, _)| since(version));
+        sets.any(|(_, keys)| of(keys))
+    }
+
     /// What the commits did to the record key `key` of `unit` since a node
     /// was read under `lease`, for a write at the version `at` that has
     /// taken in every commit up to it.

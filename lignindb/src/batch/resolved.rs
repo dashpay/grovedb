@@ -7,7 +7,7 @@ use lignin_tree::node::NodeHandle;
 
 use super::{
     node::StagedNode,
-    staged::{Entry, Keys, Leave, Staged, SubtreeState, Write, DATA, ORDER},
+    staged::{Entry, Keys, Leave, Move, Staged, SubtreeState, Write, DATA, ORDER},
 };
 use crate::txn::{
     Applied, Batch, BatchError, Column, Entering, HostPut, Hosted, MerkWrite, RecordWrite, RootPut,
@@ -144,6 +144,13 @@ impl<C> Resolved<C> {
                 hung.insert(*hosted, at);
             }
         }
+        // A subtree is moved to the element that the batch was told hosts
+        // it afterwards.
+        let unhosted = |moving: &&Move| !hung.contains_key(&moving.to);
+        if let Some(moving) = staged.moves.iter().find(unhosted) {
+            let subtree = moving.from;
+            return Err(BatchError::MoveHost { subtree });
+        }
         let left = |(subtree, state): (&Subtree, &SubtreeState)| Some((*subtree, state.leave?));
         let leaves = staged.subtrees.iter().filter_map(left).collect();
         // A subtree is entered after the one its host is in, where the
@@ -180,6 +187,11 @@ impl<C> Resolved<C> {
     /// have been before: [`Self::with_batch`] shows which enter each is.
     pub fn enters(&self) -> &[Subtree] {
         &self.enters
+    }
+
+    /// Whether the batch moves a subtree ([`StagedBatch::move_subtree`](super::StagedBatch::move_subtree)).
+    pub fn moves(&self) -> bool {
+        !self.staged.moves.is_empty()
     }
 
     /// Whether the batch drops or clears a subtree.
@@ -316,7 +328,21 @@ impl<C> Resolved<C> {
             };
             entering.write()
         });
-        let subtrees: Vec<_> = leaves.chain(enters).collect();
+        let moves = self.staged.moves.iter().filter_map(|moving| {
+            let hung = self.hung.get(&moving.to)?;
+            Some(SubtreeWrite::Move {
+                from: moving.from,
+                to: moving.to,
+                host: HostPut {
+                    subtree: hung.subtree,
+                    key: &hung.key,
+                    position: hung.position,
+                },
+                read: moving.read,
+                below: &moving.below,
+            })
+        });
+        let subtrees: Vec<_> = leaves.chain(moves).chain(enters).collect();
         run(&Batch {
             records: &records,
             merks: &merks,

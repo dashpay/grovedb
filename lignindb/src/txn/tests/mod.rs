@@ -11,6 +11,7 @@ mod enters;
 mod errors;
 mod handles;
 mod hashes;
+mod moves;
 mod parked;
 pub(crate) mod random;
 mod readers;
@@ -174,6 +175,19 @@ impl<'s> World<'s> {
                 };
                 left.cut = left.below.iter().copied().filter(written).collect();
             }
+            if let Write::Move(moved) = &mut write {
+                // Of the subtrees below a moved one, those the moves name
+                // go with it, and the others leave. A pair for a subtree
+                // that is not below one says nothing.
+                let tops = moved.tops.clone();
+                let below: Vec<Subtree> = (tops.iter())
+                    .flat_map(|top| model::below(&hosts, *top))
+                    .collect();
+                (moved.pairs).retain(|(old, _)| tops.contains(old) || below.contains(old));
+                moved.left = (below.iter().copied())
+                    .filter(|below| moved.pairs.iter().all(|(old, _)| old != below))
+                    .collect();
+            }
             model.writes.push((write, first_write, false));
         }
     }
@@ -272,19 +286,30 @@ impl<'s> World<'s> {
         let committed = self.model.records.keys().map(|(unit, _)| *unit);
         let model = tx.model.borrow();
         let written = model.writes.iter().map(|(write, ..)| write.unit());
-        committed.chain(written).collect()
+        // A move writes every column under each prefix it names.
+        let moved = model.writes.iter().flat_map(|(write, ..)| match write {
+            Write::Move(moved) => moved.named.clone(),
+            _ => Vec::new(),
+        });
+        let moved = moved.flat_map(|named| Column::ALL.map(|column| Unit::new(column, named)));
+        committed.chain(written).chain(moved).collect()
     }
 
     /// The keys of `unit` that have, or had, a record that `tx` could read.
     pub(crate) fn keys(&self, tx: &Tx<'s>, unit: Unit) -> BTreeSet<Vec<u8>> {
         let mut keys = model::keys_of(&self.model.records, unit);
-        for (write, ..) in &tx.model.borrow().writes {
+        let model = tx.model.borrow();
+        for (write, ..) in &model.writes {
             match write {
                 Write::Put(own, key, _) | Write::Delete(own, key) if *own == unit => {
                     keys.insert(key.clone());
                 }
                 _ => {}
             }
+        }
+        if model.moves() {
+            // What a move brought under the unit's prefix.
+            keys.extend(model.view(&self.model.records, unit).into_keys());
         }
         keys
     }

@@ -60,6 +60,18 @@ pub trait CommittedSide<'s> {
 
     /// The key the side stands on, if it stands on one.
     fn key(&self) -> Option<&[u8]>;
+
+    /// The subtree whose committed records the side shows, by the prefix
+    /// its version has them under.
+    fn under(&self) -> Subtree;
+
+    /// Points the side at the committed records under the prefix `under`,
+    /// at the same version. It then stands on no key.
+    ///
+    /// A cursor shows a subtree that its transaction moved from the
+    /// records the committed version has under the prefix the subtree was
+    /// taken from.
+    fn point(&mut self, guard: &OperationGuard<'s>, under: Subtree) -> Result<(), TxnError>;
 }
 
 /// The committed flat records of one unit at one version.
@@ -130,6 +142,16 @@ impl<'s> CommittedSide<'s> for FlatSide<'s> {
     fn key(&self) -> Option<&[u8]> {
         self.cursor.key()
     }
+
+    fn under(&self) -> Subtree {
+        self.unit.subtree
+    }
+
+    fn point(&mut self, _guard: &OperationGuard<'s>, under: Subtree) -> Result<(), TxnError> {
+        self.unit = Unit::new(self.unit.column, under);
+        self.cursor = self.tree.cursor_within(under.as_bytes());
+        Ok(())
+    }
 }
 
 impl<'s> FlatSide<'s> {
@@ -172,6 +194,8 @@ pub struct MerkSide<'s> {
     at: CommitVersion,
     lease: Lease,
     cursor: tree::Cursor,
+    /// The prefix the version has the Merk under.
+    under: Subtree,
     buffers: LoadBuffers,
     unlinked: Option<UnlinkedSide<'s>>,
 }
@@ -236,6 +260,7 @@ impl<'s> MerkSide<'s> {
     ) {
         self.unlinked = records.then(|| UnlinkedSide::over(self.path, self.at, subtree));
         self.cursor = tree::Cursor::open(&self.reader(guard), root);
+        self.under = subtree;
     }
 
     /// Shows `read` the committed node under `key`, or `None` if the
@@ -398,6 +423,19 @@ impl<'s> CommittedSide<'s> for MerkSide<'s> {
             (false, false) => None,
         }
     }
+
+    fn under(&self) -> Subtree {
+        self.under
+    }
+
+    fn point(&mut self, guard: &OperationGuard<'s>, under: Subtree) -> Result<(), TxnError> {
+        let mut opened = None;
+        let directory = Opened::at(&mut opened, &self.path, guard, self.at)?;
+        let root = directory.root(&self.path, guard, &under)?.flatten();
+        self.cursor = tree::Cursor::open(&self.reader(guard), root);
+        self.under = under;
+        Ok(())
+    }
 }
 
 /// A cursor through a write transaction over the nodes of one Merk.
@@ -558,6 +596,7 @@ impl<'t, 's> MerkCursor<'t, 's> {
             at,
             lease,
             cursor: tree::Cursor::open(&reader, root),
+            under: subtree,
             buffers: LoadBuffers::new(),
             unlinked,
         };
@@ -853,17 +892,36 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// The subtree is opened once, and asked for again whenever the
     /// transaction has dropped or cleared a subtree since, or has taken
     /// such a write back.
+    ///
+    /// Where the transaction moved the subtree, the committed side is the
+    /// records that the cursor's version has under the prefix the subtree
+    /// was taken from, and where a move took a subtree from the cursor's
+    /// prefix and brought none, or takes the subtree out with one above
+    /// it ([`Opened::leaves_with_a_move`]), it is not read. A transaction that serves
+    /// its records by key refuses the read where a move decides what is
+    /// under the subtree ([`BatchError::MovedByKey`](super::BatchError)).
     fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
         let (path, at, subtree) = (*self.txn.path(), self.pin.version(), self.unit.subtree);
+        (self.txn).guard_cursor(self.who, subtree, &mut self.opened, guard, at)?;
         let (opened, seen) = (&mut self.opened, self.seen);
-        let (left, reads) = self.txn.with_set(self.who, self.unit, |set| {
+        let (left, reads, under) = self.txn.with_set(self.who, self.unit, |set| {
             if let Some((_, reads)) = seen.filter(|(left, _)| *left == set.left()) {
-                return Ok((set.left(), reads));
+                return Ok((set.left(), reads, None));
             }
+            let under = set.committed_under(subtree);
             let opened = Opened::at(opened, &path, guard, at)?;
-            let reads = opened.seen(&path, guard, set, &subtree)?.is_some();
-            Ok::<_, TxnError>((set.left(), reads))
+            let reads = match under {
+                Some(under) => {
+                    !opened.leaves_with_a_move(&path, guard, set, &subtree)?
+                        && opened.seen(&path, guard, set, &under)?.is_some()
+                }
+                None => false,
+            };
+            Ok::<_, TxnError>((set.left(), reads, under))
         })??;
+        if let Some(under) = under.filter(|under| *under != self.side.under()) {
+            self.side.point(guard, under)?;
+        }
         if seen != Some((left, reads)) {
             // The transaction dropped or cleared a subtree, or took such a
             // write back: the committed side may have come into the

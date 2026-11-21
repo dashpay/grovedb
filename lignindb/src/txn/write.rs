@@ -402,6 +402,42 @@ pub struct HostPut<'a> {
 /// what its own drops and clears take and what its scopes hold against
 /// each other. Where it had none, it has a subtree with what the write
 /// states.
+///
+/// # The move
+///
+/// [`Self::Move`] gives a subtree another prefix, under another key of
+/// the Merk its host is in, and takes the subtrees below it along. Its
+/// rules are `transactions.md` MV1 to MV8 (section 7.5) and CF10. What a
+/// caller states and is answered:
+///
+/// - **No node is copied.** The directory's records of the moved Merk,
+///   and of each Merk below it that `below` names, are written under the
+///   new prefix, and so is each of their flat records, in every column
+///   ([`lignin_tree::drop::rekey`]). A Merk below that `below` does not
+///   name leaves with the move if it has no node, as a drop takes it, and
+///   refuses the batch if it has one
+///   ([`BatchError::MoveUnnamed`](super::BatchError::MoveUnnamed)).
+/// - **The batch puts the node that hosts the subtree afterwards**, in
+///   the Merk the host is in before and at the position the subtree had
+///   ([`BatchError::MoveHost`](super::BatchError::MoveHost)). It states
+///   nothing else of a prefix that one of its moves names, but the drop
+///   of a subtree that is entered where one goes
+///   ([`BatchError::Moved`](super::BatchError::Moved)). Its moves are
+///   made together, after its drops and clears and before its enters.
+/// - **The move is dated at `read`**, as a kept value is dated at its
+///   read: a commit beside the transaction that wrote the node which
+///   hosts the subtree, since that read, refuses the batch as a conflict
+///   ([`BatchError::ValueTaken`](super::BatchError::ValueTaken)), and a
+///   move of a subtree whose host is a node of the committed state names
+///   a read ([`BatchError::NoRead`](super::BatchError::NoRead)).
+/// - **Afterwards the transaction reads under the new prefix** what it
+///   read under the old one, and no subtree under the old one. Frames
+///   that are made again make the move again, and write the flat records
+///   again. A transaction that serves its records by key refuses every
+///   read and write that a move of it decides
+///   ([`BatchError::MovedByKey`](super::BatchError::MovedByKey)), and a
+///   scope that keeps its writes in the write set refuses a move
+///   ([`BatchError::MoveBeside`](super::BatchError::MoveBeside)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtreeWrite<'a> {
     /// Enters the subtree, with no node: the operation writes the element
@@ -472,6 +508,80 @@ pub enum SubtreeWrite<'a> {
         /// position it has, and is what a subtree with no host states.
         position: Option<u8>,
     },
+    /// Moves the subtree to another prefix, under another key of the Merk
+    /// its host is in, with the subtrees below it (`tree-layout.md` D5,
+    /// D6): see [The move](#the-move).
+    Move {
+        /// The prefix the subtree is entered under before the batch.
+        from: Subtree,
+        /// The prefix it has afterwards.
+        to: Subtree,
+        /// The element that hosts it afterwards: a node that the same
+        /// batch puts, in the Merk its host is in before, hosting `to`
+        /// at the position the subtree had.
+        host: HostPut<'a>,
+        /// The handle the mover read the node with that hosts the
+        /// subtree before the batch, or `None` where that node is a
+        /// record the transaction wrote itself.
+        read: Option<NodeHandle>,
+        /// The prefix that each subtree below `from` has afterwards, by
+        /// the prefix it has before the batch.
+        below: &'a [(Subtree, Subtree)],
+    },
+}
+
+/// A move of a subtree ([`SubtreeWrite::Move`], [`SubtreeWrite::moving`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Moving<'a> {
+    /// The prefix the subtree is entered under before the batch.
+    pub from: Subtree,
+    /// The prefix it has afterwards.
+    pub to: Subtree,
+    /// The element that hosts it afterwards.
+    pub host: HostPut<'a>,
+    /// The read of the node that hosts it before.
+    pub read: Option<NodeHandle>,
+    /// The prefixes of the subtrees below it, before and afterwards.
+    pub below: &'a [(Subtree, Subtree)],
+}
+
+impl<'a> Moving<'a> {
+    /// The move as the write it is.
+    pub const fn write(&self) -> SubtreeWrite<'a> {
+        let Self {
+            from,
+            to,
+            host,
+            read,
+            below,
+        } = *self;
+        SubtreeWrite::Move {
+            from,
+            to,
+            host,
+            read,
+            below,
+        }
+    }
+
+    /// The prefixes the move takes a subtree from, if one is entered
+    /// there: `from`, and the first of each pair.
+    pub fn sources(&self) -> impl Iterator<Item = Subtree> + 'a {
+        let below = self.below.iter().map(|(from, _)| *from);
+        std::iter::once(self.from).chain(below)
+    }
+
+    /// The prefixes the move brings a subtree to: `to`, and the second
+    /// of each pair.
+    pub fn targets(&self) -> impl Iterator<Item = Subtree> + 'a {
+        let below = self.below.iter().map(|(_, to)| *to);
+        std::iter::once(self.to).chain(below)
+    }
+
+    /// Every prefix the move names, on either side.
+    pub fn named(&self) -> impl Iterator<Item = Subtree> + 'a {
+        self.sources().chain(self.targets())
+    }
 }
 
 /// An enter of a subtree, of either kind ([`SubtreeWrite::entering`]).
@@ -518,8 +628,33 @@ impl<'a> SubtreeWrite<'a> {
         matches!(self, Self::Enter { .. } | Self::EnterIfAbsent { .. })
     }
 
-    /// The enter the write is, of either kind, or `None` for any other
-    /// write.
+    /// Whether the write is a drop or a clear of its subtree: it takes
+    /// the subtree out, or what its Merk holds.
+    pub const fn leaves(&self) -> bool {
+        matches!(self, Self::Drop { .. } | Self::Clear { .. })
+    }
+
+    /// The move the write is, or `None` for any other.
+    pub const fn moving(&self) -> Option<Moving<'a>> {
+        match *self {
+            Self::Move {
+                from,
+                to,
+                host,
+                read,
+                below,
+            } => Some(Moving {
+                from,
+                to,
+                host,
+                read,
+                below,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The enter the write is, of either kind, or `None` for any other.
     pub const fn entering(&self) -> Option<Entering<'a>> {
         match *self {
             Self::Enter {
@@ -537,24 +672,22 @@ impl<'a> SubtreeWrite<'a> {
                 host,
                 if_absent: matches!(self, Self::EnterIfAbsent { .. }),
             }),
-            Self::Drop { .. } | Self::Clear { .. } | Self::Convert { .. } => None,
+            Self::Drop { .. } | Self::Clear { .. } | Self::Convert { .. } | Self::Move { .. } => {
+                None
+            }
         }
     }
 
-    /// Whether the write takes its subtree out, or what it holds: a drop
-    /// or a clear.
-    pub const fn leaves(&self) -> bool {
-        matches!(self, Self::Drop { .. } | Self::Clear { .. })
-    }
-
-    /// The subtree the write names.
+    /// The subtree the write names: for a move, the one it moves, by the
+    /// prefix it has before the batch.
     pub const fn subtree(&self) -> Subtree {
         match *self {
             Self::Enter { subtree, .. }
             | Self::EnterIfAbsent { subtree, .. }
             | Self::Drop { subtree }
             | Self::Clear { subtree }
-            | Self::Convert { subtree, .. } => subtree,
+            | Self::Convert { subtree, .. }
+            | Self::Move { from: subtree, .. } => subtree,
         }
     }
 }
@@ -571,16 +704,16 @@ impl<'a> SubtreeWrite<'a> {
 /// the batch above this one (TXN-08).
 ///
 /// The parts of a batch are applied in this order, wherever they stand in
-/// it: the drops and the clears, the subtrees that are stated anew, the
-/// enters of both kinds in the order they are given, the change sets, and
-/// the records.
+/// it: the drops and the clears, the moves, the subtrees that are stated
+/// anew, the enters of both kinds in the order they are given, the change
+/// sets, and the records. The moves of a batch are made together.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Batch<'a> {
     /// The writes of flat records.
     pub records: &'a [RecordWrite<'a>],
     /// The change sets of the Merks.
     pub merks: &'a [MerkWrite<'a>],
-    /// The subtrees the operation enters, drops and clears.
+    /// The subtrees the operation enters, drops, clears and moves.
     pub subtrees: &'a [SubtreeWrite<'a>],
 }
 
@@ -604,6 +737,16 @@ impl Batch<'_> {
     pub(crate) fn leaving(&self) -> Vec<Subtree> {
         let leaves = (self.subtrees.iter()).filter(|write| write.leaves());
         leaves.map(SubtreeWrite::subtree).collect()
+    }
+
+    /// Whether the batch drops or clears a subtree.
+    pub(crate) fn has_leaves(&self) -> bool {
+        self.subtrees.iter().any(SubtreeWrite::leaves)
+    }
+
+    /// The moves of the batch, in its order.
+    pub(crate) fn moves(&self) -> impl Iterator<Item = Moving<'_>> + '_ {
+        self.subtrees.iter().filter_map(SubtreeWrite::moving)
     }
 }
 

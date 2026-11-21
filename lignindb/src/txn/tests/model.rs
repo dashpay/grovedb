@@ -162,6 +162,47 @@ pub enum Write {
     /// meets no write, and it stands among the writes so that it is taken
     /// back with them.
     Stated(Subtree),
+    /// The moves of one batch, each of a subtree with those below it,
+    /// which are made together: one write, of every key under every
+    /// prefix their statements name.
+    Move(Moved),
+}
+
+/// What the moves of one batch do.
+#[derive(Debug, Clone, Default)]
+pub struct Moved {
+    /// Every prefix the statements name, on either side: what the write
+    /// covers in the write set and in the key set of its commit.
+    pub named: Vec<Subtree>,
+    /// The subtrees that are moved, by the prefix each has before.
+    pub tops: Vec<Subtree>,
+    /// Each subtree that has another prefix afterwards: the prefix before
+    /// and the prefix after. The model works out which of the pairs that
+    /// are stated name a subtree below a moved one.
+    pub pairs: Vec<(Subtree, Subtree)>,
+    /// The subtrees below the moved ones that leave with them.
+    pub left: Vec<Subtree>,
+}
+
+impl Moved {
+    /// The prefix that the subtree which the move brings to `to` had.
+    fn source(&self, to: Subtree) -> Option<Subtree> {
+        let brought = self.pairs.iter().find(|(_, new)| *new == to);
+        brought.map(|(old, _)| *old)
+    }
+
+    /// The prefix that the subtree which the move takes from `from` has
+    /// afterwards.
+    fn target(&self, from: Subtree) -> Option<Subtree> {
+        let taken = self.pairs.iter().find(|(old, _)| *old == from);
+        taken.map(|(_, new)| *new)
+    }
+
+    /// Whether the move takes a subtree from `from`: to another prefix,
+    /// or out.
+    fn takes(&self, from: Subtree) -> bool {
+        self.target(from).is_some() || self.left.contains(&from)
+    }
 }
 
 /// Which subtree each hosted subtree is below: the subtree of its host.
@@ -179,6 +220,22 @@ pub fn hosted(hosts: &mut Hosts, write: &Write) {
             }
             if !left.cleared {
                 hosts.remove(&left.subtree);
+            }
+        }
+        Write::Move(moved) => {
+            // Made together: every subtree is taken from where it hangs,
+            // and then each hangs below the host it had, under the prefix
+            // that one has afterwards.
+            for left in &moved.left {
+                hosts.remove(left);
+            }
+            let taken: Vec<_> = (moved.pairs.iter())
+                .map(|(old, new)| (*new, hosts.remove(old)))
+                .collect();
+            for (new, host) in taken {
+                if let Some(host) = host {
+                    hosts.insert(new, moved.target(host).unwrap_or(host));
+                }
             }
         }
         Write::Put(..) | Write::Delete(..) | Write::Range(..) | Write::Stated(_) => {}
@@ -243,6 +300,7 @@ impl Write {
             Self::Put(unit, ..) | Self::Delete(unit, _) | Self::Range(unit, ..) => *unit,
             Self::Leave(left) => Unit::data(left.subtree),
             Self::Enter(subtree, _) | Self::Stated(subtree) => Unit::data(*subtree),
+            Self::Move(moved) => Unit::data(moved.named[0]),
         }
     }
 
@@ -251,6 +309,7 @@ impl Write {
         match self {
             Self::Leave(left) => left.takes(unit),
             Self::Enter(..) | Self::Stated(_) => false,
+            Self::Move(moved) => moved.named.contains(&unit.subtree),
             _ => self.unit() == unit,
         }
     }
@@ -263,6 +322,7 @@ impl Write {
             }
             Self::Leave(left) => left.takes(unit),
             Self::Enter(..) | Self::Stated(_) => false,
+            Self::Move(moved) => moved.named.contains(&unit.subtree),
         }
     }
 
@@ -271,6 +331,22 @@ impl Write {
         match (self, other) {
             (Self::Enter(..) | Self::Stated(_), _) | (_, Self::Enter(..) | Self::Stated(_)) => {
                 false
+            }
+            // A move writes every key under each prefix it names. What a
+            // drop takes below its subtree is the model's to say, so a
+            // drop above a moved subtree meets the move.
+            (Self::Move(moved), Self::Move(other)) => {
+                moved.named.iter().any(|named| other.named.contains(named))
+            }
+            (Self::Move(moved), Self::Leave(left)) | (Self::Leave(left), Self::Move(moved)) => {
+                let mut named = moved.named.iter();
+                named.any(|named| left.names(Unit::data(*named)) || left.subtree == *named)
+            }
+            // And what left with a move is taken as a drop takes what is
+            // below its subtree.
+            (Self::Move(moved), other) | (other, Self::Move(moved)) => {
+                let subtree = other.unit().subtree;
+                moved.named.contains(&subtree) || moved.left.contains(&subtree)
             }
             (Self::Leave(left), Self::Leave(other)) => {
                 let units = |left: &Left| {
@@ -316,6 +392,20 @@ fn apply(records: &mut Records, write: &Write) {
             records.retain(|(unit, key), _| !write.covers(*unit, key));
         }
         Write::Enter(..) | Write::Stated(_) => {}
+        Write::Move(moved) => {
+            // Made together: every record under a prefix that a subtree
+            // is taken from goes, and then each is under the prefix its
+            // subtree has afterwards, in the column it was in.
+            let mut taken = Vec::new();
+            records.retain(|(unit, key), value| {
+                let takes = moved.takes(unit.subtree);
+                if let Some(to) = moved.target(unit.subtree) {
+                    taken.push(((Unit::new(unit.column, to), key.clone()), value.clone()));
+                }
+                !takes
+            });
+            records.extend(taken);
+        }
     }
 }
 
@@ -330,43 +420,66 @@ impl TxnModel {
     /// What the transaction's newest write that covers the key says:
     /// `None` if it has none, `Some(None)` for a delete.
     pub fn own(&self, unit: Unit, key: &[u8]) -> Option<Option<&Val>> {
-        let newest = self
-            .writes
-            .iter()
-            .rev()
-            .find(|(write, ..)| write.covers(unit, key))?;
-        Some(match &newest.0 {
-            Write::Put(_, _, value) => Some(value),
-            Write::Delete(..)
-            | Write::Range(..)
-            | Write::Leave(_)
-            | Write::Enter(..)
-            | Write::Stated(_) => None,
-        })
+        self.traced(unit, key).0
+    }
+
+    /// What the transaction's newest write that covers the key says, and
+    /// the unit the committed state has the key in if no write covers it:
+    /// another one where the transaction moved the subtree.
+    fn traced(&self, mut unit: Unit, key: &[u8]) -> (Option<Option<&Val>>, Unit) {
+        for (write, ..) in self.writes.iter().rev() {
+            if let Write::Move(moved) = write {
+                // What is under a prefix after a move is what was under
+                // the prefix its subtree was taken from, and nothing
+                // where a subtree was taken and none brought.
+                match moved.source(unit.subtree) {
+                    Some(from) => unit = Unit::new(unit.column, from),
+                    None if moved.takes(unit.subtree) => return (Some(None), unit),
+                    None => {}
+                }
+                continue;
+            }
+            if write.covers(unit, key) {
+                let own = match write {
+                    Write::Put(_, _, value) => Some(value),
+                    _ => None,
+                };
+                return (Some(own), unit);
+            }
+        }
+        (None, unit)
     }
 
     /// The record the transaction reads under the key (RD3).
     pub fn read<'a>(&'a self, committed: &'a Records, unit: Unit, key: &[u8]) -> Option<&'a Val> {
-        match self.own(unit, key) {
-            Some(own) => own,
-            None => committed.get(&(unit, key.to_vec())),
+        match self.traced(unit, key) {
+            (Some(own), _) => own,
+            (None, unit) => committed.get(&(unit, key.to_vec())),
         }
+    }
+
+    /// Whether the transaction moved a subtree.
+    pub fn moves(&self) -> bool {
+        (self.writes.iter()).any(|(write, ..)| matches!(write, Write::Move(_)))
     }
 
     /// The records of `unit` the transaction reads, in key order.
     pub fn view(&self, committed: &Records, unit: Unit) -> BTreeMap<Vec<u8>, Val> {
+        // A move brings records from another unit: every record is asked.
+        let all = self.moves();
         let mut records: Records = committed
             .iter()
-            .filter(|((own, _), _)| *own == unit)
+            .filter(|((own, _), _)| all || *own == unit)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         for (write, ..) in &self.writes {
-            if write.touches(unit) {
+            if all || write.touches(unit) {
                 apply(&mut records, write);
             }
         }
         records
             .into_iter()
+            .filter(|((own, _), _)| *own == unit)
             .map(|((_, key), value)| (key, value))
             .collect()
     }
@@ -407,6 +520,25 @@ impl TxnModel {
         for (own, first_write, met) in &mut self.writes {
             if *first_write < version && writes.iter().any(|write| write.meets(own)) {
                 *met = true;
+            }
+        }
+        // A subtree that the commit entered below one that a move of the
+        // transaction takes to another prefix, and that the move does
+        // not name, leaves with that move where the transaction's writes
+        // are applied over the commit.
+        for write in writes {
+            let Write::Enter(subtree, Some(host)) = write else {
+                continue;
+            };
+            let moves = self.writes.iter_mut().filter_map(|(own, ..)| match own {
+                Write::Move(moved) => Some(moved),
+                _ => None,
+            });
+            for moved in moves {
+                if moved.takes(*host) && !moved.takes(*subtree) {
+                    moved.left.push(*subtree);
+                    break;
+                }
             }
         }
     }
@@ -467,6 +599,18 @@ pub enum OwnedSubtree {
     /// States the subtree anew: its tree type and, where one is given, its
     /// position among the subtrees of its host. The model keeps neither.
     Convert(Subtree, Vec<u8>, Option<u8>),
+    /// Moves the subtree `from` to `to`, hosted by the node with the key
+    /// `host.1` of the subtree `host.0` at the position `host.2`. `read`
+    /// is the handle the mover read the node with that hosts it before,
+    /// and `below` has the prefixes of the subtrees below, before and
+    /// afterwards.
+    Move {
+        from: Subtree,
+        to: Subtree,
+        host: (Subtree, Vec<u8>, u8),
+        read: Option<NodeHandle>,
+        below: Vec<(Subtree, Subtree)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -537,17 +681,15 @@ impl OwnedMerk {
 
 impl OwnedBatch {
     /// Every write of the batch, in the order the write set takes them: a
-    /// drop is one write and so is a clear, and a subtree that is entered
-    /// is none. What is below a subtree that leaves is the model's to say
-    /// (`World::apply`).
+    /// drop is one write and so is a clear, then a move is one, and a
+    /// subtree that is entered is none. What is below a subtree that
+    /// leaves or moves is the model's to say (`World::apply`).
     pub fn writes(&self) -> Vec<Write> {
         let leaving = self.subtrees.iter().filter_map(|subtree| {
             let (subtree, cleared) = match subtree {
-                OwnedSubtree::Enter(..)
-                | OwnedSubtree::EnterIfAbsent(..)
-                | OwnedSubtree::Convert(..) => return None,
                 OwnedSubtree::Drop(subtree) => (*subtree, false),
                 OwnedSubtree::Clear(subtree) => (*subtree, true),
+                _ => return None,
             };
             Some(Write::Leave(Left {
                 subtree,
@@ -567,10 +709,29 @@ impl OwnedBatch {
             OwnedSubtree::Convert(subtree, ..) => Some(Write::Stated(*subtree)),
             _ => None,
         });
+        // The moves of a batch are made together: one write.
+        let mut all = Moved::default();
+        for subtree in &self.subtrees {
+            if let OwnedSubtree::Move {
+                from, to, below, ..
+            } = subtree
+            {
+                all.tops.push(*from);
+                all.pairs.push((*from, *to));
+                all.pairs.extend(below.iter().copied());
+            }
+        }
+        let (sources, targets): (Vec<_>, Vec<_>) = all.pairs.iter().copied().unzip();
+        all.named = sources.into_iter().chain(targets).collect();
+        let moved = (!all.tops.is_empty()).then_some(Write::Move(all));
         let merks = self.merks.iter().flat_map(OwnedMerk::writes);
-        (leaving.chain(stated).chain(entered).chain(merks))
-            .chain(self.records.iter().cloned())
-            .collect()
+        (leaving
+            .chain(moved)
+            .chain(stated)
+            .chain(entered)
+            .chain(merks))
+        .chain(self.records.iter().cloned())
+        .collect()
     }
 
     /// The same batch, in which every node that keeps its value names the
@@ -669,7 +830,7 @@ impl OwnedBatch {
                     value,
                 },
                 Write::Put(..) => panic!("a node is written in a change set"),
-                Write::Leave(_) | Write::Enter(..) | Write::Stated(_) => {
+                Write::Leave(_) | Write::Enter(..) | Write::Stated(_) | Write::Move(_) => {
                     panic!("a subtree is written as a whole")
                 }
                 Write::Delete(unit, key) => RecordWrite::Delete { unit: *unit, key },
@@ -701,6 +862,23 @@ impl OwnedBatch {
                     subtree: *subtree,
                     tree_type,
                     position: *position,
+                },
+                OwnedSubtree::Move {
+                    from,
+                    to,
+                    host: (subtree, key, position),
+                    read,
+                    below,
+                } => SubtreeWrite::Move {
+                    from: *from,
+                    to: *to,
+                    host: HostPut {
+                        subtree: *subtree,
+                        key,
+                        position: *position,
+                    },
+                    read: *read,
+                    below,
                 },
             })
             .collect();

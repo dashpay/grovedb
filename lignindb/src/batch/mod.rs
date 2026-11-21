@@ -200,6 +200,21 @@
 //! of: a batch can stand where its operations, applied one after the
 //! other, would have been refused half way.
 //!
+//! ## A subtree that is moved
+//!
+//! [`StagedBatch::move_subtree`] stages the move of a subtree to another
+//! prefix (`transactions.md` section 7.5), under the element that the
+//! same operation said hosts that prefix ([`StagedBatch::host`]). The
+//! moves of a batch are of one operation. They are applied together,
+//! after the batch's drops and clears and before its enters, and no rule
+//! above re-keys what the batch holds: beside its moves a batch holds
+//! nothing under a prefix that a move names, of any operation, but the
+//! drop of a subtree that is entered where one goes. What else it holds
+//! there refuses it where it is resolved ([`BatchError::Moved`]), and so
+//! does a move whose operation did not say which element hosts the new
+//! prefix ([`BatchError::MoveHost`]). A merge makes the moves again in
+//! the batch that takes them.
+//!
 //! ## A subtree that may be entered already
 //!
 //! [`StagedBatch::enter`] makes a subtree that is new, and the
@@ -273,6 +288,8 @@ use std::{
     fmt,
     sync::{Mutex, MutexGuard, PoisonError},
 };
+
+use lignin_tree::node::NodeHandle;
 
 use self::staged::{Leave, Staged};
 pub use self::{
@@ -436,6 +453,32 @@ impl<C> StagedBatch<C> {
     /// below it goes.
     pub fn clear(&self, subtree: Subtree) {
         self.staged().leave(subtree, Leave::Clear);
+    }
+
+    /// Moves the subtree `from` to the prefix `to`, under the element that
+    /// was said to host `to` ([`Self::host`]), with the subtrees below it
+    /// that `below` names, each by the prefix it has and the one it goes
+    /// to ([`SubtreeWrite::Move`](crate::txn::SubtreeWrite)). `read` is
+    /// the handle the mover read the node with that hosts the subtree
+    /// before.
+    ///
+    /// The moves of a batch are of one operation, and are made together.
+    /// Beside them the batch holds nothing under a prefix a move names, on
+    /// either side: no outcome of a key, no root, no enter and no clear.
+    /// The one drop it holds there is of a subtree that is entered where
+    /// one is moved to and that no move takes away. A batch that holds
+    /// more is refused where it is resolved
+    /// ([`BatchError::Moved`]), and one
+    /// that was not told the element that hosts `to` with
+    /// [`BatchError::MoveHost`].
+    pub fn move_subtree(
+        &self,
+        from: Subtree,
+        to: Subtree,
+        read: Option<NodeHandle>,
+        below: &[(Subtree, Subtree)],
+    ) {
+        self.staged().move_subtree(from, to, read, below);
     }
 
     /// The batch as it stands, or the first call that no outcome can stand

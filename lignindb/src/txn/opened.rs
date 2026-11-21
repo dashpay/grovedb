@@ -150,6 +150,81 @@ impl Opened {
         self.unlinked.insert(*subtree, has);
     }
 
+    /// Whether a move of the transaction whose write set is `set` decides
+    /// what the transaction reads under `subtree`: a move names the
+    /// subtree, on either side, or took it out with the subtree it moved;
+    /// the transaction entered it under a subtree of which that holds; or
+    /// it is below a prefix that a move took a subtree from, at this
+    /// version, which has the subtrees where they were before the moves.
+    pub(crate) fn moved<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        // Up the hosts that the transaction's own enters state, to the
+        // first subtree it did not enter.
+        let mut at = *subtree;
+        let mut seen = vec![at];
+        loop {
+            if set.moves(&at) {
+                return Ok(true);
+            }
+            match set.host_of(&at).flatten() {
+                Some(host) if !seen.contains(&host) => {
+                    seen.push(host);
+                    at = host;
+                }
+                _ => break,
+            }
+        }
+        self.below_a_source(path, guard, set, &at)
+    }
+
+    /// Whether `subtree` is below a prefix that a move of `set` took a
+    /// subtree from, as this version has the subtrees.
+    fn below_a_source<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        let sources = set.moved_from();
+        self.open(path, guard, subtree)?;
+        for source in &sources {
+            self.open(path, guard, source)?;
+        }
+        let Some(entry) = &self.entries[subtree] else {
+            return Ok(false);
+        };
+        Ok(sources.iter().any(|source| {
+            let above = self.entries[source].as_ref();
+            above.is_some_and(|above| entry.lineage().any(|id| id == above.id()))
+        }))
+    }
+
+    /// Whether `subtree`, which this version has entered, leaves with a
+    /// move of `set` when the writes of the set are laid out over this
+    /// version: no move names it, and it is below a prefix that a move
+    /// took a subtree from. Such a subtree has no node, or the move is
+    /// not laid out (`transactions.md` MV2); it left with the move where
+    /// the move was stated, or a commit beside the transaction entered
+    /// it there since.
+    pub(crate) fn leaves_with_a_move<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        if !set.has_moves() || set.moves(subtree) {
+            return Ok(false);
+        }
+        self.below_a_source(path, guard, set, subtree)
+    }
+
     /// The ids of the Merks that `subtree` is below at this version, from
     /// the outermost, if it is entered: what tells the subtree from one
     /// that is entered under its prefix after a Merk above it was dropped

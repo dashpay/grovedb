@@ -105,6 +105,7 @@ impl State {
                 // stays entered.
                 Write::Stated(_) => {}
                 Write::Range(..) => unreachable!("the stress writes no range delete of its own"),
+                Write::Move(_) => unreachable!("the stress moves no subtree"),
             }
         }
     }

@@ -595,21 +595,28 @@ impl<'s> WriteTxn<'s> {
             .map(|merk| Unit::data(merk.subtree))
             .collect();
         units.extend(batch.records.iter().map(RecordWrite::unit));
-        let whole = batch.leaving();
+        let leaving = batch.leaving();
+        let mut whole = leaving.clone();
         let entering = entering(batch);
         for write in batch.subtrees {
             // The entry of a Merk in the subtree directory is of that
             // Merk's unit (SC2).
             let subtree = write.subtree();
+            let every = |subtree| Column::ALL.map(|column| Unit::new(column, subtree));
             match write {
                 SubtreeWrite::Enter { .. } | SubtreeWrite::EnterIfAbsent { .. } => {
                     units.push(Unit::data(subtree));
                 }
                 SubtreeWrite::Clear { .. } => units.push(Unit::data(subtree)),
-                SubtreeWrite::Drop { .. } => {
-                    units.extend(Column::ALL.map(|column| Unit::new(column, subtree)));
-                }
+                SubtreeWrite::Drop { .. } => units.extend(every(subtree)),
                 SubtreeWrite::Convert { .. } => units.push(Unit::data(subtree)),
+                SubtreeWrite::Move { .. } => {}
+            }
+            // A move claims every prefix it names, on either side, whole
+            // and in every column, with what is below each.
+            for named in write.moving().iter().flat_map(|moving| moving.named()) {
+                units.extend(every(named));
+                whole.push(named);
             }
         }
         let nodes = batch.merks.iter().flat_map(|merk| merk.nodes);
@@ -627,7 +634,7 @@ impl<'s> WriteTxn<'s> {
         let mut hosts = Hosts {
             path: &self.path,
             entering: &entering,
-            leaving: &whole,
+            leaving: &leaving,
             noted: &state.above,
             laid: None,
             set: &state.set,
@@ -682,10 +689,20 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.lock();
         let state = &mut *state;
         let applied = (self.begin(state, true)).and_then(|op| {
+            let laid = state.scopes.laid(id);
+            for moving in batch.moves() {
+                // A move is laid out on the frames when it is stated, and
+                // it knows nothing of the marks of pending elements.
+                let marked = state.scopes.ever_marked();
+                let mut named = moving.named();
+                if !laid || named.any(|named| marked.iter().any(|(at, _)| *at == named)) {
+                    let subtree = moving.from;
+                    return Err(BatchError::MoveBeside { subtree }.into());
+                }
+            }
             self.claim_batch(state, &op, id, batch)?;
             self.note_under(state, &op, batch)?;
             let above = self.above(state, &op, batch)?;
-            let laid = state.scopes.laid(id);
             let applied = match laid {
                 true => {
                     let scopes = &state.scopes;
@@ -979,11 +996,11 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<(), TxnError> {
         let merks = batch.merks.iter().map(|merk| merk.subtree);
         let records = batch.records.iter().map(|record| record.unit().subtree);
-        let leaving = (batch.subtrees.iter()).filter(|write| write.leaves());
-        for subtree in merks
-            .chain(records)
-            .chain(leaving.map(SubtreeWrite::subtree))
-        {
+        // A move is held against what a commit takes above the subtree
+        // it moves, as a drop is.
+        let whole =
+            (batch.subtrees.iter()).filter(|write| write.leaves() || write.moving().is_some());
+        for subtree in merks.chain(records).chain(whole.map(SubtreeWrite::subtree)) {
             if !state.under.contains_key(&subtree) {
                 let opened = Opened::at(&mut state.directory, &self.path, &op.guard, op.at)?;
                 let above = opened.lineage(&self.path, &op.guard, &subtree)?;

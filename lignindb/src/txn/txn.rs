@@ -30,7 +30,7 @@ use super::{
     reads::{Reads, Since},
     unlinked,
     view::{ChildKeys, NodeView, SubtreeView},
-    write::{Applied, Batch, SubtreeWrite, ValuePut},
+    write::{Applied, Batch, Moving, SubtreeWrite, ValuePut},
     write_set::{EntryId, Mark, Own, OwnSubtree, Restated, Said, WriteSet},
 };
 use crate::{
@@ -834,7 +834,11 @@ impl<'s> WriteTxn<'s> {
         let path = &self.path;
         let lease = Lease::take();
         for id in keeping {
-            let subtree = state.set.entry(id).unit.subtree;
+            // Where the transaction moved the node's subtree before the
+            // write, the committed state has the node under the prefix
+            // the subtree was taken from.
+            let gone = TxnError::Damaged("a node whose value is kept is gone");
+            let subtree = state.set.committed_under_at(id).ok_or(gone)?;
             let root = self.committed_root(state, guard, version, &subtree)?;
             let mut pages = path.committed_pages(guard, version, lease, &mut state.buffers);
             // No commit wrote the key since the transaction did, or the
@@ -972,6 +976,7 @@ impl<'s> WriteTxn<'s> {
         let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
             return self.write_by_key(state, op, batch);
         };
+        Self::date_moves(&state.set, &state.reads, op.at, &mut frames, batch)?;
         // A value that is kept is one its writer read: when, and what the
         // commits did to its key since (CF2a).
         let kept = Kept::of(&state.set, &state.reads, op.at, frames.lease(), batch);
@@ -985,13 +990,14 @@ impl<'s> WriteTxn<'s> {
         }
         // What the transaction wrote below a Merk that the batch drops or
         // clears goes with it: the directory says which, before the batch.
-        let cut = match batch.subtrees.iter().any(SubtreeWrite::leaves) {
+        let cut = match batch.has_leaves() {
             true => frames.below(batch, state.set.written())?,
             false => Vec::new(),
         };
         match frames.apply(path, batch, None) {
             Ok(applied) => {
-                let first = state.set.add(batch, op.at, frames.empty_before(), &cut);
+                let (empty, left) = (frames.empty_before(), frames.left_with_moves());
+                let first = state.set.add(batch, op.at, empty, &cut, left);
                 if !kept.met.is_empty() {
                     for (offset, unit, key) in &kept.met {
                         state.set.meet_kept(first + offset, *unit, key);
@@ -1029,6 +1035,142 @@ impl<'s> WriteTxn<'s> {
         }
     }
 
+    /// Dates each move of `batch` at the read of the node that hosts the
+    /// moved subtree before the batch, as a kept value is dated at the
+    /// read it is kept from (CF2a, [`Kept::of`]): the host's value hash
+    /// commits to the Merk as the mover read it, and the move carries the
+    /// cells as they are now.
+    ///
+    /// The batch is refused, with nothing changed, where a commit outside
+    /// the transaction wrote that node's key since the read the move
+    /// names, or may have ([`BatchError::ValueTaken`]), and where the
+    /// node is the committed state's and the move names no read
+    /// ([`BatchError::NoRead`]). A node the transaction wrote itself with
+    /// its value stated needs no date: a commit that wrote its key since
+    /// meets that write.
+    fn date_moves(
+        set: &WriteSet,
+        reads: &Reads,
+        at: CommitVersion,
+        frames: &mut Awake<'s, '_>,
+        batch: &Batch<'_>,
+    ) -> Result<(), TxnError> {
+        for moving in batch.moves() {
+            // A subtree that is not entered, or has no host, is refused
+            // for that where the batch is applied.
+            let Some(entry) = frames.entry(&moving.from)? else {
+                continue;
+            };
+            let Some(host) = entry.host() else {
+                continue;
+            };
+            let subtree = Subtree::new(*host.parent);
+            let unit = Unit::data(subtree);
+            let lease = moving.read.map(|handle| handle.lease());
+            if lease == Some(frames.lease()) {
+                continue;
+            }
+            let since = lease.map(|lease| reads.since(lease, at, unit, host.key));
+            match (set.own(unit, host.key), since) {
+                (_, Some(Since::Unwritten)) => {}
+                (Own::Unwritten, None) => {
+                    let root = frames.root(&subtree)?;
+                    if find(&mut frames.tree, root, host.key)?.is_some() {
+                        return Err(BatchError::NoRead { subtree }.into());
+                    }
+                }
+                (Own::Unwritten, Some(_)) => {
+                    return Err(BatchError::ValueTaken { subtree }.into());
+                }
+                (Own::Node(id), Some(_)) if !set.states_value(id) => {
+                    return Err(BatchError::ValueTaken { subtree }.into());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Why a transaction that lays nothing out does not answer for a
+    /// move: where a commit has met one of its writes, that is a conflict
+    /// ([`BatchError::MovedByKey`]); where its writes cannot be laid out
+    /// over the version it reads, it is the refusal of that layout; and
+    /// for a scope that keeps its writes in the write set beside the
+    /// frames, [`BatchError::MoveBeside`].
+    fn unlaid(&self, state: &State<'s>, guard: &OperationGuard<'s>, subtree: Subtree) -> TxnError {
+        if state.set.met() > 0 {
+            return BatchError::MovedByKey { subtree }.into();
+        }
+        if let Some((at, _)) = state.stuck.filter(|(_, ops)| *ops == state.set.ops()) {
+            let frames = Self::build(&self.path, guard, at, &state.set, &state.scopes);
+            if let Err(refused) = frames {
+                return refused;
+            }
+        }
+        BatchError::MoveBeside { subtree }.into()
+    }
+
+    /// Whether `who` is answered from the write set over the committed
+    /// state, and not from frames that show the transaction's writes: a
+    /// commit has met one of them, they cannot be laid out, or `who` is a
+    /// scope whose writes are kept in the write set.
+    fn by_key(state: &State<'s>, who: Who) -> bool {
+        state.set.met() > 0
+            || state.stuck.is_some_and(|(_, ops)| ops == state.set.ops())
+            || who.id().is_some_and(|id| !state.scopes.laid(id))
+    }
+
+    /// Refuses the read or the write of `subtree` by `who` where a move
+    /// of the transaction decides what is under it ([`Opened::moved`])
+    /// and `who` has no frames that show the move ([`Self::unlaid`]).
+    /// `opened` keeps the directory of the committed version `at`.
+    fn refuse_moved(
+        &self,
+        state: &State<'s>,
+        opened: &mut Option<Opened>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+        who: Who,
+        subtree: Subtree,
+    ) -> Result<(), TxnError> {
+        if !state.set.has_moves() || !Self::by_key(state, who) {
+            return Ok(());
+        }
+        let opened = Opened::at(opened, &self.path, guard, at)?;
+        match opened.moved(&self.path, guard, &state.set, &subtree)? {
+            true => Err(self.unlaid(state, guard, subtree)),
+            false => Ok(()),
+        }
+    }
+
+    /// [`Self::refuse_moved`], in an operation of the transaction.
+    fn guard_moved(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        who: Who,
+        subtree: Subtree,
+    ) -> Result<(), TxnError> {
+        let mut opened = state.directory.take();
+        let refused = self.refuse_moved(state, &mut opened, &op.guard, op.at, who, subtree);
+        state.directory = opened;
+        refused
+    }
+
+    /// [`Self::refuse_moved`], for a cursor, which brings the directory
+    /// of the version `at` that it reads.
+    pub(crate) fn guard_cursor(
+        &self,
+        who: Who,
+        subtree: Subtree,
+        opened: &mut Option<Opened>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+    ) -> Result<(), TxnError> {
+        let state = self.lock();
+        self.refuse_moved(&state, opened, guard, at, who, subtree)
+    }
+
     /// The refusal `error` of `batch`, which says so where a commit outside
     /// the transaction is its cause ([`BatchError::ValueTaken`], CF2a): a
     /// node of the batch has no value to keep, or its Merk is not entered,
@@ -1042,16 +1184,73 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
         error: TxnError,
     ) -> TxnError {
-        let subtree = match &error {
-            TxnError::Batch(
-                BatchError::NoValue { subtree } | BatchError::NotEntered { subtree },
-            ) => *subtree,
+        let TxnError::Batch(refused) = &error else {
+            return error;
+        };
+        if let Some(subtree) = Self::taken_from_move(&state.reads, batch, refused) {
+            return BatchError::ValueTaken { subtree }.into();
+        }
+        let (subtree, not_entered) = match refused {
+            BatchError::NoValue { subtree } => (*subtree, false),
+            BatchError::NotEntered { subtree } => (*subtree, true),
             _ => return error,
         };
-        match self.taken(state, op, batch, subtree) {
-            Ok(true) => BatchError::ValueTaken { subtree }.into(),
-            Ok(false) | Err(_) => error,
+        if matches!(self.taken(state, op, batch, subtree), Ok(true)) {
+            return BatchError::ValueTaken { subtree }.into();
         }
+        // A subtree that the batch writes into, or enters a subtree under,
+        // and that a commit which the transaction took in dropped or
+        // moved: the key set of that commit names it.
+        let written = !batch.leaves(subtree) && batch.moves().all(|moving| moving.from != subtree);
+        let named = |keys: &KeySet| keys.subtrees.contains(&subtree);
+        match not_entered && written && state.reads.any_since(None, named) {
+            true => BatchError::ValueTaken { subtree }.into(),
+            false => error,
+        }
+    }
+
+    /// The subtree that a batch with a move was refused for, where a
+    /// commit that the transaction took in since the read the move names
+    /// explains the refusal ([`Reads::any_since`]):
+    ///
+    /// - the moved subtree is not entered, and such a commit wrote every
+    ///   key of the Merk its host is in, or took a subtree out, whichever;
+    /// - a prefix the move brings a subtree to has one, and such a commit
+    ///   wrote the key of the node that hosts the moved subtree
+    ///   afterwards, or a key under a prefix the move brings a subtree to.
+    ///
+    /// A commit that wrote the key of the node which hosts the moved
+    /// subtree before is told before the batch is applied
+    /// ([`Self::date_moves`]).
+    fn taken_from_move(reads: &Reads, batch: &Batch<'_>, refused: &BatchError) -> Option<Subtree> {
+        let (subtree, moving) = match refused {
+            BatchError::NotEntered { subtree } => (
+                *subtree,
+                batch.moves().find(|moving| moving.from == *subtree)?,
+            ),
+            BatchError::Entered { subtree } => {
+                let mut moves = batch.moves();
+                let brings = |moving: &Moving<'_>| moving.targets().any(|to| to == *subtree);
+                (*subtree, moves.find(brings)?)
+            }
+            _ => return None,
+        };
+        let lease = moving.read.map(|handle| handle.lease());
+        let host = moving.host;
+        let explains = |keys: &KeySet| match refused {
+            BatchError::NotEntered { .. } => {
+                keys.covers_unit(Unit::data(host.subtree)) || keys.takes_any()
+            }
+            _ => {
+                let under = |to: Subtree| {
+                    Column::ALL
+                        .iter()
+                        .any(|column| keys.touches(Unit::new(*column, to)))
+                };
+                keys.meets_key(Unit::data(host.subtree), host.key) || moving.targets().any(under)
+            }
+        };
+        reads.any_since(lease, explains).then_some(subtree)
     }
 
     /// Whether commits outside the transaction are why `batch` has no
@@ -1141,6 +1340,25 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
+        // A move is laid out when it is stated, or not made. Neither is
+        // anything written by key where a move decides what is there.
+        if let Some(moving) = batch.moves().next() {
+            return Err(self.unlaid(state, &op.guard, moving.from));
+        }
+        if state.set.has_moves() {
+            let merks = batch.merks.iter().map(|merk| merk.subtree);
+            let records = batch.records.iter().map(|record| record.unit().subtree);
+            let hosts = batch.subtrees.iter().filter_map(|write| {
+                let host = write.entering()?.host?;
+                Some(host.subtree)
+            });
+            let named = batch.subtrees.iter().map(SubtreeWrite::subtree);
+            let written: Vec<Subtree> = merks.chain(records).chain(hosts).chain(named).collect();
+            for subtree in written {
+                // The claim of the batch was taken for its scope.
+                self.guard_moved(state, op, Who::OUTSIDE, subtree)?;
+            }
+        }
         for record in batch.records {
             // The transaction has written no node of the subtree since it
             // last dropped or cleared it, or the write set would not admit
@@ -1207,13 +1425,13 @@ impl<'s> WriteTxn<'s> {
             entry += merk.removed.len() as EntryId;
         }
         let cut = self.cut(state, op, batch)?;
-        if batch.subtrees.iter().any(SubtreeWrite::leaves) {
+        if batch.has_leaves() {
             // The cells of a Merk that leaves stay in their pages: every
             // handle that was read before ends (PN8).
             state.renew_lease();
             state.lease_at = Some(op.at);
         }
-        let first = state.set.add(batch, op.at, &empty, &cut);
+        let first = state.set.add(batch, op.at, &empty, &cut, &[]);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
         }
@@ -1246,6 +1464,7 @@ impl<'s> WriteTxn<'s> {
         let state = &mut *state;
         let op = self.begin(state, false)?;
         self.claim_read(state, &op.guard, op.at, who, unit)?;
+        self.guard_moved(state, &op, who, unit.subtree)?;
         match state.set.own(unit, key) {
             Own::Put(value) => {
                 out.extend_from_slice(value);
@@ -1254,11 +1473,24 @@ impl<'s> WriteTxn<'s> {
             Own::Deleted => Ok(false),
             Own::Node(_) => Err(TxnError::Damaged("a Merk node is read as a flat record")),
             // No record is read under a subtree that is not entered, or
-            // that went with one the transaction dropped.
-            Own::Unwritten => match self.seen(state, &op.guard, op.at, &unit.subtree)? {
-                Some(_) => self.committed_record(state, &op, unit, key, out),
-                None => Ok(false),
-            },
+            // that went with one the transaction dropped or moved. The
+            // committed state has the records of a subtree that the
+            // transaction moved under the prefix it took the subtree from.
+            Own::Unwritten => {
+                let Some(under) = state.set.committed_under(unit.subtree) else {
+                    return Ok(false);
+                };
+                if self.leaves_with_a_move(state, &op.guard, op.at, &unit.subtree)? {
+                    return Ok(false);
+                }
+                match self.seen(state, &op.guard, op.at, &under)? {
+                    Some(_) => {
+                        let unit = Unit::new(unit.column, under);
+                        self.committed_record(state, &op, unit, key, out)
+                    }
+                    None => Ok(false),
+                }
+            }
         }
     }
 
@@ -1381,6 +1613,22 @@ impl<'s> WriteTxn<'s> {
         opened.seen(&self.path, guard, set, subtree)
     }
 
+    /// [`Opened::leaves_with_a_move`], at the committed version `at`.
+    fn leaves_with_a_move(
+        &self,
+        state: &mut State<'s>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        let State { directory, set, .. } = state;
+        if !set.has_moves() {
+            return Ok(false);
+        }
+        let opened = Opened::at(directory, &self.path, guard, at)?;
+        opened.leaves_with_a_move(&self.path, guard, set, subtree)
+    }
+
     /// Whether the Merk `subtree` has a root as a transaction with no
     /// frames sees it: the one its writes gave it last, and otherwise the
     /// committed one.
@@ -1431,6 +1679,7 @@ impl<'s> WriteTxn<'s> {
         let state = &mut *state;
         let op = self.begin(state, false)?;
         self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        self.guard_moved(state, &op, who, subtree)?;
         if who.id().is_none_or(|id| state.scopes.laid(id))
             && let Some(frames) = Woken::wake(&mut state.frames, &op.guard)
         {
@@ -1591,6 +1840,7 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin_shown(state, who, Unit::data(subtree))?;
+        self.guard_moved(state, &op, who, subtree)?;
         let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
@@ -1656,6 +1906,7 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin_shown(state, who, Unit::data(subtree))?;
+        self.guard_moved(state, &op, who, subtree)?;
         let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
             Ok(shown) => return Ok(Ok(shown)),
             Err(read) => read,
@@ -1741,6 +1992,7 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin_shown(state, who, Unit::data(subtree))?;
+        self.guard_moved(state, &op, who, subtree)?;
         if Self::reads_by_key(state, who, Unit::data(subtree)) {
             state.unwatch();
             return Ok(None);

@@ -79,6 +79,22 @@ pub(super) fn shape<C>(resolved: &Resolved<C>) -> Shape {
                 SubtreeWrite::Convert {
                     subtree, tree_type, ..
                 } => format!("convert {} to {}", name(*subtree), text(tree_type)),
+                SubtreeWrite::Move {
+                    from,
+                    to,
+                    host,
+                    below,
+                    ..
+                } => {
+                    let below = below.iter().map(|(from, to)| (name(*from), name(*to)));
+                    let below: String = below
+                        .map(|(from, to)| format!(", {from} to {to}"))
+                        .collect();
+                    let (at, key) = (name(host.subtree), text(host.key));
+                    let position = host.position;
+                    let (from, to) = (name(*from), name(*to));
+                    format!("move {from} to {to} at {position} of {at}/{key}{below}")
+                }
             })
             .collect(),
         merks: (batch.merks.iter())
@@ -1688,4 +1704,116 @@ fn an_enter_if_absent_is_ordered_hosted_merged_and_dropped_as_an_enter_is() {
         };
         assert_eq!(batch.resolve().map(|_| ()), Err(not_entered), "{if_absent}");
     }
+}
+
+/// The move of the subtree `B` to `C`, under the node `new` of `A`, which
+/// takes the place of the node `old`, with the subtree `20` below it,
+/// which goes to `30`.
+fn move_b_to_c(batch: &StagedBatch) {
+    let host = leaf(b"new", b"a tree");
+    batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(C)])), ());
+    batch.delete_node(subtree(A), b"old", ());
+    batch.move_subtree(subtree(B), subtree(C), None, &[(subtree(20), subtree(30))]);
+}
+
+/// A staged batch states a move with the element that was said to host
+/// the new prefix, holds the drop of what is entered there beside it, and
+/// refuses whatever else it holds under a prefix a move names, from any
+/// operation and in any order, and a move of another operation.
+#[test]
+fn a_staged_batch_holds_its_moves_and_nothing_else_of_what_they_name() {
+    const MOVE: &str = "move 2 to 3 at 0 of 1/new, 20 to 30";
+    let batch = StagedBatch::new();
+    assert!(!batch.take_pending().resolve().expect("nothing").moves());
+    move_b_to_c(&batch);
+    assert!(!batch.is_empty());
+    let moved = batch.resolve().expect("no call is refused");
+    assert!(moved.moves() && !moved.leaves());
+    assert_eq!(shape(&moved).subtrees, [MOVE]);
+    // A move that is merged into another batch is a move of that one.
+    let (batch, other) = (StagedBatch::new(), StagedBatch::new());
+    move_b_to_c(&other);
+    batch.merge(other);
+    assert_eq!(resolved(batch).subtrees, [MOVE]);
+    // What is entered where the subtree goes is dropped by the same
+    // batch, before the move.
+    for first in [false, true] {
+        let batch = StagedBatch::new();
+        if first {
+            batch.drop_subtree(subtree(C));
+            batch.next_operation();
+        }
+        move_b_to_c(&batch);
+        if !first {
+            batch.drop_subtree(subtree(C));
+        }
+        assert_eq!(resolved(batch).subtrees, ["drop 3", MOVE]);
+    }
+
+    // The batch was not told which element hosts the new prefix.
+    let batch = StagedBatch::<()>::new();
+    batch.move_subtree(subtree(B), subtree(C), None, &[]);
+    let subtree_b = subtree(B);
+    assert_eq!(
+        batch.resolve().expect_err("no host"),
+        BatchError::MoveHost { subtree: subtree_b }
+    );
+
+    type Call = fn(&StagedBatch);
+    let beside: [(&str, u8, Call); 7] = [
+        ("a record under the source", B, |batch| {
+            batch.put(unit(Column::Aux, B), b"k", b"v", ())
+        }),
+        ("a node under the target", C, |batch| {
+            put(batch, C, &leaf(b"k", b"v"), true)
+        }),
+        ("a root below the target", 30, |batch| {
+            batch.set_root(subtree(30), Some(b"k"))
+        }),
+        ("an enter below the source", 20, |batch| {
+            batch.enter(subtree(20), b"tree")
+        }),
+        ("an enter if absent of the target", C, |batch| {
+            batch.enter_if_absent(subtree(C), b"tree")
+        }),
+        ("a clear of the target", C, |batch| batch.clear(subtree(C))),
+        ("a drop of the source", B, |batch| {
+            batch.drop_subtree(subtree(B))
+        }),
+    ];
+    for (what, named, call) in beside {
+        // In the operation of the move, before it and after it, and in
+        // an operation before it and one after it.
+        for order in 0..4 {
+            let batch = StagedBatch::new();
+            if order < 2 {
+                call(&batch);
+            }
+            if order == 0 {
+                batch.next_operation();
+            }
+            move_b_to_c(&batch);
+            if order == 3 {
+                batch.next_operation();
+            }
+            if order >= 2 {
+                call(&batch);
+            }
+            let subtree = subtree(named);
+            let refused = batch.resolve().expect_err(what);
+            assert_eq!(refused, BatchError::Moved { subtree }, "{what}, {order}");
+        }
+    }
+    // The moves of a batch are of one operation.
+    let batch = StagedBatch::new();
+    move_b_to_c(&batch);
+    batch.next_operation();
+    let host = leaf(b"newer", b"a tree");
+    batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(D)])), ());
+    batch.move_subtree(subtree(40), subtree(D), None, &[]);
+    let subtree = subtree(40);
+    assert_eq!(
+        batch.resolve().expect_err("two operations"),
+        BatchError::Moved { subtree }
+    );
 }
