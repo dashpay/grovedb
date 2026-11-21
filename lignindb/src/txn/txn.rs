@@ -666,6 +666,15 @@ const _: fn() = || {
     moved::<Scope<'static, 'static>>();
 };
 
+/// A subtree that is entered once the subtrees of a batch have left and
+/// are entered ([`WriteTxn::entered_after`]).
+#[derive(Debug, Clone, Copy)]
+struct Entered {
+    /// Whether the batch itself enters it: its Merk has no node then,
+    /// whatever was under its prefix before.
+    by_the_batch: bool,
+}
+
 impl<'s> WriteTxn<'s> {
     pub(crate) fn new(path: WritePath<'s>) -> Self {
         Self {
@@ -1724,16 +1733,10 @@ impl<'s> WriteTxn<'s> {
             if is_load(merk) {
                 // A load is the whole of a Merk that is entered and had no
                 // root: both are checked where the write is taken (LD6).
-                let named = |write: &&SubtreeWrite<'_>| write.subtree() == subtree;
-                let entered = match batch.subtrees.iter().rev().find(named) {
-                    Some(SubtreeWrite::Drop { .. }) => false,
-                    Some(SubtreeWrite::Enter { .. }) => true,
-                    _ => self.said(state, op, subtree, |view| view.is_some())?,
-                };
-                if !entered {
+                let Some(entered) = self.entered_after(state, op, batch, subtree)? else {
                     return Err(BatchError::NotEntered { subtree }.into());
-                }
-                if !rootless {
+                };
+                if !rootless && !entered.by_the_batch {
                     let fault = super::error::WholeFault::HasRoot;
                     return Err(BatchError::NotWhole { subtree, fault }.into());
                 }
@@ -2088,6 +2091,49 @@ impl<'s> WriteTxn<'s> {
         let left = set.left_after(entered);
         let gone = !left.is_empty() && by_key.below(subtree, &left, Some((entered, ops)))?;
         Ok(read(view.filter(|_| !gone)))
+    }
+
+    /// Whether `subtree` is entered once the subtrees of `batch` have left
+    /// and are entered, as a transaction with no frames to ask says it,
+    /// or `None` for one that is not. A batch drops and clears before it
+    /// enters, wherever its statements stand:
+    ///
+    /// - a subtree that the batch enters is entered, and its Merk has no
+    ///   node then;
+    /// - one that the batch drops and does not enter is not;
+    /// - any other is entered where it was before the batch
+    ///   ([`Self::said`]) and is below no other subtree that the
+    ///   batch drops or clears ([`Self::below`]).
+    fn entered_after(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'_>,
+        subtree: Subtree,
+    ) -> Result<Option<Entered>, TxnError> {
+        let named = || (batch.subtrees.iter()).filter(move |write| write.subtree() == subtree);
+        if named().any(SubtreeWrite::enters) {
+            return Ok(Some(Entered { by_the_batch: true }));
+        }
+        let before = Some(Entered {
+            by_the_batch: false,
+        });
+        if named().any(|write| matches!(write, SubtreeWrite::Drop { .. }))
+            || !self.said(state, op, subtree, |view| view.is_some())?
+        {
+            return Ok(None);
+        }
+        let above: Vec<Subtree> = (batch.subtrees.iter())
+            .filter(|write| write.leaves() && write.subtree() != subtree)
+            .map(SubtreeWrite::subtree)
+            .collect();
+        if above.is_empty() {
+            return Ok(before);
+        }
+        let State { directory, set, .. } = state;
+        let mut by_key = ByKey::new(&self.path, &op.guard, op.at, set, directory)?;
+        let gone = by_key.below(subtree, &above, None)?;
+        Ok(before.filter(|_| !gone))
     }
 
     /// Those of the subtrees the transaction has written that are below

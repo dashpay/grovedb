@@ -118,8 +118,8 @@
 //! ([`CommitError::Halted`]). A recovery that keeps the group finds cells
 //! that point into those files. The store has the hold as well where the
 //! commit panics after it took the lock on the counts (step 6) and before
-//! it has counted the values (step 7). After the count the counts keep
-//! the files, and a commit that fails or panics then leaves no hold.
+//! it has counted the values (step 7). A commit that fails or panics
+//! after the count leaves no hold: the values are counted then.
 //!
 //! **After a crash the store has all of a load or none of it.** A manifest
 //! that covers every value is durable before the group that names their

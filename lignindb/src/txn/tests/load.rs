@@ -757,7 +757,9 @@ fn take<'t, 's>(
 ///   the conflict.
 ///
 /// And a load into a subtree that is not entered is refused where it is
-/// taken. So it is where the load is laid out and where it is taken by
+/// taken: one that never was, and one below a subtree that the batch of
+/// the load drops. A subtree that the batch drops and enters again takes
+/// the load. So it is where the load is laid out and where it is taken by
 /// key, by a scope that is still open beside another while the other
 /// transaction commits.
 #[test]
@@ -820,6 +822,57 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
         world.check(&tx);
         assert!(matches!(ends(&tx), Ok(())), "nothing was taken");
 
+        // Nor does a subtree below one that the batch of the load drops.
+        let (above, below) = (ENTERED + 3, ENTERED + 4);
+        let host = key(b'h', 3);
+        let tx = world.begin();
+        let mut outer = world.merk(&tx, above, |items| {
+            items.insert(host.clone(), b"tree".to_vec());
+        });
+        outer
+            .hosted
+            .insert(host.clone(), vec![model::subtree(below)]);
+        let mut batch = batch_of(vec![outer]);
+        batch.subtrees = vec![
+            OwnedSubtree::Enter(model::subtree(above), None),
+            OwnedSubtree::Enter(
+                model::subtree(below),
+                Some((model::subtree(above), host.clone(), 0)),
+            ),
+        ];
+        world
+            .apply(&tx, &batch)
+            .expect("a Merk and an empty one below it");
+        assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+        let tx = world.begin();
+        let mut dropping = alone(below);
+        dropping.subtrees = vec![OwnedSubtree::Drop(model::subtree(above))];
+        let refused = take(&world, &tx, (&dropping, below), by_key)
+            .map(drop)
+            .expect_err("it went with the subtree above");
+        let gone = BatchError::NotEntered {
+            subtree: model::subtree(below),
+        };
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == gone),
+            "by key: {by_key}: {refused}"
+        );
+        world.check(&tx);
+
+        // A subtree that the batch drops and enters again takes the load,
+        // wherever the two statements stand: a batch drops before it
+        // enters.
+        let mut again = alone(4);
+        again.subtrees = vec![
+            OwnedSubtree::Enter(model::subtree(4), None),
+            OwnedSubtree::Drop(model::subtree(4)),
+        ];
+        let open = take(&world, &tx, (&again, 4), by_key).expect("a load");
+        open.into_iter().for_each(|scope| scope.merge());
+        world.check(&tx);
+        let published = commit(&mut world, tx);
+        assert_eq!(published.acquired, long_values(&merk));
+
         // The write, the other commit, the commit of the load.
         let tx = world.begin();
         let open = take(&world, &tx, (&alone(2), 2), by_key).expect("a load");
@@ -849,7 +902,7 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
 
         // The Merks are the first writer's, each whole.
         world.check_committed();
-        assert_eq!(counted(&db), long_values(&merk) as u64);
+        assert_eq!(counted(&db), 2 * long_values(&merk) as u64);
         let report = db.verify_still();
         assert!(db.unsound(&report).is_empty(), "{report}");
     }
@@ -903,6 +956,11 @@ fn a_commit_of_a_load_that_is_met_ends_with_the_conflict() {
 ///   which is refused as well where every node is written one by one;
 /// - where the batch has the other host say that it hosts nothing;
 /// - where the batch does not write the other host.
+///
+/// So is one that the batch itself enters with another key of the load's
+/// Merk, at another position, or with no host. A load that is taken by
+/// key is in the write set, and is refused when it is laid out: its commit
+/// is refused with the transaction as it was.
 ///
 /// A Merk that was entered with the node of the load as its host, and got
 /// its nodes before the load, is hosted by it
@@ -991,6 +1049,56 @@ fn a_node_of_a_load_hosts_no_merk_that_was_entered_with_another_host() {
         }
         tx.txn.rollback().expect("no scope is open");
     }
+
+    // The batch enters the Merk itself, and not with the node that hosts
+    // it in the load.
+    let tx = world.begin();
+    let entered = |name: u8| model::subtree(ENTERED + name);
+    let loaded = model::subtree(2);
+    let enters = [
+        ("another key", entered(2), Some((loaded, key(b'z', 1), 0))),
+        (
+            "another position",
+            entered(3),
+            Some((loaded, second.clone(), 1)),
+        ),
+        ("no host", entered(4), None),
+    ];
+    for (with, subtree, host) in enters {
+        let mut hosting = whole(2, &other);
+        hosting.hosted.insert(second.clone(), vec![subtree]);
+        let mut batch = batch_of(vec![hosting]);
+        batch.subtrees = vec![OwnedSubtree::Enter(subtree, host)];
+        let refused = load(&world, &tx, &batch, &[2]).expect_err("the Merk has another host");
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == not_its_host),
+            "entered with {with}: {refused}"
+        );
+        world.check(&tx);
+    }
+    tx.txn.rollback().expect("no scope is open");
+
+    // Taken by key, the load is in the write set. It is refused where it
+    // is laid out, which its commit asks for.
+    let tx = world.begin();
+    let mut hosting = whole(2, &other);
+    hosting
+        .hosted
+        .insert(second.clone(), vec![model::subtree(hosted)]);
+    let batch = batch_of(vec![hosting]);
+    let open = take(&world, &tx, (&batch, 2), true).expect("taken by key");
+    open.into_iter().for_each(|scope| scope.merge());
+    let committer = db.committer(&versions);
+    let refused = db
+        .commit_as(&committer, &tx.txn, None)
+        .expect_err("no commit");
+    assert!(
+        matches!(&refused, CommitError::Refused(TxnError::Batch(error)) if *error == not_its_host),
+        "{refused}"
+    );
+    assert!(refused.leaves_transaction_open());
+    tx.txn.rollback().expect("no scope is open");
+
     world.check_committed();
     let report = db.verify_still();
     assert!(db.unsound(&report).is_empty(), "{report}");

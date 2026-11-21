@@ -425,7 +425,7 @@ impl fmt::Display for WholeFault {
             Self::HostsWritten => "a node hosts a Merk that the batch writes node by node",
             Self::HostsItself => "it hosts a Merk that hosts it",
             Self::HostedTwice => "a node hosts a Merk that has a host in the batch",
-            Self::NotItsHost => "a node hosts a Merk that was entered with another host",
+            Self::NotItsHost => "a node hosts a Merk that was entered with another host or none",
         })
     }
 }

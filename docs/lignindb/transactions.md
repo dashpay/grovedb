@@ -1255,8 +1255,8 @@ to CM7 and to the first case of PV6.
    (CM9), the store has the hold from then on, until the session ends. So
    it has where the commit panics after it took the lock on the counts in
    step 6 and before step 7 has counted the values. A commit that fails
-   or panics after the count has no hold to leave: the counts keep the
-   files.
+   or panics after the count leaves no hold: the values are counted then
+   (PV6).
 
 A pointer of LD2 that a cell of *T* stopped holding again before the
 commit was never counted, and the group does not list it as released. The
@@ -1348,20 +1348,26 @@ file at a time, under one lock, and the manifest has one lock (LT7 level
 LD4) or for none (LD3), takes the first for each append, and the second
 where no manifest names the file yet (LD2). Where *T*'s commit covers the
 values (LD5 item 1), it takes the first for the sync of the file and then
-the second for the replacement. The first is taken under a transaction's
-own lock (LT7 level 2) and before the second, which is the file-set lock
-(level 3). So an operation that appends a value of a load, and a commit
+the second for the replacement. An operation or a commit of *T* takes the
+first under *T*'s own lock (LT7 level 2), and whoever holds the first and
+needs the second, which is the file-set lock (level 3), takes it under
+the first. So an operation that appends a value of a load, and a commit
 that covers the values of one, wait
 
-- for a load of another transaction, or the commit of one: for one
-  append, and for a sync of the file and a replacement of the manifest
-  that cover values
+- for what a load of another transaction, or the commit of one, does
+  under the first lock: one append; before it, where the file is full,
+  the sync that closes it; where no manifest names the file that takes
+  the value, the creation of a file and the replacement of the manifest
+  that names it, with a manifest in doubt settled first (LD2); where an
+  append failed, a sync of the file; and the sync of a commit that covers
+  values
 - for whoever holds the lock on the manifest, as write-back does over a
   replacement of the manifest and a checkpoint does while it links files
 
-Beside those two, the first lock is taken only by whoever closes that
-file to have it cleaned. Where a commit of a load waits for either lock
-under the commit lock (LD5), the commits behind it wait with it.
+One more call takes the first lock, and no other: the close of the file
+that the loads fill, for whoever cleans the value log. Where a commit of
+a load waits for either lock under the commit lock (LD5), the commits
+behind it wait with it.
 
 ## 8. Commit
 
@@ -2558,7 +2564,7 @@ whether either can be made to wait for the other.
 | 7a | Writer, writer in the same transaction | units, private frames, the transaction's merged writes | SC3, SC4, SC6, SC7, LT1 to LT5 | one physical step (LT3); a claim never waits |
 | 7b | Writer, writer in another transaction | nothing until one commits, but for the value-log file that loads fill and the manifest that names it (LD2) | RD8, WT1, WT4, LD8 | never, but for two that load (LD8) |
 | 8a | Writer, commit of its own transaction | the write set | CM1, SC8 | commit is refused while a scope is open |
-| 8b | Writer, a foreign commit | *L*, the keys both wrote, and locations the writer kept | RD3, RD4, WT7, WT7a, WT7b, PN8, CF2, CF3, LD8 | never, but for a writer that loads while the commit covers the values of a load (LD8); the writer rebases at its next operation |
+| 8b | Writer, a foreign commit | *L*, the keys both wrote, and locations the writer kept | RD3, RD4, WT7, WT7a, WT7b, PN8, CF2, CF3, LD8 | never, but for a writer that loads and the commit of a load, each of which waits for what the other does under the lock of the file that loads fill (LD8); the writer rebases at its next operation |
 | 9 | Writer, flusher | the committed pages a writer has copied; never a private frame, and no data file: a writer writes to none but for a load (WT4, LD2) | FL1, FL5, FL7, WT4, PV7, LD8 | never, but for a writer that loads (LD8); the flusher leaves a copied page's values as they are, the pending ones pending and the placed ones in place |
 | 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, what a dropped subtree left in them, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, WT11, CL5, CL6, ID1, ID2, LD8 | never, but for a writer that loads (LD8); the cleaner leaves a copied page for later |
 | 11 | Writer, checkpoint | nothing: uncommitted writes are not captured; the manifest, for a writer that loads (LD2) | CK1, CK8, LD8 | never, but for a writer that loads (LD8) |
@@ -3683,6 +3689,6 @@ that takes the values of a load over (plan draft 40).
 | Where a load is laid out, its long values are appended to the value log before the commit, under a hold, and the write set keeps where they are. | LD2 (new), LD3 (new), WT4, FL1, FL7 |
 | The commit of a load has a durable manifest cover those values before its frames are taken, lists the pointers its cells hold as acquired, and counts them. | LD5 (new), PV6, CM3, CM7, CM8 |
 | A load is counted by the conflict rule as the puts of its nodes and as a range over the nodes of its subtree. | LD6 (new), CF5 |
-| A load and its commit take the lock of the file that loads fill and the lock on the manifest. | LD8 (new), section 13 rows 7b and 9 to 12 |
+| A load and its commit take the lock of the file that loads fill and the lock on the manifest. | LD8 (new), section 13 rows 7b, 8b and 9 to 15 |
 
 New tests: T-LD1 to T-LD4.

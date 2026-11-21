@@ -57,11 +57,12 @@ fn writes(merk: &MerkWrite<'_>) -> bool {
 /// is hosted by no other node of the batch: the write to the tree pages
 /// refuses two hosts of one Merk among the cells it holds
 /// (`lignin_tree::fragment`), and the cells of a load are not among them.
-/// Here that is checked for the nodes that state what they host. A node
-/// that is written and keeps what it hosts keeps pointers the batch does
-/// not state: that none of them is at a Merk a node of a load hosts
-/// follows from the host that the entry of each Merk names, which is
-/// checked where the batch is laid out (`Frames::plan_load`).
+/// Here that is checked for the nodes that state what they host. That
+/// the entry of a Merk names the node of the load that hosts it is
+/// checked where the batch is laid out (`Frames::plan_load`). A node
+/// that is written as any other is held to no entry, here or there: the
+/// pointers it states or keeps are its writer's to keep in step with the
+/// directory.
 pub(crate) fn load_order(batch: &Batch<'_>) -> Result<Vec<usize>, BatchError> {
     let merks = batch.merks;
     let by_subtree: HashMap<Subtree, usize> = (merks.iter().enumerate())
@@ -364,11 +365,11 @@ impl Drop for Held<'_> {
 /// again before the lock is taken here, the replacement below fails with
 /// the doubt, which stays for the next call.
 ///
-/// The caller holds its transaction's lock and that of the loads' file,
-/// and the commit lock where a commit covers values under it: none of
-/// them is a lock of the store, which is what settling asks for, and no
-/// holder of the manifest's lock waits for one of them
-/// (`transactions.md` LD8).
+/// The caller holds its transaction's lock, the lock of the loads' file
+/// where an append names a file, and the commit lock where a commit
+/// covers values under it: none of them is a lock of the store, which is
+/// what settling asks for, and no holder of the manifest's lock waits
+/// for one of them (`transactions.md` LD8).
 ///
 /// [`WriteBack::settle_manifest`]: lignin_store::flush::WriteBack::settle_manifest
 fn name_files(path: &WritePath<'_>) -> Result<(), ValueStoreError> {
