@@ -119,8 +119,6 @@ pub use orchard::builder::{Builder, BundleType};
 pub use orchard::bundle::BatchValidator;
 // Bundle/Action types
 pub use orchard::bundle::{Authorized, Flags};
-// Bundle reconstruction: proof-size policy for `Bundle::try_from_parts`
-pub use orchard::bundle::ProofSizeEnforcement;
 // Proof creation/verification (requires orchard "circuit" feature)
 pub use orchard::circuit::{ProvingKey, VerifyingKey};
 // Key management
