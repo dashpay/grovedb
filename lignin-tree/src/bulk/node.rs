@@ -142,7 +142,9 @@ pub trait LoadValues: Values {
     /// write does. A load that puts its values into the value log as their
     /// cells get their pages appends the value for `page` here and returns
     /// the pointer: the cell holds it from its first write on. A place of
-    /// another length than the value is refused by the page.
+    /// another length than the value ends the load with
+    /// [`LoadError::Value`](super::LoadError::Value), before the cell is
+    /// written.
     fn place(&mut self, pending: PendingValue, page: PageId) -> Result<ValuePlace, Refusal> {
         self.placed(pending, page);
         Ok(ValuePlace::Pending(pending))

@@ -296,6 +296,9 @@ struct Placed {
     log: Vec<(PageId, Vec<u8>)>,
     /// Refuses the value that would be placed at this position.
     refuse_at: Option<usize>,
+    /// Gives the value that is placed at this position a place that is
+    /// one byte longer than it.
+    longer_at: Option<usize>,
 }
 
 impl Placed {
@@ -343,7 +346,9 @@ impl LoadValues for Placed {
             .expect("a value that was held");
         let file = lignin_format::FileId::new(3).expect("not zero");
         let offset = (self.log.len() as u64 + 1) * Self::SPACING;
-        let pointer = lignin_format::value_log::ValuePointer::new(file, offset, value.len() as u32);
+        let longer = u32::from(self.longer_at == Some(self.log.len()));
+        let len = value.len() as u32 + longer;
+        let pointer = lignin_format::value_log::ValuePointer::new(file, offset, len);
         self.log.push((page, value));
         Ok(ValuePlace::Placed(pointer.expect("a pointer")))
     }
@@ -422,6 +427,34 @@ fn a_value_that_is_refused_its_place_ends_the_load() {
     let refused = chain(&mut loader, &mut mem, &mut values, 300).expect_err("a refusal");
     assert!(matches!(refused, LoadError::Value(_)), "{refused}");
     assert_eq!(values.log.len(), 3);
+    let leaf = loader.node(
+        &mut mem,
+        &mut values,
+        &mut Rules::default(),
+        &plain(b"next", b"v"),
+    );
+    assert!(matches!(leaf, Err(LoadError::Failed)));
+}
+
+/// The cell of a value is counted with the length the value has. A place
+/// of another length is a well-formed pointer, which a page would take:
+/// the load refuses it before the cell is written.
+#[test]
+fn a_place_of_another_length_than_its_value_ends_the_load() {
+    let layout = Layout::proposed(SIZE);
+    let mut loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
+    let (mut mem, mut values) = (Mem::new(SIZE), Placed::default());
+    values.longer_at = Some(2);
+    let refused = chain(&mut loader, &mut mem, &mut values, 300).expect_err("a refusal");
+    let LoadError::Value(said) = &refused else {
+        panic!("{refused}");
+    };
+    let (held, placed) = (THRESHOLD + 40, THRESHOLD + 41);
+    assert_eq!(
+        said.to_string(),
+        format!("a value of {held} bytes was given a place of {placed}")
+    );
+    assert_eq!(values.log.len(), 3, "the place was asked for and refused");
     let leaf = loader.node(
         &mut mem,
         &mut values,

@@ -694,7 +694,15 @@ impl Loader {
             self.counters.cell_bytes += u64::from(node.size);
             if let Some(pending) = node.pending {
                 let place = values.place(pending, filling.page);
-                node.place = Some(place.map_err(LoadError::Value)?);
+                let place = place.map_err(LoadError::Value)?;
+                // The cell was counted with the length of the value it
+                // was given: a place of another length is of another value.
+                if place.value_len() != pending.value_len() {
+                    let (held, placed) = (pending.value_len(), place.value_len());
+                    let other = format!("a value of {held} bytes was given a place of {placed}");
+                    return Err(LoadError::Value(other.into()));
+                }
+                node.place = Some(place);
                 self.counters.values += 1;
                 self.counters.value_bytes += u64::from(pending.value_len());
             }
