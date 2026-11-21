@@ -105,12 +105,24 @@ A cursor shows the state the handle's reads show. How long it stays stable under
 | Scan | Asks `status()` |
 | --- | --- |
 | `rebuild_indexed_tree_secondaries` (`grovedb/src/operations/indexed_tree.rs`): its walk of the primary and its walk of each secondary | yes, since #1063 |
-| `clear_subtree_with_costs_v0` and `clear_subtree_with_costs_v1` (`grovedb/src/operations/delete/clear_subtree/`): the walk that deletes the subtrees nested in a Merk before the Merk is cleared | no |
-| `verify_merk_and_submerks_in_transaction` (`grovedb/src/lib.rs`) | no |
-| `verify_indexed_axis_content` (`grovedb/src/lib.rs`): its walk of the primary and its walk of the secondary | no |
-| `indexed_axis_range_rows_generic` and `collect_top_k_via_iterator` (`indexed_tree.rs`): walks of a secondary | no |
+| `clear_subtree_with_costs_v0` and `clear_subtree_with_costs_v1` (`grovedb/src/operations/delete/clear_subtree/`): the walk that deletes the subtrees nested in a Merk before the Merk is cleared | yes, since GROVE-06 |
+| `verify_merk_and_submerks_in_transaction` (`grovedb/src/lib.rs`) | yes, since GROVE-06 |
+| `verify_indexed_axis_content` (`grovedb/src/lib.rs`): its walk of the primary and its walk of the secondary | yes, since GROVE-06 |
+| `indexed_axis_range_rows_generic` and `collect_top_k_via_iterator` (`indexed_tree.rs`): walks of a secondary | yes, since GROVE-06 |
 
-Scans that are compiled for tests only are not in the table, because no operation concludes anything from their end: `legacy_linear_indexed_count_top_k_paginated` in `indexed_tree.rs` and the helper `stored_rows` in `grovedb/src/tests/indexed_tree_secondary_drift_tests.rs`, neither of which asks. On RocksDB nothing changes for the scans of the table. On LigninDB a scan that a scope's claim refuses would end early there, so GROVE-05 and GROVE-06 make them ask. The same holds for the cursor loops of `grovedb-query` and `Element::iterator`.
+Scans that are compiled for tests only are not in the table, because no operation concludes anything from their end: `legacy_linear_indexed_count_top_k_paginated` in `indexed_tree.rs` and the helper `stored_rows` in `grovedb/src/tests/indexed_tree_secondary_drift_tests.rs`, neither of which asks. On RocksDB nothing changes for the scans of the table unless its iterator reports an error. On LigninDB a scan that a scope's claim refuses, or whose read of a page failed, would have ended early there, so GROVE-06 made them ask: each fails with `Error::StorageError` where its cursor's status is an error.
+
+Three walks of GroveDB have no `KVIterator`, and ask the same since GROVE-06:
+
+| Walk | On a cursor error |
+| --- | --- |
+| `ElementsIterator::next_element` (`grovedb/src/element/elements_iterator.rs`), behind `Element::iterator`: `find_subtrees`, the deletion visitor, the scan for elements that take backward references, state sync's walk of a Merk, the visualizer | returns `Error::StorageError` where the cursor stands on no record, or shows a key with no record under it, and its status is an error. A key with no record under it and no error is passed over, as `KVIterator` passes it |
+| the range of a query (`query_item_internal`, `grovedb/src/element/query.rs`) | the query fails with `Error::StorageError` where the range ended on an error. A cursor that stands on a key and shows no record under it is that error where its status has one, and `CorruptedData` as before where it has none |
+| the walk that adds sum items (`query_aggregate_sums`, `grovedb/src/element/aggregate_sum_query/mod.rs`) | as the range of a query |
+
+The cursor loops of `grovedb-query` (`QueryItem::seek_for_iter`, `iter_is_valid_for_type`) place a cursor and say whether it is inside an item. They conclude nothing from an end, and their callers are the walks above and `KVIterator`.
+
+`grovedb/src/tests/refused_scans.rs` holds the scans to this, on the engine of the suite and, from `grovedb/src/engine/lignin/tests`, on LigninDB beside RocksDB. Behind handles whose cursor fails once (`RefusedMoves` in `grovedb/src/tests/faultable_reads.rs`), each operation is run once for every move of a cursor it makes with that move refused, and once for every record with that record withheld: the range of a query in both directions, the walk that adds sum items, `find_subtrees`, a clear with `check_for_subtrees` of a tree whose last record is a tree, and `verify_grovedb`. With a fault the operation fails, and where the scan is all it does with the storage's error. The clear is the one that tells most: a scan that took a refused move for its end would find no tree and clear a tree that its options forbid it to clear. The scans of an indexed tree (the range and the first rows of a secondary, and the two walks of `verify_indexed_axis_content`) are held to it on the engine of the suite only, until the LigninDB engine takes a write into an indexed tree (GROVE-04).
 
 ### Change sets
 
