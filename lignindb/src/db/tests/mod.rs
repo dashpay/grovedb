@@ -42,7 +42,7 @@ use lignin_tree::hash::Stale;
 
 use crate::{
     commit::{Committed, NoStaleHashes, Published},
-    db::ReclaimStats,
+    db::{OpenError, ReclaimStats},
     snapshot::Operation,
     txn::{
         Batch, Column, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, Subtree,
@@ -848,4 +848,42 @@ pub(super) fn halt_background(db: &Db) {
     db.shared.write_back().stop();
     threads.reclaim.join().expect("the reclaimer ends");
     threads.write_back.join().expect("write-back ends");
+}
+
+/// Opens the database in `dir` as [`Db::open`] does, and starts neither of
+/// its two threads: a session in which no thread but the test's own
+/// writes back or reclaims, from the open on.
+///
+/// [`halt_background`] does not give that. A thread that [`Db::open`]
+/// started can have made its first turn before it is told to end, and
+/// whether it has is the schedule's to say. Either turn shows in what the
+/// session does next:
+///
+/// - The reclaimer's first round takes the allocator's step
+///   (`Versions::reclaim`). An open has a page id that an earlier session
+///   freed, and whose free link the page table still holds, as retired,
+///   and that step frees it. So after that round the first commit of
+///   the session can give a new page an id that it could not have given
+///   it before.
+/// - Write-back's first turn makes the file operations that the first
+///   turn of the test would have made, and meets what the device refuses
+///   of them in the test's place.
+///
+/// This is [`Db::open`] up to the start of its threads, step for step, and
+/// has to be kept so. The handle ends as one that [`halt_background`] was
+/// called on does: when it is dropped, as a process that is killed.
+pub(super) fn open_at_rest(dir: impl AsRef<Path>, options: &Options) -> Result<Db, OpenError> {
+    let dir = dir.as_ref();
+    let opened = crate::db::open::open_dir(dir, options)?;
+    let (shared, directory, _) = crate::db::open::open_store(dir, options, opened.manifest)?;
+    shared
+        .adopt_drops(&directory)
+        .map_err(OpenError::catalog("what earlier drops left"))?;
+    Ok(Db {
+        shared: Arc::new(shared),
+        threads: Mutex::new(None),
+        created: opened.created,
+        opening: crate::db::Opening::default(),
+        guard: opened.lock,
+    })
 }
