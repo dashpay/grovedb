@@ -87,8 +87,8 @@
 //!
 //! | Step | What happens | How manifests name the file from then on |
 //! | --- | --- | --- |
-//! | Create | [`LogStore::create`] creates `wal/<id>.log` under an id above every id used before, appends the file header, syncs the file and syncs `wal/`. The log has one such file at a time: the file it turns to next. | Open, 20 bytes valid. |
-//! | Name | The manifest is replaced. From here the log can turn to the file. | |
+//! | Create | [`LogStore::create`] creates `wal/<id>.log` under an id above every id used before and appends the file header. Nothing is synced, and the file is not one of the log's yet: [`LogStore::describe`] does not name it and does not record its id. The log has one such file at a time: the file it turns to next. | Not named. |
+//! | Name | [`LogStore::commit`] replaces the manifest with one that names the file. The sync of the file, the sync of `wal/` and the sync of the manifest's temporary file are one list of syncs for the file layer ([`Vfs::sync_together`](lignin_io::Vfs::sync_together)), made before the manifest gets its name, so the file is durable with its name before a manifest that names it is in force. From here the file is one of the log's, and the log can turn to it. | Open, 20 bytes valid. |
 //! | Turn | [`LogStore::rotate`] appends the file's start record, which says where the file before it ends and which commit it comes after (LG9). The file before it takes no more items, and this one takes them. | |
 //! | Append | [`LogStore::append_group`], [`LogStore::append_change`] and [`LogStore::append_mark`] append one item each. | |
 //! | Sync | [`LogStore::sync`] syncs the file, after every file before it. | Open, valid up to the last item synced. |
@@ -106,6 +106,14 @@
 //! the next file, replace the manifest. The turn away from a file that is
 //! full is [`LogStore::rotate`]'s, because it moves an end of the log at
 //! which a commit may have asked for its place ([the locks](#locks)).
+//!
+//! Two calls are a part of those. [`LogStore::begin`] is a roll that ends
+//! as soon as the log takes items, without the file to turn to after that:
+//! a session's open makes it, and so creates one file and writes one
+//! manifest where a roll makes two of each. [`LogStore::rotate_early`] is
+//! a turn away from a file that holds a commit and is not full, which a
+//! table checkpoint asks for where it begins
+//! ([below](#what-a-table-checkpoint-asks-of-the-log)).
 //!
 //! **A file takes items only once a durable manifest names it.** A recovery
 //! reads the log files its manifest names and no others. An item in a file
@@ -210,7 +218,7 @@
 //! | The same, while an append that was taken back waits for its sync | [`LogError::SyncFailed`] | Besides, that append is unsettled from here on: nothing keeps a crash from bringing the item back. Every later append and turn fails with [`LogError::Unsettled`]. |
 //! | The append of a start record, in [`LogStore::rotate`] | [`LogError::NotAppended`], or `Ok` if the record is in the file, or [`LogError::Unsettled`] if the log cannot find out | The log has not turned and ends where it did. The file it would have turned to is given up, and deleted once no manifest names it. If the record is in the file, the log has turned to a file that takes no items, and turns again. |
 //! | [`LogStore::create`] | [`LogError::Io`] | No file that a manifest names. Its id is not used again in this session, and no manifest records it. If what was written cannot be removed either, a file stays that no manifest names, and the next open removes it. |
-//! | [`LogStore::commit`] | as [`ManifestStore::update`] | The old manifest, or the manifest in doubt. A file that was created is not turned to until a manifest names it. |
+//! | [`LogStore::commit`] | as [`ManifestStore::update`] | The old manifest, or the manifest in doubt. A file that was created is not turned to until a manifest names it. Where the syncs that were to make such a file durable with the manifest failed, the old manifest is in force and the file is given up, since no later sync can vouch for it: the log needs another, under the next id. The file is removed, and if that fails as well, a file stays that no manifest names, and the next open removes it. |
 //! | The deletion of a dropped file | [`LogError::NotDeleted`] | The new manifest, in force, and the file, which the next call or the next session deletes. |
 //!
 //! **After a failed append of an item the failed bytes are cut off before
@@ -286,7 +294,7 @@
 //! [`LogStore::open`] takes the [`LogEnd`] that the session's recovery
 //! read. Every file of it ends where its last whole item ends. The files
 //! that hold nothing of the log are taken out. The first
-//! [`LogStore::roll`] then:
+//! [`LogStore::roll`] or [`LogStore::begin`] then:
 //!
 //! 1. makes those files durable to that end
 //! 2. replaces the manifest: it names them closed at that length, names no
@@ -345,6 +353,22 @@
 //! not discarded, and both after `ManifestInDoubt`. With no checkpoint in
 //! force it holds the whole log. The log knows no checkpoint: it keeps
 //! what it is told to keep.
+//!
+//! **A turn where the checkpoint begins**, which nothing rests on.
+//! A [`LogReader`] reads the first file its manifest names from the first
+//! item, wherever in it the place of the checkpoint's sample is: the
+//! commits the checkpoint does not cover can lie before that place, and
+//! nothing durable says where the group of the first of them begins. So
+//! the file a recovery starts in should hold little from before the
+//! checkpoint. [`LogStore::rotate_early`] turns the log although its file
+//! is not full, if the file holds a commit ([`LogStore::holds_a_commit`])
+//! and a file that a durable manifest names is ready
+//! ([`LogStore::has_file_ready`]). Whoever writes checkpoints calls it
+//! before the pass of write-back that a checkpoint starts with, and has
+//! a file made ready first where the log has none. The files before the
+//! turn then hold every commit up to that moment. They can be dropped
+//! with the checkpoint where it comes to cover those commits, and go
+//! unless a [`LogHold`] still keeps one of them.
 //!
 //! # Dropping files
 //!
@@ -420,8 +444,9 @@
 //! records of the page steps and the checkpoint mark. So a commit takes
 //! that lock before it asks for its place and holds it until its group is
 //! in, as a commit whose cells stop holding value pointers does already
-//! (CM3). [`LogStore::rotate`] moves the end of the log as well: call it
-//! under one of the two locks, or from the committer itself.
+//! (CM3). [`LogStore::rotate`] and [`LogStore::rotate_early`] move the
+//! end of the log as well: call them under one of the two locks, or from
+//! the committer itself.
 //! [`LogStore::roll`] needs neither: it turns the log only while the log
 //! has no file that takes items, and then no commit holds a place that it
 //! can still append at.
@@ -444,8 +469,9 @@
 //!   length, where nothing is read: a database that shares the file as a
 //!   hard link appends to it, as the live database does to the last log
 //!   file of a checkpoint (CK5 of `transactions.md`).
-//! - It calls [`LogStore::roll`] before the session's first append, which
-//!   [recovery](crate::recovery) does, and from then on whenever
+//! - It calls [`LogStore::begin`] or [`LogStore::roll`] before the
+//!   session's first append, which [recovery](crate::recovery) does with
+//!   the first of the two, and [`LogStore::roll`] from then on whenever
 //!   [`LogStore::is_due`], and from time to time: outside a commit and
 //!   outside a page step. A file that is full it turns with
 //!   [`LogStore::rotate`], where no commit is between asking for its place

@@ -419,12 +419,13 @@ impl SegmentStore {
     /// [`SegmentStoreError::UnnamedSegmentHoldsBlocks`] and removes nothing.
     /// Other entries of `seg/` are left alone.
     ///
-    /// `seg/` is created if it is missing, and its name is made durable
-    /// either way ([`list_or_create_dir`]).
+    /// `seg/` is created if it is missing, and its name is durable when
+    /// this returns ([`list_or_create_dir`]).
     pub fn open(manifest: &ManifestStore) -> Result<Self, SegmentStoreError> {
         let current = manifest.manifest()?;
         let store = Self::load(manifest.vfs().clone(), manifest.dir(), current, false)?;
-        let entries = list_or_create_dir(&*store.vfs, &store.dir, &FileNames::SEGMENT)?;
+        let dir_sync = manifest.dir_sync();
+        let entries = list_or_create_dir(&*store.vfs, &store.dir, &FileNames::SEGMENT, dir_sync)?;
         store.remove_unnamed(&entries, current)?;
         Ok(store)
     }

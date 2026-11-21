@@ -5,7 +5,14 @@
 use lignin_format::manifest::FileState;
 
 use super::*;
-use crate::{segment::FileNames, table::LinkKind};
+use crate::{
+    segment::{
+        tests::faulty::{FaultyVfs, Op as FileOp},
+        FileNames,
+    },
+    table::LinkKind,
+    wal::LogError,
+};
 
 #[test]
 fn a_new_store_recovers_to_no_commit_and_takes_the_first() {
@@ -580,22 +587,20 @@ fn the_files_of_the_earlier_session_are_closed_and_its_torn_commit_gives_its_ver
     check(&store, &kept, &[]);
     let named = store.manifest.manifest().expect("a manifest").clone();
     let files = named.files();
-    let (last, earlier) = files
+    let (active, earlier) = files
         .iter()
         .filter(|file| file.kind() == lignin_format::FileKind::Wal)
         .collect::<Vec<_>>()
         .split_last()
         .map(|(last, earlier)| (**last, earlier.to_vec()))
         .expect("log files");
-    // The session's log ends in a file of its own, and the file it turns
-    // to next is made: those two are open, and every file of the earlier
-    // session is closed, the log where its last whole item ends.
-    let (active, earlier) = earlier.split_last().expect("the session's file");
-    assert!(active.id() > third.at.file() && last.id() > active.id());
-    assert_eq!(
-        (active.state(), last.state()),
-        (FileState::Open, FileState::Open)
-    );
+    // The session's log ends in a file of its own, which is open, and
+    // every file of the earlier session is closed, the log where its last
+    // whole item ends. The file the log turns to next is not made by the
+    // recovery.
+    assert!(active.id() > third.at.file());
+    assert_eq!(active.state(), FileState::Open);
+    assert_eq!(store.log.end().map(|end| end.file()), Some(active.id()));
     for file in files
         .iter()
         .filter(|file| file.kind() != lignin_format::FileKind::Wal || file.id() < active.id())
@@ -620,6 +625,60 @@ fn the_files_of_the_earlier_session_are_closed_and_its_torn_commit_gives_its_ver
     let model = session.kill();
     let store = dir.open();
     assert_eq!(store.landed(), version(3));
+    check(&store, &model, &[]);
+}
+
+/// **What a recovery deletes.** The only file a recovery drops is a log
+/// file of the earlier session that holds nothing of the log. An open that
+/// cannot delete it fails, where its manifest has just stopped naming the
+/// file, and the next open fails on the same file where it finds it
+/// unnamed. Once the file can be deleted the store opens on the state it
+/// had.
+#[test]
+fn an_open_that_cannot_delete_a_log_file_fails_until_the_file_can_be_deleted() {
+    let dir = Dir::new();
+    let mut session = Session::begin(&dir, Model::default());
+    session.commit(&[insert((1, 1), b"a", inline(&[1; 40]))]);
+    // The session has a file made ready that its log never turns to.
+    let store = &mut session.store;
+    store
+        .log
+        .roll(&mut store.manifest)
+        .expect("a file is ready");
+    let named = store.log.files_named().expect("the log's files");
+    let ready = named.last().expect("a log file");
+    assert!(ready.id() > store.log.end().expect("an end").file());
+    let name = FileNames::WAL.file_name(ready.id());
+    let on_disk = dir.path.join("wal").join(&name);
+    session.sync();
+    let model = session.kill();
+
+    let vfs = FaultyVfs::new(Arc::new(StdVfs));
+    let open = || {
+        let manifest = ManifestStore::open(Arc::new(vfs.clone()), &dir.path).expect("a manifest");
+        recover(manifest, &options())
+    };
+    vfs.fail(FileOp::RemoveFile, &name);
+    let error = open().expect_err("the open fails");
+    assert!(
+        matches!(&error, RecoveryError::Log(LogError::NotDeleted { path, .. }) if *path == on_disk),
+        "{error}"
+    );
+    assert!(on_disk.exists());
+    assert_eq!(vfs.pending_faults(), 0);
+
+    vfs.fail(FileOp::RemoveFile, &name);
+    let error = open().expect_err("the next open fails");
+    assert!(
+        matches!(&error, RecoveryError::Log(LogError::Io { op: "remove", path, .. }) if *path == on_disk),
+        "{error}"
+    );
+    assert!(on_disk.exists());
+    assert_eq!(vfs.pending_faults(), 0);
+
+    let store = open().unwrap_or_else(|error| panic!("the store does not recover: {error}"));
+    assert!(!on_disk.exists());
+    assert_eq!(store.landed(), version(1));
     check(&store, &model, &[]);
 }
 

@@ -78,7 +78,7 @@ fn append_to(
 }
 
 #[test]
-fn a_new_database_gets_its_segment_directory_once_and_every_open_makes_it_durable() {
+fn a_new_database_gets_its_segment_directory_once_and_its_name_is_synced_once() {
     let dir = tempfile::tempdir().unwrap();
     let vfs = faulty_std();
     let manifest =
@@ -100,9 +100,18 @@ fn a_new_database_gets_its_segment_directory_once_and_every_open_makes_it_durabl
     assert_eq!(segments.segments_named().unwrap(), []);
     assert_eq!(segments.dir(), dir.path());
 
+    // The directory is there with a durable name, whether this session
+    // made it or the manifest store found it at its open, which syncs the
+    // database directory once.
     drop(segments);
     SegmentStore::open(&manifest).unwrap();
-    assert_eq!(vfs.take_calls(), [(Op::ReadDir, seg), synced]);
+    assert_eq!(vfs.take_calls(), [(Op::ReadDir, seg.clone())]);
+    drop(manifest);
+    let manifest = ManifestStore::open(Arc::new(vfs.clone()), dir.path()).unwrap();
+    let opened = vfs.take_calls();
+    assert_eq!(opened.iter().filter(|call| **call == synced).count(), 1);
+    SegmentStore::open(&manifest).unwrap();
+    assert_eq!(vfs.take_calls(), [(Op::ReadDir, seg)]);
 }
 
 #[test]

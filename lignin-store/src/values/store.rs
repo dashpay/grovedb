@@ -26,7 +26,7 @@ use super::{
     walk::ValueWalk,
     writer::{ValueHold, ValueWriter},
 };
-use crate::segment::{create_file, list_or_create_dir, FileNames, ManifestStore};
+use crate::segment::{create_file, list_or_create_dir, DirSync, FileNames, ManifestStore};
 
 /// The length at which a writer's file is full, unless
 /// [`ValueStore::with_target_file_len`] sets another.
@@ -143,6 +143,7 @@ pub(crate) fn net(change: &ValueChange) -> (Vec<ValuePointer>, Vec<ValuePointer>
 pub struct ValueRecovery {
     vfs: Arc<dyn Vfs>,
     dir: PathBuf,
+    dir_sync: DirSync,
     files: BTreeMap<FileId, Arc<ValueFile>>,
     accounts: BTreeMap<FileId, Account>,
     last_id: Option<FileId>,
@@ -208,9 +209,9 @@ impl ValueRecovery {
     ///   such a file was found to be too low and the file is still in `val/`,
     ///   where the next step would remove it
     ///
-    /// Otherwise `val/` is created if it is missing, its name is made
-    /// durable, and every file in it with a value-log file's name that the
-    /// manifest does not name is removed, as [`ValueStore::open`] describes.
+    /// Otherwise `val/` is created if it is missing, with a durable name,
+    /// and every file in it with a value-log file's name that the manifest
+    /// does not name is removed, as [`ValueStore::open`] describes.
     pub fn finish(self) -> Result<ValueStore, ValueStoreError> {
         for (&file, account) in &self.accounts {
             if account.values != 0 && !self.files.contains_key(&file) {
@@ -220,7 +221,8 @@ impl ValueRecovery {
                 });
             }
         }
-        let entries = list_or_create_dir(&*self.vfs, &self.dir, &FileNames::VALUE_LOG)?;
+        let entries =
+            list_or_create_dir(&*self.vfs, &self.dir, &FileNames::VALUE_LOG, &self.dir_sync)?;
         for entry in &entries {
             let unnamed = FileNames::VALUE_LOG
                 .parse(&entry.name)
@@ -489,8 +491,8 @@ impl ValueStore {
     /// [`ValueStoreError::UnnamedFileHoldsValues`] and removes nothing. Other
     /// entries of `val/` are left alone.
     ///
-    /// `val/` is created if it is missing, and its name is made durable
-    /// either way.
+    /// `val/` is created if it is missing, and its name is durable when
+    /// this returns ([`list_or_create_dir`]).
     pub fn open(manifest: &ManifestStore, counts: &[FileCount]) -> Result<Self, ValueStoreError> {
         Self::recover(manifest, counts)?.finish()
     }
@@ -512,6 +514,7 @@ impl ValueStore {
         Ok(ValueRecovery {
             vfs,
             dir: manifest.dir().to_path_buf(),
+            dir_sync: manifest.dir_sync().clone(),
             files,
             accounts: counts
                 .iter()

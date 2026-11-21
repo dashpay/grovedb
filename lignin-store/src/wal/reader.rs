@@ -44,6 +44,7 @@ pub struct FileEnd {
     valid_len: u64,
     latest: CommitVersion,
     named_len: u64,
+    named_state: FileState,
     named_latest: CommitVersion,
 }
 
@@ -79,6 +80,13 @@ impl FileEnd {
     /// it was durable when the manifest was written.
     pub const fn named_len(&self) -> u64 {
         self.named_len
+    }
+
+    /// The state the manifest names the file in, which says how far it
+    /// was read: an open file to its end, and a closed one to its valid
+    /// length.
+    pub const fn named_state(&self) -> FileState {
+        self.named_state
     }
 
     /// The version of the last commit group of the log up to
@@ -353,6 +361,7 @@ impl Current {
             valid_len: self.offset,
             latest: self.latest,
             named_len: self.named.valid_len(),
+            named_state: self.named.state(),
             named_latest: self.named_latest,
         }
     }

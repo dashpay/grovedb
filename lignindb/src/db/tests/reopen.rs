@@ -267,8 +267,34 @@ fn the_reopen_of_a_store_of_the_reference_size() {
         options.cache_size >> 20,
         with_small[2]
     );
-    // The row: a reopen within 60 ms, all of it. About a dozen syncs are
-    // in every reopen, so on a disk whose sync takes several milliseconds
+    // The same reopen with nothing between the engine and the operating
+    // system's files. A list of syncs reaches the file layer as one list
+    // only this way (`Vfs::sync_together`), and where a sync ends in a
+    // flush of the whole device that is what a reopen waits for.
+    let plain = Options {
+        vfs: Arc::new(StdVfs),
+        ..options.clone()
+    };
+    let mut direct: Vec<f64> = (0..10)
+        .map(|_| {
+            let began = Instant::now();
+            let db = Db::open(&dir, &plain).expect("the database is opened again");
+            let took = began.elapsed().as_secs_f64() * 1e3;
+            check(&db);
+            db.close().expect("the session ends");
+            took
+        })
+        .collect();
+    direct.sort_by(f64::total_cmp);
+    println!(
+        "with no file layer over the operating system's: median {:.2} ms, fastest {:.2} ms, \
+         slowest {:.2} ms",
+        direct[direct.len() / 2],
+        direct[0],
+        direct[direct.len() - 1]
+    );
+    // The row: a reopen within 60 ms, all of it. The syncs of a reopen
+    // are listed above, so on a disk whose sync takes several milliseconds
     // this measures the disk: the parts above say which it is.
     assert!(
         median.open_ms < 60.0,
