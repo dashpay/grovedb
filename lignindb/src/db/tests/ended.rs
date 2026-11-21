@@ -484,11 +484,15 @@ fn a_manifest_in_doubt_is_settled_and_ends_no_session() {
 }
 
 /// The creation of a checkpoint is the first to come by, after a table
-/// checkpoint that was refused every replacement of the manifest. On a
-/// device that still refuses the sync of a directory the manifest cannot
-/// be opened again: the creation fails with that error and leaves
-/// nothing, the manifest is in doubt as before, and the session has not
-/// ended. With room the next creation settles the manifest and is made.
+/// checkpoint that was refused every replacement of the manifest. The
+/// test then refuses directory syncs. Checkpoint creation returns the
+/// out-of-space error from settling the manifest and leaves neither
+/// checkpoint directory; the trace from the start of that call on has no
+/// making of a directory at a path that begins with `/checkpoint`, and
+/// has a listing at such a path, as the test's looks for the two
+/// directories make; the manifest remains in doubt and the session stays
+/// open. Once the test refuses nothing any more, the next creation
+/// settles the manifest and is made.
 #[test]
 fn a_creation_of_a_checkpoint_settles_the_manifest_first() {
     let mut session = session(34, SyncPolicy::Never);
@@ -515,12 +519,27 @@ fn a_creation_of_a_checkpoint_settles_the_manifest_first() {
         .fs
         .add_rule(FaultRule::new(Fault::Enospc).on(OpKind::SyncDir).forever());
     let committer = db.shared.committer();
+    let before = session.fs.trace().len();
     let refused = Checkpointer::new(&committer)
         .create(Path::new("/checkpoint"))
         .expect_err("no manifest is opened");
     assert!(matches!(&refused, CheckpointError::Settle(_)), "{refused}");
     assert!(out_of_space(&refused), "{refused}");
     assert!(gone(&session, "/checkpoint") && gone(&session, "/checkpoint.creating"));
+    let traced: Vec<Event> = session.fs.trace().into_iter().skip(before).collect();
+    let has = |kind: OpKind, under: &str| {
+        traced.iter().any(
+            |event| matches!(event, Event::Op(op) if op.kind == kind && op.path.starts_with(under)),
+        )
+    };
+    assert!(
+        has(OpKind::ReadDir, "/checkpoint"),
+        "the trace has no read_dir at a path that begins with /checkpoint"
+    );
+    assert!(
+        !has(OpKind::CreateDir, "/checkpoint"),
+        "the trace of the failed creation has a create_dir at a path that begins with /checkpoint"
+    );
     assert!(in_doubt());
     assert_eq!(db.reopen(), None);
 
