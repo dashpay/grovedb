@@ -2118,15 +2118,15 @@ fn a_commit_between_the_comparing_read_and_the_write_is_a_commit_since_the_read(
 
             match between {
                 Between::Deletes => {
+                    // The refusal is the conflict of the seam, and no
+                    // storage error by its words.
                     let refused = written.expect_err("there is no value to keep");
-                    let taken = BatchError::ValueTaken {
-                        subtree: Subtree::new([0; 32]),
+                    let Error::StorageError(refused) = refused else {
+                        panic!("{at}: {refused}");
                     };
-                    assert!(matches!(refused, Error::StorageError(_)), "{at}: {refused}");
-                    assert!(
-                        refused.to_string().contains(&taken.to_string()),
-                        "{at}: {refused}"
-                    );
+                    assert!(refused.is_commit_conflict(), "{at}: {refused}");
+                    let conflict = grovedb_storage::error::CommitError::Conflict;
+                    assert_eq!(refused.commit_error(), Some(conflict), "{at}");
                 }
                 _ => written.unwrap_or_else(|error| panic!("{at}: {error}")),
             }

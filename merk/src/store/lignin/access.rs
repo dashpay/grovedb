@@ -8,7 +8,10 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use grovedb_storage::{error::WriteScopeError, Error as StorageError};
+use grovedb_storage::{
+    error::{CommitError, WriteScopeError},
+    Error as StorageError,
+};
 use lignin_format::tree_page::{HashField, Side};
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
@@ -394,6 +397,13 @@ pub(super) trait BatchPart {
 /// more Merks deep than the subtree directory takes. That is a limit of
 /// the engine which the write met and no fault of the store, and a caller
 /// tells it from damage by its error.
+///
+/// Among the storage errors two have a class that names no engine: a
+/// claim of another open scope, and a write that the transaction refused
+/// because a commit outside it took a node whose value the write keeps
+/// (`TxnError::is_conflict`). The second is the conflict of the seam,
+/// `CommitError::Conflict`: the write changed nothing, the transaction is
+/// open, and a caller answers it as it answers a commit that lost.
 pub(super) fn fault(error: TxnError) -> Error {
     match error {
         TxnError::Directory(DirectoryError::TooDeep) => {
@@ -403,6 +413,9 @@ pub(super) fn fault(error: TxnError) -> Error {
         // is named so through every seam (`engine.md`, "Write scopes").
         TxnError::ScopeOverlap { .. } => {
             Error::StorageError(StorageError::WriteScope(WriteScopeError::Overlap))
+        }
+        error if error.is_conflict() => {
+            Error::StorageError(StorageError::Commit(CommitError::Conflict))
         }
         error => refused(&error.to_string()),
     }
