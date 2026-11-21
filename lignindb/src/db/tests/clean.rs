@@ -38,11 +38,14 @@ fn the_policy_of_the_cleaner_comes_from_the_options() {
     assert_eq!(db.shared.store.cleaner.config(), CleanerConfig::new());
 }
 
-/// A session begins with two Merks whose pages are in a segment and
-/// whose values are in a file of the value log, both closed: an earlier
-/// session wrote them and was closed. One of the two is dropped, and
-/// what it had in those files is dead whatever the threads of this
-/// session do next. Then commits enter a Merk with values out of line and
+/// A session begins with three Merks that an earlier session wrote
+/// before it was closed: their pages are in a segment that is sealed,
+/// and the values of the two that have values out of line are in a file
+/// of the value log that is closed. The one with no value out of line is
+/// dropped first, and one of the other two by the first of the commits
+/// that follow: blocks of that segment and values of that file are dead
+/// whatever the threads of this session do next. The commits enter a
+/// Merk with values out of line and
 /// drop the one before, again and again. What the drops leave is
 /// reclaimed, and the cleaner of the session, on its thread, gives files
 /// back: segments, and files of the value log. Whether it moved something

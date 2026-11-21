@@ -943,26 +943,28 @@ impl Db {
     /// the pages of which it is the newest version and not on the
     /// others, so a check of a sound store beside a reclaiming can find a
     /// flat record whose entry is gone, which is also what damage looks
-    /// like. Under the commit lock no commit has installed pages that it
-    /// has not published: the pinned version is the newest of every
-    /// page, and it has every step that was made. None is made during
-    /// the run, so the version is checked as every reader of it found it.
+    /// like. Under the commit lock no commit is between its installs and
+    /// its publication, so every step that was made is in the pinned
+    /// version. None is made during the run, so the version is checked
+    /// as every reader of it found it.
     ///
-    /// The pin waits for a commit that is being made, and nothing waits
-    /// for the check but this: a round of the reclaiming that is due goes
-    /// on when the check has ended, and so does a call of
-    /// [`Self::reclaim`], so for as long as a check takes the pages and
-    /// values of dropped subtrees are given back later; and a second
-    /// check on demand waits for the first. The commit lock is given
-    /// back once the version is pinned: commits and readers go on beside
-    /// the check, and so do write-back and the cleaner, for whom the
-    /// check is one reader more. What they may give back only when no
-    /// reader needs it (the links of a chain, a file that was emptied)
-    /// waits for the check's pin and its operation guard as for any
-    /// reader's.
+    /// Before it pins, the check waits for a round of the reclaiming that
+    /// is running, and for whoever holds the commit lock: a commit that
+    /// is being made, a wipe, the sample of a checkpoint. The commit lock
+    /// is given back once the version is pinned: commits and readers go
+    /// on beside the check, and so do write-back and the cleaner, for
+    /// whom the check is one reader more. So what waits for the end of a
+    /// check is what waits for any reader's pin and operation guard (the
+    /// reuse of page ids, the links of a chain, a file that was emptied),
+    /// and two things more: a round of the reclaiming that is due, with
+    /// any call of [`Self::reclaim`], so that the pages and values of
+    /// dropped subtrees are given back later; and a second check on
+    /// demand.
     ///
     /// `rules` are called with the reclaiming held back, so they call
-    /// neither this function nor [`Self::reclaim`] on this handle.
+    /// neither this function nor [`Self::reclaim`] on this handle. The
+    /// rules of a commit ([`Self::commit`]) run under the commit lock,
+    /// and do not call this function either.
     ///
     /// In a session that has ended ([`Self::reopen`]) it checks what the
     /// readers of that session read on: the latest version that was
@@ -977,11 +979,12 @@ impl Db {
         // taken before the pin and given back after the check, so no step
         // is made from the pin to the end of the check.
         let _held_back = lock(&shared.store.reclaiming);
-        // The pin is taken under the commit lock: no commit has installed
-        // pages that it has not published, so the version is the newest
-        // of every page, and every step the reclaimer has made is in it.
-        // The order is the one a round of the reclaiming has when it
-        // loads the directory again: its lock, then the commit lock.
+        // The pin is taken under the commit lock: no commit is between
+        // its installs and its publication, so every step the reclaimer
+        // has made is in the version. The order is the one a round of the
+        // reclaiming has when it loads the directory again: its lock,
+        // then the commit lock. The other order would wait for such a
+        // round for ever.
         let pin = {
             let _commit = shared.store.committing.lock();
             let pin = shared.versions.pin();

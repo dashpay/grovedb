@@ -111,11 +111,12 @@ impl LigninEngine {
     /// is entered in the subtree directory if it is not.
     ///
     /// The check that a close of the database makes in a debug build is
-    /// given Merk's rules, so that it holds the stored hashes of the
-    /// nodes of every Merk in use to them: each is made again and
-    /// compared, but for a value hash that only its writer can make,
-    /// which the rules take as it is stored. Elements are read as the
-    /// latest GroveVersion reads them, as the engine reads a host.
+    /// given Merk's rules for a check ([`MerkHashRules::for_check`]), so
+    /// that it holds the stored hashes of the nodes of every Merk in use
+    /// to them: each is made again and compared, but for the value
+    /// hashes that those rules take as they are stored. Elements are
+    /// read as the latest GroveVersion reads them, as the engine reads a
+    /// host.
     pub fn new(db: Db) -> Result<Self, Error> {
         if cfg!(debug_assertions) {
             let rules = MerkHashRules::for_check(GroveVersion::latest());

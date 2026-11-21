@@ -11,9 +11,9 @@
 //! The tests that call `check` close the database they leave, open it
 //! again and have the physical checker of the engine read every page of
 //! it, with the stored hashes of the nodes of every Merk in use checked
-//! by Merk's rules: each is made again and compared, but for a value hash
-//! that only its writer can make (a reference's), which the rules take as
-//! it is stored. In a debug build every database of these tests is
+//! by Merk's rules for a check (`MerkHashRules::for_check`): each is made
+//! again and compared, but for the value hashes that those rules take as
+//! they are stored. In a debug build every database of these tests is
 //! checked so when it is closed, by the database itself.
 
 mod append_only;

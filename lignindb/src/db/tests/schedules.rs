@@ -661,8 +661,7 @@ fn close(db: Db, cleaner_state: &CleanerState, errors: &mut Vec<String>) {
 
 fn base(seed: u64) -> Base {
     let fs = SimVfs::new(SimConfig::new(seed));
-    let db = Db::open("/db", &options(Arc::new(fs.clone()))).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest("/db", &options(Arc::new(fs.clone()))).expect("a new database");
     let history = History::new(1);
     let mut writers = [Writer::new(1, seed), Writer::new(2, seed)];
     let mut first = OwnedBatch::default();
@@ -958,9 +957,8 @@ fn work(
             match created {
                 Ok(created) => {
                     made.version = Some(created.version);
-                    match Db::open(CHECKPOINT, options) {
+                    match open_at_rest(CHECKPOINT, options) {
                         Ok(opened) => {
-                            halt_background(&opened);
                             made.opened = Some(opened);
                             Ok(format!("opened, {created:?}"))
                         }
@@ -1050,8 +1048,7 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
         gate: gate.clone(),
     });
     let options = options(vfs.clone());
-    let db = Db::open("/db", &options).expect("the state is opened");
-    halt_background(&db);
+    let db = open_at_rest("/db", &options).expect("the state is opened");
     *lock(&gate.asks.0) = Some(db.shared.clone());
     let history = base.world.history.copy();
     let mut writers = base.world.writers.clone();
@@ -1316,8 +1313,7 @@ fn sweep(step: Step, burst: Burst) {
 fn a_checkpoint_sampled_right_after_the_log_turned_to_a_new_file_opens() {
     let fs = SimVfs::new(SimConfig::new(9));
     let options = options(Arc::new(fs));
-    let db = Db::open("/db", &options).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest("/db", &options).expect("a new database");
     let history = History::new(1);
     let mut writer = Writer::new(1, 9);
     let write_back = db.shared.write_back();
@@ -1362,8 +1358,7 @@ enum Behind {
 /// was dropped by the latest commit, with its model and nothing reclaimed.
 fn dropped_just_now() -> (Db, History) {
     let fs = SimVfs::new(SimConfig::new(11));
-    let db = Db::open("/db", &options(Arc::new(fs))).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest("/db", &options(Arc::new(fs))).expect("a new database");
     let history = History::new(1);
     let mut writer = Writer::new(1, 11);
     let mut first = OwnedBatch::default();

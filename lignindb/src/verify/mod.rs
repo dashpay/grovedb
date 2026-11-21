@@ -175,8 +175,8 @@
 //!   and a step on another page is. Such a version can hold a flat record
 //!   whose entry is gone ([`Rule::FlatRecordWithoutEntry`]), with every
 //!   read of it right and no byte wrong. **A version is sound to check
-//!   only if no step of the reclaimer was made since a later commit
-//!   first installed a page**, and [`Scope::Reader`] counts on the caller
+//!   when no step of the reclaimer was made since a later commit first
+//!   installed a page**, and [`Scope::Reader`] counts on the caller
 //!   for that as [`Scope::Still`] does. A caller has it by pinning the
 //!   latest version under the commit lock, where no commit is between
 //!   its installs and its publication, with the reclaimer held back from

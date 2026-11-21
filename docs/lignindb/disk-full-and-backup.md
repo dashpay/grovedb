@@ -684,9 +684,9 @@ syncs every commit. It is run with no fault, and then once for each file
 operation that a device can refuse for room, with the device full at that
 operation.
 
-A database of the sweep is opened with neither of its two background
-threads, and the script makes every turn of write-back and of the
-reclaimer. Nothing but the script and the device then decides what a run
+A database of the sweep is opened with none of its background threads,
+and the script makes every turn of write-back and of the reclaimer; the
+cleaner makes none. Nothing but the script and the device then decides what a run
 does: each run makes the file operations of the run with no fault up to
 the one that is refused, so the operation that is refused is the one at
 its place in that run. A run that came to its refusal by other operations

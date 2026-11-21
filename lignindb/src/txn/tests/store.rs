@@ -1169,8 +1169,9 @@ pub enum RecoveredAsLeft {
 
 impl Db {
     /// The physical check that the drop of a store makes, at the latest
-    /// version, which is returned: a finding that counts as unsound
-    /// ([`Self::unsound`]) is a panic with the report.
+    /// version, which is returned. A finding that counts as unsound
+    /// ([`Self::unsound`]) is a panic with the report, and so are more
+    /// findings than a report keeps.
     fn left_sound(&self) -> CommitVersion {
         let at = self.commits.newest();
         let report = self.verify_by_own_rules(at, Scope::Still);

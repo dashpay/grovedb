@@ -577,11 +577,15 @@ pub(super) enum VerifyStage {
     Checked,
 }
 
+/// What a test runs at the stages of a check on demand.
+#[cfg(test)]
+pub(super) type AtVerify = Box<dyn FnMut(VerifyStage)>;
+
 #[cfg(test)]
 thread_local! {
     /// What a test has run at each stage of a check on demand on this
     /// thread.
-    pub(super) static AT_VERIFY: std::cell::RefCell<Option<Box<dyn FnMut(VerifyStage)>>> =
+    pub(super) static AT_VERIFY: std::cell::RefCell<Option<AtVerify>> =
         const { std::cell::RefCell::new(None) };
 }
 

@@ -8,8 +8,9 @@
 //! then once for each of them with the simulated device full at that
 //! operation: for that operation alone, from it on with syncs refused as
 //! well, and from it on with syncs that succeed. A database of the sweep
-//! is opened with neither of its threads (`open_at_rest`), and the script
-//! makes every turn of write-back and of the reclaimer. So nothing but the
+//! is opened with none of its threads (`open_at_rest`), and the script
+//! makes every turn of write-back and of the reclaimer; the cleaner makes
+//! none. So nothing but the
 //! script and the device decides what a run does, and each run makes the
 //! file operations of the run with no fault up to the one that is refused:
 //! a run that does not is a failure of the sweep, which names the first
@@ -206,7 +207,7 @@ pub(super) struct Session {
     pub(super) told: Told,
     /// Whether the background work of the database is at rest, and the
     /// session makes its turns. A database that is opened while it is, is
-    /// opened with neither of its threads.
+    /// opened with none of its threads.
     halted: bool,
     /// The state that a checkpoint in [`CHECKPOINT`] holds if there is
     /// one, and whether its creation returned: one that was refused may
@@ -885,7 +886,7 @@ impl Session {
 }
 
 /// Opens what a power cut left, in the file system of `options`, with
-/// neither of its threads.
+/// none of its threads.
 fn open_after_a_cut(options: &Options, context: &str) -> Db {
     open_at_rest(DIR, options).unwrap_or_else(|error| panic!("{context}: {error}"))
 }

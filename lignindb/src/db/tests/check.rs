@@ -202,9 +202,10 @@ fn the_physical_checker_reads_an_open_database() {
 /// A check on demand pins its version under the commit lock with the
 /// reclaiming held back (D-193), and holds the reclaiming back until the
 /// checker has returned (D-183). Three looks at the check show it: at the
-/// pin neither lock is free; a reclaiming that comes due once the version
-/// is pinned waits; and when the checker has returned it waits still,
-/// with nothing reclaimed.
+/// pin neither lock is free; before the first read the reclaiming is
+/// held; and when the checker has returned it is held still, with
+/// nothing reclaimed. The reclaiming that came due is asked for after
+/// the last look, and is made when the check has returned.
 ///
 /// A Merk that hosts another is dropped, and once the check has pinned
 /// that version a commit writes the leaf of the column that holds a
@@ -223,7 +224,7 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,
-        sync::TryLockError,
+        sync::{mpsc, TryLockError},
     };
 
     use crate::db::store::{VerifyStage, AT_VERIFY};
@@ -279,6 +280,11 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
     // many Merks were reclaimed, when the checker had returned.
     let looks = Rc::new(RefCell::new(Vec::new()));
     let due = Rc::new(Cell::new(None));
+    // The reclaiming that comes due is asked for by a thread that begins
+    // when the last look has been made: at each look the check holds the
+    // reclaiming back, or nobody does.
+    let (begin, begun) = mpsc::channel::<()>();
+    let begun = Cell::new(Some(begun));
     let (store, looked, waits) = (db.clone(), looks.clone(), due.clone());
     AT_VERIFY.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move |stage| {
@@ -296,17 +302,24 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
                     .commit(&store);
                     assert!(store.version() > dropped_at);
                     let reclaiming = store.clone();
+                    let begun = begun.take().expect("one look before the first read");
                     match held {
                         // Nothing holds the reclaiming back: it is made
                         // here, behind the pin and before the check
                         // reads a page.
                         false => reclaim(&store),
-                        true => waits.set(Some(thread::spawn(move || reclaim(&reclaiming)))),
+                        true => waits.set(Some(thread::spawn(move || {
+                            let _ = begun.recv();
+                            reclaim(&reclaiming);
+                        }))),
                     }
                     format!("reading: reclaiming {held}")
                 }
                 VerifyStage::Checked => {
                     let merks = store.stats().reclaimed.merks;
+                    // From here the reclaiming is asked for, and waits
+                    // for the check to return.
+                    let _ = begin.send(());
                     format!("checked: reclaiming {held}, {merks} reclaimed")
                 }
             };
@@ -346,12 +359,17 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
 /// A session that the store has ended (OPS-08): a sync of the log was
 /// refused, and the session takes no commit any more. Its readers read
 /// on, and a check on demand reads as they do: the latest version that
-/// was published, which is sound. The close makes no check of it in a
-/// debug build, whatever the close itself returns: what such a session
-/// leaves is the next recovery's to make whole, and the next session is
-/// checked like any other.
+/// was published, which is sound. Its close cannot make the log durable
+/// and returns that error, and a close that did not do all of its work
+/// makes no check, in any build: the store is spoiled here as only the
+/// check of a still store finds it, and the close returns its error with
+/// no panic. What the session left is the next recovery's to make whole,
+/// and the next session is checked like any other.
+///
+/// A session that ended for writes and whose close does its work is
+/// `a_session_that_ended_for_writes_is_not_checked_at_its_close`.
 #[test]
-fn a_session_that_the_store_ended_is_checked_on_demand_and_not_at_its_close() {
+fn a_session_that_the_store_ended_is_checked_on_demand_as_its_readers_read_it() {
     use lignin_io::sim::{Event, Fault, FaultRule, OpKind, OpSet};
     use lignin_store::wal::SyncPolicy;
 
@@ -384,12 +402,22 @@ fn a_session_that_the_store_ended_is_checked_on_demand_and_not_at_its_close() {
     assert!(report.is_sound(), "{report}");
     assert_eq!(report.census, before.census, "{report}");
 
-    // The store is spoiled as only a still check finds it: a close that
-    // checked would panic here in a debug build.
+    // The session's background work was at rest, with its threads
+    // ended. The handle is given threads to end, so that its close does
+    // what the close of a session does.
+    let ended = || thread::spawn(|| {});
+    *crate::db::store::lock(&db.threads) = Some(crate::db::Threads {
+        write_back: ended(),
+        reclaim: ended(),
+        cleaner: ended(),
+    });
     spoil(&db);
     let version = db.version();
     let closed = db.close();
-    println!("the close of the session that has ended: {closed:?}");
+    assert!(
+        matches!(&closed, Err(crate::db::DbError::Flush(_))),
+        "{closed:?}"
+    );
 
     session.options.create_if_missing = false;
     let db = Db::open("/db", &session.options).expect("the next session");

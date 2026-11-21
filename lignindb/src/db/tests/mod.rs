@@ -890,6 +890,9 @@ impl Drop for Ending<'_> {
 /// session in which nothing is written back and nothing is reclaimed but
 /// what the test asks for, and one that ends, when the handle is dropped,
 /// as a process that is killed ends.
+///
+/// A loop that is ended here may have made turns since the open: see
+/// [`open_at_rest`] for a session in which none is made.
 pub(super) fn halt_background(db: &Db) {
     let threads = crate::db::store::lock(&db.threads).take();
     let threads = threads.expect("the threads of the database");
@@ -899,14 +902,14 @@ pub(super) fn halt_background(db: &Db) {
     threads.write_back.join().expect("write-back ends");
 }
 
-/// Opens the database in `dir` as [`Db::open`] does, and starts neither of
-/// its two threads: a session in which no thread but the test's own
-/// writes back or reclaims, from the open on.
+/// Opens the database in `dir` as [`Db::open`] does, and starts none of
+/// its three threads: a session in which no thread but the test's own
+/// writes back, reclaims or cleans, from the open on.
 ///
 /// [`halt_background`] does not give that. A thread that [`Db::open`]
 /// started can have made its first turn before it is told to end, and
-/// whether it has is the schedule's to say. Either turn shows in what the
-/// session does next:
+/// whether it has is the schedule's to say. A turn of any of them shows
+/// in what the session does next:
 ///
 /// - The reclaimer's first round takes the allocator's step
 ///   (`Versions::reclaim`). An open has a page id that an earlier session
@@ -917,6 +920,8 @@ pub(super) fn halt_background(db: &Db) {
 /// - Write-back's first turn makes the file operations that the first
 ///   turn of the test would have made, and meets what the device refuses
 ///   of them in the test's place.
+/// - The cleaner's first turn is a pass over the segments and one over
+///   the value log, with the file operations of both.
 ///
 /// This is [`Db::open`] up to the start of its threads, step for step, and
 /// has to be kept so. The handle ends as one that [`halt_background`] was
