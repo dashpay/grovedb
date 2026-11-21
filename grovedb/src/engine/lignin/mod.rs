@@ -145,41 +145,109 @@ impl LigninEngine {
         Ok(opened.is_some())
     }
 
-    /// Enters the subtrees that no element hosts and that every grove has,
-    /// where the latest version does not have them, in a database that was
-    /// just made and after a wipe: the root Merk, as a normal tree, and
-    /// the namespace of the pending-drop records, which keeps no tree.
+    /// Enters the subtrees that no element hosts and that every grove has
+    /// ([`hostless`]), where the latest version does not have them: in a
+    /// database that was just made, in one commit. A database that has
+    /// both is not written.
     ///
-    /// Each is a commit of its own. One that a write of another thread
-    /// entered in between is entered, and is left as it is; any other
-    /// way the commit ends without being published and durable is the
-    /// error of the call.
+    /// Each is entered if it is absent, so a write of another thread that
+    /// entered one since the look is no error: the commit finds that
+    /// subtree and enters the other.
     fn enter_hostless(&self) -> Result<(), Error> {
         let normal = tree_type_bytes(TreeType::NormalTree);
-        let hostless: [(SubtreePrefix, &[u8]); 2] =
-            [(ROOT, &normal), (*pending_prefix_drops_namespace(), &[])];
-        for (prefix, tree_type) in hostless {
-            let subtree = Subtree::new(prefix);
-            if self.entered(subtree)? {
-                continue;
-            }
-            let enter = [SubtreeWrite::Enter {
-                subtree,
-                tree_type,
-                host: None,
-            }];
-            let batch = Batch {
-                subtrees: &enter,
-                ..Batch::default()
-            };
-            match self.db.write(&batch, &mut NoStaleHashes) {
-                // A write of another thread entered it in between.
-                Err(error) if error::entered_already(&error) => {}
-                Err(error) => return Err(write_error(error)),
-                Ok(_) => {}
+        let mut enters = Vec::with_capacity(2);
+        for (subtree, tree_type) in hostless(&normal) {
+            if !self.entered(subtree)? {
+                enters.push(SubtreeWrite::EnterIfAbsent {
+                    subtree,
+                    tree_type,
+                    host: None,
+                });
             }
         }
+        if enters.is_empty() {
+            return Ok(());
+        }
+        let batch = Batch {
+            subtrees: &enters,
+            ..Batch::default()
+        };
+        (self.db.write(&batch, &mut NoStaleHashes)).map_err(write_error)?;
         Ok(())
+    }
+}
+
+/// The subtrees that no element hosts and that every grove has, each with
+/// the tree type it is entered with: the root Merk, as a normal tree whose
+/// type bytes are `normal`, and the namespace of the pending-drop records,
+/// which keeps no tree.
+fn hostless(normal: &[u8]) -> [(Subtree, &[u8]); 2] {
+    let namespace = Subtree::new(*pending_prefix_drops_namespace());
+    [(Subtree::new(ROOT), normal), (namespace, &[])]
+}
+
+/// What a test has happen while a group is applied, with the transaction
+/// the group is applied to.
+#[cfg(test)]
+type Between = Box<dyn FnOnce(&LigninTransaction<'_>)>;
+
+#[cfg(test)]
+type Waiting = std::cell::RefCell<std::collections::VecDeque<Between>>;
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has happen on its own thread between a look that says
+    /// which subtrees a group enters and the application after it, one
+    /// for each look and in their order.
+    static AFTER_A_LOOK: Waiting =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    /// What a test has happen on its own thread after an application
+    /// that the transaction refused, before the engine asks whether
+    /// anything was published, one for each refusal and in their order.
+    static AFTER_A_REFUSAL: Waiting =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+    /// What each application of a group that failed answered, on this
+    /// thread and in their order, for a test to read.
+    static REFUSED: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// What a test has happen on its own thread inside a look, once: the
+    /// number of reads of an entry that it comes after, and what it is.
+    static AFTER_ENTRY_READS: std::cell::RefCell<Option<(usize, Box<dyn FnOnce()>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Has `happens` happen beside a group. A group that it applies itself
+/// meets nothing that waits after a look or after a refusal.
+#[cfg(test)]
+fn beside_the_group(happens: impl FnOnce()) {
+    let held = (AFTER_A_LOOK.take(), AFTER_A_REFUSAL.take());
+    happens();
+    AFTER_A_LOOK.set(held.0);
+    AFTER_A_REFUSAL.set(held.1);
+}
+
+/// Has the next of `waiting` happen.
+#[cfg(test)]
+fn happen(waiting: &'static std::thread::LocalKey<Waiting>, transaction: &LigninTransaction<'_>) {
+    let next = waiting.with_borrow_mut(|waiting| waiting.pop_front());
+    if let Some(next) = next {
+        beside_the_group(|| next(transaction));
+    }
+}
+
+/// Counts a read of an entry by a look, and has what waits for that
+/// read happen ([`AFTER_ENTRY_READS`]).
+#[cfg(test)]
+fn an_entry_was_read() {
+    let due = AFTER_ENTRY_READS.with_borrow_mut(|waiting| match waiting {
+        Some((reads, _)) if *reads > 1 => {
+            *reads -= 1;
+            None
+        }
+        waiting => waiting.take().map(|(_, due)| due),
+    });
+    if let Some(due) = due {
+        beside_the_group(due);
     }
 }
 
@@ -480,8 +548,10 @@ impl Engine for LigninEngine {
     }
 
     fn wipe(&self) -> Result<(), Error> {
-        self.db.wipe().map_err(write_error)?;
-        self.enter_hostless()
+        // One commit: the wipe, and the two subtrees every grove has.
+        let normal = tree_type_bytes(TreeType::NormalTree);
+        (self.db.wipe_entering(&hostless(&normal))).map_err(write_error)?;
+        Ok(())
     }
 
     fn start_transaction(&self) -> LigninTransaction<'_> {
@@ -672,25 +742,53 @@ impl Engine for LigninEngine {
         transaction: &LigninTransaction<'_>,
     ) -> CostResult<LigninApplied, Error> {
         let view = transaction.view();
+        let mut parts = group.parts;
         // A snapshot refuses the writes itself, and is asked for nothing
         // before it does.
-        let enters = match transaction.is_snapshot_read() {
-            true => Ok(enter::Owed::default()),
-            false => enter::owed(view, &group.parts),
-        };
-        match enters {
-            Ok(owed) => {
-                let mut parts = group.parts;
-                // What an indexed tree hosts is said of its element in
-                // every batch of the group.
-                for part in &mut parts {
-                    for host in &owed.hosts {
-                        part.host(host);
-                    }
+        if transaction.is_snapshot_read() {
+            return LigninSettled::apply(parts, view, &[]).map_err(merk_error);
+        }
+        // A group in which a batch enters, drops or clears a subtree
+        // itself can be refused for an entry by its own doing, with
+        // nothing published beside it: it is not looked for again.
+        let own = parts.iter().any(LigninSettled::writes_directory);
+        loop {
+            // A commit that is published from here on is one the look may
+            // not have read.
+            let before = self.db.version();
+            let owed = match enter::owed(view, &parts) {
+                Ok(owed) => owed,
+                Err(error) => return Err(error).wrap_with_cost(OperationCost::default()),
+            };
+            #[cfg(test)]
+            happen(&AFTER_A_LOOK, transaction);
+            // What an indexed tree hosts is said of its element in
+            // every batch of the group, as this look read the element.
+            for part in &mut parts {
+                part.forget_hosts();
+                for host in &owed.hosts {
+                    part.host(host);
                 }
-                LigninSettled::apply(parts, view, &owed.enters).map_err(merk_error)
             }
-            Err(error) => Err(error).wrap_with_cost(OperationCost::default()),
+            let applied = LigninSettled::apply_kept(&mut parts, view, &owed.enters);
+            let Err(refused) = &applied.value else {
+                return applied.map_err(|refused| merk_error(refused.error));
+            };
+            #[cfg(test)]
+            {
+                REFUSED.with_borrow_mut(|all| all.push(refused.error.to_string()));
+                happen(&AFTER_A_REFUSAL, transaction);
+            }
+            // The group is looked for and applied again where the
+            // transaction found the entry of a subtree otherwise than
+            // the look had, no batch of the group enters, drops or
+            // clears a subtree itself, and a commit was published since
+            // before the look. Every other refusal is the caller's
+            // answer.
+            let stale = (refused.entry).is_some_and(|entry| owed.found_otherwise(entry));
+            if !stale || own || self.db.version() == before {
+                return applied.map_err(|refused| merk_error(refused.error));
+            }
         }
     }
 

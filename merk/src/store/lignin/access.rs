@@ -12,9 +12,9 @@ use grovedb_storage::{error::WriteScopeError, Error as StorageError};
 use lignin_format::tree_page::{HashField, Side};
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
-    Batch, ChildKeys, Column, HostPut, Hosted, LinkPut, LinkView, MerkCursor, MerkSide, MerkWrite,
-    NodePut, NodeView, ParkedCursor, RecordWrite, Resumed, RootPut, Scope, Subtree, SubtreeView,
-    SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
+    Batch, BatchError, ChildKeys, Column, Entering, HostPut, Hosted, LinkPut, LinkView, MerkCursor,
+    MerkSide, MerkWrite, NodePut, NodeView, ParkedCursor, RecordWrite, Resumed, RootPut, Scope,
+    Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
 };
 
 use super::{
@@ -175,6 +175,10 @@ pub(super) enum SubtreeChange {
         /// key there, and the position of this subtree among those it
         /// hosts.
         host: Option<(Prefix, Vec<u8>, u8)>,
+        /// Whether the subtree is entered only where the transaction does
+        /// not have it entered when the write is applied, and is left as
+        /// it is where it has (`SubtreeWrite::EnterIfAbsent`).
+        if_absent: bool,
     },
 }
 
@@ -328,12 +332,49 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
     /// Applies the batches of `parts` to the transaction, one operation
     /// each and in their order, and all of them or none. `enters` are
     /// subtrees that are entered with them, each with the part it is
-    /// entered by, besides those the part enters itself.
+    /// entered by, besides those the part enters itself. Where the
+    /// transaction refuses a batch with one of the two refusals that
+    /// [`LigninEntryRefused`] names, `entry` is given which.
     fn apply_parts(
         &self,
         parts: &[&dyn BatchPart],
         enters: &[(usize, SubtreeChange)],
+        entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error>;
+}
+
+/// The entry of a subtree as a transaction found it, where it refused a
+/// batch with one of two refusals of `lignindb::txn::BatchError`:
+/// `NotEntered` and `EnteredOtherwise`. No other refusal is told so, also
+/// one that is of an entry: an enter of a subtree as one that is new,
+/// where the subtree is entered (`Entered`), is told as an error alone.
+///
+/// The transaction judges a batch on what the batches before it in its
+/// group and its own drops and clears left. A drop takes out its
+/// subtree and those below it, and a clear of a Merk that has a root
+/// takes out those below it; a clear of a Merk with no node takes out
+/// none, and a drop of one that has a subtree below it is refused. A
+/// subtree that one of those took out, and that none entered again, has
+/// no entry to it, whatever the transaction held before.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LigninEntryRefused {
+    /// The subtree has no entry (`NotEntered`).
+    NotEntered(Prefix),
+    /// The subtree has an entry with another tree type or another host
+    /// than an enter if absent of the batch states (`EnteredOtherwise`).
+    EnteredOtherwise(Prefix),
+}
+
+fn entry_refused(error: &TxnError) -> Option<LigninEntryRefused> {
+    match error {
+        TxnError::Batch(BatchError::NotEntered { subtree }) => {
+            Some(LigninEntryRefused::NotEntered(*subtree.as_bytes()))
+        }
+        TxnError::Batch(BatchError::EnteredOtherwise { subtree, .. }) => {
+            Some(LigninEntryRefused::EnteredOtherwise(*subtree.as_bytes()))
+        }
+        _ => None,
+    }
 }
 
 /// A batch that is handed to a transaction as it stands when it is asked
@@ -765,15 +806,20 @@ fn subtree_write(change: &SubtreeChange) -> SubtreeWrite<'_> {
             subtree,
             tree_type,
             host,
-        } => SubtreeWrite::Enter {
-            subtree: Subtree::new(*subtree),
-            tree_type,
-            host: host.as_ref().map(|(subtree, key, position)| HostPut {
+            if_absent,
+        } => {
+            let entering = Entering {
                 subtree: Subtree::new(*subtree),
-                key,
-                position: *position,
-            }),
-        },
+                tree_type,
+                host: host.as_ref().map(|(subtree, key, position)| HostPut {
+                    subtree: Subtree::new(*subtree),
+                    key,
+                    position: *position,
+                }),
+                if_absent: *if_absent,
+            };
+            entering.write()
+        }
     }
 }
 
@@ -811,10 +857,14 @@ thread_local! {
 /// is written, also one that the transaction holds. A node of it is read
 /// only where its write leaves a hash stale, for the bytes of that hash:
 /// a node that is new may state any for one.
+///
+/// Where the transaction refuses the batch with one of the two refusals
+/// that [`LigninEntryRefused`] names, `entry` is given which.
 pub(super) fn apply_batch(
     scope: &Scope<'_, '_>,
     batch: &Batch<'_>,
     whole: &[bool],
+    entry: &mut Option<LigninEntryRefused>,
 ) -> Result<Written, Error> {
     let mut written = Written::default();
     let fresh = |subtree: Subtree| {
@@ -884,7 +934,10 @@ pub(super) fn apply_batch(
             merks: &merks,
             ..*batch
         })
-        .map_err(fault)?;
+        .map_err(|error| {
+            *entry = entry_refused(&error);
+            fault(error)
+        })?;
 
     // The handles come in the order of the batch: the nodes of the first
     // Merk, then those of the second. A transaction that serves its records
@@ -991,6 +1044,7 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
             subtrees: &subtrees,
         },
         &whole,
+        &mut None,
     )
 }
 
@@ -1000,6 +1054,7 @@ fn apply_parts(
     scope: &Scope<'_, '_>,
     parts: &[&dyn BatchPart],
     enters: &[(usize, SubtreeChange)],
+    entry: &mut Option<LigninEntryRefused>,
 ) -> Result<Vec<Written>, Error> {
     if enters.iter().any(|(part, _)| *part >= parts.len()) {
         return Err(refused("subtrees were to be entered with no batch"));
@@ -1012,7 +1067,7 @@ fn apply_parts(
             .collect();
         written.push(part.with_batch(&mut |batch| {
             if enters.is_empty() {
-                return apply_batch(scope, batch, &[]);
+                return apply_batch(scope, batch, &[], entry);
             }
             let subtrees = with_enters(batch.subtrees, &enters);
             apply_batch(
@@ -1022,6 +1077,7 @@ fn apply_parts(
                     ..*batch
                 },
                 &[],
+                entry,
             )
         })?);
     }
@@ -1238,7 +1294,10 @@ impl<A: Reader + super::flat::FlatAccess> Access for A {
         &self,
         parts: &[&dyn BatchPart],
         enters: &[(usize, SubtreeChange)],
+        entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error> {
-        self.writing(parts.len(), |scope| apply_parts(scope, parts, enters))
+        self.writing(parts.len(), |scope| {
+            apply_parts(scope, parts, enters, entry)
+        })
     }
 }

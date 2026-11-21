@@ -20,8 +20,8 @@ use lignindb::{
 
 use super::{
     access::{
-        column, stored_node, with_child_keys, Access, BatchPart, Child, Location, Prefix, Seek,
-        StoredNode, SubtreeChange, Walk, Write, Written,
+        column, stored_node, with_child_keys, Access, BatchPart, Child, LigninEntryRefused,
+        Location, Prefix, Seek, StoredNode, SubtreeChange, Walk, Write, Written,
     },
     flat::{FlatAccess, FlatWalk},
     refused, LigninEntry, LigninHosted, LigninWriter,
@@ -332,6 +332,7 @@ impl Access for LigninSnapshot<'_> {
         &self,
         _parts: &[&dyn BatchPart],
         _enters: &[(usize, SubtreeChange)],
+        _entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error> {
         Err(read_only("the application of a batch"))
     }

@@ -28,8 +28,8 @@ use lignindb::{
 
 use super::{
     access::{
-        Access, BatchPart, Child, Location, Prefix, StoredNode, SubtreeChange, Walk, Write,
-        Written, AFTER_COMPARING,
+        Access, BatchPart, Child, LigninEntryRefused, Location, Prefix, StoredNode, SubtreeChange,
+        Walk, Write, Written, AFTER_COMPARING,
     },
     flat::{FlatAccess, FlatWalk},
     hash::MerkHashRules,
@@ -1182,6 +1182,12 @@ fn a_settled_batch_is_told_what_an_element_hosts() {
     with_element.host(&host(50, &[second, first]));
     let turned = Some(vec![Subtree::new(second), Subtree::new(first)]);
     assert_eq!(handed(&with_element), (Some(turned), false));
+    // Taken back, the element hosts what the handles named.
+    with_element.forget_hosts();
+    assert_eq!(
+        handed(&with_element),
+        (Some(Some(vec![Subtree::new(first)])), false)
+    );
 
     // A batch that does not put the element's node writes the Merk
     // anchored once it is told whose it is.
@@ -1462,6 +1468,91 @@ fn a_subtree_that_a_batch_drops_and_enters_again_is_written_whole() {
     assert!(staged.is_empty());
 }
 
+/// A group can take a subtree out with one above it, and give that subtree
+/// to be entered if it is absent (`SubtreeWrite::EnterIfAbsent`). The Merk
+/// it writes under the prefix is then a new one, whatever the transaction
+/// holds there until the group is applied: every value the group states of
+/// it is written, one that is byte for byte the value of the Merk that
+/// goes as well as another. A group that takes no subtree out keeps what
+/// the Merk it is given holds.
+#[test]
+fn a_subtree_given_with_a_group_that_takes_one_above_it_is_written_whole() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let parent = LigninSubtree::alone([1; 32]);
+    let child = LigninSubtree {
+        prefix: [222; 32],
+        host: Some(LigninHost {
+            subtree: parent.prefix,
+            key: be(50),
+            hosted: vec![[222; 32]],
+        }),
+    };
+    let enters = [(child.clone(), b"tree".to_vec())];
+    let nodes = |value: &[u8]| -> Vec<_> { (0..9).map(|n| basic(n, value)).collect() };
+    // Stages the element that hosts the child, in a Merk of the parent
+    // that is new.
+    let element = |staged: &LigninBatch| {
+        let upper = LigninNodeStore::deferred(&writer, parent.clone(), Some(staged));
+        apply(&mut open_layered(upper, None), &[basic(50, b"an element")]);
+    };
+    // Stages nine nodes with `value` as a Merk that is new under the
+    // child's prefix, on a handle that has seen the nodes the transaction
+    // holds there.
+    let below = |staged: &LigninBatch, value: &[u8]| {
+        let lower = LigninNodeStore::deferred(&writer, child.clone(), Some(staged));
+        for key in 0..9 {
+            let _ = lower.get_node(&be(key), NO_VALUE_DEFINED_COST, version());
+        }
+        let mut lower = open_layered(lower, None);
+        apply(&mut lower, &nodes(value));
+        lower.root_key()
+    };
+    let apply_group = |staged: &LigninBatch| {
+        let part = staged.settle(&writer).unwrap().expect("a settled batch");
+        let applied = LigninSettled::apply(vec![part], &writer, &enters);
+        let applied = applied.unwrap().expect("the group is applied");
+        (applied.values_written, applied.values_kept)
+    };
+    let check = |root: Option<Vec<u8>>, value: &[u8]| {
+        let reference = MemNodeStore::new();
+        apply(&mut open_layered(reference.clone(), None), &nodes(value));
+        let reader = LigninNodeStore::deferred(&writer, child.clone(), None);
+        let expected = records(&reference, root.clone());
+        assert_same_records(&records(&reader, root), &expected, "the hosted Merk");
+        assert_eq!(expected.len(), 9);
+    };
+
+    // The subtree is absent: the group enters it under its element.
+    let staged = LigninBatch::new();
+    element(&staged);
+    let root = below(&staged, b"below");
+    assert_eq!(apply_group(&staged), (10, 0));
+    check(root, b"below");
+
+    // The parent is dropped and entered again, which takes the subtree
+    // with it, and the group gives the subtree once more: with the values
+    // its Merk had, and then with others.
+    for value in [&b"below"[..], b"other"] {
+        let staged = LigninBatch::new();
+        staged.drop_subtree(&parent);
+        staged.enter(&parent, b"tree").unwrap();
+        element(&staged);
+        let root = below(&staged, value);
+        assert_eq!(apply_group(&staged), (10, 0), "{value:?}");
+        check(root, value);
+    }
+
+    // A group that takes nothing out finds the subtree it is given, and
+    // keeps the values its Merk holds.
+    let staged = LigninBatch::new();
+    let root = below(&staged, b"other");
+    assert_eq!(apply_group(&staged), (0, 9));
+    check(root, b"other");
+}
+
 #[test]
 fn a_handle_that_only_reads_refuses_every_write() {
     let lignin = Lignin::new();
@@ -1685,8 +1776,9 @@ impl Access for Unsteady<'_> {
         &self,
         parts: &[&dyn BatchPart],
         enters: &[(usize, SubtreeChange)],
+        entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error> {
-        self.under.apply_parts(parts, enters)
+        self.under.apply_parts(parts, enters, entry)
     }
 }
 

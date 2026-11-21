@@ -1127,8 +1127,9 @@ impl Access for Failing<'_> {
         &self,
         parts: &[&dyn BatchPart],
         enters: &[(usize, SubtreeChange)],
+        entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error> {
-        self.under.apply_parts(parts, enters)
+        self.under.apply_parts(parts, enters, entry)
     }
 }
 

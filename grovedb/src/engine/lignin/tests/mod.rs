@@ -34,12 +34,12 @@ use grovedb_storage::{
     Error as StorageError, FlatStore, RawIterator,
 };
 use grovedb_version::version::GroveVersion;
-use lignindb::{Db, Options};
+use lignindb::{txn::Subtree, Db, Options};
 
 use self::cases::{Grove, A, B};
 use super::{error, LigninEngine};
 use crate::{
-    engine::{Engine, SubtreeMove, WriteGroup},
+    engine::{Engine, SubtreeHandle, SubtreeMove, WriteGroup},
     Element, Error, GroveDb, TransactionArg,
 };
 
@@ -607,7 +607,18 @@ fn a_wipe_leaves_a_grove_that_is_written_again() {
         .unwrap()
         .expect("an aux record");
     let before = grove.db.start_snapshot_read_transaction();
+    let at = grove.db.engine().database().version();
     grove.db.wipe().expect("a wipe");
+    // One commit, in which the two subtrees that every grove has are
+    // entered again.
+    let database = grove.db.engine().database();
+    assert_eq!(Some(database.version()), at.next());
+    for prefix in [[0; 32], *pending_prefix_drops_namespace()] {
+        let snapshot = database.snapshot();
+        let operation = snapshot.operation();
+        let opened = operation.open(Subtree::new(prefix));
+        assert!(opened.expect("a lookup").is_some(), "{prefix:?}");
+    }
     // Nothing is left for a reader of the latest version, and a snapshot
     // from before keeps reading its own.
     assert_eq!(grove.db.root_hash(None, v).unwrap().expect("a root"), empty);
@@ -1175,25 +1186,24 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
         class(WriteError::Commit(halted)),
         Some(CommitError::Unsettled)
     );
-    // A write that enters a subtree which a commit beside it entered is
-    // told from every other way a write ends.
-    let entered = || {
-        TxnError::Batch(lignindb::txn::BatchError::Entered {
-            subtree: lignindb::txn::Subtree::new([1; 32]),
-        })
-    };
-    assert!(error::entered_already(&WriteError::Commit(
-        Commit::Refused(entered())
-    )));
-    assert!(error::entered_already(&WriteError::Commit(Commit::Failed(
-        lignindb::commit::Failure::Txn(entered())
-    ))));
-    assert!(!error::entered_already(&WriteError::Commit(
-        Commit::Refused(too_deep())
-    )));
-    assert!(!error::entered_already(&WriteError::Commit(
-        Commit::Conflict
-    )));
+    // A subtree that is entered as another tree than a write states, or
+    // under another element, is a storage error that names both.
+    let otherwise = TxnError::Batch(lignindb::txn::BatchError::EnteredOtherwise {
+        subtree: Subtree::new([1; 32]),
+        differs: Box::new(lignindb::txn::Differs::TreeType {
+            entered: (*b"a").into(),
+            stated: (*b"b").into(),
+        }),
+    });
+    let otherwise = error::write_error(WriteError::Commit(Commit::Refused(otherwise)));
+    assert_eq!(otherwise.commit_error(), None);
+    let words = otherwise.to_string();
+    assert!(
+        matches!(otherwise, StorageError::StorageError(_))
+            && words.contains("0x61")
+            && words.contains("0x62"),
+        "{words}"
+    );
     // A commit that found the log ahead of the session has failed, and
     // says that the database has to be opened again.
     let version = engine().1.database().version();
@@ -1452,10 +1462,9 @@ fn two_transactions_that_both_write_first_into_one_subtree() {
     check(dir.path());
 
     // Two records with different keys in a keyspace that no element names
-    // and nothing has entered: the two transactions share no key, and the
-    // second to commit is refused all the same, by the subtree directory,
-    // which it would enter a second time. It is no conflict, and nothing
-    // of it is kept.
+    // and nothing has entered: the two transactions share no key, and
+    // both commit, as on RocksDB. Each batch enters the keyspace if it is
+    // absent, and the second to commit finds the entry of the first.
     let (dir, engine) = engine();
     let keyspace = [7; 32];
     let write = |key: &[u8]| {
@@ -1471,21 +1480,22 @@ fn two_transactions_that_both_write_first_into_one_subtree() {
     };
     let (first, second) = (write(b"a"), write(b"b"));
     (engine.commit_transaction(second).unwrap()).expect("the first commit");
-    let lost = engine.commit_transaction(first).unwrap();
-    let lost = lost.expect_err("the second commit");
-    assert_eq!(lost.commit_error(), None, "{lost}");
-    assert!(lost.to_string().contains("lignindb"), "{lost}");
+    (engine.commit_transaction(first).unwrap()).expect("the second commit");
     let read = |key: &[u8]| {
         let tx = engine.start_read_transaction();
         let handle = engine.subtree_by_prefix(keyspace, None, &tx).unwrap();
         handle.aux().get(key).unwrap().expect("a read")
     };
-    assert_eq!((read(b"a"), read(b"b")), (None, Some(b"v".to_vec())));
-    // Made again, the write finds the keyspace entered and is committed.
-    (engine.commit_transaction(write(b"a")).unwrap()).expect("the write made again");
-    assert_eq!(read(b"a"), Some(b"v".to_vec()));
+    let written = Some(b"v".to_vec());
+    assert_eq!((read(b"a"), read(b"b")), (written.clone(), written));
+    // Two writers of one key of it meet in that key.
+    let (first, second) = (write(b"c"), write(b"c"));
+    (engine.commit_transaction(second).unwrap()).expect("the first commit");
+    let lost = engine.commit_transaction(first).unwrap();
+    let lost = lost.expect_err("the second commit");
+    assert!(lost.is_commit_conflict(), "{lost}");
     // The namespace of the pending-drop records is entered with the
-    // database, so two transactions that stage a record each both commit.
+    // database: two transactions that stage a record each both commit.
     let namespace = *pending_prefix_drops_namespace();
     let stage = |key: &[u8]| {
         let tx = engine.start_transaction();
@@ -1652,4 +1662,1136 @@ fn a_close_in_a_debug_build_makes_the_hashes_of_a_grove_again() {
             && said.contains("the stored hash differs from its recomputation"),
         "{said}"
     );
+}
+
+/// A keyspace that no element names leaves with a wipe, and a wipe can be
+/// published between the look that says what a group enters and the
+/// group's application. The look found the keyspace, so nothing is stated
+/// for it, and the transaction refuses the write. The engine looks again
+/// and applies the group with the keyspace to be entered: the write is
+/// taken, as on RocksDB. The order is forced: the wipe runs inside the
+/// application, after the look.
+#[test]
+fn a_keyspace_that_a_wipe_takes_after_the_look_is_entered_by_the_write() {
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    let (dir, engine) = engine();
+    let engine = Arc::new(engine);
+    let keyspace = [7; 32];
+    let put = |key: &[u8], between: Option<Box<dyn FnOnce()>>| {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_by_prefix(keyspace, Some(&batch), &tx)
+            .unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        super::AFTER_A_LOOK.set(between.into_iter().map(apart).collect());
+        let applied = engine.apply_batch(batch, &tx).unwrap();
+        assert!(super::AFTER_A_LOOK.take().is_empty(), "the group looked");
+        applied.expect("a batch");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    };
+    put(b"seed", None);
+    let at = engine.database().version();
+    let wiped = Rc::new(Cell::new(false));
+    let between = {
+        let (engine, wiped) = (engine.clone(), wiped.clone());
+        Box::new(move || {
+            engine.wipe().expect("a wipe");
+            wiped.set(true);
+        })
+    };
+    put(b"late", Some(between));
+    assert!(wiped.get());
+    // The wipe and the write are two commits.
+    let after = at.next().and_then(|wipe| wipe.next());
+    assert_eq!(Some(engine.database().version()), after);
+    let read = |key: &[u8]| {
+        let tx = engine.start_read_transaction();
+        let handle = engine.subtree_by_prefix(keyspace, None, &tx).unwrap();
+        handle.aux().get(key).unwrap().expect("a read")
+    };
+    assert_eq!((read(b"seed"), read(b"late")), (None, Some(b"v".to_vec())));
+    drop(Arc::into_inner(engine).expect("the only handle on the engine"));
+    check(dir.path());
+}
+
+/// A group looks and finds a keyspace that no element names. Before the
+/// group is applied the keyspace is wiped and entered again by another
+/// writer, under an element. The group stated nothing for the keyspace,
+/// so its write is taken into the one that is there, as on RocksDB.
+#[test]
+fn a_keyspace_that_is_entered_under_an_element_after_the_look_takes_the_write() {
+    use std::sync::Arc;
+
+    let v = version();
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+    let engine = db.engine();
+    let keyspace = build_prefix(path![b"t"].into()).unwrap();
+    let put = |key: &[u8], between: Option<Box<dyn FnOnce()>>| {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_by_prefix(keyspace, Some(&batch), &tx)
+            .unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        super::AFTER_A_LOOK.set(between.into_iter().map(apart).collect());
+        let applied = engine.apply_batch(batch, &tx).unwrap();
+        assert!(super::AFTER_A_LOOK.take().is_empty(), "the group looked");
+        applied.expect("a batch");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    };
+    put(b"seed", None);
+    let between = {
+        let db = db.clone();
+        Box::new(move || {
+            db.wipe().expect("a wipe");
+            (db.insert(ROOT, b"t", Element::empty_tree(), None, None, v))
+                .unwrap()
+                .expect("a tree");
+            let engine = db.engine();
+            let tx = engine.start_transaction();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let handle = engine.subtree(path![b"t"].into(), Some(&batch), &tx);
+            let handle = handle.unwrap();
+            (handle.aux().put(b"other", b"v", None).unwrap()).expect("staging");
+            drop(handle);
+            engine.apply_batch(batch, &tx).unwrap().expect("a batch");
+            (engine.commit_transaction(tx).unwrap()).expect("a commit");
+        })
+    };
+    put(b"late", Some(between));
+    let tx = engine.start_read_transaction();
+    let handle = engine.subtree_by_prefix(keyspace, None, &tx).unwrap();
+    let read = |key: &[u8]| handle.aux().get(key).unwrap().expect("a read");
+    let written = Some(b"v".to_vec());
+    assert_eq!(
+        (read(b"seed"), read(b"other"), read(b"late")),
+        (None, written.clone(), written)
+    );
+    // The keyspace is the one the other writer entered, under its element.
+    let entry = handle.entry().expect("the directory answers");
+    let host = entry.expect("it is entered").host.expect("a host");
+    assert_eq!((host.subtree, host.key), ([0; 32], b"t".to_vec()));
+    drop(handle);
+    drop(tx);
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
+/// A group looks and finds the subtree of a tree. Before the group is
+/// applied a wipe takes the subtree, and the tree is inserted again and
+/// nothing is written into it. The transaction refuses the write into a
+/// subtree that is not entered, the engine looks again, finds none, and
+/// applies the group with the subtree to be entered under its element: the
+/// write is taken, as that of a writer that began after the wipe is.
+#[test]
+fn a_tree_that_a_wipe_takes_after_the_look_is_entered_again_by_the_write() {
+    use std::sync::Arc;
+
+    let v = version();
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+    let engine = db.engine();
+    let tree = |db: &Lignin| {
+        (db.insert(ROOT, b"t", Element::empty_tree(), None, None, v))
+            .unwrap()
+            .expect("a tree");
+    };
+    let put = |key: &[u8], between: Option<Box<dyn FnOnce()>>| {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree(path![b"t"].into(), Some(&batch), &tx);
+        let handle = handle.unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        super::AFTER_A_LOOK.set(between.into_iter().map(apart).collect());
+        let applied = engine.apply_batch(batch, &tx).unwrap();
+        assert!(super::AFTER_A_LOOK.take().is_empty(), "the group looked");
+        applied.expect("a batch");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    };
+    tree(&db);
+    put(b"seed", None);
+    let between = {
+        let db = db.clone();
+        Box::new(move || {
+            db.wipe().expect("a wipe");
+            tree(&db);
+        })
+    };
+    put(b"late", Some(between));
+    let tx = engine.start_read_transaction();
+    let handle = engine.subtree(path![b"t"].into(), None, &tx).unwrap();
+    let read = |key: &[u8]| handle.aux().get(key).unwrap().expect("a read");
+    assert_eq!((read(b"seed"), read(b"late")), (None, Some(b"v".to_vec())));
+    let entry = handle.entry().expect("the directory answers");
+    let host = entry.expect("it is entered").host.expect("a host");
+    assert_eq!((host.subtree, host.key), ([0; 32], b"t".to_vec()));
+    drop(handle);
+    drop(tx);
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
+/// What happens beside a group and asks nothing of the transaction the
+/// group is applied to.
+fn apart(happens: Box<dyn FnOnce()>) -> super::Between {
+    Box::new(move |_| happens())
+}
+
+/// An engine whose tests can have commits of other writers published
+/// while a group is applied: after a look of the group at the subtree
+/// directory, and after an application that the transaction refused.
+trait Looks: Engine {
+    /// Has `between` happen during the next application of a group on
+    /// this thread, pair by pair: the first of a pair after a look of
+    /// the group, and the second after the transaction refused the
+    /// application that followed that look. An engine that does not look
+    /// applies a group once: there all of them happen now, in their
+    /// order, before that application.
+    fn between_looks(between: Vec<[Box<dyn FnOnce()>; 2]>);
+
+    /// Why each application failed since [`Self::between_looks`], in
+    /// their order. What was given there and has not happened is given
+    /// up.
+    fn refused() -> Vec<String>;
+}
+
+impl Looks for LigninEngine {
+    fn between_looks(between: Vec<[Box<dyn FnOnce()>; 2]>) {
+        super::REFUSED.take();
+        let (mut looked, mut refused) = (Vec::new(), Vec::new());
+        for [after_a_look, after_a_refusal] in between {
+            looked.push(apart(after_a_look));
+            refused.push(apart(after_a_refusal));
+        }
+        super::AFTER_A_LOOK.set(looked.into());
+        super::AFTER_A_REFUSAL.set(refused.into());
+    }
+
+    fn refused() -> Vec<String> {
+        let why = |refused: String| {
+            if refused.contains("is not entered") {
+                "not entered".to_owned()
+            } else if refused.contains("and the enter states") {
+                "entered otherwise".to_owned()
+            } else {
+                refused
+            }
+        };
+        super::AFTER_A_LOOK.take();
+        super::AFTER_A_REFUSAL.take();
+        super::REFUSED.take().into_iter().map(why).collect()
+    }
+}
+
+#[cfg(feature = "rocksdb_storage")]
+impl Looks for crate::RocksDbEngine {
+    fn between_looks(between: Vec<[Box<dyn FnOnce()>; 2]>) {
+        between.into_iter().flatten().for_each(|between| between());
+    }
+
+    fn refused() -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// What a commit of another writer does to the tree `t` and to its
+/// keyspace.
+#[derive(Debug, Clone, Copy)]
+enum Beside {
+    /// A wipe: the tree and its keyspace are gone.
+    Wipe,
+    /// The tree is inserted, and nothing is written into it.
+    EmptyTree,
+    /// The tree is inserted, and a writer puts a record into its subtree
+    /// by its path: on LigninDB that enters the keyspace under the tree's
+    /// element.
+    Tree,
+    /// A writer puts a record into the keyspace by its prefix: on
+    /// LigninDB that enters the keyspace with no host, where it is not
+    /// entered.
+    Record,
+}
+
+/// A history of [`written_beside`].
+#[derive(Debug, Clone, Copy)]
+struct Stale {
+    /// Whether the writer's handle is by the path of the tree `t`, which
+    /// is then there from the start, and not by the prefix of its
+    /// keyspace.
+    by_path: bool,
+    /// Whether the tree `t` is in a tree `a`, not at the root: on
+    /// LigninDB the subtree that holds its element is then one that a
+    /// wipe takes, and that the insert of `t` enters.
+    nested: bool,
+    /// Whether the keyspace holds a record from the start, through a
+    /// handle of the writer's kind: on LigninDB it is entered then.
+    seeded: bool,
+    /// What is published while the writer's group is applied, pair by
+    /// pair: on LigninDB the first of a pair after a look of the group,
+    /// and the second after the transaction refused the application that
+    /// followed that look.
+    beside: &'static [(&'static [Beside], &'static [Beside])],
+}
+
+/// A writer stages one aux record for the keyspace of the tree `t`, and
+/// commits of other writers are published while its group is applied
+/// ([`Looks::between_looks`]), all of them. What the application and
+/// the commit answered and what is read of the keyspace afterwards, what
+/// the writer's calls were charged (its handle, its put, the application
+/// and the commit), and why each application failed.
+fn written_beside<E: Looks + 'static>(
+    case: Stale,
+) -> (Vec<String>, Vec<OperationCost>, Vec<String>) {
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    fn put<E: Engine>(db: &GroveDb<E>, nested: bool, by_path: bool, key: &[u8]) {
+        let engine = db.engine();
+        let tx = engine.start_transaction();
+        let batch = E::Batch::default();
+        let handle = keyspace(engine, nested, by_path, Some(&batch), &tx).unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, &tx).unwrap().expect("a batch");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    }
+    fn keyspace<'a, E: Engine>(
+        engine: &'a E,
+        nested: bool,
+        by_path: bool,
+        batch: Option<&'a E::Batch>,
+        transaction: &'a E::Transaction<'_>,
+    ) -> grovedb_costs::CostContext<E::Subtree<'a>> {
+        match (by_path, nested) {
+            (true, true) => engine.subtree(path![b"a", b"t"].into(), batch, transaction),
+            (true, false) => engine.subtree(path![b"t"].into(), batch, transaction),
+            (false, _) => {
+                let prefix = match nested {
+                    true => build_prefix(path![b"a", b"t"].into()),
+                    false => build_prefix(path![b"t"].into()),
+                };
+                engine.subtree_by_prefix(prefix.unwrap(), batch, transaction)
+            }
+        }
+    }
+    fn tree<E: Engine>(db: &GroveDb<E>, nested: bool) {
+        let (v, tree) = (version(), Element::empty_tree);
+        if nested {
+            (db.insert(ROOT, b"a", tree(), None, None, v))
+                .unwrap()
+                .expect("a tree");
+            (db.insert(path![b"a"], b"t", tree(), None, None, v))
+                .unwrap()
+                .expect("a tree in it");
+        } else {
+            (db.insert(ROOT, b"t", tree(), None, None, v))
+                .unwrap()
+                .expect("a tree");
+        }
+    }
+    fn answer(result: Result<(), StorageError>) -> String {
+        match result {
+            Ok(()) => "OK".to_owned(),
+            Err(error) if error.is_commit_conflict() => "Conflict".to_owned(),
+            Err(StorageError::NotSupported(what)) => format!("not supported: {what}"),
+            Err(error) => format!("refused: {error}"),
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Arc::new(GroveDb::<E>::open_with_engine(dir.path()).expect("a database"));
+    let nested = case.nested;
+    if case.by_path {
+        tree(&db, nested);
+    }
+    if case.seeded {
+        put(&db, nested, case.by_path, b"seed");
+    }
+    let happened = Rc::new(Cell::new(0));
+    let between = |beside: &'static [Beside]| {
+        let (db, happened) = (db.clone(), happened.clone());
+        Box::new(move || {
+            for beside in beside {
+                match beside {
+                    Beside::Wipe => db.wipe().expect("a wipe"),
+                    Beside::EmptyTree => tree(&db, nested),
+                    Beside::Tree => {
+                        tree(&db, nested);
+                        put(&db, nested, true, b"other");
+                    }
+                    Beside::Record => put(&db, nested, false, b"other"),
+                }
+                happened.set(happened.get() + 1);
+            }
+        }) as Box<dyn FnOnce()>
+    };
+
+    let engine = db.engine();
+    let (mut seen, mut costs) = (Vec::new(), Vec::new());
+    let tx = engine.start_transaction();
+    let batch = E::Batch::default();
+    let grovedb_costs::CostContext {
+        value: opened,
+        cost,
+    } = keyspace(engine, nested, case.by_path, Some(&batch), &tx);
+    costs.push(cost);
+    let staged = opened.aux().put(b"late", b"v", None);
+    costs.push(staged.cost);
+    staged.value.expect("staging");
+    drop(opened);
+    let pairs = case.beside.iter();
+    E::between_looks(
+        pairs
+            .map(|(looked, refused)| [between(looked), between(refused)])
+            .collect(),
+    );
+    let applied = engine.apply_batch(batch, &tx);
+    let refused = E::refused();
+    let all = case.beside.iter();
+    let all: usize = all
+        .map(|(looked, refused)| looked.len() + refused.len())
+        .sum();
+    assert_eq!(happened.get(), all, "{case:?}: all of it was published");
+    costs.push(applied.cost);
+    let taken = applied.value.is_ok();
+    seen.push(answer(applied.value.map(drop)));
+    if taken {
+        let committed = engine.commit_transaction(tx);
+        costs.push(committed.cost);
+        seen.push(answer(committed.value));
+    } else {
+        drop(tx);
+    }
+    let reader = engine.start_read_transaction();
+    let opened = keyspace(engine, nested, false, None, &reader).unwrap();
+    for key in [&b"seed"[..], b"other", b"late"] {
+        let read = opened.aux().get(key).unwrap().expect("a read");
+        seen.push(format!("{}", read.is_some()));
+    }
+    (seen, costs, refused)
+}
+
+/// D-181 item 2, the look of the engine: what a group enters is read
+/// before the group is applied, and a commit of another writer can come
+/// between the two. Each history here has such commits published while
+/// one group is applied, by construction: the engine runs them after a
+/// look of the group, or after an application that the transaction
+/// refused. The eleven histories that are held against RocksDB have no
+/// application refused, or one, two or three, each for the cause its
+/// history says. The write is then taken, and the answers, the records
+/// and the writer's costs are those of RocksDB, where the same commits
+/// come before the one application. In five of them a second commit
+/// comes after the refusal, and the look after it finds what the look
+/// before it found. One more history is answered otherwise than on
+/// RocksDB: a wipe took the element of the tree.
+#[test]
+fn a_group_is_applied_again_for_each_commit_after_its_look_and_answers_as_rocksdb() {
+    use Beside::{EmptyTree, Record, Tree, Wipe};
+
+    let taken = |seed: bool, other: bool| {
+        let read = |there: bool| format!("{there}");
+        vec![
+            "OK".to_owned(),
+            "OK".to_owned(),
+            read(seed),
+            read(other),
+            read(true),
+        ]
+    };
+    let by_prefix = |seeded, beside| Stale {
+        by_path: false,
+        nested: false,
+        seeded,
+        beside,
+    };
+    let by_path = |beside| Stale {
+        by_path: true,
+        nested: false,
+        seeded: true,
+        beside,
+    };
+    let histories: [(Stale, Vec<String>, &[&str]); 11] = [
+        // The look finds the keyspace, and a wipe takes it: the write is
+        // refused, the second look finds none, and the keyspace is
+        // entered with the write.
+        (
+            by_prefix(true, &[(&[Wipe], &[])]),
+            taken(false, false),
+            &["not entered"],
+        ),
+        // The look finds none and states the enter, and another writer
+        // enters the keyspace under an element: the enter is refused, the
+        // second look finds the keyspace, and the write goes into it.
+        (
+            by_prefix(false, &[(&[Tree], &[])]),
+            taken(false, true),
+            &["entered otherwise"],
+        ),
+        // Both, one after the other: the second application fails too.
+        (
+            by_prefix(true, &[(&[Wipe], &[]), (&[Tree], &[])]),
+            taken(false, true),
+            &["not entered", "entered otherwise"],
+        ),
+        // And a wipe after the third look: the third application fails,
+        // and the fourth is taken.
+        (
+            by_prefix(true, &[(&[Wipe], &[]), (&[Tree], &[]), (&[Wipe], &[])]),
+            taken(false, false),
+            &["not entered", "entered otherwise", "not entered"],
+        ),
+        // A wipe and the entered tree come after one look: the keyspace is
+        // there at the application, which states nothing and is taken.
+        (
+            by_prefix(true, &[(&[Wipe, Tree], &[])]),
+            taken(false, true),
+            &[],
+        ),
+        // By the path of the tree: a wipe takes the tree and its subtree,
+        // and the tree is inserted again. The second look states the
+        // enter under its element.
+        (
+            by_path(&[(&[Wipe, EmptyTree], &[])]),
+            taken(false, false),
+            &["not entered"],
+        ),
+        // The look finds the keyspace and a wipe takes it. After the
+        // refusal another writer enters it again, by its prefix: the
+        // second look finds the keyspace, as the first did, and the write
+        // goes into it.
+        (
+            by_prefix(true, &[(&[Wipe], &[Record])]),
+            taken(false, true),
+            &["not entered"],
+        ),
+        // The same, and the other writer enters it under an element.
+        (
+            by_prefix(true, &[(&[Wipe], &[Tree])]),
+            taken(false, true),
+            &["not entered"],
+        ),
+        // And by the path of the tree, which is inserted and written
+        // into again after the refusal.
+        (
+            by_path(&[(&[Wipe], &[Tree])]),
+            taken(false, true),
+            &["not entered"],
+        ),
+        // The look finds none and states the enter, and another writer
+        // enters the keyspace under an element. After the refusal a wipe
+        // takes it: the second look states the enter the first stated,
+        // and the keyspace is entered with the write.
+        (
+            by_prefix(false, &[(&[Tree], &[Wipe])]),
+            taken(false, false),
+            &["entered otherwise"],
+        ),
+        // A tree in a tree, by its path, with nothing written into it:
+        // the look states the enter under its element. A wipe takes the
+        // subtree that holds the element, and the enter is refused. After
+        // the refusal both trees are inserted again: the second look
+        // states the enter the first stated.
+        (
+            Stale {
+                by_path: true,
+                nested: true,
+                seeded: false,
+                beside: &[(&[Wipe], &[EmptyTree])],
+            },
+            taken(false, false),
+            &["not entered"],
+        ),
+    ];
+    for (case, expected, failed) in histories {
+        let (seen, costs, refused) = written_beside::<LigninEngine>(case);
+        assert_eq!(seen, expected, "{case:?}");
+        assert_eq!(refused, failed, "{case:?}");
+        assert_eq!(costs.len(), 4, "{case:?}");
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let (on_rocksdb, charged, _) = written_beside::<crate::RocksDbEngine>(case);
+            assert_eq!((seen, costs), (on_rocksdb, charged), "{case:?}");
+        }
+    }
+
+    // One history is answered otherwise, as it is with no commit beside
+    // it (`engine.md`, "Subtrees are entered by the first batch that
+    // writes into them"): a wipe takes the tree's element with its
+    // subtree, and nothing puts it back. The second look refuses the
+    // group as a first write under a key that holds no element, and
+    // RocksDB takes the write into a keyspace that no element leads to.
+    let no_element = by_path(&[(&[Wipe], &[])]);
+    let (seen, _, refused) = written_beside::<LigninEngine>(no_element);
+    assert!(seen[0].starts_with("not supported: "), "{seen:?}");
+    assert!(seen[0].contains("holds no element"), "{seen:?}");
+    assert_eq!(seen[1..], ["false", "false", "false"]);
+    assert_eq!(refused, ["not entered"]);
+    #[cfg(feature = "rocksdb_storage")]
+    {
+        let (on_rocksdb, ..) = written_beside::<crate::RocksDbEngine>(no_element);
+        assert_eq!(on_rocksdb, taken(false, false));
+    }
+}
+
+/// A refusal that is of no entry which the look found otherwise is the
+/// caller's answer, whatever is published beside the group: the group is
+/// applied once and looked for once. Here the group goes through a write
+/// scope while another scope holds the unit it writes, and a wipe, which
+/// takes the keyspace that the look found entered, is published after the
+/// refusal.
+#[test]
+fn a_refusal_that_is_of_no_entry_is_answered_after_one_application() {
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    let (dir, engine) = engine();
+    let engine = Arc::new(engine);
+    let keyspace = [7; 32];
+    let put = |through: &<LigninEngine as Engine>::Transaction<'_>, key: &[u8]| {
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_by_prefix(keyspace, Some(&batch), through)
+            .unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, through).unwrap()
+    };
+    let seeded = engine.start_transaction();
+    put(&seeded, b"seed").expect("a batch");
+    (engine.commit_transaction(seeded).unwrap()).expect("a commit");
+
+    let tx = engine.start_transaction();
+    let first = engine.open_write_scope(&tx).expect("a scope");
+    let second = engine.open_write_scope(&tx).expect("a scope beside it");
+    put(LigninEngine::scope_transaction(&first), b"a").expect("the first scope's record");
+    let wiped = Rc::new(Cell::new(false));
+    let wipe: super::Between = {
+        let (engine, wiped) = (engine.clone(), wiped.clone());
+        Box::new(move |_| {
+            engine.wipe().expect("a wipe");
+            wiped.set(true);
+        })
+    };
+    super::REFUSED.take();
+    // A second look would take the second of these.
+    super::AFTER_A_LOOK.set([apart(Box::new(|| ())), apart(Box::new(|| ()))].into());
+    super::AFTER_A_REFUSAL.set([wipe].into());
+    let at = engine.database().version();
+    let overlap = put(LigninEngine::scope_transaction(&second), b"c");
+    let overlap = overlap.expect_err("the first scope wrote the unit");
+    assert!(
+        matches!(overlap, StorageError::WriteScope(WriteScopeError::Overlap)),
+        "{overlap}"
+    );
+    assert!(wiped.get());
+    assert_eq!(at.next(), Some(engine.database().version()));
+    assert_eq!(super::REFUSED.take().len(), 1);
+    assert_eq!(super::AFTER_A_LOOK.take().len(), 1, "one look");
+    assert!(super::AFTER_A_REFUSAL.take().is_empty());
+    engine.rollback_write_scope(first).expect("a rollback");
+    engine.rollback_write_scope(second).expect("a rollback");
+    drop(tx);
+    drop(Arc::into_inner(engine).expect("the only handle on the engine"));
+    check(dir.path());
+}
+
+/// A group in which a batch enters, drops or clears a subtree itself is
+/// not looked for again, whatever is published beside it: the entry it
+/// is refused for can be gone by its own doing. Here the first batch of
+/// a group drops a keyspace and the second writes a record into it,
+/// which a transaction that lays the group out where it is applied
+/// refuses, and a commit that has nothing to do with the keyspace is
+/// published after the refusal.
+#[test]
+fn a_group_that_drops_a_subtree_is_answered_after_one_application() {
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    use grovedb_merk::store::lignin::LigninSubtree;
+
+    let (dir, engine) = engine();
+    let engine = Arc::new(engine);
+    let (keyspace, elsewhere) = ([7; 32], [8; 32]);
+    let put = |engine: &LigninEngine, into: [u8; 32], key: &[u8]| {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree_by_prefix(into, Some(&batch), &tx).unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, &tx).unwrap().expect("a batch");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    };
+    put(&engine, keyspace, b"seed");
+
+    let tx = engine.start_transaction();
+    let mut group = <LigninEngine as Engine>::WriteGroup::default();
+    let drops = <LigninEngine as Engine>::Batch::default();
+    drops.drop_subtree(&LigninSubtree::alone(keyspace));
+    (engine.settle_batch(&mut group, drops).unwrap()).expect("a settled batch");
+    let writes = <LigninEngine as Engine>::Batch::default();
+    let handle = engine
+        .subtree_by_prefix(keyspace, Some(&writes), &tx)
+        .unwrap();
+    (handle.aux().put(b"late", b"v", None).unwrap()).expect("staging");
+    drop(handle);
+    (engine.settle_batch(&mut group, writes).unwrap()).expect("a settled batch");
+
+    let published = Rc::new(Cell::new(false));
+    let unrelated: super::Between = {
+        let (engine, published) = (engine.clone(), published.clone());
+        Box::new(move |_| {
+            put(&engine, elsewhere, b"other");
+            published.set(true);
+        })
+    };
+    super::REFUSED.take();
+    // A second look would take the second of these.
+    super::AFTER_A_LOOK.set([apart(Box::new(|| ())), apart(Box::new(|| ()))].into());
+    super::AFTER_A_REFUSAL.set([unrelated].into());
+    let at = engine.database().version();
+    let refused = engine.apply_write_group(group, &tx).unwrap();
+    let refused = refused.expect_err("the group drops the keyspace it writes into");
+    assert!(refused.to_string().contains("is not entered"), "{refused}");
+    assert!(published.get());
+    assert_eq!(at.next(), Some(engine.database().version()));
+    assert_eq!(super::REFUSED.take().len(), 1);
+    assert_eq!(super::AFTER_A_LOOK.take().len(), 1, "one look");
+    assert!(super::AFTER_A_REFUSAL.take().is_empty());
+    drop(tx);
+    let reader = engine.start_read_transaction();
+    let handle = engine.subtree_by_prefix(keyspace, None, &reader).unwrap();
+    let read = |key: &[u8]| handle.aux().get(key).unwrap().expect("a read");
+    assert_eq!((read(b"seed"), read(b"late")), (Some(b"v".to_vec()), None));
+    drop(handle);
+    drop(reader);
+    drop(Arc::into_inner(engine).expect("the only handle on the engine"));
+    check(dir.path());
+}
+
+/// A subtree that the look states an enter for, and that the transaction
+/// then finds with no entry, waits for an enter of the group itself: no
+/// commit made that so, and the group is not looked for again. Here a
+/// handle names its subtree as the one that holds its own element, and
+/// the group states that element. The look states the enter under it,
+/// the transaction refuses the enter of a subtree whose host is in a
+/// subtree with no entry, and a commit that has nothing to do with it is
+/// published after the refusal.
+#[test]
+fn a_subtree_that_is_named_as_its_own_host_is_answered_after_one_application() {
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    use grovedb_merk::{
+        store::lignin::{LigninHost, LigninNodeStore, LigninSubtree},
+        tree::kv::ValueDefinedCostType,
+        Merk, Op, TreeFeatureType, TreeType,
+    };
+
+    const NO_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> = None;
+    let v = version();
+    let (dir, engine) = engine();
+    let engine = Arc::new(engine);
+    let (ring, elsewhere) = ([7; 32], [8; 32]);
+
+    let tx = engine.start_transaction();
+    let batch = <LigninEngine as Engine>::Batch::default();
+    let named = LigninSubtree {
+        prefix: ring,
+        host: Some(LigninHost {
+            subtree: ring,
+            key: b"k".to_vec(),
+            hosted: vec![ring],
+        }),
+    };
+    let view = tx.write_transaction().expect("a write transaction");
+    let handle = LigninNodeStore::deferred(view, named, Some(&batch));
+    let mut merk = Merk::open_base(handle, TreeType::NormalTree, NO_COST, v)
+        .unwrap()
+        .expect("a Merk with no node");
+    let element = Element::empty_tree().serialize(v).expect("the bytes");
+    let put = Op::Put(element, TreeFeatureType::BasicMerkNode);
+    (merk.apply::<_, Vec<u8>>(&[(b"k".to_vec(), put)], &[], None, v))
+        .unwrap()
+        .expect("a write of the Merk");
+    drop(merk);
+
+    let published = Rc::new(Cell::new(false));
+    let unrelated: super::Between = {
+        let (engine, published) = (engine.clone(), published.clone());
+        Box::new(move |_| {
+            let tx = engine.start_transaction();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let handle = engine
+                .subtree_by_prefix(elsewhere, Some(&batch), &tx)
+                .unwrap();
+            (handle.aux().put(b"other", b"v", None).unwrap()).expect("staging");
+            drop(handle);
+            engine.apply_batch(batch, &tx).unwrap().expect("a batch");
+            (engine.commit_transaction(tx).unwrap()).expect("a commit");
+            published.set(true);
+        })
+    };
+    super::REFUSED.take();
+    // A second look would take the second of these.
+    super::AFTER_A_LOOK.set([apart(Box::new(|| ())), apart(Box::new(|| ()))].into());
+    super::AFTER_A_REFUSAL.set([unrelated].into());
+    let at = engine.database().version();
+    let refused = engine.apply_batch(batch, &tx).unwrap();
+    let refused = refused.expect_err("the subtree that holds the element is not entered");
+    assert!(refused.to_string().contains("is not entered"), "{refused}");
+    assert!(published.get());
+    assert_eq!(at.next(), Some(engine.database().version()));
+    assert_eq!(super::REFUSED.take().len(), 1);
+    assert_eq!(super::AFTER_A_LOOK.take().len(), 1, "one look");
+    assert!(super::AFTER_A_REFUSAL.take().is_empty());
+    drop(tx);
+    let reader = engine.start_read_transaction();
+    let handle = engine.subtree_by_prefix(ring, None, &reader).unwrap();
+    assert_eq!(handle.entry().expect("the directory answers"), None);
+    drop(handle);
+    drop(reader);
+    drop(Arc::into_inner(engine).expect("the only handle on the engine"));
+    check(dir.path());
+}
+
+/// The bound of the engine's look: a refusal for an entry that the look
+/// found otherwise is the caller's answer where no commit was published
+/// since before the look. The seam has one thread at a time write through
+/// a transaction, so the look and the application after it then read one
+/// state. This test has the writing thread itself change the transaction
+/// between the two, from a hook, to have such a refusal with no commit:
+/// the transaction entered the keyspace itself, and is rolled back to a
+/// savepoint from before that. The group is applied once and its refusal
+/// is answered; the transaction stays open, and takes the same write when
+/// it is applied again.
+#[test]
+fn a_refusal_for_an_entry_is_answered_where_no_commit_was_published() {
+    let (dir, engine) = engine();
+    let keyspace = [7; 32];
+    let put = |tx: &<LigninEngine as Engine>::Transaction<'_>, key: &[u8]| {
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_by_prefix(keyspace, Some(&batch), tx)
+            .unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, tx).unwrap()
+    };
+    let tx = engine.start_transaction();
+    engine.set_savepoint(&tx).expect("a savepoint");
+    put(&tx, b"own").expect("a batch that enters the keyspace");
+    let back: super::Between = Box::new(|tx| {
+        let tx = tx.write_transaction().expect("a write transaction");
+        tx.rollback_to_savepoint().expect("a rollback");
+    });
+    super::REFUSED.take();
+    super::AFTER_A_LOOK.set([back].into());
+    let at = engine.database().version();
+    let refused = put(&tx, b"late").expect_err("the keyspace is not entered any more");
+    assert!(refused.to_string().contains("is not entered"), "{refused}");
+    assert_eq!(super::REFUSED.take().len(), 1);
+    assert!(super::AFTER_A_LOOK.take().is_empty(), "the group looked");
+    assert_eq!(engine.database().version(), at);
+    put(&tx, b"late").expect("a batch that enters the keyspace");
+    (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    let reader = engine.start_read_transaction();
+    let handle = engine.subtree_by_prefix(keyspace, None, &reader).unwrap();
+    let read = |key: &[u8]| handle.aux().get(key).unwrap().expect("a read");
+    assert_eq!((read(b"own"), read(b"late")), (None, Some(b"v".to_vec())));
+    drop(handle);
+    drop(reader);
+    drop(engine);
+    check(dir.path());
+}
+
+/// Two write scopes of one transaction that each write a record of a
+/// keyspace which is entered already, in different columns, are held
+/// apart by nothing: each group finds the keyspace and states nothing for
+/// it, so neither claims its entry in the subtree directory as a write.
+#[test]
+fn two_write_scopes_write_into_one_keyspace_that_is_entered() {
+    let (dir, engine) = engine();
+    let keyspace = [7; 32];
+    let put = |through: &<LigninEngine as Engine>::Transaction<'_>, meta: bool, key: &[u8]| {
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_by_prefix(keyspace, Some(&batch), through)
+            .unwrap();
+        let staged = match meta {
+            true => handle.meta().put(key, b"v", None),
+            false => handle.aux().put(key, b"v", None),
+        };
+        staged.unwrap().expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, through).unwrap()
+    };
+    let seeded = engine.start_transaction();
+    put(&seeded, false, b"seed").expect("a batch");
+    (engine.commit_transaction(seeded).unwrap()).expect("a commit");
+
+    let tx = engine.start_transaction();
+    let first = engine.open_write_scope(&tx).expect("a scope");
+    let second = engine.open_write_scope(&tx).expect("a scope beside it");
+    put(LigninEngine::scope_transaction(&first), false, b"a").expect("the first scope's record");
+    put(LigninEngine::scope_transaction(&second), true, b"b").expect("the second scope's record");
+    // A group that is refused for another cause than an entry the look
+    // found otherwise is applied once, and the caller is answered the
+    // refusal. Here the first scope holds the unit the second writes.
+    super::REFUSED.take();
+    let overlap = put(LigninEngine::scope_transaction(&second), false, b"c");
+    let overlap = overlap.expect_err("the first scope wrote the unit");
+    assert!(
+        matches!(overlap, StorageError::WriteScope(WriteScopeError::Overlap)),
+        "{overlap}"
+    );
+    assert_eq!(super::REFUSED.take().len(), 1);
+    engine.merge_write_scope(first).expect("a merge");
+    engine.merge_write_scope(second).expect("a merge");
+    (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    let read = engine.start_read_transaction();
+    let handle = engine.subtree_by_prefix(keyspace, None, &read).unwrap();
+    let written = Some(b"v".to_vec());
+    let aux = handle.aux().get(b"a").unwrap().expect("a read");
+    let meta = handle.meta().get(b"b").unwrap().expect("a read");
+    assert_eq!((aux, meta), (written.clone(), written));
+    drop(handle);
+    drop(read);
+    drop(engine);
+    check(dir.path());
+}
+
+/// One of the cases of two first writers: the subtree both write into,
+/// the keyspace of it, and whether they write one key.
+#[derive(Debug, Clone, Copy)]
+struct FirstWriters {
+    /// The subtree of a tree that was inserted and never written into,
+    /// through a handle by its path, or a keyspace that no element names,
+    /// through a handle by its prefix.
+    by_path: bool,
+    meta: bool,
+    same_key: bool,
+}
+
+/// Two transactions that each make the first write into one subtree
+/// nothing was written into, both begun and both written before either
+/// commits (D-181 item 2). What each commit answered and what is read
+/// afterwards, and what each call was charged: the insert of the tree,
+/// for each writer its handle, its put and the application of its batch,
+/// the two commits, and the handle and the two reads of the reader.
+fn two_first_writers<E: Engine>(case: FirstWriters) -> (Vec<String>, Vec<OperationCost>) {
+    fn handle<'a, E: Engine>(
+        engine: &'a E,
+        case: FirstWriters,
+        batch: Option<&'a E::Batch>,
+        transaction: &'a E::Transaction<'_>,
+    ) -> grovedb_costs::CostContext<E::Subtree<'a>> {
+        match case.by_path {
+            true => engine.subtree(path![b"t"].into(), batch, transaction),
+            false => engine.subtree_by_prefix([7; 32], batch, transaction),
+        }
+    }
+    let v = version();
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = GroveDb::<E>::open_with_engine(dir.path()).expect("a database");
+    let inserted = db.insert(ROOT, b"t", Element::empty_tree(), None, None, v);
+    let (mut seen, mut costs) = (Vec::new(), vec![inserted.cost]);
+    (inserted.value).expect("a tree that nothing is written into");
+    let engine = db.engine();
+    let key = |writer: u8| match case.same_key {
+        true => vec![b'k'],
+        false => vec![b'k', writer],
+    };
+    let mut write = |writer: u8| {
+        let transaction = engine.start_transaction();
+        let batch = E::Batch::default();
+        let grovedb_costs::CostContext {
+            value: opened,
+            cost,
+        } = handle(engine, case, Some(&batch), &transaction);
+        costs.push(cost);
+        let staged = match case.meta {
+            true => opened.meta().put(key(writer), &[writer], None),
+            false => opened.aux().put(key(writer), &[writer], None),
+        };
+        costs.push(staged.cost);
+        staged.value.expect("staging");
+        drop(opened);
+        let applied = engine.apply_batch(batch, &transaction);
+        costs.push(applied.cost);
+        applied.value.expect("a batch");
+        transaction
+    };
+    let (first, second) = (write(1), write(2));
+    for transaction in [second, first] {
+        let committed = engine.commit_transaction(transaction);
+        costs.push(committed.cost);
+        seen.push(match committed.value {
+            Ok(()) => "OK".to_owned(),
+            Err(error) if error.is_commit_conflict() => "Conflict".to_owned(),
+            Err(error) => format!("refused: {error}"),
+        });
+    }
+    let reader = engine.start_read_transaction();
+    let grovedb_costs::CostContext {
+        value: opened,
+        cost,
+    } = handle(engine, case, None, &reader);
+    costs.push(cost);
+    for writer in [1, 2] {
+        let read = match case.meta {
+            true => opened.meta().get(key(writer)),
+            false => opened.aux().get(key(writer)),
+        };
+        costs.push(read.cost);
+        seen.push(format!("{:?}", read.value.expect("a read")));
+    }
+    (seen, costs)
+}
+
+/// The case of two first writers of one subtree, on LigninDB and beside
+/// RocksDB: with records under different keys both commit and both
+/// records are read, with one key the second commit is the conflict, and
+/// every answer and every `OperationCost` is the one of the same calls on
+/// RocksDB.
+#[test]
+fn two_first_writers_of_one_subtree_are_answered_and_charged_as_on_rocksdb() {
+    for by_path in [true, false] {
+        for meta in [false, true] {
+            for same_key in [false, true] {
+                let case = FirstWriters {
+                    by_path,
+                    meta,
+                    same_key,
+                };
+                let (seen, costs) = two_first_writers::<LigninEngine>(case);
+                // The second writer to be begun commits first.
+                let expected = match same_key {
+                    true => ["OK", "Conflict", "Some([2])", "Some([2])"],
+                    false => ["OK", "OK", "Some([1])", "Some([2])"],
+                };
+                assert_eq!(seen, expected, "{case:?}");
+                assert_eq!(costs.len(), 12, "{case:?}");
+                #[cfg(feature = "rocksdb_storage")]
+                assert_eq!(
+                    (seen, costs),
+                    two_first_writers::<crate::RocksDbEngine>(case),
+                    "{case:?}"
+                );
+            }
+        }
+    }
+}
+
+/// D-181 item 5: a wipe is one commit, with the two subtrees that every
+/// grove has. The appends of the file layer fail from the first, the
+/// second or the third on, around a wipe, and a failed append is undone
+/// or leaves a part of its bytes in the file, or all of them. Whatever
+/// the wipe returned, the grove is as it was or it is wiped and has both
+/// subtrees, in this session and in the next: it is never wiped without
+/// them. Where the first append fails and is undone, the wipe has failed
+/// and no session finds it.
+#[test]
+fn a_wipe_that_fails_leaves_the_grove_as_it_was() {
+    use std::sync::Arc;
+
+    use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet, SimConfig, SimVfs};
+
+    let v = version();
+    let hostless = [[0; 32], *pending_prefix_drops_namespace()];
+    for (skip, torn) in (0..3u64).flat_map(|skip| [(skip, false), (skip, true)]) {
+        let case = format!("append {skip}, torn {torn}");
+        let fs = SimVfs::new(SimConfig::new(40 + skip));
+        let options = Options {
+            vfs: Arc::new(fs.clone()),
+            ..Options::default()
+        };
+        let engine = LigninEngine::open_with("/grove", &options).expect("an engine");
+        let db = GroveDb::from_engine(engine);
+        (db.insert(ROOT, A, Element::empty_tree(), None, None, v))
+            .unwrap()
+            .expect("a tree");
+        let item = Element::new_item(b"a1".to_vec());
+        (db.insert(path![A], b"a1", item, None, None, v))
+            .unwrap()
+            .expect("an item");
+        (db.put_aux(b"x", b"aux", None, None))
+            .unwrap()
+            .expect("an aux record");
+        db.engine().flush().expect("the log is synced");
+        let before = db.root_hash(None, v).unwrap().expect("a root");
+        let at = db.engine().database().version();
+
+        let appends = OpSet::of(&[OpKind::Append]);
+        let rule = FaultRule::new(Fault::Eio).on(appends).skip(skip);
+        fs.add_rule(rule.torn_append(torn).forever());
+        let wiped = db.wipe();
+        fs.clear_rules();
+        // Whether a reader of `db` finds the grove as it was, and not
+        // wiped. Either has the two subtrees.
+        let as_it_was = |db: &Lignin, at: &str| {
+            let aux = db.get_aux(b"x", None).unwrap().expect("a read");
+            let root = db.root_hash(None, v).unwrap().expect("a root");
+            let database = db.engine().database();
+            let snapshot = database.snapshot();
+            let operation = snapshot.operation();
+            let entered = hostless.map(|prefix| {
+                let opened = operation.open(Subtree::new(prefix));
+                opened.expect("a lookup").is_some()
+            });
+            assert_eq!(entered, [true; 2], "{case}, {at}: both are entered");
+            match aux {
+                Some(aux) => {
+                    assert_eq!((aux, root), (b"aux".to_vec(), before), "{case}, {at}");
+                    true
+                }
+                None => {
+                    assert_ne!(root, before, "{case}, {at}");
+                    let item = db.get(path![A], b"a1", None, v).unwrap();
+                    assert!(item.is_err(), "{case}, {at}: the item is gone");
+                    false
+                }
+            }
+        };
+        // Whether the wipe is published is read from the version, and the
+        // grove is as that says, whatever the wipe returned.
+        let published = db.engine().database().version() != at;
+        let kept = as_it_was(&db, "in this session");
+        assert_eq!(kept, !published, "{case}: {wiped:?}");
+        assert!(wiped.is_err() || published, "{case}: a wipe that is made");
+        let undone = skip == 0 && !torn;
+        if undone {
+            assert!(wiped.is_err() && !published, "{case}: {wiped:?}");
+        }
+        drop(db);
+        // The next session finds a wipe that was published, and none
+        // whose group was taken back. The database is read before the
+        // engine has it, which would enter a subtree of the two that it
+        // found gone: both are there, and the engine writes nothing.
+        let database = Db::open("/grove", &options).expect("it opens again");
+        let found = {
+            let snapshot = database.snapshot();
+            let operation = snapshot.operation();
+            hostless.map(|prefix| {
+                let opened = operation.open(Subtree::new(prefix));
+                opened.expect("a lookup").is_some()
+            })
+        };
+        assert_eq!(found, [true; 2], "{case}: both are entered at the open");
+        let opened_at = database.version();
+        let engine = LigninEngine::new(database).expect("an engine");
+        assert_eq!(engine.database().version(), opened_at, "{case}");
+        let db = GroveDb::from_engine(engine);
+        let kept = as_it_was(&db, "in the next session");
+        assert!(!(published && kept), "{case}: a published wipe is lost");
+        assert!(
+            !undone || kept,
+            "{case}: a wipe that was taken back is made"
+        );
+        // The grove is written again either way.
+        (db.insert(ROOT, b"after", Element::empty_tree(), None, None, v))
+            .unwrap()
+            .expect("a tree after the wipe");
+    }
 }
