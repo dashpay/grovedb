@@ -661,6 +661,7 @@ impl<'s> Cleaner<'s> {
         if work.segment.is_none() {
             let writer = segments.create()?;
             segments.commit(&mut *self.write_back.manifest()?)?;
+            self.state.writes(writer.sync_record());
             work.segment = Some(writer);
         }
         let writer = work.segment.as_mut().expect("a segment was just made");
@@ -691,6 +692,7 @@ impl<'s> Cleaner<'s> {
         if let Err(error) = writer.seal() {
             return Err(self.segment_failed(work, writer, error));
         }
+        self.state.wrote(writer.file_id());
         Ok(())
     }
 
@@ -715,7 +717,10 @@ impl<'s> Cleaner<'s> {
         first: SegmentStoreError,
     ) -> CleanerError {
         let source = match writer.sync() {
-            Ok(_) => return first.into(),
+            Ok(_) => {
+                self.state.wrote(writer.file_id());
+                return first.into();
+            }
             Err(SegmentStoreError::SegmentFailed { .. }) => first,
             Err(source) => source,
         };

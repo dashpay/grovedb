@@ -15,7 +15,7 @@ use super::{
 use crate::{
     alloc::Epoch,
     flush::trim_bound::TrimBound,
-    segment::SegmentWriter,
+    segment::{SegmentWriter, SyncRecord},
     values::{ChangeMark, Retired, ValueWriter},
 };
 
@@ -98,6 +98,9 @@ pub struct CleanerState {
     pub(super) config: CleanerConfig,
     pub(super) counters: Counters,
     pub(super) work: Mutex<Work>,
+    /// The segment store's record of each segment that the cleaner has
+    /// moved blocks into and that is not sealed, or whose sync failed.
+    pub(super) written: Mutex<Vec<SyncRecord>>,
     /// What the last read of the page table found.
     pub(super) space: Mutex<Space>,
     pub(super) wake: Mutex<bool>,
@@ -130,6 +133,7 @@ impl CleanerState {
             config,
             counters: Counters::default(),
             work: Mutex::default(),
+            written: Mutex::default(),
             space: Mutex::default(),
             wake: Mutex::new(false),
             woken: Condvar::new(),
@@ -146,7 +150,25 @@ impl CleanerState {
 
     /// What the cleaner has done so far.
     pub fn stats(&self) -> CleanerStats {
-        self.counters.snapshot()
+        let failed = lock(&self.written)
+            .iter()
+            .filter(|segment| segment.failed())
+            .count();
+        CleanerStats {
+            segments_not_durable: failed as u64,
+            ..self.counters.snapshot()
+        }
+    }
+
+    /// Notes that the cleaner moves blocks into the segment of `record`.
+    pub(super) fn writes(&self, record: SyncRecord) {
+        lock(&self.written).push(record);
+    }
+
+    /// Gives up the record of the segment `file`, whose writer is gone
+    /// and of which no sync has failed: none can fail any more.
+    pub(super) fn wrote(&self, file: FileId) {
+        lock(&self.written).retain(|segment| segment.file_id() != file || segment.failed());
     }
 
     /// What the segments held when a pass last read the page table

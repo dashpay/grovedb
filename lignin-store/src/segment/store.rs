@@ -289,6 +289,10 @@ impl Segment {
         self.state().has_writer
     }
 
+    pub(super) fn has_failed(&self) -> bool {
+        self.state().failed
+    }
+
     fn check_appendable_in(&self, state: &State) -> Result<(), SegmentStoreError> {
         let file = self.id;
         match state.phase {

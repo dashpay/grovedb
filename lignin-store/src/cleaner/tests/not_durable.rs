@@ -110,3 +110,59 @@ fn a_sealing_that_is_refused_its_sync_keeps_what_the_device_said() {
     assert!(flush.segments_not_durable());
     assert_eq!(flush.stats().segment_syncs_failed, 1);
 }
+
+/// A table checkpoint syncs every segment that is being written, the
+/// cleaner's among them, and the cleaner is not told when that sync
+/// fails. Its statistics count the segment all the same, right after the
+/// checkpoint, by the segment store's record of it, and count it once:
+/// also after a pass, which moves nothing in a store whose segments are
+/// not durable, and after the cleaner has met the failure at its sealing.
+#[test]
+fn a_checkpoint_whose_sync_of_the_cleaners_segment_fails_is_counted_at_once_and_once() {
+    let (fs, db, state, file) = moving();
+    assert_eq!(state.stats().segments_not_durable, 0);
+    refuse(&fs, file, OpSet::SYNCS);
+    let refused = db.wb().checkpoint();
+    let refused = refused.expect_err("the checkpoint syncs the cleaner's segment");
+    assert!(db.wb().state().segments_not_durable(), "{refused}");
+    assert_eq!(state.stats().segments_not_durable, 1, "{refused}");
+
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let pass = cleaner.pass().expect("a pass that moves nothing");
+    assert_eq!(pass.blocks_moved, 0, "{pass:?}");
+    assert_eq!(state.stats().segments_not_durable, 1);
+    let met = cleaner.finish();
+    let met = met.expect_err("the sealing of a segment that failed");
+    assert!(
+        matches!(met, CleanerError::SegmentNotDurable { file: failed, .. } if failed == file),
+        "{met}"
+    );
+    assert_eq!(state.stats().segments_not_durable, 1);
+    let _ = cleaner.finish();
+    assert_eq!(state.stats().segments_not_durable, 1);
+}
+
+/// The cleaner's own sealing is refused its sync: the segment is counted,
+/// once. A segment that the cleaner seals with no failure is not, and its
+/// record is given up with its writer.
+#[test]
+fn a_sealing_of_the_cleaners_segment_that_is_refused_its_sync_is_counted_once() {
+    let (_fs, db, state, _) = moving();
+    Cleaner::new(db.wb(), &state)
+        .finish()
+        .expect("a sealing on a device with room");
+    assert_eq!(state.stats().segments_not_durable, 0);
+    let kept = state.written.lock().expect("the records");
+    assert!(kept.is_empty(), "a record of a sealed segment is kept");
+    drop(kept);
+
+    let (fs, db, state, file) = moving();
+    refuse(&fs, file, OpSet::SYNCS);
+    let cleaner = Cleaner::new(db.wb(), &state);
+    cleaner
+        .finish()
+        .expect_err("the sealing is refused its sync");
+    assert_eq!(state.stats().segments_not_durable, 1);
+    let _ = cleaner.finish();
+    assert_eq!(state.stats().segments_not_durable, 1);
+}

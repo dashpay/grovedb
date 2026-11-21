@@ -170,6 +170,14 @@ pub struct CleanerStats {
     pub value_files_dropped: u64,
     /// Passes that ended with an error.
     pub errors: u64,
+    /// Segments that the cleaner moved blocks into and of which a sync
+    /// has failed, whoever made that sync: the cleaner's own, after an
+    /// append or a sealing that failed, or the sync that a table
+    /// checkpoint makes of every segment that is being written. Each is
+    /// counted once, by the segment store's own record of it
+    /// ([`SyncRecord`](crate::segment::SyncRecord)), so the count is right
+    /// before the cleaner has met the failure itself.
+    pub segments_not_durable: u64,
 }
 
 #[derive(Debug, Default)]
@@ -230,6 +238,7 @@ impl Counters {
             value_bytes_copied: read(&self.value_bytes_copied),
             value_files_dropped: read(&self.value_files_dropped),
             errors: read(&self.errors),
+            segments_not_durable: 0,
         }
     }
 }

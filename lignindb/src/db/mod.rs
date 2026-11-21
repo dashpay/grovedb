@@ -716,11 +716,12 @@ impl fmt::Display for DbStats {
         writeln!(
             f,
             "cleaner: {} blocks moved and {} segments dropped, {} values moved and {} value-log \
-             files dropped",
+             files dropped, {} segments not durable",
             self.cleaner.blocks_moved,
             self.cleaner.segments_dropped,
             self.cleaner.values_moved,
-            self.cleaner.value_files_dropped
+            self.cleaner.value_files_dropped,
+            self.cleaner.segments_not_durable
         )?;
         writeln!(
             f,
