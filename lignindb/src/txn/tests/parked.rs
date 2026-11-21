@@ -564,6 +564,18 @@ fn a_cursor_is_pointed_at_another_merk_of_the_version_it_pinned() {
     };
 
     let tx = world.begin();
+    // A cursor that is opened on a subtree its version has no entry for
+    // reads no committed side there. Pointed at a Merk the version has, it
+    // asks again, and shows the nodes of that Merk.
+    let not_entered = model::subtree(super::store::ENTERED);
+    let mut nowhere = tx.txn.merk_cursor(not_entered).expect("a cursor");
+    nowhere.seek_to_first().expect("a seek");
+    assert_eq!(nowhere.key(), None);
+    nowhere.retarget(model::subtree(3)).expect("a retarget");
+    let view = tx.model.borrow().view(&at_open, unit(3));
+    assert_eq!(scan_merk(&mut nowhere, &view, false), keys_at_open(3));
+    drop(nowhere);
+
     let mut cursor = tx.txn.merk_cursor(model::subtree(1)).expect("a cursor");
     cursor.seek(&key(4)).expect("a seek");
     assert_eq!(cursor.key(), Some(&key(4)[..]));
@@ -626,14 +638,13 @@ fn a_cursor_is_pointed_at_another_merk_of_the_version_it_pinned() {
     assert_eq!(versions.pins_held(), pins_at_open, "and no pin more");
     assert_eq!(db.pool.census().pinned, 0, "and no page");
 
-    // A subtree the version has no entry for has nothing to show, and the
+    // A Merk the version has no node of has nothing to show, and the
     // cursor goes on from there.
     cursor.retarget(model::subtree(9)).expect("a retarget");
     cursor.seek_to_first().expect("a seek");
     assert_eq!(cursor.key(), None);
     cursor.seek_for_prev(&key(99)).expect("a seek");
     assert_eq!(cursor.key(), None);
-
     // The transaction writes the second Merk. The cursor, pointed there,
     // shows the write beside the nodes of its version, and pointed back at
     // the first Merk it shows none of it.
