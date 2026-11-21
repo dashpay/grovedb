@@ -91,9 +91,11 @@ fn reopened(dir: &Path, vfs: &Watched) -> Db {
         vfs: Arc::new(vfs.clone()),
         ..options()
     };
+    // Both sessions have neither thread from their open on: a turn of
+    // write-back's thread would write back, and a round of the reclaimer's
+    // would read pages into the pool, before either was ended.
     {
-        let db = Db::open(dir, &options).expect("a new database");
-        halt_background(&db);
+        let db = open_at_rest(dir, &options).expect("a new database");
         let entered = Writes {
             enter: (0..SUBTREES)
                 .map(|number| (numbered(number), None))
@@ -115,8 +117,7 @@ fn reopened(dir: &Path, vfs: &Watched) -> Db {
         cache_size: POOL,
         ..options
     };
-    let db = Db::open(dir, &small).expect("the database is opened again");
-    halt_background(&db);
+    let db = open_at_rest(dir, &small).expect("the database is opened again");
     let (links, pages) = links(&db);
     assert_eq!(links, pages, "every page has its base image and no more");
     db
