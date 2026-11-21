@@ -249,7 +249,9 @@
 //! commit: a turn of write-back does, a table checkpoint, the creation of
 //! a checkpoint of the database. A session in one of these states would
 //! take commits that can never become durable, keep a log that only
-//! grows, or refuse every commit for a failure that is over.
+//! grows, or refuse every commit for a failure that is over. A log that
+//! has used the last of its file ids ends the session in the same way
+//! ([`Reopen::LogFileIdsUsedUp`], DF12).
 //!
 //! So every commit looks at the store before it begins and after it has
 //! ended, and so does [`Db::reopen`]: the session has ended from the first
@@ -332,7 +334,10 @@
 //!   write-back's last checkpoint names them.
 //!
 //! An error of any of them changes nothing that is committed. It is counted
-//! and kept as text ([`DbStats::background`]).
+//! and kept as text ([`DbStats::background`]). After a turn that failed,
+//! each of the three waits before its next turn, whoever wakes it: its
+//! idle time, and longer after each further failed turn in a row, up to a
+//! second (`disk-full-and-backup.md` DF12).
 //!
 //! **Closing waits for a reclaiming that holds cells.** From the moment
 //! the record of a dropped Merk is out of the directory, the cells that
