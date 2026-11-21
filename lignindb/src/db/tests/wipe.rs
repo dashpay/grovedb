@@ -430,7 +430,9 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
                     match seen(&operation, numbered(writer * 1000 + round), b"k") {
                         None => {}
                         Some((16, records)) => {
-                            assert!(records.len() <= 1);
+                            // The one record a writer puts, or none yet.
+                            let record = (Column::Aux, b"whole".to_vec());
+                            assert!(records.is_empty() || records == [record], "{records:?}");
                             whole[index(writer, round)].store(true, Ordering::Release);
                         }
                         Some(other) => panic!("a subtree in part: {other:?}"),
