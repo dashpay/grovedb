@@ -650,6 +650,21 @@ impl<E: Engine> Engine for RefusedReads<E> {
             .map(FaultableReads)
     }
 
+    fn subtree_beside<'a, 'b, B>(
+        &'a self,
+        path: SubtreePath<'b, B>,
+        prefix: SubtreePrefix,
+        batch: Option<&'a Self::Batch>,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> CostContext<Self::Subtree<'a>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        self.0
+            .subtree_beside(path, prefix, batch, transaction)
+            .map(FaultableReads)
+    }
+
     fn immediate_subtree<'a, 'b, B>(
         &'a self,
         path: SubtreePath<'b, B>,

@@ -29,7 +29,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use grovedb_costs::OperationCost;
+use grovedb_costs::{CostResult, OperationCost};
 use grovedb_merk::proofs::query::AggregateSumQuery;
 use grovedb_path::SubtreePath;
 use grovedb_storage::RawIterator;
@@ -40,9 +40,14 @@ use super::{
     LigninEngine,
 };
 use crate::{
-    engine::Engine, operations::proof::ProveOptions, query_result_type::QueryResultType,
-    reference_path::ReferencePathType, AggregateSumPathQuery, Element, GroveDb,
-    PathBranchChunkQuery, PathQuery, PathTrunkChunkQuery, Query, QueryItem, SizedQuery,
+    engine::Engine,
+    operations::proof::{indexed_axis::AxisEntries, ProveOptions},
+    query_result_type::{
+        PathKeyOptionalElementTrio, QueryResultElement, QueryResultElements, QueryResultType,
+    },
+    reference_path::ReferencePathType,
+    AggregateSumPathQuery, Element, Error, GroveDb, PathBranchChunkQuery, PathQuery, PathQueryRun,
+    PathTrunkChunkQuery, Query, QueryItem, SizedQuery,
 };
 
 const GROUPS: &[u8] = b"groups";
@@ -67,7 +72,7 @@ fn group(kind: usize) -> Vec<u8> {
     format!("group {kind:02}").into_bytes()
 }
 
-fn path(segments: &[&[u8]]) -> Vec<Vec<u8>> {
+pub(super) fn path(segments: &[&[u8]]) -> Vec<Vec<u8>> {
     segments.iter().map(|segment| segment.to_vec()).collect()
 }
 
@@ -648,7 +653,98 @@ fn keys(version: &GroveVersion) -> Vec<(Vec<Vec<u8>>, Vec<u8>)> {
     keys
 }
 
-fn named(phase: &str, call: &str, name: &str) -> String {
+/// The elements of an answer.
+pub(super) trait Elements {
+    /// Calls `take` with each element of the answer, in its order.
+    fn each(&self, take: &mut dyn FnMut(&Element));
+}
+
+impl Elements for Element {
+    fn each(&self, take: &mut dyn FnMut(&Element)) {
+        take(self);
+    }
+}
+
+impl Elements for Option<Element> {
+    fn each(&self, take: &mut dyn FnMut(&Element)) {
+        self.iter().for_each(take);
+    }
+}
+
+impl Elements for QueryResultElements {
+    fn each(&self, take: &mut dyn FnMut(&Element)) {
+        for row in &self.elements {
+            match row {
+                QueryResultElement::ElementResultItem(element)
+                | QueryResultElement::KeyElementPairResultItem((_, element))
+                | QueryResultElement::PathKeyElementTrioResultItem((_, _, element)) => {
+                    take(element)
+                }
+            }
+        }
+    }
+}
+
+impl Elements for (QueryResultElements, u16) {
+    fn each(&self, take: &mut dyn FnMut(&Element)) {
+        self.0.each(take);
+    }
+}
+
+impl Elements for Vec<PathKeyOptionalElementTrio> {
+    fn each(&self, take: &mut dyn FnMut(&Element)) {
+        self.iter()
+            .flat_map(|(_, _, element)| element)
+            .for_each(take);
+    }
+}
+
+impl Elements for AxisEntries {
+    fn each(&self, take: &mut dyn FnMut(&Element)) {
+        match self {
+            Self::Count(rows) => rows.iter().for_each(|row| take(&row.value)),
+            Self::Sum(rows) => rows.iter().for_each(|row| take(&row.value)),
+            Self::Avg(rows) | Self::BigSum(rows) => rows.iter().for_each(|row| take(&row.value)),
+        }
+    }
+}
+
+impl Elements for PathQueryRun {
+    fn each(&self, take: &mut dyn FnMut(&Element)) {
+        match self {
+            Self::Elements { elements, .. } => elements.each(take),
+            Self::AxisEntries { entries, .. } => entries.each(take),
+            Self::BranchedAxisEntries(branches) => {
+                for entries in branches.iter().flat_map(|(_, entries)| entries) {
+                    entries.each(take);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// An answer with a digest of the bytes of its elements, each as it is
+/// stored. The text of an element, which a history compares, leaves out
+/// what two elements can differ in: the referrers of an element that
+/// takes backward references are not in it.
+pub(super) fn exact<T: Elements>(
+    answer: CostResult<T, Error>,
+    version: &GroveVersion,
+) -> CostResult<(T, String), Error> {
+    answer.map_ok(|answer| {
+        let mut digest = blake3::Hasher::new();
+        answer.each(&mut |element| {
+            let bytes = element.serialize(version).expect("the bytes of an element");
+            digest.update(&(bytes.len() as u64).to_be_bytes());
+            digest.update(&bytes);
+        });
+        let digest = digest.finalize().to_hex().to_string();
+        (answer, digest)
+    })
+}
+
+pub(super) fn named(phase: &str, call: &str, name: &str) -> String {
     format!("{phase} | {call} | {name}")
 }
 
@@ -671,19 +767,25 @@ fn read_keys<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) {
         let log = &mut *recorder.log;
         log.answer(
             named(phase, "get", &name),
-            db.get(at, &key, through, version),
+            exact(db.get(at, &key, through, version), version),
         );
         log.answer(
             named(phase, "get with no cache", &name),
-            db.get_caching_optional(at.into(), &key, false, through, version),
+            exact(
+                db.get_caching_optional(at.into(), &key, false, through, version),
+                version,
+            ),
         );
         log.answer(
             named(phase, "get raw", &name),
-            db.get_raw(at.into(), &key, through, version),
+            exact(db.get_raw(at.into(), &key, through, version), version),
         );
         log.answer(
             named(phase, "get raw optional", &name),
-            db.get_raw_optional(at.into(), &key, through, version),
+            exact(
+                db.get_raw_optional(at.into(), &key, through, version),
+                version,
+            ),
         );
         log.answer(
             named(phase, "has raw", &name),
@@ -691,7 +793,10 @@ fn read_keys<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) {
         );
         log.answer(
             named(phase, "follow", &name),
-            db.follow_reference(whole.as_slice().into(), true, through, version),
+            exact(
+                db.follow_reference(whole.as_slice().into(), true, through, version),
+                version,
+            ),
         );
     }
 }
@@ -707,37 +812,46 @@ fn read_queries<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) 
         let log = &mut *recorder.log;
         log.answer(
             named(phase, "query", &name),
-            db.query(
-                &query,
-                true,
-                true,
-                true,
-                QueryPathKeyElementTrioResultType,
-                through,
+            exact(
+                db.query(
+                    &query,
+                    true,
+                    true,
+                    true,
+                    QueryPathKeyElementTrioResultType,
+                    through,
+                    version,
+                ),
                 version,
             ),
         );
         log.answer(
             named(phase, "query with no cache", &name),
-            db.query(
-                &query,
-                false,
-                false,
-                false,
-                QueryKeyElementPairResultType,
-                through,
+            exact(
+                db.query(
+                    &query,
+                    false,
+                    false,
+                    false,
+                    QueryKeyElementPairResultType,
+                    through,
+                    version,
+                ),
                 version,
             ),
         );
         log.answer(
             named(phase, "query raw", &name),
-            db.query_raw(
-                &query,
-                true,
-                true,
-                true,
-                QueryPathKeyElementTrioResultType,
-                through,
+            exact(
+                db.query_raw(
+                    &query,
+                    true,
+                    true,
+                    true,
+                    QueryPathKeyElementTrioResultType,
+                    through,
+                    version,
+                ),
                 version,
             ),
         );
@@ -755,24 +869,33 @@ fn read_queries<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) 
         );
         log.answer(
             named(phase, "run", &name),
-            db.run_path_query(
-                &query,
-                true,
-                true,
-                true,
-                QueryPathKeyElementTrioResultType,
-                through,
+            exact(
+                db.run_path_query(
+                    &query,
+                    true,
+                    true,
+                    true,
+                    QueryPathKeyElementTrioResultType,
+                    through,
+                    version,
+                ),
                 version,
             ),
         );
         if query.query.limit.is_some() {
             log.answer(
                 named(phase, "keys optional", &name),
-                db.query_keys_optional(&query, true, true, true, through, version),
+                exact(
+                    db.query_keys_optional(&query, true, true, true, through, version),
+                    version,
+                ),
             );
             log.answer(
                 named(phase, "raw keys optional", &name),
-                db.query_raw_keys_optional(&query, true, true, true, through, version),
+                exact(
+                    db.query_raw_keys_optional(&query, true, true, true, through, version),
+                    version,
+                ),
             );
         }
     }
@@ -780,13 +903,16 @@ fn read_queries<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) 
         let both = [&first, &second];
         recorder.log.answer(
             named(phase, "many raw", &name),
-            db.query_many_raw(
-                &both,
-                true,
-                true,
-                true,
-                QueryPathKeyElementTrioResultType,
-                through,
+            exact(
+                db.query_many_raw(
+                    &both,
+                    true,
+                    true,
+                    true,
+                    QueryPathKeyElementTrioResultType,
+                    through,
+                    version,
+                ),
                 version,
             ),
         );
@@ -839,17 +965,17 @@ fn read_queries<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) 
 }
 
 /// An answer that was charged nothing: what the verifier made of a proof.
-fn note(log: &mut Log, name: String, answer: String) {
+pub(super) fn note(log: &mut Log, name: String, answer: String) {
     log.answers.push((name, OperationCost::default(), answer));
 }
 
 /// What the verifier made of a proof: the root hash it came to, and its
 /// answer as text.
-type Verified = Result<([u8; 32], String), crate::Error>;
+pub(super) type Verified = Result<([u8; 32], String), crate::Error>;
 
 /// Whether the verifier took a proof and came to `root` by it: the call
 /// the outcome is noted under, and the outcome as text.
-fn verification(verified: Verified, root: &[u8; 32]) -> (&'static str, String) {
+pub(super) fn verification(verified: Verified, root: &[u8; 32]) -> (&'static str, String) {
     match verified {
         Ok((verified_root, answer)) if verified_root == *root => {
             ("verified", format!("Ok({answer})"))
@@ -884,7 +1010,7 @@ fn verify(proof: &[u8], query: &PathQuery, version: &GroveVersion) -> Verified {
 
 /// The call under which a proof is noted that the verifier refused, or by
 /// which it came to another root hash than the committed one.
-const NOT_VERIFIED: &str = "not verified";
+pub(super) const NOT_VERIFIED: &str = "not verified";
 
 /// Proves every path query of this module from the committed state, and
 /// has the verifier check each proof that was made. What it made of the
@@ -1295,7 +1421,7 @@ fn a_move_refused_inside_a_scan_fails_the_operation_as_on_rocksdb() {
 }
 
 /// The kind of a call, from its name, and whether it was answered.
-fn kind_of(answer: &Answer) -> (String, bool) {
+pub(super) fn kind_of(answer: &Answer) -> (String, bool) {
     let mut parts = answer.0.split(" | ");
     let call = parts.nth(1).unwrap_or("write");
     (call.to_owned(), answer.2.starts_with("Ok"))
@@ -1303,7 +1429,7 @@ fn kind_of(answer: &Answer) -> (String, bool) {
 
 /// How many calls of each kind a history made, and how many of them were
 /// answered and not refused.
-fn tally(log: &Log) -> BTreeMap<String, (usize, usize)> {
+pub(super) fn tally(log: &Log) -> BTreeMap<String, (usize, usize)> {
     let mut tally: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for answer in &log.answers {
         let (call, answered) = kind_of(answer);
@@ -1317,7 +1443,7 @@ fn tally(log: &Log) -> BTreeMap<String, (usize, usize)> {
 /// Every call of the two histories gave the same answer at the same
 /// cost. Lists the calls that did not, the first of them in full.
 #[cfg_attr(not(feature = "rocksdb_storage"), allow(dead_code))]
-fn assert_same_calls(lignin: &[Answer], rocksdb: &[Answer]) {
+pub(super) fn assert_same_calls(lignin: &[Answer], rocksdb: &[Answer]) {
     let short = |text: &str| -> String { text.chars().take(600).collect() };
     let mut different = Vec::new();
     for (call, (lignin, rocksdb)) in lignin.iter().zip(rocksdb).enumerate() {

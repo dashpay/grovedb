@@ -258,8 +258,10 @@ pub(crate) fn refused_scans<E: Engine>(dir: &Path, version: &'static GroveVersio
 /// The scans of an indexed tree with one move refused at a time: a range
 /// of its secondary, the first rows of it, and the two scans of a
 /// verification that compare the secondary with the primary.
-#[cfg(grovedb_test_engine)]
-fn refused_scans_of_an_indexed_tree<E: Engine>(dir: &Path, version: &'static GroveVersion) {
+pub(crate) fn refused_scans_of_an_indexed_tree<E: Engine>(
+    dir: &Path,
+    version: &'static GroveVersion,
+) -> Vec<Answer> {
     const INDEXED: &[u8] = b"indexed";
 
     let db = GroveDb::<RefusedReads<E>>::open_with_engine(dir).expect("a database");
@@ -307,6 +309,7 @@ fn refused_scans_of_an_indexed_tree<E: Engine>(dir: &Path, version: &'static Gro
     swept.no_refusal_is_an_answer(name);
     let issues = swept.whole.expect("a verification that ran");
     assert!(issues.is_empty(), "{name}: {issues:?}");
+    log
 }
 
 #[cfg(grovedb_test_engine)]
@@ -328,6 +331,8 @@ mod on_the_engine_of_the_suite {
     #[test]
     fn a_move_refused_inside_a_scan_of_an_indexed_tree_fails_the_operation() {
         let dir = tempfile::tempdir().expect("a directory");
-        refused_scans_of_an_indexed_tree::<SuiteEngine>(dir.path(), GroveVersion::latest());
+        let log =
+            refused_scans_of_an_indexed_tree::<SuiteEngine>(dir.path(), GroveVersion::latest());
+        assert!(log.len() > 40, "{} calls", log.len());
     }
 }

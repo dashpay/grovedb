@@ -13,6 +13,7 @@
 //! it, with every hash of every Merk node made again by Merk's rules.
 
 mod append_only;
+mod axes;
 mod cases;
 mod indexed;
 mod nested;

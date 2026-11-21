@@ -36,7 +36,7 @@ use crate::{
 const ROOT: &[&[u8]] = &[];
 
 /// One kind of indexed tree, as its history uses it.
-trait Indexed {
+pub(super) trait Indexed {
     /// What the history calls the tree.
     const NAME: &'static str;
 
@@ -83,7 +83,7 @@ fn sum(n: usize) -> i64 {
     (n as i64 * 37) % 101 - 40
 }
 
-struct Count;
+pub(super) struct Count;
 
 impl Indexed for Count {
     const NAME: &'static str = "count";
@@ -130,7 +130,7 @@ impl Indexed for Count {
     }
 }
 
-struct Sum;
+pub(super) struct Sum;
 
 impl Indexed for Sum {
     const NAME: &'static str = "sum";
@@ -169,7 +169,7 @@ impl Indexed for Sum {
     }
 }
 
-struct CountSum;
+pub(super) struct CountSum;
 
 impl Indexed for CountSum {
     const NAME: &'static str = "count and sum";
@@ -216,7 +216,7 @@ impl Indexed for CountSum {
 /// A tree with a count and a sum that keeps two of the three axes: its
 /// second Merk is the one of the sum, and its third the one of the
 /// average.
-struct SumAndAverage;
+pub(super) struct SumAndAverage;
 
 impl Indexed for SumAndAverage {
     const NAME: &'static str = "sum and average";
@@ -260,7 +260,7 @@ impl Indexed for SumAndAverage {
     }
 }
 
-struct BigSum;
+pub(super) struct BigSum;
 
 impl Indexed for BigSum {
     const NAME: &'static str = "big sum";
@@ -299,7 +299,7 @@ impl Indexed for BigSum {
     }
 }
 
-struct CountBigSum;
+pub(super) struct CountBigSum;
 
 impl Indexed for CountBigSum {
     const NAME: &'static str = "count and big sum";
