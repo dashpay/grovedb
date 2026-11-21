@@ -237,10 +237,12 @@ impl<'s> Checkpointer<'s> {
     /// checkpoint is built beside it, in a directory of the target's name
     /// with [`CREATING_SUFFIX`](super::CREATING_SUFFIX) added, which is
     /// renamed to `target` when everything in it is durable. That name is
-    /// this call's: a directory of it whose lock this call takes, and
-    /// which it finds again under that lock, is emptied and built in.
-    /// Where its lock is found held, as by another creation that is
-    /// building in it, the call fails ([`CheckpointError::Creating`]).
+    /// reserved for creation. Before building in a directory already
+    /// there, the call takes its lock, checks the directory again under
+    /// that lock, syncs its parent, and removes every entry except the
+    /// lock file. Where its lock is found held, as by another creation
+    /// that is building in it, the call fails
+    /// ([`CheckpointError::Creating`]).
     ///
     /// **When this returns `Ok`, the checkpoint is durable, and so is its
     /// version in the live database** (CK4). `target` is then a database
