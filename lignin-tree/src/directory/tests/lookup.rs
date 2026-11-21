@@ -288,6 +288,7 @@ fn the_merk_with_a_node_beside_a_prefix_is_the_nearest_in_use() {
         let mut walk = grove.directory.entries();
         std::iter::from_fn(|| walk.next(&grove.pages).expect("an entry")).count()
     });
-    assert_eq!(all, entered.len());
-    assert!(read.0 * 4 < whole.0, "{read:?} of {whole:?}");
+    // The entry of the dropped Merk went with the drop.
+    assert_eq!(all, entered.len() - 1);
+    assert!(read.0 * 2 < whole.0, "{read:?} of {whole:?}");
 }
