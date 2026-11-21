@@ -263,13 +263,18 @@ Clearing a Merk the same way (`tree-layout.md` D4) is a drop that keeps the
 host: the Merk's directory entry becomes that of an empty Merk and is not
 removed. The three points above and CL6 hold for it as for a drop.
 
-What a clear is in the write set is GROVE-05's to state. Today's `Merk::clear`
-deletes node by node, and on existing GroveVersions a clear has to give the
-commit outcomes those deletes give (GM0, 14.5). One range delete of that
-Merk's records (ST4) gives them against every tree change, because a clear
-is a tree change itself (GM2). It differs against writes that do not
-propagate to the root (14.2), as row D5 of 14.5 does, so choosing it adds a
-row to that table (section 18, open point 4).
+On existing GroveVersions a clear that keeps the host is in the write set
+what `Merk::clear` makes of it: one delete for each node, by its key, and
+the root of the Merk stated as gone (GROVE-05). Its commit outcomes are
+those of the same deletes on RocksDB (GM0), against every write, so it
+adds no row to 14.5. The clear above, one range delete of the Merk's
+records (ST4), is the engine's and is used by no operation of GroveDB: it
+would give the same outcomes against every tree change, because a clear is
+a tree change itself (GM2), and others against writes that do not
+propagate to the root (14.2), as row D5 of 14.5 does. A clear has to read
+every node for what it is charged on these versions either way; a later
+GroveVersion that charges a clear by a rule of its own can take the range
+delete (GROVE-13).
 
 ## 4. What each handle reads
 
@@ -2176,7 +2181,7 @@ document or of the engine.
 | --- | --- | --- | --- | --- |
 | D1 | A read with no transaction | reads the latest state at each storage read | pins one version for the operation (RD2) | The result is one RocksDB can also give. Visible only when a commit lands during the operation. |
 | D2 | Wipe | four range deletes, one column family after another, each its own write (`storage.rs:871-881`) | one commit (CV3) | P-23 and VER-04 ask for a wipe that a crash leaves whole or undone. On RocksDB a reader, a checkpoint or a crash between two steps sees some columns wiped. |
-| D3 | Flat subtree drop | the drop's commit deletes the element and writes a pending-drop record. The subtree's records stay until `flush_pending_prefix_drops` deletes them: one range delete per prefix and column family, then one delete of the record, each its own write (`storage.rs:928-966,994-1005`) | the subtree's records are removed in the drop's commit (CV9). The flush checks liveness as today, reclaims the cells and pages the drop left, which takes no version (CL6), and deletes each pending-drop record with a write with no transaction: one commit per record | TREE-09 unlinks at the drop. The records in question are unreachable from any element. Between the drop and the flush the RocksDB engine still returns them in two cases: to a read of a dropped prefix made directly, and to a caller that re-creates the dropped path before the flush, which callers are told not to do. LigninDB returns them in neither (CV9). |
+| D3 | Flat subtree drop | the drop's commit deletes the element and writes a pending-drop record. The subtree's records stay until `flush_pending_prefix_drops` deletes them: one range delete per prefix and column family, then one delete of the record, each its own write (`storage.rs:928-966,994-1005`) | the subtree's records are removed in the drop's commit (CV9). The flush checks liveness as today and deletes each pending-drop record with a write with no transaction: one commit per record. Its range delete finds nothing entered under the prefixes of such a record, and drops what it does find. The cells and pages the drop left are reclaimed by the engine's background work, which takes no version (CL6) and does not wait for the flush | TREE-09 unlinks at the drop. The records in question are unreachable from any element. Between the drop and the flush the RocksDB engine still returns them in two cases: to a read of a dropped prefix made directly, and to a caller that re-creates the dropped path before the flush, which callers are told not to do. LigninDB returns them in neither (CV9). **Open, `MERK-05-F2`:** a third reader sees them on RocksDB in that time, and is to see the same on LigninDB: a cursor of the subtree that is the neighbour of a dropped prefix in its column, at a step from no key, which lands on the dropped records there. A descending range that excludes its end and ends past the last key of that neighbour answers its rows on RocksDB where the dropped records follow it and nothing else does, and none on LigninDB, inside the dropping transaction from the drop on and for every reader until the flush. The follow-up keeps, for each prefix of a pending-drop record and each line, that it held a record, until the range delete names the prefix. The same holds, with no flush to end it, for the records of the trees that a flat drop leaves behind against its caller's word, for those of a tree that an element was written over (`GROVE-03-F1`), and for those of a tree whose element a clear removed that was told to look for no tree (`check_for_subtrees: false`). **Open, `GROVE-03-F1`:** the records of such a tree, and of a tree that an element was written over, are also read on RocksDB by the path of the tree where no element is asked for on the way (`has_raw`), and by a tree that is made again under its key (`is_empty_tree`), with no flush to end it; LigninDB is to answer the same. |
 | D4 | Commit when the memtable history is too short | `TryAgain` | CF2 decided exactly (CF9) | node-local |
 | D5 | A range delete outside *T* over a key *T* wrote | `Busy` or success, depending on the memtables | `Conflict` (CF9) | node-local; not reached by Platform's call sites |
 | D6 | Records loaded outside *T* under a key *T* wrote | success | `Conflict` (CF9) | devnet seeding only; not reached there |
@@ -2216,7 +2221,7 @@ took.
 | STORE-09, TREE-08 | PV4, PV6, PV7 and CL5: a value pointer rewrite takes no version, is installed in a page step that checks the current page version, the owner and private copies held at that moment, changes the counts in that step, is recovered with the pages, and an emptied file goes only when CL5 allows. FL1: a value appended ahead of its page step is held. FL7: new values come from write-back, not from commits. The counts lock is level 4a of LT7, and the counts recover by DU5. | When a file is cleaned, when a value is durable, regrouping, and what makes the page step one step. |
 | STORE-10 | ID1 to ID5, and the three questions of PN6. | The allocator. |
 | FMT-05 | The log group carries new values whole (FL7), says which pages the commit freed (ID4) and which value pointers its cells stopped holding (DU5). A background change has a record of its own in the log, with its count change (PV6, DU5). | The records. Whether a carried value is repeated or named (FL7). |
-| GROVE-05 | The drop removes the subtree's records in its own commit (CV9). The flush reclaims what the drop left without a version (CL6) and removes each pending-drop record with one commit (14.5 D3). | The liveness check and the report. What a clear that keeps the host is in the write set (CV9). |
+| GROVE-05 | The drop removes the subtree's records in its own commit (CV9). The flush removes each pending-drop record with one commit, and what the drop left is reclaimed without a version (CL6) by the engine's background work (14.5 D3). | Done: `engine.md`, "A subtree leaves with its element". A clear that keeps the host is the deletes of `Merk::clear` (CV9). |
 | GROVE-11, GROVE-12 | SC9 (pending marks), 14.4, SC3 and SC7. A scope's Merk cache keeps locations only under PN8. A host marked pending is not followed (SC9). GM3 does not cover a Merk that was empty when it was first written (14.2). | Stop points, finalize, the GroveDB scope. The rule for two transactions that each create the root of one empty Merk (GM3). |
 | VER-05 | Section 13, and the models and scenarios of 15.2. | The models. |
 | VER-08 | 14.3: the three mainnet heights run in the state of WT7b. | The replay. |
@@ -2687,7 +2692,10 @@ are listed so the owner can overrule one before code depends on it.
     (14.5 D2).
 19. **A subtree drop removes its records in the drop's commit** (CV9), where
     the RocksDB engine removes them at the later flush (14.5 D3). This
-    follows TREE-09 and fixes what GROVE-05 maps the flush to.
+    follows TREE-09 and fixes what GROVE-05 maps the flush to: the removal
+    of the pending-drop records, and a drop of whatever is still entered
+    under their prefixes, which after a flat drop through the engine is
+    nothing.
 20. **An operation is the size of one storage call** (section 1, RD4), so
     that the read rule is exactly as fine-grained as RocksDB's.
 21. **A location kept between operations must be checked before it is
@@ -2843,8 +2851,8 @@ task it names:
    Keeping it in memory needs FL3's rule on folding read for a version that
    is kept there, and placing it for that version alone needs a hold that
    outlives the step. For a page that has been freed, FL6 settles it.
-4. **What a clear that keeps the host is in the write set** (CV9): GROVE-05
-   states it, under the constraint that commit outcomes on existing
-   GroveVersions equal RocksDB's. The candidates are one range delete, which
-   would be a new row of the table in 14.5, and the per-node deletes of
-   today's `Merk::clear`.
+4. **What a clear that keeps the host is in the write set** (CV9): closed by
+   GROVE-05. It is the per-node deletes of `Merk::clear`, whose commit
+   outcomes on existing GroveVersions are RocksDB's by construction, and
+   14.5 has no row for it. The engine's range delete of a Merk's records
+   stays for a later GroveVersion with a cost rule of its own (GROVE-13).
