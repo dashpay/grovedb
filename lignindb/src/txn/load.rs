@@ -21,6 +21,7 @@ use lignin_tree::{
     fragment::{FragmentError, PageMut, Pages, Values},
     hash::{HashRules, Refusal},
     node::{NodeError, NodeHandle, NodePage, NodeRef},
+    value::{read_placed, ValueBuf},
 };
 
 use super::{
@@ -28,7 +29,7 @@ use super::{
     key::Subtree,
     pages::TreePages,
     path::WritePath,
-    write::{Batch, Hosted, MerkWrite, RootPut},
+    write::{Batch, Hosted, MerkWrite, RootPut, ValuePut},
 };
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -56,6 +57,10 @@ fn writes(merk: &MerkWrite<'_>) -> bool {
 /// is hosted by no other node of the batch: the write to the tree pages
 /// refuses two hosts of one Merk among the cells it holds
 /// (`lignin_tree::fragment`), and the cells of a load are not among them.
+/// Here that is checked for the nodes that state what they host. For a
+/// node that is written and keeps what it hosts, it is checked where the
+/// batch is laid out, when the node's cell is found
+/// (`Frames::keeps_no_root`).
 pub(crate) fn load_order(batch: &Batch<'_>) -> Result<Vec<usize>, BatchError> {
     let merks = batch.merks;
     let by_subtree: HashMap<Subtree, usize> = (merks.iter().enumerate())
@@ -193,10 +198,24 @@ impl StoredValue {
 /// Its lock is taken under the lock of the transaction that loads or
 /// commits (LT7 level 2) and before the manifest's (level 3). Under it the
 /// file layer is waited for, and the manifest's lock for the one
-/// replacement that names a new file.
+/// replacement that names a new file (`transactions.md` LD8). The lock on
+/// the holds it keeps for the session is taken with nothing under it.
 #[derive(Debug, Default)]
 pub struct LoadFiles {
-    writer: Mutex<Option<ValueWriter>>,
+    writer: Mutex<Option<Filling>>,
+    /// The holds of the commits that ended with their values in no count
+    /// and their group not known to be out of the log ([`Held`]). They
+    /// end with the session.
+    kept: Mutex<Vec<ValueHold>>,
+}
+
+/// The file the loads fill.
+#[derive(Debug)]
+struct Filling {
+    writer: ValueWriter,
+    /// Whether a manifest names the file, which takes values only then
+    /// (`lignin_store::values`, "The life of a file").
+    named: bool,
 }
 
 impl LoadFiles {
@@ -208,6 +227,9 @@ impl LoadFiles {
     /// Appends `value` for a cell of the page `owner`, under `hold`. A
     /// file that is full is closed first, and the next one is created and
     /// named by a manifest (`lignin_store::values`, "The life of a file").
+    /// A file that could not be named stays the one the loads fill, and
+    /// each append first tries to name it: a manifest that keeps failing
+    /// leaves one file behind, and not one for each try.
     fn append(
         &self,
         path: &WritePath<'_>,
@@ -215,25 +237,29 @@ impl LoadFiles {
         owner: PageId,
         value: &[u8],
     ) -> Result<ValuePointer, ValueStoreError> {
-        let mut writer = lock(&self.writer);
-        if let Some(full) = writer.take_if(|writer| writer.is_full()) {
-            full.finish()?;
+        let mut filling = lock(&self.writer);
+        if let Some(full) = filling.take_if(|file| file.writer.is_full()) {
+            full.writer.finish()?;
         }
-        let file = match &mut *writer {
+        let file = match &mut *filling {
             Some(file) => file,
             empty => {
-                let created = path.values.create()?;
-                name_files(path)?;
-                empty.insert(created)
+                let writer = path.values.create()?;
+                let named = false;
+                empty.insert(Filling { writer, named })
             }
         };
-        let appended = file.append(hold, owner, value);
+        if !file.named {
+            name_files(path)?;
+            file.named = true;
+        }
+        let appended = file.writer.append(hold, owner, value);
         if matches!(&appended, Err(error) if !matches!(error, ValueStoreError::Format { .. })) {
             // The file may take no value any more: the next one goes to
             // another file. What it took before is made durable here, if
             // it can be, since no later sync of this writer comes.
-            let _ = file.sync();
-            *writer = None;
+            let _ = file.writer.sync();
+            *filling = None;
         }
         appended
     }
@@ -249,25 +275,75 @@ impl LoadFiles {
     /// dead values, those of loads that were rolled back or laid out
     /// again. The holds on the file stay as they are.
     pub fn close(&self, file: FileId) -> Result<bool, ValueStoreError> {
-        let mut writer = lock(&self.writer);
-        let Some(filled) = writer.take_if(|writer| writer.file_id() == file) else {
+        let mut filling = lock(&self.writer);
+        let Some(filled) = filling.take_if(|filled| filled.writer.file_id() == file) else {
             return Ok(false);
         };
-        filled.finish()?;
+        filled.writer.finish()?;
         Ok(true)
     }
 
     /// Syncs the file the loads fill now. A file whose sync fails takes no
-    /// more values, and what it holds past its last sync is covered by no
-    /// manifest and is read no more.
+    /// more values. What it took before its last sync that succeeded
+    /// stays as it was. What it took since is covered by no manifest
+    /// that is written from here on.
     fn sync(&self) -> Result<(), ValueStoreError> {
-        let mut writer = lock(&self.writer);
-        let synced = writer.as_mut().map(ValueWriter::sync);
+        let mut filling = lock(&self.writer);
+        let synced = filling.as_mut().map(|file| file.writer.sync());
         if let Some(Err(error)) = synced {
-            *writer = None;
+            *filling = None;
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Ends the holds of commits that are kept for the session, as the
+    /// end of the session does, and returns how many they were.
+    #[cfg(test)]
+    pub(crate) fn end_kept(&self) -> usize {
+        std::mem::take(&mut *lock(&self.kept)).len()
+    }
+}
+
+/// The hold of a commit on the files of the values of its loads, from
+/// when the commit may append its group until the values are counted.
+///
+/// A commit gives it up with [`Self::release`] where it returns with its
+/// group known not to be in the log, and once the values are counted. A
+/// commit that ends in any other way drops it, and the hold is then kept
+/// with the [`LoadFiles`] of the store until the session ends: where the
+/// commit cannot be settled, where its install is refused, and where it
+/// panics at any step. A recovery that keeps the group finds cells that
+/// point into those files, and no count of this session says so.
+pub(crate) struct Held<'a> {
+    files: &'a LoadFiles,
+    loaded: Loaded,
+}
+
+impl<'a> Held<'a> {
+    /// The hold `loaded` has, which is kept with `files` unless it is
+    /// released.
+    pub(crate) fn new(files: &'a LoadFiles, loaded: Loaded) -> Self {
+        Self { files, loaded }
+    }
+
+    /// What the transaction holds of the values of its loads.
+    pub(crate) fn loaded(&self) -> &Loaded {
+        &self.loaded
+    }
+
+    /// Gives the hold up.
+    pub(crate) fn release(mut self) {
+        self.loaded = Loaded::default();
+    }
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        let hold = std::mem::take(&mut self.loaded.hold);
+        if hold.files().next().is_some() {
+            lock(&self.files.kept).push(hold);
+        }
     }
 }
 
@@ -275,11 +351,65 @@ impl LoadFiles {
 /// are now. A file that the new manifest names no more and that could not
 /// be deleted is no failure of this: the manifest is in force, and the
 /// deletion is tried again (`ValueStoreError::NotDeleted`).
+///
+/// A manifest that an earlier replacement left in doubt is settled first,
+/// as write-back settles it ([`WriteBack::manifest`]): it is opened
+/// again, and every store is told which manifest is in force. What a
+/// store answers to that is not returned here. The manifest is in force
+/// once it was opened, and where it could not be opened the replacement
+/// below fails with the doubt, which stays for the next call.
+///
+/// [`WriteBack::manifest`]: lignin_store::flush::WriteBack::manifest
 fn name_files(path: &WritePath<'_>) -> Result<(), ValueStoreError> {
-    match path.values.commit(&mut lock(path.manifest)) {
+    let write_back = path.write_back;
+    let mut manifest = match write_back.manifest() {
+        Ok(manifest) => manifest,
+        Err(_) => lock(write_back.stores().manifest),
+    };
+    match path.values.commit(&mut manifest) {
         Ok(()) | Err(ValueStoreError::NotDeleted { .. }) => Ok(()),
         Err(error) => Err(error),
     }
+}
+
+/// The owner of a value that a load put into the value log before its
+/// node had a page ([`spill`]). No cell ever holds a pointer to such a
+/// record: to the value log it is a record whose owner is not found
+/// (`value-log-format.md` O4), and no count has it.
+const NO_PAGE: PageId = PageId::MAX;
+
+/// Puts the values of the loads of `batch` that are too long for a cell
+/// into the value log, for no page, and returns where each is, by the
+/// place of its node among the entries of the batch: what the write set
+/// keeps in the place of the bytes (`StoredValue`).
+///
+/// This is for a load that is applied where no frames take it. When its
+/// frames are made, each value is read from here and appended for the
+/// page its cell gets, as the values of a load that is laid out again
+/// are. The files stay held with `loaded`.
+pub(crate) fn spill(
+    path: &WritePath<'_>,
+    loaded: &mut Loaded,
+    batch: &Batch<'_>,
+) -> Result<Vec<(u32, StoredValue)>, TxnError> {
+    let merks = batch.merks;
+    let firsts = entry_firsts(merks);
+    let mut stored = Vec::new();
+    for (merk, write) in merks.iter().enumerate().filter(|(_, merk)| is_load(merk)) {
+        for (at, node) in write.nodes.iter().enumerate() {
+            let ValuePut::Value(value) = node.value else {
+                continue;
+            };
+            if path.inline.is_inline(value.len()) {
+                continue;
+            }
+            checked_value_len(value.len())?;
+            let appended = (path.load_files).append(path, &mut loaded.hold, NO_PAGE, value);
+            let (pointer, owner) = (appended?, NO_PAGE);
+            stored.push((firsts[merk] + at as u32, StoredValue { pointer, owner }));
+        }
+    }
+    Ok(stored)
 }
 
 /// Has a durable manifest cover every value that the loads of a
@@ -393,37 +523,57 @@ impl Loaded {
 /// new values do (`lignin_tree::value`): no address of the log has it.
 const NEW_VALUE: u64 = 1 << 63;
 
-/// The values of the cells a load builds. A value out of line is kept from
-/// when its node arrives until its cell gets its page, and is appended to
-/// the value log then, for that page: the cell is written with the
-/// pointer.
-pub(super) struct Placing<'a, 's> {
+/// Where the value of a node of a load is from when the node arrives
+/// until its cell gets its page. Nothing of the value is copied
+/// meanwhile, in whatever order the nodes arrive.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Source<'b> {
+    /// In the batch, which its caller holds for the whole write.
+    Batch(&'b [u8]),
+    /// In the value log, where the frames before put it.
+    Stored(StoredValue),
+}
+
+/// The values of the cells a load builds. Of a value out of line the load
+/// keeps where it is ([`Source`]) from when its node arrives until its
+/// cell gets its page. Then the value is appended to the value log, for
+/// that page: the cell is written with the pointer.
+pub(super) struct Placing<'a, 's, 'b> {
     path: &'a WritePath<'s>,
     loaded: &'a mut Loaded,
-    /// The values of the nodes whose cells are in no page yet, each with
-    /// the place of its node among the entries of the batch.
-    held: HashMap<ValueId, (u32, Box<[u8]>)>,
+    /// Where the value of each node is whose cell is in no page yet, with
+    /// the place of the node among the entries of the batch.
+    held: HashMap<ValueId, (u32, Source<'b>)>,
     next: u64,
-    /// The place of the node that is handed to the loader, among the
-    /// entries of the batch.
-    pub(super) entry: u32,
+    /// The node that is handed to the loader: its place among the entries
+    /// of the batch, and where its value is.
+    node: Option<(u32, Source<'b>)>,
+    /// One value that is read from the value log to be appended again.
+    buf: ValueBuf,
     /// Where each value out of line went, by the place of its node.
     pub(super) stored: Vec<(u32, StoredValue)>,
     /// Why the value log refused a value.
     pub(super) failed: Option<TxnError>,
 }
 
-impl<'a, 's> Placing<'a, 's> {
+impl<'a, 's, 'b> Placing<'a, 's, 'b> {
     pub(super) fn new(path: &'a WritePath<'s>, loaded: &'a mut Loaded) -> Self {
         Self {
             path,
             loaded,
             held: HashMap::new(),
             next: 0,
-            entry: 0,
+            node: None,
+            buf: ValueBuf::new(),
             stored: Vec::new(),
             failed: None,
         }
+    }
+
+    /// Says which node is handed to the loader next: its place among the
+    /// entries of the batch, and where its value is.
+    pub(super) fn node(&mut self, entry: u32, source: Source<'b>) {
+        self.node = Some((entry, source));
     }
 
     fn refuse(&mut self, error: impl Into<TxnError>) -> Refusal {
@@ -436,7 +586,7 @@ impl<'a, 's> Placing<'a, 's> {
 
 /// A load calls [`LoadValues::hold`] and [`LoadValues::place`] and nothing
 /// else: it carries no cell and takes none out.
-impl Values for Placing<'_, '_> {
+impl Values for Placing<'_, '_, '_> {
     fn released(&mut self, _: ValuePlace, _: PageId) {
         self.refuse(TxnError::Damaged("a load released a value"));
     }
@@ -453,25 +603,41 @@ impl Values for Placing<'_, '_> {
     }
 }
 
-impl LoadValues for Placing<'_, '_> {
+impl LoadValues for Placing<'_, '_, '_> {
     fn hold(&mut self, value: &[u8]) -> Result<Option<PendingValue>, Refusal> {
+        let node = self.node.take();
         if self.path.inline.is_inline(value.len()) {
             return Ok(None);
         }
         let len = checked_value_len(value.len()).map_err(|error| self.refuse(error))?;
+        let Some(node) = node else {
+            return Err(self.refuse(TxnError::Damaged("a load held a value of no node")));
+        };
         self.next += 1;
         let name = (NEW_VALUE | self.next).to_le_bytes();
-        self.held.insert(name, (self.entry, value.into()));
+        self.held.insert(name, node);
         let pending = PendingValue::new(name, len).map_err(|error| self.refuse(error))?;
         Ok(Some(pending))
     }
 
     fn place(&mut self, pending: PendingValue, page: PageId) -> Result<ValuePlace, Refusal> {
-        let Some((entry, value)) = self.held.remove(&pending.id()) else {
+        let Some((entry, source)) = self.held.remove(&pending.id()) else {
             return Err(self.refuse(TxnError::Damaged("a load placed a value it was not given")));
         };
-        let hold = &mut self.loaded.hold;
-        let appended = (self.path.load_files).append(self.path, hold, page, &value);
+        let mut buf = std::mem::take(&mut self.buf);
+        let value = match source {
+            Source::Batch(value) => Ok(value),
+            Source::Stored(stored) => {
+                let read = read_placed(self.path.values, stored.pointer, stored.owner, &mut buf);
+                read.map_err(TxnError::from)
+            }
+        };
+        let appended = value.and_then(|value| {
+            let hold = &mut self.loaded.hold;
+            let appended = (self.path.load_files).append(self.path, hold, page, value);
+            appended.map_err(TxnError::from)
+        });
+        self.buf = buf;
         let pointer = appended.map_err(|error| self.refuse(error))?;
         self.loaded.note(pointer);
         let stored = StoredValue {

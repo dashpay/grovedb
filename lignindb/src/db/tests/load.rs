@@ -200,29 +200,58 @@ struct Swept {
 ///
 /// In each state the next open has
 ///
-/// - the Merk that was there before, whole;
-/// - the loaded Merk with every node and every value, or its subtree with
-///   no node, and never anything between: with every node wherever the
-///   flush had returned before the cut;
+/// - the Merk that was there before, with the records a store has that
+///   no cut touched;
+/// - the loaded Merk with those records too, every node and every value,
+///   or its subtree with no node, and never anything between: with every
+///   node wherever the flush had returned before the cut;
 /// - a store that the physical checker finds sound, which counts the
 ///   values of each value-log file against the cells that point into it.
 ///
 /// Where nothing was kept and where all was, the load is made again if it
 /// is not there, and is whole then.
-fn sweep_power_cuts(merk: &Merk, every: bool) -> Swept {
+///
+/// With `first` the load that is cut is the first of its store: the cuts
+/// begin before the value-log file of the loads is created and before a
+/// manifest names it. Otherwise the Merk of before was a load too, and
+/// the load that is cut appends to the file that one left.
+fn sweep_power_cuts(merk: &Merk, every: bool, first: bool) -> Swept {
     let before = mixed(b'b', 120);
     let whole = Merk::len(merk);
-    let mut swept = Swept::default();
-    for cut in 1.. {
-        let fs = SimVfs::new(SimConfig::new(4_010));
-        let options = |fs: &SimVfs| Options {
-            vfs: Arc::new(fs.clone()),
-            ..options()
+    let lay_before = |db: &Db| {
+        let writes = Writes {
+            merks: vec![(subtree(9), before.clone())],
+            load: !first,
+            ..Writes::default()
         };
+        writes.commit(db);
+    };
+    let options = |fs: &SimVfs| Options {
+        vfs: Arc::new(fs.clone()),
+        ..options()
+    };
+    // What a reader finds of the two Merks in a store that no cut touched.
+    let (want_before, want_loaded) = {
+        let fs = SimVfs::new(SimConfig::new(4_010));
         let db = Db::open("/db", &options(&fs)).expect("a new database");
         halt_background(&db);
         entered(&db, &[subtree(1), subtree(9)]);
-        load(&db, subtree(9), before.clone());
+        lay_before(&db);
+        load(&db, subtree(1), merk.clone());
+        let dumped = |subtree| dump(&db, subtree).expect("a subtree that is entered");
+        (dumped(subtree(9)), dumped(subtree(1)))
+    };
+    assert_eq!(
+        (want_before.len(), want_loaded.len()),
+        (before.len(), whole)
+    );
+    let mut swept = Swept::default();
+    for cut in 1.. {
+        let fs = SimVfs::new(SimConfig::new(4_010));
+        let db = Db::open("/db", &options(&fs)).expect("a new database");
+        halt_background(&db);
+        entered(&db, &[subtree(1), subtree(9)]);
+        lay_before(&db);
         db.flush().expect("what was there before is durable");
 
         fs.crash_at(CrashPoint::AfterChange(fs.stats().changes + cut));
@@ -249,7 +278,7 @@ fn sweep_power_cuts(merk: &Merk, every: bool) -> Swept {
         if !fs.is_powered_off() {
             // Everything was done before the cut.
             assert!(flushed);
-            assert_eq!(dump(&db, subtree(1)).map(|nodes| nodes.len()), Some(whole));
+            assert!(dump(&db, subtree(1)).as_ref() == Some(&want_loaded));
             drop(db);
             break;
         }
@@ -280,7 +309,7 @@ fn sweep_power_cuts(merk: &Merk, every: bool) -> Swept {
                 .unwrap_or_else(|error| panic!("{context}: the next open: {error}"));
             halt_background(&db);
             let kept = dump(&db, subtree(9)).expect("the subtree of before");
-            assert_eq!(kept.len(), before.len(), "{context}: the Merk of before");
+            assert!(kept == want_before, "{context}: the Merk of before");
             let loaded = dump(&db, subtree(1)).expect("the subtree of the load");
             match loaded.len() {
                 0 => {
@@ -289,6 +318,7 @@ fn sweep_power_cuts(merk: &Merk, every: bool) -> Swept {
                 }
                 nodes => {
                     assert_eq!(nodes, whole, "{context}: a part of the Merk");
+                    assert!(loaded == want_loaded, "{context}: other records");
                     swept.with += 1;
                 }
             }
@@ -297,7 +327,11 @@ fn sweep_power_cuts(merk: &Merk, every: bool) -> Swept {
                 // The store takes the load again.
                 let (counters, _) = load(&db, subtree(1), merk.clone());
                 assert_eq!(counters.nodes, whole as u64, "{context}");
-                assert_eq!(dump(&db, subtree(1)).map(|nodes| nodes.len()), Some(whole));
+                let again = dump(&db, subtree(1));
+                assert!(
+                    again.as_ref() == Some(&want_loaded),
+                    "{context}: other records"
+                );
                 sound(&db, &format!("{context}, loaded again"));
             }
             drop(db);
@@ -310,14 +344,24 @@ fn sweep_power_cuts(merk: &Merk, every: bool) -> Swept {
 /// TXN-10's last "done when": **a power cut at any point of a load's
 /// commit leaves the store without the Merk or with all of it**
 /// ([`sweep_power_cuts`]). The load is of a Merk of a few pages with
-/// thirty values out of line, and of each cut a dozen states are opened.
+/// thirty values out of line, and of each cut a dozen states are opened:
+/// once as the first load of its store, which creates the file of the
+/// loads, and once after another load.
 #[test]
 fn a_power_cut_at_any_point_of_a_loads_commit_leaves_no_merk_or_all_of_it() {
-    let swept = sweep_power_cuts(&mixed(b'p', 90), false);
-    assert!(swept.cuts > 20, "{swept:?}");
+    let mut cuts = Vec::new();
+    for first in [true, false] {
+        let swept = sweep_power_cuts(&mixed(b'p', 90), false, first);
+        assert!(swept.cuts > 20, "{swept:?}");
+        assert!(
+            swept.without > 0 && swept.with > 0 && swept.durable_cuts > 0,
+            "{swept:?}"
+        );
+        cuts.push(swept.cuts);
+    }
     assert!(
-        swept.without > 0 && swept.with > 0 && swept.durable_cuts > 0,
-        "{swept:?}"
+        cuts[0] > cuts[1],
+        "the first load of a store changes more files: {cuts:?}"
     );
 }
 
@@ -327,7 +371,7 @@ fn a_power_cut_at_any_point_of_a_loads_commit_leaves_no_merk_or_all_of_it() {
 #[test]
 #[ignore = "about 30,000 states of a power cut; a quarter of an hour"]
 fn a_power_cut_at_any_point_of_a_larger_loads_commit_in_every_state() {
-    let swept = sweep_power_cuts(&mixed(b'p', 700), true);
+    let swept = sweep_power_cuts(&mixed(b'p', 700), true, true);
     assert!(swept.cuts > 200 && swept.states > 20_000, "{swept:?}");
     assert!(
         swept.without > 0 && swept.with > 0 && swept.durable_cuts > 0,
@@ -378,6 +422,18 @@ impl Uniform {
             nodes,
             value: vec![0x76; value_len],
         }
+    }
+
+    /// The same Merk with its nodes stated in another order that has a
+    /// child before its parent: every leaf first, and then the nodes by
+    /// their height. The values of about half the nodes wait for a page at
+    /// once then.
+    fn by_height(mut self) -> Self {
+        let height =
+            |child: StatedChild| child.map_or(0, |(_, heights)| heights.0.max(heights.1) + 1);
+        self.nodes
+            .sort_by_key(|(_, children)| height(children[0]).max(height(children[1])));
+        self
     }
 
     /// Calls `run` with the batch that enters `subtree` and loads the Merk
@@ -431,13 +487,17 @@ impl Uniform {
 /// write set and the pages of a load are the same whether its values out
 /// of line are 300 bytes long or 6,000, and no page holds a value for the
 /// commit. A load whose values are in their cells holds each twice: in its
-/// cell and in the write set.
+/// cell and in the write set. So it is in whatever order the nodes are
+/// stated, also with every leaf first.
 #[test]
 fn what_a_load_holds_does_not_grow_with_the_bytes_of_its_values_out_of_line() {
-    let held = |value_len: usize| {
+    let held_in = |value_len: usize, leaves_first: bool| {
         let dir = temp();
         let db = Db::open(dir.path(), &options()).expect("a new database");
-        let merk = Uniform::new(4_000, value_len);
+        let merk = match leaves_first {
+            true => Uniform::new(4_000, value_len).by_height(),
+            false => Uniform::new(4_000, value_len),
+        };
         let txn = db.begin();
         let scope = txn.scope().expect("a scope");
         let applied = merk
@@ -456,6 +516,10 @@ fn what_a_load_holds_does_not_grow_with_the_bytes_of_its_values_out_of_line() {
         }
         (stats.write_set_bytes, stats.tree_pages, counters.values)
     };
+    let held = |value_len: usize| held_in(value_len, false);
+    let leaves_first = (held_in(300, true), held_in(6_000, true));
+    assert_eq!(leaves_first.0, leaves_first.1, "with every leaf first");
+    assert_eq!(leaves_first.1 .2, 4_000);
     let (short, long) = (held(300), held(6_000));
     assert_eq!(
         short, long,
@@ -470,25 +534,32 @@ fn what_a_load_holds_does_not_grow_with_the_bytes_of_its_values_out_of_line() {
     );
 }
 
-/// What the system counts as the memory of this process, in bytes.
+/// What the system counts as the memory of this process, in bytes: now,
+/// and the most it has been.
 #[cfg(target_os = "linux")]
-fn resident() -> u64 {
+fn resident() -> (u64, u64) {
     let status = std::fs::read_to_string("/proc/self/status").expect("the status of the process");
-    let line = status.lines().find(|line| line.starts_with("VmRSS:"));
-    let kib = line.and_then(|line| line.split_whitespace().nth(1));
-    kib.and_then(|kib| kib.parse::<u64>().ok())
-        .expect("the resident set")
-        << 10
+    let bytes = |name: &str| {
+        let line = status.lines().find(|line| line.starts_with(name));
+        let kib = line.and_then(|line| line.split_whitespace().nth(1));
+        kib.and_then(|kib| kib.parse::<u64>().ok())
+            .expect("a line of the status")
+            << 10
+    };
+    (bytes("VmRSS:"), bytes("VmHWM:"))
 }
 
 /// The memory a load holds, measured on the process: a Merk of
 /// `LOAD_NODES` nodes (250,000) whose values are `LOAD_VALUE_LEN` bytes
 /// (4,096, a gigabyte out of line in all) is loaded in one transaction of
 /// a database in `LOAD_DIR` (a temporary directory), and the resident set
-/// is read before the load, with the load held, and after its commit. It
-/// prints what the load holds, in all and for a node. Where the values
-/// are of 2,048 bytes or more, the load holds less than half of their
-/// bytes.
+/// is read before the load, with the load held, and after its commit,
+/// and the most it was up to the end of the load. It prints what the load
+/// holds, in all and for a node. Where the values are of 2,048 bytes or
+/// more, the load holds less than half of their bytes, and never held
+/// more while it was laid out. With `LOAD_ORDER=height` every leaf is
+/// stated first, so that the values of half the nodes wait for their
+/// pages at once.
 ///
 /// It is run alone, in a unit with a cap on its memory below what the
 /// values take, so that a load that held them would not get through:
@@ -529,18 +600,23 @@ fn the_memory_a_load_holds_is_measured_on_the_process() {
         ..options()
     };
     let db = Db::open(&store, &options).expect("a new database");
-    let merk = Uniform::new(nodes, value_len);
+    let leaves_first = std::env::var("LOAD_ORDER").is_ok_and(|order| order == "height");
+    let merk = match leaves_first {
+        true => Uniform::new(nodes, value_len).by_height(),
+        false => Uniform::new(nodes, value_len),
+    };
     let mib = |bytes: u64| bytes as f64 / (1u64 << 20) as f64;
     let txn = db.begin();
     let scope = txn.scope().expect("a scope");
-    let (before, began) = (resident(), Instant::now());
+    let (before, began) = (resident().0, Instant::now());
     let (applied, stated) = merk.with(subtree(1), |batch| {
         // The batch is its caller's: what it takes is not the load's.
-        let stated = resident();
+        let stated = resident().0;
         (scope.apply(batch).expect("a load"), stated)
     });
     scope.merge();
-    let (held, loaded) = (resident(), began.elapsed());
+    let ((held, most), loaded) = (resident(), began.elapsed());
+    let most = most.saturating_sub(stated);
     let counters = applied.load.expect("the loader laid the Merk out");
     let stats = txn.stats();
     let began = Instant::now();
@@ -548,7 +624,7 @@ fn the_memory_a_load_holds_is_measured_on_the_process() {
         Ok(Committed::Published(published)) => published,
         other => panic!("the load is committed, and not {other:?}"),
     };
-    let (after, committed) = (resident(), began.elapsed());
+    let (after, committed) = (resident().0, began.elapsed());
     let load = held.saturating_sub(stated);
     let page = db.page_size().get() as u64;
     println!(
@@ -560,11 +636,18 @@ fn the_memory_a_load_holds_is_measured_on_the_process() {
     );
     println!(
         "resident: {:.1} MiB before, {:.1} MiB with the batch stated, {:.1} MiB with the load \
-         held, {:.1} MiB after the commit",
+         held, {:.1} MiB after the commit; at most {:.1} MiB above the batch up to the end of \
+         the load{}",
         mib(before),
         mib(stated),
         mib(held),
-        mib(after)
+        mib(after),
+        mib(most),
+        if leaves_first {
+            ", every leaf stated first"
+        } else {
+            ""
+        }
     );
     println!(
         "the load holds {:.1} MiB, {:.0} bytes for a node: {:.1} MiB of pages ({} of {page} \
@@ -588,9 +671,11 @@ fn the_memory_a_load_holds_is_measured_on_the_process() {
     assert_eq!((published.value_bytes, stats.value_pages), (0, 0));
     if value_len >= 2_048 {
         assert!(
-            load < counters.value_bytes / 2,
-            "the load holds {:.1} MiB for {:.1} MiB of values out of line",
+            load.max(most) < counters.value_bytes / 2,
+            "the load holds {:.1} MiB, and held {:.1} MiB at most, for {:.1} MiB of values out \
+             of line",
             mib(load),
+            mib(most),
             mib(counters.value_bytes)
         );
     }

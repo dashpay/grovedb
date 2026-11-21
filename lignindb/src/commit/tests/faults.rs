@@ -29,7 +29,10 @@ use super::{aux, read_groups, records, sim, store_on, DIR};
 use crate::{
     commit::{CommitError, Committed, Committer, Failure, NoStaleHashes, Stopped},
     snapshot::Versions,
-    txn::tests::{put, store::Db},
+    txn::{
+        tests::{put, store::Db},
+        TxnError,
+    },
 };
 
 /// One commit that was tried: the number of the attempt, which the value
@@ -590,8 +593,10 @@ fn no_commit_is_taken_while_the_cut_cannot_be_made() {
 
 /// A load whose commit is unsettled keeps the files of its values for as
 /// long as the session lasts: its group names them, and a crash can bring
-/// the group back (CM9). A load that is rolled back holds none, and the
-/// file its values went to is taken out of the store once it is closed.
+/// the group back (CM9). The store has the hold from then on, and it ends
+/// with the session: nothing of the process outlives that. A load that is
+/// rolled back holds none, and the file its values went to is taken out
+/// of the store once it is closed.
 #[test]
 fn a_load_whose_commit_is_unsettled_keeps_its_values_for_the_session() {
     use crate::txn::tests::{
@@ -602,7 +607,9 @@ fn a_load_whose_commit_is_unsettled_keeps_its_values_for_the_session() {
 
     // Whether the file that the values of a load went to is taken out of
     // the store once it is closed and nothing of the latest version points
-    // into it.
+    // into it, how many holds the store has for the session then, and
+    // whether the file goes once those holds have ended, as they do with
+    // the session.
     let goes = |unsettled: bool| {
         let session = Session::new(700, SyncPolicy::Never);
         session.commit();
@@ -621,7 +628,7 @@ fn a_load_whose_commit_is_unsettled_keeps_its_values_for_the_session() {
         let file = file.id();
         if unsettled {
             // A manifest covers the values while the files can be synced.
-            txn.prepare_loads().expect("the values are covered");
+            txn.prepare_loads();
             let taken_back = FaultRule::new(Fault::Eio)
                 .on(OpKind::Append)
                 .torn_append(false);
@@ -641,11 +648,117 @@ fn a_load_whose_commit_is_unsettled_keeps_its_values_for_the_session() {
         let closed = session.db.load_files.close(file);
         assert!(closed.expect("the file is closed"), "the loads fill it");
         assert!(!session.db.load_files.close(file).expect("no file"));
-        let values = &session.db.values;
-        let retired = values.retire(session.versions.latest());
-        let dropped = values.drop_empty(retired).expect("what is empty goes");
-        dropped.contains(&file)
+        let gone = |session: &Session| {
+            let values = &session.db.values;
+            let retired = values.retire(session.versions.latest());
+            let dropped = values.drop_empty(retired).expect("what is empty goes");
+            dropped.contains(&file)
+        };
+        let went = gone(&session);
+        let kept = session.db.load_files.end_kept();
+        (went, kept, went || gone(&session))
     };
-    assert!(goes(false), "the file of a load that was rolled back");
-    assert!(!goes(true), "the file of a load whose commit is unsettled");
+    assert_eq!(
+        goes(false),
+        (true, 0, true),
+        "the file of a load that was rolled back"
+    );
+    assert_eq!(
+        goes(true),
+        (false, 1, true),
+        "the file of a load whose commit is unsettled"
+    );
+}
+
+/// A replacement of the manifest that fails in its rename leaves the
+/// manifest in doubt (`lignin_store::segment`). The commit of a load that
+/// meets this is refused with the transaction as it was. The next try
+/// settles the manifest as write-back does, with no pass of write-back
+/// between, and commits.
+#[test]
+fn the_commit_of_a_load_settles_a_manifest_that_was_left_in_doubt() {
+    use crate::txn::tests::{
+        load::{batch_of, items, whole},
+        model,
+        store::Rng,
+    };
+
+    let session = Session::new(701, SyncPolicy::Never);
+    session.commit();
+    let committer = session.committer();
+    let txn = committer.path().begin();
+    let scope = txn.scope().expect("a scope");
+    let merk = items(&mut Rng::new(4), b'd', 60, 2);
+    let long = merk.values().filter(|value| value.len() > 256).count();
+    let batch = batch_of(vec![whole(1, &merk)]);
+    let loaded = batch.loading(&[model::subtree(1)], |batch| scope.apply(batch));
+    assert!(loaded.expect("a load").load.is_some());
+    scope.merge();
+    let in_doubt = || {
+        let manifest = session.db.manifest.lock().expect("the manifest");
+        manifest.manifest().is_err()
+    };
+
+    let renames = FaultRule::new(Fault::Eio).on(OpKind::Rename).forever();
+    session.fs.add_rule(renames);
+    for _ in 0..2 {
+        let refused = committer.commit(&txn, &mut NoStaleHashes);
+        assert!(
+            matches!(&refused, Err(CommitError::Refused(TxnError::Values(_)))),
+            "{refused:?}"
+        );
+        assert!(in_doubt(), "the replacement was left in doubt");
+    }
+    session.fs.clear_rules();
+    let published = match committer.commit(&txn, &mut NoStaleHashes) {
+        Ok(Committed::Published(published)) => published,
+        other => panic!("the load is committed, and not {other:?}"),
+    };
+    assert_eq!(published.acquired, long);
+    assert!(!in_doubt());
+}
+
+/// The first value of the loads of a store goes to a file that is created
+/// for it and that a manifest names before it takes the value. Where the
+/// manifest cannot be replaced, the load is refused, and every later try
+/// finds the same file: no file is left behind for each of them.
+#[test]
+fn a_load_whose_file_cannot_be_named_creates_it_once() {
+    use crate::txn::tests::{
+        load::{batch_of, items, whole},
+        model,
+        store::Rng,
+    };
+
+    let session = Session::new(702, SyncPolicy::Never);
+    session.commit();
+    let committer = session.committer();
+    let txn = committer.path().begin();
+    let merk = items(&mut Rng::new(5), b'f', 60, 2);
+    let long = merk.values().filter(|value| value.len() > 256).count();
+    let batch = batch_of(vec![whole(1, &merk)]);
+    let load = || {
+        let scope = txn.scope().expect("a scope");
+        let loaded = batch.loading(&[model::subtree(1)], |batch| scope.apply(batch));
+        scope.merge();
+        loaded
+    };
+    let files = || session.db.values.files_named().expect("the files").len();
+    assert_eq!(files(), 0);
+
+    let renames = FaultRule::new(Fault::Eio).on(OpKind::Rename).forever();
+    session.fs.add_rule(renames);
+    for _ in 0..3 {
+        let refused = load().expect_err("no manifest names the file");
+        assert!(matches!(refused, TxnError::Values(_)), "{refused}");
+        assert_eq!(files(), 1, "the file of the first try");
+    }
+    session.fs.clear_rules();
+    assert!(load().expect("a load").load.is_some());
+    assert_eq!(files(), 1);
+    let published = match committer.commit(&txn, &mut NoStaleHashes) {
+        Ok(Committed::Published(published)) => published,
+        other => panic!("the load is committed, and not {other:?}"),
+    };
+    assert_eq!(published.acquired, long);
 }

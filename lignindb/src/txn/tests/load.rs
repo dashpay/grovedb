@@ -75,6 +75,28 @@ pub(crate) fn whole(name: u8, items: &Items) -> OwnedMerk {
     }
 }
 
+/// The change set of [`whole`] with its nodes in another order that has a
+/// child before its parent: every leaf first, and then the nodes by their
+/// height. No node of it has its parent before every node that is lower
+/// has arrived, so the values of all the leaves, a third of the nodes of
+/// the tree the model makes, wait for a page at once.
+pub(crate) fn whole_by_height(name: u8, items: &Items) -> OwnedMerk {
+    let mut merk = whole(name, items);
+    let mut heights: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+    for (key, node, _) in &merk.nodes {
+        let children = [&node.left, &node.right].into_iter().flatten();
+        let below = children.map(|link| heights[&link.key]).max();
+        heights.insert(key.clone(), below.map_or(1, |below| below + 1));
+    }
+    merk.nodes.sort_by_key(|(key, ..)| heights[key]);
+    let leaves = heights.values().filter(|height| **height == 1).count();
+    let first =
+        (merk.nodes.iter()).take_while(|(_, node, _)| node.left.is_none() && node.right.is_none());
+    assert_eq!(first.count(), leaves, "every leaf comes first");
+    assert!(leaves * 4 > merk.nodes.len(), "{leaves} leaves");
+    merk
+}
+
 /// A batch of `merks`, each with the record that a change of its root
 /// writes beside it.
 pub(crate) fn batch_of(merks: Vec<OwnedMerk>) -> OwnedBatch {
@@ -271,9 +293,19 @@ fn the_commit_of_a_load_carries_no_value_and_counts_each() {
 /// What a rebase and a rollback to a mark do with loaded pages: the load
 /// is laid out again by the loader, and its values are appended anew for
 /// the pages their cells are in now. The records are what they were, and
-/// the commit counts each value once.
+/// the commit counts each value once. So it is in whatever order the
+/// nodes are stated: a child before its parent as a walk of the tree
+/// finds them, and every leaf first, where the values of a third of the
+/// nodes wait for their pages at once, the first time from the batch and
+/// then from the value log.
 #[test]
 fn frames_that_are_made_again_lay_a_load_out_again() {
+    for stated in [whole, whole_by_height] {
+        frames_are_made_again(stated);
+    }
+}
+
+fn frames_are_made_again(stated: fn(u8, &Items) -> OwnedMerk) {
     let (db, versions) = Db::new(256);
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(12);
@@ -281,7 +313,7 @@ fn frames_that_are_made_again_lay_a_load_out_again() {
     let long = long_values(&merk);
 
     let tx = world.begin();
-    load(&world, &tx, &batch_of(vec![whole(1, &merk)]), &[1]).expect("a load");
+    load(&world, &tx, &batch_of(vec![stated(1, &merk)]), &[1]).expect("a load");
     let pages = tx.txn.stats().tree_pages;
     // A commit of another transaction, which meets no write of this one.
     let landed = world.edit_outside(
@@ -316,6 +348,15 @@ fn frames_that_are_made_again_lay_a_load_out_again() {
     assert_eq!((published.acquired, published.released), (long, 0));
     assert_eq!((published.value_bytes, published.value_pages), (0, 0));
     assert_eq!(counted(&db), long as u64);
+    let long_bytes: usize = (merk.values().map(Vec::len))
+        .filter(|len| *len >= LONG)
+        .sum();
+    let files = db.values.files_named().expect("the files");
+    let appended: u64 = files.iter().map(|file| file.valid_len()).sum();
+    assert!(
+        appended >= 3 * long_bytes as u64,
+        "{appended} bytes hold three copies of {long_bytes}"
+    );
     world.check_committed();
 }
 
@@ -704,9 +745,128 @@ fn a_load_is_the_puts_of_its_nodes_to_the_conflict_rule() {
     assert_eq!(counted(&db), long_values(&merk) as u64);
 }
 
+/// The commit of a transaction that holds a load makes it ready before
+/// the commit lock is taken, and what that comes to is no answer of the
+/// commit. A transaction that a commit has met ends with the conflict,
+/// also where the look at what its drop covers fails while it is made
+/// ready: the error is no reason to try again (CF6).
+#[test]
+fn a_commit_of_a_load_that_is_met_ends_with_the_conflict() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let merk = items(&mut Rng::new(19), b'm', 200, 3);
+    let dropped = world.edit_outside(
+        9,
+        |items| items.extend(items_of(&mut Rng::new(20), b'g', 12)),
+        &[],
+    );
+    assert!(matches!(dropped, Outcome::Committed(_)));
+    let beside = |value: &[u8]| OwnedBatch {
+        records: vec![put(model::unit(Column::Aux, 8), b"k", value)],
+        ..OwnedBatch::default()
+    };
+
+    let tx = world.begin();
+    load(&world, &tx, &batch_of(vec![whole(1, &merk)]), &[1]).expect("a load");
+    let drop = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Drop(model::subtree(9))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &drop).expect("the drop");
+    world.apply(&tx, &beside(b"mine")).expect("a record beside");
+    let theirs = world.write_outside(&beside(b"theirs"), &[&tx]);
+    assert!(matches!(theirs, Outcome::Committed(_)));
+    tx.txn.refuse_look();
+    assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+    assert_eq!(counted(&db), 0, "no value of the load is counted");
+}
+
+/// A Merk has one host. A node that is written as any other keeps the
+/// Merks it hosts, and a node of a load in the same batch names one of
+/// them: the batch is refused with the transaction as it was, as the same
+/// batch is whose nodes are all written one by one.
+#[test]
+fn a_merk_that_a_kept_host_and_a_node_of_a_load_host_is_hosted_twice() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(21);
+    let hosted = ENTERED + 1;
+    let host = key(b'h', 1);
+
+    // A node of the Merk 1 hosts a Merk with nodes.
+    let tx = world.begin();
+    let mut outer = world.merk(&tx, 1, |items| {
+        items.extend(items_of(&mut rng, b'o', 20));
+        items.insert(host.clone(), b"tree".to_vec());
+    });
+    outer
+        .hosted
+        .insert(host.clone(), vec![model::subtree(hosted)]);
+    let inner = world.merk(&tx, hosted, |items| {
+        items.extend(items_of(&mut rng, b'i', 30));
+    });
+    let mut batch = batch_of(vec![outer, inner]);
+    batch.subtrees = vec![OwnedSubtree::Enter(
+        model::subtree(hosted),
+        Some((model::subtree(1), host.clone(), 0)),
+    )];
+    world.apply(&tx, &batch).expect("a host and its Merk");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    // The host is written and keeps what it hosts, and a node of another
+    // Merk, which the batch hands over whole, names the same Merk.
+    let tx = world.begin();
+    let other = items(&mut rng, b'a', 60, 3);
+    let second = other.keys().nth(7).expect("a node").clone();
+    let two_hosts = || {
+        let kept = world.merk(&tx, 1, |items| {
+            items.insert(host.clone(), b"tree, written".to_vec());
+        });
+        assert!(kept.hosted.is_empty(), "the host keeps what it hosts");
+        let mut load = whole(2, &other);
+        load.hosted
+            .insert(second.clone(), vec![model::subtree(hosted)]);
+        batch_of(vec![kept, load])
+    };
+    // The nodes above the host keep their values: each is read, and the
+    // write names that read.
+    let scope = tx.txn.scope().expect("a scope");
+    let read = two_hosts().through(&scope);
+    let refused = read.loading(&[model::subtree(2)], |batch| scope.apply(batch));
+    scope.merge();
+    let refused = refused.expect_err("two hosts");
+    let twice = BatchError::NotWhole {
+        subtree: model::subtree(2),
+        fault: WholeFault::HostedTwice,
+    };
+    assert!(
+        matches!(&refused, TxnError::Batch(error) if *error == twice),
+        "{refused}"
+    );
+    world.check(&tx);
+    let one_by_one = world.apply(&tx, &two_hosts());
+    let two_pointers = |error: &TxnError| {
+        use lignin_tree::fragment::{FragmentError, WriteError};
+        matches!(
+            error,
+            TxnError::Fragment(FragmentError::Write(WriteError::TwoPointers { .. }))
+        )
+    };
+    assert!(
+        matches!(&one_by_one, Err(error) if two_pointers(error)),
+        "two hosts, node by node: {one_by_one:?}"
+    );
+    world.check(&tx);
+    tx.txn.rollback().expect("no scope is open");
+    world.check_committed();
+}
+
 /// A transaction that a commit has met serves its records by key, and a
-/// load it is given then has no page: its values stay with the write set,
-/// and every record is read as it was stated. And a load keeps no value,
+/// load it is given then has no page: its values that fit their cells
+/// stay with the write set, the others are in the value log, and every
+/// record is read as it was stated. And a load keeps no value,
 /// so no read is dated for it (CF2a): it is taken after any number of
 /// commits, with no handle named.
 #[test]
@@ -760,6 +920,56 @@ fn a_load_by_key_and_a_load_after_many_commits() {
     let published = commit(&mut world, tx);
     assert_eq!(published.acquired, long_values(&merk));
     world.check_committed();
+}
+
+/// A load that no frames take, here that of a scope that is open beside
+/// another, has no page. Its values that are too long for a cell are in
+/// the value log all the same, and the write set holds as much of the
+/// load whether such a value is 257 bytes long or 9,000 more: while the
+/// scope keeps its writes there, and once they are laid out.
+#[test]
+fn a_load_that_no_frames_take_keeps_its_long_values_in_the_value_log() {
+    let held = |more: usize| {
+        let (db, versions) = Db::new(256);
+        let mut world = World::new(&db, &versions);
+        let mut merk = items(&mut Rng::new(23), b'n', 240, 2);
+        for value in merk.values_mut().filter(|value| value.len() >= LONG) {
+            value.resize(LONG + more, 0x5a);
+        }
+        let long = long_values(&merk);
+        let tx = world.begin();
+        let first = tx.txn.scope().expect("a scope");
+        let beside = tx.txn.scope().expect("a scope beside it");
+        let batch = batch_of(vec![whole(1, &merk)]);
+        let first_write = world.latest().get();
+        let applied = batch.loading(&[model::subtree(1)], |batch| beside.apply(batch));
+        assert_eq!(applied.expect("kept in the write set").load, None);
+        world.note(&tx, &batch, first_write);
+        let unlaid = tx.txn.stats().write_set_bytes;
+        assert_eq!(tx.txn.stats().tree_pages, 0);
+        // A value that went into the value log for no page is read from
+        // there, by key.
+        let (long_key, long_value) = (merk.iter())
+            .find(|(_, value)| value.len() >= LONG)
+            .expect("a value out of line");
+        let read = beside.node(model::subtree(1), long_key, |view| {
+            value_of(&view.expect("a node of the load"))
+        });
+        assert_eq!(&read.expect("a read by key"), long_value);
+        first.merge();
+        beside.merge();
+        world.check(&tx);
+        let laid = tx.txn.stats();
+        assert!(laid.tree_pages > 0 && laid.value_pages == 0, "{laid:?}");
+        let published = commit(&mut world, tx);
+        assert_eq!((published.acquired, published.value_bytes), (long, 0));
+        assert_eq!(counted(&db), long as u64);
+        world.check_committed();
+        (unlaid, laid.write_set_bytes, long)
+    };
+    let (short, long) = (held(0), held(9_000));
+    assert_eq!(short, long, "9,000 bytes more in each value out of line");
+    assert!(short.2 > 100, "{short:?}");
 }
 
 /// A load of a scope that is open beside another is kept in the write

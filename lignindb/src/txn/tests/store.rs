@@ -778,7 +778,7 @@ impl Db {
             directories: &self.directories,
             flat_drops: self.flat_drops(),
             load_files: &self.load_files,
-            manifest: &self.manifest,
+            write_back: self.write_back(versions),
         };
         WritePath::new(
             store,

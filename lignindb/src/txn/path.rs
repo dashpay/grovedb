@@ -2,18 +2,15 @@
 
 use std::{
     fmt,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use lignin_format::{CommitVersion, PageSize};
 use lignin_store::{
     alloc::PageAllocator,
     cache::{BufferPool, OwnerId},
+    flush::WriteBack,
     load::{LoadBuffers, PageLoader},
-    segment::ManifestStore,
     stats::Stats,
     values::ValueStore,
 };
@@ -130,10 +127,11 @@ pub struct WritePath<'s> {
     /// The value-log file the loads of the store append to
     /// (`crate::txn`, "A load").
     pub(crate) load_files: &'s LoadFiles,
-    /// The manifest, behind the lock that makes its replacements one at a
-    /// time (LT7 level 3): a load has it name the file its values go to,
-    /// and the commit of a load has it cover them.
-    pub(crate) manifest: &'s Mutex<ManifestStore>,
+    /// Write-back's handle on the store, for its manifest behind the lock
+    /// that makes replacements one at a time (LT7 level 3): a load has it
+    /// name the file its values go to, and the commit of a load has it
+    /// cover them.
+    pub(crate) write_back: WriteBack<'s>,
     pub(crate) keyspaces: Keyspaces,
     pub(crate) layout: Layout,
     pub(crate) inline: InlinePolicy,
@@ -164,9 +162,9 @@ pub(crate) struct Store<'s> {
     /// The value-log file the loads of the store append to: one for the
     /// store, made beside its commits.
     pub(crate) load_files: &'s LoadFiles,
-    /// The store's manifest, which write-back replaces under the same
-    /// lock.
-    pub(crate) manifest: &'s Mutex<ManifestStore>,
+    /// Write-back's handle on the store, whose manifest the loads replace
+    /// under the lock write-back replaces it under.
+    pub(crate) write_back: WriteBack<'s>,
 }
 
 impl<'s> WritePath<'s> {
@@ -192,7 +190,7 @@ impl<'s> WritePath<'s> {
             directories: store.directories,
             flat_drops: store.flat_drops,
             load_files: store.load_files,
-            manifest: store.manifest,
+            write_back: store.write_back,
             keyspaces,
             layout,
             inline,

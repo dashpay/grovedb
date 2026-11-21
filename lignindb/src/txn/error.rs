@@ -403,7 +403,8 @@ pub enum WholeFault {
     /// Loads of the batch host each other, in a cycle of one or more.
     HostsItself,
     /// A node hosts a Merk that another node of the batch hosts, or hosts
-    /// it twice. A Merk has one host.
+    /// it twice. The other node may be one that the batch writes and that
+    /// keeps the Merks it hosts. A Merk has one host.
     HostedTwice,
 }
 

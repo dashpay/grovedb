@@ -24,7 +24,7 @@ use super::{
     error::{BatchError, TxnError},
     frames::{stored_key, Awake, Frames, Parked, Woken},
     key::{Column, KeySet, Subtree, Unit},
-    load::{cover, is_load, Loaded},
+    load::{cover, is_load, spill, Loaded},
     opened::Opened,
     pages::{child_keys, find, follow, CommittedPages, NodePages},
     path::WritePath,
@@ -1777,15 +1777,18 @@ impl<'s> WriteTxn<'s> {
             entry += merk.removed.len() as EntryId;
         }
         let cut = self.cut(state, op, batch)?;
+        // A load that is taken by key has no page. Its values that are too
+        // long for a cell go into the value log all the same, for no page,
+        // and the write set keeps where they are: when its frames are
+        // made, the load is laid out from there.
+        let stored = spill(path, &mut state.loaded, batch)?;
         if batch.has_leaves() {
             // The cells of a Merk that leaves stay in their pages: every
             // handle that was read before ends (PN8).
             state.renew_lease();
             state.lease_at = Some(op.at);
         }
-        // A load that is taken by key has no page: its values stay with
-        // the write set until its frames are made.
-        let first = state.set.add(batch, op.at, &empty, &cut, &[], &[]);
+        let first = state.set.add(batch, op.at, &empty, &cut, &[], &stored);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
         }
@@ -2596,15 +2599,19 @@ impl<'s> WriteTxn<'s> {
     /// no load is left as it is.
     ///
     /// The commit does the same under the commit lock ([`Self::seal`]),
-    /// and finds it done unless a commit landed in between.
-    pub(crate) fn prepare_loads(&self) -> Result<(), TxnError> {
+    /// and finds it done unless a commit landed in between. What this
+    /// comes to is the seal's to say, which decides the conflict before
+    /// anything else (CF6): an error here is returned by no one, and the
+    /// seal meets it again if it stands.
+    pub(crate) fn prepare_loads(&self) {
         let mut state = self.lock();
         let state = &mut *state;
         if !state.set.has_loads() {
-            return Ok(());
+            return;
         }
-        self.begin(state, false)?;
-        self.cover(state)
+        if self.begin(state, false).is_ok() {
+            let _ = self.cover(state);
+        }
     }
 
     /// Has a durable manifest cover the values that the loads of the

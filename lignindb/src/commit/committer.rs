@@ -3,7 +3,6 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     fmt,
-    mem::ManuallyDrop,
 };
 
 use lignin_format::{
@@ -35,8 +34,9 @@ use super::{
 use crate::{
     snapshot::OperationGuard,
     txn::{
-        load::Loaded, Batch, FlatFrames, KeySet, Parts, Sealed, TreeCopy, TreePages, TxnError,
-        WritePath, WriteTxn,
+        load::{Held, Loaded},
+        Batch, FlatFrames, KeySet, Parts, Sealed, TreeCopy, TreePages, TxnError, WritePath,
+        WriteTxn,
     },
 };
 
@@ -254,9 +254,9 @@ impl<'s> Committer<'s> {
         }
         self.look_at_log(true)?;
         // A transaction that holds a load is made ready before the commit
-        // lock is taken: what that syncs, and its replacement of the
-        // manifest, no other commit waits for.
-        txn.prepare_loads().map_err(CommitError::Refused)?;
+        // lock is taken, so that what this syncs, and its replacement of
+        // the manifest, are not waited for under the commit lock.
+        txn.prepare_loads();
         let mut untold = None;
         let committed = self.commit_locked(txn, &path, rules, also, |_| Ok(()), &mut untold);
         // No lock is held here: whoever is told may call the store.
@@ -554,15 +554,6 @@ impl<'s> Committer<'s> {
             let lost = TxnError::Damaged("a value of a load is covered by no manifest");
             return Err(self.failed(lost.into()));
         }
-        // From here on the hold on the files of those values is given up
-        // only where the group is known not to be in the log, and once
-        // the values are counted. A commit that ends in any other way
-        // keeps it for the session: where it cannot be settled, where its
-        // install is refused, and where it panics. A recovery that keeps
-        // the group finds cells that point into those files, and no count
-        // of this session says so.
-        let loaded = ManuallyDrop::new(loaded);
-        let release = |loaded: ManuallyDrop<Loaded>| drop(ManuallyDrop::into_inner(loaded));
 
         // Step 6. The lock on the counts is taken before the log is asked
         // for the place of the group, and held until the commit is counted
@@ -570,12 +561,17 @@ impl<'s> Committer<'s> {
         let guard = path.versions.guard();
         let mut flat = flat.for_commit(&guard);
         let counts = (path.values.step()).map_err(|error| self.failed(error.into()))?;
+        // From here on the hold on the files of those values is given up
+        // only where the group is known not to be in the log, and once
+        // the values are counted. A commit that ends in any other way
+        // leaves it with the store for the session ([`Held`]).
+        let held = Held::new(path.load_files, loaded);
         let mut places = 0;
         let (appended, logged) = loop {
             let at = match self.log.next_group() {
                 Ok(at) => at,
                 Err(error) => {
-                    release(loaded);
+                    held.release();
                     return Err(self.not_appended(counts, version, error));
                 }
             };
@@ -592,17 +588,17 @@ impl<'s> Committer<'s> {
                     version,
                     reason: gap.to_string(),
                 });
-                release(loaded);
+                held.release();
                 return Err(self.failed(gap));
             }
             let group = &mut lock.scratch.group;
-            let own = (&*loaded, &acquired[..]);
+            let own = (held.loaded(), &acquired[..]);
             let logged =
                 Self::write_group(group, &at, &mut tree, &mut values, &source, &mut flat, own);
             let logged = match logged {
                 Ok(logged) => logged,
                 Err(failure) => {
-                    release(loaded);
+                    held.release();
                     return Err(self.failed(failure));
                 }
             };
@@ -613,13 +609,13 @@ impl<'s> Committer<'s> {
                     self.state.count(Counted::Rewritten);
                 }
                 Err(LogError::PlaceTaken { .. }) => {
-                    release(loaded);
+                    held.release();
                     return Err(self.failed(Failure::PlaceLost));
                 }
                 Err(error) => {
                     let ended = self.not_appended(counts, version, error);
                     if !matches!(ended, CommitError::Unsettled { .. }) {
-                        release(loaded);
+                        held.release();
                     }
                     return Err(ended);
                 }
@@ -655,7 +651,7 @@ impl<'s> Committer<'s> {
         let miscounted = counts.apply(&change, version).err();
         // The values of the loads are counted: the hold on their files
         // ends here. What no cell holds of them is dead space.
-        release(loaded);
+        held.release();
 
         // The fsync of the commit, if the sync policy asks for one (CM7):
         // before anything is published, and under no lock but the commit

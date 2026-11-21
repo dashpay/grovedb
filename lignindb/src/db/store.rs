@@ -534,7 +534,7 @@ impl Shared {
             directories: &store.directories,
             flat_drops: catalog.flat_drops,
             load_files: &store.load_files,
-            manifest: &store.manifest,
+            write_back: self.write_back(),
         };
         WritePath::new(
             parts,
