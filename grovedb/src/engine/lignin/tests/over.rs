@@ -547,6 +547,7 @@ fn a_move_whose_subtree_a_commit_dropped_before_its_walk_is_a_conflict() {
     assert!(refused.is_commit_conflict(), "{refused}");
     let read = (db.get(ROOT, b"c", None, v).unwrap()).expect("the element where it was");
     assert_eq!(read, counted);
+    assert!(db.get(ROOT, b"d", None, v).unwrap().is_err());
     drop(Arc::into_inner(db).expect("the only handle on the grove"));
     check(dir.path());
 }

@@ -2567,6 +2567,16 @@ fn a_settled_batch_says_which_puts_are_over_a_tree_and_takes_a_drop() {
     drop(merk);
     let on = staged.settle(&writer).unwrap().expect("a settled batch");
     assert!(!on.began_empty(&sole.prefix) && on.writes_merk(&sole.prefix));
+    // So did a writer whose first change set removes that root and puts a
+    // node that is new to the Merk, both at once: a change set that
+    // removes a node begins no Merk, whatever it puts.
+    let staged = LigninBatch::new();
+    let handle = LigninNodeStore::deferred(&writer, sole.clone(), Some(&staged));
+    let mut merk = open_layered(handle, Some(be(1)));
+    apply(&mut merk, &[(be(1), Op::Delete), basic(3, b"three")]);
+    drop(merk);
+    let at_once = staged.settle(&writer).unwrap().expect("a settled batch");
+    assert!(!at_once.began_empty(&sole.prefix) && at_once.writes_merk(&sole.prefix));
     let none = LigninBatch::new()
         .settle(&writer)
         .unwrap()

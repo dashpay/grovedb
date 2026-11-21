@@ -801,6 +801,37 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
         calls.get(rooted, &added);
         calls.get(inner, b"deep");
     }
+    // The same for a tree with one element: the first segment removes the
+    // one node of its Merk, and what is added after it puts a node that
+    // is new to that Merk, into the same tree.
+    let solo: &[&[u8]] = &[b"documents", b"solo"];
+    calls.batch(
+        "a tree with one element",
+        vec![
+            insert(&solo[..1], b"solo", Element::empty_tree()),
+            insert(solo, &[b'o', 0], Element::new_item(vec![6; 12])),
+        ],
+    );
+    for (round, height) in [None, Some(0u8), Some(1), Some(2)].into_iter().enumerate() {
+        let options = BatchApplyOptions {
+            batch_pause_height: height,
+            ..BatchApplyOptions::default()
+        };
+        let (only, next) = ([b'o', round as u8], [b'o', round as u8 + 1]);
+        calls.partial(
+            &format!("the one element of a tree deleted, paused at {height:?}"),
+            vec![delete(solo, &only)],
+            Some(options),
+            |cost| {
+                Ok(vec![
+                    insert(&[b"balances"], b"payer", charged(cost)),
+                    insert(solo, &next, Element::new_item(vec![7; 12])),
+                ])
+            },
+        );
+        calls.get(solo, &next);
+        calls.refused(|calls| calls.get(solo, &only));
+    }
     // The same for a tree that keeps its data flat: leaves appended by a
     // first segment that stops below the tree's element.
     calls.batch(
