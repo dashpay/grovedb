@@ -155,9 +155,10 @@ fn settle(db: &Db) {
 ///    is due, so if the first of the two was written as a base image, the
 ///    second is a run behind it.
 /// 4. **An image has a commit that is not durable.** The log is synced
-///    for a table checkpoint and by nothing else in this store: with the
-///    checkpoints locked, a commit is in the log and no sync has reached
-///    it when the image is taken.
+///    for a table checkpoint and by a roll of the log, and by nothing
+///    else in this store. A checkpoint holds the lock on the checkpoints
+///    and a roll the manifest's: with both locked, a commit is in the
+///    log and no sync has reached it when the image is taken.
 fn built(
     db: &Db,
     fs: &SimVfs,
@@ -198,10 +199,12 @@ fn built(
     assert!(stats.delta_blocks > runs, "{stats:?}");
 
     let no_checkpoint = db.state.checkpoints.lock().expect("the checkpoints");
+    let no_roll = db.manifest.lock().expect("the manifest");
     let durable = db.log.durable().version;
     let latest = change(5);
     let image = fs.crash_image();
     let synced = db.log.durable().version;
+    drop(no_roll);
     drop(no_checkpoint);
     assert!(synced < latest, "{synced} is durable of {latest}");
     (4, (durable, latest, image))
