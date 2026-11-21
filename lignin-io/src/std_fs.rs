@@ -44,9 +44,13 @@
 //! on macOS that call replaces a directory only if it has no entries, and
 //! refuses to move a directory into itself.
 //!
-//! [`Vfs::sync_dir`] and a [`SyncItem::Dir`] open their path before they look
-//! at what it names. Where it names a FIFO, that open waits until the FIFO
-//! has a writer, and only then does the call fail with `NotADirectory`.
+//! [`Vfs::sync_dir`] and a [`SyncItem::Dir`] open their path with
+//! `O_DIRECTORY` on Linux on x86-64 and on AArch64 and on macOS, except
+//! under Miri: the system refuses a path that names no directory. On Linux
+//! on any other architecture, and under Miri, whose `open` does not take the
+//! flag, they open the path without it and then look at what it names: where
+//! it names a FIFO, that open waits until the FIFO has a writer, and only
+//! then does the call fail with `NotADirectory`.
 //!
 //! # A set synced together
 //!
@@ -168,7 +172,7 @@ use std::{
     any::Any,
     fs::{self, File, OpenOptions, TryLockError},
     io::{self, ErrorKind, Write},
-    os::unix::fs::{FileExt, MetadataExt},
+    os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt},
     path::Path,
     sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
@@ -473,8 +477,30 @@ fn failed_sync(error: &io::Error) -> String {
     )
 }
 
+/// The flag with which `open` refuses a path that names no directory, on
+/// the systems whose number for it is written out here: Linux on x86-64 and
+/// on AArch64, and macOS. The numbers are those of these systems' C
+/// libraries. No other system is guessed at, and Miri's `open` does not take
+/// the flag.
+const O_DIRECTORY: Option<i32> = if cfg!(miri) {
+    None
+} else if cfg!(target_os = "macos") {
+    Some(0x0010_0000)
+} else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    Some(0x1_0000)
+} else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    Some(0x4000)
+} else {
+    None
+};
+
 fn open_dir(path: &Path) -> io::Result<File> {
-    let dir = File::open(path)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    if let Some(flag) = O_DIRECTORY {
+        options.custom_flags(flag);
+    }
+    let dir = options.open(path)?;
     if !dir.metadata()?.is_dir() {
         return Err(path_error(
             ErrorKind::NotADirectory,
