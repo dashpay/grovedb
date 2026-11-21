@@ -462,6 +462,22 @@ fn every_plan_of_a_small_image_can_be_listed() {
 }
 
 #[test]
+fn every_plan_counts_the_changes_before_it_lists_their_orders() {
+    let with_changes = |changes: u64| {
+        let fs = sim(23);
+        let file = create_durable(&fs, "/file", b"");
+        for len in 1..=changes {
+            file.set_len(len).unwrap();
+        }
+        fs.crash_image()
+    };
+    let one = with_changes(1);
+    assert_eq!(one.every_plan(2).map(|plans| plans.len()), Some(2));
+    assert!(one.every_plan(1).is_none());
+    assert!(with_changes(64).every_plan(usize::MAX).is_none());
+}
+
+#[test]
 fn every_plan_of_an_image_with_more_changes_than_a_stack_is_deep_is_refused() {
     on_a_small_stack(|| {
         let fs = sim(22);
