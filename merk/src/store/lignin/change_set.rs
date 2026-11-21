@@ -1371,13 +1371,10 @@ fn charge_outcomes(
         let prefix = outcome.unit.subtree.as_bytes();
         // The data keyspace is the last, and a moved record comes before
         // the outcome whose stored key is the first after its own.
-        while keyspace == Keyspace::Data {
-            let before = |((subtree, key), _): &((Prefix, Vec<u8>), (u64, Charge))| {
-                (subtree, key.as_slice()) < (prefix, outcome.key)
-            };
-            let Some(((_, key), (_, attached))) = moved.next_if(before) else {
-                break;
-            };
+        let before = |((subtree, key), _): &((Prefix, Vec<u8>), (u64, Charge))| {
+            keyspace == Keyspace::Data && (subtree, key.as_slice()) < (prefix, outcome.key)
+        };
+        while let Some(((_, key), (_, attached))) = moved.next_if(before) {
             charge_moved(charge, &key, attached)?;
         }
         let stored_key_len = stored_key_len(outcome.key);

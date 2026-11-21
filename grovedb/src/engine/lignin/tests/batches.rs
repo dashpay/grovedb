@@ -1100,7 +1100,7 @@ fn over_a_tree<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     for kind in 0..made {
         calls.batch("filled", filled(&[], &top(kind), kind, made));
     }
-    for kind in 0..made {
+    for (kind, own) in KINDS.iter().enumerate().take(made) {
         let (top, next) = (top(kind), (kind + 1) % made);
         let top = top.as_slice();
         match kind % WAYS {
@@ -1108,10 +1108,7 @@ fn over_a_tree<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
             0 => {
                 calls.batch("an item over it", vec![insert(&[], top, item(5))]);
                 held(&mut calls, top, false);
-                calls.batch(
-                    "a tree over the item",
-                    vec![insert(&[], top, (KINDS[kind].make)())],
-                );
+                calls.batch("a tree over the item", vec![insert(&[], top, (own.make)())]);
                 held(&mut calls, top, false);
                 calls.batch("into it", inside(top, kind));
             }
@@ -1119,10 +1116,7 @@ fn over_a_tree<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
             1 => calls.batch("a tree over it, written", fresh(top, next)),
             // A tree of its own kind alone, and what is in it later.
             2 => {
-                calls.batch(
-                    "a tree over it",
-                    vec![insert(&[], top, (KINDS[kind].make)())],
-                );
+                calls.batch("a tree over it", vec![insert(&[], top, (own.make)())]);
                 held(&mut calls, top, false);
                 calls.batch("into it", inside(top, kind));
             }
@@ -1151,7 +1145,7 @@ fn over_a_tree<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
                     .answer("insert an item over it".to_owned(), inserted);
                 calls.root();
                 held(&mut calls, top, false);
-                calls.insert(&[], top, (KINDS[kind].make)());
+                calls.insert(&[], top, (own.make)());
                 calls.batch("into it", inside(top, kind));
             }
             // By operations that are applied one by one.
