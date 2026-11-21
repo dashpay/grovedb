@@ -312,7 +312,13 @@ fn a_read_checks_the_pointer_against_the_file_and_the_owner() {
         .append(&mut hold, page(7), b"the first value")
         .unwrap();
     let second = writer.append(&mut hold, page(8), b"second").unwrap();
+    assert_eq!(store.values.reads(), (0, 0));
     assert_eq!(store.read(first, 7).unwrap(), b"the first value");
+    assert_eq!(
+        store.values.reads(),
+        (1, 15),
+        "a read is counted with its bytes"
+    );
 
     let (offset, error) = format_error(store.read(first, 8).unwrap_err());
     assert_eq!(offset, first.offset());
@@ -358,6 +364,11 @@ fn a_read_checks_the_pointer_against_the_file_and_the_owner() {
         store.read(elsewhere, 7),
         Err(ValueStoreError::UnknownFile { file }) if file == file_id(2)
     ));
+    assert_eq!(
+        store.values.reads(),
+        (1, 15),
+        "a read that failed is not counted"
+    );
 }
 
 #[test]

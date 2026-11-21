@@ -7,6 +7,7 @@ mod beside;
 mod check;
 mod checkpoints;
 mod clean;
+mod counted;
 mod ended;
 mod enters;
 mod filling;

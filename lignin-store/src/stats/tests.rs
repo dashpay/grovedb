@@ -131,6 +131,8 @@ fn a_reading_prints_as_a_short_report() {
         cache_hits: 10,
         hashes: 11,
         keyed_lookups: 12,
+        value_reads: 13,
+        value_read_bytes: 1_400,
         watch: Watch {
             log_held: 60,
             unwritten: 1,
@@ -150,6 +152,7 @@ fn a_reading_prints_as_a_short_report() {
         "log: 100 bytes in 2 groups; 3 node records (40 bytes), 1 other records (5 bytes)\n\
          written back: 70 bytes; cleaned: 8 bytes; pages read: 9, cache hits: 10; hashes: 11; \
          keyed lookups: 12\n\
+         values read from the value log: 13 (1400 bytes)\n\
          log held: 60 bytes by 2 bytes of pending values, 1 page versions to write back\n\
          checkpoints put off: 3, failed: 2; waits for room: 4 (1 stalled, 5ms in all); \
          segment syncs failed: 0"

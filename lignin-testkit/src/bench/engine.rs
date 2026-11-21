@@ -181,6 +181,8 @@ impl From<&StoreStats> for Counters {
             cache_hits,
             hashes,
             keyed_lookups,
+            value_reads: _,
+            value_read_bytes: _,
             watch: _,
             log: _,
             flush: _,

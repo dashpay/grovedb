@@ -464,6 +464,18 @@ pub struct ValueStore {
     live: RwLock<BTreeMap<FileId, Arc<ValueFile>>>,
     set: Mutex<FileSet>,
     counts: Mutex<Counts>,
+    /// The values [`Self::read`] read, and their bytes.
+    reads: ValueReads,
+}
+
+/// The values read by their pointers from the files of a value log
+/// ([`ValueStore::reads`]): what readers, write transactions and the
+/// invariant checker read of values that are not in their cells. The
+/// cleaner's copies are not among them.
+#[derive(Debug, Default)]
+struct ValueReads {
+    values: AtomicU64,
+    bytes: AtomicU64,
 }
 
 impl ValueStore {
@@ -574,6 +586,7 @@ impl ValueStore {
                 durable: 0,
                 latest: CommitVersion::EMPTY,
             }),
+            reads: ValueReads::default(),
         }
     }
 
@@ -732,7 +745,23 @@ impl ValueStore {
         owner: PageId,
         buf: &'a mut Vec<u8>,
     ) -> Result<Value<'a>, ValueStoreError> {
-        self.file(pointer.file())?.read(pointer, owner, buf)
+        let value = self.file(pointer.file())?.read(pointer, owner, buf)?;
+        self.reads.values.fetch_add(1, Ordering::Relaxed);
+        let bytes = u64::from(pointer.value_len());
+        self.reads.bytes.fetch_add(bytes, Ordering::Relaxed);
+        Ok(value)
+    }
+
+    /// How many values [`Self::read`] has read since the store was opened,
+    /// and their bytes: every read that returned a value, whoever made it.
+    /// A read that failed is not counted, and nor are the values the
+    /// cleaner copies.
+    pub fn reads(&self) -> (u64, u64) {
+        let reads = &self.reads;
+        (
+            reads.values.load(Ordering::Relaxed),
+            reads.bytes.load(Ordering::Relaxed),
+        )
     }
 
     /// Whether the durable manifest covers the value `pointer` names: it
