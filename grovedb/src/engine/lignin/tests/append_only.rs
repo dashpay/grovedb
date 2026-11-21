@@ -233,6 +233,10 @@ trait Appended {
     /// The batch operation that appends the `n`th value to `tree`.
     fn op(tree: Vec<Vec<u8>>, n: usize) -> QualifiedGroveDbOp;
 
+    /// What the answers of a history on a grove version that has the kind
+    /// must hold beside what every kind's must.
+    fn held(_answers: &[Answer]) {}
+
     /// The key a query names the position `n` of the tree by.
     fn position(n: u64) -> Vec<u8> {
         n.to_be_bytes().to_vec()
@@ -351,6 +355,25 @@ impl Appended for Bulk {
 
     fn op(tree: Vec<Vec<u8>>, n: usize) -> QualifiedGroveDbOp {
         QualifiedGroveDbOp::bulk_append_op(tree, Self::value(n))
+    }
+
+    /// A full chunk is read with the values that filled it: the first
+    /// four of the tree at the root, each whole and in their order.
+    fn held(answers: &[Answer]) {
+        let shown = |n: usize| format!("{:?}", Self::value(n));
+        let bytes = |n: usize| shown(n).trim_matches(['[', ']']).to_owned();
+        let holds = |chunk: &str| {
+            let mut from = 0;
+            (0..1 << CHUNK_POWER).all(|n| {
+                let at = chunk[from..]
+                    .find(&bytes(n))
+                    .map(|at| from + at + bytes(n).len());
+                at.inspect(|at| from = *at).is_some()
+            })
+        };
+        let chunks = answers.iter().filter(|(call, ..)| call == "chunk");
+        let full = chunks.filter(|(.., answer)| holds(answer)).count();
+        assert!(full > 0, "no chunk with the first four values");
     }
 
     fn reads<'db, E: Engine>(
@@ -918,6 +941,7 @@ fn told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usi
                     assert!(answered(call, with) > 0, "{} {call} {with}", T::NAME);
                 }
             }
+            T::held(answers);
         }
         let stale = has_tree(number) && number <= 3;
         assert_eq!(checks, [true, !stale], "{} on version {number}", T::NAME);

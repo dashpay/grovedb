@@ -31,34 +31,48 @@
 //! from the element as the group leaves it ([`Owed::hosts`]):
 //!
 //! - **The Merks of an indexed tree are entered together**, by a group
-//!   that holds a write for one of them while none is entered, each at its
+//!   that holds a write for one of them through a handle that names the
+//!   element while none is entered, each at its
 //!   position under the element: the primary as a tree of the element's
 //!   type, a secondary as a tree of the type its axis keeps. They are
 //!   entered with the batch of the group that enters the subtree the
 //!   element is in, and with the first batch of the group where that
 //!   subtree is entered already.
-//! - **The element's node names all of them** in every batch of such a
-//!   group that puts it, whichever of them the batch writes.
+//! - **The element's node names all of them** in every batch that puts
+//!   it, of a group that holds a write for one of them through a handle
+//!   that names the element.
 //! - **A handle that names an element says whose subtree it writes**:
 //!   a handle by path, of the subtree of its path, and a handle beside
 //!   that subtree ([`Engine::subtree_beside`](crate::Engine::subtree_beside)),
-//!   of the subtree with its prefix. A write through a handle that names
-//!   an element which hosts no subtree with the handle's prefix once the
-//!   group is applied is refused with `Error::NotSupported`, and so are
-//!   writes into one subtree through handles that name two elements. A
-//!   handle that names no element, by prefix or beside the path of the
-//!   root, is not held to an element.
+//!   of the subtree with its prefix. A write through a handle beside a
+//!   subtree is refused with `Error::NotSupported` where the element it
+//!   names hosts no subtree with the handle's prefix once the group is
+//!   applied, and so are writes into one subtree through handles that
+//!   name two elements, or one element with two subtrees of its own path.
+//!   A write through a handle by path under a key that holds no element
+//!   once the group is applied is refused where the subtree is not
+//!   entered, and applied where it is: the delete of a tree removes the
+//!   records of its subtree with its element. A handle that names no
+//!   element, by prefix or beside the path of the root, is not held to an
+//!   element.
+//! - **What an element hosts is read from the group where it states the
+//!   element**: from the last batch that states a value for the element's
+//!   node or removes it, which gives the element or none. Otherwise it is
+//!   read from the transaction, as a node of the Merk that holds the
+//!   element.
 //! - **The directory has all of them where the element names them, or
 //!   none.** A subtree is not dropped when its element goes (GROVE-05),
 //!   and a conversion does not move the subtrees of its element
 //!   (MERK-09). So an indexed tree can find, under its key, subtrees that
 //!   are entered already. A group that holds a write for one of its Merks
-//!   is refused with `Error::NotSupported` where a subtree the element
+//!   through a handle that names the element is refused with
+//!   `Error::NotSupported` where a subtree the element
 //!   hosts is entered at another position or under another element, and
 //!   where one of them is entered and another is not.
 //!
-//! A batch that enters a subtree itself has said its host and its tree
-//! type, and neither is looked at here.
+//! Nothing is worked out here for a subtree that a batch of the group
+//! enters itself: its host, its position and its tree type are what that
+//! batch resolves them to.
 //!
 //! What this does not do:
 //!
@@ -137,13 +151,18 @@ fn beside_nothing(host: &LigninHost) -> Error {
     ))
 }
 
-/// Whether two hosts are one element: the same key of the same Merk.
+/// Whether two hosts are one element, named alike: the same key of the
+/// same Merk, with the same subtree as the one of the element's own path,
+/// which what the element hosts is worked out from.
 fn same_element(one: &LigninHost, other: &LigninHost) -> bool {
-    (one.subtree, &one.key) == (other.subtree, &other.key)
+    (one.subtree, &one.key, one.hosted.first()) == (other.subtree, &other.key, other.hosted.first())
 }
 
 fn named_twice() -> Error {
-    not_supported("writes into one subtree through handles that name two elements for it")
+    not_supported(
+        "writes into one subtree through handles that name two elements for it, or one element \
+         with two subtrees of its own path",
+    )
 }
 
 /// What the parts make of an element.

@@ -1077,6 +1077,19 @@ fn a_settled_batch_is_told_what_an_element_hosts() {
     // that name different elements do not.
     assert!(!settled(true, Some(50)).names_two_hosts());
     assert!(settled(true, Some(60)).names_two_hosts());
+    // So do two that name one element with two different first subtrees:
+    // what the element hosts is worked out from the first.
+    let staged = LigninBatch::new();
+    for (own, key) in [(first, b"k"), (second, b"l")] {
+        let subtree = LigninSubtree {
+            prefix: second,
+            host: Some(host(50, &[own])),
+        };
+        let handle = LigninNodeStore::deferred(&writer, subtree, Some(&staged));
+        (handle.put_meta_record(key, b"v").unwrap()).expect("a staged record");
+    }
+    let settled = staged.settle(&writer).unwrap().expect("a settled batch");
+    assert!(settled.names_two_hosts());
 }
 
 #[test]

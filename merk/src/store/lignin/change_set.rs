@@ -579,9 +579,11 @@ impl Marks {
         match self.written.get_mut(&named.prefix) {
             Some(known) if known.host.is_some() && named.host.is_none() => {}
             Some(known) => {
+                // An element is its Merk and its key, and it is named
+                // with the first subtree it hosts.
                 let element = |named: &LigninSubtree| {
                     let host = named.host.as_ref()?;
-                    Some((host.subtree, host.key.clone()))
+                    Some((host.subtree, host.key.clone(), host.hosted.first().copied()))
                 };
                 if known.host.is_some() && element(known) != element(&named) {
                     self.two_hosts.insert(named.prefix);
@@ -909,7 +911,8 @@ impl LigninSettled {
     }
 
     /// Whether handles that staged into the batch named two different
-    /// elements as the host of one subtree the batch holds a write for.
+    /// elements as the host of one subtree the batch holds a write for,
+    /// or one element with two different first subtrees.
     /// [`Self::written`] has the later of the two; the store does not
     /// choose between them, and whoever applies the batch may refuse it.
     pub fn names_two_hosts(&self) -> bool {

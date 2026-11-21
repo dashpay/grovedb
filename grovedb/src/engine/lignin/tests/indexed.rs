@@ -12,7 +12,7 @@ use grovedb_costs::{CostResult, OperationCost};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     proofs::{query::AggregateFold, Query},
-    store::lignin::{LigninEntry, LigninNodeStore, LigninSubtree},
+    store::lignin::{LigninEntry, LigninHost, LigninNodeStore, LigninSubtree},
     TreeType,
 };
 use grovedb_storage::{
@@ -409,7 +409,7 @@ fn axis_reads_of<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]], 
         }
         let rank = |key: &[u8]| PathQuery::new_axis_rank_of_key(at(), axis, key.to_vec(), true);
         run("rank", axis, rank(b"leaf02"));
-        run("rank", axis, rank(b"missing"));
+        run("rank missing", axis, rank(b"missing"));
         for fold in [AggregateFold::Population, AggregateFold::Total] {
             let query = PathQuery::new_axis_aggregate_over_value_range(at(), axis, -20, 60, fold);
             run(&format!("fold {fold:?}"), axis, query);
@@ -646,6 +646,14 @@ fn told<T: Indexed>(has_kind: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usiz
                     if average || wide { 0 } else { 10 },
                 ];
                 assert_eq!(seen, expected, "{name}, {axis:?}, on version {number}");
+                // A rank that is answered is a rank, at the seven stages
+                // that have the key, and the key that no stage has is
+                // told as a key that is not there.
+                let ranks = [
+                    opening(answers, &of("rank"), RANK),
+                    opening(answers, &of("rank missing"), NO_RANK),
+                ];
+                assert_eq!(ranks, [7, 10], "{name}, {axis:?}, on version {number}");
                 // A fold that is not answered is refused as a fold the
                 // axis does not have, and by no other error.
                 for fold in [of("fold Population"), of("fold Total")] {
@@ -748,6 +756,18 @@ fn with_rows(answers: &[Answer], call: &str) -> usize {
     answers.iter().filter(rows).count()
 }
 
+/// How many of `answers` are of a call named `call` whose answer opens
+/// with `with`.
+fn opening(answers: &[Answer], call: &str, with: &str) -> usize {
+    let opens = |(named, _, answer): &&Answer| named == call && answer.starts_with(with);
+    answers.iter().filter(opens).count()
+}
+
+/// The text that the rank of a key opens with, and the rank of a key the
+/// tree does not hold.
+const RANK: &str = "Ok((AxisRank(";
+const NO_RANK: &str = "Err(PathKeyNotFound(";
+
 /// The text that the refusal of a fold opens with: a fold that the axis
 /// does not have is refused where the query is validated, before a read.
 const FOLD_REFUSED: &str = "Err(InvalidQuery(";
@@ -804,12 +824,21 @@ fn nested_told<T: Indexed>() -> impl Fn(&[Answer], usize) {
             }
             assert_eq!(count(&format!("children {tree}")), 1, "version {number}");
         }
+        // The inner tree holds `leaf02`, the outer does not, and neither
+        // holds the other key. Each is asked once.
         for axis in T::axes() {
-            assert_eq!(
-                count(&format!("rank {axis:?} inner")),
-                1,
-                "version {number}"
-            );
+            let of = |call: &str, tree: &str, with: &str| {
+                opening(answers, &format!("{call} {axis:?} {tree}"), with)
+            };
+            let seen = [
+                of("rank", "inner", RANK),
+                of("rank", "outer", NO_RANK),
+                of("rank missing", "inner", NO_RANK),
+                of("rank missing", "outer", NO_RANK),
+            ];
+            assert_eq!(seen, [1, 1, 1, 1], "{axis:?}, version {number}");
+            let asked = [of("rank", "inner", ""), of("rank", "outer", "")];
+            assert_eq!(asked, [1, 1], "{axis:?}, version {number}");
         }
     }
 }
@@ -1198,6 +1227,45 @@ fn handles_that_name_two_elements_for_one_subtree_are_refused() {
     );
     let read = engine.subtree_by_prefix(own, None, &tx).unwrap();
     assert_eq!(read.aux().get(b"p").unwrap().expect("a read"), None);
+
+    // Handles that name the element of the indexed tree, and disagree
+    // about which subtree is the one of its own path: in one batch, and
+    // in two batches of a group in either order.
+    let wrong = |batch: &<LigninEngine as Engine>::Batch| {
+        let subtree = LigninSubtree {
+            prefix: secondary,
+            host: Some(LigninHost {
+                subtree: [0; 32],
+                key: b"idx".to_vec(),
+                hosted: vec![secondary],
+            }),
+        };
+        let view = tx.write_transaction().expect("a write transaction");
+        let handle = LigninNodeStore::deferred(view, subtree, Some(batch));
+        (handle.aux().put(b"z", b"v", None).unwrap()).expect("staging");
+    };
+    let batch = <LigninEngine as Engine>::Batch::default();
+    stage(&batch, idx, b"x");
+    wrong(&batch);
+    two_elements((engine.apply_batch(batch, &tx).unwrap()).expect_err("one batch"));
+    for wrong_first in [false, true] {
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        for part in [wrong_first, !wrong_first] {
+            let batch = <LigninEngine as Engine>::Batch::default();
+            match part {
+                true => wrong(&batch),
+                false => stage(&batch, idx, b"x"),
+            }
+            (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        }
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        two_elements(applied.map(|_| ()).expect_err("two batches"));
+    }
+    let read = engine.subtree_by_prefix(secondary, None, &tx).unwrap();
+    for key in [b"x", b"z"] {
+        assert_eq!(read.aux().get(key).unwrap().expect("a read"), None);
+    }
+    drop(read);
 
     // The right handle alone writes.
     let batch = <LigninEngine as Engine>::Batch::default();
