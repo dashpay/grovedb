@@ -667,6 +667,61 @@ fn leaves_that_a_commit_entered_where_a_moved_tree_goes_are_not_dropped() {
     check(dir.path());
 }
 
+/// A tree of leaves changes places with a tree that nothing was written
+/// into, and after the walk a commit beside the mover puts an element
+/// into that tree. The batch puts the element of the tree of leaves over
+/// the element of a tree whose Merk is entered by then, with a node. The
+/// look for the trees that are written over says nothing of a prefix
+/// that a moved subtree goes to, the Merk makes no room, the transaction
+/// refuses the batch as a conflict, and the element is where it was.
+#[test]
+fn an_element_that_a_commit_put_where_moved_leaves_go_is_not_dropped() {
+    use crate::batch::QualifiedGroveDbOp;
+
+    let v = version();
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+    let root: &[&[u8]] = &[];
+    let u: &[&[u8]] = &[b"u"];
+    // `u` is the root of the root Merk and `m` its child: a write of the
+    // node `u` writes no node that hosts the moved tree.
+    (db.insert(root, b"u", Element::empty_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree");
+    (db.insert(root, b"m", Element::empty_mmr_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree of leaves");
+    (db.mmr_tree_append(root, b"m", vec![7; 40], None, v))
+        .unwrap()
+        .expect("a leaf");
+    let (other, done) = beside(&db, move |db| {
+        let u: &[&[u8]] = &[b"u"];
+        (db.insert(u, b"y", item(2), None, None, v))
+            .unwrap()
+            .expect("the first element of the tree");
+    });
+    let swap = vec![
+        QualifiedGroveDbOp::move_op(Vec::new(), b"m".to_vec(), b"u".to_vec()),
+        QualifiedGroveDbOp::move_op(Vec::new(), b"u".to_vec(), b"m".to_vec()),
+    ];
+    REFUSED.take();
+    // The walk reads the entry of the tree of leaves, and the look for
+    // what the group enters reads an entry after it.
+    AFTER_ENTRY_READS.set(Some((2, other)));
+    let swapped = db.apply_batch(swap, None, None, v).unwrap();
+    assert!(AFTER_ENTRY_READS.take().is_none());
+    assert!(done.get(), "the other writer came after the walk");
+    let refused = swapped.expect_err("a Merk with a node is entered where the leaves go");
+    assert!(refused.is_commit_conflict(), "{refused}");
+    assert_eq!(REFUSED.take().len(), 1);
+    let held = db.get(u, b"y", None, v).unwrap();
+    assert_eq!(held.expect("the other writer's element"), item(2));
+    let leaves = db.mmr_tree_leaf_count(root, b"m", None, v).unwrap();
+    assert_eq!(leaves.expect("the tree of leaves where it was"), 1);
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
 /// A tree with an element changes places with a tree that was written
 /// into and emptied, whose Merk makes room: the look states its drop.
 /// After the look a commit beside the mover writes a tree of leaves over
