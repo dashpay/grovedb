@@ -83,11 +83,6 @@ trait Side: Engine {
     /// What is checked of the database in `dir`, which nothing has open.
     fn check(dir: &Path, v: &GroveVersion);
 
-    /// Takes the open database of `engine` out of the check that its
-    /// close makes in a debug build, for a test that leaves in it what
-    /// that check finds.
-    fn unchecked(engine: &Self);
-
     /// What is checked of the database in `dir`, which nothing has open
     /// and which holds the commits of a restore that did not finish.
     fn check_incomplete(dir: &Path, v: &GroveVersion);
@@ -98,10 +93,6 @@ impl Side for LigninEngine {
 
     fn check(dir: &Path, v: &GroveVersion) {
         append_only::check(dir, v);
-    }
-
-    fn unchecked(engine: &Self) {
-        engine.database().unchecked_at_close();
     }
 
     /// The physical checker finds one thing in it: the value hash of a
@@ -133,8 +124,6 @@ impl Side for crate::RocksDbEngine {
 
     fn check(_dir: &Path, _v: &GroveVersion) {}
 
-    fn unchecked(_engine: &Self) {}
-
     fn check_incomplete(_dir: &Path, _v: &GroveVersion) {}
 }
 
@@ -145,10 +134,6 @@ impl<E: Side> Side for crate::tests::faultable_reads::RefusedReads<E> {
 
     fn check(dir: &Path, v: &GroveVersion) {
         E::check(dir, v);
-    }
-
-    fn unchecked(engine: &Self) {
-        E::unchecked(&engine.0);
     }
 
     fn check_incomplete(dir: &Path, v: &GroveVersion) {
@@ -1104,6 +1089,13 @@ fn a_refused_chunk_and_an_abandoned_session_leave_nothing_between_the_engines() 
     sessions::<LigninEngine, Rocks>(v);
 }
 
+/// The mode of a session that may commit before its end, with a budget of
+/// one byte and one subtree in flight.
+const PARTS: RestoreCommitMode = RestoreCommitMode::Incremental {
+    budget_bytes: 1,
+    max_subtrees_in_flight: 1,
+};
+
 /// A session that may commit what it has restored before its end, with a
 /// budget of one byte and one subtree in flight: it commits more than
 /// three times before its end, ends on the root hash of its source with
@@ -1115,10 +1107,7 @@ fn a_refused_chunk_and_an_abandoned_session_leave_nothing_between_the_engines() 
 fn in_parts<S: Side, T: Side>(v: &GroveVersion) {
     let source = Made::<S>::new(v);
     let shape = &source.shape;
-    let parts = RestoreCommitMode::Incremental {
-        budget_bytes: 1,
-        max_subtrees_in_flight: 1,
-    };
+    let parts = PARTS;
 
     let synced = round::<S, T>(&source, parts, v);
     assert!(
@@ -1145,9 +1134,136 @@ fn in_parts<S: Side, T: Side>(v: &GroveVersion) {
     let starts = begin(&target, source.root, parts, v).is_ok();
     assert!(!starts, "a marked database starts no session");
     target.flush().expect("a flush");
-    T::unchecked(target.engine());
+    // The owner of such a database closes it and discards it. The close
+    // makes no check of it in a debug build, on any engine.
     drop(target);
     T::check_incomplete(dir.path(), v);
+}
+
+/// A session in parts that commits into a new database on LigninDB and
+/// stops before its end, by `ending`: after three commits it is dropped
+/// (`"dropped"`), it is refused a chunk after its first commit
+/// (`"refused a chunk"`), or its commit at the end is refused
+/// (`"refused at its end"`). The database holds the mark of a restore that
+/// did not finish.
+fn left_marked(
+    source: &Made<LigninEngine>,
+    ending: &str,
+    v: &GroveVersion,
+) -> (tempfile::TempDir, GroveDb<LigninEngine>) {
+    let dir = tempfile::tempdir().expect("a directory");
+    let target = open::<LigninEngine>(dir.path());
+    let mark = target.engine().incomplete_restore_mark();
+    assert_eq!(mark.expect("a read of the mark"), None);
+    {
+        let mut session = begin(&target, source.root, PARTS, v).expect("a session starts");
+        let mut requests = Requests::new(&source.db, source.root, v);
+        let mut next = None;
+        while ending == "refused a chunk" || session.intermediate_commits() < 3 {
+            let (request, payload) = requests.fetch().expect("a request");
+            if ending == "refused a chunk" && named(&source.root, &request).contains(&victim()) {
+                next = Some((request, payload));
+                break;
+            }
+            let applied = requests.apply(&mut session, &request, &payload);
+            applied.expect("the chunk is taken");
+        }
+        assert!(session.intermediate_commits() > 0, "{ending}");
+        match ending {
+            "dropped" => drop(session),
+            "refused a chunk" => {
+                let (request, payload) = next.expect("the victim is asked for");
+                let altered =
+                    changed(
+                        &source.root,
+                        &request,
+                        &payload,
+                        &mut |prefix, part| match *prefix == victim() {
+                            true => with_a_foreign_node(part),
+                            false => part,
+                        },
+                    );
+                let refused = requests.apply(&mut session, &request, &altered);
+                refused.expect_err("a chunk with a foreign node is refused");
+                let after = requests.apply(&mut session, &request, &payload);
+                let after = after.expect_err("a failed session takes no chunk");
+                assert!(after.to_string().contains("session has failed"), "{after}");
+            }
+            "refused at its end" => {
+                let committed = target.commit_session(session, v);
+                let committed = committed.expect_err("a session that did not finish");
+                assert!(committed.to_string().contains("incomplete"), "{committed}");
+            }
+            other => panic!("no ending {other}"),
+        }
+    }
+    let mark = target.engine().incomplete_restore_mark();
+    assert_eq!(
+        mark.expect("a read of the mark"),
+        Some(source.root.to_vec())
+    );
+    (dir, target)
+}
+
+/// The engine leaves a database that holds the commits of a restore that
+/// did not finish out of the check that a close makes in a debug build.
+/// However the session ended (it was dropped, it was refused a chunk, its
+/// commit at the end was refused), the database is closed, opened again,
+/// asked for its mark, refused a session and closed again, with what that
+/// check would report still in it. A database whose session committed at
+/// its end holds no mark.
+#[test]
+fn a_database_that_holds_an_incomplete_restore_is_closed_to_be_discarded() {
+    let v = GroveVersion::latest();
+    let source = Made::<LigninEngine>::new(v);
+    for ending in ["dropped", "refused a chunk", "refused at its end"] {
+        let (dir, target) = left_marked(&source, ending, v);
+        drop(target);
+        let again = open::<LigninEngine>(dir.path());
+        assert!(again.has_incomplete_restore().expect("a read of the mark"));
+        let starts = begin(&again, source.root, PARTS, v).is_ok();
+        assert!(!starts, "a marked database starts no session ({ending})");
+        drop(again);
+        LigninEngine::check_incomplete(dir.path(), v);
+    }
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let target = open::<LigninEngine>(dir.path());
+    let (_, commits) = whole(&source.db, &target, PARTS, v);
+    assert!(commits > 3, "{commits} commits before the end");
+    assert!(!target.has_incomplete_restore().expect("a read of the mark"));
+    let mark = target.engine().incomplete_restore_mark();
+    assert_eq!(mark.expect("a read of the mark"), None);
+}
+
+/// The close of a database is taken out of its check only on a mark that
+/// was read. Where the read of the mark fails as the engine is dropped,
+/// the close of a database that holds the mark makes its check, and
+/// reports what the restore left in it. With its mark read, the same
+/// database is closed.
+#[cfg(debug_assertions)]
+#[test]
+fn a_close_is_checked_where_the_mark_of_a_restore_is_not_read() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::super::MARK_READ_FAILS;
+    let v = GroveVersion::latest();
+    let source = Made::<LigninEngine>::new(v);
+    let (dir, target) = left_marked(&source, "dropped", v);
+    MARK_READ_FAILS.with(|fails| fails.set(true));
+    let closed = catch_unwind(AssertUnwindSafe(move || drop(target)));
+    let panic = closed.expect_err("a close that is checked finds the restore");
+    let said = panic.downcast_ref::<String>().expect("a text");
+    assert!(said.contains("is left unsound at version"), "{said}");
+    assert!(
+        !MARK_READ_FAILS.with(|fails| fails.get()),
+        "the read was asked"
+    );
+
+    let again = open::<LigninEngine>(dir.path());
+    assert!(again.has_incomplete_restore().expect("a read of the mark"));
+    drop(again);
+    LigninEngine::check_incomplete(dir.path(), v);
 }
 
 #[test]
@@ -1742,9 +1858,12 @@ fn handed_over(
 /// passes the physical checker, and the root hash and the node records of
 /// the Merk above are what they were before the call, so no value and no
 /// hash changed. Without the call the same commit leaves a host that does
-/// not point at its Merk, which the checker reports.
+/// not point at its Merk, which the checker reports, and which the close
+/// of the database reports in a debug build.
 #[test]
 fn a_merk_that_was_handed_over_is_named_in_its_host() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
     use grovedb_merk::store::lignin::hash::MerkHashRules;
     use lignindb::{Db, Options};
     let v = GroveVersion::latest();
@@ -1779,11 +1898,17 @@ fn a_merk_that_was_handed_over_is_named_in_its_host() {
         committed.unwrap().expect("a commit");
         let root = target.root_hash(None, v).unwrap().expect("a root");
         assert_eq!(root, source_root);
-        if !named {
-            // The close of a debug build would find what is read below.
-            engine.database().unchecked_at_close();
+        if named || !cfg!(debug_assertions) {
+            drop(target);
+        } else {
+            // The close of a debug build finds what is read below: the
+            // engine leaves a database out of that check for the mark of
+            // a restore that did not finish, and for nothing else.
+            let closed = catch_unwind(AssertUnwindSafe(move || drop(target)));
+            let panic = closed.expect_err("a host that does not point at its Merk");
+            let said = panic.downcast_ref::<String>().expect("a text");
+            assert!(said.contains("is left unsound at version"), "{said}");
         }
-        drop(target);
 
         let db = Db::open(dir.path(), &Options::default()).expect("the database opens again");
         let mut rules = MerkHashRules::for_check(v);
