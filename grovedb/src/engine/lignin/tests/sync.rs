@@ -1796,6 +1796,36 @@ fn a_merk_that_was_handed_over_is_named_in_its_host() {
     }
 }
 
+/// The store puts the node of a host again through an immediate handle,
+/// and for a key that holds a node: a handle that does not write at once
+/// and a key with no node are refused, and neither changes what a read
+/// shows.
+#[test]
+fn the_store_refuses_to_name_the_merks_of_a_host_it_cannot_put() {
+    use grovedb_merk::store::lignin::{LigninNodeStore, LigninSubtree};
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = open::<LigninEngine>(dir.path());
+    hosts(&db, v);
+    let transaction = db.start_transaction();
+    let before = shown(&db, &transaction, v);
+    let root = || LigninSubtree::alone(prefix_of(&[]));
+    let hosted = [prefix_of(&[b"tree"])];
+
+    let reading = LigninNodeStore::read_only(transaction.view(), root());
+    let refused = reading.name_hosted(b"tree", &hosted);
+    let refused = format!("{:?}", refused.expect_err("a handle that reads"));
+    assert!(refused.contains("does not write at once"), "{refused}");
+    drop(reading);
+
+    let writing = LigninNodeStore::immediate(transaction.view(), root());
+    let refused = writing.name_hosted(b"no element", &hosted);
+    let refused = format!("{:?}", refused.expect_err("a key with no node"));
+    assert!(refused.contains("no node of its Merk"), "{refused}");
+    drop(writing);
+    assert_eq!(shown(&db, &transaction, v), before);
+}
+
 /// On an engine for which a subtree is its prefix the call does nothing:
 /// it answers for any path, and the records of the grove are what they
 /// were.
