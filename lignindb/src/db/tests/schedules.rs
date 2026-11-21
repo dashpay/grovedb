@@ -1496,9 +1496,10 @@ fn a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back() 
     });
     thread::scope(|threads| {
         let (db, history) = (&db, &history);
-        // Whatever fails here, every thread goes on and the scope ends: a
-        // commit that ends before its publication is seen, and the commit
-        // that waits is let go when this closure is left.
+        // The sender is dropped when this closure is left, which lets the
+        // commit that waits at its publication go on. A commit that ends
+        // before its publication is seen in the loop below; one that
+        // neither ends nor comes to it is waited for with no bound.
         let go_on = go_on;
         let commit = threads.spawn(move || commit_behind(db, history, Behind::Column));
         while at_publication
@@ -1519,8 +1520,8 @@ fn a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back() 
         while !round.is_finished() {
             assert!(
                 began.elapsed() < Duration::from_secs(30),
-                "the round of the reclaimer inside the commit does not end: it waits for the \
-                 commit"
+                "the round of the reclaimer did not end within 30 s, with the commit held \
+                 before its publication"
             );
             thread::sleep(Duration::from_millis(1));
         }
