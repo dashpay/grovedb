@@ -144,6 +144,12 @@ pub struct FlushStats {
     /// Values that were appended and then given up, because their cell was
     /// gone before it could be given the pointer. They are dead space.
     pub values_given_up: u64,
+    /// Value-log files that write-back gave up while it was filling
+    /// them: an append to the file was refused, a sync of it failed, or
+    /// a regrouping that wrote to it did. Such a file is closed, where it
+    /// ends or where it was last durable, and the next value goes to
+    /// another file.
+    pub value_files_given_up: u64,
     /// Values that were appended again and repointed when the values of
     /// their page were regrouped.
     pub values_regrouped: u64,
@@ -222,6 +228,7 @@ pub(super) struct Counters {
     pub(super) value_bytes: AtomicU64,
     pub(super) values_placed: AtomicU64,
     pub(super) values_given_up: AtomicU64,
+    pub(super) value_files_given_up: AtomicU64,
     pub(super) values_regrouped: AtomicU64,
     pub(super) steps_put_off: AtomicU64,
     pub(super) held_for_readers: AtomicU64,
@@ -264,6 +271,7 @@ impl Counters {
             value_bytes: read(&self.value_bytes),
             values_placed: read(&self.values_placed),
             values_given_up: read(&self.values_given_up),
+            value_files_given_up: read(&self.value_files_given_up),
             values_regrouped: read(&self.values_regrouped),
             steps_put_off: read(&self.steps_put_off),
             held_for_readers: read(&self.held_for_readers),

@@ -292,9 +292,22 @@ impl ValueFile {
         }
     }
 
-    /// Syncs the file. One sync runs at a time, and `life` is not held while
-    /// it does, so that ending a writer waits for no sync.
+    /// Syncs the file through the handle the store reads it by. One sync
+    /// runs at a time, and `life` is not held while it does, so that
+    /// ending a writer waits for no sync.
     pub(super) fn sync(&self) -> Result<u64, ValueStoreError> {
+        self.sync_through(&*self.file)
+    }
+
+    /// Syncs the file through `handle`, which is a handle on this file:
+    /// what [`Self::sync`] does, for a writer that syncs through the
+    /// handle it appended by.
+    ///
+    /// A file that is closed, or of which a sync has failed, is not
+    /// synced again, through whichever handle: after a sync that failed,
+    /// a later one that succeeded would say nothing of the bytes the
+    /// failed one was for.
+    pub(super) fn sync_through(&self, handle: &dyn VfsFile) -> Result<u64, ValueStoreError> {
         let _one_at_a_time = self.syncing.lock().unwrap_or_else(PoisonError::into_inner);
         let end = {
             let mut life = self.life();
@@ -311,7 +324,7 @@ impl ValueFile {
             }
             end
         };
-        let synced = self.file.sync_data();
+        let synced = handle.sync_data();
         let mut life = self.life();
         let result = match synced {
             Ok(()) => {

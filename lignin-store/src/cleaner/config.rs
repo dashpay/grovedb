@@ -168,6 +168,10 @@ pub struct CleanerStats {
     pub value_bytes_copied: u64,
     /// Value-log files that were taken out of the store.
     pub value_files_dropped: u64,
+    /// Value-log files of the cleaner's own copies that it gave up after
+    /// a cleaning that wrote to them failed. Such a file is closed, where
+    /// it ends or where it was last durable.
+    pub value_files_given_up: u64,
     /// Passes that ended with an error.
     pub errors: u64,
     /// Segments that the cleaner moved blocks into and of which a sync
@@ -204,6 +208,7 @@ pub(super) struct Counters {
     pub(super) values_left: AtomicU64,
     pub(super) value_bytes_copied: AtomicU64,
     pub(super) value_files_dropped: AtomicU64,
+    pub(super) value_files_given_up: AtomicU64,
     pub(super) errors: AtomicU64,
 }
 
@@ -237,6 +242,7 @@ impl Counters {
             values_left: read(&self.values_left),
             value_bytes_copied: read(&self.value_bytes_copied),
             value_files_dropped: read(&self.value_files_dropped),
+            value_files_given_up: read(&self.value_files_given_up),
             errors: read(&self.errors),
             segments_not_durable: 0,
         }

@@ -817,19 +817,22 @@ impl<'s> WriteBack<'s> {
     /// append to it failed or a step that wrote to it did. The next value
     /// goes to another file.
     ///
-    /// The file is synced by its writer before the writer goes, and is
-    /// closed where it ends. Whoever cleans the value log takes closed
-    /// files only, and a file whose writer is dropped while it holds
-    /// values that were never synced stays open for as long as the
-    /// session lasts. If the sync fails, the file is closed at the length
-    /// that was durable before it, as after any sync of a value-log file
-    /// that fails: no cell points behind that length, since a cell is
-    /// given its pointer only behind a manifest that covers the value.
+    /// The file is synced by its writer, through the handle that
+    /// appended, before the writer goes, and is closed where it ends
+    /// ([`ValueWriter::give_up`]). Whoever cleans the value log takes
+    /// closed files only, and a file whose writer is dropped while it
+    /// holds values that were never synced stays open for as long as the
+    /// session lasts. If the sync fails, or a sync of the file had failed
+    /// before, the file is closed at the length that was durable, and is
+    /// not synced again: no cell points behind that length, since a cell
+    /// is given its pointer only behind a manifest that covers the value
+    /// ([`Self::cover`]). It ends no session.
     pub(super) fn give_up_value_file(&self, files: &mut Files) {
         if let Some(writer) = files.values.take() {
+            count(&self.state.counters.value_files_given_up, 1);
             // Whatever the sync answers, the file is closed once its
             // writer is gone.
-            let _ = writer.finish();
+            let _ = writer.give_up();
         }
     }
 

@@ -123,8 +123,9 @@ impl<'s> WriteBack<'s> {
         if let Some(Err(error)) = synced {
             // The values cannot be made durable in that file any more.
             // They are given up with their holds, and appended to
-            // another file by the next pass.
-            files.values = None;
+            // another file by the next pass. The file is closed where it
+            // was durable, and is not synced again.
+            self.give_up_value_file(files);
             return Err(error.into());
         }
         values.commit(&mut *self.manifest()?)?;

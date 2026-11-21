@@ -289,33 +289,55 @@ fn a_committer_waits_for_room_and_never_for_its_own_copies() {
     db.check_cold();
 }
 
+/// The value-log file `raw` of the simulated store, by name and by path.
+fn value_file(raw: u32) -> (String, std::path::PathBuf) {
+    use crate::segment::{tests::sim::db_dir, FileNames};
+
+    let id = lignin_format::FileId::new(raw).expect("a file id");
+    let path = FileNames::VALUE_LOG.path(db_dir(), id);
+    let name = path.file_name().expect("a name").to_string_lossy();
+    (name.into_owned(), path)
+}
+
+/// The handle that made every append to a value-log file, of which
+/// `seen` is what its handles did.
+fn appender(seen: &[handles::Seen]) -> u64 {
+    let mut appended = seen.iter().filter(|seen| seen.op == "append");
+    let handle = appended.next().expect("an append").handle;
+    assert!(appended.all(|seen| seen.handle == handle), "{seen:?}");
+    handle
+}
+
 /// D-209. An append to the value-log file that write-back fills is
 /// refused, with a value of the same pass in the file already. The file
-/// is given up: what it holds is synced through its writer, and the file
-/// is closed where it ends. So the value before the refused one is
-/// covered and placed, and the file is one that the cleaner of the value
-/// log takes, in this session. The other value goes to another file.
+/// is given up: what it holds is synced through the handle that appended
+/// it, and the file is closed where it ends. So the value before the
+/// refused one is covered and placed, and the file is one that the
+/// cleaner of the value log takes, in this session. The other value goes
+/// to another file.
 #[test]
 fn a_value_log_file_that_is_given_up_after_a_refused_append_is_closed_in_the_session() {
     use lignin_format::{manifest::FileState, FileId};
     use lignin_io::{
-        sim::{Fault, FaultRule, OpKind},
+        sim::{Fault, FaultRule, OpKind, SimConfig},
         OpenMode,
     };
 
-    use crate::segment::{tests::sim::db_dir, FileNames};
+    use crate::segment::tests::sim::{db_dir, shared, sim_fs};
 
-    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    let fs = sim_fs(SimConfig::new(5));
+    let vfs = handles::Handles::over(shared(&fs));
+    let config = FlushConfig::new(Db::SIZE);
+    let db = Db::create(vfs.clone(), db_dir(), config, LogOptions::default());
     db.commit(&[
         insert((1, 1), b"a", long(1, 900)),
         insert((2, 1), b"b", long(2, 900)),
     ]);
     let file = |raw| FileId::new(raw).expect("a file id");
+    let (name, path) = value_file(1);
     // The file's header and the first value are appended, and the second
     // value is refused.
-    let refused = FaultRule::new(Fault::Enospc)
-        .on(OpKind::Append)
-        .at(FileNames::VALUE_LOG.path(db_dir(), file(1)));
+    let refused = FaultRule::new(Fault::Enospc).on(OpKind::Append).at(&path);
     fs.add_rule(refused.skip(2).torn_append(false));
     let error = db.wb().pass().expect_err("an append to the value log");
     assert!(error.to_string().contains("00000001.val"), "{error}");
@@ -324,7 +346,8 @@ fn a_value_log_file_that_is_given_up_after_a_refused_append_is_closed_in_the_ses
         pointers.iter().map(|pointer| pointer.file()).collect()
     };
     assert_eq!(files(db.pointers(page(1))), [file(1)], "the first value");
-    assert_eq!(db.stats().values_given_up, 0);
+    let stats = db.stats();
+    assert_eq!((stats.values_given_up, stats.value_files_given_up), (0, 1));
     let closed: Vec<FileId> = (db.values.cleanable(0).iter())
         .map(|cleanable| cleanable.file)
         .collect();
@@ -334,6 +357,16 @@ fn a_value_log_file_that_is_given_up_after_a_refused_append_is_closed_in_the_ses
         "the file that was given up is not closed"
     );
 
+    // The sync of the giving up is the one after the refused append, and
+    // the handle that appended made it.
+    let seen = vfs.seen(&name);
+    let at = seen.iter().position(|seen| seen.op == "append" && !seen.ok);
+    let at = at.expect("the refused append");
+    let sync = seen.get(at + 1).expect("a sync after the refused append");
+    assert_eq!((sync.op, sync.ok), ("sync", true), "{seen:?}");
+    assert_eq!(sync.handle, appender(&seen), "{seen:?}");
+    assert_eq!(seen.len(), at + 2, "{seen:?}");
+
     // The next pass puts the other value into another file, and the
     // manifest it writes names the first one closed at its whole length.
     db.wb().pass().expect("a pass");
@@ -342,11 +375,172 @@ fn a_value_log_file_that_is_given_up_after_a_refused_append_is_closed_in_the_ses
     let first = named.iter().find(|named| named.id() == file(1));
     let first = first.expect("the file is named");
     assert_eq!(first.state(), FileState::Closed);
-    let on_device = db.vfs.open(
-        &FileNames::VALUE_LOG.path(db_dir(), file(1)),
-        OpenMode::Read,
-    );
+    let on_device = db.vfs.open(&path, OpenMode::Read);
     let on_device = on_device.and_then(|file| file.len()).expect("a length");
     assert_eq!(first.valid_len(), on_device);
+    db.check_cold();
+}
+
+/// D-246. The sync of a value-log file at its giving up is refused. The
+/// file held a value that an earlier sync had made durable and a manifest
+/// covered, and two that were appended since.
+///
+/// - The file is closed at the length the earlier sync covered, and the
+///   manifest names it so. Nothing is appended to it and no sync of it is
+///   made for the rest of the session, whoever syncs the value log: a
+///   sync that succeeded later would say nothing of the bytes the refused
+///   one was for.
+/// - The two values behind that length are given up, with their holds,
+///   and no manifest covers them: no cell points at them. They are
+///   appended to another file with the value that was refused. The value
+///   before that length keeps its place and is read.
+/// - The session goes on: a table checkpoint is installed.
+#[test]
+fn a_value_log_file_whose_sync_at_its_giving_up_is_refused_is_closed_where_a_sync_had_covered_it() {
+    use lignin_format::{manifest::FileState, FileId};
+    use lignin_io::{
+        sim::{Fault, FaultRule, OpKind, SimConfig},
+        OpenMode,
+    };
+
+    use crate::segment::tests::sim::{db_dir, shared, sim_fs};
+
+    let fs = sim_fs(SimConfig::new(5));
+    let vfs = handles::Handles::over(shared(&fs));
+    let config = FlushConfig::new(Db::SIZE);
+    let db = Db::create(vfs.clone(), db_dir(), config, LogOptions::default());
+    let file = |raw| FileId::new(raw).expect("a file id");
+    let (name, path) = value_file(1);
+    let named = |db: &Db| {
+        let named = db.values.files_named().expect("the files");
+        let first = named.iter().find(|named| named.id() == file(1));
+        let first = first.expect("the file is named");
+        (first.state(), first.valid_len())
+    };
+    let on_device = |db: &Db| {
+        let handle = db.vfs.open(&path, OpenMode::Read);
+        handle.and_then(|file| file.len()).expect("a length")
+    };
+
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    db.wb().pass().expect("a pass");
+    let first = db.pointers(page(1));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].file(), file(1));
+    let (state, covered) = named(&db);
+    assert_eq!(state, FileState::Open);
+    assert_eq!(covered, on_device(&db), "the first value is durable");
+
+    db.commit(&[
+        insert((2, 1), b"b", long(2, 900)),
+        insert((3, 1), b"c", long(3, 900)),
+        insert((4, 1), b"d", long(4, 900)),
+    ]);
+    // Two more values are appended, the third is refused, and so is
+    // every sync of the file from here on.
+    let append = FaultRule::new(Fault::Enospc).on(OpKind::Append).at(&path);
+    fs.add_rule(append.skip(2).torn_append(false));
+    let sync = FaultRule::new(Fault::Enospc).on(OpKind::SyncData).at(&path);
+    fs.add_rule(sync.forever());
+    let error = db.wb().pass().expect_err("an append to the value log");
+    assert!(error.to_string().contains("00000001.val"), "{error}");
+    fs.clear_rules();
+
+    let stats = db.stats();
+    assert_eq!((stats.values_given_up, stats.value_files_given_up), (2, 1));
+    assert_eq!(named(&db), (FileState::Closed, covered));
+    assert!(on_device(&db) >= covered + 1800, "two values lie behind it");
+    // The refused sync was made through the handle that appended, and is
+    // the last thing a handle did to the file.
+    let seen = vfs.seen(&name);
+    let refused = seen.last().expect("a sync");
+    assert_eq!((refused.op, refused.ok), ("sync", false), "{seen:?}");
+    assert_eq!(refused.handle, appender(&seen), "{seen:?}");
+
+    // The rest of the session: the values are placed elsewhere, the
+    // value log is synced as a whole, and a table checkpoint is taken.
+    db.wb().pass().expect("a pass");
+    db.values.sync().expect("a sync of the value log");
+    let installed = db.wb().checkpoint().expect("a table checkpoint");
+    assert!(
+        matches!(installed, Checkpointed::Installed { .. }),
+        "{installed:?}"
+    );
+    db.values.sync().expect("a sync of the value log");
+    assert_eq!(vfs.seen(&name), seen, "the file was appended to or synced");
+    assert_eq!(named(&db), (FileState::Closed, covered));
+
+    assert_eq!(db.pointers(page(1)), first);
+    for id in 1..=4 {
+        let pointers = db.pointers(page(id));
+        assert_eq!(pointers.len(), 1, "page {id}");
+        let pointer = pointers[0];
+        assert!(db.values.covers(pointer), "page {id}: {pointer:?}");
+        assert_eq!(pointer.file() == file(1), id == 1, "page {id}");
+    }
+    assert_eq!(db.stats().values_given_up, 2);
+    db.check_cold();
+}
+
+/// D-246. The sync that covers the values of a pass is refused, once.
+/// The file is given up there: it is closed at the length the sync
+/// before had covered, and no second sync of it is asked for, which the
+/// device would have answered with success and which would have said
+/// nothing of the bytes the refused one was for. The values of the pass
+/// are in no cell and go to another file.
+#[test]
+fn a_value_log_file_whose_covering_sync_is_refused_is_closed_and_not_synced_again() {
+    use lignin_format::{manifest::FileState, FileId};
+    use lignin_io::sim::{Fault, FaultRule, OpKind, SimConfig};
+
+    use crate::segment::tests::sim::{db_dir, shared, sim_fs};
+
+    let fs = sim_fs(SimConfig::new(5));
+    let vfs = handles::Handles::over(shared(&fs));
+    let config = FlushConfig::new(Db::SIZE);
+    let db = Db::create(vfs.clone(), db_dir(), config, LogOptions::default());
+    let file = |raw| FileId::new(raw).expect("a file id");
+    let (name, path) = value_file(1);
+    let named = |db: &Db| {
+        let named = db.values.files_named().expect("the files");
+        let first = named.iter().find(|named| named.id() == file(1));
+        let first = first.expect("the file is named");
+        (first.state(), first.valid_len())
+    };
+
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    db.wb().pass().expect("a pass");
+    let first = db.pointers(page(1));
+    let (state, covered) = named(&db);
+    assert_eq!(state, FileState::Open);
+    let before = vfs.seen(&name).len();
+
+    db.commit(&[
+        insert((2, 1), b"b", long(2, 900)),
+        insert((3, 1), b"c", long(3, 900)),
+    ]);
+    let sync = FaultRule::new(Fault::Enospc).on(OpKind::SyncData).at(&path);
+    fs.add_rule(sync);
+    let error = db.wb().pass().expect_err("the sync of the value log");
+    assert!(error.to_string().contains("00000001.val"), "{error}");
+
+    let seen = vfs.seen(&name);
+    let since: Vec<(&str, bool)> = (seen[before..].iter())
+        .map(|seen| (seen.op, seen.ok))
+        .collect();
+    assert_eq!(since, [("append", true), ("append", true), ("sync", false)]);
+    assert_eq!(named(&db), (FileState::Closed, covered));
+    assert_eq!(db.stats().value_files_given_up, 1);
+
+    db.wb().pass().expect("a pass");
+    db.values.sync().expect("a sync of the value log");
+    assert_eq!(vfs.seen(&name), seen, "the file was appended to or synced");
+    assert_eq!(db.pointers(page(1)), first);
+    for id in 2..=3 {
+        let pointers = db.pointers(page(id));
+        assert_eq!(pointers.len(), 1, "page {id}");
+        assert_eq!(pointers[0].file(), file(2), "page {id}");
+        assert!(db.values.covers(pointers[0]), "page {id}");
+    }
     db.check_cold();
 }

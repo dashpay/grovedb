@@ -308,6 +308,92 @@ fn a_value_log_file_given_up_with_its_sync_refused_is_closed_where_it_was_durabl
     db.check_cold();
 }
 
+/// D-209, for the cleaner's own file. A cleaning copies two live values
+/// into the cleaner's value-log file, and the device refuses the second
+/// copy. The cleaner gives its file up: the copy that is in it is synced
+/// through the handle that appended it, and the file is closed where it
+/// ends. No cell points into it, so it holds no live value, and the
+/// passes on a device with room clean the first file into another one
+/// and drop both, in the same session.
+#[test]
+fn the_cleaners_own_value_log_file_is_given_up_after_a_refused_copy_and_dropped() {
+    use lignin_io::sim::{Fault, FaultRule, OpKind, SimConfig};
+
+    use crate::{
+        flush::tests::handles::Handles,
+        segment::{
+            tests::sim::{db_dir, shared, sim_fs},
+            FileNames,
+        },
+        wal::LogOptions,
+    };
+
+    let fs = sim_fs(SimConfig::new(5));
+    let vfs = Handles::over(shared(&fs));
+    let db = Db::create(
+        vfs.clone(),
+        db_dir(),
+        small_segments(),
+        LogOptions::default(),
+    );
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 900)),
+        insert((2, 1), b"b", long(2, 900)),
+        insert((3, 1), b"c", long(3, 900)),
+    ]);
+    db.wb().pass().expect("a pass");
+    let first = db.pointers(page(1))[0].file();
+    db.wb().close_value_file(first).expect("the file is closed");
+    db.commit(&[set((1, 1), inline(b"short"))]);
+    db.wb().pass().expect("a pass");
+    let live = db.live_values();
+    assert_eq!(live, 2);
+
+    // The cleaner's file is the next one of the value log. Its header
+    // and the first copy are appended, and the second copy is refused.
+    let own = FileId::new(first.get() + 1).expect("a file id");
+    let path = FileNames::VALUE_LOG.path(db_dir(), own);
+    let name = path.file_name().expect("a name").to_string_lossy();
+    let refused = FaultRule::new(Fault::Enospc).on(OpKind::Append).at(&path);
+    fs.add_rule(refused.skip(2).torn_append(false));
+    let state = CleanerState::new(eager());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let error = cleaner.pass_values(&Cells(&db));
+    let error = error.expect_err("a copy is refused");
+    assert!(error.to_string().contains(&*name), "{error}");
+    fs.clear_rules();
+    assert_eq!(state.stats().value_files_given_up, 1);
+    assert_eq!(db.pointers(page(2))[0].file(), first, "no value was moved");
+
+    let seen = vfs.seen(&name);
+    let appended: Vec<u64> = (seen.iter().filter(|seen| seen.op == "append"))
+        .map(|seen| seen.handle)
+        .collect();
+    assert_eq!(appended.len(), 3, "{seen:?}");
+    let last = seen.last().expect("a sync");
+    assert_eq!((last.op, last.ok), ("sync", true), "{seen:?}");
+    assert!(
+        appended.iter().all(|&handle| handle == last.handle),
+        "{seen:?}"
+    );
+    let named = db.values.files_named().expect("the files");
+    let given_up = named.iter().find(|named| named.id() == own);
+    let given_up = given_up.expect("the manifest names the cleaner's file");
+    assert_eq!(given_up.state(), FileState::Closed);
+
+    let (moved, dropped) = settle_values(&cleaner, &Cells(&db));
+    assert_eq!(moved, 2);
+    assert!(
+        dropped.contains(&first) && dropped.contains(&own),
+        "{dropped:?}"
+    );
+    assert!(!value_on_disk(&db, first) && !value_on_disk(&db, own));
+    assert_eq!(db.live_values(), live);
+    db.wb().pass().expect("a pass");
+    db.check_warm();
+    db.check_cold();
+}
+
 /// **Test T-PN5, for a value-log file.** A file that a cleaning emptied is
 /// not deleted while an operation that was running then is running: it
 /// may have read a pointer into the file.
