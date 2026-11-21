@@ -104,8 +104,12 @@ fn sweep<T: Debug>(
     }
 }
 
+/// Whether `error` is the storage's error of the injected fault itself,
+/// and no other error that carries its words.
 fn is_the_refusal(error: &Error) -> bool {
-    error.to_string().contains(INJECTED_READ_FAILURE)
+    use grovedb_storage::Error as Storage;
+
+    matches!(error, Error::StorageError(Storage::StorageError(words)) if words == INJECTED_READ_FAILURE)
 }
 
 impl<T: Debug> Swept<T> {
