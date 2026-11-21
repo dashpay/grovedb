@@ -992,7 +992,10 @@ another move of the batch takes one from.
 under each prefix that a subtree went to what it read under the prefix the
 subtree was taken from: the committed records there and its own writes
 from before the move, in every column, and what it writes under the new
-prefix afterwards (RD3, RD5, RD6). What the subtree held in its data
+prefix afterwards (RD3, RD5, RD6). A cursor reads the committed records of
+the version it was opened on (RD6): under the new prefix, those that
+version has under the old one, whichever commits were published between
+that version and the move. What the subtree held in its data
 column, the nodes of a Merk or flat records, it holds under the new prefix
 (ST1). Under a prefix that a subtree was taken from, or that a subtree
 which left with the move had (MV2), and that no move of the batch brought a
@@ -1071,8 +1074,9 @@ it is.
   empties the overlap set (WT8) gives *T* its frames again, and its reads
   with them, where the writes that are left can be laid out.
 - Otherwise, where the writes of *T* cannot be laid out over the version
-  it reads, the refusal is the one that stops the layout, with the subtree
-  that one names, and no conflict.
+  it reads, the refusal is the one that stops the layout, as that one is:
+  it names the subtree that stopped it where it names one. It is no
+  conflict.
 
 While the write set of *T* holds a move, a seek of a cursor through *T*,
 and a step or a read from a key the cursor stands on, begins as each
@@ -1098,14 +1102,15 @@ decides, and a batch that drops or clears a subtree while the write set
 holds a move. There `MoveBeside` names the subtree that `MovedByKey` names
 in MV7. Where the transaction itself serves its records by key, the
 refusal is that of MV7, through whichever scope. Every scope whose writes
-are laid out refuses a batch with a move, with `MoveBeside`, while the
-pending mark of
-an element of a Merk under a prefix the move names stands (SC9), or a call
-that set that mark or took it off is among the writes that the
-transaction's frames show: one of a scope that merged, where it changed
-the mark, or one of an open scope whose writes are laid out, whether it
-changed the mark or not. A batch that is refused after its claims were
-taken leaves them with its scope (SC3).
+are laid out refuses a batch with a move, with `MoveBeside`, while a
+pending mark (SC9) stands under a prefix that the move names, whichever
+key it is of, or a call that set such a mark or took one off is among the
+writes that the transaction's frames show: one of a scope that merged,
+where it changed the mark, or one of an open scope whose writes are laid
+out, whether it changed the mark or not. A mark is of a prefix and a key,
+whether or not a subtree is entered there and an element is under the key.
+A batch that is refused after its claims were taken leaves them with its
+scope (SC3).
 
 ## 8. Commit
 
@@ -1502,9 +1507,8 @@ them, are keys of its change sets as for any batch. So:
 - the commit of *T* meets every entry that another transaction made before
   it under one of those prefixes, and under a subtree below one of them by
   the two rules of CF5. That is every entry, a range delete that contains
-  no key among them: the commit took the subtree whole, as a drop does,
-  and each entry is laid out again only over a subtree that is entered
-  under its prefix. The names that an enter if absent recorded above
+  no key among them: the commit took the subtree whole, as a drop does.
+  The names that an enter if absent recorded above
   its host are prefixes of the committed state: they stay as recorded
   when the transaction that stated the enter moves a subtree itself.
 
@@ -2684,9 +2688,10 @@ same result.
 - T-MV4: a rollback to a savepoint from before a move; frames that are made
   again over a directory with another subtree below the moved one, one
   that leaves and one that a stated pair names; a subtree that left with
-  the move and that a later commit entered elsewhere; a move that cannot
-  be made again, found by a read by key and by a cursor of either kind,
-  and made once a later commit lets it (MV6).
+  the move and that a later commit entered elsewhere; a subtree that a
+  commit entered below a Merk which the transaction cleared before it
+  moved it; a move that cannot be made again, found by a read by key and
+  by a cursor of either kind, and made once a later commit lets it (MV6).
 - T-MV5: CF10 and MV7. The dating, with the foreign commit before the read
   and after it, with no read named and with a read that cannot be dated; a
   foreign commit after the move under each kind of prefix its entry
@@ -2694,15 +2699,19 @@ same result.
   against the transactions that wrote beside it; a batch that is laid out
   after it; two movers of which one names a prefix that the other let
   leave, in both orders; a range delete with a key in it and one with
-  none, against a move, in both orders; a commit that enters subtrees
+  none, against a move, in both orders; a drop above a prefix that a
+  second move takes its subtree from, with a look of the mover before it
+  and without; a commit that enters subtrees
   below the moved one with their hosts; the refusals that a foreign commit
   explains, with
   a drop in the batch and without; by key, the reads and the writes where
   a move decides by each of the three conditions of MV7, a drop and a
   clear, a write of a subtree that holds flat data, a cursor of either
   kind as the first call after the commit, a cursor that steps after a
-  look at a commit failed, and a cursor that reads the node it found once a
-  commit has entered its subtree below a target; and the scopes of MV8.
+  look at a commit failed, a cursor that reads the node it found once a
+  commit has entered its subtree below a target, and one that reads a node
+  at the moment of a rollback; a cursor from before a commit and a move
+  (MV5); and the scopes of MV8.
 - T-MV6: the power is cut after every change of a session whose commit
   moves subtrees: two change places, with flat records under each and
   under the subtree below it, and a subtree with no node leaves. Every cut
