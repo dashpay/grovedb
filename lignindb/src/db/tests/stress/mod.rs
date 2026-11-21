@@ -98,7 +98,7 @@ use self::{
 };
 use super::*;
 use crate::{
-    checkpoint::{self, Checkpointer},
+    checkpoint::{self, CheckpointOptions},
     db::{store::lock, WriteError},
     snapshot::{LatestLease, Snapshot},
     txn::{
@@ -640,8 +640,7 @@ fn outside(run: &Run<'_>, writer: &mut Writer, dir: &Path, options: &Options) {
 /// of its own, reads every subtree of the one version it holds, closes it
 /// and deletes it (CK1, CK7).
 fn checkpoint(run: &Run<'_>, target: &Path, options: &Options) {
-    let committer = run.db.shared.committer();
-    let created = Checkpointer::new(&committer).create(target);
+    let created = run.db.checkpoint(target, CheckpointOptions::default());
     let created = created.unwrap_or_else(|error| panic!("a checkpoint: {error}"));
     let opened = Db::open(target, options).unwrap_or_else(|error| {
         // What the checkpoint is made of, for whoever reads the failure.

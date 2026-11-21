@@ -17,6 +17,7 @@
 //! | [`Db::read`] | One operation that pins no version and reads the latest one ([`Operation`]). | RD4 |
 //! | [`Db::flush`] | Makes every commit that was published when it was called durable. | DU1a, P-05 |
 //! | [`Db::wipe`], [`Db::wipe_entering`] | Removes every record of every keyspace, in one commit, in which the second enters the subtrees its caller names. | CV3, CF5, P-23 |
+//! | [`Db::checkpoint`] | Makes a checkpoint of the database in a new directory, which is opened as a database of its own ([`crate::checkpoint`]). | CK1 to CK10 |
 //! | [`Db::stats`] | Every count the engine keeps ([`DbStats`]). | |
 //! | [`Db::keyspaces`] | The flat keyspace of each column. | |
 //!
@@ -525,6 +526,7 @@ pub use self::{
     reclaim::{ReclaimStats, Round},
 };
 use crate::{
+    checkpoint::{CheckpointError, CheckpointOptions, Checkpointer, Created},
     commit::{CommitError, CommitStats, Committed, Committer, NoStaleHashes, Published},
     options::Options,
     snapshot::{LatestLease, Operation, Snapshot},
@@ -1332,6 +1334,52 @@ impl Db {
                 Err(DbError::Flush(error))
             }
         }
+    }
+
+    /// Makes a checkpoint of the database in the new directory `target`,
+    /// which is opened as a database of its own ([`Db::open`]). This is
+    /// [`Checkpointer::create`] with `options`, on the commit path of this
+    /// database: the documentation of that call is the contract of this
+    /// one, and [`crate::checkpoint`] says what a checkpoint is, what its
+    /// creation holds of the live database and for how long, and what a
+    /// creation leaves that fails or that the power cuts.
+    ///
+    /// The call borrows the handle: it is made from any thread, beside
+    /// commits, readers, the background work and other calls of it. A
+    /// close takes the handle, so no call of this is made beside one.
+    ///
+    /// **The call asks the commit path whether the session takes
+    /// commits, and not [`Self::reopen`].**
+    ///
+    /// - A call that finds the commit path stopped when it begins is
+    ///   refused with [`CheckpointError::Stopped`], which has the commit
+    ///   path's reason, and has made no call to the file layer. The
+    ///   commit path has stopped in every session of which
+    ///   [`Self::reopen`] says [`Reopen::NotDurable`] or
+    ///   [`Reopen::Stopped`].
+    /// - A call that finds it not stopped goes on as in any session. A
+    ///   session of which [`Self::reopen`] says
+    ///   [`Reopen::SegmentsNotDurable`] can be one whose commit path has
+    ///   not stopped.
+    /// - A call whose own sync of the log fails returns
+    ///   [`CheckpointError::Sync`]. That sync stays failed in the store,
+    ///   and the session ends for it as for any sync of the log that
+    ///   failed ("A session that takes no write any more" in the
+    ///   [module documentation](self)).
+    ///
+    /// [`DbStats`] has no count of the checkpoints that this call makes.
+    /// An error of this call is returned to its caller, and the call does
+    /// not count it among the errors of the background work
+    /// ([`DbStats::background`]).
+    pub fn checkpoint(
+        &self,
+        target: &Path,
+        options: CheckpointOptions,
+    ) -> Result<Created, CheckpointError> {
+        let committer = self.shared.committer();
+        Checkpointer::new(&committer)
+            .with_options(options)
+            .create(target)
     }
 
     /// Removes every record of every keyspace: the nodes of every Merk,

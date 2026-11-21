@@ -25,7 +25,7 @@ use crate::{
         tests::world::{check_reads, write, State},
         Backup, BackupError,
     },
-    checkpoint::{self, Checkpointer},
+    checkpoint::{self, CheckpointOptions},
     txn::tests::store::Rng,
 };
 
@@ -143,12 +143,9 @@ fn a_backup_from_a_checkpoint_is_the_database_at_the_checkpoints_version() {
         // node makes it (P-14). It is not opened.
         fs.create_dir(Path::new("/db/checkpoints"))
             .expect("a directory");
-        let created = {
-            let committer = db.shared.committer();
-            Checkpointer::new(&committer)
-                .create(Path::new(CHECKPOINT))
-                .unwrap_or_else(|error| panic!("{context}: {error}"))
-        };
+        let created = db
+            .checkpoint(Path::new(CHECKPOINT), CheckpointOptions::default())
+            .unwrap_or_else(|error| panic!("{context}: {error}"));
         let at = state.clone();
         assert_eq!(created.version.get(), at.version(), "{context}");
 

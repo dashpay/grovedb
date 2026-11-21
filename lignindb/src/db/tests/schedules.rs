@@ -118,7 +118,7 @@ use super::{
     *,
 };
 use crate::{
-    checkpoint::{self, Checkpointer},
+    checkpoint::{self, CheckpointOptions},
     db::store::{lock, Shared, Steps},
     snapshot::{LatestLease, Snapshot, Versions},
     txn::{
@@ -936,8 +936,7 @@ fn work(
         },
         Step::CleanValues => clean_values(db, &Cleaner::new(write_back, cleaner_state), &log),
         Step::Checkpoint => {
-            let committer = db.shared.committer();
-            match Checkpointer::new(&committer).create(Path::new(CHECKPOINT)) {
+            match db.checkpoint(Path::new(CHECKPOINT), CheckpointOptions::default()) {
                 Ok(created) => {
                     made.version = Some(created.version);
                     Ok(format!("{created:?}"))
@@ -949,10 +948,7 @@ fn work(
             // The creation is no part of the step, and it is over, with
             // what it held, before the first point.
             gate.rest();
-            let created = {
-                let committer = db.shared.committer();
-                Checkpointer::new(&committer).create(Path::new(CHECKPOINT))
-            };
+            let created = db.checkpoint(Path::new(CHECKPOINT), CheckpointOptions::default());
             gate.pace();
             match created {
                 Ok(created) => {
@@ -1328,8 +1324,7 @@ fn a_checkpoint_sampled_right_after_the_log_turned_to_a_new_file_opens() {
         }
     }
     assert!(turned, "the log never turned to a new file");
-    let committer = db.shared.committer();
-    let created = Checkpointer::new(&committer).create(Path::new(CHECKPOINT));
+    let created = db.checkpoint(Path::new(CHECKPOINT), CheckpointOptions::default());
     let created = created.unwrap_or_else(|error| panic!("the checkpoint: {error}"));
     let opened = Db::open(CHECKPOINT, &options).unwrap_or_else(|error| {
         let manifest = lignin_store::segment::read_manifest(&*options.vfs, Path::new(CHECKPOINT));
