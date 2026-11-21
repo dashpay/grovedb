@@ -96,8 +96,8 @@ pub struct Published {
     /// from").
     pub directory: Directory,
     /// The first value pointer that the counts of live values could not
-    /// take as the commit released it. The whole change was applied all
-    /// the same, and the commit went on
+    /// take as the commit released or acquired it. The whole change was
+    /// applied all the same, and the commit went on
     /// ([`ValueStore::apply`](lignin_store::values::ValueStore::apply)).
     pub miscounted: Option<ValueStoreError>,
 }

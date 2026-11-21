@@ -132,7 +132,7 @@
 //! a Merk that has no root, handed over in one change set, every node
 //! once, a child before its parent, with every value stated, every hash
 //! made and the root named. Such a change set that has a node is a
-//! **load** (`transactions.md` LD1 to LD7). A state-sync restore, the
+//! **load** (`transactions.md` LD1 to LD8). A state-sync restore, the
 //! load hatch and the migrator from RocksDB hand their Merks over so.
 //! One that is not what it says is refused with nothing changed
 //! ([`BatchError::NotWhole`], [`WholeFault`]).
@@ -154,8 +154,11 @@
 //!   wherever it stands in the batch, or of a Merk the batch does not
 //!   write. No Merk is laid out inside the fragment of its host. A node of
 //!   a load does not host a Merk that the batch writes node by node, nor
-//!   one that another node of the batch hosts, and a node that is written
-//!   as any other can host a load.
+//!   one that another node of the batch hosts: the batch is refused. For
+//!   another node that states the Merks it hosts that is before anything
+//!   is changed, and for one that is written and keeps them it is when
+//!   the batch is laid out. A node that is written as any other can host
+//!   a load.
 //! - **The hashes are the ones the change set states.** The loader asks
 //!   for each hash of a node when the node arrives, and is answered with
 //!   what the change set says: no rule is known here. The hash of the
@@ -181,10 +184,12 @@
 //!
 //! **A load that is applied where no frames take it has no page then**:
 //! where a write of the transaction is met (WT7b), and for a scope that
-//! keeps its writes in the write set ([`crate::scope`]). Its values are
-//! in the write set like those of any write, and stay there. When frames
-//! are made, the load is laid out from those bytes, and its values out of
-//! line go into the value log then.
+//! keeps its writes in the write set ([`crate::scope`]). Its values that
+//! are too long for a cell go into the value log in that operation all
+//! the same, each for no page, and the write set keeps where they are
+//! (LD3). A value that fits its cell is in the write set, like that of
+//! any write. When frames are made, the load is laid out from there, and
+//! each value out of line is appended again for the page of its cell.
 //!
 //! **To the conflict rule a load is the puts of its nodes** (LD6), and
 //! the first node of its Merk: it is not laid out over a root that a
@@ -205,9 +210,14 @@
 //! - for a value out of line the 12 bytes of its place, in the cell and in
 //!   the run, and 20 bytes in the write set, whatever its length
 //!
-//! While the operation lays the load out, the loader keeps the nodes whose
-//! cells are in no page yet, each with its value. The batch itself is its
-//! caller's ([`TxnStats`] has the pages and the bytes of the write set).
+//! While the operation lays the load out, the loader keeps the cell of
+//! each node that is in no page yet, in whatever order the nodes are
+//! stated. Of a value out of line the transaction keeps only where it is
+//! until the cell gets its page: in the batch, or in the value log where
+//! the frames are made again. There a value is read when its node is
+//! handed to the loader and again when it is appended: two such values
+//! are in memory at most. The batch itself is its caller's ([`TxnStats`]
+//! has the pages and the bytes of the write set).
 //!
 //! # Subtrees and the directory
 //!

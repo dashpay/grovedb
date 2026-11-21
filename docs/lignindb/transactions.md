@@ -1169,7 +1169,12 @@ too long for their cells are in the value log before the commit.** This is
 the exception to WT4 and FL7. Such a value is appended to a value-log file
 when its cell gets its page, for that page, and the cell holds the pointer
 from its first write on. The append can create the file and replace the
-manifest so that it names the file. Until *T* commits:
+manifest so that it names the file. Where the file cannot be named, the
+append is refused and the file is kept: for as long as it is the file that
+loads fill, each append first tries to name it, and creates no other. A
+manifest that an earlier replacement left in doubt is settled first, here
+and in LD5, as write-back settles it (`lignin_store::flush`). Until *T*
+commits:
 
 - no count of live values includes the value (PV6)
 - *T* holds the file, as background work holds the file of a value it
@@ -1184,23 +1189,36 @@ nothing that recovery keeps points at one (DU3).
 **LD3. For such a load the write set keeps where each of those values is,
 in the place of its bytes.** The record in the value log is written once
 and never changed (`value-log-format.md`), and *T* holds its file, so WT3
-holds for the entry as long as that file can be read: a value-log file
-whose sync failed is read no more past what was synced, and a transaction
-whose write set names a value there is rolled back. A read of the record
-by key (WT7b) reads the value log.
+holds for the entry as long as the record can be read. A read of the
+record by key (WT7b) reads the value log.
 
-A load that is applied while *T* has no frames to lay it out in is in the
-write set with the bytes of every value, like any write, for as long as
-the entry is there: *T* serves its records by key (WT7b), or the scope
-that applies it keeps its writes in the write set (TXN-09).
+The record can be read until a sync of its file fails. A value-log file
+whose sync failed takes no more values, and what it took after its last
+sync that succeeded is read no more (`lignin_store::values`). Where *T*'s
+write set names such a value, a read of that record by key fails, and so
+does every operation and every commit of *T* that has to make *T*'s
+frames (LD4), each with *T* as it was. Where that refuses *T*'s commit,
+*T*'s caller rolls it back, or back to a savepoint that was set before
+the load. What the file took before that sync is as it was.
+
+A load that is applied while *T* has no frames to lay it out in has no
+page then: *T* serves its records by key (WT7b), or the scope that applies
+it keeps its writes in the write set (TXN-09). Its values that are too
+long for their cells are appended to the value log in that operation all
+the same, each for no page: the record names the greatest page id as its
+owner, and no cell ever points at it (`value-log-format.md` O4). The write
+set keeps where they are, as above, and LD2's three items hold for them.
+When frames are made, LD4 lays the load out from there. A value that fits
+its cell is in the write set, like that of any write.
 
 **LD4. Private frames that are made from the write set lay a load out
 again**, as they apply every write again (WT7a): the bulk loader lays it
 out in new pages, and each value that is too long for its cell is read
 from where the write set has it and appended to the value log again, for
 the page its cell is in now. A copy that was appended for frames that are
-no more is dead space. The records are what they were. The pages need not
-be: they are again the loader's.
+no more is dead space, and so is one that was appended for no page (LD3).
+The records are what they were. The pages need not be: they are again the
+loader's.
 
 **LD5. The commit of a load takes its values over.** This is the exception
 to CM7 and to the first case of PV6.
@@ -1209,13 +1227,17 @@ to CM7 and to the first case of PV6.
    manifest covers every value that *T*'s loads appended for those frames
    (`segment-manifest.md` M13). Where one does not yet, the value-log file
    that the loads fill is synced and the manifest is replaced. If that
-   fails, the commit is refused and *T* is as it was.
+   fails, the commit is refused and *T* is as it was. No manifest covers
+   what a value-log file took after its last sync that succeeded, once a
+   sync of it has failed (LD3): the commit is refused for as long as *T*
+   has the frames that such a value was appended for.
 2. The group lists as acquired each pointer of *T*'s loads that a cell of
    the frames holds (`log-format.md` LG16), and step 7 of CM3 counts them
    (PV6).
 3. *T*'s hold on the files ends when they are counted. Where the commit
    ends with its group possibly in the log and the values not counted
-   (CM9), the hold stays for the session.
+   (CM9), the store has the hold from then on, until the session ends. So
+   it has where the commit panics in step 6 or 7.
 
 A pointer of LD2 that a cell of *T* stopped holding again before the
 commit was never counted, and the group does not list it as released. The
@@ -1223,13 +1245,16 @@ value of such a cell that was carried to another page travels in the
 group, as that of any carried cell does (FL7).
 
 Item 1 is done twice. It is done before the commit lock is taken, after
-*T*'s frames were made over the latest version of that moment, so that no
-other commit waits for the sync and for the manifest. It is done again
-under the commit lock, where it finds nothing to do unless frames were
-made in between: because another commit was published, or because an
-operation of *T* on another thread dropped them or loaded more. Only then
-does a commit wait, under the commit lock, for what LD4 appends, for a
-sync of a value-log file and for the manifest (CM8).
+*T*'s frames were made over the latest version of that moment, so that
+the sync and the manifest are not waited for under the commit lock. What
+that first time comes to is no answer of the commit: an error of it is
+returned by no one. It is done again under the commit lock, after the
+conflict is decided (CF6), and an error there refuses the commit. There it
+finds nothing to do unless frames were made in between: because another
+commit was published, or because an operation of *T* on another thread
+dropped them or loaded more. Only then does a commit wait, under the
+commit lock, for what LD4 appends, for a sync of a value-log file and for
+the manifest (CM8). LD8 says what is waited for either time.
 
 **A crash leaves all of a load or none of it.** If recovery keeps the
 group (DU2), every pointer it acquires names a value that a durable
@@ -1266,10 +1291,33 @@ from the operation to its commit:
 Of a value in the value log these hold the 12 bytes of its place, in the
 cell and in the run, and those 20 bytes, whatever its length. Two things
 hold more for a time. While the operation lays the load out, the loader
-keeps the nodes whose cells are in no page yet, each with its value
-(`lignin_tree::bulk`). And the commit builds its log group in memory
-before it appends it (CM3 step 6): the runs of all pages of *T* once more.
-A load of LD3's second paragraph has its values in the write set.
+keeps the cell of each node that is in no page yet (`lignin_tree::bulk`),
+in whatever order the nodes are stated. Of a value that is too long for
+its cell, *T* keeps only where it is until the cell gets its page: in the
+batch, which is its caller's, or in the value log where the frames are
+made again (LD4). There a value is read when its node is handed to the
+loader and again when it is appended, so two such values are in memory
+at most. And the commit builds its log group in memory before it appends
+it (CM3 step 6): the runs of all pages of *T* once more. A load of LD3's second
+paragraph has in the write set what one that is laid out has: the 20
+bytes for a value in the value log, and the value if it fits its cell.
+
+**LD8. What a load waits for.** The loads of a store fill one value-log
+file at a time, under one lock, and the manifest has one lock (LT7 level
+3). An operation of *T* that appends a value of a load, for a page (LD2,
+LD4) or for none (LD3), takes the first for each append, and the second
+where no manifest names the file yet (LD2). Where *T*'s commit covers the
+values (LD5 item 1), it takes both. So they wait
+
+- for a load of another transaction, or the commit of one: for one
+  append, and for a sync of the file and a replacement of the manifest
+  that cover values
+- for whoever holds the lock on the manifest, as write-back does over a
+  replacement of the manifest and a checkpoint does while it links files
+
+A transaction with no load takes neither lock. Where a commit of a load
+waits for them under the commit lock (LD5), the commits behind it wait
+with it.
 
 ## 8. Commit
 
@@ -2464,13 +2512,13 @@ whether either can be made to wait for the other.
 | 5 | Reader, cleaner | blocks, files and page ids the reader's version needs | PN2, PN6, CL1 to CL5, ID2 | never |
 | 6 | Reader, checkpoint | files | PN5, CK7 | never |
 | 7a | Writer, writer in the same transaction | units, private frames, the transaction's merged writes | SC3, SC4, SC6, SC7, LT1 to LT5 | one physical step (LT3); a claim never waits |
-| 7b | Writer, writer in another transaction | nothing until one commits | RD8, WT1, WT4 | never |
+| 7b | Writer, writer in another transaction | nothing until one commits, but for the value-log file that loads fill and the manifest that names it (LD2) | RD8, WT1, WT4, LD8 | never, but for two that load (LD8) |
 | 8a | Writer, commit of its own transaction | the write set | CM1, SC8 | commit is refused while a scope is open |
 | 8b | Writer, a foreign commit | *L*, the keys both wrote, and locations the writer kept | RD3, RD4, WT7, WT7a, WT7b, PN8, CF2, CF3 | never; the writer rebases at its next operation |
-| 9 | Writer, flusher | the committed pages a writer has copied; never a private frame, and no data file: a writer writes to none but for a load (WT4, LD2) | FL1, FL5, FL7, WT4, PV7 | never; the flusher leaves a copied page's values as they are, the pending ones pending and the placed ones in place |
-| 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, what a dropped subtree left in them, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, WT11, CL5, CL6, ID1, ID2 | never; the cleaner leaves a copied page for later |
-| 11 | Writer, checkpoint | nothing: uncommitted writes are not captured | CK1, CK8 | never |
-| 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8 | the second waits for the commit lock |
+| 9 | Writer, flusher | the committed pages a writer has copied; never a private frame, and no data file: a writer writes to none but for a load (WT4, LD2) | FL1, FL5, FL7, WT4, PV7, LD8 | never, but for a writer that loads (LD8); the flusher leaves a copied page's values as they are, the pending ones pending and the placed ones in place |
+| 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, what a dropped subtree left in them, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, WT11, CL5, CL6, ID1, ID2, LD8 | never, but for a writer that loads (LD8); the cleaner leaves a copied page for later |
+| 11 | Writer, checkpoint | nothing: uncommitted writes are not captured; the manifest, for a writer that loads (LD2) | CK1, CK8, LD8 | never, but for a writer that loads (LD8) |
+| 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8, LD8 | the second waits for the commit lock; two commits of loads also as LD8 says |
 | 13 | Committer, flusher | the log, the page versions just born with their pending values, pages whose values the flusher places or regroups, and the counts of live values | CM3 steps 6 and 7, CM8, CM9, FL1, FL4 to FL7, PV6, PV7, LT7 | the committer, before it takes the lock (FL5); otherwise one page step, or one hold of the counts lock by either; a commit that fsyncs the log (CM7) waits for an fsync of the log that the flusher is making (CM8) |
 | 14 | Committer, cleaner | page-table entries; pages and ids the commit frees; pages whose value pointers the cleaner rewrites or whose left-over cells it removes; the counts of live values | CL4 to CL7, PV6, PV7, ID2, PN6, LT7 | one page step, or one hold of the counts lock by either |
 | 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling; a commit that fsyncs the log (CM7) waits for an fsync of the log that the checkpoint is making (CM8, CK5) |
@@ -2739,7 +2787,7 @@ took.
 | TXN-07 | Wipe is one commit over the range "everything" (CV3, CF5). `flush()` is DU1a. | The facade. |
 | TXN-08 | A batch is one operation: one read of *L*, one first-write version, one entry per key it ends up holding (RD4, WT5, GM0). Which call survives for a key, by operation generation (GM0). | Batch semantics. |
 | TXN-09 | Section 9. The directory entry of a Merk is in that Merk's unit (SC2). Marks and other scopes' claims can be asked for by the tree layer (SC9, LT4). | Claim tables, merge, the scope's undo. |
-| TXN-10 | LD1 to LD7: a load is the records of its change set (LD1), its long values are in the value log before the commit and are the commit's to take over (LD2, LD5), and frames that are made from the write set lay it out again (LD4). | How a change set states that it is whole, the value-log file loads append to, and how the commit finds the pointers it acquires. |
+| TXN-10 | LD1 to LD8: a load is the records of its change set (LD1), its long values are in the value log before the commit and are the commit's to take over (LD2, LD5), and frames that are made from the write set lay it out again (LD4). | How a change set states that it is whole, the value-log file loads append to, and how the commit finds the pointers it acquires. |
 | TREE-03 | LT1, LT4: it runs a scope's change sets again on merged pages, by key. It may ask whether another open scope has claimed a unit, for placement only. | The layout rules (`tree-layout.md`). |
 | TREE-05 | ST3, SC2, SC9, CV9: an entry is no record; it is written by the scope that holds its Merk and is exact while the host is marked pending; an entry that a drop left behind is never returned. | The entry, and how a lookup tells a left-over one. |
 | TREE-06 | RD6. | The cursor. |
@@ -3088,20 +3136,29 @@ TREE-09, VER-05)**
   over whole reads back, node by node, as the same Merk written by ordinary
   change sets, in the transaction and after its commit, and its pages are
   at the loader's fill. A change set that states it is whole and is not is
-  refused with nothing changed.
+  refused with nothing changed. A batch in which a Merk has a host among
+  the nodes of a load and another among its other nodes is refused when
+  it is laid out.
 - T-LD2: the values of a load (LD2, LD3, LD5), owed by TXN-10. The commit
   of a transaction that made a load and no other write carries no value in
   its group. A commit counts every value of its loads that its cells point
   at, once, also after its frames were made again and after a later write
   of the same transaction replaced or removed loaded nodes. A rollback
   leaves no count changed. What the transaction holds of a load after the
-  operation does not grow with the bytes of its values out of line.
+  operation does not grow with the bytes of its values out of line: where
+  it is laid out, in whatever order its nodes are stated, and where no
+  frames take it. What the process holds while a load is laid out, with
+  every leaf stated first, is measured by a test that is run by hand. A
+  commit that ends with its group possibly in the log leaves the hold on
+  the files with the store, until the session ends.
 - T-LD3: a power cut at any point of the commit of a load (LD5), owed by
   TXN-10: every state the cut can leave opens with the Merk whole or with
   no node of it, and passes the physical invariant checker (VER-07).
 - T-LD4: a load and the conflict rule (LD6), owed by TXN-10: two loads of
-  one Merk, a load beside a first node of another transaction, and a load
-  after more commits than a transaction keeps key sets of.
+  one Merk, a load beside a first node of another transaction, a load
+  after more commits than a transaction keeps key sets of, and a commit of
+  a load that is met while the look at what its drop covers fails, which
+  ends with the conflict.
 - T-VL6: the counts after a crash (DU5), owed by STORE-07 with STORE-03.
   Samples are taken while commits, write-back and value moves run, and a
   crash comes at any point. The counts recovered from the sample in force
@@ -3579,5 +3636,6 @@ that takes the values of a load over (plan draft 40).
 | Where a load is laid out, its long values are appended to the value log before the commit, under a hold, and the write set keeps where they are. | LD2 (new), LD3 (new), WT4, FL1, FL7 |
 | The commit of a load has a durable manifest cover those values before its frames are taken, lists the pointers its cells hold as acquired, and counts them. | LD5 (new), PV6, CM3, CM7, CM8 |
 | A load is counted by the conflict rule as the puts of its nodes. | LD6 (new), CF5 |
+| A load and its commit take the lock of the file that loads fill and the lock on the manifest. | LD8 (new), section 13 rows 7b and 9 to 12 |
 
 New tests: T-LD1 to T-LD4.

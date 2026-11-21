@@ -89,28 +89,35 @@
 //!
 //! | Step | What is done | Locks held |
 //! | --- | --- | --- |
-//! | before | The transaction's frames are made over the latest version, and where no durable manifest covers the values its loads appended for them, the file the loads fill is synced and the manifest is replaced. A failure refuses the commit with the transaction as it was ([`CommitError::Refused`]). | the transaction's own, that of the loads' file, the manifest's |
-//! | 2 to 4 | The same again, before the frames are taken. Nothing is left to do unless frames were made since: a commit of another was published, or an operation of the transaction on another thread dropped them or loaded more. | commit lock, and the three above |
+//! | before | The transaction's frames are made over the latest version, and where no durable manifest covers the values its loads appended for them, the file the loads fill is synced and the manifest is replaced. An error here is returned by no one: the same is done again below. | the transaction's own, that of the loads' file, the manifest's |
+//! | 2 to 4 | The same again, after the conflict is decided (CF6) and before the frames are taken. A failure refuses the commit with the transaction as it was ([`CommitError::Refused`]). Nothing is left to do unless frames were made since: a commit of another was published, or an operation of the transaction on another thread dropped them or loaded more. | commit lock, and the three above |
 //! | 6 | The group lists as acquired the pointers that cells of the transaction's pages hold to values of its loads, after the released ones. A pointer of its own loads that a cell stopped holding again is not listed as released: no count had it. | as for any commit |
 //! | 7 | The acquired pointers are counted with the released ones, and the hold on the files of the loads ends. | as for any commit |
 //!
 //! So such a commit can sync a value-log file and replace the manifest,
-//! which costs what those cost on the store's disk. No other commit waits
-//! for them where they are made in the first row. In the second row a
-//! commit waits for them under the commit lock, and for what the frames
-//! append (CM8). [`Published::acquired`] counts the pointers.
+//! which costs what those cost on the store's disk. In the first row they
+//! are made without the commit lock. In the second row a commit waits for
+//! them under the commit lock, and for what the frames append (CM8), and
+//! the commits behind it wait with it. What either row waits for is in
+//! `transactions.md` LD8. [`Published::acquired`] counts the pointers.
 //!
-//! **A value in a file whose sync failed is covered by no manifest**
+//! **A value-log file whose sync failed takes no more values. No
+//! manifest covers what it took after its last sync that succeeded, and
+//! that is read no more**
 //! ([`ValueStoreError::FileFailed`](lignin_store::values::ValueStoreError::FileFailed)).
-//! The commit of a transaction whose frames hold a pointer to one is
-//! refused each time, and the transaction is rolled back.
+//! The commit of a transaction is refused, with the transaction as it
+//! was, for as long as it has the frames that a load appended such a
+//! value for, and each time it has to make its frames from a write set
+//! that names such a value (`transactions.md` LD3, LD5). What the file
+//! took before that sync is as it was.
 //!
 //! **Where the commit ends with its group possibly in the log and the
-//! values not counted**, the hold stays for as long as the session lasts:
-//! a commit that cannot be settled ([`CommitError::Unsettled`]), one whose
-//! install is refused ([`CommitError::Halted`]), and one that panics from
-//! its append on. A recovery that keeps the group finds cells that point
-//! into those files.
+//! values not counted**, the store has the hold from then on, until the
+//! session ends: a commit that cannot be settled
+//! ([`CommitError::Unsettled`]) and one whose install is refused
+//! ([`CommitError::Halted`]). A recovery that keeps the group finds cells
+//! that point into those files. The store has the hold as well where the
+//! commit panics once it holds the lock on the counts (step 6).
 //!
 //! **After a crash the store has all of a load or none of it.** A manifest
 //! that covers every value is durable before the group that names their
