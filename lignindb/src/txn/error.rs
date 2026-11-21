@@ -403,9 +403,13 @@ pub enum WholeFault {
     /// Loads of the batch host each other, in a cycle of one or more.
     HostsItself,
     /// A node hosts a Merk that another node of the batch hosts, or hosts
-    /// it twice. The other node may be one that the batch writes and that
-    /// keeps the Merks it hosts. A Merk has one host.
+    /// it twice. A Merk has one host.
     HostedTwice,
+    /// A node hosts a Merk that was entered with another host, or with
+    /// none: the subtree directory names the host of a Merk
+    /// ([`HostPut`](super::HostPut)), and a node of a load is written
+    /// with the root of no other Merk.
+    NotItsHost,
 }
 
 impl fmt::Display for WholeFault {
@@ -421,6 +425,7 @@ impl fmt::Display for WholeFault {
             Self::HostsWritten => "a node hosts a Merk that the batch writes node by node",
             Self::HostsItself => "it hosts a Merk that hosts it",
             Self::HostedTwice => "a node hosts a Merk that has a host in the batch",
+            Self::NotItsHost => "a node hosts a Merk that was entered with another host",
         })
     }
 }

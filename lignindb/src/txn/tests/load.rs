@@ -711,27 +711,34 @@ fn a_load_is_the_puts_of_its_nodes_to_the_conflict_rule() {
 }
 
 /// Applies the load `batch` of the Merk `name` through a scope of `tx`
-/// that is laid out, or, with `by_key`, through one that is open beside
-/// another and keeps its writes in the write set until it merges.
-fn take<'s>(
+/// that is laid out and merges, or, with `by_key`, through one that is
+/// open beside another and keeps its writes in the write set. Those two
+/// scopes are returned open, to be merged: the load is laid out then.
+fn take<'t, 's>(
     world: &World<'s>,
-    tx: &Tx<'s>,
+    tx: &'t Tx<'s>,
     (batch, name): (&OwnedBatch, u8),
     by_key: bool,
-) -> Result<Applied, TxnError> {
+) -> Result<Vec<Scope<'t, 's>>, TxnError> {
     if !by_key {
-        return load(world, tx, batch, &[name]);
+        return load(world, tx, batch, &[name]).map(|_| Vec::new());
     }
     let first = tx.txn.scope()?;
     let beside = tx.txn.scope()?;
     let first_write = world.latest().get();
     let applied = batch.loading(&[model::subtree(name)], |batch| beside.apply(batch));
-    first.merge();
-    beside.merge();
-    let applied = applied?;
-    assert!(applied.load.is_none(), "the load was taken by key");
-    world.note(tx, batch, first_write);
-    Ok(applied)
+    match applied {
+        Ok(applied) => {
+            assert!(applied.load.is_none(), "the load was taken by key");
+            world.note(tx, batch, first_write);
+            Ok(vec![first, beside])
+        }
+        Err(refused) => {
+            first.merge();
+            beside.merge();
+            Err(refused)
+        }
+    }
 }
 
 /// "The Merk is entered and has no root" is a precondition of a load that
@@ -749,7 +756,10 @@ fn take<'s>(
 ///   load: that transaction is met by the range of the load, and ends with
 ///   the conflict.
 ///
-/// So it is where the load is laid out and where it is taken by key.
+/// And a load into a subtree that is not entered is refused where it is
+/// taken. So it is where the load is laid out and where it is taken by
+/// key, by a scope that is still open beside another while the other
+/// transaction commits.
 #[test]
 fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
     for by_key in [false, true] {
@@ -781,7 +791,9 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
         let other = world.begin();
         first_node(&world, &other, 1);
         assert!(matches!(world.commit(other, &[&tx]), Outcome::Committed(_)));
-        let refused = take(&world, &tx, (&alone(1), 1), by_key).expect_err("a root");
+        let refused = take(&world, &tx, (&alone(1), 1), by_key)
+            .map(drop)
+            .expect_err("a root");
         let rooted = BatchError::NotWhole {
             subtree: model::subtree(1),
             fault: WholeFault::HasRoot,
@@ -792,14 +804,29 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
         );
         world.check(&tx);
         assert_eq!(tx.txn.stats().overlapped, 0);
+
+        // A subtree that is not entered takes no load.
+        let lost = ENTERED + 9;
+        let refused = take(&world, &tx, (&alone(lost), lost), by_key)
+            .map(drop)
+            .expect_err("no entry");
+        let not_entered = BatchError::NotEntered {
+            subtree: model::subtree(lost),
+        };
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == not_entered),
+            "by key: {by_key}: {refused}"
+        );
+        world.check(&tx);
         assert!(matches!(ends(&tx), Ok(())), "nothing was taken");
 
         // The write, the other commit, the commit of the load.
         let tx = world.begin();
-        take(&world, &tx, (&alone(2), 2), by_key).expect("a load");
+        let open = take(&world, &tx, (&alone(2), 2), by_key).expect("a load");
         let other = world.begin();
         first_node(&world, &other, 2);
         assert!(matches!(world.commit(other, &[&tx]), Outcome::Committed(_)));
+        open.into_iter().for_each(|scope| scope.merge());
         let ended = ends(&tx);
         assert!(
             matches!(ended, Err(CommitError::Conflict)),
@@ -810,7 +837,8 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
         let other = world.begin();
         first_node(&world, &other, 3);
         let tx = world.begin();
-        take(&world, &tx, (&alone(3), 3), by_key).expect("a load");
+        let open = take(&world, &tx, (&alone(3), 3), by_key).expect("a load");
+        open.into_iter().for_each(|scope| scope.merge());
         let published = commit(&mut world, tx);
         assert_eq!(published.acquired, long_values(&merk));
         let ended = ends(&other);
@@ -865,12 +893,22 @@ fn a_commit_of_a_load_that_is_met_ends_with_the_conflict() {
     assert_eq!(counted(&db), 0, "no value of the load is counted");
 }
 
-/// A Merk has one host. A node that is written as any other keeps the
-/// Merks it hosts, and a node of a load in the same batch names one of
-/// them: the batch is refused with the transaction as it was, as the same
-/// batch is whose nodes are all written one by one.
+/// A node of a load hosts a Merk only where the Merk was entered with
+/// that node as its host (LD1): the directory names the host of a Merk,
+/// and a node of a load is written with the root of no other. A Merk that
+/// another node hosts is refused to it before anything is laid out, with
+/// the transaction as it was:
+///
+/// - where the batch writes the other host and it keeps what it hosts,
+///   which is refused as well where every node is written one by one;
+/// - where the batch has the other host say that it hosts nothing;
+/// - where the batch does not write the other host.
+///
+/// A Merk that was entered with the node of the load as its host, and got
+/// its nodes before the load, is hosted by it
+/// (`the_nodes_of_a_load_host_merks`).
 #[test]
-fn a_merk_that_a_kept_host_and_a_node_of_a_load_host_is_hosted_twice() {
+fn a_node_of_a_load_hosts_no_merk_that_was_entered_with_another_host() {
     let (db, versions) = Db::new(256);
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(21);
@@ -897,52 +935,65 @@ fn a_merk_that_a_kept_host_and_a_node_of_a_load_host_is_hosted_twice() {
     world.apply(&tx, &batch).expect("a host and its Merk");
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
 
-    // The host is written and keeps what it hosts, and a node of another
-    // Merk, which the batch hands over whole, names the same Merk.
-    let tx = world.begin();
     let other = items(&mut rng, b'a', 60, 3);
     let second = other.keys().nth(7).expect("a node").clone();
-    let two_hosts = || {
-        let kept = world.merk(&tx, 1, |items| {
-            items.insert(host.clone(), b"tree, written".to_vec());
-        });
-        assert!(kept.hosted.is_empty(), "the host keeps what it hosts");
+    let not_its_host = BatchError::NotWhole {
+        subtree: model::subtree(2),
+        fault: WholeFault::NotItsHost,
+    };
+    for other_host in ["keeps", "hosts nothing", "is not written"] {
+        // A node of another Merk, which the batch hands over whole, names
+        // the Merk that the first node hosts.
+        let tx = world.begin();
         let mut load = whole(2, &other);
         load.hosted
             .insert(second.clone(), vec![model::subtree(hosted)]);
-        batch_of(vec![kept, load])
-    };
-    // The nodes above the host keep their values: each is read, and the
-    // write names that read.
-    let scope = tx.txn.scope().expect("a scope");
-    let read = two_hosts().through(&scope);
-    let refused = read.loading(&[model::subtree(2)], |batch| scope.apply(batch));
-    scope.merge();
-    let refused = refused.expect_err("two hosts");
-    let twice = BatchError::NotWhole {
-        subtree: model::subtree(2),
-        fault: WholeFault::HostedTwice,
-    };
-    assert!(
-        matches!(&refused, TxnError::Batch(error) if *error == twice),
-        "{refused}"
-    );
-    world.check(&tx);
-    let one_by_one = world.apply(&tx, &two_hosts());
-    let two_pointers = |error: &TxnError| {
-        use lignin_tree::fragment::{FragmentError, WriteError};
-        matches!(
-            error,
-            TxnError::Fragment(FragmentError::Write(WriteError::TwoPointers { .. }))
-        )
-    };
-    assert!(
-        matches!(&one_by_one, Err(error) if two_pointers(error)),
-        "two hosts, node by node: {one_by_one:?}"
-    );
-    world.check(&tx);
-    tx.txn.rollback().expect("no scope is open");
+        let mut merks = Vec::new();
+        if other_host != "is not written" {
+            let mut written = world.merk(&tx, 1, |items| {
+                items.insert(host.clone(), b"tree, written".to_vec());
+            });
+            assert!(written.hosted.is_empty(), "the host keeps what it hosts");
+            if other_host == "hosts nothing" {
+                written.hosted.insert(host.clone(), Vec::new());
+            }
+            merks.push(written);
+        }
+        merks.push(load);
+        let batch = batch_of(merks);
+        // The nodes above the other host keep their values: each is read,
+        // and the write names that read.
+        let scope = tx.txn.scope().expect("a scope");
+        let read = batch.through(&scope);
+        let refused = read.loading(&[model::subtree(2)], |batch| scope.apply(batch));
+        scope.merge();
+        let refused = refused.expect_err("the Merk has another host");
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == not_its_host),
+            "the other host {other_host}: {refused}"
+        );
+        world.check(&tx);
+        assert_eq!(tx.txn.stats().tree_pages, 0, "nothing was laid out");
+        if other_host == "keeps" {
+            let one_by_one = world.apply(&tx, &batch);
+            let two_pointers = |error: &TxnError| {
+                use lignin_tree::fragment::{FragmentError, WriteError};
+                matches!(
+                    error,
+                    TxnError::Fragment(FragmentError::Write(WriteError::TwoPointers { .. }))
+                )
+            };
+            assert!(
+                matches!(&one_by_one, Err(error) if two_pointers(error)),
+                "two hosts, node by node: {one_by_one:?}"
+            );
+            world.check(&tx);
+        }
+        tx.txn.rollback().expect("no scope is open");
+    }
     world.check_committed();
+    let report = db.verify_still();
+    assert!(db.unsound(&report).is_empty(), "{report}");
 }
 
 /// A transaction that a commit has met serves its records by key, and a

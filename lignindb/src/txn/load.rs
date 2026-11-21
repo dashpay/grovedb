@@ -57,10 +57,11 @@ fn writes(merk: &MerkWrite<'_>) -> bool {
 /// is hosted by no other node of the batch: the write to the tree pages
 /// refuses two hosts of one Merk among the cells it holds
 /// (`lignin_tree::fragment`), and the cells of a load are not among them.
-/// Here that is checked for the nodes that state what they host. For a
-/// node that is written and keeps what it hosts, it is checked where the
-/// batch is laid out, when the node's cell is found
-/// (`Frames::keeps_no_root`).
+/// Here that is checked for the nodes that state what they host. A node
+/// that is written and keeps what it hosts keeps pointers the batch does
+/// not state: that none of them is at a Merk a node of a load hosts
+/// follows from the host that the entry of each Merk names, which is
+/// checked where the batch is laid out (`Frames::plan_load`).
 pub(crate) fn load_order(batch: &Batch<'_>) -> Result<Vec<usize>, BatchError> {
     let merks = batch.merks;
     let by_subtree: HashMap<Subtree, usize> = (merks.iter().enumerate())
@@ -238,7 +239,9 @@ impl LoadFiles {
         value: &[u8],
     ) -> Result<ValuePointer, ValueStoreError> {
         let mut filling = lock(&self.writer);
-        if let Some(full) = filling.take_if(|file| file.writer.is_full()) {
+        // A file that no manifest names took no value, whatever length a
+        // store calls full.
+        if let Some(full) = filling.take_if(|file| file.named && file.writer.is_full()) {
             full.writer.finish()?;
         }
         let file = match &mut *filling {
@@ -313,8 +316,9 @@ impl LoadFiles {
 /// commit that ends in any other way drops it, and the hold is then kept
 /// with the [`LoadFiles`] of the store until the session ends: where the
 /// commit cannot be settled, where its install is refused, and where it
-/// panics at any step. A recovery that keeps the group finds cells that
-/// point into those files, and no count of this session says so.
+/// panics before the values are counted. A recovery that keeps the group
+/// finds cells that point into those files, and no count of this session
+/// says so.
 pub(crate) struct Held<'a> {
     files: &'a LoadFiles,
     loaded: Loaded,
@@ -359,6 +363,12 @@ impl Drop for Held<'_> {
 /// was opened, and where it could not be opened, or was left in doubt
 /// again before the lock is taken here, the replacement below fails with
 /// the doubt, which stays for the next call.
+///
+/// The caller holds its transaction's lock and that of the loads' file,
+/// and the commit lock where a commit covers values under it: none of
+/// them is a lock of the store, which is what settling asks for, and no
+/// holder of the manifest's lock waits for one of them
+/// (`transactions.md` LD8).
 ///
 /// [`WriteBack::settle_manifest`]: lignin_store::flush::WriteBack::settle_manifest
 fn name_files(path: &WritePath<'_>) -> Result<(), ValueStoreError> {

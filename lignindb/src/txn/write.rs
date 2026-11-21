@@ -322,6 +322,9 @@ pub struct MerkWrite<'a> {
     /// - a node hosts no Merk that another change set of the same batch
     ///   writes, unless that change set is a load as well, and none that
     ///   another node of the batch hosts
+    /// - a node hosts a Merk that is entered only where the Merk was
+    ///   entered with that node as its host ([`HostPut`]): its key, and the
+    ///   place of the Merk in the node's [`Hosted::Set`]
     ///
     /// Anything else is refused
     /// ([`BatchError::NotWhole`](super::BatchError::NotWhole)), and so is
@@ -849,4 +852,10 @@ pub struct Applied {
     /// frames took: the transaction serves its records by key, or the
     /// scope keeps its writes in the write set.
     pub load: Option<LoadCounters>,
+    /// The bytes that cells and their slots take in the emptiest of the
+    /// pages that the loader of the batch's loads filled and left before
+    /// the loads ended: of every page it started but the one that each
+    /// level was filling at the end, which holds what was left. `None`
+    /// where `load` is, and for loads that left no page before they ended.
+    pub least_filled: Option<usize>,
 }

@@ -1721,10 +1721,22 @@ impl<'s> WriteTxn<'s> {
             let subtree = merk.subtree;
             let left = batch.leaves(subtree);
             let rootless = left || !self.rooted(state, op, &subtree)?;
-            if is_load(merk) && !rootless {
-                // A load is the whole of a Merk that had no root.
-                let fault = super::error::WholeFault::HasRoot;
-                return Err(BatchError::NotWhole { subtree, fault }.into());
+            if is_load(merk) {
+                // A load is the whole of a Merk that is entered and had no
+                // root: both are checked where the write is taken (LD6).
+                let named = |write: &&SubtreeWrite<'_>| write.subtree() == subtree;
+                let entered = match batch.subtrees.iter().rev().find(named) {
+                    Some(SubtreeWrite::Drop { .. }) => false,
+                    Some(SubtreeWrite::Enter { .. }) => true,
+                    _ => self.said(state, op, subtree, |view| view.is_some())?,
+                };
+                if !entered {
+                    return Err(BatchError::NotEntered { subtree }.into());
+                }
+                if !rootless {
+                    let fault = super::error::WholeFault::HasRoot;
+                    return Err(BatchError::NotWhole { subtree, fault }.into());
+                }
             }
             empty.push(rootless);
             for node in merk.nodes {

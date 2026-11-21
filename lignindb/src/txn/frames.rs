@@ -39,8 +39,8 @@ use super::{
     path::{FlatWriter, Idle, WritePath, IDLE},
     unlinked,
     write::{
-        Applied, Batch, Entering, Hosted, LinkPut, MerkWrite, Moving, RecordWrite, RootPut,
-        SubtreeWrite, ValuePut,
+        Applied, Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, Moving, RecordWrite,
+        RootPut, SubtreeWrite, ValuePut,
     },
     write_set::Again,
 };
@@ -585,11 +585,6 @@ struct Resolver<'a> {
     /// it. The nodes of such a Merk are in their pages before any other
     /// name of the batch is looked for, and none of them is written again.
     loaded: Vec<Option<CellAddress>>,
-    /// The root of each Merk that a node of a load hosts and that the
-    /// batch does not load, with the load whose node hosts it. The cell of
-    /// that node is no cell of the write to the tree pages, which so
-    /// cannot see a second host of the Merk among the cells it holds.
-    adopted: HashMap<CellAddress, Subtree>,
 }
 
 impl Resolver<'_> {
@@ -664,8 +659,6 @@ struct LoadPlan {
     /// The root of each Merk that a node of a load hosts and that the
     /// batch does not load.
     outside: HashMap<Subtree, Option<CellAddress>>,
-    /// Those roots, each with the load whose node hosts its Merk.
-    adopted: HashMap<CellAddress, Subtree>,
     loader: Loader,
 }
 
@@ -676,6 +669,9 @@ struct Load {
     /// The handles of the nodes of each load, in the order of its change
     /// set.
     handles: Vec<Vec<NodeHandle>>,
+    /// The bytes in use in the emptiest page the loader filled and left
+    /// before the loads ended ([`Applied::least_filled`]).
+    least_filled: Option<usize>,
     counters: LoadCounters,
 }
 
@@ -1471,7 +1467,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             by_subtree,
             places: Vec::new(),
             loaded: vec![None; merks.len()],
-            adopted: HashMap::new(),
         };
 
         // What every name of the batch stands for is found before anything
@@ -1508,14 +1503,13 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let mut load = None;
         if merks.iter().any(is_load) {
             let stored = again.map_or(&[][..], |again| again.stored);
-            let mut plan = match self.plan_load(path, batch, view, &resolver) {
+            let plan = match self.plan_load(path, batch, view, &resolver) {
                 Ok(plan) => plan,
                 Err(error) => {
                     self.tree.set_lease(lease);
                     return Err(Refused::clean(error));
                 }
             };
-            resolver.adopted = std::mem::take(&mut plan.adopted);
             let done = self.load(path, batch, &resolver, plan, stored, loaded);
             let done = done.map_err(Refused::dirty)?;
             if again.is_some() {
@@ -1523,7 +1517,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 // again: nobody takes these.
                 self.stored = Vec::new();
             }
-            (resolver.loaded, handles, load) = (done.roots, done.handles, Some(done.counters));
+            (resolver.loaded, handles) = (done.roots, done.handles);
+            load = Some((done.counters, done.least_filled));
         }
         // A refusal from here on leaves the pages of the loads in the
         // frames, whatever else it changed.
@@ -1788,15 +1783,50 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 .collect(),
             nodes,
             unlinked,
-            load,
+            load: load.map(|(counters, _)| counters),
+            least_filled: load.and_then(|(_, least_filled)| least_filled),
         };
         Ok((applied, loose))
+    }
+
+    /// Whether the entry of `subtree` names `host` as the element that
+    /// hosts it, once the subtrees of the batch have left and are
+    /// entered, of which `entering` has the hosts: `None` for a subtree
+    /// that is not entered then.
+    fn names_host(
+        &self,
+        view: &Subtrees,
+        entering: &HashMap<Subtree, Option<HostPut<'_>>>,
+        subtree: &Subtree,
+        host: HostPut<'_>,
+    ) -> Result<Option<bool>, TxnError> {
+        if let Some(named) = entering.get(subtree) {
+            return Ok(Some(*named == Some(host)));
+        }
+        let names = |entry: &Entry| {
+            entry.host().is_some_and(|named| {
+                (named.parent, named.key, named.position)
+                    == (host.subtree.as_bytes(), host.key, host.position)
+            })
+        };
+        if let Some(left) = view.leaving.iter().find(|left| left.subtree == *subtree) {
+            return Ok((!left.dropped).then(|| names(&left.entry)));
+        }
+        let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+        let entry = entry.filter(|entry| !view.below_leaving(entry));
+        Ok(entry.as_ref().map(names))
     }
 
     /// What the loads of `batch` need that is found before a page is
     /// started: the order they are laid out in, the roots of the Merks
     /// their nodes host that the batch does not load, and a loader. It
     /// changes nothing.
+    ///
+    /// A node of a load hosts a Merk only where the entry of the Merk
+    /// names that node as its host (LD1): the cell of the node is written
+    /// with the address of the Merk's root, and a root that the directory
+    /// gives another host, or none, would have a pointer the directory
+    /// does not know. A subtree that is not entered has no root to name.
     fn plan_load(
         &self,
         path: &WritePath<'s>,
@@ -1806,20 +1836,36 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     ) -> Result<LoadPlan, TxnError> {
         let merks = batch.merks;
         let order = load_order(batch)?;
-        let (mut outside, mut adopted) = (HashMap::new(), HashMap::new());
+        let entering: HashMap<Subtree, Option<HostPut<'_>>> = (batch.subtrees.iter())
+            .filter_map(|write| match write {
+                SubtreeWrite::Enter { subtree, host, .. } => Some((*subtree, *host)),
+                _ => None,
+            })
+            .collect();
+        let mut outside = HashMap::new();
         for &merk in &order {
-            let sets = merks[merk]
-                .nodes
-                .iter()
-                .filter_map(|node| match node.hosted {
-                    Hosted::Set(hosted) => Some(hosted),
-                    Hosted::Keep => None,
-                });
-            for subtree in sets.flatten() {
-                if resolver.load(subtree).is_none() && !outside.contains_key(subtree) {
-                    let root = self.entered(view, subtree)?.flatten();
-                    outside.insert(*subtree, root);
-                    adopted.extend(root.map(|root| (root, merks[merk].subtree)));
+            let write = &merks[merk];
+            let not_its_host = || BatchError::NotWhole {
+                subtree: write.subtree,
+                fault: WholeFault::NotItsHost,
+            };
+            for node in write.nodes {
+                let Hosted::Set(hosted) = node.hosted else {
+                    continue;
+                };
+                for (position, subtree) in hosted.iter().enumerate() {
+                    let host = HostPut {
+                        subtree: write.subtree,
+                        key: node.key,
+                        position: u8::try_from(position).map_err(|_| not_its_host())?,
+                    };
+                    if self.names_host(view, &entering, subtree, host)? == Some(false) {
+                        return Err(not_its_host().into());
+                    }
+                    if resolver.load(subtree).is_none() && !outside.contains_key(subtree) {
+                        let root = self.entered(view, subtree)?.flatten();
+                        outside.insert(*subtree, root);
+                    }
                 }
             }
         }
@@ -1828,7 +1874,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(LoadPlan {
             order,
             outside,
-            adopted,
             loader: loader.map_err(|error| load_error(error, None, first))?,
         })
     }
@@ -1871,7 +1916,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             order,
             outside,
             mut loader,
-            ..
         } = plan;
         let firsts = entry_firsts(merks);
         let not_whole = |subtree, fault| TxnError::from(BatchError::NotWhole { subtree, fault });
@@ -1958,6 +2002,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             handles[merk] = pages.take_handles().ok_or(in_no_page)?;
         }
         let first = merks[order[0]].subtree;
+        // The pages the loader has left by now are the ones it filled: each
+        // level fills one more, which holds what the load ends with.
+        let mut least_filled = None;
+        for page in loader.drain_pages() {
+            self.fragments.hints_mut().note(page.page, page.used);
+            least_filled =
+                Some(least_filled.map_or(page.used, |least: usize| least.min(page.used)));
+        }
         let report = (loader.finish()).map_err(|error| load_error(error, None, first))?;
         for page in &report.pages {
             self.fragments.hints_mut().note(page.page, page.used);
@@ -1968,6 +2020,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(Load {
             roots,
             handles,
+            least_filled,
             counters: report.counters,
         })
     }
@@ -1982,27 +2035,20 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// Checks that the cell at `host`, which is written and keeps the Merks
     /// it hosts, hosts none that the batch has a change set for: the root
     /// of such a Merk is the host's to name, and a host that keeps its
-    /// pointers names nothing. Nor does it host a Merk that a node of a
-    /// load of the batch hosts: that Merk would have two hosts.
+    /// pointers names nothing.
     fn keeps_no_root(
         &mut self,
         resolver: &Resolver<'_>,
         host: CellAddress,
     ) -> Result<(), TxnError> {
-        let (roots, adopted) = (&resolver.roots, &resolver.adopted);
-        let kept = self.tree.page(host.page(), |page| {
-            let node = page.node(host.slot())?;
-            let hosted = || node.hosted_roots().flatten();
-            let twice = hosted().find_map(|root| adopted.get(&root).copied());
-            let written = hosted().find_map(|root| roots.iter().position(|at| *at == Some(root)));
-            Some((twice, written))
+        let roots = &resolver.roots;
+        let hosted = self.tree.page(host.page(), |page| {
+            let pointers = page.node(host.slot())?.hosted_roots();
+            Some(
+                (pointers.flatten()).find_map(|root| roots.iter().position(|at| *at == Some(root))),
+            )
         })?;
-        let (twice, hosted) = kept.ok_or(NodeError::NoNode { address: host })?;
-        if let Some(subtree) = twice {
-            let fault = WholeFault::HostedTwice;
-            return Err(BatchError::NotWhole { subtree, fault }.into());
-        }
-        match hosted {
+        match hosted.ok_or(NodeError::NoNode { address: host })? {
             Some(merk) if !resolver.merks[merk].anchored => {
                 let subtree = resolver.merks[merk].subtree;
                 Err(BatchError::HostKeeps { subtree }.into())
