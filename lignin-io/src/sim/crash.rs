@@ -157,16 +157,17 @@ impl fmt::Display for NameChange {
 /// length the write gave the file is kept apart from the bytes, as a file
 /// system keeps it: [`len`](Self::len) is the length the file is grown to
 /// before the surviving sectors are put in, and a sector, or the part of one,
-/// that is then still past the end of the file is dropped. Bytes that a
-/// length covers but no surviving sector fills read as zeros.
+/// that is then still past the end of the file is dropped. Bytes that the
+/// growth adds and no surviving sector fills read as zeros, and bytes the
+/// file had that no surviving sector fills stay as they were.
 ///
 /// For a write of sectors `0..4` that ends at byte `end`:
 ///
 /// | Tear | What is in the file |
 /// | --- | --- |
 /// | `sectors: [0..2], len:` end of sector 1 | The first two sectors. |
-/// | `sectors: [0..2], len: end` | The whole length, with zeros after the first two sectors. |
-/// | `sectors: [], len: end` | The whole length, all zeros. |
+/// | `sectors: [0..2], len: end` | The whole length. After the first two sectors it keeps what was there, and reads as zeros where the file had not reached. |
+/// | `sectors: [], len: end` | The whole length, with nothing of the write: what was there, and zeros where the file had not reached. |
 /// | `sectors: [0..4], len: 0` | The bytes that overwrote the file as it was, and no growth. |
 /// | `sectors: [1..2, 3..4], len: end` | Two sectors, and gaps that keep what was there or read as zeros. |
 #[derive(Clone, Debug, PartialEq, Eq)]

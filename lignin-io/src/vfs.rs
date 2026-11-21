@@ -36,26 +36,31 @@
 //!
 //! Every method takes `&self` and may be called from any thread. Reads may run
 //! at the same time as writes; a read sees every write whose call returned
-//! before the read began, through any handle of the file. A read that overlaps
-//! a write still in progress may see any mix of old and new bytes.
+//! before the read began, through any handle of the file, absent a failed
+//! write-back (the last rule under [Durability](self#durability)). A read
+//! that overlaps a write still in progress may see any mix of old and new
+//! bytes.
 //!
 //! # Durability
 //!
 //! A crash is a power loss or a kernel failure. A process that exits or is
-//! killed loses nothing it wrote. After a crash only this is certain:
+//! killed loses nothing it wrote, absent a failed write-back (the last rule
+//! below). After a crash only this is certain:
 //!
 //! - **Synced content.** A file's bytes and length are durable once
 //!   [`VfsFile::sync_data`] or [`VfsFile::sync_all`] returns `Ok` on any handle
 //!   of that file. That covers every write, append and length change that
 //!   returned before the sync began, unless a sync of the file failed in
-//!   between (see below).
+//!   between (see below), and absent a failed write-back (the last rule
+//!   below).
 //! - **Unsynced content.** After a crash a file is its last synced state with
 //!   some of the later changes applied: any subset of them, in any order, and
 //!   a write possibly only in part, torn at any byte. Each lands where it was
 //!   made, an append at the offset it returned. Where a length survives
-//!   without the bytes written below it, those bytes read as zeros. And the
-//!   bytes of a write that grew the file can survive without the growth: the
-//!   write then ends where the file ended before it.
+//!   without the bytes written below it, the file is there as it would be
+//!   without those bytes: it keeps what it held, and reads as zeros where it
+//!   held nothing. And the bytes of a write that grew the file can survive
+//!   without the growth: the write then ends where the file ended before it.
 //! - **Nothing else is damaged.** A byte that no unsynced change touched keeps
 //!   its value. This assumes storage that writes a sector whole or not at
 //!   all, which is what lets a log be appended to behind bytes that are
@@ -84,13 +89,14 @@
 //!   the directories above it, and that is only renamed after that, by its
 //!   own name or with a directory above it, and never removed or replaced,
 //!   has a name after every crash. And when every directory and every file
-//!   has been synced since its last change, and no sync of them failed,
-//!   nothing is unsynced: a crash then loses nothing. A sync may make an
-//!   earlier change durable sooner than promised here, when a change it makes
-//!   durable builds on it, and never later. This rule, like the atomic
-//!   rename, assumes a filesystem that journals its directories. A hard link
-//!   and the removal of the old name are two changes, not a rename: a crash
-//!   that keeps the removal and loses the link loses the file.
+//!   has been synced since its last change, and neither write-back nor a
+//!   sync of those changes failed, nothing is unsynced: a crash then loses
+//!   nothing. A sync may make an earlier change durable sooner than promised
+//!   here, when a change it makes durable builds on it, and never later.
+//!   This rule, like the atomic rename, assumes a filesystem that journals
+//!   its directories. A hard link and the removal of the old name are two
+//!   changes, not a rename: a crash that keeps the removal and loses the
+//!   link loses the file.
 //! - **Rename is atomic, synced or not.** A crash keeps a rename whole or not
 //!   at all, of a file and of a directory with everything in it: of the two
 //!   things a rename does, taking the old name away and giving the new one,
@@ -126,6 +132,22 @@
 //!   the file already has is not one. To rely on what the earlier changes were
 //!   to leave, write it to a new file and make that file durable, and its name
 //!   with the names of the directories above it.
+//! - **A write-back can fail unreported.** The system writes a file's
+//!   changes to storage in its own time, before any sync asks for them:
+//!   that is write-back, and it can fail without a `Vfs` call reporting it.
+//!   A write lost to a write-back error can cease to be visible to reads.
+//!   Process exit or termination does not itself discard buffered writes;
+//!   those writes can still be lost to a write-back error. And a sync on a
+//!   reopened file can succeed after both the unwritten data and the error
+//!   record are gone. On Linux this is one way to it: write-back fails with
+//!   no sync in flight, the last handle of the file is dropped and the
+//!   system evicts the file's inode from memory, and the file is opened
+//!   again and synced. So a sync through a handle that did not make a change
+//!   is no proof that the change reached storage: it promises the change
+//!   only absent a failed write-back. To check for such errors, retain the
+//!   writing handle and check a sync on it after the change, before closing
+//!   it. A sync that reports one is a sync that failed, and the rule above
+//!   holds for it.
 //!
 //! # Locks
 //!
@@ -472,8 +494,10 @@ pub trait VfsFile: Any + fmt::Debug + Send + Sync {
 
     /// Sets the file's length. Shrinking drops the bytes past `len`; growing
     /// adds zeros. On an [`OpenMode::Append`] handle the next append starts at
-    /// `len`. Setting the length the file has leaves its bytes and length as
-    /// they are.
+    /// `len`, unless appends on that handle fail already
+    /// ([Failures that stick](self#failures-that-stick)): they go on failing.
+    /// Setting the length the file has leaves its bytes and length as they
+    /// are.
     ///
     /// Needs [`OpenMode::Write`] or [`OpenMode::Append`].
     fn set_len(&self, len: u64) -> io::Result<()>;
