@@ -355,6 +355,33 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
         transaction: &'a Self::Transaction<'_>,
     ) -> CostContext<Self::ImmediateSubtree<'a>>;
 
+    /// Brings what the engine keeps of the subtrees that the element at
+    /// `path` hosts in step with that element as `transaction` holds it,
+    /// for a restore that writes those subtrees through immediate handles
+    /// (state sync). A session calls it before it replays a page of flat
+    /// records that holds a record into such a subtree, and before and
+    /// after it finishes the restore of a Merk that has nodes, which is
+    /// where a store that is handed a Merk whole is first written.
+    ///
+    /// The element is the one under the last segment of `path`, in the
+    /// subtree of the segments before; the empty path has none, and the
+    /// call does nothing for it. An engine for which a subtree is its
+    /// prefix keeps nothing of a subtree beside its records and does
+    /// nothing, which is what the trait provides. On every engine the call
+    /// is charged nothing and changes no record that a read shows: no
+    /// value, no hash and no root.
+    fn adopt_restored_subtrees<'b, B>(
+        &self,
+        path: SubtreePath<'b, B>,
+        transaction: &Self::Transaction<'_>,
+    ) -> Result<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let _ = (path, transaction);
+        Ok(())
+    }
+
     /// Settles `batch`: works out what its writes cost and adds them to
     /// `group`, after everything the group already holds. Nothing is applied
     /// yet. The cost returned is charged whether or not the group is ever

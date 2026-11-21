@@ -192,7 +192,10 @@ fn element_of(value: &[u8]) -> Option<Element> {
 
 /// The node `host` as the transaction has it: `None` if there is no such
 /// node, and otherwise the element it holds, if its bytes are one's.
-fn element_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<Option<Element>>, Error> {
+pub(super) fn element_read(
+    view: LigninView<'_>,
+    host: &LigninHost,
+) -> Result<Option<Option<Element>>, Error> {
     let parent = LigninNodeStore::read_only(view, LigninSubtree::alone(host.subtree));
     let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
     let node = parent.get_node(&host.key, no_cost, GroveVersion::latest());
@@ -260,7 +263,7 @@ fn host_of<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Host<'a> {
 
 /// What the group makes of the element that `host` names, and what that
 /// element hosts.
-enum Hosting {
+pub(super) enum Hosting {
     /// No element: the group removes it, or there never was one.
     Nothing,
     /// An element that hosts the subtree of its own path and no other,
@@ -273,7 +276,7 @@ enum Hosting {
 /// The Merks that `element` hosts, where `own` is the subtree of its own
 /// path: for an indexed tree the primary and then the secondary of each
 /// axis, in the element's order.
-fn hosting(element: &Element, own: [u8; 32]) -> Result<Hosting, Error> {
+pub(super) fn hosting(element: &Element, own: [u8; 32]) -> Result<Hosting, Error> {
     let Some(tree_type) = element.tree_type() else {
         return Ok(Hosting::One(None));
     };

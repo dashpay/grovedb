@@ -397,19 +397,6 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
         Ok(tree)
     }
 
-    /// Rebuild restoration state from partial storage state
-    #[allow(dead_code)]
-    fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
-        // TODO: think about the return type some more
-        let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
-        if !bad_link_map.is_empty() {
-            self.chunk_id_to_root_hash = bad_link_map;
-            self.parent_keys = parent_keys;
-        }
-
-        Ok(())
-    }
-
     /// Consumes the `Restorer` and returns a newly created, fully populated
     /// Merk instance. This method will return an error if called before
     /// processing all chunks.
@@ -2538,104 +2525,6 @@ mod tests {
     #[test]
     fn restore_multi_chunk_10000_limit() {
         test_restoration_multi_chunk_strategy(10000, Some(1200));
-    }
-
-    #[test]
-    fn test_restoration_interruption() {
-        let grove_version = GroveVersion::latest();
-        let mut merk = TempMerk::new(grove_version);
-        let batch = make_batch_seq(0..15);
-        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
-            .unwrap()
-            .expect("apply failed");
-        assert_eq!(merk.height(), Some(4));
-
-        let storage = TempEngine::new();
-        let tx = storage.start_transaction();
-        let restoration_merk = Merk::open_base(
-            storage
-                .immediate_subtree(SubtreePath::empty(), &tx)
-                .unwrap(),
-            TreeType::NormalTree,
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )
-        .unwrap()
-        .unwrap();
-
-        // restorer root hash should be empty
-        assert_eq!(restoration_merk.root_hash().unwrap(), [0; 32]);
-
-        // at the start both merks should have different root hash values
-        assert_ne!(
-            merk.root_hash().unwrap(),
-            restoration_merk.root_hash().unwrap()
-        );
-
-        let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
-
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
-        assert_eq!(
-            restorer.chunk_id_to_root_hash.get(vec![].as_slice()),
-            Some(merk.root_hash().unwrap()).as_ref()
-        );
-
-        // first restore the first chunk
-        let (chunk, next_chunk_index) = chunk_producer.chunk_with_index(1, grove_version).unwrap();
-        let new_chunk_ids = restorer
-            .process_chunk(
-                &traversal_instruction_as_vec_bytes(&[]),
-                chunk,
-                grove_version,
-            )
-            .expect("should process chunk");
-        assert_eq!(new_chunk_ids.len(), 4);
-        assert_eq!(next_chunk_index, Some(2));
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
-        assert_eq!(restorer.parent_keys.len(), 4);
-
-        // store old state for later reference
-        let old_chunk_id_to_root_hash = restorer.chunk_id_to_root_hash.clone();
-        let old_parent_keys = restorer.parent_keys.clone();
-
-        // drop the restorer and the restoration merk
-        drop(restorer);
-        // open the restoration merk again and build a restorer from it
-        let restoration_merk = Merk::open_base(
-            storage
-                .immediate_subtree(SubtreePath::empty(), &tx)
-                .unwrap(),
-            TreeType::NormalTree,
-            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
-            grove_version,
-        )
-        .unwrap()
-        .unwrap();
-        let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);
-
-        // assert the state of the restorer
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
-        assert_eq!(restorer.parent_keys.len(), 0);
-
-        // recover state
-        let recovery_attempt = restorer.attempt_state_recovery(grove_version);
-        assert!(recovery_attempt.is_ok());
-        if restorer.staged.is_some() {
-            // A store that is handed a Merk whole held nothing of the
-            // chunk, so there is nothing to recover from it: the restore
-            // starts again with the chunk at the root.
-            assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
-            assert_eq!(restorer.parent_keys.len(), 0);
-            assert!(restorer.merk.is_empty_tree().unwrap());
-            return;
-        }
-        assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
-        assert_eq!(restorer.parent_keys.len(), 4);
-
-        // assert equality to old state
-        assert_eq!(old_chunk_id_to_root_hash, restorer.chunk_id_to_root_hash);
-        assert_eq!(old_parent_keys, restorer.parent_keys);
     }
 
     /// Restores a Merk of forty nodes into a store that is handed a Merk

@@ -57,6 +57,7 @@
 
 mod enter;
 mod error;
+mod restore;
 #[cfg(test)]
 mod tests;
 
@@ -96,6 +97,7 @@ use lignindb::{
 
 use self::error::{failed, merk_error, not_supported, txn_error, write_error};
 use super::{Engine, EngineBatch, SubtreeCursor, SubtreeHandle, SubtreeMove, WriteGroup};
+use crate::replication::INCOMPLETE_RESTORE_AUX_KEY;
 
 /// The subtree at the root of a grove: the one with the empty path.
 const ROOT: SubtreePrefix = [0; 32];
@@ -135,6 +137,22 @@ impl LigninEngine {
     /// The LigninDB database underneath.
     pub fn database(&self) -> &Db {
         &self.db
+    }
+
+    /// The mark of a restore that did not finish, as the latest version
+    /// holds it (`GroveDb::has_incomplete_restore`): the aux record that
+    /// state sync keeps at the root from the first commit of a session
+    /// that commits in parts until the commit at its end. It is read
+    /// through a snapshot.
+    fn incomplete_restore_mark(&self) -> Result<Option<Vec<u8>>, Error> {
+        #[cfg(test)]
+        if MARK_READ_FAILS.with(|fails| fails.replace(false)) {
+            return Err(not_supported("a read that a test has fail"));
+        }
+        let snapshot = LigninSnapshot::new(self.db.snapshot());
+        let handle = LigninNodeStore::read_only(&snapshot, LigninSubtree::alone(ROOT));
+        let aux = handle.aux();
+        grovedb_storage::FlatStore::get(&aux, INCOMPLETE_RESTORE_AUX_KEY).value
     }
 
     /// Whether the latest version has `subtree` in its subtree directory.
@@ -214,6 +232,9 @@ thread_local! {
     /// number of reads of an entry that it comes after, and what it is.
     static AFTER_ENTRY_READS: std::cell::RefCell<Option<(usize, Box<dyn FnOnce()>)>> =
         const { std::cell::RefCell::new(None) };
+    /// A test's word that the next read of the mark of a restore that did
+    /// not finish fails, on this thread.
+    static MARK_READ_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Has `happens` happen beside a group. A group that it applies itself
@@ -402,6 +423,28 @@ impl SubtreeMove for LigninSubtreeMove {
     ) -> CostResult<Option<T>, crate::Error> {
         Err(not_supported("the move of a subtree to another prefix").into())
             .wrap_with_cost(OperationCost::default())
+    }
+}
+
+impl Drop for LigninEngine {
+    /// A database that holds the commits of a restore that did not finish
+    /// is left out of the check that a close makes in a debug build
+    /// ([`Self::new`], `Db::unchecked_at_close`): its elements can commit
+    /// to Merks that were not restored, which that check reports, and its
+    /// owner closes it to discard it. For a database with no such mark
+    /// the engine changes nothing of the close, and so for one whose
+    /// restore committed at its end, which takes the mark away.
+    ///
+    /// The close is taken out of the check only on a mark that was read:
+    /// where the read of the mark fails, the engine changes nothing of
+    /// the close. While the thread is panicking it reads nothing.
+    fn drop(&mut self) {
+        if !cfg!(debug_assertions) || std::thread::panicking() {
+            return;
+        }
+        if matches!(self.incomplete_restore_mark(), Ok(Some(_))) {
+            self.db.unchecked_at_close();
+        }
     }
 }
 
@@ -715,6 +758,17 @@ impl Engine for LigninEngine {
         let view = transaction.view();
         let subtree = named_by_prefix(prefix, Some(view));
         LigninNodeStore::immediate(view, subtree).wrap_with_cost(OperationCost::default())
+    }
+
+    fn adopt_restored_subtrees<'b, B>(
+        &self,
+        path: SubtreePath<'b, B>,
+        transaction: &LigninTransaction<'_>,
+    ) -> Result<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        restore::adopt(transaction.view(), path)
     }
 
     fn settle_batch(

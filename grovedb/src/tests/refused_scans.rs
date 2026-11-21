@@ -435,6 +435,28 @@ pub(crate) fn refused_scans_of_an_indexed_tree<E: Engine>(
     swept.no_refusal_is_an_answer(name);
     let issues = swept.whole.expect("a verification that ran");
     assert!(issues.is_empty(), "{name}: {issues:?}");
+
+    // The walk over the nodes of every Merk that state sync makes before
+    // it commits what it restored. It reads the secondary of an indexed
+    // tree through an immediate handle, after the primary: a walk of the
+    // secondary that took a refused move for its end would pass rows it
+    // never compared with the primary.
+    let name = "a verification of a restored indexed tree";
+    let transaction = db.start_transaction();
+    let swept = sweep(&mut log, name, || {
+        uncharged(db.verify_restored_value_hashes(&transaction, version))
+    });
+    swept.each_refusal_is_the_error(name);
+    swept.whole.as_ref().expect("a verification that ran");
+    // A walk moves once to its first node and once from each node, and
+    // asks for the record of each: over the root Merk (2 nodes), the
+    // primary and the secondary of the tree with children (4 each), the
+    // trees its children are (11 in all), and the primary and the
+    // secondary of the tree with none.
+    let (merks, nodes) = (9, 2 + 4 + 4 + 11);
+    assert_eq!(swept.fired[MOVES], merks + nodes, "{name}");
+    assert_eq!(swept.fired[RECORDS], nodes, "{name}");
+    drop(transaction);
     log
 }
 

@@ -1165,6 +1165,26 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
         Ok(metadata)
     }
 
+    /// The path of the element that hosts the subtree `chunk_prefix`, whose
+    /// restore is at `path`: `path` itself, and for the secondary of an
+    /// indexed tree's axis, which is restored at no path, the path of its
+    /// primary. It is read while the group of the indexed tree is still
+    /// registered: [`Self::note_indexed_member_complete`] un-registers the
+    /// members of a group once the group resolves.
+    fn hosted_at(
+        &self,
+        chunk_prefix: &SubtreePrefix,
+        path: &[Vec<u8>],
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        let Some((primary_prefix, _)) = self.secondary_owner.get(chunk_prefix) else {
+            return Ok(path.to_vec());
+        };
+        let group = self.indexed_groups.get(primary_prefix);
+        group.map(|group| group.path.clone()).ok_or_else(|| {
+            Error::InternalError("indexed secondary has no registered group".to_string())
+        })
+    }
+
     /// Records the actual restored root hash of a completed subtree that
     /// is a member of an indexed group (no-op otherwise) and, once the
     /// whole group is restored, runs the unconditional joint verification
@@ -1463,9 +1483,30 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
                                 }
                                 completed_member_root = Some(merk_root);
                             } else {
+                                // The restore hands a Merk with nodes to
+                                // the store, through an immediate handle:
+                                // an engine that keeps a record of its
+                                // subtrees is told of the element that
+                                // hosts the Merk, before the hand-over and
+                                // again after it
+                                // (`Engine::adopt_restored_subtrees`). A
+                                // subtree the restore writes nothing into
+                                // is not named to the engine.
+                                let hosted_at = self.hosted_at(&chunk_prefix, &completed_path)?;
+                                let hosted_at: Vec<&[u8]> =
+                                    hosted_at.iter().map(Vec::as_slice).collect();
+                                db.db.adopt_restored_subtrees(
+                                    hosted_at.as_slice().into(),
+                                    transaction_ref,
+                                )?;
                                 match restorer.finalize_with_grovedb_elements(grove_version) {
                                     Ok(merk) => {
                                         completed_member_root = Some(merk.root_hash().unwrap());
+                                        drop(merk);
+                                        db.db.adopt_restored_subtrees(
+                                            hosted_at.as_slice().into(),
+                                            transaction_ref,
+                                        )?;
                                     }
                                     Err(err) => {
                                         return Err(Error::InternalError(format!(
