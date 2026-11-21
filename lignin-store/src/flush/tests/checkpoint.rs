@@ -481,3 +481,133 @@ fn the_loop_tries_no_checkpoint_while_a_page_is_held_back() {
     let (covers, ..) = installed(tick.checkpoint.expect("a checkpoint"));
     assert_eq!(covers, db.latest());
 }
+
+/// A table checkpoint turns the log where it begins, and the device
+/// refuses the start record of the file the log turns to, for room. What
+/// a refused append leaves in the file is the device's to say, and each
+/// seed here is a device. One leaves less than the record: the log stays
+/// in the file it was in. Another leaves all of it: the log has turned,
+/// to a file that takes no item, and the checkpoint rolls the log before
+/// its mark.
+///
+/// On a device that has room for everything after that one refusal the
+/// checkpoint is installed either way. On a device that refuses every
+/// write and every creation from then on it fails with what the device
+/// refused, and not with the bare fact that the log has no file that
+/// takes items.
+#[test]
+fn a_checkpoint_whose_log_turn_is_refused_its_start_record_answers_with_what_the_device_said() {
+    use std::error::Error;
+
+    use lignin_io::sim::{Effect, Event, Fault, FaultRule, OpKind, OpSet, Outcome, SimError};
+
+    use crate::segment::tests::sim::{db_dir, shared, sim_fs};
+
+    // A store whose log ends in a file that holds a commit, so that the
+    // next table checkpoint turns the log, to a file that it makes ready
+    // first. With the number of the file operations made so far.
+    let store = |seed: u64| {
+        let fs = sim_fs(SimConfig {
+            trace_ops: true,
+            ..SimConfig::new(seed)
+        });
+        let db = Db::create(
+            shared(&fs),
+            db_dir(),
+            FlushConfig::new(Db::SIZE),
+            LogOptions::default(),
+        );
+        db.commit(&[insert((1, 1), b"a", inline(b"one"))]);
+        db.wb().checkpoint().expect("a first checkpoint");
+        db.commit(&[hash((1, 1), 1)]);
+        let from = fs.stats().ops;
+        (fs, db, from)
+    };
+    let appends = |fs: &SimVfs, from: u64| -> Vec<lignin_io::sim::OpRecord> {
+        let ops = fs.trace().into_iter().filter_map(|event| match event {
+            Event::Op(op) if op.op > from && op.kind == OpKind::Append => Some(op),
+            _ => None,
+        });
+        ops.filter(|op| op.path.contains("/wal/")).collect()
+    };
+    let refused_for_room = |error: &FlushError| {
+        let mut next: Option<&(dyn Error + 'static)> = Some(error);
+        while let Some(error) = next {
+            let io = error.downcast_ref::<std::io::Error>();
+            if io.is_some_and(|io| SimError::injected(io) == Some(Fault::Enospc)) {
+                return true;
+            }
+            next = error.source();
+        }
+        false
+    };
+
+    let (mut whole, mut cut) = (0, 0);
+    for seed in 60..76 {
+        // With no fault the checkpoint turns the log: its first append to
+        // the log that is no file's header is the start record of the
+        // file it turns to, and the mark follows it in that file.
+        let (fs, db, from) = store(seed);
+        let installed = db.wb().checkpoint().expect("a checkpoint with no fault");
+        assert!(matches!(installed, Checkpointed::Installed { .. }));
+        let made = appends(&fs, from);
+        let start = made
+            .iter()
+            .find(|op| op.offset != 0)
+            .expect("a start record");
+        let behind = |op: &&lignin_io::sim::OpRecord| {
+            op.path == start.path && op.offset >= start.offset + start.len
+        };
+        assert!(
+            made.iter().any(|op| behind(&op)),
+            "seed {seed}: a mark behind the start record: {made:?}"
+        );
+        let (at, path) = (start.op, start.path.clone());
+
+        for stays_full in [false, true] {
+            let (fs, db, from) = store(seed);
+            fs.add_rule(FaultRule::new(Fault::Enospc).from_op(at).torn_append(true));
+            if stays_full {
+                let needs_room = OpSet::WRITES | OpSet::NAMES;
+                let rule = FaultRule::new(Fault::Enospc).on(needs_room);
+                fs.add_rule(rule.from_op(at + 1).forever());
+            }
+            let answered = db.wb().checkpoint();
+            let refused = appends(&fs, from).into_iter().find(|op| op.op == at);
+            let refused = refused.unwrap_or_else(|| panic!("seed {seed}: no append {at}"));
+            assert_eq!(refused.path, path, "seed {seed}");
+            let Outcome::Injected {
+                effect: Effect::AppendTorn(left),
+                ..
+            } = refused.outcome
+            else {
+                panic!("seed {seed}: {refused:?}");
+            };
+            match left == refused.len {
+                true => whole += 1,
+                false => cut += 1,
+            }
+            let context = format!(
+                "seed {seed}, a device that stays full: {stays_full}, {left} of {} bytes left",
+                refused.len
+            );
+            match (stays_full, answered) {
+                (false, answered) => {
+                    let installed = answered.unwrap_or_else(|error| panic!("{context}: {error}"));
+                    assert!(
+                        matches!(installed, Checkpointed::Installed { .. }),
+                        "{context}: {installed:?}"
+                    );
+                }
+                (true, Ok(installed)) => panic!("{context}: {installed:?}"),
+                (true, Err(error)) => {
+                    assert!(refused_for_room(&error), "{context}: {error}");
+                }
+            }
+        }
+    }
+    assert!(
+        whole > 0 && cut > 0,
+        "{whole} runs left the whole record and {cut} less"
+    );
+}

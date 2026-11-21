@@ -20,12 +20,17 @@ use crate::{
         CheckpointInfo, CountSample, Link, LinkError, LinkKind, LogDurable, LogPlace,
         PageTableError, ValueCount,
     },
+    values::CountStep,
     wal::LogError,
 };
 
 /// How often [`WriteBack::roll_log`] goes round before it gives up: as
 /// often as [`LogStore::roll`](crate::wal::LogStore::roll) does.
 const ROLL_ROUNDS: usize = 6;
+
+/// How often a table checkpoint rolls a log that has no file that takes
+/// items before it appends its mark.
+const MARK_ROLLS: usize = 3;
 
 /// What a call of [`WriteBack::checkpoint`] came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +182,10 @@ impl<'s> WriteBack<'s> {
     /// does not fail it. Where the file cannot be created or named, or its
     /// start record cannot be appended, the log stays in the file it is
     /// in and the checkpoint is taken there, as it was before the log was
-    /// turned for checkpoints. So it is while the manifest is in doubt,
+    /// turned for checkpoints. One refusal turns the log all the same: a
+    /// start record that the device refused and that is in the file. The
+    /// log is then in a file that takes no item, which the checkpoint
+    /// looks for before its mark ([`Self::step_for_the_mark`]). So it is while the manifest is in doubt,
     /// which this turn does not settle. What stood in the way meets
     /// whoever needs it next: the turn away from a file that is full
     /// ([`Self::roll_log`]), or the manifest that names this checkpoint.
@@ -213,6 +221,49 @@ impl<'s> WriteBack<'s> {
         match log.rotate_early() {
             Err(LogError::NotAppended { .. }) => Ok(false),
             turned => Ok(turned?),
+        }
+    }
+
+    /// Takes the lock on the counts of live values, under which a table
+    /// checkpoint appends its mark, with a log that has a file that takes
+    /// items if a roll of the log gives it one.
+    ///
+    /// The log can have none here. The early turn of the checkpoint was
+    /// refused its start record by a device that kept the record
+    /// ([`Self::turn_log_early`]), or an append failed since the
+    /// checkpoint began: one of its own pass, or one of a commit or a
+    /// page step beside it. Nothing is appended to the log under the lock
+    /// on the counts but by its holder, and the log is not turned under
+    /// it by another: between a look here that finds a file that takes
+    /// items and the append of the mark nobody else's append or turn
+    /// comes. Whether the mark is appended is then the file layer's to
+    /// say. A log that is found with no such file is
+    /// rolled, with the lock given back, since a roll takes it, as a log
+    /// is rolled after any append that failed ([`Self::roll_log`]). What
+    /// stands in the way of a roll is the error of the checkpoint.
+    ///
+    /// The log is rolled [`MARK_ROLLS`] times at most. After each roll an
+    /// append can fail again before the lock is held again, and a roll
+    /// can end with a file that takes no item where a start record was
+    /// refused and kept each time. A log that has no file after the last
+    /// roll is left so: the mark then fails with
+    /// [`LogError::NoActiveFile`], which names no cause, and whoever keeps
+    /// the log rolls it at its next turn.
+    ///
+    /// While the log has a file that takes items this makes no operation
+    /// on a file.
+    fn step_for_the_mark(&self) -> Result<CountStep<'s>, FlushError> {
+        let Stores { values, log, .. } = self.stores;
+        let mut rolls = 0;
+        loop {
+            let step = values.step()?;
+            let takes_items = !matches!(log.next_group(), Err(LogError::NoActiveFile));
+            if takes_items || rolls == MARK_ROLLS {
+                return Ok(step);
+            }
+            drop(step);
+            self.roll_log()?;
+            rolls += 1;
         }
     }
 
@@ -329,7 +380,6 @@ impl<'s> WriteBack<'s> {
 
     fn try_checkpoint(&self) -> Result<Checkpointed, FlushError> {
         let Stores {
-            values,
             log,
             checkpoints,
             table,
@@ -354,7 +404,7 @@ impl<'s> WriteBack<'s> {
         self.pass()?;
 
         let in_force = state.in_force.as_ref().map(|named| named.covers);
-        let step = values.step()?;
+        let step = self.step_for_the_mark()?;
         let latest = versions.latest();
         let written = match self.floor() {
             Some(floor) => CommitVersion::new(floor.get().saturating_sub(1)).unwrap_or(latest),
