@@ -706,3 +706,86 @@ fn a_call_for_a_turn_ends_no_wait_after_a_failed_turn() {
     state.stopping.store(true, Ordering::Release);
     assert!(ends(&state, hour, || {}), "the loop was stopped");
 }
+
+/// A call that room was made ends the wait after a failed turn: the one
+/// that is running when it comes, and the one that begins next where
+/// none is. It ends that one sleep and no later one, also where the
+/// sleep it ended was one after a turn that did not fail. A wait that it
+/// cut short has put no turn off.
+#[test]
+fn a_call_that_room_was_made_ends_one_wait_after_a_failed_turn() {
+    let config = FlushConfig {
+        idle: Duration::from_secs(3600),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let state = FlushState::new(config);
+    let hour = Some(Duration::from_secs(3600));
+
+    // During the wait.
+    assert!(
+        ends(&state, hour, || state.room_made()),
+        "room was made during the wait"
+    );
+    // Before it: the wait that begins next ends at once.
+    state.room_made();
+    assert!(ends(&state, hour, || {}), "room was made before the wait");
+    assert_eq!(state.stats().turns_put_off, 0);
+
+    // The wait after that lasts as long as it was told to, with nobody
+    // who asks for a turn or with somebody. (The helper above asked for
+    // one to let its sleeper go.)
+    *lock(&state.wake) = false;
+    let began = Instant::now();
+    state.sleep(Some(ms(60)));
+    assert!(began.elapsed() >= ms(60), "{:?}", began.elapsed());
+    assert_eq!(state.stats().turns_put_off, 0);
+    state.wake();
+    let began = Instant::now();
+    state.sleep(Some(ms(60)));
+    assert!(began.elapsed() >= ms(60), "{:?}", began.elapsed());
+    assert_eq!(state.stats().turns_put_off, 1);
+
+    // A sleep after a turn that did not fail ends for the call as for a
+    // call for a turn, and the call is used up by it.
+    state.room_made();
+    assert!(ends(&state, None, || {}), "the idle sleep did not end");
+    let began = Instant::now();
+    state.sleep(Some(ms(60)));
+    assert!(began.elapsed() >= ms(60), "{:?}", began.elapsed());
+}
+
+/// The loop itself: its turns fail on a device that stays full, and its
+/// waits are an hour. Told that room was made, it takes its next turn at
+/// once, each time it is told.
+#[test]
+fn the_loop_takes_its_next_turn_at_once_when_it_is_told_that_room_was_made() {
+    let config = FlushConfig {
+        idle: Duration::from_secs(3600),
+        max_failed_wait: Duration::from_secs(3600),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (_fs, db) = stuck(config);
+    let wb = db.wb();
+    let failed = || db.stats().errors;
+    let reached = |turns: u64| {
+        let began = Instant::now();
+        while failed() < turns && began.elapsed() < Duration::from_secs(60) {
+            std::thread::yield_now();
+        }
+        failed() >= turns
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| wb.run(|_| {}));
+        // The first turn is made at once, and the wait after it is an
+        // hour.
+        let _stop = StopOnDrop(wb);
+        let first = reached(1);
+        let mut told = Vec::new();
+        for turns in 2..=4 {
+            wb.room_made();
+            told.push(reached(turns));
+        }
+        assert!(first, "the loop made no turn");
+        assert_eq!(told, [true; 3], "the loop went on waiting");
+    });
+}

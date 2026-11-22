@@ -109,6 +109,9 @@ pub struct CleanerState {
     pub(super) space: Mutex<Space>,
     pub(super) wake: Mutex<bool>,
     pub(super) woken: Condvar,
+    /// Whether room was made on the device since the loop last ended a
+    /// sleep ([`Self::room_made`]).
+    pub(super) room_made: AtomicBool,
     pub(super) stopping: AtomicBool,
     /// What a test does between the copy of a block and the switch of its
     /// link.
@@ -141,6 +144,7 @@ impl CleanerState {
             space: Mutex::default(),
             wake: Mutex::new(false),
             woken: Condvar::new(),
+            room_made: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             #[cfg(test)]
             at_switch: Mutex::default(),
@@ -187,10 +191,22 @@ impl CleanerState {
         self.woken.notify_all();
     }
 
+    /// Notes that room was made on the device, and wakes the loop
+    /// ([`Cleaner::room_made`](super::Cleaner::room_made)): the sleep
+    /// that the loop is in, or the one that follows the turn it is in,
+    /// ends at once, whichever kind it is ([`Self::sleep`]).
+    pub(super) fn room_made(&self) {
+        self.room_made.store(true, Ordering::Release);
+        self.wake();
+    }
+
     /// The sleep of the background loop between two turns: until it is
     /// woken or its idle time has passed after a turn in which no pass
     /// failed (`failed_wait` is `None`), and for `failed_wait` after one in
-    /// which a pass did, whoever wakes it. The end of the loop ends both.
+    /// which a pass did, whoever wakes it. The end of the loop ends both,
+    /// and so does a call that room was made ([`Self::room_made`]), which
+    /// ends the one sleep that is running when it comes or that begins
+    /// next.
     pub(super) fn sleep(&self, failed_wait: Option<Duration>) {
         let stopping = || self.stopping.load(Ordering::Acquire);
         let mut woken = lock(&self.wake);
@@ -206,7 +222,11 @@ impl CleanerState {
             }
             Some(wait) => {
                 let began = Instant::now();
-                while !stopping() {
+                // The call that room was made sets its mark and then
+                // takes the lock that is held here from the look at the
+                // mark to the wait, so none is missed.
+                let room_made = || self.room_made.load(Ordering::Acquire);
+                while !stopping() && !room_made() {
                     let Some(left) = wait.checked_sub(began.elapsed()) else {
                         break;
                     };
@@ -219,5 +239,6 @@ impl CleanerState {
             }
         }
         *woken = false;
+        self.room_made.store(false, Ordering::Release);
     }
 }

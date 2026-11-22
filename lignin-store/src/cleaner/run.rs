@@ -19,7 +19,8 @@ impl Cleaner<'_> {
     /// and twice as long after each further such turn in a row, up to
     /// [`FlushConfig::max_failed_wait`] of the store's write-back, whoever
     /// wakes it. The wait is the idle time again after the first turn in
-    /// which no pass fails. Only [`Self::stop`] ends it before that.
+    /// which no pass fails. Only [`Self::stop`] and [`Self::room_made`]
+    /// end it before that.
     ///
     /// `values` makes the pass over the value log
     /// ([`Self::pass_values`]). It is the caller's because the owners of
@@ -72,6 +73,17 @@ impl Cleaner<'_> {
             ..self.write_back.state().config()
         };
         turn_failed.then(|| pacing.wait_after_failure(*failed_turns))
+    }
+
+    /// Tells the background loop that room was made on the device, by
+    /// whoever made it: a session that gave back a reserve of bytes, say.
+    /// The sleep that the loop is in, or the one that follows the turn it
+    /// is in, ends at once, also where it is the wait after a turn in
+    /// which a pass failed ([`Self::run`]): the turn after it is made on a
+    /// device with more room. No later sleep is ended by the call, and
+    /// the loop's count of failed turns in a row is as it was.
+    pub fn room_made(&self) {
+        self.state.room_made();
     }
 
     /// Ends the background loop after its current turn. A loop that has

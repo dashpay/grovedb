@@ -248,8 +248,8 @@ impl WriteBack<'_> {
     /// begins anew, and a turn that does not fail is followed by the
     /// sleep of the first paragraph. A wait in which a turn was asked
     /// for is counted ([`FlushStats::turns_put_off`]). `failed` is
-    /// called before the wait begins. Only [`Self::stop`] ends the wait
-    /// before its time.
+    /// called before the wait begins. Only [`Self::stop`] and
+    /// [`Self::room_made`] end the wait before its time.
     ///
     /// **A failed turn has moved something on** if its pass did what no
     /// later turn has to do again ([`Pass::progressed`]): it wrote a page
@@ -285,6 +285,17 @@ impl WriteBack<'_> {
     /// first ([`Self::run`]).
     pub fn wake(&self) {
         self.state.wake();
+    }
+
+    /// Tells the background loop that room was made on the device, by
+    /// whoever made it: a session that gave back a reserve of bytes, say.
+    /// The sleep that the loop is in, or the one that follows the turn it
+    /// is in, ends at once, also where it is the wait after a turn that
+    /// failed ([`Self::run`]): the turn after it is made on a device with
+    /// more room. No later sleep is ended by the call, and the loop's
+    /// count of failed turns in a row is as it was.
+    pub fn room_made(&self) {
+        self.state.room_made();
     }
 
     /// Ends the background loop after its current turn. A loop that has

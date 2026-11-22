@@ -339,6 +339,9 @@ pub struct FlushState {
     pub(super) turned: Condvar,
     pub(super) wake: Mutex<bool>,
     pub(super) woken: Condvar,
+    /// Whether room was made on the device since the loop last ended a
+    /// sleep ([`Self::room_made`]).
+    pub(super) room_made: AtomicBool,
     /// The page versions that wait to be written back, as far as
     /// write-back knows.
     pub(super) owed: AtomicUsize,
@@ -371,6 +374,7 @@ impl FlushState {
             turned: Condvar::new(),
             wake: Mutex::new(false),
             woken: Condvar::new(),
+            room_made: AtomicBool::new(false),
             owed: AtomicUsize::new(0),
             logged: AtomicU64::new(0),
             logged_in_all: AtomicU64::new(0),
@@ -479,13 +483,24 @@ impl FlushState {
         self.woken.notify_all();
     }
 
+    /// Notes that room was made on the device, and asks for a turn
+    /// ([`WriteBack::room_made`](super::WriteBack::room_made)): the sleep
+    /// that the loop is in, or the one that follows the turn it is in,
+    /// ends at once, whichever kind it is ([`Self::sleep`]).
+    pub(super) fn room_made(&self) {
+        self.room_made.store(true, Ordering::Release);
+        self.wake();
+    }
+
     /// The sleep of the background loop between two turns.
     ///
     /// After a turn that did not fail (`failed_wait` is `None`) it ends
     /// when a turn is asked for ([`Self::wake`]), and after the idle time
     /// of the configuration otherwise. After a turn that failed it lasts
     /// `failed_wait`, whoever asks for a turn before it or during it.
-    /// Only the end of the loop ends it before that.
+    /// Only the end of the loop ends it before that, and a call that room
+    /// was made ([`Self::room_made`]), which ends the one sleep that is
+    /// running when it comes or that begins next.
     pub(super) fn sleep(&self, failed_wait: Option<Duration>) {
         let stopping = || self.stopping.load(Ordering::Acquire);
         let mut asked = lock(&self.wake);
@@ -501,7 +516,11 @@ impl FlushState {
             }
             Some(wait) => {
                 let began = Instant::now();
-                while !stopping() {
+                // The call that room was made sets its mark and then
+                // takes the lock that is held here from the look at the
+                // mark to the wait, so none is missed.
+                let room_made = || self.room_made.load(Ordering::Acquire);
+                while !stopping() && !room_made() {
                     let Some(left) = wait.checked_sub(began.elapsed()) else {
                         break;
                     };
@@ -511,12 +530,13 @@ impl FlushState {
                         .unwrap_or_else(PoisonError::into_inner);
                     asked = next;
                 }
-                if *asked && !stopping() {
+                if *asked && !stopping() && !room_made() {
                     count(&self.counters.turns_put_off, 1);
                 }
             }
         }
         *asked = false;
+        self.room_made.store(false, Ordering::Release);
     }
 
     /// Keeps the log for the table checkpoint the manifest names, which
