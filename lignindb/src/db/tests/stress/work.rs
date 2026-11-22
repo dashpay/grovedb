@@ -256,6 +256,29 @@ impl Writer {
         Piece::new(batch, Then::Merk(merk, after))
     }
 
+    /// Every document of the stable Merk `merk` written again, each with a
+    /// new value, and nothing else: the Merk keeps its keys, so its root
+    /// stays.
+    pub(in crate::db::tests) fn rewritten(&mut self, merk: usize) -> Piece {
+        let (subtree, view) = self.merks[merk].clone();
+        let mut items = Committed::items(&view);
+        for (key, value) in &mut items {
+            let serial = u64::from_be_bytes(key[1..9].try_into().expect("a serial"));
+            *value = self.value(serial);
+        }
+        let change = OwnedMerk::change(subtree, &view, &items);
+        let records = World::root_record(&change).into_iter().collect();
+        let after = (model::records(&items).1.into_iter())
+            .map(|(key, node)| (key, Val::Node(node)))
+            .collect();
+        let batch = OwnedBatch {
+            merks: vec![change],
+            records,
+            subtrees: Vec::new(),
+        };
+        Piece::new(batch, Then::Merk(merk, after))
+    }
+
     fn generation_subtrees(&self, generation: u64) -> (Subtree, Subtree) {
         (named(3, self.id, generation), named(4, self.id, generation))
     }

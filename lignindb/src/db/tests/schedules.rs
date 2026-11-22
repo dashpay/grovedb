@@ -67,10 +67,28 @@
 //! point: two bursts at two points of one step are the stress test's
 //! (`super::stress`), by chance.
 //!
-//! Nor does a step stand inside a commit: at its point it waits for the
-//! publication of the commit it let in. What a thread sees between the
-//! install of a commit and its publication is reached only where a burst
-//! outlasts the step's patience, by chance.
+//! # A schedule inside a commit
+//!
+//! In a schedule of the kind above no step stands inside a commit: at its
+//! point it waits for the publication of the commit it let in. A second
+//! kind has steps there on purpose ([`inside_a_commit`]). A commit is
+//! held between its count and its publication, where it has installed
+//! its pages and given the lock on the counts of values back and the
+//! published version is still the one before it
+//! (`CommitState::run_before_publication`). A turn of write-back and the
+//! passes of the cleaner run there, each to its end, from a state in
+//! which they meet what the commit did: the values that write-back places
+//! are those of the commit's pages, and the file that the passes over the
+//! value log empty is one that the commit has released values of. A
+//! snapshot reads the version before the commit afterwards, and the
+//! oracle below decides.
+//!
+//! A round of the engine's reclaimer is no step of this kind: one that
+//! ends a reclaiming asks for the commit lock, which the commit holds.
+//! [`a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back`]
+//! has a round inside a commit that ends none. Neither is the creation of
+//! a checkpoint of the database ([`Db::checkpoint`]), which asks for that
+//! lock too.
 //!
 //! # What was found by chance, and which schedule finds it on purpose
 //!
@@ -79,8 +97,11 @@
 //! | D-145: the reclaimer walked to a record's leaf with each level at the then-current version of its page; a commit that freed or split the leaf between two levels gave an error, or left a root record with no entry | a reclaiming against a burst that merges, and one that splits, the leaves of the directory |
 //! | D-116: a page that was made under an id used before, and freed while a pass of write-back had its block appended and not yet linked, was linked | a turn of write-back against a commit that empties pages it has not written ([`Burst::Empties`]) |
 //! | D-172: an open of a checkpoint refused a log file that the database it was made of had appended to since the open first read it (`WrongLogEnd`) | `super::beside`, which commits before every look of the open at its log; the opens of a checkpoint here commit at one point each |
+//! | D-142: a value-log file that a page step emptied was stamped empty at the version the step read, and was taken out under a snapshot of that version, which still read a cell that a commit had counted against the file and not yet published | passes over the value log inside a commit |
+//! | D-142: the owners of values looked a page up at the published version, and a value that write-back had placed in a page of a commit not yet published was counted live with no owner found | a turn of write-back and passes over the value log inside a commit |
 
 use std::{
+    collections::BTreeMap,
     io,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -91,16 +112,16 @@ use std::{
     thread::{self, ThreadId},
 };
 
-use lignin_format::CommitVersion;
+use lignin_format::{CommitVersion, FileId};
 use lignin_io::{
     sim::{SimConfig, SimVfs},
     DirEntry, OpenMode, Vfs, VfsFile, VfsLock,
 };
 use lignin_store::{
     alloc::{Epoch, Pins},
-    cleaner::{BothOwners, Cleaner, CleanerConfig, CleanerState},
+    cleaner::{BothOwners, Cleaner, CleanerConfig, CleanerState, ValuePass},
     flush::{Published, Stores, WriteBack},
-    values::OwnersError,
+    values::{Cleaned, OwnersError},
 };
 use lignin_tree::{
     drop::{Progress, Reclaim, Reclaimer},
@@ -636,15 +657,19 @@ fn options(vfs: Arc<dyn Vfs>) -> Options {
 }
 
 fn clean_values(db: &Db, cleaner: &Cleaner<'_>, log: &dyn StepLog) -> Result<String, String> {
+    value_pass(db, cleaner, log).map(|pass| format!("{pass:?}"))
+}
+
+/// One pass of `cleaner` over the value log, with the owners of values of
+/// both kinds.
+fn value_pass(db: &Db, cleaner: &Cleaner<'_>, log: &dyn StepLog) -> Result<ValuePass, String> {
     let store = &*db.shared.store;
     let owners = BothOwners(
         TreeOwners::new(store.loader(), &store.pool, store.page_size, &log),
         FlatOwners::new(store.loader(), &store.pool, store.config(), &log),
     );
-    match cleaner.pass_values(&owners) {
-        Ok(pass) => Ok(format!("{pass:?}")),
-        Err(error) => Err(format!("the cleaner's pass over the value log: {error}")),
-    }
+    (cleaner.pass_values(&owners))
+        .map_err(|error| format!("the cleaner's pass over the value log: {error}"))
 }
 
 /// What a close does for a database whose threads are ended.
@@ -1543,6 +1568,417 @@ fn a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back() 
     (db.shared.store.committing).run_before_publication(|_| {});
     reclaim_all(&db, &history);
     assert_eq!(db.stats().reclaimed.merks, 1);
+}
+
+/// A cleaner whose targets are that nothing is dead: a pass over the
+/// value log closes a file that is being filled as soon as a byte of it
+/// is dead, and cleans the closed file with the largest share of dead
+/// bytes, however small that share is.
+fn eager_cleaner() -> CleanerConfig {
+    CleanerConfig {
+        seal_dead_percent: 0,
+        value_dead_percent: 0,
+        min_segment_len: 1,
+        ..cleaner_config()
+    }
+}
+
+/// How long a step that is run inside a commit is waited for. One that
+/// has not ended by then fails the schedule, and the commit is let go, so
+/// that a step that waited for the commit lock ends.
+const INSIDE: Duration = Duration::from_secs(300);
+
+/// The passes over the value log that one step of a schedule inside a
+/// commit makes at most. Each cleans one file at most.
+const PASSES: usize = 64;
+
+/// What a schedule inside a commit gave.
+#[derive(Debug, Default)]
+struct Within {
+    /// The value-log file that write-back was filling when the commit was
+    /// made: the values of two Merks stood in it.
+    filled: Option<FileId>,
+    /// How many live values that file lost by the count of the commit,
+    /// before its publication: those of the Merk that the commit wrote.
+    released: u64,
+    /// How many it kept then: those of the other Merk.
+    others: u64,
+    /// How many values write-back placed inside the commit. They are
+    /// values of the commit's own pages: a turn before the commit found
+    /// nothing to place.
+    placed: u64,
+    /// How many live values that file gained by those turns of
+    /// write-back.
+    placed_there: u64,
+    /// The files that the passes over the value log cleaned inside the
+    /// commit, each with what its cleaning did.
+    cleaned: Vec<(FileId, Cleaned)>,
+    /// The blocks that the passes over the segments moved inside the
+    /// commit, and the table checkpoints that they had installed there.
+    blocks_moved: u64,
+    checkpoints: u64,
+    /// The files that were taken out of the store while the version
+    /// before the commit was pinned, inside the commit and after it.
+    dropped_under_the_pin: Vec<FileId>,
+    /// Whether that file was taken out once nothing pinned the version.
+    dropped_at_the_end: bool,
+    /// What each step inside the commit did, in its own words.
+    did: Vec<String>,
+    /// Everything that is no sound end of the schedule.
+    errors: Vec<String>,
+}
+
+impl Within {
+    /// Asserts that the commit released values of the file that
+    /// write-back was filling, that the passes inside the commit emptied
+    /// the file by moving every value that was live in it then, and that
+    /// the file stayed while the version before the commit was pinned and
+    /// went afterwards.
+    fn emptied_and_kept(&self) {
+        let filled = self.filled.expect("a file");
+        assert!(self.released > 0 && self.others > 0, "{self:?}");
+        let cleaned = (self.cleaned.iter()).find(|(file, _)| *file == filled);
+        let (_, cleaning) = cleaned.unwrap_or_else(|| panic!("{filled} is not cleaned: {self:?}"));
+        assert_eq!(
+            (cleaning.moved, cleaning.live),
+            (self.others + self.placed, 0),
+            "the passes inside the commit left values of {filled} where they were: {self:?}"
+        );
+        assert!(
+            !self.dropped_under_the_pin.contains(&filled),
+            "{filled} was taken out under the pin: {self:?}"
+        );
+        assert!(self.dropped_at_the_end, "{filled} stayed: {self:?}");
+    }
+}
+
+/// The live values of each value-log file that holds one.
+fn live_values(db: &Db) -> BTreeMap<FileId, u64> {
+    let counts = db.shared.store.values.counts();
+    (counts.iter())
+        .filter(|count| count.values > 0)
+        .map(|count| (count.file, count.values))
+        .collect()
+}
+
+/// The live values of the value-log file `file`.
+fn live_in(db: &Db, file: FileId) -> u64 {
+    live_values(db).get(&file).copied().unwrap_or(0)
+}
+
+/// What one step of a schedule inside a commit did.
+#[derive(Debug, Default)]
+struct Did {
+    /// In the step's own words.
+    told: String,
+    /// Its passes over the value log.
+    values: Vec<ValuePass>,
+    /// The blocks that its pass over the segments moved, and the table
+    /// checkpoints that the pass had installed.
+    segments: (u64, u64),
+}
+
+/// One step of the background work on the calling thread, with no pace:
+/// a turn of write-back, a pass of the cleaner over the segments, or
+/// passes of the cleaner over the value log until one neither moves a
+/// value nor takes a file out.
+fn step_at_once(db: &Db, step: Step, cleaner_state: &CleanerState) -> Result<Did, String> {
+    let write_back = db.shared.write_back();
+    let cleaner = Cleaner::new(write_back, cleaner_state);
+    let mut did = Did::default();
+    match step {
+        Step::WriteBack => {
+            let tick = write_back.tick();
+            let tick = tick.map_err(|error| format!("write-back: {error}"))?;
+            did.told = format!("{tick:?}");
+        }
+        Step::CleanSegments => {
+            let pass = cleaner.pass();
+            let pass =
+                pass.map_err(|error| format!("the cleaner's pass over the segments: {error}"))?;
+            did.told = format!("{pass:?}");
+            did.segments = (pass.blocks_moved, pass.checkpoints);
+        }
+        Step::CleanValues => loop {
+            let pass = value_pass(db, &cleaner, &db.shared.steps())?;
+            let progressed = pass.progressed();
+            did.values.push(pass);
+            if !progressed {
+                did.told = format!("{:?}", did.values);
+                break;
+            }
+            if did.values.len() == PASSES {
+                return Err(format!(
+                    "the value log is not cleaned in {PASSES} passes: {:?}",
+                    did.values
+                ));
+            }
+        },
+        other => unreachable!("{other:?} is no step that is run inside a commit"),
+    }
+    Ok(did)
+}
+
+/// **One schedule of the second kind: background steps inside a commit.**
+/// A commit is held between its count and its publication
+/// (`CommitState::run_before_publication`): its pages are installed, the
+/// counts of the value log have what it released, and the published
+/// version is the one before it. `steps` run there, one after another,
+/// each to its end. Then the commit is published, the background work
+/// has its turns, and the store is brought to rest and judged as after a
+/// schedule of the first kind. A snapshot pins the version before the
+/// commit from before it to after those turns, and is compared with the
+/// model of that version then.
+///
+/// **The state is made so that the passes over the value log meet the
+/// commit's pages.** A commit writes every document of two Merks again,
+/// and a turn of write-back places the values that it brought: they
+/// stand in one file, and a second turn finds nothing to place. The
+/// commit that is held writes every document of the first of the two
+/// again. It releases values of that file, in which those of the other
+/// Merk stay live, and it brings pending values on pages of its own. So
+/// inside the commit
+///
+/// - a turn of write-back places values in pages that are installed and
+///   not published, in that file, and counts them at once;
+/// - the passes over the value log, of a cleaner whose targets are that
+///   nothing is dead ([`eager_cleaner`]), close that file and clean it.
+///   They move the values of the other Merk and those that the turn
+///   placed, whose owners the published version does not have, and so
+///   they empty a file that the commit has counted against while a
+///   snapshot still reads the cells that the commit changed.
+///
+/// What was reached is returned and asserted by the caller, with what
+/// went wrong.
+fn inside_a_commit(steps: &[Step]) -> Within {
+    let base = base(23);
+    let vfs: Arc<dyn Vfs> = Arc::new(base.fs.crash(0));
+    let db = open_at_rest("/db", &options(vfs)).expect("the state is opened");
+    let history = base.world.history.copy();
+    let mut writers = base.world.writers.clone();
+    assert_eq!(db.version().get(), history.version());
+    let mut within = Within::default();
+    let cleaner_state = CleanerState::new(eager_cleaner());
+    let at_once = |step: Step| step_at_once(&db, step, &cleaner_state);
+
+    // The state. No reader is left from before: the snapshot of this
+    // schedule is the oldest pin there is.
+    drop(prelude(&db, &history, &mut writers));
+    at_once(Step::WriteBack).expect("a turn of write-back of the state");
+    at_once(Step::CleanValues).expect("the passes of the state");
+    let before = live_values(&db);
+    let both = vec![writers[0].rewritten(0), writers[0].rewritten(1)];
+    commit(&db, &history, &mut writers[0], both);
+    at_once(Step::WriteBack).expect("a turn of write-back of the state");
+    let after = live_values(&db);
+    let gained: Vec<FileId> = (after.iter())
+        .filter(|(file, live)| before.get(*file).copied().unwrap_or(0) < **live)
+        .map(|(file, _)| *file)
+        .collect();
+    let [filled] = gained[..] else {
+        panic!("write-back placed the values of the two Merks in {gained:?}");
+    };
+    within.filled = Some(filled);
+    // Nothing is pending: one more turn places nothing.
+    let placed = || db.shared.write_back().state().stats().values_placed;
+    let placed_by_then = placed();
+    at_once(Step::WriteBack).expect("a turn of write-back of the state");
+    assert_eq!(placed(), placed_by_then, "a value was pending still");
+
+    let reader = db.snapshot();
+    let before_the_commit = reader.version();
+    let live = live_in(&db, filled);
+    let (arrived, at_publication) = mpsc::channel();
+    let (go_on, resumed) = mpsc::channel::<()>();
+    let resumed = Mutex::new(resumed);
+    (db.shared.store.committing).run_before_publication(move |_| {
+        let _ = arrived.send(());
+        let _ = lock(&resumed).recv();
+    });
+    thread::scope(|threads| {
+        let (db, history, cleaner_state) = (&db, &history, &cleaner_state);
+        let writer = &mut writers[0];
+        // The sender is dropped when this closure is left, which lets a
+        // commit that waits at its publication go on.
+        let go_on = go_on;
+        let held = threads.spawn(move || {
+            let written = writer.rewritten(0);
+            commit(db, history, writer, vec![written])
+        });
+        while at_publication
+            .recv_timeout(Duration::from_millis(10))
+            .is_err()
+        {
+            assert!(
+                !held.is_finished(),
+                "the commit ended and did not come to its publication"
+            );
+        }
+        assert_eq!(db.version(), before_the_commit, "the commit is published");
+        within.others = live_in(db, filled);
+        within.released = live - within.others;
+
+        for &step in steps {
+            let (placed_before, there_before) = (placed(), live_in(db, filled));
+            // On a thread of its own, so that a step that does not end
+            // fails the schedule and does not hold the test.
+            let made = threads.spawn(move || step_at_once(db, step, cleaner_state));
+            let began = Instant::now();
+            while !made.is_finished() && began.elapsed() < INSIDE {
+                thread::sleep(Duration::from_millis(1));
+            }
+            if !made.is_finished() {
+                (within.errors).push(format!("{step:?} did not end inside the commit"));
+                let _ = go_on.send(());
+            }
+            match made.join().expect("a step inside the commit") {
+                Ok(did) => {
+                    within.did.push(did.told);
+                    within.blocks_moved += did.segments.0;
+                    within.checkpoints += did.segments.1;
+                    for pass in did.values {
+                        within.cleaned.extend(pass.cleaned);
+                        within.dropped_under_the_pin.extend(pass.dropped);
+                    }
+                }
+                Err(error) => within.errors.push(format!("inside the commit: {error}")),
+            }
+            if step == Step::WriteBack {
+                within.placed += placed() - placed_before;
+                within.placed_there += live_in(db, filled) - there_before;
+            }
+        }
+        if db.version() != before_the_commit {
+            (within.errors).push("the commit was published before the steps ended".to_string());
+        }
+        let _ = go_on.send(());
+        held.join().expect("the commit is made");
+    });
+    // The hook holds what waited for the test: it goes before a later
+    // commit comes to it.
+    (db.shared.store.committing).run_before_publication(|_| {});
+    assert_eq!(Some(db.version()), before_the_commit.next());
+
+    // The background work has its turns under the snapshot, which then
+    // reads all of its version.
+    for _ in 0..3 {
+        for step in [Step::WriteBack, Step::CleanSegments, Step::CleanValues] {
+            match at_once(step) {
+                Ok(did) => {
+                    let dropped = did.values.into_iter().flat_map(|pass| pass.dropped);
+                    within.dropped_under_the_pin.extend(dropped);
+                }
+                Err(error) => within.errors.push(format!("after the commit: {error}")),
+            }
+        }
+    }
+    let read = catch_unwind(AssertUnwindSafe(|| {
+        compare_at(&db, &history, &reader.operation())
+    }));
+    if read.is_err() {
+        within.errors.push(format!(
+            "the snapshot of version {before_the_commit} does not read its version"
+        ));
+    }
+    drop(reader);
+    for round in 0..6 {
+        match at_once(Step::CleanValues) {
+            Ok(did) => {
+                let mut dropped = did.values.iter().flat_map(|pass| &pass.dropped);
+                within.dropped_at_the_end |= dropped.any(|file| *file == filled);
+            }
+            Err(error) => within.errors.push(format!("at the end: {error}")),
+        }
+        tick(&db, &history, 7_000 + round);
+    }
+
+    // To rest, and the checker decides.
+    let mut errors = std::mem::take(&mut within.errors);
+    settle(&db, &history, &mut errors);
+    if let Err(error) = db.shared.write_back().pass() {
+        errors.push(format!("a pass of write-back at the end: {error}"));
+    }
+    let stats = db.stats();
+    let background = &stats.background;
+    if background.write_back_errors + background.reclaim_errors + stats.reclaimed.given_up > 0 {
+        errors.push(format!("{background:?}, {:?}", stats.reclaimed));
+    }
+    let report = verify(&db, Scope::Still, db.version());
+    errors.extend(
+        report
+            .findings
+            .iter()
+            .map(|finding| format!("the checker: {finding}")),
+    );
+    if report.more_findings + report.unreached.cells > 0 {
+        errors.push(format!(
+            "the checker: {} more findings, {} cells that nothing reaches",
+            report.more_findings, report.unreached.cells
+        ));
+    }
+    compare_all(&db, &history);
+    close(db, &cleaner_state, &mut errors);
+    within.errors = errors;
+    println!("{steps:?} inside a commit: {within:#?}");
+    within
+}
+
+/// A turn of write-back inside a commit places values of the commit's
+/// pages, which are installed and not published.
+#[test]
+fn a_turn_of_write_back_inside_a_commit_places_values_of_its_pages() {
+    let within = inside_a_commit(&[Step::WriteBack]);
+    assert!(within.errors.is_empty(), "{:#?}", within.errors);
+    assert!(
+        within.placed > 0 && within.placed_there == within.placed,
+        "{within:?}"
+    );
+}
+
+/// Passes over the value log inside a commit empty a file that the
+/// commit has counted against. The file is not taken out of the store
+/// while a snapshot pins the version before the commit, whose cells
+/// still point into it, and is taken out afterwards
+/// (`value-log-format.md` O8).
+#[test]
+fn passes_over_the_value_log_inside_a_commit_keep_the_file_they_empty_for_the_version_before() {
+    let within = inside_a_commit(&[Step::CleanValues]);
+    assert!(within.errors.is_empty(), "{:#?}", within.errors);
+    within.emptied_and_kept();
+}
+
+/// A turn of write-back and passes over the value log inside a commit:
+/// the passes move the values that the turn has just placed in pages of
+/// the commit, whose owners the published version does not have
+/// (`transactions.md` PV7), and empty the file as in the test above.
+#[test]
+fn passes_over_the_value_log_inside_a_commit_find_the_owners_of_values_placed_in_its_pages() {
+    let within = inside_a_commit(&[Step::WriteBack, Step::CleanValues]);
+    assert!(within.errors.is_empty(), "{:#?}", within.errors);
+    assert!(
+        within.placed > 0 && within.placed_there == within.placed,
+        "{within:?}"
+    );
+    within.emptied_and_kept();
+}
+
+/// A pass over the segments inside a commit, between a turn of
+/// write-back and passes over the value log: it moves a block and has a
+/// table checkpoint installed there, and the passes after it do what
+/// they do in the test above.
+#[test]
+fn a_pass_over_the_segments_inside_a_commit_leaves_a_sound_store() {
+    let within = inside_a_commit(&[Step::WriteBack, Step::CleanSegments, Step::CleanValues]);
+    assert!(within.errors.is_empty(), "{:#?}", within.errors);
+    assert!(
+        within.placed > 0 && within.placed_there == within.placed,
+        "{within:?}"
+    );
+    assert!(
+        within.blocks_moved > 0 && within.checkpoints > 0,
+        "{within:?}"
+    );
+    within.emptied_and_kept();
 }
 
 macro_rules! schedules {
