@@ -200,7 +200,7 @@ use crate::{
         kv::{ValueDefinedCostType, KV},
         TreeNode, TreeNodeInner,
     },
-    Error, Link,
+    Error, Link, TreeType,
 };
 
 /// The version of the storage cost rules this store charges by: the one
@@ -756,6 +756,13 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
             Ok(change_set) => self.submit(change_set, "a write", false),
             Err(error) => Err(error).wrap_with_cost(MODEL.refused_write()),
         }
+    }
+
+    /// The subtree is stated anew ([`Self::convert`]): at once on a
+    /// handle that writes at once, and in the batch of a handle that
+    /// stages, with the nodes that were written again.
+    fn state_tree_type(&self, tree_type: TreeType) -> Result<(), Error> {
+        self.convert(tree_type)
     }
 
     fn root_key(&self) -> CostResult<Option<Vec<u8>>, Error> {

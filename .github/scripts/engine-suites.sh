@@ -6,7 +6,9 @@
 #                                   engine of a suite but its first, which the
 #                                   workspace run already covers
 #   engine-suites.sh run [ARGS]     every suite on every engine, one after the
-#                                   other; ARGS follow `cargo test -p PACKAGE`
+#                                   other, each with the Cargo feature that
+#                                   compiles its engine; ARGS follow
+#                                   `cargo test -p PACKAGE --features FEATURE`
 #
 # The engine of a suite is the engine of the package's unit tests. Its
 # integration tests and doc tests use the package as a dependent does, on
@@ -14,8 +16,8 @@
 # target, and a run on another engine is of the unit tests (`--lib`).
 #
 # A suite is a package, the variable that selects its engine and its
-# registry: a file with one engine a line, its name first, and the default
-# engine first.
+# registry: a file with one engine a line, its name and then the Cargo
+# feature of the package that compiles it, and the default engine first.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -29,6 +31,11 @@ SUITES
 
 engines() {
     grep -vE '^[[:space:]]*(#|$)' "$repo/$1" | awk '{ print $1 }'
+}
+
+# The Cargo feature that compiles the engine $2 of the registry $1.
+feature() {
+    grep -vE '^[[:space:]]*(#|$)' "$repo/$1" | awk -v engine="$2" '$1 == engine { print $2 }'
 }
 
 case "${1:-}" in
@@ -48,7 +55,8 @@ run)
         targets=()
         for engine in $(engines "$registry"); do
             echo "== $package on $engine"
-            env "$variable=$engine" cargo test -p "$package" "${targets[@]}" "$@"
+            env "$variable=$engine" cargo test -p "$package" \
+                --features "$(feature "$registry" "$engine")" "${targets[@]}" "$@"
             targets=(--lib)
         done
     done < <(suites)

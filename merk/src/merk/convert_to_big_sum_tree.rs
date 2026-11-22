@@ -83,7 +83,20 @@ where
     /// whole tree is held in memory until then. The Merk is taken by value
     /// and handed back only once the write is made: after a refusal or a
     /// failure there is no handle left to go on with, and storage is as it
-    /// was.
+    /// was, with one exception below.
+    ///
+    /// Once the nodes of a Merk that has any are committed, the store is
+    /// told the tree type the Merk has now
+    /// (`NodeStore::state_tree_type`). A Merk with no node wrote none
+    /// again, and states nothing. A store that keeps no tree type does
+    /// nothing for the statement, and nothing is read, written or
+    /// charged. A store that keeps the tree type of a subtree beside its
+    /// nodes takes it there, and can refuse: the conversion then fails
+    /// after its commit. The rewritten nodes are then where the commit
+    /// put them, in the transaction of a handle that writes at once and
+    /// in the batch of a handle that stages, and the caller gives that
+    /// transaction or that batch up, as after any write that failed part
+    /// of the way.
     ///
     /// Available where
     /// `operations.insert.convert_to_big_sum_tree` is enabled.
@@ -155,6 +168,9 @@ where
             &mut cost,
             self.commit(key_updates, aux, None, old_specialized_cost, grove_version)
         );
+        if self.has_root_key() {
+            cost_return_on_error_no_add!(cost, self.storage.state_tree_type(wide_tree_type));
+        }
         Ok(self).wrap_with_cost(cost)
     }
 }
@@ -396,6 +412,61 @@ mod tests {
             drop(converted);
             let reopened = open(&storage, &tx, wide, grove_version);
             assert_eq!(reopened.root_hash().unwrap(), wide_root, "{narrow}");
+        }
+    }
+
+    /// On LigninDB the subtree directory names the tree type of a subtree.
+    /// A conversion states the wide one through the handle it writes with
+    /// (`NodeStore::state_tree_type`): at once on a handle that writes at
+    /// once, and with the batch of a handle that stages. Nothing else
+    /// tells the engine of the suite a tree type, so before the conversion
+    /// the directory has the bytes that engine enters a subtree with.
+    #[cfg(merk_test_engine = "lignin")]
+    #[test]
+    fn the_directory_names_the_tree_type_a_conversion_leaves() {
+        use crate::test_utils::{LigninTestEngine, SuiteBatch};
+
+        let grove_version = GroveVersion::latest();
+        for (narrow, wide) in PAIRS {
+            for staged in [false, true] {
+                let storage = TempEngine::new();
+                let tx = storage.start_transaction();
+                let batch = SuiteBatch::default();
+                let store = match staged {
+                    true => storage.subtree(SubtreePath::empty(), Some(&batch), &tx),
+                    false => storage.immediate_subtree(SubtreePath::empty(), &tx),
+                };
+                let mut merk = Merk::open_base(
+                    store.unwrap(),
+                    narrow,
+                    Some(&Element::value_defined_cost_for_serialized_value),
+                    grove_version,
+                )
+                .unwrap()
+                .expect("open");
+                fill(&mut merk, grove_version);
+                let entered = merk.storage.entry().expect("the directory answers");
+                let entered = entered.expect("the subtree is entered");
+                assert_eq!(entered.tree_type, LigninTestEngine::TREE_TYPE);
+
+                let converted = convert(merk, grove_version).0.expect("convert");
+                let entry = || {
+                    let reader = storage.subtree(SubtreePath::empty(), None, &tx).unwrap();
+                    let entry = reader.entry().expect("the directory answers");
+                    entry.expect("the subtree is entered")
+                };
+                if staged {
+                    // The statement is staged with the nodes of the wide
+                    // tree, and is made when the batch is applied.
+                    assert_eq!(entry().tree_type, LigninTestEngine::TREE_TYPE);
+                    drop(converted);
+                    storage
+                        .apply_batch(batch, &tx)
+                        .unwrap()
+                        .expect("the batch is applied");
+                }
+                assert_eq!(entry().tree_type().expect("a tree type"), wide, "{narrow}");
+            }
         }
     }
 

@@ -2544,10 +2544,10 @@ fn a_conversion_costs_the_same(
         let (Some(on_rocks), Some(on_lignin)) = (on_rocks, on_lignin) else {
             return false;
         };
-        // The Merk is stated anew in the subtree directory, at once on a
-        // handle that writes at once.
+        // The conversion stated the Merk anew in the subtree directory
+        // (`NodeStore::state_tree_type`), at once on a handle that writes
+        // at once.
         let wide = on_lignin.tree_type;
-        (on_lignin.storage.convert(wide)).expect("the conversion is stated");
         let entry = on_lignin.storage.entry().unwrap();
         let entry = entry.expect("the Merk is entered");
         assert_eq!(
@@ -2648,12 +2648,10 @@ fn a_conversion_costs_the_same(
     let (cost, on_lignin, found) = convert_as_a_client(on_lignin, grove_version);
     assert_eq!(found, expected, "{}", at("the conversion"));
     assert_eq!(cost, expected_cost, "{}", at("the cost of the conversion"));
-    // The batch that writes the nodes of the wide tree states the Merk
-    // anew in the subtree directory. That is no write of a record: the
+    // The conversion staged, in the batch that writes the nodes of the
+    // wide tree, the statement of the Merk anew in the subtree directory
+    // (`NodeStore::state_tree_type`). That is no write of a record: the
     // batch is charged what it is charged on RocksDB.
-    if let (Some(merk), Ok((wide, ..))) = (&on_lignin, &found) {
-        (merk.storage.convert(*wide)).expect("the conversion is stated");
-    }
     drop((on_rocks, on_lignin));
     let expected = rocks.commit_multi_context_batch(storage_batch, Some(&rocks_tx));
     let read_before = reads(&transaction);

@@ -1136,7 +1136,7 @@ mod test {
         test_utils::*,
         tree::{kv::ValueDefinedCostType, TreeNode, NULL_HASH},
         tree_type::TreeType,
-        Error, Op,
+        Error, Op, TreeFeatureType,
         TreeFeatureType::BasicMerkNode,
     };
     // TODO: Close and then reopen test
@@ -1195,6 +1195,171 @@ mod test {
         assert_eq!(linked.len(), 20);
         assert!(!linked.contains(b"unlinked".as_slice()));
         assert!(batch.iter().all(|(key, _)| linked.contains(key)));
+    }
+
+    /// The feature of a node of a tree of `tree_type` that carries `n`.
+    fn feature_of(tree_type: TreeType, n: u64) -> TreeFeatureType {
+        use TreeFeatureType::*;
+        let sum = n as i64 - 3;
+        let big = i128::from(sum) << 70;
+        match tree_type {
+            TreeType::NormalTree => BasicMerkNode,
+            TreeType::SumTree => SummedMerkNode(sum),
+            TreeType::BigSumTree => BigSummedMerkNode(big),
+            TreeType::CountTree => CountedMerkNode(1),
+            TreeType::CountSumTree => CountedSummedMerkNode(1, sum),
+            TreeType::ProvableCountTree => ProvableCountedMerkNode(1),
+            TreeType::ProvableCountSumTree => ProvableCountedSummedMerkNode(1, sum),
+            TreeType::ProvableSumTree => ProvableSummedMerkNode(sum),
+            TreeType::ProvableCountProvableSumTree => {
+                ProvableCountedAndProvableSummedMerkNode(1, sum)
+            }
+            TreeType::ProvableCountProvableBigSumTree => {
+                ProvableCountedAndProvableBigSummedMerkNode(1, big)
+            }
+            TreeType::CountBigSumTree => CountedBigSummedMerkNode(1, big),
+            TreeType::ProvableBigSumTree => ProvableBigSummedMerkNode(big),
+            other => panic!("no feature chosen for {other:?}"),
+        }
+    }
+
+    /// Values of every size are stored and read back as they were put,
+    /// under every tree type whose nodes carry an aggregate of their own:
+    /// an empty value, values on both sides of 256 bytes and of 4, 8, 16
+    /// and 32 KiB, which are the sizes at which a store that keeps nodes
+    /// in pages may keep a value elsewhere, and a megabyte.
+    #[test]
+    fn large_values_are_stored_and_read_back_under_every_tree_type() {
+        let grove_version = GroveVersion::latest();
+        let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+        let lengths: [usize; 16] = [
+            0,
+            255,
+            256,
+            257,
+            4_095,
+            4_097,
+            8_191,
+            8_193,
+            16_383,
+            16_385,
+            32_767,
+            32_768,
+            32_769,
+            100_000,
+            300_000,
+            1 << 20,
+        ];
+        // Each stretch of 256 bytes of a value, counted from its start,
+        // begins with its own number in two bytes.
+        let value = |len: usize, salt: u8| -> Vec<u8> {
+            let byte = |at: usize| match at % 256 {
+                0 => (at >> 8) as u8,
+                1 => (at >> 16) as u8,
+                within => (within as u8).wrapping_mul(31).wrapping_add(salt),
+            };
+            (0..len).map(byte).collect()
+        };
+        let longest = value(1 << 20, 1);
+        let stretches: std::collections::BTreeSet<&[u8]> = longest.chunks(256).collect();
+        assert_eq!(stretches.len(), 1 << 12, "two stretches are the same");
+        let key = |k: usize| vec![b'k', k as u8];
+        for tree_type in [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableCountProvableBigSumTree,
+            TreeType::CountBigSumTree,
+            TreeType::ProvableBigSumTree,
+        ] {
+            let mut merk = TempMerk::new_with_tree_type(grove_version, tree_type);
+            let count = lengths.len();
+            // What the Merk holds after each round, by the number of its
+            // key: a length and the salt of the bytes. First a value of
+            // every length. Then every key has the length of the key at
+            // the other end, so that a long value becomes a short one and
+            // a short one a long one, but the middle one, which is put
+            // again as it is, and the first, which is removed.
+            let first: Vec<Option<(usize, u8)>> =
+                lengths.iter().map(|len| Some((*len, 1))).collect();
+            let second: Vec<Option<(usize, u8)>> = (0..count)
+                .map(|k| match k {
+                    0 => None,
+                    k if k == count / 2 => first[k],
+                    k => Some((lengths[count - 1 - k], 2)),
+                })
+                .collect();
+
+            for (round, held) in [first, second].into_iter().enumerate() {
+                let at = format!("{tree_type}, round {round}");
+                let batch: Vec<_> = (held.iter().enumerate())
+                    .map(|(k, held)| match held {
+                        Some((len, salt)) => {
+                            let feature = feature_of(tree_type, k as u64 + u64::from(*salt));
+                            (key(k), Op::Put(value(*len, *salt), feature))
+                        }
+                        None => (key(k), Op::Delete),
+                    })
+                    .collect();
+                merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+                    .unwrap()
+                    .expect("apply");
+                let root_hash = merk.root_hash().unwrap();
+                // The Merk is opened again on what the commit stored.
+                merk.commit(grove_version);
+                assert_eq!(merk.root_hash().unwrap(), root_hash, "{at}");
+                for (k, held) in held.iter().enumerate() {
+                    let read = merk.get(&key(k), true, no_cost, grove_version);
+                    let read = read.unwrap().expect("a read");
+                    let expected = held.map(|(len, salt)| value(len, salt));
+                    assert!(read == expected, "the value under key {k}, {at}");
+                    // A node that is read from the store carries the value
+                    // hash of the bytes it was put with.
+                    let hash = merk.get_value_hash(&key(k), true, no_cost, grove_version);
+                    let expected = expected.map(|value| crate::tree::value_hash(&value).unwrap());
+                    assert_eq!(hash.unwrap().expect("a read"), expected, "{at}");
+                }
+                // The cursor shows the keys the Merk holds, in their
+                // order and each once, and under each the record of its
+                // node, with its value and its feature.
+                let mut cursor = merk.storage.cursor();
+                cursor.seek_to_first().unwrap();
+                let mut shown = Vec::new();
+                while cursor.valid().unwrap() {
+                    let shown_key = cursor.key().unwrap().expect("a key").to_vec();
+                    let record = cursor.value().unwrap().expect("a record").to_vec();
+                    let node =
+                        TreeNode::decode_raw(&record, shown_key.clone(), no_cost, grove_version);
+                    let node = node.expect("a node record");
+                    let k = shown.len();
+                    shown.push((
+                        shown_key,
+                        node.value_as_slice().to_vec(),
+                        node.feature_type(),
+                    ));
+                    assert!(k < count, "more records than keys, {at}");
+                    cursor.next().unwrap();
+                }
+                assert!(cursor.status().is_ok(), "{at}");
+                let expected: Vec<_> = (held.iter().enumerate())
+                    .filter_map(|(k, held)| {
+                        let (len, salt) = (*held)?;
+                        let feature = feature_of(tree_type, k as u64 + u64::from(salt));
+                        Some((key(k), value(len, salt), feature))
+                    })
+                    .collect();
+                assert_eq!(shown.len(), expected.len(), "{at}");
+                for (shown, expected) in shown.iter().zip(&expected) {
+                    assert!(shown == expected, "the record under {:?}, {at}", expected.0);
+                }
+            }
+        }
     }
 
     #[test]

@@ -28,6 +28,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     tree::{kv::ValueDefinedCostType, TreeNode, TreeNodeInner},
+    tree_type::TreeType,
     Error, Link,
 };
 
@@ -308,6 +309,20 @@ pub trait NodeStore<'db> {
             Ok(()) => self.commit(change_set),
             Err(e) => Err(e).wrap_with_cost(Default::default()),
         }
+    }
+
+    /// States that the Merk of this subtree is a tree of `tree_type` from
+    /// here on: its nodes were written again, through this handle, as the
+    /// nodes of that tree. A conversion in place states it once it has
+    /// committed them (`Merk::convert_to_big_sum_tree`), for a Merk that
+    /// has a node, and nothing else does.
+    ///
+    /// It reads and writes no node and no record, and is charged nothing.
+    /// A store that keeps no tree type has no use for it, which is the
+    /// default: it does nothing and cannot fail. A store that keeps the
+    /// tree type of a subtree beside its nodes takes it there.
+    fn state_tree_type(&self, _tree_type: TreeType) -> Result<(), Error> {
+        Ok(())
     }
 
     /// The recorded key of the root node, for a Merk that keeps its own. A
