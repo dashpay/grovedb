@@ -1,6 +1,6 @@
 //! Models of what the parts of the engine do to each other, on the code
-//! of each part (VER-05; `transactions.md` section 15.2, "Loom models owed
-//! by VER-05").
+//! of each part (VER-05; `transactions.md` section 15.2, "Concurrency
+//! coverage").
 //!
 //! The buffer pool, the page id allocator and the page table are
 //! `lignin-store`'s, and what they are asked about, the version pins and

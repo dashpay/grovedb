@@ -85,11 +85,24 @@ enum Then {
     Nothing,
     /// The nodes that one of its stable Merks has now.
     Merk(usize, BTreeMap<Vec<u8>, Val>),
-    Entered(u64),
+    Entered(Generation),
     Dropped(u64),
+    /// The subtree below its oldest generation is dropped, and the Merk
+    /// above it holds these items now.
+    Hollowed(BTreeMap<Vec<u8>, Vec<u8>>),
     /// Members that joined its crowd, and how many of the oldest left it.
     Crowded(Vec<u64>),
     Thinned(usize),
+}
+
+/// A generation that a writer has entered.
+#[derive(Clone)]
+struct Generation {
+    number: u64,
+    /// The items of its outer Merk.
+    outer: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Whether the subtree below it is entered still.
+    hosts: bool,
 }
 
 /// One part of a commit: the batch that one scope applies, what it writes
@@ -155,7 +168,7 @@ pub(in crate::db::tests) struct Writer {
     serial: u64,
     revision: u64,
     /// The generations that are entered, the oldest first.
-    generations: VecDeque<u64>,
+    generations: VecDeque<Generation>,
     generation: u64,
     /// The members of its crowd that are entered, the oldest first.
     crowd: VecDeque<u64>,
@@ -256,6 +269,29 @@ impl Writer {
         Piece::new(batch, Then::Merk(merk, after))
     }
 
+    /// Every document of the stable Merk `merk` written again, each with a
+    /// new value, and nothing else: the Merk keeps its keys, so its root
+    /// stays.
+    pub(in crate::db::tests) fn rewritten(&mut self, merk: usize) -> Piece {
+        let (subtree, view) = self.merks[merk].clone();
+        let mut items = Committed::items(&view);
+        for (key, value) in &mut items {
+            let serial = u64::from_be_bytes(key[1..9].try_into().expect("a serial"));
+            *value = self.value(serial);
+        }
+        let change = OwnedMerk::change(subtree, &view, &items);
+        let records = World::root_record(&change).into_iter().collect();
+        let after = (model::records(&items).1.into_iter())
+            .map(|(key, node)| (key, Val::Node(node)))
+            .collect();
+        let batch = OwnedBatch {
+            merks: vec![change],
+            records,
+            subtrees: Vec::new(),
+        };
+        Piece::new(batch, Then::Merk(merk, after))
+    }
+
     fn generation_subtrees(&self, generation: u64) -> (Subtree, Subtree) {
         (named(3, self.id, generation), named(4, self.id, generation))
     }
@@ -266,14 +302,18 @@ impl Writer {
         let generation = self.generation;
         self.generation += 1;
         let (outer, inner) = self.generation_subtrees(generation);
-        let merk = |writer: &mut Self, subtree: Subtree, nodes: u64| {
-            let items: BTreeMap<Vec<u8>, Vec<u8>> = (0..nodes)
+        let items = |writer: &mut Self, nodes: u64| -> BTreeMap<Vec<u8>, Vec<u8>> {
+            (0..nodes)
                 .map(|node| (document_key(node), writer.value(generation * 100 + node)))
-                .collect();
-            OwnedMerk::change(subtree, &BTreeMap::new(), &items)
+                .collect()
         };
-        let below = merk(self, inner, INNER);
-        let mut above = merk(self, outer, OUTER);
+        let below = OwnedMerk::change(inner, &BTreeMap::new(), &items(self, INNER));
+        let entered = Generation {
+            number: generation,
+            outer: items(self, OUTER),
+            hosts: true,
+        };
+        let mut above = OwnedMerk::change(outer, &BTreeMap::new(), &entered.outer);
         above.hosted.insert(host_key(), vec![inner]);
         let mut records: Vec<Write> = [&below, &above]
             .into_iter()
@@ -299,23 +339,45 @@ impl Writer {
                 OwnedSubtree::Enter(inner, Some((outer, host_key(), 0))),
             ],
         };
-        Piece::new(batch, Then::Entered(generation))
+        Piece::new(batch, Then::Entered(entered))
+    }
+
+    /// The drop of the subtree below the oldest generation that is
+    /// entered, alone: the Merk above it stays, without the node that
+    /// hosted the subtree. `None` if no generation is entered, or if that
+    /// subtree is dropped already.
+    pub(in crate::db::tests) fn drop_below_oldest(&mut self) -> Option<Piece> {
+        let oldest = self.generations.front().filter(|oldest| oldest.hosts)?;
+        let (outer, inner) = self.generation_subtrees(oldest.number);
+        let view: BTreeMap<Vec<u8>, Val> = (model::records(&oldest.outer).1.into_iter())
+            .map(|(key, node)| (key, Val::Node(node)))
+            .collect();
+        let mut items = oldest.outer.clone();
+        items.remove(&host_key());
+        let above = OwnedMerk::change(outer, &view, &items);
+        let batch = OwnedBatch {
+            records: World::root_record(&above).into_iter().collect(),
+            merks: vec![above],
+            subtrees: vec![OwnedSubtree::Drop(inner)],
+        };
+        Some(Piece::new(batch, Then::Hollowed(items)))
     }
 
     /// The drop of the oldest generation that is entered, with the subtree
-    /// below it.
+    /// below it where that is entered still.
     pub(in crate::db::tests) fn drop_oldest(&mut self) -> Option<Piece> {
-        let generation = *self.generations.front()?;
-        let (outer, inner) = self.generation_subtrees(generation);
+        let oldest = self.generations.front()?;
+        let (outer, inner) = self.generation_subtrees(oldest.number);
         let batch = OwnedBatch {
             subtrees: vec![OwnedSubtree::Drop(outer)],
             ..OwnedBatch::default()
         };
-        let mut piece = Piece::new(batch, Then::Dropped(generation));
+        let below = oldest.hosts.then_some(inner).into_iter().collect();
+        let mut piece = Piece::new(batch, Then::Dropped(oldest.number));
         piece.writes = vec![Write::Leave(Left {
             subtree: outer,
             cleared: false,
-            below: vec![inner],
+            below,
             cut: Vec::new(),
         })];
         Some(piece)
@@ -409,7 +471,12 @@ impl Writer {
                 Then::Merk(merk, nodes) => self.merks[merk].1 = nodes,
                 Then::Entered(generation) => self.generations.push_back(generation),
                 Then::Dropped(generation) => {
-                    assert_eq!(self.generations.pop_front(), Some(generation));
+                    let oldest = self.generations.pop_front();
+                    assert_eq!(oldest.map(|oldest| oldest.number), Some(generation));
+                }
+                Then::Hollowed(items) => {
+                    let oldest = self.generations.front_mut().expect("a generation");
+                    (oldest.outer, oldest.hosts) = (items, false);
                 }
                 Then::Crowded(members) => self.crowd.extend(members),
                 Then::Thinned(count) => drop(self.crowd.drain(..count)),
