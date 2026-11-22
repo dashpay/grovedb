@@ -990,8 +990,10 @@ its drops before its moves.
 
 **MV4. The order of a batch** is: its drops and clears, its moves, the
 subtrees it states anew, its enters, its change sets, its records. So a
-subtree that leaves with a move of the batch (MV2) is not entered where
-the batch states it anew (`NotEntered`). **The moves of one batch are made
+subtree that leaves with a move of the batch (MV2), under a prefix that no
+move of the batch names, is not entered where the batch states it anew
+(`NotEntered`); under a prefix that a move names, MV3 refuses the
+statement before that. **The moves of one batch are made
 together**, from the state that its drops and clears leave: every Merk is
 taken from its prefix before one is entered under its new prefix. So two
 subtrees change places in one batch, and a subtree goes to the prefix that
@@ -2571,8 +2573,7 @@ document or of the engine.
 | D9 | A write into a subtree that a foreign commit moved away or dropped, so that nothing is entered under its prefix, by a call that lays the writes of its transaction out over the latest version (WT7a) | success; the records are under the old prefix, which no element leads to | the batch is refused, as a conflict where the engine can tell (CF10) | needs two writers at a time. RocksDB then holds records that only a read of the prefix made directly returns, or a caller that makes the path again, as in D3. |
 | D10 | A move that *T* states, a read or a write where a move of *T* decides, or a drop or a clear by a *T* that holds a move, after a foreign commit has met a write of *T* | served; the commit fails | refused as a conflict (`MovedByKey`, MV7); the commit fails | needs two writers at a time. The transaction fails on both engines, on LigninDB one step earlier. |
 | D11 | A read through a cursor of *T* that was opened before a foreign commit, where a move of *T* decides what is under the cursor's subtree and no commit has met a write of *T* when the call is made | served; an iterator reads the snapshot it was made on under the writes of *T* | refused, with no conflict (MV7): with the refusal that stops the layout of the writes of *T* over the latest version where one does, and with `MoveBeside` otherwise. The commit of *T* is decided as before | a move of LigninDB is laid out over the latest version, and not over the one that the cursor reads. Needs two writers at a time, and a cursor that is held across the other's commit. A caller of LigninDB itself meets it with one writer too, where it keeps a cursor across the commit of the cursor's own transaction and uses the transaction again; GroveDB ends its transaction with the commit |
-
-| D12 | The records of a moved subtree that no link of its Merk's tree leads to (GM0), which LigninDB keeps as unlinked records | a move copies the records that GroveDB's walk of the subtree reads. They go with the subtree where the walk reads its Merk, and stay under the old prefix for a Merk whose element names no root, which the walk does not read | a move takes every flat record of each subtree it gives a prefix to the new prefix (MV1), these among them, whether the Merk has a root or not. A subtree with no node that the move names no prefix for leaves, and its records with it (MV2) | a move of LigninDB re-keys a subtree by its entry and reads no record of it (`tree-layout.md` D5, D6). The records are in no hash. After a move of a tree whose element names no root, RocksDB holds such a record under the old prefix, where a read of the prefix made directly finds it, or a caller that makes the path again, as in D3. LigninDB holds none there: it shows the record under the new prefix where the move named the subtree, and nowhere where it did not. Kept as a known difference (D-263, D-264) |
+| D12 | The records of a moved subtree that no link of its Merk's tree leads to (GM0), which LigninDB keeps as unlinked records | a move copies the records that GroveDB's walk of the subtree reads. They go with the subtree where the walk reads its Merk, and stay under the old prefix for a Merk whose element names no root, which the walk does not read | a move takes every flat record of each subtree it gives a prefix to the new prefix (MV1), these among them, whether the Merk has a root or not. A subtree with no node that the move names no prefix for leaves, and its records with it (MV2) | a move of LigninDB finds the Merks it re-keys in the directory and walks no node of them; it reads and copies the flat records of each, these among them (`tree-layout.md` D5, D6). The records are in no hash. After a move of a tree whose element names no root, RocksDB holds such a record under the old prefix, where a read of the prefix made directly finds it, or a caller that makes the path again, as in D3. LigninDB holds none there: it shows the record under the new prefix where the move named the subtree, and nowhere where it did not. Kept as a known difference (D-263, D-264) |
 
 Three things that might look like differences are not. A second write
 transaction is allowed on both engines and conflicts by the same rule (CF7).
@@ -2711,13 +2712,18 @@ same result.
   own kept by a later write and none of the committed one; two Merks
   that change places, of which one holds an unlinked record, with no
   lookup for either afterwards; a Merk that is moved to a prefix under
-  which the transaction had left a record of its own. With no move,
+  which the transaction had left a record of its own; a Merk with no
+  node that holds unlinked records, below a moved subtree, where the
+  move names it and where it leaves with the move. With no move,
   what a clear and a drop take below their subtree: a clear after an
   enter of a Merk with nodes if it is absent, a drop of a Merk that
   was committed with no node and a subtree below it, and a clear of a
   Merk with no node under which its transaction had entered a subtree
   and written a record, which the transaction goes on reading by key
-  after a commit gave the Merk a node and met the clear
+  after a commit gave the Merk a node and met the clear; the same clear
+  stated by key, after a commit met the transaction, which takes what
+  the transaction entered below the Merk; and a clear of a Merk whose
+  node records are all unlinked, which takes nothing below it
   (`lignindb/src/txn/tests/moves.rs`).
 - T-MV2: after a move the directory and every flat column hold, record for
   record, what they hold where the subtree was written under the new
@@ -2728,7 +2734,8 @@ same result.
   through `Db::verify`, and the next session reads the same. A reader of
   the version before a commit of moves and one of the version after it
   each find the unlinked records under the prefixes whose Merks hold them
-  at their version, with one lookup for a subtree
+  at their version, with one lookup for each subtree that is opened,
+  over its reads by key and its walk
   (`lignindb/src/txn/tests/moves.rs`, `lignindb/src/db/tests/moves.rs`).
 - T-MV3: the refusals of MV3, each leaving the write set as it was, with
   a subtree that a move names stated anew before the move and after it,
@@ -2769,7 +2776,10 @@ same result.
   the transaction and commits are published, as many as CF3 keeps key
   sets of and one more, one whose read under way shows no node after a
   rollback, and one whose read shows a node that another thread keeps by
-  its handle before the read has ended; a cursor of another version than
+  its handle before the read has ended, and one whose read shows an
+  unlinked record, which has no handle, while another thread keeps a
+  value by a handle from before a rollback; a cursor of another version
+  than
   the latest, where a move
   decides and where none does, with the commit before the move and after
   it; a drop after a clear that took a subtree when it was made again;
@@ -2807,9 +2817,10 @@ same result.
   from its seed and prints its calls where it fails. A step draws what
   is done next: one call, several, or none. The test runs 40 histories
   of 160 steps, and two of 30 under Miri; the environment names the
-  seeds and the number of steps of a longer run. No history has an
-  unlinked record in a Merk with no node, a subtree that is stated anew
-  with another tree type or at another place, an enter
+  seeds and the number of steps of a longer run. No history has a batch
+  that writes an unlinked record into a Merk with no node or a commit
+  that leaves one there, a subtree that is stated anew with another tree
+  type or at another place, an enter
   of a subtree
   if it is absent, a commit of a Merk with no node above a subtree, a
   move to another Merk, a write that keeps a node's value by the handle

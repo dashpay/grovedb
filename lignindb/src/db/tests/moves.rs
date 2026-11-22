@@ -292,9 +292,9 @@ fn a_commit_that_moves_subtrees_is_sound_and_is_read_by_the_next_session() {
 /// one goes to a prefix that had no subtree. A reader of the version
 /// before the moves and one of the version after them each find a record
 /// under the prefixes whose Merks hold one at their version and none
-/// under the others, by key and in a walk of the nodes, and each asks
-/// once of a subtree whether it holds any. The next session reads the
-/// same.
+/// under the others, by key and in a walk of the nodes, and each subtree
+/// that is opened is asked once whether it holds any. The next session
+/// reads the same.
 #[test]
 fn a_reader_finds_the_unlinked_records_of_a_moved_merk_under_its_new_prefix() {
     use crate::txn::unlinked::probe;
