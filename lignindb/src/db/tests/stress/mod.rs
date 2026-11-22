@@ -911,22 +911,6 @@ fn epoch(
                     && cleaner_state.stats().value_passes >= 3)
         });
     });
-    let background = db.stats().background;
-    assert_eq!(
-        background.cleaner_errors, 0,
-        "the cleaner: {:?}",
-        background.last_error
-    );
-    let cleaned = cleaner_state.stats();
-    assert_eq!(
-        (
-            cleaned.errors,
-            cleaned.segments_unreadable,
-            cleaned.segments_gone
-        ),
-        (0, 0, 0),
-        "{cleaned:?}"
-    );
 
     // Everything that was dropped is reclaimed. A page that the latest
     // commit wrote is freed after the next one, so commits are made until
@@ -940,23 +924,37 @@ fn epoch(
         tick(&db, history, round);
         add(&tally.ticks, 1);
     }
+    // The threads of the database are ended before their counts are
+    // read: the cleaner made passes beside those commits too, and nothing
+    // of the background work failed up to its last turn.
+    halt_background(&db);
     let stats = db.stats();
     assert_eq!(stats.reclaimed.given_up, 0, "{stats}");
     assert_eq!(
         (
             stats.background.write_back_errors,
-            stats.background.reclaim_errors
+            stats.background.reclaim_errors,
+            stats.background.cleaner_errors
         ),
-        (0, 0),
+        (0, 0, 0),
         "the background work: {:?}\n{stats}",
         stats.background
+    );
+    let cleaned = cleaner_state.stats();
+    assert_eq!(
+        (
+            cleaned.errors,
+            cleaned.segments_unreadable,
+            cleaned.segments_gone
+        ),
+        (0, 0, 0),
+        "{cleaned:?}"
     );
     assert_eq!(stats.pins, 0, "{stats}");
     assert!(stats.reopen.is_none(), "{stats}");
 
-    // The store at rest: the threads of the database are ended, and the
-    // checker reads everything of the latest version.
-    halt_background(&db);
+    // The store at rest: the checker reads everything of the latest
+    // version.
     let latest = db.version();
     let report = verify(&db, Scope::Still, latest);
     sound(&report, "the store is not sound at rest");

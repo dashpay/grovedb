@@ -75,12 +75,15 @@ impl Catalog {
 pub(super) struct Signal {
     thread: OnceLock<Thread>,
     stop: AtomicBool,
-    /// How often the thread was woken, and how many rounds it has begun:
-    /// what a test of its pace counts.
+    /// How often the thread was woken, how many rounds it has begun, and
+    /// after how many of them it took its idle wait: what a test of its
+    /// pace counts.
     #[cfg(test)]
     pub(super) wakes: AtomicU64,
     #[cfg(test)]
     pub(super) rounds: AtomicU64,
+    #[cfg(test)]
+    pub(super) idled: AtomicU64,
 }
 
 impl Signal {

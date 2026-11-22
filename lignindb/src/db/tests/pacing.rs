@@ -151,6 +151,20 @@ fn refused_creations(fs: &SimVfs, path: &Path, after: u64, to: u64) -> u64 {
     fs.trace().iter().filter(|event| refused(event)).count() as u64
 }
 
+/// The log files other than `path` that the device was asked to open
+/// after its operation number `after`, whatever it answered.
+fn other_log_files_opened(fs: &SimVfs, path: &Path, after: u64) -> Vec<String> {
+    let path = path.display().to_string();
+    let wal = FileNames::WAL.dir(Path::new(DIR)).display().to_string();
+    let other = |event: &Event| match event {
+        Event::Op(op) if op.kind == OpKind::Open && op.op > after => {
+            (op.path.starts_with(&wal) && op.path != path).then(|| op.path.clone())
+        }
+        _ => None,
+    };
+    fs.trace().iter().filter_map(other).collect()
+}
+
 /// The three background threads run on the full device, as a database
 /// that is open has them, and somebody asks write-back and the reclaimer
 /// for a turn all the time. Write-back's loop ends no more failed turns
@@ -166,7 +180,6 @@ fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no
     let files = log_files(&session.fs);
     let next = FileId::new(*files.last().expect("a log file") + 1).expect("an id");
     let next_file = FileNames::WAL.path(Path::new(DIR), next);
-    let asked_for = format!("cannot create {}", next_file.display());
     {
         let db = session.db.as_ref().expect("the database is open");
         let shared = &*db.shared;
@@ -174,6 +187,7 @@ fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no
         let config = store.flush.config();
         let asking = AtomicBool::new(true);
         let cleaner_failed = || store.troubles.cleaner.load(Ordering::Relaxed);
+        let opened = session.fs.stats().ops;
         let (window, turns, passes, asked) = thread::scope(|scope| {
             scope.spawn(|| crate::db::write_back(shared));
             scope.spawn(|| shared.reclaim_loop(IDLE));
@@ -225,8 +239,10 @@ fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no
             "the log file was asked for {asked} times in {turns} turns and {passes} passes"
         );
         assert!(stats.background.write_back_errors >= turns, "{stats}");
-        let last = db.stats().background.last_error.expect("a turn failed");
-        assert!(last.contains(&asked_for), "{last}");
+        // From the first turn of the threads to their end the log was
+        // asked for that one file, whoever asked.
+        let others = other_log_files_opened(&session.fs, &next_file, opened);
+        assert!(others.is_empty(), "other log files were opened: {others:?}");
         assert_eq!(db.reopen(), None, "the session has ended");
     }
     assert_eq!(
@@ -251,10 +267,15 @@ fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no
 /// and nobody asks them for anything. The reclaimer's thread is woken by
 /// a commit that dropped something and by a reader that gave up a pin
 /// on an older version, and there is neither: no wake reaches its signal
-/// while write-back's turns fail beside it, no round of it fails, and it
-/// makes a round each time its idle time has passed. A sleep of a thread
-/// can end early with no wake, so twice as many rounds are allowed as
-/// the idle times that passed: a thread that spins makes thousands.
+/// while write-back's turns fail beside it, no round of it fails, and
+/// after every round it takes its idle wait. A thread that spins takes
+/// none: its rounds follow one another at once.
+///
+/// The threads are watched until write-back has failed three more turns
+/// and the reclaimer has made three more rounds, which each of them comes
+/// to by itself, and the rounds and the waits are counted once the
+/// threads have ended. A sleep of a thread can end early with no wake,
+/// which makes a round more and a wait more.
 #[test]
 fn the_reclaimer_on_a_device_that_stays_full_is_woken_by_nobody() {
     let session = stuck();
@@ -266,7 +287,7 @@ fn the_reclaimer_on_a_device_that_stays_full_is_woken_by_nobody() {
     let wakes = || signal.wakes.load(Ordering::Relaxed);
     let failed = || store.flush.stats().errors;
     let asking = AtomicBool::new(false);
-    let (window, made, woken, turns) = thread::scope(|scope| {
+    let (window, woken, turns) = thread::scope(|scope| {
         scope.spawn(|| crate::db::write_back(shared));
         scope.spawn(|| shared.reclaim_loop(IDLE));
         scope.spawn(|| crate::db::clean(shared));
@@ -277,25 +298,30 @@ fn the_reclaimer_on_a_device_that_stays_full_is_woken_by_nobody() {
             thread::yield_now();
         }
         let began = Instant::now();
-        let (made, woken, turns) = (rounds(), wakes(), failed());
-        thread::sleep(WINDOW);
-        let (made, woken, turns) = (rounds() - made, wakes() - woken, failed() - turns);
-        (began.elapsed(), made, woken, turns)
+        let (made, turns) = (rounds(), failed());
+        while failed() < turns + 3 || rounds() < made + 3 {
+            thread::yield_now();
+        }
+        // The wakes are read before the threads are told to end, which
+        // wakes the reclaimer's.
+        (began.elapsed(), wakes(), failed() - turns)
     });
     let background = db.stats().background;
-    let idle_times = (window.as_micros() / IDLE.as_micros()) as u64;
+    let made = rounds();
+    let idled = signal.idled.load(Ordering::Relaxed);
     println!(
-        "in {window:?} ({idle_times} idle times of {IDLE:?}): {made} rounds of the reclaimer and \
-         {woken} wakes of its thread, beside {turns} failed turns of write-back; {} calls of the \
-         reclaimer failed",
+        "in {window:?}, with an idle time of {IDLE:?}: {made} rounds of the reclaimer since the \
+         open, {idled} of them followed by its idle wait, and {woken} wakes of its thread, beside \
+         {turns} failed turns of write-back; {} calls of the reclaimer failed",
         background.reclaim_errors
     );
     assert_eq!(woken, 0, "the reclaimer's thread was woken");
     assert_eq!(background.reclaim_errors, 0, "{background:?}");
-    assert!(turns > 0, "write-back made no turn beside it");
+    // Every round was followed by the idle wait, but the one at which
+    // the thread was told to end.
     assert!(
-        made <= 2 * (idle_times + 1),
-        "{made} rounds in {idle_times} idle times"
+        made >= 4 && made - idled <= 1,
+        "{made} rounds and {idled} idle waits"
     );
 }
 

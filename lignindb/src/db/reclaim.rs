@@ -450,7 +450,11 @@ impl Shared {
                 // at its bound of calls. Everything else waits for a
                 // commit, a reader or a write transaction, which wake the
                 // thread or are asked for again after the idle time.
-                None if !round.more => thread::park_timeout(idle),
+                None if !round.more => {
+                    #[cfg(test)]
+                    store.signal.idled.fetch_add(1, Ordering::Relaxed);
+                    thread::park_timeout(idle)
+                }
                 None => {}
             }
         }
