@@ -12,7 +12,7 @@ use lignin_format::{
     CellAddress, PageId, SlotId,
 };
 use lignin_store::{
-    cache::{ExclusiveLatch, ValueId},
+    cache::{ExclusiveLatch, PageRef, ValueId},
     load::FRAME_FORMAT,
     values::ValueChange,
 };
@@ -181,6 +181,33 @@ impl TreeValues {
             CellValue::Inline(bytes) => Ok(bytes),
             CellValue::OutOfLine(pointer) => source.placed(pointer, page, buf),
             CellValue::Pending(pending) => self.read_pending(source, pending, page, buf),
+        }
+    }
+
+    /// The value of `node`, a node of any page the scope is shown.
+    ///
+    /// For a page the scope has copied or made, `committed` is `None` and
+    /// this is [`Self::read`]. For a committed page that the scope has
+    /// not copied, `committed` is the frame the caller read the node
+    /// from, which it holds, and the value is read as
+    /// [`read_value`](super::read_value) reads it, from that frame.
+    ///
+    /// [`Self::read`] is not for such a page. It looks for the bytes of a
+    /// pending value with the frame the store has for the page when it
+    /// asks, and write-back can have placed the value since the node was
+    /// read and put a frame there that has the pointer and not the
+    /// bytes: the scope holds no private copy of the page, so it does not
+    /// itself hold that step back (`transactions.md` PV7).
+    pub fn read_shown<'a>(
+        &'a self,
+        source: &ValueSource<'_>,
+        node: NodeRef<'a>,
+        committed: Option<&'a PageRef<'_>>,
+        buf: &'a mut ValueBuf,
+    ) -> Result<&'a [u8], ValueError> {
+        match committed {
+            Some(frame) => source.framed(frame, node, buf),
+            None => self.read(source, node, buf),
         }
     }
 

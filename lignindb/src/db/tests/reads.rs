@@ -539,3 +539,61 @@ fn a_reader_walks_the_records_of_a_column_across_its_operations() {
     assert!(matches!(refused, Err(ReadError::OtherVersion { .. })));
     assert_eq!(value(&walk), Some(b"1".to_vec()));
 }
+
+/// A lookup of a write transaction that has frames can show it a cell of
+/// a committed page that it has never copied. The value of such a node
+/// can be pending: an earlier commit logged it, and write-back has not
+/// placed it. Write-back places it with a page step, which the
+/// transaction does not itself hold back, since it holds no private copy
+/// of that page, and which puts a frame with the pointer and without the
+/// value's bytes in the place of the one the transaction was shown.
+///
+/// Here the step falls where a thread of write-back can make it: after
+/// the transaction was shown the node and before it reads the node's
+/// value. The value is read all the same, from the frame the node was
+/// shown in (D-262).
+#[test]
+fn a_write_transaction_reads_a_value_that_write_back_places_while_it_is_shown_the_node() {
+    let dir = temp();
+    let db = open_at_rest(dir.path(), &options()).expect("a new database");
+    let merk = Merk::sized(b'k', 300, 700);
+    let items = merk.items();
+    plant(&db, subtree(1), merk);
+    let flush = &db.shared.store.flush;
+    assert_eq!(flush.stats().values_placed, 0, "write-back is at rest");
+
+    // The transaction writes another Merk: it has frames from here on.
+    let txn = db.begin();
+    let scope = txn.scope().expect("a scope");
+    let other = Writes {
+        enter: vec![(subtree(2), None)],
+        merks: vec![(subtree(2), Merk::sized(b'j', 3, 24))],
+        ..Writes::default()
+    };
+    (other.with(|batch| scope.apply(batch))).expect("the batch is applied");
+
+    let (key, value) = items.last().expect("a node").clone();
+    let read = scope.node(subtree(1), &key, |view| {
+        let view = view.expect("the node is there");
+        // What write-back's thread does beside the transaction.
+        db.shared.write_back().pass().expect("a pass");
+        let mut buf = lignin_tree::value::ValueBuf::new();
+        view.value(&mut buf).map(<[u8]>::to_vec)
+    });
+    let stats = flush.stats();
+    println!(
+        "{} values placed and {} steps put off inside the read: {:?}",
+        stats.values_placed,
+        stats.steps_put_off,
+        read.as_ref().map(|read| read.as_ref().map(Vec::len))
+    );
+    assert_eq!(
+        (stats.values_placed, stats.steps_put_off),
+        (300, 0),
+        "the value of the node that was shown was placed"
+    );
+    let read = read.expect("a read").expect("the value of the node");
+    assert_eq!(read, value);
+    scope.rollback();
+    txn.rollback().expect("a rollback");
+}

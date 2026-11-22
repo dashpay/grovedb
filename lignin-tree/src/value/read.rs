@@ -8,12 +8,13 @@ use lignin_format::{
     CommitVersion, PageId,
 };
 use lignin_store::{
+    cache::PageRef,
     load::{LoadBuffers, PageLoader},
     values::ValueStore,
 };
 
 use super::error::ValueError;
-use crate::node::PinnedNode;
+use crate::node::{NodeRef, PinnedNode};
 
 /// The memory a read of a value out of line uses, kept by the reader from
 /// one read to the next.
@@ -101,8 +102,29 @@ impl<'s> ValueSource<'s> {
         read_placed(self.store, pointer, owner, buf)
     }
 
+    /// The value of `node`, a node of the committed page in `frame`, which
+    /// the caller read the node from and holds ([`read_framed`]).
+    pub(super) fn framed<'a>(
+        &self,
+        frame: &'a PageRef<'_>,
+        node: NodeRef<'a>,
+        buf: &'a mut ValueBuf,
+    ) -> Result<&'a [u8], ValueError> {
+        read_framed(self.store, frame, node, buf)
+    }
+
     /// The bytes of the pending value `pending`, which are with the frame
     /// of the committed page `page`.
+    ///
+    /// The page is loaded for this, so a caller asks it only of a page
+    /// that the scope holds a private copy of: no page step is made
+    /// beside a private copy (`transactions.md` PV7), and the frame the
+    /// store has for the page is then the one the scope copied, with the
+    /// bytes. The frame of a page that nobody has copied can be another
+    /// by the time it is loaded again: write-back places the value in a
+    /// page step and takes its bytes off the frame it puts there. A node
+    /// of such a page is read from the frame it was read in
+    /// ([`read_framed`]).
     pub(super) fn pending<'a>(
         &self,
         page: PageId,
@@ -140,12 +162,23 @@ pub fn read_value<'a>(
     node: &'a PinnedNode<'_>,
     buf: &'a mut ValueBuf,
 ) -> Result<&'a [u8], ValueError> {
-    let page = node.page();
-    match node.node().value() {
+    read_framed(store, node.page().frame(), node.node(), buf)
+}
+
+/// The value of `node`, a node of the committed page in `frame`: the read
+/// of [`read_value`], for a caller that holds the frame it read the node
+/// from and has no pin of the node's own. The frame is the one `node`
+/// was read from, and not one that was loaded for the page afterwards.
+pub(super) fn read_framed<'a>(
+    store: &ValueStore,
+    frame: &'a PageRef<'_>,
+    node: NodeRef<'a>,
+    buf: &'a mut ValueBuf,
+) -> Result<&'a [u8], ValueError> {
+    let page = frame.page();
+    match node.value() {
         CellValue::Inline(bytes) => Ok(bytes),
-        CellValue::OutOfLine(pointer) => read_placed(store, pointer, page.id(), buf),
-        CellValue::Pending(pending) => {
-            pending_bytes(page.frame().attached(pending.id()), pending, page.id())
-        }
+        CellValue::OutOfLine(pointer) => read_placed(store, pointer, page, buf),
+        CellValue::Pending(pending) => pending_bytes(frame.attached(pending.id()), pending, page),
     }
 }

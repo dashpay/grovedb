@@ -4,7 +4,7 @@
 use std::fmt;
 
 use lignin_format::tree_page::{Hash, Side};
-use lignin_store::values::ValueStore;
+use lignin_store::{cache::PageRef, values::ValueStore};
 use lignin_tree::{
     directory::Entry,
     hash::Stale,
@@ -128,10 +128,13 @@ impl ChildKeys {
 #[derive(Clone, Copy)]
 enum Values<'a> {
     /// A cell of the transaction's frames: as its scope reads it
-    /// ([`TreeValues::read`]).
+    /// ([`TreeValues::read_shown`]). `committed` is the frame the cell is
+    /// shown in, if that is a committed page the transaction has not
+    /// copied.
     Scope {
         values: &'a TreeValues,
         source: &'a ValueSource<'a>,
+        committed: Option<&'a PageRef<'a>>,
     },
     /// A cell of a committed page, which `node` keeps pinned
     /// ([`read_value`]).
@@ -181,14 +184,21 @@ impl fmt::Debug for NodeView<'_> {
 }
 
 impl<'a> NodeView<'a> {
-    /// A cell of the transaction's frames.
+    /// A cell of the transaction's frames. `committed` is the frame the
+    /// cell was read from, if the page is a committed one that the
+    /// transaction has not copied.
     pub(crate) fn framed(
         node: NodeRef<'a>,
         values: &'a TreeValues,
         source: &'a ValueSource<'a>,
+        committed: Option<&'a PageRef<'a>>,
         stale: Stale,
     ) -> Self {
-        let values = Values::Scope { values, source };
+        let values = Values::Scope {
+            values,
+            source,
+            committed,
+        };
         Self {
             source: Source::Cell {
                 node,
@@ -280,7 +290,11 @@ impl<'a> NodeView<'a> {
     {
         match self.source {
             Source::Cell { node, values, .. } => match values {
-                Values::Scope { values, source } => Ok(values.read(source, node, buf)?),
+                Values::Scope {
+                    values,
+                    source,
+                    committed,
+                } => Ok(values.read_shown(source, node, committed, buf)?),
                 Values::Committed { store, node } => Ok(read_value(store, node, buf)?),
             },
             // A record is shown only once the transaction has its own copy
