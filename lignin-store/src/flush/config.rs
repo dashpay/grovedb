@@ -95,11 +95,15 @@ impl FlushConfig {
     /// whatever the bound is set to.
     pub fn wait_after_failure(&self, in_vain: u32) -> Duration {
         let first = self.idle.max(Duration::from_millis(1));
-        let doublings = in_vain.saturating_sub(1).min(31);
-        first
-            .saturating_mul(1 << doublings)
-            .min(self.max_failed_wait)
-            .max(first)
+        let bound = self.max_failed_wait.max(first);
+        let mut wait = first;
+        for _ in 1..in_vain {
+            if wait >= bound {
+                break;
+            }
+            wait = wait.saturating_mul(2);
+        }
+        wait.min(bound)
     }
 }
 

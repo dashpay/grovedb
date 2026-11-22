@@ -132,6 +132,22 @@ fn the_wait_after_a_failed_turn_doubles_from_the_idle_time_to_its_bound() {
         ..config
     };
     assert_eq!(waits(busy), [1, 1, 2, 4, 8, 16, 32, 64, 100]);
+    // The wait grows to its bound however large the bound is: from a
+    // millisecond, 32 doublings pass 30 days, and 31 do not.
+    let days = |days: u64| Duration::from_secs(days * 24 * 3600);
+    let patient = FlushConfig {
+        idle: ms(1),
+        max_failed_wait: days(30),
+        ..config
+    };
+    assert!(patient.wait_after_failure(32) < days(25));
+    assert_eq!(patient.wait_after_failure(33), days(30));
+    assert_eq!(patient.wait_after_failure(u32::MAX), days(30));
+    let endless = FlushConfig {
+        max_failed_wait: Duration::MAX,
+        ..patient
+    };
+    assert_eq!(endless.wait_after_failure(u32::MAX), Duration::MAX);
 }
 
 /// Each turn on the full device fails, moves nothing on, and is followed
@@ -517,6 +533,49 @@ fn a_page_step_whose_record_the_log_refused_is_a_turn_that_failed() {
     assert_eq!(in_vain, 0);
     assert_eq!(db.pointers(page(1)).len(), 1, "the value is placed");
     db.check_cold();
+}
+
+/// A failed turn that moved something on ends the row of turns that
+/// failed and moved nothing on, and is followed by the idle time. Here
+/// three turns fail in a row on the device that refuses the records of
+/// page steps, and the wait has grown. Then a page with no pending value
+/// is committed, in a log file that a commit's thread has turned to, as
+/// it does before it commits. The next turn fails by its page step as the
+/// ones before it, and writes that page: it has moved something on.
+#[test]
+fn a_failed_turn_that_moved_something_on_ends_the_row_of_turns_in_vain() {
+    let config = FlushConfig {
+        idle: ms(10),
+        max_failed_wait: ms(80),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (_fs, _lies, db) = stuck_where_the_device_refuses_the_records_of_page_steps(config);
+    let wb = db.wb();
+    let mut in_vain = 0;
+    let mut failed = 0;
+    let mut turn = |in_vain: &mut u32| {
+        let wait = wb.paced_turn(in_vain, &mut |_| failed += 1);
+        wait.map(|wait| wait.as_millis())
+    };
+    let row: Vec<_> = (0..3).map(|_| turn(&mut in_vain)).collect();
+    assert_eq!((row, in_vain), (vec![Some(10), Some(20), Some(40)], 3));
+
+    let written = db.stats().base_blocks + db.stats().delta_blocks;
+    {
+        let mut manifest = db.manifest.lock().expect("the manifest");
+        db.log.roll(&mut manifest).expect("a turn of the log");
+    }
+    db.commit(&[insert((2, 1), b"b", inline(b"short"))]);
+    assert_eq!(turn(&mut in_vain), Some(10), "the turn wrote a page");
+    assert_eq!(in_vain, 0);
+    let stats = db.stats();
+    assert_eq!(stats.base_blocks + stats.delta_blocks, written + 1);
+    assert_eq!(lock(&db.state.placing).len(), 1, "the value is ready");
+
+    // The row begins anew with the next turn that moves nothing on.
+    let row: Vec<_> = (0..3).map(|_| turn(&mut in_vain)).collect();
+    assert_eq!((row, in_vain), (vec![Some(10), Some(20), Some(40)], 3));
+    assert_eq!((failed, db.stats().errors), (7, 7));
 }
 
 /// The same device under the loop itself, with nobody who asks for a
