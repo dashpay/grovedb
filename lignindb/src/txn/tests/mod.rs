@@ -11,6 +11,8 @@ mod enters;
 mod errors;
 mod handles;
 mod hashes;
+mod histories;
+mod moves;
 mod parked;
 pub(crate) mod random;
 mod readers;
@@ -159,23 +161,51 @@ impl<'s> World<'s> {
     /// with the first-write version `first_write`.
     fn note(&self, tx: &Tx<'s>, batch: &OwnedBatch, first_write: u64) {
         let mut model = tx.model.borrow_mut();
-        // Which subtree is below which before the batch: its drops come
-        // before its enters.
-        let hosts = model.hosts(&self.model.hosts);
+        // Which subtree is below which before each write of the batch,
+        // and which Merk has a node: its drops and clears come before its
+        // moves, and those before its enters and its change sets.
+        let mut hosts = model.hosts(&self.model.hosts);
+        let mut records = model.records(&self.model.records);
+        let writes = model.writes.len();
+        model.roots.retain(|(after, ..)| *after <= writes);
+        let mut said = model.said();
+        model.bare.retain(|at| *at < writes);
+        let mut bare = Vec::new();
         for mut write in batch.writes() {
             if let Write::Leave(left) = &mut write {
                 // A drop names one subtree: what is below it goes too, and
                 // what the transaction had written there is covered.
-                left.below = model::below(&hosts, left.subtree);
+                let rooted = left.lay(&hosts, &records, said.0.get(&left.subtree).copied());
+                if left.cleared && !rooted {
+                    bare.push(model.writes.len());
+                }
                 let written = |subtree: &Subtree| {
                     let units = Column::ALL.map(|column| Unit::new(column, *subtree));
                     (model.writes.iter())
-                        .any(|(write, ..)| units.iter().any(|unit| write.touches(*unit)))
+                        .any(|(write, ..)| units.iter().any(|unit| write.indexed(*unit)))
                 };
                 left.cut = left.below.iter().copied().filter(written).collect();
             }
+            if let Write::Move(moved) = &mut write {
+                // Which subtrees the move takes where, and which leave
+                // with it: those are what it covers from here on.
+                moved.stated = moved.pairs.clone();
+                moved.lay(&hosts);
+                moved.left = moved.gone.clone();
+            }
+            said.take(&model.roots, model.writes.len(), &write);
+            model::hosted(&mut hosts, &write);
+            model::apply(&mut records, &write);
             model.writes.push((write, first_write, false));
         }
+        model.bare.extend(bare);
+        // What the change sets of the batch state of the roots.
+        let writes = model.writes.len();
+        let stated = batch.merks.iter().filter_map(|merk| {
+            let root = merk.root.as_ref()?;
+            Some((writes, merk.subtree, root.is_some()))
+        });
+        model.roots.extend(stated);
     }
 
     /// Applies one change of one Merk.
@@ -215,8 +245,14 @@ impl<'s> World<'s> {
     /// Commits `tx` in the store and in the model, and tells the models of
     /// `others`, which stay open.
     pub(crate) fn commit(&mut self, tx: Tx<'s>, others: &[&Tx<'s>]) -> Outcome {
+        self.commit_of(&tx, others)
+    }
+
+    /// [`Self::commit`], for a transaction that its holder keeps: it has
+    /// ended, and the model of it holds no write.
+    pub(crate) fn commit_of(&mut self, tx: &Tx<'s>, others: &[&Tx<'s>]) -> Outcome {
         let outcome = self.db.commit(self.versions, &tx.txn).expect("a commit");
-        let model = tx.model.borrow();
+        let model = tx.model.take();
         let expected = match (model.writes.is_empty(), model.conflicts()) {
             (true, _) => Outcome::Empty,
             (false, true) => Outcome::Conflict,
@@ -224,9 +260,21 @@ impl<'s> World<'s> {
                 let writes: Vec<Write> = (model.writes.iter())
                     .map(|(write, ..)| write.clone())
                     .collect();
+                // What a commit below a dropped or cleared subtree meets
+                // is asked of the entries that the directory has stored
+                // once the commit is made (`Committed::stored`).
                 let commit = self.model.commit(&writes);
                 for other in others {
-                    other.model.borrow_mut().foreign(commit, &writes);
+                    // What the other saw of the subtrees at its last look,
+                    // which was before this commit.
+                    let looked = other.txn.looked_at().map(CommitVersion::get);
+                    let saw = looked.map(|at| self.model.hosts_at(at));
+                    let mut other = other.model.borrow_mut();
+                    other.look(&saw.unwrap_or_default());
+                    other.foreign(commit, &writes);
+                    other.foreign_below(commit, &writes, &self.model.stored);
+                    // Its writes are made again over the commit.
+                    other.lay(&self.model.hosts, &self.model.records);
                 }
                 Outcome::Committed(version(commit))
             }
@@ -272,19 +320,31 @@ impl<'s> World<'s> {
         let committed = self.model.records.keys().map(|(unit, _)| *unit);
         let model = tx.model.borrow();
         let written = model.writes.iter().map(|(write, ..)| write.unit());
-        committed.chain(written).collect()
+        // A move writes every column under each prefix it covers, and
+        // takes what is under each subtree that leaves with it.
+        let moved = model.writes.iter().flat_map(|(write, ..)| match write {
+            Write::Move(moved) => moved.covered().chain(moved.gone.clone()).collect(),
+            _ => Vec::new(),
+        });
+        let moved = moved.flat_map(|named| Column::ALL.map(|column| Unit::new(column, named)));
+        committed.chain(written).chain(moved).collect()
     }
 
     /// The keys of `unit` that have, or had, a record that `tx` could read.
     pub(crate) fn keys(&self, tx: &Tx<'s>, unit: Unit) -> BTreeSet<Vec<u8>> {
         let mut keys = model::keys_of(&self.model.records, unit);
-        for (write, ..) in &tx.model.borrow().writes {
+        let model = tx.model.borrow();
+        for (write, ..) in &model.writes {
             match write {
                 Write::Put(own, key, _) | Write::Delete(own, key) if *own == unit => {
                     keys.insert(key.clone());
                 }
                 _ => {}
             }
+        }
+        if model.moves() {
+            // What a move brought under the unit's prefix.
+            keys.extend(model.view(&self.model.records, unit).into_keys());
         }
         keys
     }
@@ -293,9 +353,18 @@ impl<'s> World<'s> {
     /// key (RD3, RD5), the committed read of each key (RD10), and a cursor
     /// over each unit of flat records, in both directions (RD6).
     pub(crate) fn check(&self, tx: &Tx<'s>) {
+        for unit in self.units(tx) {
+            self.check_unit(tx, unit);
+        }
+        let met = tx.model.borrow().met();
+        assert_eq!(tx.txn.stats().overlapped, met, "the overlap set");
+    }
+
+    /// [`Self::check`], of the records of `unit` alone.
+    pub(crate) fn check_unit(&self, tx: &Tx<'s>, unit: Unit) {
         let committed = &self.model.records;
         let model = tx.model.borrow();
-        for unit in self.units(tx) {
+        {
             let view = model.view(committed, unit);
             let mut flat = true;
             for key in self.keys(tx, unit) {
@@ -360,18 +429,24 @@ impl<'s> World<'s> {
                 assert_eq!(back, keys, "{unit}, backwards");
             }
         }
-        assert_eq!(tx.txn.stats().overlapped, model.met(), "the overlap set");
     }
 
     /// Checks the committed state against the model: every record as a
     /// transaction that has written nothing reads it, and the tree pages.
     pub(crate) fn check_committed(&self) {
+        self.check_committed_but(|_| false);
+    }
+
+    /// [`Self::check_committed`], where the nodes of the model under the
+    /// keys that `unlinked` names are unlinked records, which no tree
+    /// page holds.
+    pub(crate) fn check_committed_but(&self, unlinked: impl Fn(&[u8]) -> bool) {
         let reader = self.begin();
         self.check(&reader);
         let keys = self.db.check_trees(self.versions, self.latest());
         let mut expected: BTreeMap<Subtree, Vec<Vec<u8>>> = BTreeMap::new();
         for ((unit, key), value) in &self.model.records {
-            if matches!(value, Val::Node(_)) {
+            if matches!(value, Val::Node(_)) && !unlinked(key) {
                 expected.entry(unit.subtree).or_default().push(key.clone());
             }
         }

@@ -70,21 +70,60 @@ pub(crate) struct Reads {
     /// The key sets of the commits the transaction took in, oldest first.
     /// Their versions follow one another with no gap.
     sets: VecDeque<(CommitVersion, Arc<KeySet>)>,
+    /// The reads of a node that are under way outside the transaction's
+    /// lock, each by the lease it is made under ([`Self::begun`]). To be
+    /// under way dates no lease and answers for no keep: a read that
+    /// finds a node dates its lease then ([`Self::note`]). The key sets
+    /// are kept while one is under way, as they are for a lease.
+    under_way: Vec<Lease>,
 }
 
 impl Reads {
-    /// Whether the transaction remembers a lease it has shown a node under.
+    /// Whether the transaction has a use for the key sets of the commits:
+    /// it remembers a lease, or a read of a node is under way.
     pub(crate) fn any(&self) -> bool {
-        !self.leases.is_empty()
+        !self.leases.is_empty() || !self.under_way.is_empty()
     }
 
-    /// Forgets every lease and every key set: the transaction has ended,
-    /// and with it the handle of every node it showed.
+    /// Forgets every lease, and every key set where no read is under way:
+    /// the transaction has ended, and with it the handle of every node it
+    /// showed. A read that is under way stays: it is of the same version
+    /// after the end as before it, and it dates its lease again when it
+    /// ends, if it showed a node ([`Self::ended`]).
     pub(crate) fn clear(&mut self) {
         self.leases.clear();
         self.last = None;
         self.framed = None;
-        self.sets.clear();
+        if self.under_way.is_empty() {
+            self.sets.clear();
+        }
+    }
+
+    /// A read of a node under `lease` is about to be made outside the
+    /// transaction's lock. Until it has ended ([`Self::ended`]) the key
+    /// sets that are taken in are kept, as many as [`Self::took`] keeps:
+    /// if it finds a node, a keep by the node's handle is answered from
+    /// them where they reach back to the version of the read
+    /// ([`Self::since`]).
+    pub(crate) fn begun(&mut self, lease: Lease) {
+        self.under_way.push(lease);
+    }
+
+    /// The read under `lease` that was under way has ended, at the
+    /// version `at`: `shown` says whether it showed a node. A node that
+    /// was shown dates the lease, if it is not remembered
+    /// ([`Self::note`]): it was dated when the node was found, and the
+    /// transaction may have ended since. With none shown, the key sets go
+    /// where nothing is left that they are kept for.
+    pub(crate) fn ended(&mut self, lease: Lease, at: CommitVersion, shown: bool) {
+        if let Some(read) = self.under_way.iter().position(|read| *read == lease) {
+            self.under_way.swap_remove(read);
+        }
+        match shown {
+            true => self.note(lease, at),
+            false if !self.any() => self.sets.clear(),
+            false => {}
+        }
     }
 
     /// A node is shown under `lease`, as the committed version `at` has it
@@ -122,12 +161,17 @@ impl Reads {
 
     /// The transaction took in the key set `keys` of the commit `version`.
     ///
-    /// None is taken while no lease is remembered, and those that were kept
-    /// go then: a lease is noted in the operation that shows its first
-    /// node, or when its cursor is opened, and what it needs is the key
-    /// sets that are taken in after that.
+    /// None is taken while no lease is remembered and no read is under
+    /// way, and those that were kept go then: a lease is noted in the
+    /// operation that shows its first node, or when its cursor is opened,
+    /// and what it needs is the key sets that are taken in after that.
+    ///
+    /// No more than [`KEPT_COMMITS`] are kept, whatever they are kept
+    /// for. What was read at a version before the one that the oldest of
+    /// them follows, under a lease or by a read that is under way,
+    /// answers for no keep ([`Since::Unknown`]).
     pub(crate) fn took(&mut self, version: CommitVersion, keys: &Arc<KeySet>) {
-        if self.leases.is_empty() {
+        if !self.any() {
             self.sets.clear();
             return;
         }
@@ -157,6 +201,19 @@ impl Reads {
                 self.last = None;
             }
         }
+    }
+
+    /// Whether `of` holds of the key set of a commit that the transaction
+    /// took in and still keeps: of one after the read that was made under
+    /// `lease`, or of any where no lease is named or the lease is not
+    /// remembered. It is for telling a refusal that such a commit
+    /// explains, and not for taking a write: what is not kept is not
+    /// found.
+    pub(crate) fn any_since(&self, lease: Option<Lease>, of: impl Fn(&KeySet) -> bool) -> bool {
+        let read = lease.and_then(|lease| self.leases.get(&lease).copied());
+        let since = |version: &CommitVersion| read.is_none_or(|read| *version > read);
+        let mut sets = self.sets.iter().filter(|(version, _)| since(version));
+        sets.any(|(_, keys)| of(keys))
     }
 
     /// What the commits did to the record key `key` of `unit` since a node

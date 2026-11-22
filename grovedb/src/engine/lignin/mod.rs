@@ -105,7 +105,6 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 use lignindb::{
     commit::NoStaleHashes,
-    snapshot::Snapshot,
     txn::{Batch, Column, RecordWrite, Subtree, SubtreeWrite, WriteTxn},
     Db, Options,
 };
@@ -329,6 +328,8 @@ enum Kind<'db> {
 /// or the view of a write scope.
 pub struct LigninTransaction<'db> {
     kind: Kind<'db>,
+    /// The database of the engine that began it.
+    db: &'db Db,
 }
 
 impl std::fmt::Debug for LigninTransaction<'_> {
@@ -342,10 +343,10 @@ impl std::fmt::Debug for LigninTransaction<'_> {
 }
 
 impl<'db> LigninTransaction<'db> {
-    fn snapshot(snapshot: Snapshot<'db>) -> Self {
-        let snapshot = Box::new(LigninSnapshot::new(snapshot));
+    fn snapshot(db: &'db Db) -> Self {
+        let snapshot = Box::new(LigninSnapshot::new(db.snapshot()));
         let kind = Kind::Snapshot(snapshot, AtomicUsize::new(0));
-        Self { kind }
+        Self { kind, db }
     }
 
     fn view(&self) -> LigninView<'_> {
@@ -719,15 +720,16 @@ impl Engine for LigninEngine {
     fn start_transaction(&self) -> LigninTransaction<'_> {
         LigninTransaction {
             kind: Kind::Write(Box::new(self.db.begin())),
+            db: &self.db,
         }
     }
 
     fn start_snapshot_read_transaction(&self) -> LigninTransaction<'_> {
-        LigninTransaction::snapshot(self.db.snapshot())
+        LigninTransaction::snapshot(&self.db)
     }
 
     fn start_read_transaction(&self) -> LigninTransaction<'_> {
-        LigninTransaction::snapshot(self.db.snapshot())
+        LigninTransaction::snapshot(&self.db)
     }
 
     fn commit_transaction(&self, transaction: LigninTransaction<'_>) -> CostResult<(), Error> {
@@ -784,6 +786,7 @@ impl Engine for LigninEngine {
         &'a self,
         transaction: &'a LigninTransaction<'_>,
     ) -> Result<LigninWriteScope<'a>, Error> {
+        let db = transaction.db;
         match &transaction.kind {
             Kind::Write(transaction) => {
                 let scope = transaction.scope().map_err(txn_error)?;
@@ -791,6 +794,7 @@ impl Engine for LigninEngine {
                 Ok(LigninWriteScope {
                     view: LigninTransaction {
                         kind: Kind::Scope(writer),
+                        db,
                     },
                 })
             }
@@ -922,6 +926,13 @@ impl Engine for LigninEngine {
         group: LigninWriteGroup,
         transaction: &LigninTransaction<'_>,
     ) -> CostResult<LigninApplied, Error> {
+        // The look below is bounded by the version of this engine's
+        // database: a transaction that another engine began is refused,
+        // with nothing read through it and nothing applied to it.
+        if !std::ptr::eq(transaction.db, &self.db) {
+            let refused = failed("the transaction was begun by another engine");
+            return Err(refused).wrap_with_cost(OperationCost::default());
+        }
         let view = transaction.view();
         let mut parts = group.parts;
         // A snapshot refuses the writes itself, and is asked for nothing

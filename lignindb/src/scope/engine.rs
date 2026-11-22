@@ -595,21 +595,28 @@ impl<'s> WriteTxn<'s> {
             .map(|merk| Unit::data(merk.subtree))
             .collect();
         units.extend(batch.records.iter().map(RecordWrite::unit));
-        let whole = batch.leaving();
+        let leaving = batch.leaving();
+        let mut whole = leaving.clone();
         let entering = entering(batch);
         for write in batch.subtrees {
             // The entry of a Merk in the subtree directory is of that
             // Merk's unit (SC2).
             let subtree = write.subtree();
+            let every = |subtree| Column::ALL.map(|column| Unit::new(column, subtree));
             match write {
                 SubtreeWrite::Enter { .. } | SubtreeWrite::EnterIfAbsent { .. } => {
                     units.push(Unit::data(subtree));
                 }
                 SubtreeWrite::Clear { .. } => units.push(Unit::data(subtree)),
-                SubtreeWrite::Drop { .. } => {
-                    units.extend(Column::ALL.map(|column| Unit::new(column, subtree)));
-                }
+                SubtreeWrite::Drop { .. } => units.extend(every(subtree)),
                 SubtreeWrite::Convert { .. } => units.push(Unit::data(subtree)),
+                SubtreeWrite::Move { .. } => {}
+            }
+            // A move claims every prefix it names, on either side, whole
+            // and in every column, with what is below each.
+            for named in write.moving().iter().flat_map(|moving| moving.named()) {
+                units.extend(every(named));
+                whole.push(named);
             }
         }
         let nodes = batch.merks.iter().flat_map(|merk| merk.nodes);
@@ -627,7 +634,7 @@ impl<'s> WriteTxn<'s> {
         let mut hosts = Hosts {
             path: &self.path,
             entering: &entering,
-            leaving: &whole,
+            leaving: &leaving,
             noted: &state.above,
             laid: None,
             set: &state.set,
@@ -682,10 +689,23 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.lock();
         let state = &mut *state;
         let applied = (self.begin(state, true)).and_then(|op| {
+            let laid = state.scopes.laid(id);
+            // What a move decides is not written by key, and a move is
+            // laid out on the frames when it is stated: asked first, so
+            // that a batch which is refused for it has claimed nothing.
+            self.guard_batch(state, &op, Who::scope(id), batch)?;
+            for moving in batch.moves() {
+                // And a move knows nothing of the marks of pending
+                // elements.
+                let subtree = moving.from;
+                let marked = state.scopes.ever_marked();
+                if (moving.named()).any(|named| marked.iter().any(|(at, _)| *at == named)) {
+                    return Err(BatchError::MoveBeside { subtree }.into());
+                }
+            }
             self.claim_batch(state, &op, id, batch)?;
             self.note_under(state, &op, batch)?;
             let above = self.above(state, &op, batch)?;
-            let laid = state.scopes.laid(id);
             let applied = match laid {
                 true => {
                     let scopes = &state.scopes;
@@ -979,11 +999,11 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<(), TxnError> {
         let merks = batch.merks.iter().map(|merk| merk.subtree);
         let records = batch.records.iter().map(|record| record.unit().subtree);
-        let leaving = (batch.subtrees.iter()).filter(|write| write.leaves());
-        for subtree in merks
-            .chain(records)
-            .chain(leaving.map(SubtreeWrite::subtree))
-        {
+        // A move is held against what a commit takes above the subtree
+        // it moves, as a drop is.
+        let whole =
+            (batch.subtrees.iter()).filter(|write| write.leaves() || write.moving().is_some());
+        for subtree in merks.chain(records).chain(whole.map(SubtreeWrite::subtree)) {
             if !state.under.contains_key(&subtree) {
                 let opened = Opened::at(&mut state.directory, &self.path, &op.guard, op.at)?;
                 let above = opened.lineage(&self.path, &op.guard, &subtree)?;
@@ -1044,7 +1064,8 @@ impl<'s> WriteTxn<'s> {
     /// The conflict rule for what a drop covers without naming it
     /// (`transactions.md` CF5, CV9): a drop deletes every record under
     /// every subtree below the dropped one, and its key set names the
-    /// dropped subtree alone. `commits` were published since the
+    /// dropped subtree and, of the subtrees below it, those that its
+    /// transaction had written under. `commits` were published since the
     /// transaction last looked, up to the version `at`.
     ///
     /// - **A commit dropped or cleared a subtree above one the transaction
@@ -1078,10 +1099,14 @@ impl<'s> WriteTxn<'s> {
     ///   which records no names, that is every such pair of commits.
     /// - With an enter if it is absent it is a pair whose later commit
     ///   takes the subtree with one that is not among the recorded names:
-    ///   the first entered it under an element that none of them is
-    ///   above, or a commit hung one of them elsewhere in between.
+    ///   for one, the first entered it under an element of a Merk beside
+    ///   the stated host's, and the later one drops that Merk.
     /// - **The transaction dropped or cleared a subtree, and a commit
     ///   wrote, dropped or cleared one below it.** The drop is met.
+    ///
+    /// A look that fails on a read keeps nothing of where it found the
+    /// subtrees: the next one holds the commits against what the last
+    /// look that was made saw.
     pub(super) fn meet_below(
         &self,
         state: &mut State<'s>,
@@ -1093,9 +1118,7 @@ impl<'s> WriteTxn<'s> {
             return Ok(());
         }
         #[cfg(test)]
-        if std::mem::take(&mut state.refuse_look) {
-            return Err(TxnError::Damaged("a look that a test refuses"));
-        }
+        let refused = std::mem::take(&mut state.refuse_look);
         let State {
             directory,
             set,
@@ -1111,13 +1134,14 @@ impl<'s> WriteTxn<'s> {
             }
         }
         let opened = Opened::at(directory, &self.path, guard, at)?;
-        for (subtree, was) in under.iter_mut() {
+        // Where the subtrees hang now is read before anything is kept of
+        // it: a look that fails on a read has seen none of them.
+        let mut seen = Vec::with_capacity(under.len());
+        for subtree in under.keys() {
             let now: Option<Vec<MerkId>> = opened.lineage(&self.path, guard, subtree)?;
-            if was.is_some() && now != *was {
-                set.meet_subtree(*subtree, at);
-            }
-            *was = now;
+            seen.push((*subtree, now));
         }
+        let mut met = Vec::new();
         let mut leaving: Vec<Subtree> = set.leaving().collect();
         leaving.sort_unstable();
         leaving.dedup();
@@ -1141,11 +1165,25 @@ impl<'s> WriteTxn<'s> {
                         break;
                     }
                     if below {
-                        set.meet_leaving(above, *version);
+                        met.push((above, *version));
                         break;
                     }
                 }
             }
+        }
+        #[cfg(test)]
+        if refused {
+            return Err(TxnError::Damaged("a look that a test refuses"));
+        }
+        for (subtree, now) in seen {
+            let was = under.get_mut(&subtree).expect("a subtree that was read");
+            if was.is_some() && now != *was {
+                set.meet_subtree(subtree, at);
+            }
+            *was = now;
+        }
+        for (above, version) in met {
+            set.meet_leaving(above, version);
         }
         Ok(())
     }

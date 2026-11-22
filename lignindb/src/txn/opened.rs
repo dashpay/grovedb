@@ -87,6 +87,18 @@ impl Opened {
         Ok(entry.map(|entry| entry.root().map(|root| root.address)))
     }
 
+    /// The id of the Merk that this version has under `subtree`, if the
+    /// subtree is entered (`lignin_tree::directory`, "Ids").
+    pub(crate) fn id<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+    ) -> Result<Option<MerkId>, TxnError> {
+        self.open(path, guard, subtree)?;
+        Ok(self.entries[subtree].as_ref().map(Entry::id))
+    }
+
     /// Whether the committed `subtree` is below one of `above`: a Merk
     /// with a node that holds, or hosts further up, the element of
     /// `subtree`.
@@ -97,18 +109,35 @@ impl Opened {
         subtree: &Subtree,
         above: &[Subtree],
     ) -> Result<bool, TxnError> {
+        let above: Vec<_> = above.iter().map(|above| (*above, None)).collect();
+        self.below_taken(path, guard, subtree, &above)
+    }
+
+    /// [`Self::below`], for subtrees that the transaction dropped or
+    /// cleared, each with whether that took the subtrees below it
+    /// (`WriteSet::taking`): a drop did, and a clear did where the Merk
+    /// had a node, which the transaction's own writes say or do not.
+    /// Where they do not, this version says, if it has the subtree: its
+    /// Merk is taken for the one that was cleared.
+    pub(crate) fn below_taken<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+        above: &[(Subtree, Option<bool>)],
+    ) -> Result<bool, TxnError> {
         self.open(path, guard, subtree)?;
-        for above in above {
+        for (above, _) in above {
             self.open(path, guard, above)?;
         }
         let Some(entry) = &self.entries[subtree] else {
             return Ok(false);
         };
-        Ok(above.iter().any(|above| {
+        Ok(above.iter().any(|(above, rooted)| {
             // A Merk with no node hosts none, and a clear of it leaves the
             // directory as it is.
             let above = self.entries[above].as_ref();
-            let above = above.filter(|above| above.root().is_some());
+            let above = above.filter(|above| rooted.unwrap_or(above.root().is_some()));
             above.is_some_and(|above| entry.lineage().any(|id| id == above.id()))
         }))
     }
@@ -136,6 +165,98 @@ impl Opened {
         let has = unlinked::any(&path.keyspaces.data, &pages, subtree)?;
         self.unlinked.insert(*subtree, has);
         Ok(has)
+    }
+
+    /// What [`Self::has_unlinked`] answers for `subtree`, if this handle
+    /// keeps the answer already.
+    pub(crate) fn unlinked_known(&self, subtree: &Subtree) -> Option<bool> {
+        self.unlinked.get(subtree).copied()
+    }
+
+    /// Keeps `has` as the answer of [`Self::has_unlinked`] for `subtree`:
+    /// what was found for this version by whoever looked it up.
+    pub(crate) fn know_unlinked(&mut self, subtree: &Subtree, has: bool) {
+        self.unlinked.insert(*subtree, has);
+    }
+
+    /// Whether a move of the transaction whose write set is `set` decides
+    /// what the transaction reads under `subtree`. That holds of a
+    /// subtree where
+    ///
+    /// - a move names it, on either side, or took it out with the subtree
+    ///   it moved;
+    /// - this version, which has the subtrees where the commits left
+    ///   them, has it below a prefix that a move names, on either side;
+    /// - or the last enter of it that the transaction made states a host
+    ///   in a subtree of which one of these three holds.
+    pub(crate) fn moved<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        let names = set.moved_names();
+        // Up the hosts that the transaction's own enters state, to the
+        // first subtree it did not enter. Each is asked of this version
+        // as well: a commit may have entered a subtree of the same prefix
+        // elsewhere.
+        let mut at = *subtree;
+        let mut seen = vec![at];
+        loop {
+            if set.moves(&at) || self.below_one_of(path, guard, &names, &at)? {
+                return Ok(true);
+            }
+            match set.host_of(&at).flatten() {
+                Some(host) if !seen.contains(&host) => {
+                    seen.push(host);
+                    at = host;
+                }
+                _ => return Ok(false),
+            }
+        }
+    }
+
+    /// Whether `subtree` is below a subtree that this version has under
+    /// one of `prefixes`.
+    fn below_one_of<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        prefixes: &[Subtree],
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        self.open(path, guard, subtree)?;
+        for prefix in prefixes {
+            self.open(path, guard, prefix)?;
+        }
+        let Some(entry) = &self.entries[subtree] else {
+            return Ok(false);
+        };
+        Ok(prefixes.iter().any(|prefix| {
+            let above = self.entries[prefix].as_ref();
+            above.is_some_and(|above| entry.lineage().any(|id| id == above.id()))
+        }))
+    }
+
+    /// Whether `subtree`, which this version has entered, leaves with a
+    /// move of `set` when the writes of the set are laid out over this
+    /// version: no move names it, and it is below a prefix that a move
+    /// took a subtree from. Such a subtree has no node, or the move is
+    /// not laid out (`transactions.md` MV2); it left with the move where
+    /// the move was stated, or a commit beside the transaction entered
+    /// it there since.
+    pub(crate) fn leaves_with_a_move<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        if !set.has_moves() || set.moves(subtree) {
+            return Ok(false);
+        }
+        self.below_one_of(path, guard, &set.moved_from(), subtree)
     }
 
     /// The ids of the Merks that `subtree` is below at this version, from
@@ -191,8 +312,8 @@ impl Opened {
         set: &WriteSet,
         subtree: &Subtree,
     ) -> Result<Option<&Entry>, TxnError> {
-        let left: Vec<Subtree> = set.leaving().collect();
-        if !left.is_empty() && self.below(path, guard, subtree, &left)? {
+        let left = set.taking();
+        if !left.is_empty() && self.below_taken(path, guard, subtree, &left)? {
             return Ok(None);
         }
         self.open(path, guard, subtree)?;

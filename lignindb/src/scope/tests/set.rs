@@ -101,7 +101,7 @@ fn add(set: &mut WriteSet, (scope, laid, first_write, op): (u32, bool, u64, Op))
             batch.subtrees = &subtrees;
         }
     }
-    set.add(&batch, version(first_write), &empty, &cut);
+    set.add(&batch, version(first_write), &empty, &cut, &[]);
     set.tag_last(scope, laid);
 }
 

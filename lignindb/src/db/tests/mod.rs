@@ -15,6 +15,7 @@ mod full;
 mod guards;
 mod kept;
 mod listed;
+mod moves;
 mod open;
 mod power;
 mod reads;
@@ -45,7 +46,7 @@ use lignin_format::{
     CellAddress, PageSize,
 };
 use lignin_store::load::LoadBuffers;
-use lignin_tree::hash::Stale;
+use lignin_tree::{hash::Stale, node::NodeHandle};
 
 use crate::{
     commit::{Committed, NoStaleHashes, Published},
@@ -565,6 +566,8 @@ struct Link {
 pub(super) struct Merk {
     nodes: Vec<Node>,
     root: Option<Vec<u8>>,
+    /// The keys of nodes that the Merk had before and has no more.
+    removed: Vec<Vec<u8>>,
 }
 
 const HASH: Hash = [0x5a; 32];
@@ -604,7 +607,11 @@ impl Merk {
         let items: Vec<_> = items.iter().collect();
         let mut nodes = Vec::new();
         let root = build(&items, &mut nodes).map(|(link, _)| link.key);
-        Self { nodes, root }
+        Self {
+            nodes,
+            root,
+            removed: Vec::new(),
+        }
     }
 
     /// A Merk of `count` nodes whose keys begin with `lead` and whose
@@ -638,6 +645,13 @@ impl Merk {
             right: None,
             hosted: Vec::new(),
         });
+        self
+    }
+
+    /// The same Merk, written over one that has a node under `key`,
+    /// which this one has not.
+    pub(super) fn without(mut self, key: &[u8]) -> Self {
+        self.removed.push(key.to_vec());
         self
     }
 
@@ -687,9 +701,25 @@ pub(super) type Entered = (Subtree, Option<(Subtree, Vec<u8>)>);
 /// under one key in each column that has one.
 pub(super) type Seen = (usize, Vec<(Column, Vec<u8>)>);
 
+/// A subtree to move to another prefix (`SubtreeWrite::Move`), at the
+/// position 0 of its host.
+#[derive(Debug, Clone)]
+pub(super) struct Moved {
+    pub(super) from: Subtree,
+    pub(super) to: Subtree,
+    /// The Merk the host is in, and the key of the host afterwards.
+    pub(super) host: (Subtree, Vec<u8>),
+    /// The read of the node that hosts the subtree before.
+    pub(super) read: Option<NodeHandle>,
+    /// The prefixes of the subtrees below it, before and afterwards.
+    pub(super) below: Vec<(Subtree, Subtree)>,
+}
+
 /// What one batch of these tests writes.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Writes {
+    /// Subtrees to move.
+    pub(super) moves: Vec<Moved>,
     /// Subtrees to enter, each with the node that hosts it, if one does.
     pub(super) enter: Vec<Entered>,
     /// Subtrees to enter if they are absent, each as for `enter`.
@@ -730,11 +760,14 @@ impl Writes {
         let nodes: Vec<Vec<NodePut<'_>>> = (self.merks.iter())
             .map(|(_, merk)| merk.nodes.iter().map(put).collect())
             .collect();
-        let merks: Vec<MerkWrite<'_>> = (self.merks.iter().zip(&nodes))
-            .map(|((subtree, merk), nodes)| MerkWrite {
+        let removed: Vec<Vec<&[u8]>> = (self.merks.iter())
+            .map(|(_, merk)| merk.removed.iter().map(Vec::as_slice).collect())
+            .collect();
+        let merks: Vec<MerkWrite<'_>> = (self.merks.iter().zip(&nodes).zip(&removed))
+            .map(|(((subtree, merk), nodes), removed)| MerkWrite {
                 subtree: *subtree,
                 nodes,
-                removed: &[],
+                removed,
                 root: RootPut::Set(merk.root.as_deref()),
                 anchored: false,
             })
@@ -757,7 +790,18 @@ impl Writes {
         let absent = self.enter_if_absent.iter();
         let enters = new.chain(absent.map(|entered| entering(entered, true)));
         let drops = (self.drop.iter()).map(|subtree| SubtreeWrite::Drop { subtree: *subtree });
-        let subtrees: Vec<SubtreeWrite<'_>> = drops.chain(enters).collect();
+        let moves = self.moves.iter().map(|moved| SubtreeWrite::Move {
+            from: moved.from,
+            to: moved.to,
+            host: HostPut {
+                subtree: moved.host.0,
+                key: &moved.host.1,
+                position: 0,
+            },
+            read: moved.read,
+            below: &moved.below,
+        });
+        let subtrees: Vec<SubtreeWrite<'_>> = drops.chain(moves).chain(enters).collect();
         let records: Vec<RecordWrite<'_>> = (self.records.iter())
             .map(|(column, subtree, key, value)| RecordWrite::put(*column, *subtree, key, value))
             .collect();

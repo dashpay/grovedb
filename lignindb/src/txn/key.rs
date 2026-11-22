@@ -264,6 +264,18 @@ impl KeySet {
         self.everything || self.subtrees.contains(&unit.subtree)
     }
 
+    /// Whether the set holds a key of `unit`, or a range of it.
+    pub(crate) fn touches(&self, unit: Unit) -> bool {
+        let written = |keys: &UnitKeys| !keys.keys.is_empty() || !keys.ranges.is_empty();
+        self.covers_unit(unit) || self.units.get(&unit).is_some_and(written)
+    }
+
+    /// Whether the commit took a subtree out, whichever: it dropped or
+    /// moved one, cleared a Merk, or was a wipe.
+    pub(crate) fn takes_any(&self) -> bool {
+        self.everything || !self.subtrees.is_empty() || !self.cleared.is_empty()
+    }
+
     /// Whether the commit took `subtree` out with every subtree below it:
     /// it dropped the subtree or cleared its Merk, or it was a wipe. A
     /// delete of every key of the subtree's data column that is no clear,

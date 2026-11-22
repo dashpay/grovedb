@@ -326,128 +326,194 @@ fn a_power_cut_around_a_wipe_leaves_all_or_nothing() {
 /// T-WP1: a wipe beside commits and readers. Each reader sees a subtree
 /// whole or not at all, and each writer's commit either lands with the
 /// subtree it entered or fails with the conflict.
+///
+/// The threads meet by the states they wait for, and nothing that is
+/// asserted is a count the schedule gives. A wipe is made when a subtree
+/// was entered since the last one and the reader has looked at a version
+/// that has it: so each wipe takes a Merk that a writer planted and that
+/// the reader saw whole. In every second round a writer waits for the
+/// wipe that takes its subtree before it writes the record, which is then
+/// refused. Every other write is made when the schedule has it, beside
+/// the wipes.
 #[test]
 fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
     const WRITERS: u32 = 3;
     const ROUNDS: u32 = 40;
+    struct Failing<'a>(&'a AtomicBool);
+    impl Drop for Failing<'_> {
+        fn drop(&mut self) {
+            if thread::panicking() {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+    }
     let dir = temp();
     let db = Db::open(dir.path(), &options()).expect("a new database");
-    let done = AtomicBool::new(false);
-    // The version each subtree was entered at, once its writer knows it.
-    let entered: Vec<AtomicU64> = (0..WRITERS * ROUNDS).map(|_| AtomicU64::new(0)).collect();
+    let (done, failed) = (AtomicBool::new(false), AtomicBool::new(false));
+    // A thread that waits for a state another one is to reach fails when
+    // that one has failed, and does not hang.
+    let until = |what: &str, reached: &dyn Fn() -> bool| {
+        while !reached() {
+            let failed = failed.load(Ordering::Acquire);
+            assert!(!failed, "a thread failed before {what}");
+            thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let subtrees = || (0..WRITERS).flat_map(|writer| (0..ROUNDS).map(move |round| (writer, round)));
+    let index = |writer: u32, round: u32| (writer * ROUNDS + round) as usize;
+    // The version each subtree was entered at, once its writer knows it,
+    // and whether the reader has seen it whole.
+    let entered: Vec<AtomicU64> = subtrees().map(|_| AtomicU64::new(0)).collect();
+    let whole: Vec<AtomicBool> = subtrees().map(|_| AtomicBool::new(false)).collect();
+    // The version of the latest wipe, once what it left was looked at, and
+    // the latest version the reader has looked at all subtrees of.
+    let (wiped_at, looked_at) = (AtomicU64::new(0), AtomicU64::new(0));
     thread::scope(|threads| {
         let _ending = Ending(&done);
+        let _failing = Failing(&failed);
         let mut writers = Vec::new();
         for writer in 0..WRITERS {
-            let (db, entered) = (&db, &entered);
+            let (db, entered, wiped_at, failed) = (&db, &entered, &wiped_at, &failed);
             writers.push(threads.spawn(move || {
+                let _failing = Failing(failed);
                 for round in 0..ROUNDS {
                     let subtree = numbered(writer * 1000 + round);
                     // Two commits for each subtree: it is entered with a
-                    // Merk, and then gets its record. The second one meets
-                    // a wipe that came between them.
+                    // Merk, and then gets its record.
                     let planted = Writes {
                         enter: vec![(subtree, None)],
                         merks: vec![(subtree, Merk::sized(b'k', 16, 300))],
                         ..Writes::default()
                     };
-                    match planted.with(|batch| db.write(batch, &mut NoStaleHashes)) {
-                        Ok(Committed::Published(planted)) => {
-                            let at = planted.version.get();
-                            entered[(writer * ROUNDS + round) as usize]
-                                .store(at, Ordering::Release);
-                        }
+                    let at = match planted.with(|batch| db.write(batch, &mut NoStaleHashes)) {
+                        Ok(Committed::Published(planted)) => planted.version.get(),
                         // A wipe was published while the write was made:
                         // its key set is every key.
                         Err(WriteError::Commit(CommitError::Conflict)) => continue,
                         other => panic!("a commit or a conflict, and not {other:?}"),
+                    };
+                    entered[index(writer, round)].store(at, Ordering::Release);
+                    // In every second round the record comes after the
+                    // wipe that takes the subtree, which is entered once:
+                    // it finds none. In the others a wipe may come between
+                    // the two commits or while the second is made.
+                    let after_its_wipe = round % 2 == 1;
+                    if after_its_wipe {
+                        until("the wipe of a subtree that was entered", &|| {
+                            wiped_at.load(Ordering::Acquire) > at
+                        });
                     }
                     let record = Writes {
                         records: vec![(Column::Aux, subtree, b"k".to_vec(), b"whole".to_vec())],
                         ..Writes::default()
                     };
                     match record.with(|batch| db.write(batch, &mut NoStaleHashes)) {
-                        Ok(Committed::Published(_)) => {}
-                        // The subtree was wiped before the record came, or
-                        // a wipe was published while the write was made.
+                        Ok(Committed::Published(_)) if !after_its_wipe => {}
                         Err(WriteError::Commit(
                             CommitError::Refused(_) | CommitError::Conflict,
                         )) => {}
-                        other => panic!("a commit or a refusal, and not {other:?}"),
+                        other => panic!(
+                            "a commit or a refusal, after its wipe a refusal, and not {other:?}"
+                        ),
                     }
                 }
             }));
         }
-        let (db, done) = (&db, &done);
+        let (db, done, whole, looked_at) = (&db, &done, &whole, &looked_at);
+        let reader_failed = &failed;
         let reader = threads.spawn(move || {
-            let mut looks = 0u64;
+            let _failing = Failing(reader_failed);
             while !done.load(Ordering::Acquire) {
                 let snapshot = db.snapshot();
                 let operation = snapshot.operation();
-                for writer in 0..WRITERS {
-                    for round in (0..ROUNDS).step_by(7) {
-                        match seen(&operation, numbered(writer * 1000 + round), b"k") {
-                            None => {}
-                            Some((16, records)) => assert!(records.len() <= 1),
-                            Some(other) => panic!("a subtree in part: {other:?}"),
+                for (writer, round) in subtrees() {
+                    match seen(&operation, numbered(writer * 1000 + round), b"k") {
+                        None => {}
+                        Some((16, records)) => {
+                            // The one record a writer puts, or none yet.
+                            let record = (Column::Aux, b"whole".to_vec());
+                            assert!(records.is_empty() || records == [record], "{records:?}");
+                            whole[index(writer, round)].store(true, Ordering::Release);
                         }
+                        Some(other) => panic!("a subtree in part: {other:?}"),
                     }
                 }
-                looks += 1;
+                drop(operation);
+                looked_at.fetch_max(snapshot.version().get(), Ordering::AcqRel);
             }
-            looks
         });
-        // A wipe every few milliseconds for as long as a writer writes,
-        // and one when they are done.
-        let (mut wipes, mut beside, mut looked_at) = (0, 0, 0);
+        // The version of the last wipe.
+        let mut last = 0;
         loop {
-            let writing = writers.iter().any(|writer| !writer.is_finished());
-            let at = db.version();
+            // The writers are asked first: when all have ended, every
+            // subtree that was entered is known here.
+            let ended = writers.iter().all(|writer| writer.is_finished());
+            let planted = subtrees()
+                .map(|(writer, round)| (writer, round, &entered[index(writer, round)]))
+                .map(|(writer, round, at)| (writer, round, at.load(Ordering::Acquire)))
+                .find(|(_, _, at)| *at > last);
+            let Some((writer, round, at)) = planted else {
+                if ended {
+                    break;
+                }
+                let failed = failed.load(Ordering::Acquire);
+                assert!(!failed, "a thread failed before the writers ended");
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            };
+            // The subtree was entered after the last wipe, and only this
+            // thread wipes: it is there, at every version from the one it
+            // was entered at, until the wipe below. So a look of the
+            // reader at such a version found it whole.
+            let subtree = numbered(writer * 1000 + round);
+            until("a look of the reader at the subtree", &|| {
+                looked_at.load(Ordering::Acquire) >= at
+            });
+            let seen_whole = whole[index(writer, round)].load(Ordering::Acquire);
+            assert!(seen_whole, "{writer}/{round} was not seen whole");
+            let snapshot = db.snapshot();
+            let operation = snapshot.operation();
+            let found = operation.open(subtree).expect("a lookup");
+            let id = found.expect("it is entered until the wipe").entry().id();
+            drop(operation);
+            drop(snapshot);
+            let before = db.version();
             let Committed::Published(wiped) = db.wipe().expect("a wipe") else {
                 panic!("a wipe is a commit");
             };
-            assert!(wiped.version > at);
-            // A wipe that found a Merk with nodes, and one that did while
-            // a writer was still writing.
-            let found = wiped.dropped.iter().any(|dropped| dropped.root.is_some());
-            wipes += u32::from(found);
-            beside += u32::from(found && writing);
+            assert!(wiped.version > before);
+            let mut dropped = wiped.dropped.iter();
+            let took = dropped.any(|dropped| dropped.id == id && dropped.root.is_some());
+            assert!(took, "{writer}/{round} was not wiped");
+            last = wiped.version.get();
             // No subtree that was entered before the wipe's version is
             // there at a later one: each is entered once, so one that is
             // found outlived the wipe, whatever was committed while the
-            // wipe ran and since.
+            // wipe ran and since. The one the wipe was made for is among
+            // them.
             let snapshot = db.snapshot();
             let operation = snapshot.operation();
-            for writer in 0..WRITERS {
-                for round in 0..ROUNDS {
-                    let at = entered[(writer * ROUNDS + round) as usize].load(Ordering::Acquire);
-                    if at == 0 || at >= wiped.version.get() {
-                        continue;
-                    }
-                    let subtree = numbered(writer * 1000 + round);
-                    let found = operation.open(subtree).expect("a lookup");
-                    assert!(found.is_none(), "{writer}/{round} outlived a wipe");
-                    looked_at += 1;
+            for (writer, round) in subtrees() {
+                let at = entered[index(writer, round)].load(Ordering::Acquire);
+                if at == 0 || at >= last {
+                    continue;
                 }
+                let found = operation.open(numbered(writer * 1000 + round));
+                let found = found.expect("a lookup");
+                assert!(found.is_none(), "{writer}/{round} outlived a wipe");
             }
             drop(operation);
             drop(snapshot);
-            if !writing {
-                break;
-            }
-            thread::sleep(Duration::from_millis(3));
+            wiped_at.store(last, Ordering::Release);
         }
         for writer in writers {
             writer.join().expect("a writer ends");
         }
-        assert!(
-            wipes > 0 && beside > 0,
-            "{wipes} wipes, {beside} beside a writer"
-        );
-        assert!(looked_at > 0, "no subtree was looked for after its wipe");
-        println!("{wipes} wipes, {beside} beside a writer, {looked_at} subtrees looked for");
+        // The first subtree of all is entered with no wipe before it, and
+        // nothing else refuses it: a wipe was made for it.
+        assert!(last > 0, "no subtree was entered");
         done.store(true, Ordering::Release);
-        assert!(reader.join().expect("the reader ends") > 0);
+        reader.join().expect("the reader ends");
     });
     // With the writers gone, one wipe leaves nothing, and all of it is
     // reclaimed.

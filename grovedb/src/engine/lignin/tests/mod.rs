@@ -674,6 +674,53 @@ fn a_handle_by_path_is_charged_the_prefix_of_its_path_and_one_by_prefix_nothing(
     assert_eq!(root.value.subtree().prefix, [0; 32]);
 }
 
+/// A group is applied through the engine that began the transaction.
+/// Another open engine refuses it for a write transaction, for the view
+/// of a write scope and for a snapshot, and leaves each as it was.
+#[test]
+fn a_write_group_is_refused_for_a_transaction_of_another_engine() {
+    let (_other_dir, other) = engine();
+    let (_dir, engine) = engine();
+    let tx = engine.start_transaction();
+    let group = || {
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let staged = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+        (staged.aux().put(b"k", b"v", None).unwrap()).expect("a staged put");
+        drop(staged);
+        batch.next_operation();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        group
+    };
+    let read = |tx: &<LigninEngine as Engine>::Transaction<'_>| {
+        let subtree = engine.subtree(ROOT, None, tx).unwrap();
+        subtree.aux().get(b"k").unwrap().expect("a read")
+    };
+    let refused = |tx: &<LigninEngine as Engine>::Transaction<'_>| {
+        let applied = other.apply_write_group(group(), tx);
+        assert_eq!(applied.cost, OperationCost::default());
+        match applied.value {
+            Err(StorageError::StorageError(said)) => {
+                assert!(said.contains("begun by another engine"), "{said}")
+            }
+            other => panic!("a refusal, and not {other:?}"),
+        }
+    };
+    refused(&tx);
+    assert_eq!(read(&tx), None);
+    let scope = engine.open_write_scope(&tx).expect("a scope");
+    refused(LigninEngine::scope_transaction(&scope));
+    assert_eq!(read(LigninEngine::scope_transaction(&scope)), None);
+    engine.merge_write_scope(scope).expect("a merge");
+    let snapshot = engine.start_snapshot_read_transaction();
+    refused(&snapshot);
+    drop(snapshot);
+    // The engine that began the transaction applies the same group.
+    assert_eq!(read(&tx), None);
+    (engine.apply_write_group(group(), &tx).unwrap()).expect("the group is applied");
+    assert_eq!(read(&tx), Some(b"v".to_vec()));
+}
+
 #[test]
 fn a_deferred_handle_stages_and_an_immediate_one_writes_at_once() {
     let (_dir, engine) = engine();

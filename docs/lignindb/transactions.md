@@ -346,6 +346,8 @@ run on RocksDB.
 - The committed side is fixed at the *L* of the instant the cursor was
   opened. The cursor holds a version pin on it (PN1). A foreign commit made
   after that is not seen by this cursor. It is seen by the next cursor.
+  Once such a commit is published, this cursor is refused where a move
+  that *T* holds decides what is under its subtree (MV7).
 - *T*'s own writes are live: a write *T* makes after the cursor was opened
   is seen when the cursor reaches that key. A delete by *T* hides the
   committed record.
@@ -832,7 +834,8 @@ where it wrote them and the committed records elsewhere:
 - a cursor over a Merk lists the committed keys of that subtree merged with
   *T*'s own, whether or not *T*'s root reaches them
 
-The engine must not repair, reorder or refuse this state. Mainnet blocks
+The engine must not repair, reorder or refuse this state, with one
+exception: what a move of *T* decides (MV7). Mainnet blocks
 32326 to 32328 were executed in it (P-09), and VER-08 replays them: the root
 hash and the costs computed through *T* have to be the ones RocksDB
 computed. A transaction in this state fails at commit (CF2), unless a
@@ -887,6 +890,258 @@ While it holds private copies, background work leaves those pages alone
 (PV7): no pending value of them is placed, no value of them is moved, and
 nothing a dropped subtree left in them is removed. Like a pin held for a
 long time (PN7), that costs log and disk space, never correctness.
+
+### 7.5 The move of a subtree
+
+GroveDB's `Move` gives an element another key and keeps what is under it.
+The prefix of a subtree is made from its path, so the subtree under the
+element, and every subtree below that one, has another prefix afterwards
+(`tree-layout.md` D5). A batch states this as a move (`SubtreeWrite::Move`;
+D-212, D-213): the prefix the subtree has (`from`), the prefix it gets
+(`to`), the element that hosts it afterwards, the read of the node that
+hosts it before the batch, and for each subtree below it the prefix it has
+and the prefix it gets (`below`). **The prefixes a move names** are `from`,
+`to` and both prefixes of every pair of `below`.
+
+**MV1. A move re-keys and copies no node.** The moved Merk, and every Merk
+below it that goes with it, keeps its cells, its id, its root, its tree
+type and the Merks it is below. The move writes the directory's records of
+each under the new prefix, and each of its flat records, in every column,
+under the new prefix with the key and the value it had. The unlinked
+records of a Merk are flat records of its data column (section 2), and go
+with it as the others do. Under a prefix
+that a Merk was taken from and none was brought to, the directory then has
+no Merk and no column has a record (`tree-layout.md` D6). The entry of the
+moved Merk names the node that the batch puts at the new key as its host.
+The cell of that node points at the Merk where the cell of the old host
+did, and hosts no Merk at the subtree's position where that one hosted
+none there (MV3).
+
+**MV2. The subtrees below.** Each Merk that the directory has below `from`
+when the move is made, at any depth, does one of three things:
+
+- one that `below` names goes to the prefix named for it. Its host keeps
+  its key and its position, in the Merk above it under that Merk's new
+  prefix;
+- one that `below` does not name, and that has no node, leaves with the
+  move as a drop takes a subtree (CV9): its entry and its flat records go,
+  and so does every Merk below it that has no node and is not named;
+- every other one refuses the batch (`MoveUnnamed`): a Merk with a node
+  that is not named, and a Merk that is named below one that leaves.
+
+A pair whose first prefix has no subtree gives no subtree another prefix.
+Its two prefixes are prefixes the move names all the same: the one it
+states for the subtree is free as every other (MV3), and the entry of the
+move covers both (MV6). A pair whose first prefix has a subtree that is not
+below `from` refuses the batch (`Moved`), unless the batch takes that
+subtree out with one above it.
+
+**MV3. What a batch with a move holds.** The batch is refused, and adds
+nothing to the write set (WT10), where
+
+- `from` has no subtree (`NotEntered`);
+- the moved subtree has no host; the host that the move states is in
+  another Merk than the host it has, or at another position; or the batch
+  does not put the node that the move states as the host (`MoveHost`);
+- the cell of the node that the batch puts as the host would not point at
+  the moved Merk as the cell of the node that hosts the subtree before the
+  batch does (`MoveHost`). Where that cell hosts a Merk at the subtree's
+  position, the new host names `to` there. Where that cell hosts none
+  there, or no node is under the key that the subtree's entry names, the
+  new host hosts no Merk at the position: it names none there, or it
+  keeps the Merks it hosts (`Hosted::Keep`) and its cell hosts none there.
+  A node that names `to` at another position than the stated one is
+  refused in both cases. The entry of a subtree names its host whether or
+  not the host's cell points at a Merk. The element of a tree that keeps
+  its data flat hosts no Merk (`tree-layout.md`, section 2), and a move
+  leaves that as it is;
+- the moves of the batch name a prefix twice as one a subtree is taken
+  from, or twice as one a subtree goes to (`SubtreeTwice`);
+- a prefix that a move states for a subtree, `to` or the second prefix of
+  a pair, has a subtree which no move of the batch takes from there and
+  which the batch does not take out, by a drop of it or by a drop or a
+  clear of a subtree above it (`Entered`);
+- the node that hosts the moved subtree afterwards hosts, at that
+  position, a subtree of which the same holds (the directory's
+  `HostTaken`, as for an enter);
+- the batch states anew (`SubtreeWrite::Convert`) a subtree under a prefix
+  that one of its moves names (`ConvertMoved`). In a later batch of *T* a
+  statement anew names the moved subtree by the prefix it then has;
+- the batch states anything else of a prefix that one of its moves names:
+  a change set, a record, an enter, a clear, or a drop of a subtree that a
+  move takes from its prefix. The one statement it may hold there is the
+  drop of a subtree under a prefix that a subtree goes to and none is
+  taken from (`Moved`);
+- the host that a move states is in a Merk under a prefix that a move of
+  the batch names (`Moved`);
+- the batch drops or clears a subtree that the moved one is below, or one
+  that is below the moved one (`Moved`).
+
+The staged batch (`StagedBatch::move_subtree`) takes the host of a move
+from what it was told hosts `to` when it is resolved, whichever operation
+said so. Where it is resolved it refuses a move for whose `to` it was told
+no host (`MoveHost`); moves of two operations (`Moved`); moves that name a
+prefix twice on one side (`SubtreeTwice`); and what it holds under a
+prefix that a move names by the rule before the last two, whichever
+operation staged it (`Moved`). The drop that the rule allows is one of the
+operation of the moves or of an earlier one: a drop that a later operation
+states would be of the subtree that was moved there, and the batch applies
+its drops before its moves.
+
+**MV4. The order of a batch** is: its drops and clears, its moves, the
+subtrees it states anew, its enters, its change sets, its records. So a
+subtree that leaves with a move of the batch (MV2), under a prefix that no
+move of the batch names, is not entered where the batch states it anew
+(`NotEntered`); under a prefix that a move names, MV3 refuses the
+statement before that. **The moves of one batch are made
+together**, from the state that its drops and clears leave: every Merk is
+taken from its prefix before one is entered under its new prefix. So two
+subtrees change places in one batch, and a subtree goes to the prefix that
+another move of the batch takes one from.
+
+**MV5. What the transaction reads afterwards.** From the move on, *T* reads
+under each prefix that a subtree went to what it read under the prefix the
+subtree was taken from: the committed records there and its own writes
+from before the move, in every column, and what it writes under the new
+prefix afterwards (RD3, RD5, RD6). A cursor reads so too, over the
+committed records of the version it was opened on (RD6), until a commit is
+published after that version: from then on it is refused under these
+prefixes (MV7). What the subtree held in its data
+column, the nodes of a Merk or flat records, it holds under the new prefix
+(ST1). The unlinked records of a moved Merk are among them: *T* reads
+each under the new prefix, by its key and among the nodes under a cursor.
+A node that *T* itself left out of its tree before the move is its own
+node under the new prefix: a later write of it that keeps its value keeps
+the value of the record that *T* left, where a committed unlinked record
+has none to keep (`lignindb::txn`, `MerkWrite`, "Unlinked records"). Under
+a prefix that a subtree was taken from, or that a subtree
+which left with the move had (MV2), and that no move of the batch brought a
+subtree to, it reads a subtree that is not entered and no record, until it
+enters one there. That one is new and holds nothing of the one that was
+moved: what *T* then drops or clears under that prefix takes nothing of
+the moved one. The committed read (RD10) answers under every prefix what
+the committed state has there: a move does not change it.
+
+**MV6. The move in the write set.** The moves of one batch are one entry of
+the write set, with the first-write version of their operation (WT5). The
+entry covers every key of every column under every prefix they name, and
+under the prefix of every subtree that left with them when they were
+stated (CF10). A rollback to a savepoint from before it, or of the scope
+that made it, removes it (WT8, SC6).
+
+Frames that are made again (WT7) make the move again, over the committed
+state as it is then: MV2 and MV3 are asked of the directory of that state.
+So a subtree with no node that a foreign commit entered below `from` since
+the move, and that the move does not name, leaves with the move from then
+on, and *T* reads no record under it. Where the move cannot be made over
+that state, the layout stops there: *T* serves its records by key (MV7),
+and its commit is refused with the refusal that MV3 gives the move. A
+foreign commit that wrote a key under a prefix the move names has met the
+move by then (CF10). What is left is one that enters a subtree and writes
+no such key, where a writer on existing GroveVersions writes the node that
+hosts the subtree it enters.
+
+Each time the move is made, the flat records of every Merk it re-keys are
+written again: one put for each, with its value. That is the cost of a
+move that does not grow with the cells of the moved subtree and does grow
+with its flat records, at the write that states it and at every rebase of
+a transaction that holds it (WT7c).
+
+Measured for a moved Merk with 100,000 flat records of a 32-byte key and a
+100-byte value in one column
+(`what_the_copy_of_the_flat_records_of_a_move_costs` in
+`lignindb/src/db/tests/moves.rs`: a release build, 8 KiB pages, the store
+in memory). The write that states the move copies 1,330 flat pages. Frames
+that are made again after a foreign commit copy 1,330 again. The commit
+makes 1,323 pages and changes 7, in a log group of 10,758,247 bytes; the
+pages of the old range are unlinked, for the reclaimer to free
+(`tree-layout.md` D6). The times are of five runs on a machine with
+dedicated processors that ran nothing else (a DigitalOcean `c-8-intel`: 8
+virtual processors of an Intel Xeon Platinum 8358 at 2.60 GHz, Linux 6.8,
+rustc 1.100.0), each as the median and the range: the write 1,074 ms
+(1,069 to 1,083), the rebuild 1,075 ms (1,071 to 1,088), and the commit
+20.1 ms (19.4 to 20.3). That is 10.7 microseconds for a record that is
+copied.
+
+**MV7. By key, a move is not answered for.** WT7b has one exception. Where
+*T* serves its records by key, a read or a write of a subtree is refused
+if a move of *T* decides what is under it, and so is a batch with a node
+that names such a subtree as one it hosts (SC2). A batch that states such
+a subtree anew writes it, and is refused so. That holds of a subtree
+where
+
+- a move names it, on either side, or it left with a move when the move
+  was stated;
+- the committed state has it below a prefix that a move names, on either
+  side;
+- or the last enter of it that *T* made states a host in a subtree of
+  which one of these three holds.
+
+A batch that states a move is refused there too. So is a batch that drops
+or clears a subtree, whichever one, while the write set of *T* holds a
+move: what such a write takes is asked of the committed directory and of
+the transaction's own enters, and those do not have a moved subtree where
+it is.
+
+- Where a foreign commit has met a write of *T*, the refusal is a conflict
+  (`MovedByKey`, CF6): the commit of *T* fails with `Conflict` anyway
+  (CF2), and the refusal says so one step earlier. It names the prefix
+  that the first move of the batch takes a subtree from, else the first
+  subtree that the batch drops or clears, else a subtree that the call
+  reads or writes and that a move decides. A rollback to a savepoint that
+  empties the overlap set (WT8) gives *T* its frames again, and its reads
+  with them, where the writes that are left can be laid out.
+- Otherwise, where the writes of *T* cannot be laid out over the version
+  it reads, the refusal is the one that stops the layout, as that one is:
+  it names the subtree that stopped it where it names one. It is no
+  conflict.
+
+While the write set of *T* holds a move, a seek of a cursor through *T*,
+and a step or a read from a key the cursor stands on, begins as each
+operation of *T* does (WT7), at the latest version. So such a call that is
+the first after a commit is refused where a move decides what is under the
+cursor's subtree, if that commit met *T* or left the writes of *T* with no
+layout.
+
+Such a call lays the writes of *T* out over the latest version where it
+can (WT7a), and a cursor reads the version it was opened on (RD6). Once a
+commit has been published after that version, whichever commit, the two
+are not one version, and the call is refused where a move decides what is
+under the cursor's subtree: with `MoveBeside`, which is no conflict and
+names that subtree, where neither of the two refusals above holds. It
+makes no difference whether the move was stated before the cursor was
+opened or afterwards, or whose commit it is: a cursor that is kept across
+the commit of *T* itself is refused so once *T*, used again, holds a move.
+A cursor over a subtree that no move decides is not refused for a move.
+Which subtrees the committed state has below a prefix
+is asked of the version the cursor reads, by the seek and by the read of
+a node alike.
+
+A call that this rule refuses has taken no claim (SC3), and a batch is
+refused by it before it is judged by what the write set holds of a subtree
+(`NotMerk`, `NotFlat`). Every other read is served as WT7b says, and the
+committed read (RD10) is never refused for a move.
+
+**MV8. A move and the scopes** (section 9). A move is laid out on the
+frames by the write that states it. It claims every column of every prefix
+it names as a write of each (SC3), so no scope beside it reads or writes
+under them while its scope is open. A scope whose writes are kept in the
+write set, because it was opened beside another and has not laid them out,
+refuses what MV7 names, with `MoveBeside`, until its writes are laid out:
+a batch with a move, every read and write that a move of the transaction
+decides, and a batch that drops or clears a subtree while the write set
+holds a move. There `MoveBeside` names the subtree that `MovedByKey` names
+in MV7. Where the transaction itself serves its records by key, the
+refusal is that of MV7, through whichever scope. Every scope whose writes
+are laid out refuses a batch with a move, with `MoveBeside`, while a
+pending mark (SC9) stands under a prefix that the move names, whichever
+key it is of, or a call that set such a mark or took one off is among the
+writes that the transaction's frames show: one of a scope that merged,
+where it changed the mark, or one of an open scope whose writes are laid
+out, whether it changed the mark or not. A mark is of a prefix and a key,
+whether or not a subtree is entered there and an element is under the key.
+A batch that is refused after its claims were taken leaves them with its
+scope (SC3).
 
 ## 8. Commit
 
@@ -1142,7 +1397,7 @@ transaction with a write holds what CF2 needs, as the first paragraph says.
 
 | Does not matter | Because |
 | --- | --- |
-| what *T* read | reads are not tracked. This is not serializability (case A3b). The one read that counts is the read of a Merk node whose value a write keeps (CF2a). |
+| what *T* read | reads are not tracked. This is not serializability (case A3b). The reads that count are the read of a Merk node whose value a write keeps (CF2a), and the read of the node that hosts a subtree which a write moves (CF10). |
 | whether the foreign write changed the value | a write is a write (ST5; cases A7, A7b) |
 | who made the foreign commit | a write with no transaction, another write transaction and a wipe count alike (cases A1, A1b, A13) |
 | a foreign write to the same subtree and key in another column | the column is part of the key (case A6) |
@@ -1159,6 +1414,32 @@ one write-set entry with its own first-write version. A range delete in a
 foreign commit meets every entry of *T* whose keys lie in the range. Wipe is
 a commit whose key set is everything, so it meets every entry.
 
+A drop deletes every record under every subtree below the dropped one (CV9).
+The key set of its commit names the dropped subtree, and of the subtrees
+below it those that its transaction had written under, which the entry of
+the drop covers; so does a clear. A foreign commit that drops or clears a
+subtree above one that *T* wrote under, by the Merks that *T* found that
+subtree below at its last look at the committed state, meets every entry of
+*T* under it. And for a subtree that *T* entered if it was absent
+(`SubtreeWrite::EnterIfAbsent`), whether it was entered then or not, a
+foreign commit that drops or clears a subtree which the stated host of that
+enter was in or below, as *T* had the subtrees when it stated the enter,
+meets the entries that *T* made under the entered subtree from that enter
+on, until *T* entered the subtree again, and before that commit. A foreign
+commit that moves subtrees (7.5) is, for both rules, one that drops every
+prefix its moves name (CF10).
+
+Neither rule sees the following, and there the outcome can depend on
+whether *T* looked at the committed state between two foreign commits: a
+subtree is not entered at *T*'s first write under it, a commit beside *T*
+enters it, and a later commit takes it with a subtree above it. With an
+enter of a subtree as one that is new (`SubtreeWrite::Enter`), which
+records no names, that is every such pair of commits. With an enter if it
+is absent it is a pair whose later commit takes the subtree with one that
+is not among the names the enter recorded. An example: the enter states a
+host in a Merk *P*, the first commit enters the subtree under an element of
+a Merk *Q* beside *P*, and the later one drops *Q*.
+
 A bulk load into a subtree, inside *T* or outside it, may be counted for
 this rule as one write of the range "that subtree's column", in place of one
 entry per loaded key. What is read back under those keys is the loaded
@@ -1169,14 +1450,18 @@ else.** GROVE-01 maps it to the engine-neutral conflict error of SEAM-04, the
 one RocksDB's `Busy` also satisfies. A commit that fails for another reason
 must not return it, and a conflict must not be reported as anything else.
 
-One refusal of a write is a conflict too, and says so: `ValueTaken`, the
-keep of a value that a foreign commit took away since its read (CF2a). It
-is not `Conflict`, because it is the answer to a write and not to a commit,
-and it leaves the transaction open with what it wrote before (WT10). A
-caller that takes it as a conflict rolls the transaction back and makes its
-reads and writes again. The seam does not map it to the engine-neutral
-conflict error yet: that is GROVE-10's, which tells it by
-`TxnError::is_conflict()`.
+Two refusals are conflicts too, and say so. `ValueTaken` is the refusal of
+a write: the keep of a value that a foreign commit took away since its read
+(CF2a), and what CF10 tells in the same way for a move and for a write
+into a subtree that a foreign commit took. `MovedByKey` is the refusal of
+what MV7 names, once a foreign commit has met *T*: a read or a write that
+a move of *T* decides, a move, and a drop or a clear beside a move.
+Neither is `Conflict`, because it is the answer to a read or
+a write and not to a commit, and it leaves the transaction open with what
+it wrote before (WT10). A caller that takes it as a conflict rolls the
+transaction back and makes its reads and writes again. The seam does not
+map them to the engine-neutral conflict error yet: that is GROVE-10's,
+which tells them by `TxnError::is_conflict()`.
 
 **CF7. A second write transaction is the same rule.** TXN-05 says "a second
 write transaction fails at commit with a conflict". Read through CF2: of two
@@ -1200,6 +1485,10 @@ together with the differences that are not about conflicts.
 | A foreign range delete covers a key *T* wrote | `Busy` only if a point entry for that key is still in a memtable or its retained history (cases A10 to A10d, B17) | always `Conflict` (CF5) | not by the call sites BASE-05 lists: the wipe starts a state-sync restore (P-22), and pending drops are flushed after the block commit and at startup (P-24) |
 | Data loaded outside *T* under keys *T* wrote | never a conflict: file ingestion is invisible to the check (case A18) | `Conflict` (CF5) | no: devnet seeding loads a subtree under which *T* has written nothing (P-30) |
 | A foreign commit writes a Merk node between *T*'s read of it and *T*'s write of it, and *T*'s write keeps the node's value | success: the node holds the value *T* read, and the foreign value is lost (case A19) | `Conflict` (CF2a) | only with two writers of one Merk at a time |
+| A foreign commit writes the node that hosts a subtree between *T*'s read of that node and *T*'s move of the subtree | success: the copy under the new path holds the records *T* read, under the hash *T* states for them, and what the foreign commit wrote under the old path is deleted with it | the batch is refused as a conflict (`ValueTaken`, CF10) | only with two writers of one Merk at a time |
+| A foreign commit moves a subtree away or drops it, so that nothing is entered under its prefix, and *T* then writes into it by a call that lays the writes of *T* out over the latest version (WT7a) | success: *T*'s records are under the old prefix, which no element leads to | the batch is refused: as a conflict (`ValueTaken`) where *T* holds the key set of a commit that names the subtree as one it moved or dropped, and as `NotEntered` where it holds none (CF10) | only with two writers at a time |
+| A foreign commit meets a write of *T*, and *T* then states a move, reads or writes where a move of its own decides, or drops or clears a subtree while it holds a move | the call is served, and the commit fails with `Busy` | the call is refused as a conflict (`MovedByKey`, MV7), and the commit fails with `Conflict` | only with two writers at a time |
+| A foreign commit is published while *T* holds a cursor, and *T* then reads through that cursor where a move that it holds decides, with none of its writes met by a commit when it calls | the call is served: an iterator reads the snapshot it was made on under the writes of *T* | the call is refused, with no conflict (MV7): with the refusal that stops the layout of the writes of *T* over the latest version where one does, and with `MoveBeside` otherwise | only with two writers at a time |
 
 LigninDB is stricter in the second and the third because the alternative is
 to commit *T*'s older records on top of a range that was deleted or loaded
@@ -1207,7 +1496,81 @@ under it, which can leave a tree that no longer hashes to its root. It is
 stricter in the fourth because a node of LigninDB can keep its value where
 RocksDB's whole-record put states it again: without the rule the node would
 be published with the foreign value under the hashes *T* made for the value
-it read (D-097).
+it read (D-097). It is stricter in the fifth because a move that re-keys
+carries the Merk as it is when the batch is applied, under a host whose
+hash was made for the Merk as *T* read it. In the sixth it refuses where
+RocksDB leaves records that nothing leads to. The seventh has RocksDB's
+outcome, one step earlier (D-213).
+
+**CF10. The move of a subtree** (7.5; D-213).
+
+*It is dated at a read.* The node that the batch puts at the new key states
+the value hash of the node at the old key. For a tree that hash commits to
+the root of the moved Merk as the mover read it, and the move carries the
+Merk as it is when the batch is applied. So a move names the read of the
+node that hosts the subtree before the batch, as a kept value names its read
+(CF2a). The batch is refused with `ValueTaken`, for the Merk that host is
+in, where a foreign commit wrote the host's key since that read, and where
+the engine cannot date the read (the three cases of CF2a). A host that *T*
+wrote itself with its value stated needs no date: CF2 decides from that
+write. The refusal changes nothing (WT10), it is a conflict to the caller
+(CF6), and the move can be made again from a new read. A move that names no
+read is refused (`NoRead`) where the host is a node of the committed state
+that *T* has not written. A commit that changed only flat records under the
+moved subtree wrote no host and is not dated: no hash commits to them, and
+the move carries them as they are.
+
+*What a move takes and what it writes.* The entry of a move (MV6) covers
+every key of every column under every prefix that the moves of its batch
+name, and under the prefix of every subtree that left with them when they
+were stated (MV2). The key set of its commit names each of those prefixes
+as a subtree it takes whole, as the key set of a drop names its subtree
+(CF5).
+The node writes of the batch, the old host's key and the new one's among
+them, are keys of its change sets as for any batch. So:
+
+- a foreign commit after the move that writes a key under one of those
+  prefixes, in any column, or that drops, clears or moves a subtree under
+  one of them, meets the move: the commit of *T* fails with `Conflict`. A
+  range delete that contains no key writes none, and meets no move. For
+  the first rule of CF5 a move is a write under each subtree that it takes
+  from its prefix as `from`, and the entry of the move is an entry under
+  every prefix it covers;
+- the commit of *T* meets every entry that another transaction made before
+  it under one of those prefixes, and under a subtree below one of them by
+  the two rules of CF5. That is every entry, a range delete that contains
+  no key among them: the commit took the subtree whole, as a drop does.
+  The names that an enter if absent recorded above
+  its host are prefixes of the committed state: they stay as recorded
+  when the transaction that stated the enter moves a subtree itself.
+
+Neither sees a foreign commit after the move that enters a subtree below
+`from` and writes no key under a prefix the move names. A writer that
+writes the hosts above its Merk writes such a key. What *T* then does is
+in MV6.
+
+*A batch that is laid out after the commit of a move.* A transaction of
+whose writes the mover's commit met none is not a conflict for it. Where
+that commit left a prefix with no subtree, because it took one from there
+and brought none, a later batch of the transaction that writes into the
+subtree it had there finds none entered and is refused. The refusal is
+`ValueTaken`, for that subtree, where the transaction holds the key set of
+a commit that names the subtree as one it moved or dropped: it holds key
+sets from the first node it is shown (CF2a, CF3). Where it holds none, the
+refusal is `NotEntered`. Where a subtree is entered under the prefix
+again, the batch is judged against that one.
+
+*A refusal of the move itself that a foreign commit explains is a
+conflict.* The engine asks the key sets it holds of the commits since the
+read the move names, or all it holds where it cannot date that read:
+
+| The batch is refused because | Told as `ValueTaken` where such a commit |
+| --- | --- |
+| `from` has no subtree | wrote every key of the Merk the host is in, or took a subtree out |
+| a prefix that a subtree goes to has a subtree | wrote the key of the node that hosts the moved subtree afterwards, or a key under a prefix that a subtree goes to |
+
+Every other refusal of MV3 is told as it is. "Explains" is not "is the
+cause": a conflict that is false needs a batch whose maker got it wrong.
 
 ## 9. Write scopes: several threads in one transaction
 
@@ -1249,6 +1612,8 @@ hold for a directory page as for any other.
 - A read through the transaction outside any scope is treated as a read by a
   scope that ends with the call: it fails with `ScopeOverlap` if another
   scope holds a write claim on the unit.
+- A move claims every column of every prefix it names, as a write of each
+  (MV8).
 
 Read claims are what make the result independent of timing: without them, a
 scope could read a Merk before or after another scope's writes to it were
@@ -2204,6 +2569,11 @@ document or of the engine.
 | D5 | A range delete outside *T* over a key *T* wrote | `Busy` or success, depending on the memtables | `Conflict` (CF9) | node-local; not reached by Platform's call sites |
 | D6 | Records loaded outside *T* under a key *T* wrote | success | `Conflict` (CF9) | devnet seeding only; not reached there |
 | D7 | A Merk node that a foreign commit wrote between *T*'s read of it and *T*'s write of it with its value kept | success; the node holds the value *T* read, and the foreign write is lost | `Conflict` (CF2a, CF9); where the foreign commit took the node away, the write is refused, as a conflict where the engine can tell (`ValueTaken`, CF2a) | needs two writers of one Merk at a time. A caller that retries on a conflict sees one where RocksDB would have dropped the other writer's value. |
+| D8 | A move of a subtree whose host a foreign commit wrote between *T*'s read of the host and *T*'s batch | success; the copy holds what *T* read, and the foreign write under the old path is lost | the batch is refused as a conflict, and the transaction stays open (`ValueTaken`, CF10) | a move of LigninDB re-keys the Merk as it is at the batch (`tree-layout.md` D5). Needs two writers at a time; a caller that retries makes the move again from a new read. |
+| D9 | A write into a subtree that a foreign commit moved away or dropped, so that nothing is entered under its prefix, by a call that lays the writes of its transaction out over the latest version (WT7a) | success; the records are under the old prefix, which no element leads to | the batch is refused, as a conflict where the engine can tell (CF10) | needs two writers at a time. RocksDB then holds records that only a read of the prefix made directly returns, or a caller that makes the path again, as in D3. |
+| D10 | A move that *T* states, a read or a write where a move of *T* decides, or a drop or a clear by a *T* that holds a move, after a foreign commit has met a write of *T* | served; the commit fails | refused as a conflict (`MovedByKey`, MV7); the commit fails | needs two writers at a time. The transaction fails on both engines, on LigninDB one step earlier. |
+| D11 | A read through a cursor of *T* that was opened before a foreign commit, where a move of *T* decides what is under the cursor's subtree and no commit has met a write of *T* when the call is made | served; an iterator reads the snapshot it was made on under the writes of *T* | refused, with no conflict (MV7): with the refusal that stops the layout of the writes of *T* over the latest version where one does, and with `MoveBeside` otherwise. The commit of *T* is decided as before | a move of LigninDB is laid out over the latest version, and not over the one that the cursor reads. Needs two writers at a time, and a cursor that is held across the other's commit. A caller of LigninDB itself meets it with one writer too, where it keeps a cursor across the commit of the cursor's own transaction and uses the transaction again; GroveDB ends its transaction with the commit |
+| D12 | The records of a moved subtree that no link of its Merk's tree leads to (GM0), which LigninDB keeps as unlinked records | a move copies the records that GroveDB's walk of the subtree reads. They go with the subtree where the walk reads its Merk, and stay under the old prefix for a Merk whose element names no root, which the walk does not read | a move takes every flat record of each subtree it gives a prefix to the new prefix (MV1), these among them, whether the Merk has a root or not. A subtree with no node that the move names no prefix for leaves, and its records with it (MV2) | a move of LigninDB finds the Merks it re-keys in the directory and walks no node of them; it reads and copies the flat records of each, these among them (`tree-layout.md` D5, D6). The records are in no hash. After a move of a tree whose element names no root, RocksDB holds such a record under the old prefix, where a read of the prefix made directly finds it, or a caller that makes the path again, as in D3. LigninDB holds none there: it shows the record under the new prefix where the move named the subtree, and nowhere where it did not. Kept as a known difference (D-263, D-264) |
 
 Three things that might look like differences are not. A second write
 transaction is allowed on both engines and conflicts by the same rule (CF7).
@@ -2322,6 +2692,146 @@ same result.
   commit, and the next commit takes the same version and is recovered. The
   record of a background change is never appended behind failed bytes: one
   that was installed is recovered whenever its bytes survive (CM9).
+
+**The move of a subtree (TXN-03)**
+
+- T-MV1: a move against a model that knows a move (MV1, MV2, MV4, MV5):
+  every read by key and by cursor, in every column, after a move, after
+  two subtrees changed places, after a chain, after a tree and an item
+  changed places and after a move of a subtree five deep; one transaction
+  that moves a subtree several times with writes at every prefix; one that
+  enters a tree again at the old key, and clears and drops it there; one
+  that cleared the Merk while it had no node and then moved it with the
+  subtree below it, alone and with an enter of that Merk if it is absent
+  before its node is removed or in the batch of the clear; one that
+  clears the moved Merk with its nodes, before the move and after it;
+  and what another transaction reads after the commit; a Merk with
+  unlinked records, a committed one and one that its mover left, by key
+  and under a cursor under both prefixes, before the commit, in frames
+  that are made again and for a reader, with the value of the mover's
+  own kept by a later write and none of the committed one; two Merks
+  that change places, of which one holds an unlinked record, with no
+  lookup for either afterwards; a cursor that was opened on a Merk and
+  is pointed at its new prefix after a move, again and again, for which
+  it is not looked up again whether the Merk holds unlinked records; a
+  Merk that is moved to a prefix under
+  which the transaction had left a record of its own; a Merk with no
+  node that holds unlinked records, below a moved subtree, where the
+  move names it and where it leaves with the move. With no move,
+  what a clear and a drop take below their subtree: a clear after an
+  enter of a Merk with nodes if it is absent, a drop of a Merk that
+  was committed with no node and a subtree below it, and a clear of a
+  Merk with no node under which its transaction had entered a subtree
+  and written a record, which the transaction goes on reading by key
+  after a commit gave the Merk a node and met the clear; the same clear
+  stated by key, after a commit met the transaction, which takes the
+  subtree that the transaction entered under a node of the Merk; and a
+  clear of a Merk whose node records are all unlinked, stated with the
+  writes laid out, which takes nothing below it
+  (`lignindb/src/txn/tests/moves.rs`).
+- T-MV2: after a move the directory and every flat column hold, record for
+  record, what they hold where the subtree was written under the new
+  prefix from the start: the entries with their ids, the records that lead
+  from a host to its Merks and from a root's cell to its Merk, the id the
+  next Merk gets, and the flat records, those of a subtree that keeps its
+  data flat among them. The physical checker finds the store sound, also
+  through `Db::verify`, and the next session reads the same. A reader of
+  the version before a commit of moves and one of the version after it
+  each find the unlinked records under the prefixes whose Merks hold them
+  at their version, with one lookup for each subtree that is opened,
+  over its reads by key and its walk
+  (`lignindb/src/txn/tests/moves.rs`, `lignindb/src/db/tests/moves.rs`).
+- T-MV3: the refusals of MV3, each leaving the write set as it was, with
+  a subtree that a move names stated anew before the move and after it,
+  one that leaves with the move, and the statement in a later batch; those
+  of MV8 and those of the staged batch; a subtree whose host's cell
+  hosts no Merk, moved with a new host that hosts none, and changing
+  places with one that its host's cell points at; what a scope reads
+  beside one whose read or write was refused for a move
+  (`lignindb/src/txn/tests/moves.rs`, `lignindb/src/batch/tests/rules.rs`).
+- T-MV4: a rollback to a savepoint from before a move; frames that are made
+  again over a directory with another subtree below the moved one, one
+  that leaves and one that a stated pair names; a subtree that left with
+  the move and that a later commit entered elsewhere; a subtree that a
+  commit entered below a Merk which the transaction cleared before it
+  moved it; a move that cannot be made again, found by a read by key and
+  by a cursor of either kind, and made once a later commit lets it (MV6).
+- T-MV5: CF10 and MV7. The dating, with the foreign commit before the read
+  and after it, with no read named and with a read that cannot be dated; a
+  foreign commit after the move under each kind of prefix its entry
+  covers, above the source and below the target; the mover's commit
+  against the transactions that wrote beside it; a batch that is laid out
+  after it; two movers of which one names a prefix that the other let
+  leave, in both orders; a range delete with a key in it and one with
+  none, against a move, in both orders; a drop above a prefix that a
+  second move takes its subtree from, where the mover took the commit
+  before it in and where it did not; a commit that enters subtrees
+  below the moved one with their hosts; the refusals that a foreign commit
+  explains, with
+  a drop in the batch and without; by key, the reads and the writes where
+  a move decides by each of the three conditions of MV7, a statement
+  anew of such a subtree, a drop and a
+  clear, a write of a subtree that holds flat data, a cursor of either
+  kind as the first call after the commit, a cursor that steps after a
+  look at a commit failed, a cursor that reads the node it found once a
+  commit has entered its subtree below a target, one that reads a record
+  or a node at the moment of a rollback, one whose read of a node
+  fails, one whose read of a node is under way while another thread uses
+  the transaction and commits are published, as many as CF3 keeps key
+  sets of and one more, one whose read under way shows no node after a
+  rollback, and one whose read shows a node that another thread keeps by
+  its handle before the read has ended, and one whose read shows an
+  unlinked record, which has no handle, where a value is kept by a
+  handle from before a rollback while that read is under way and after
+  it; a commit whose move states a pair for the prefix of a subtree
+  that went with the clear of a Merk, beside a transaction that has
+  cleared that Merk again; a cursor of another version than
+  the latest, where a move
+  decides and where none does, with the commit before the move and after
+  it; a drop after a clear that took a subtree when it was made again;
+  and the scopes of MV8.
+- T-MV6: the power is cut after every change of a session whose commit
+  moves subtrees: two change places, with an unlinked record in the Merk
+  of one of them and of a third that is moved, flat records under each and
+  under the subtree below it, and a subtree with no node leaves. Every cut
+  recovers a version the session published, or the whole of the commit
+  that was under way, and none before the last version that was made
+  durable; it holds what that version held, and the store is sound. A cut
+  that comes after the grove was made durable recovers the version before
+  the commit of the moves or its version
+  (`lignindb/src/db/tests/power.rs`).
+- T-MV7: random histories against the model that knows a move
+  (`lignindb/src/txn/tests/histories.rs`). Two transactions stay open on
+  a store on disk, and others are committed between their calls. A
+  history draws batches that write nodes, unlinked records beside the
+  tree of a Merk and flat records, that state a subtree anew, and that
+  enter, drop, clear, move and exchange subtrees, a clear and a move of
+  one subtree in either order, marks, rollbacks to a mark and of a whole
+  transaction, commits, cursors of both kinds that are kept and read at
+  later calls, two of one version among them, and reads that fail: a
+  look at the commits, a change of the prefix that a cursor reads under,
+  and a read of a node. It holds against the model what a transaction
+  reads by key and by cursor after each of its batches, or that each of
+  those reads is refused where the transaction serves its records by key
+  and a move decides; what each cursor that is kept answers or is
+  refused; that a batch which moves a subtree and states one anew that
+  its moves name is refused, and one that states anew by key a subtree
+  that a move decides; the outcome of every commit, the records and the
+  Merks it
+  leaves, and what the directory shows under every prefix the history
+  has named. It runs the physical checker at the end. A history follows
+  from its seed and prints its calls where it fails. A step draws what
+  is done next: one call, several, or none. The test runs 40 histories
+  of 160 steps, and two of 30 under Miri; the environment names the
+  seeds and the number of steps of a longer run. No history has a batch
+  that writes an unlinked record into a Merk with no node or a commit
+  that leaves one there, a subtree that is stated anew with another tree
+  type or at another place, an enter
+  of a subtree
+  if it is absent, a commit of a Merk with no node above a subtree, a
+  move to another Merk, a write that keeps a node's value by the handle
+  of a cursor's read, a scope beside another, or a second thread, and
+  none asks whether a transaction watches the commits.
 
 **Rebase (TXN-03)**
 

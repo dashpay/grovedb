@@ -6,6 +6,7 @@
 //!   Merk's records in the directory and the two ends of its flat records
 //!   in each column, whatever the Merk holds.
 //! - [`enter`] enters a Merk, so that it starts with no flat record.
+//! - [`rekey`] moves Merks to other prefixes, with their flat records.
 //!   [`Flats`] is the flat side of both: the columns ([`Column`]) and the
 //!   keyspace of the unlinked pages.
 //! - [`Reclaimer`] takes out what a drop left, in page steps on the pages
@@ -372,6 +373,7 @@ mod column;
 mod error;
 mod flat;
 mod merk;
+mod rekey;
 mod step;
 mod unlink;
 mod wait;
@@ -383,6 +385,7 @@ pub use column::{enter, Column, Flats};
 pub use error::DropError;
 pub use flat::{FlatDrop, FlatDrops, FlatReclaimed};
 pub use merk::{Progress, Reclaim, Reclaimed};
+pub use rekey::rekey;
 pub use step::{Busy, Reclaimer};
 pub use unlink::{unlink, Leaving, Unlink};
 pub use wait::Wait;

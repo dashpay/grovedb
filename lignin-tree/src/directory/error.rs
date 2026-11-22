@@ -25,8 +25,9 @@ impl Error for Malformed {}
 /// writer's pages are then no state of the directory, and whoever owns them
 /// gives them up, as after a failed write of any flat keyspace
 /// (`transactions.md` WT10). Every other error is a refusal, and a write
-/// that is refused has changed no page, with the one exception
-/// [`Directory::rekey`](super::Directory::rekey) states.
+/// that is refused has changed no page, with the exceptions that
+/// [`Directory::rekey`](super::Directory::rekey) and
+/// [`Directory::rekey_pairs`](super::Directory::rekey_pairs) state.
 #[derive(Debug)]
 pub enum DirectoryError {
     /// The flat keyspace the directory is kept in failed.
@@ -64,6 +65,19 @@ pub enum DirectoryError {
     },
     /// A Merk was to move below itself.
     Inside {
+        /// The prefix of the Merk.
+        prefix: Prefix,
+    },
+    /// A Merk with no host was to be moved to another key of its host's
+    /// Merk.
+    NoHost {
+        /// The prefix of the Merk.
+        prefix: Prefix,
+    },
+    /// A Merk below a moved one is given no prefix by the move, and does
+    /// not leave with it: it has a node, or a Merk below it is one that
+    /// stays.
+    Unnamed {
         /// The prefix of the Merk.
         prefix: Prefix,
     },
@@ -156,6 +170,17 @@ impl fmt::Display for DirectoryError {
             Self::Inside { prefix } => write!(
                 f,
                 "the Merk under the prefix {} would move below itself",
+                Short(prefix)
+            ),
+            Self::NoHost { prefix } => write!(
+                f,
+                "the Merk under the prefix {} has no host, and is moved to no other",
+                Short(prefix)
+            ),
+            Self::Unnamed { prefix } => write!(
+                f,
+                "the Merk under the prefix {} is below a moved one, and the move names no prefix \
+                 for it",
                 Short(prefix)
             ),
             Self::NotEmpty { prefix } => write!(

@@ -167,6 +167,11 @@
 //! - **A commit was published since before that look**: the latest
 //!   version of the database is another than it was then.
 //!
+//! That version is the one of the engine the group is applied through.
+//! A transaction that another engine began is refused there before
+//! anything is looked for: nothing is read through it, and nothing is
+//! applied to it.
+//!
 //! Every other refusal is the caller's answer as it is, and nothing is
 //! looked for after it: a refusal of the look, as the one of a first
 //! write under a key that holds no element; a refusal of the transaction

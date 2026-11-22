@@ -131,10 +131,19 @@
 //! ([`lignin_tree::directory`]): the transaction opens every Merk through
 //! it, and tells it what its writes do.
 //!
-//! - **A batch says which subtrees it enters, drops and clears**
+//! - **A batch says which subtrees it enters, drops, clears and moves**
 //!   ([`SubtreeWrite`]), as the caller that writes the hosting elements
 //!   knows them. A change set and a flat record, in any column, are of a
 //!   subtree that is entered ([`BatchError::NotEntered`]).
+//! - **A subtree is moved to another prefix with the subtrees below it**
+//!   ([`SubtreeWrite::Move`], `transactions.md` section 7.5). The
+//!   directory's records and the flat records are written under the new
+//!   prefixes and no node is copied. The write set keeps the statement:
+//!   it says under which prefix the committed state has what the
+//!   transaction reads under each prefix afterwards, and frames that are
+//!   made again make the move again. The move is dated at the read of
+//!   the node that hosted the subtree, and is a write of every key under
+//!   every prefix it names (CF10).
 //! - **A subtree is entered as one that is new, or if it is absent**
 //!   ([`SubtreeWrite::Enter`], [`SubtreeWrite::EnterIfAbsent`]). The first
 //!   is refused where the subtree is entered. The second is judged
@@ -149,7 +158,9 @@
 //!   tree type of its entry, and its place among the subtrees of its
 //!   host, as a conversion in place leaves them
 //!   ([`Directory::restate`](lignin_tree::directory::Directory::restate)).
-//!   The subtree keeps its nodes, its root and what is below it.
+//!   The subtree keeps its nodes, its root and what is below it. A batch
+//!   that moves a subtree states none anew that its moves name
+//!   ([`BatchError::ConvertMoved`]).
 //! - **No record of a subtree is read without its entry.** In every
 //!   column the committed records under a prefix belong to the entry the
 //!   directory has under that prefix, so where the version that is read

@@ -343,7 +343,7 @@ pub use check::Census;
 pub use error::{DirectoryError, Malformed};
 pub use read::{Children, Drops, Entries};
 pub use record::{Child, Dropped, Entry, Host, MerkId, Prefix, RecordKind, Root};
-pub use rekey::Step;
+pub use rekey::{Rekey, RekeyPlan, Rekeyed, Step};
 pub use write::{Restated, RootChange};
 
 use crate::flat::{FlatConfig, FlatPages, FlatPagesMut, FlatTree};

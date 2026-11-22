@@ -3,19 +3,23 @@
 //! passes and table checkpoints. Whatever the cut keeps, the next open
 //! lands on a committed version at or after the last one that was made
 //! durable, with what that version held, and the store is sound.
+//!
+//! A second session is swept the same way: one whose commit moves
+//! subtrees to other prefixes (`transactions.md` 7.5, D-213 item 6).
 
 use std::collections::BTreeMap;
 
 use lignin_io::sim::{CrashPoint, SimConfig, SimVfs};
 use lignin_store::flush::Checkpointed;
 
-use super::*;
+use super::{moves::Grove, *};
 
-/// What each subtree of the script holds at a version: the keys and the
-/// values of the nodes of its Merk. The three lives of the page ids are
+/// What each subtree of a script holds at a version: the keys and the
+/// values of the nodes of its Merk, and its flat record under one key in
+/// each column that has one. The three lives of the page ids are
 /// Merks of as many nodes with other keys and values, so a version that
 /// was recovered with the pages of another life is told from its own.
-type State = BTreeMap<u8, Items>;
+type State = Grove;
 
 /// What a table checkpoint of the script comes to, where the power is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +30,8 @@ enum Expected {
     PutOff,
 }
 
-/// The subtrees the script ever enters.
+/// The subtrees the first script ever enters, and the one that every
+/// recovered session plants.
 const NAMES: [u8; 10] = [1, 2, 3, 9, 20, 21, 22, 23, 50, 77];
 
 /// What a run of the script did, to the point where the power went.
@@ -102,7 +107,7 @@ impl Script<'_> {
             ..Writes::default()
         };
         self.commit(writes, |state| {
-            state.insert(name, items);
+            state.insert(name, (items, Vec::new()));
         })
     }
 
@@ -112,8 +117,63 @@ impl Script<'_> {
             ..Writes::default()
         };
         self.commit(writes, |state| {
-            state.insert(name, Items::new());
+            state.insert(name, (Items::new(), Vec::new()));
         })
+    }
+
+    /// The commit of a write transaction that moves the subtrees of the
+    /// grove (`moves::moves`).
+    fn moved(&mut self) -> bool {
+        let (_, next) = moves::moves(&self.state, |_| None);
+        self.ran.under_way = Some(next);
+        match moves::commit_moves(self.db, &self.state) {
+            Ok((Committed::Published(published), next)) => {
+                self.ran.latest = published.version.get();
+                self.ran.model.insert(self.ran.latest, next.clone());
+                self.state = next;
+                self.ran.under_way = None;
+                true
+            }
+            Ok((Committed::Empty, _)) => panic!("the commit writes"),
+            Err(error) => {
+                assert!(!self.on(), "the moves failed with the power on: {error}");
+                false
+            }
+        }
+    }
+
+    /// Rounds of the reclaimer until nothing waits for it, or the power
+    /// is gone.
+    fn settle(&mut self) -> bool {
+        for _ in 0..1_000 {
+            let waiting = self.db.reclaim().waiting;
+            if !self.on() {
+                return false;
+            }
+            if waiting == 0 {
+                return true;
+            }
+        }
+        panic!("what the moves left is not reclaimed: {}", self.db.stats());
+    }
+
+    /// The second script: a grove is committed and made durable, and one
+    /// commit moves its subtrees. Two change places and a third goes to
+    /// another key, each with the subtree below it and with flat records
+    /// under both, and a subtree with no node leaves with its move. Then
+    /// what left is reclaimed, and write-back and a table checkpoint take
+    /// the commit to the segments.
+    fn moves(&mut self) -> bool {
+        let (grove, held) = moves::grove();
+        self.commit(grove, |state| *state = held)
+            && self.flush()
+            && self.pass()
+            && self.moved()
+            && self.settle()
+            && self.flush()
+            && self.pass()
+            && self.checkpoint(Expected::Installed)
+            && self.pass()
     }
 
     fn drop_of(&mut self, name: u8) -> bool {
@@ -274,54 +334,51 @@ impl Script<'_> {
     }
 }
 
-/// Runs the script on a new database in `fs`, with the power cut after
+/// One of the scripts.
+type Run<'r> = &'r dyn Fn(&mut Script<'_>) -> bool;
+
+/// Runs `script` on a new database in `fs`, with the power cut after
 /// `cut` more changes of the file layer than the open made, if a cut is
 /// given.
-fn ran(fs: &SimVfs, cut: Option<u64>) -> Ran {
+fn ran(fs: &SimVfs, cut: Option<u64>, script: Run<'_>) -> Ran {
     let options = Options {
         vfs: Arc::new(fs.clone()),
         ..options()
     };
     let db = open_at_rest("/db", &options).expect("a new database");
-    let mut script = Script {
+    let mut session = Script {
         db: &db,
         fs,
         ran: Ran::default(),
         state: State::new(),
     };
     // The version of the open's own commit: no subtree.
-    script.ran.latest = db.version().get();
-    script.ran.durable = script.ran.latest;
-    script.ran.model.insert(script.ran.latest, State::new());
+    session.ran.latest = db.version().get();
+    session.ran.durable = session.ran.latest;
+    session.ran.model.insert(session.ran.latest, State::new());
     if let Some(cut) = cut {
         fs.crash_at(CrashPoint::AfterChange(fs.stats().changes + cut));
     }
-    script.ran.whole = script.run();
-    let ran = script.ran;
+    session.ran.whole = script(&mut session);
+    let ran = session.ran;
     db.unchecked_at_close();
     drop(db);
     ran
 }
 
-/// What a reader of the latest version of `db` finds of the script's
-/// subtrees: every key and value of each Merk. The script writes no flat
-/// record, and the one key that `seen` looks for has none.
+/// What a reader of the latest version of `db` finds of the subtrees of
+/// the scripts: every key and value of each Merk, and the flat record
+/// under the one key that a script writes one under.
 fn found(db: &Db) -> State {
-    let snapshot = db.snapshot();
-    let operation = snapshot.operation();
-    let subtrees = NAMES.into_iter().filter_map(|name| {
-        let (_, records) = seen(&operation, subtree(name), b"k")?;
-        assert!(records.is_empty());
-        Some((name, items_of(&operation, subtree(name))?))
-    });
-    subtrees.collect()
+    let names: Vec<u8> = NAMES.into_iter().chain(moves::NAMES).collect();
+    moves::found(db, &names)
 }
 
 /// The script alone, with the power on: it makes what the sweep is for.
 #[test]
 fn the_script_frees_pages_that_never_had_a_link_around_a_table_checkpoint() {
     let fs = SimVfs::new(SimConfig::new(31));
-    let ran = ran(&fs, None);
+    let ran = ran(&fs, None, &|script: &mut Script<'_>| script.run());
     assert!(ran.whole);
     assert!(
         ran.never_linked > 0,
@@ -364,12 +421,38 @@ fn the_script_frees_pages_that_never_had_a_link_around_a_table_checkpoint() {
 /// the cut happened to keep.
 #[test]
 fn a_power_cut_at_any_point_of_a_session_recovers_a_committed_version() {
-    let whole = ran(&SimVfs::new(SimConfig::new(31)), None);
+    let swept = swept(31, &|script: &mut Script<'_>| script.run());
+    let Swept {
+        cuts, landed_on, ..
+    } = &swept;
+    assert!(*cuts > 50, "{cuts} cuts");
+    // Cuts are recovered at versions all along the script, the last one
+    // among them.
+    let latest = swept.whole.latest;
+    assert!(landed_on.len() as u64 > latest / 2, "{landed_on:?}");
+    assert!(landed_on.contains_key(&latest), "{landed_on:?}");
+}
+
+/// What a sweep of a script came to.
+struct Swept {
+    /// The script with the power on.
+    whole: Ran,
+    /// How many cuts were made.
+    cuts: u32,
+    /// How many states landed on each version.
+    landed_on: BTreeMap<u64, u32>,
+}
+
+/// The sweep of `script`, as the test above describes it, with the
+/// simulator seeded with `seed`.
+fn swept(seed: u64, script: Run<'_>) -> Swept {
+    let whole = ran(&SimVfs::new(SimConfig::new(seed)), None, script);
+    assert!(whole.whole);
     let (mut cuts, mut states, mut in_flight) = (0u32, 0u32, 0u32);
     let mut landed_on: BTreeMap<u64, u32> = BTreeMap::new();
     for cut in 1.. {
-        let fs = SimVfs::new(SimConfig::new(31));
-        let ran = ran(&fs, Some(cut));
+        let fs = SimVfs::new(SimConfig::new(seed));
+        let ran = ran(&fs, Some(cut), script);
         if ran.whole && !fs.is_powered_off() {
             break;
         }
@@ -438,9 +521,34 @@ fn a_power_cut_at_any_point_of_a_session_recovers_a_committed_version() {
          versions landed on: {landed_on:?}; the script publishes {} versions",
         whole.latest
     );
-    assert!(cuts > 50, "{cuts} cuts");
-    // Cuts are recovered at versions all along the script, the last one
-    // among them.
-    assert!(landed_on.len() as u64 > whole.latest / 2, "{landed_on:?}");
-    assert!(landed_on.contains_key(&whole.latest), "{landed_on:?}");
+    Swept {
+        whole,
+        cuts,
+        landed_on,
+    }
+}
+
+/// D-213 item 6: the power is cut after every change that the second
+/// script makes to the files, and each cut is recovered as in the sweep
+/// above. The commit that moves the subtrees is recovered whole or not
+/// at all: a state lands on the version before it, with every node and
+/// every flat record under the prefixes they had, or on its version, with
+/// each under the prefix its subtree went to, and the store is sound to
+/// the physical checker either way.
+#[test]
+fn a_power_cut_at_any_point_of_a_commit_that_moves_subtrees_recovers_it_whole_or_not_at_all() {
+    let swept = swept(53, &|script: &mut Script<'_>| script.moves());
+    // The open's commit, the grove, and the moves.
+    let moved = swept.whole.latest;
+    assert_eq!(swept.whole.model.len(), 3);
+    let (before, after) = (&swept.whole.model[&(moved - 1)], &swept.whole.model[&moved]);
+    assert_ne!(before, after);
+    assert!(before.len() > after.len(), "a subtree left with a move");
+    let landed = |version: u64| swept.landed_on.get(&version).copied().unwrap_or(0);
+    assert!(
+        landed(moved - 1) > 0 && landed(moved) > 0,
+        "{:?}",
+        swept.landed_on
+    );
+    assert!(swept.cuts > 20, "{} cuts", swept.cuts);
 }

@@ -13,7 +13,8 @@ use lignin_format::{
 use lignin_store::alloc::PageAllocator;
 use lignin_tree::{
     directory::{
-        Directory, DirectoryError, Dropped, Entry, Host, MerkId, Restated, Root, RootChange,
+        Directory, DirectoryError, Dropped, Entry, Host, MerkId, Prefix, Rekey, RekeyPlan,
+        Restated, Root, RootChange,
     },
     drop::{self, DropError, Flats, Leaving as Left},
     flat::Private,
@@ -33,8 +34,8 @@ use super::{
     path::{FlatWriter, Idle, WritePath, IDLE},
     unlinked,
     write::{
-        Applied, Batch, Entering, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, SubtreeWrite,
-        ValuePut,
+        Applied, Batch, Entering, Hosted, LinkPut, MerkWrite, Moving, RecordWrite, RootPut,
+        SubtreeWrite, ValuePut,
     },
 };
 use crate::snapshot::OperationGuard;
@@ -231,9 +232,18 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// data column of a subtree it has written a node into since it last
     /// dropped or cleared the subtree (ST1), and a drop and a clear take
     /// the subtree's keys out. The keys of a subtree that went with one
-    /// above it stay until the subtree is entered again, and nothing is
-    /// read or written under it until then.
+    /// above it stay until a subtree is entered under its prefix again or
+    /// a move brings one there, and nothing is read or written under it
+    /// until then. The keys of a Merk that is moved go with it to its
+    /// new prefix.
     own: HashSet<Vec<u8>>,
+    /// The subtrees that left with the moves of the batch that was applied
+    /// last.
+    left: Vec<Subtree>,
+    /// For each Merk that a clear applied to these frames entered again
+    /// under another id (`Directory::clear`), the id it had before every
+    /// such clear, by the id it has since.
+    renewed: HashMap<MerkId, MerkId>,
 }
 
 /// The most cells a search by key passes before the pages are taken for
@@ -386,6 +396,40 @@ struct Subtrees {
     /// The subtrees the batch makes an entry for: not one that is entered
     /// if it is absent and was found entered.
     entering: HashSet<Subtree>,
+    /// What the moves of the batch do to the directory, if it has any
+    /// ([`Directory::plan_rekey`]).
+    rekey: Option<RekeyPlan>,
+    /// The subtrees that a move brings a Merk to, each with the root of
+    /// that Merk.
+    moved: HashMap<Subtree, Option<CellAddress>>,
+    /// The subtrees that a move takes a Merk from: those it gives another
+    /// prefix, and those that leave with it.
+    taken: HashSet<Subtree>,
+}
+
+/// The refusal of a plan for the moves of a batch, as the batch is told
+/// it.
+fn unplanned(error: DirectoryError) -> TxnError {
+    let subtree = Subtree::new;
+    let refused = match error {
+        DirectoryError::NotFound { prefix } => BatchError::NotEntered {
+            subtree: subtree(prefix),
+        },
+        DirectoryError::Exists { prefix } => BatchError::Entered {
+            subtree: subtree(prefix),
+        },
+        DirectoryError::Twice { prefix } => BatchError::SubtreeTwice {
+            subtree: subtree(prefix),
+        },
+        DirectoryError::Unnamed { prefix } => BatchError::MoveUnnamed {
+            subtree: subtree(prefix),
+        },
+        DirectoryError::NoHost { prefix } => BatchError::MoveHost {
+            subtree: subtree(prefix),
+        },
+        error => return error.into(),
+    };
+    refused.into()
 }
 
 /// Checks that `entry`, which the subtree of `enter` is entered with, has
@@ -454,6 +498,13 @@ impl Subtrees {
             (self.leaving.iter()).any(|left| left.root.is_some() && left.entry.id() == id)
         };
         entry.lineage().any(leaves)
+    }
+
+    /// Whether the batch ends every node handle that was read before it:
+    /// it drops, clears or moves a Merk, whose cells stay in their pages
+    /// (PN8).
+    fn ends_handles(&self) -> bool {
+        !self.leaving.is_empty() || self.rekey.is_some()
     }
 }
 
@@ -619,6 +670,8 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             empty: self.empty,
             unlinked: self.unlinked,
             own: self.own,
+            left: self.left,
+            renewed: self.renewed,
         }
     }
 }
@@ -654,6 +707,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             empty: Vec::new(),
             unlinked: HashMap::new(),
             own: HashSet::new(),
+            left: Vec::new(),
+            renewed: HashMap::new(),
             base: at,
         })
     }
@@ -667,6 +722,19 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// root before.
     pub(crate) fn empty_before(&self) -> &[bool] {
         &self.empty
+    }
+
+    /// The subtrees below a moved one that left with the moves of the
+    /// batch that was applied last: those the moves named no prefix for.
+    pub(crate) fn left_with_moves(&self) -> &[Subtree] {
+        &self.left
+    }
+
+    /// The id that the Merk which has `id` in these frames had before the
+    /// clears that were applied to them: its own, where none of them gave
+    /// it another.
+    pub(crate) fn before_clears(&self, id: MerkId) -> MerkId {
+        self.renewed.get(&id).copied().unwrap_or(id)
     }
 
     /// The lease the nodes of the frames are read under. It ends with the
@@ -701,7 +769,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 SubtreeWrite::Clear { subtree } => (subtree, false),
                 SubtreeWrite::Enter { .. }
                 | SubtreeWrite::EnterIfAbsent { .. }
-                | SubtreeWrite::Convert { .. } => continue,
+                | SubtreeWrite::Convert { .. }
+                | SubtreeWrite::Move { .. } => continue,
             };
             let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
             let entry = entry.ok_or(BatchError::NotEntered { subtree })?;
@@ -730,6 +799,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 let subtree = left.subtree;
                 return Err(BatchError::NotEntered { subtree }.into());
             }
+        }
+        let moves: Vec<Moving<'_>> = batch.moves().collect();
+        if !moves.is_empty() {
+            self.plan_moves(&moves, &mut view)?;
         }
         for write in batch.subtrees {
             let Some(enter) = write.entering() else {
@@ -777,6 +850,92 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(view)
     }
 
+    /// Checks the moves of a batch against the directory as the drops and
+    /// the clears of the batch leave it, and notes in `view` where each
+    /// Merk goes and which leave, with nothing changed.
+    ///
+    /// Each moved subtree is entered and stays in the Merk its host is in,
+    /// at its position. No drop and no clear of the batch names it, a
+    /// subtree below it, or one that its host is in or below.
+    fn plan_moves(&self, moves: &[Moving<'_>], view: &mut Subtrees) -> Result<(), TxnError> {
+        let mut pairs: Vec<Vec<(Prefix, Prefix)>> = Vec::with_capacity(moves.len());
+        for moving in moves {
+            let subtree = moving.from;
+            let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+            let entry = entry.ok_or(BatchError::NotEntered { subtree })?;
+            let stated = moving.host;
+            let stays = entry.host().is_some_and(|host| {
+                host.parent == stated.subtree.as_bytes() && host.position == stated.position
+            });
+            if !stays {
+                return Err(BatchError::MoveHost { subtree }.into());
+            }
+            for left in &view.leaving {
+                let (moved, leaves) = (entry.id(), left.entry.id());
+                if moved == leaves
+                    || left.entry.lineage().any(|id| id == moved)
+                    || entry.lineage().any(|id| id == leaves)
+                {
+                    let subtree = left.subtree;
+                    return Err(BatchError::Moved { subtree }.into());
+                }
+            }
+            let below = moving.below.iter();
+            pairs.push(
+                below
+                    .map(|(from, to)| (*from.as_bytes(), *to.as_bytes()))
+                    .collect(),
+            );
+        }
+        let rekeys: Vec<Rekey<'_>> = (moves.iter().zip(&pairs))
+            .map(|(moving, below)| Rekey {
+                from: moving.from.as_bytes(),
+                to: moving.to.as_bytes(),
+                key: moving.host.key,
+                below,
+            })
+            .collect();
+        // What the batch drops, and what is below a Merk it drops or
+        // clears, is out of the directory before the moves are made.
+        let leaves = |entry: &Entry| {
+            let dropped = |left: &Leaving| left.dropped && left.entry.id() == entry.id();
+            view.leaving.iter().any(dropped) || view.below_leaving(entry)
+        };
+        let plan = self.directory.plan_rekey(&*self.flat, &rekeys, &leaves);
+        let plan = plan.map_err(unplanned)?;
+        // A pair names a subtree below the moved one, or one that is not
+        // entered. One that is entered elsewhere would stay where it is,
+        // under a prefix the move is taken to have emptied. And the
+        // prefix that such a pair states for a subtree is free as every
+        // other one: the transaction reads under it what the pair says.
+        let taken: HashSet<&Prefix> = plan.moved().map(|(from, ..)| from).collect();
+        let gone: HashSet<&Prefix> = taken.iter().copied().chain(plan.left()).collect();
+        for (from, to) in pairs
+            .iter()
+            .flatten()
+            .filter(|(from, _)| !taken.contains(from))
+        {
+            let entry = self.directory.open(&*self.flat, from)?;
+            if entry.is_some_and(|entry| !leaves(&entry)) {
+                let subtree = Subtree::new(*from);
+                return Err(BatchError::Moved { subtree }.into());
+            }
+            let there = self.directory.open(&*self.flat, to)?;
+            if there.is_some_and(|there| !leaves(&there)) && !gone.contains(to) {
+                let subtree = Subtree::new(*to);
+                return Err(BatchError::Entered { subtree }.into());
+            }
+        }
+        for (from, to, was) in plan.moved() {
+            let root = was.root().map(|root| root.address);
+            view.moved.insert(Subtree::new(*to), root);
+            view.taken.insert(Subtree::new(*from));
+        }
+        (view.taken).extend(plan.left().iter().map(|prefix| Subtree::new(*prefix)));
+        view.rekey = Some(plan);
+        Ok(())
+    }
+
     /// The entry `subtree` keeps through the batch: of a subtree that is
     /// entered before it and that the batch does not drop, alone or with
     /// one above it. A clear keeps the entry, without its root.
@@ -817,6 +976,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     ) -> Result<Option<Option<CellAddress>>, TxnError> {
         if view.entering.contains(subtree) {
             return Ok(Some(None));
+        }
+        // A Merk that a move brings there is entered, whatever was there
+        // before, and one that a move takes away is not.
+        if let Some(root) = view.moved.get(subtree) {
+            return Ok(Some(*root));
+        }
+        if view.taken.contains(subtree) {
+            return Ok(None);
         }
         if let Some(left) = view.leaving.iter().find(|left| left.subtree == *subtree) {
             return Ok((!left.dropped).then_some(None));
@@ -926,6 +1093,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         made: Option<&[bool]>,
     ) -> Result<Applied, Refused> {
         let view = self.subtrees(batch).map_err(Refused::clean)?;
+        self.hosts_moved(batch).map_err(Refused::clean)?;
         let mut entered = HashMap::new();
         for record in batch.records {
             // A record is of a subtree that is entered, in every column,
@@ -959,6 +1127,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             (path.flat_drops)
                 .unlink_prefix(&mut *self.flat, &data, prefix, self.base)
                 .map_err(Refused::dropping)?;
+            // The subtree is the one it was, with those records, under
+            // whichever id the clear left it.
+            let cleared = self.directory.open(&*self.flat, prefix);
+            let cleared = cleared.map_err(Refused::dirty)?;
+            let was = left.entry.id();
+            if let Some(now) = cleared.map(|entry| entry.id()).filter(|now| *now != was) {
+                self.renewed.insert(now, self.before_clears(was));
+            }
         }
         // The unlinked records: those under the keys that the change sets
         // link a node under or delete go, and the nodes that the trees do
@@ -992,11 +1168,52 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 SubtreeWrite::Drop { subtree } => {
                     self.unlinked.remove(subtree);
                 }
-                SubtreeWrite::Convert { .. } => continue,
+                SubtreeWrite::Convert { .. } | SubtreeWrite::Move { .. } => continue,
             }
             // What the transaction left under a subtree goes with it.
             let prefix = write.subtree();
             (self.own).retain(|key| !key.starts_with(prefix.as_bytes()));
+        }
+        // A Merk that is moved has its flat records under its new prefix,
+        // the unlinked ones among them: what is known of whether it holds
+        // any goes there with it, and so do the keys of the records that
+        // the transaction left. The moves of a batch are made together,
+        // and what leaves with them takes its own out. A key that was
+        // left under a prefix by a subtree which went with one above it
+        // is not of the Merk that a move brings there.
+        if let Some(plan) = &view.rekey {
+            let moved: Vec<(Subtree, Subtree)> = (plan.moved())
+                .map(|(from, to, _)| (Subtree::new(*from), Subtree::new(*to)))
+                .collect();
+            let known: Vec<(Subtree, Option<bool>)> = (moved.iter())
+                .map(|(from, to)| (*to, self.unlinked.remove(from)))
+                .collect();
+            for left in plan.left() {
+                self.unlinked.remove(&Subtree::new(*left));
+            }
+            for (to, known) in known {
+                match known {
+                    Some(known) => drop(self.unlinked.insert(to, known)),
+                    None => drop(self.unlinked.remove(&to)),
+                }
+            }
+            // Each key is asked first of the prefixes that a Merk is taken
+            // from: the key of a Merk that leaves a prefix which another
+            // comes to goes with its Merk.
+            let goes: HashMap<&[u8], &Subtree> = (moved.iter())
+                .map(|(from, to)| (&from.as_bytes()[..], to))
+                .collect();
+            let mut gone: HashSet<&[u8]> = plan.left().iter().map(|left| &left[..]).collect();
+            gone.extend(moved.iter().map(|(_, to)| &to.as_bytes()[..]));
+            let own = std::mem::take(&mut self.own);
+            let rekeyed = own.into_iter().filter_map(|key| {
+                let (prefix, rest) = key.split_at(Subtree::LEN.min(key.len()));
+                if let Some(to) = goes.get(prefix) {
+                    return Some([&to.as_bytes()[..], rest].concat());
+                }
+                (!gone.contains(prefix)).then_some(key)
+            });
+            self.own = rekeyed.collect();
         }
         for subtree in unlinked.holding {
             self.unlinked.insert(subtree, true);
@@ -1052,6 +1269,75 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(applied)
     }
 
+    /// Whether the cell of the node under `key`, in the Merk whose root is
+    /// `root`, hosts a Merk at `position`: the cell has a pointer there,
+    /// to a root or to none. Where no node is under the key, none does.
+    fn hosts_at(
+        &mut self,
+        root: Option<CellAddress>,
+        key: &[u8],
+        position: usize,
+    ) -> Result<bool, TxnError> {
+        let Some(at) = find(&mut self.tree, root, key)? else {
+            return Ok(false);
+        };
+        let hosts = self.tree.page(at.page(), |page| {
+            Some(page.node(at.slot())?.hosted_roots().count() > position)
+        })?;
+        Ok(hosts.ok_or(NodeError::NoNode { address: at })?)
+    }
+
+    /// Checks, for each subtree that `batch` moves, that the cell of the
+    /// node which the batch puts as its host points at the moved Merk as
+    /// the cell of the node that hosts it before the batch does
+    /// (`transactions.md` MV3):
+    ///
+    /// - where the old host's cell hosts a Merk at the subtree's
+    ///   position, the new host names the subtree's new prefix there;
+    /// - where it hosts none there, or no node is under the key that the
+    ///   subtree's entry names, the new host hosts no Merk at the
+    ///   position: it names none there, or it keeps what it hosts and its
+    ///   cell hosts none there.
+    ///
+    /// The entry of a subtree names its host whether or not the host's
+    /// cell points at a Merk: the element of a tree that keeps its data
+    /// flat hosts none (`tree-layout.md`, section 2), and a move leaves
+    /// that as it is. Nothing is changed.
+    fn hosts_moved(&mut self, batch: &Batch<'_>) -> Result<(), TxnError> {
+        for moving in batch.moves() {
+            let subtree = moving.from;
+            // A subtree that is not entered, or that has no host, was
+            // refused where the moves were planned.
+            let Some(entry) = self.directory.open(&*self.flat, subtree.as_bytes())? else {
+                continue;
+            };
+            let Some(host) = entry.host() else {
+                continue;
+            };
+            let position = usize::from(host.position);
+            // The host stays in its Merk, at its position.
+            let root = self.root(&Subtree::new(*host.parent))?;
+            let hosted = self.hosts_at(root, host.key, position)?;
+            let stated = moving.host;
+            let merk = (batch.merks.iter()).find(|merk| merk.subtree == stated.subtree);
+            let node = merk.and_then(|merk| merk.nodes.iter().find(|node| node.key == stated.key));
+            let fits = match node.map(|node| node.hosted) {
+                Some(Hosted::Set(named)) => match hosted {
+                    true => named.get(position) == Some(&moving.to),
+                    false => named.len() <= position,
+                },
+                // A node that keeps what it hosts names nothing.
+                Some(Hosted::Keep) | None => {
+                    !hosted && !self.hosts_at(root, stated.key, position)?
+                }
+            };
+            if !fits {
+                return Err(BatchError::MoveHost { subtree }.into());
+            }
+        }
+        Ok(())
+    }
+
     fn apply_merks(
         &mut self,
         path: &WritePath<'s>,
@@ -1060,6 +1346,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         made: Option<&[bool]>,
     ) -> Result<(Applied, UnlinkedWrites), Refused> {
         self.empty.clear();
+        self.left.clear();
         let merks = batch.merks;
         if merks.is_empty() && batch.subtrees.is_empty() {
             return Ok(Default::default());
@@ -1177,11 +1464,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             at: self.base,
         };
         // A Merk that leaves keeps its cells in their pages, so a handle
-        // into them would still be followed. Every handle that was read
+        // into them would still be followed, and so would one into a Merk
+        // that has another prefix afterwards. Every handle that was read
         // before ends here: the write is made under a new lease, and
         // reports its nodes under that one (PN8).
         let lease = self.tree.lease();
-        if !view.leaving.is_empty() {
+        if view.ends_handles() {
             self.tree.set_lease(Lease::take());
         }
         let report = match (merks.is_empty(), view.leaving.is_empty()) {
@@ -1257,6 +1545,20 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         #[cfg(all(test, not(loom)))]
         probe::strike();
 
+        // The moves, after the drops and before the enters: the records
+        // of the directory for every Merk that has another prefix
+        // afterwards, and its flat records in every column. The roots are
+        // told below, under the prefixes the Merks have then.
+        let rekeyed = match &view.rekey {
+            Some(plan) => {
+                let left = drop::rekey(&mut self.directory, &mut flats, plan);
+                self.dropped.extend(left.map_err(Refused::dropping)?);
+                (self.left).extend(plan.left().iter().map(|prefix| Subtree::new(*prefix)));
+                true
+            }
+            None => false,
+        };
+
         // The directory: the Merks that are stated anew, the Merks that are
         // entered, each so that it starts with no flat record, and then
         // every root the write changed. A
@@ -1265,7 +1567,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // they were. A subtree that is entered if it is absent, and was
         // found entered, keeps its entry and its records: nothing is done
         // for it.
-        let mut untouched = merks.is_empty() && view.leaving.is_empty();
+        let mut untouched = merks.is_empty() && view.leaving.is_empty() && !rekeyed;
         let restated: Vec<Restated<'_>> = (batch.subtrees.iter())
             .filter_map(|write| match write {
                 SubtreeWrite::Convert {
@@ -1391,10 +1693,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for (merk, write) in resolver.merks.iter().enumerate() {
             let (offset, nodes) = (resolver.offsets[merk], write.nodes);
             for put in nodes {
-                // No hint is followed in a batch that drops or clears a
-                // Merk: its cells stay in their pages, and a handle from
-                // before would name one of them.
-                let hint = put.at.filter(|_| view.leaving.is_empty());
+                // No hint is followed in a batch that drops, clears or
+                // moves a Merk: its cells stay in their pages, and a
+                // handle from before would name one of them.
+                let hint = put.at.filter(|_| !view.ends_handles());
                 let hinted = hint.and_then(|handle| self.follow(handle, put.key));
                 ats.push(match hinted {
                     Some(at) => Some(at),

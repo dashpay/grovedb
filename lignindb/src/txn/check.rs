@@ -6,7 +6,7 @@ use lignin_format::value_log::MAX_VALUE_LEN;
 
 use super::{
     error::BatchError,
-    key::{Column, Unit},
+    key::{Column, Subtree, Unit},
     write::{Batch, Entering, Hosted, RecordWrite, RootPut, SubtreeWrite, ValuePut},
 };
 
@@ -26,13 +26,72 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// a Merk, holds no key or value that is too long, enters no subtree
 /// twice, by either kind of enter, drops or clears none twice, and states
 /// none anew twice or beside its enter, its drop or its clear.
+///
+/// Of its moves: that no prefix is named twice as one a subtree is taken
+/// from, and none twice as one a subtree is brought to; that the batch
+/// puts the node each move states as the host, and names the new prefix
+/// among the Merks that node hosts at the stated position or not at all
+/// (which of the two is asked where the batch is applied, of the cell
+/// that hosts the subtree before); and that nothing else is stated of a
+/// prefix a move
+/// names, but the drop of a subtree that is entered where one is moved to
+/// and that no move takes away. A subtree that is stated anew under such
+/// a prefix is refused as that ([`BatchError::ConvertMoved`]).
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
     let (mut entered, mut left) = (HashSet::new(), HashSet::new());
     let mut stated = HashSet::new();
+    let (mut sources, mut targets) = (HashSet::new(), HashSet::new());
+    for moving in batch.moves() {
+        let twice = |subtree| Err(BatchError::SubtreeTwice { subtree });
+        if let Some(subtree) = moving.sources().find(|from| !sources.insert(*from)) {
+            return twice(subtree);
+        }
+        if let Some(subtree) = moving.targets().find(|to| !targets.insert(*to)) {
+            return twice(subtree);
+        }
+    }
+    let named = |subtree: &Subtree| sources.contains(subtree) || targets.contains(subtree);
+    let moved = |subtree: Subtree| Err(BatchError::Moved { subtree });
+    for moving in batch.moves() {
+        let host = moving.host;
+        if host.key.len() > MAX_NODE_KEY {
+            return Err(BatchError::KeyTooLong {
+                subtree: host.subtree,
+                len: host.key.len(),
+            });
+        }
+        let merk = batch.merks.iter().find(|merk| merk.subtree == host.subtree);
+        let node = merk.and_then(|merk| merk.nodes.iter().find(|node| node.key == host.key));
+        let at = usize::from(host.position);
+        let elsewhere = |hosted: &[Subtree]| {
+            let mut named = hosted.iter().enumerate();
+            named.any(|(position, hosted)| *hosted == moving.to && position != at)
+        };
+        if !node
+            .is_some_and(|node| !matches!(node.hosted, Hosted::Set(hosted) if elsewhere(hosted)))
+        {
+            let subtree = moving.from;
+            return Err(BatchError::MoveHost { subtree });
+        }
+        if named(&host.subtree) {
+            return moved(host.subtree);
+        }
+    }
     for write in batch.subtrees {
+        if write.moving().is_some() {
+            continue;
+        }
         let subtree = write.subtree();
+        // A drop makes room where a subtree is moved to.
+        let makes_room = matches!(write, SubtreeWrite::Drop { .. }) && !sources.contains(&subtree);
+        if named(&subtree) && !makes_room {
+            return match write {
+                SubtreeWrite::Convert { .. } => Err(BatchError::ConvertMoved { subtree }),
+                _ => moved(subtree),
+            };
+        }
         let enter = write.entering();
         let once = match (enter, write) {
             (Some(_), _) => entered.insert(subtree),
@@ -79,6 +138,9 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
         if !merks.insert(subtree) {
             return Err(BatchError::MerkTwice { subtree });
         }
+        if named(&subtree) {
+            return moved(subtree);
+        }
         let unit = Unit::data(subtree);
         let key_len = |key: &[u8]| match key.len() > MAX_NODE_KEY {
             true => Err(BatchError::KeyTooLong {
@@ -121,6 +183,9 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
         let unit = record.unit();
         if unit.column == Column::Data && merks.contains(&unit.subtree) {
             return Err(BatchError::NotFlat { unit });
+        }
+        if named(&unit.subtree) {
+            return moved(unit.subtree);
         }
         match *record {
             RecordWrite::Put { unit, key, value } => {

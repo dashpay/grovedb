@@ -8,7 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lignin_io::sim::SimRng;
 
-use super::{super::Step, *};
+use super::{
+    super::{Rekey, Step},
+    *,
+};
 
 /// A Merk as the model has it: one for each id.
 #[derive(Debug, Clone)]
@@ -46,6 +49,10 @@ struct Counts {
     cleared: u64,
     moved: u64,
     moved_merks: u64,
+    paired: u64,
+    paired_merks: u64,
+    changed_places: u64,
+    left_with_a_move: u64,
     replaced: u64,
     reclaimed_merks: u64,
     reclaimed_drops: u64,
@@ -536,6 +543,143 @@ impl Model {
         self.counts.moved_merks += moved.len() as u64;
     }
 
+    /// Moves a Merk to another key of the Merk that hosts it, or has it
+    /// change places with one beside it, by pairs: every Merk below is
+    /// named with the prefix of its new path, but now and then one that
+    /// has no node and hosts none, which leaves.
+    fn rekey_pairs(&mut self) {
+        let Some(first) = self.pick(|merk| merk.parent.is_some()) else {
+            return;
+        };
+        let above = self.merks[first].parent.expect("a hosted Merk");
+        let seg = |model: &Self, index: usize| {
+            let (key, position) = model.merks[index].path.last().expect("a path").clone();
+            (key, position)
+        };
+        let (key, position) = seg(self, first);
+        let beside: Vec<usize> = (self.merks[above].children.iter())
+            .filter(|((at, _), index)| *at == position && **index != first)
+            .map(|(_, index)| *index)
+            .collect();
+        // Where each moved Merk goes: the step that hosts it afterwards.
+        let mut tops: Vec<(usize, Seg)> = Vec::new();
+        if !beside.is_empty() && self.chance(45) {
+            let second = beside[self.below(beside.len())];
+            tops.push((first, seg(self, second)));
+            tops.push((second, (key, position)));
+        } else {
+            let to = KEYS[self.below(KEYS.len())].to_vec();
+            if to == key {
+                return;
+            }
+            tops.push((first, (to, position)));
+        }
+        let mut places: Vec<(usize, Vec<Seg>, Prefix)> = Vec::new();
+        let mut leaving: Vec<usize> = Vec::new();
+        let mut named: Vec<Vec<(Prefix, Prefix)>> = Vec::new();
+        for (index, seg) in &tops {
+            let old = self.merks[*index].path.clone();
+            let mut to = old[..old.len() - 1].to_vec();
+            to.push(seg.clone());
+            let mut below = Vec::new();
+            for at in self.subtree(*index) {
+                let merk = &self.merks[at];
+                let alone = merk.root.is_none() && merk.children.is_empty();
+                if at != *index && alone && self.chance(50) {
+                    leaving.push(at);
+                    continue;
+                }
+                let merk = &self.merks[at];
+                let path: Vec<Seg> = to.iter().chain(&merk.path[old.len()..]).cloned().collect();
+                let prefix = self.prefix_below(above, &path);
+                if at != *index {
+                    below.push((merk.prefix, prefix));
+                }
+                places.push((at, path, prefix));
+            }
+            named.push(below);
+        }
+        let moved: BTreeSet<usize> = places.iter().map(|(at, ..)| *at).collect();
+        let froms: Vec<Prefix> = tops
+            .iter()
+            .map(|(index, _)| self.merks[*index].prefix)
+            .collect();
+        let tos: Vec<Prefix> = (tops.iter())
+            .map(|(index, _)| {
+                places
+                    .iter()
+                    .find(|(at, ..)| at == index)
+                    .expect("a place")
+                    .2
+            })
+            .collect();
+        // A key that hosts a Merk which stays is taken.
+        let stays = |to: &Prefix| self.live.get(to).is_some_and(|at| !moved.contains(at));
+        let taken = tos.iter().any(stays);
+        let moves: Vec<Rekey<'_>> = (tops.iter().enumerate())
+            .map(|(n, (_, seg))| Rekey {
+                from: &froms[n],
+                to: &tos[n],
+                key: &seg.0,
+                below: &named[n],
+            })
+            .collect();
+        let plan = self.directory.plan_rekey(&self.pages, &moves, &|_| false);
+        if taken {
+            assert!(matches!(plan, Err(DirectoryError::Exists { .. })));
+            self.counts.refused += 1;
+            return;
+        }
+        let plan = plan.expect("a plan");
+        assert_eq!(plan.moved().count(), places.len());
+        let rekeyed = self.directory.rekey_pairs(&mut self.pages, &plan);
+        let rekeyed = rekeyed.expect("moved");
+        let mut left: Vec<MerkId> = rekeyed.left.iter().map(|left| left.id).collect();
+        let mut expected: Vec<MerkId> = leaving.iter().map(|at| self.merks[*at].id).collect();
+        left.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(left, expected);
+        assert!(rekeyed.left.iter().all(|left| left.root.is_none()));
+
+        for at in &leaving {
+            let merk = self.merks[*at].clone();
+            self.leave(*at);
+            let gone = &mut self.merks[*at];
+            (gone.entry, gone.hosted) = (false, false);
+            let (key, position) = merk.path.last().expect("a path").clone();
+            let above = merk.parent.expect("a hosted Merk");
+            assert_eq!(
+                self.merks[above].children.remove(&(position, key)),
+                Some(*at)
+            );
+            self.drops.push(*at);
+        }
+        for (index, _) in &tops {
+            let (key, position) = seg(self, *index);
+            self.merks[above].children.remove(&(position, key));
+        }
+        for (at, ..) in &places {
+            let prefix = self.merks[*at].prefix;
+            self.live.remove(&prefix);
+        }
+        for (at, _, prefix) in &places {
+            self.replace(prefix);
+            self.live.insert(*prefix, *at);
+            self.seen.insert(*prefix);
+        }
+        for (at, path, prefix) in places.iter().cloned() {
+            let merk = &mut self.merks[at];
+            (merk.path, merk.prefix) = (path, prefix);
+        }
+        for (index, seg) in tops.iter().cloned() {
+            self.merks[above].children.insert((seg.1, seg.0), index);
+        }
+        self.counts.paired += 1;
+        self.counts.paired_merks += places.len() as u64;
+        self.counts.changed_places += u64::from(tops.len() == 2);
+        self.counts.left_with_a_move += leaving.len() as u64;
+    }
+
     /// One step of the reclaimer: the records of one Merk that a dropped
     /// one left, or the record of a dropped Merk that left nothing else.
     /// It finds its way through the directory alone.
@@ -603,7 +747,8 @@ impl Model {
             62..70 => self.unlink(),
             70..73 => self.clear(),
             73..79 => self.rekey(),
-            79..97 => self.reclaim(),
+            79..84 => self.rekey_pairs(),
+            84..97 => self.reclaim(),
             _ => {
                 let root = self.directory.root_page();
                 let loaded = Directory::load(&self.pages, root, self.pages.config);
@@ -735,6 +880,10 @@ fn the_directory_agrees_with_a_model_and_no_open_returns_a_left_over_entry() {
             (&mut total.cleared, counts.cleared),
             (&mut total.moved, counts.moved),
             (&mut total.moved_merks, counts.moved_merks),
+            (&mut total.paired, counts.paired),
+            (&mut total.paired_merks, counts.paired_merks),
+            (&mut total.changed_places, counts.changed_places),
+            (&mut total.left_with_a_move, counts.left_with_a_move),
             (&mut total.replaced, counts.replaced),
             (&mut total.reclaimed_merks, counts.reclaimed_merks),
             (&mut total.reclaimed_drops, counts.reclaimed_drops),
@@ -753,6 +902,8 @@ fn the_directory_agrees_with_a_model_and_no_open_returns_a_left_over_entry() {
     assert!(total.carried > 1_000 && total.swapped > 100 && total.emptied > 50);
     assert!(total.dropped > 500 && total.left > 500 && total.cleared > 50);
     assert!(total.moved > 100 && total.moved_merks > total.moved);
+    assert!(total.paired > 100 && total.paired_merks > total.paired);
+    assert!(total.changed_places > 20 && total.left_with_a_move > 5);
     assert!(
         total.replaced > 20,
         "{} left-over entries were replaced",

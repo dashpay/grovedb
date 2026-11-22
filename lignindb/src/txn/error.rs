@@ -268,9 +268,87 @@ pub enum BatchError {
         subtree: Subtree,
     },
     /// A batch enters one subtree twice, drops or clears it twice, or
-    /// states it anew twice, or beside its enter, its drop or its clear.
+    /// states it anew twice, or beside its enter, its drop or its clear,
+    /// or its moves take a subtree from one prefix twice or bring two to
+    /// one.
     SubtreeTwice {
         /// The subtree.
+        subtree: Subtree,
+    },
+    /// A subtree is moved ([`SubtreeWrite::Move`](super::SubtreeWrite::Move))
+    /// to a host it cannot have: the subtree has no host; the host that is
+    /// stated is in another Merk or at another position than the one it
+    /// has; the batch does not put that node; the node names the
+    /// subtree's new prefix among the Merks it hosts at another position;
+    /// it does not name that prefix at the position where the cell of the
+    /// node that hosts the subtree before hosts a Merk there; or its cell
+    /// hosts a Merk at the position where that cell hosts none there.
+    MoveHost {
+        /// The subtree, by the prefix it is moved from.
+        subtree: Subtree,
+    },
+    /// A subtree is moved, and a subtree below it has no prefix named for
+    /// it and does not leave with the move: it has a node, or a subtree
+    /// below it is named.
+    MoveUnnamed {
+        /// The subtree below the moved one.
+        subtree: Subtree,
+    },
+    /// A batch that moves a subtree states something else of a subtree
+    /// its moves name: an enter, a clear, a change set, a record, a drop
+    /// of one that is taken from its prefix, or the host of a move in it.
+    /// Or it drops or clears a subtree below one that is moved, or one
+    /// that the moved subtree's host is in or below. Or a move names a
+    /// new prefix for a subtree that is entered and is not below the one
+    /// it moves. The one statement a batch makes beside a move of a prefix
+    /// the move names is the drop of the subtree that is entered where a
+    /// subtree is moved to. A subtree that is stated anew there has a
+    /// refusal of its own ([`Self::ConvertMoved`]).
+    Moved {
+        /// The subtree the other statement names.
+        subtree: Subtree,
+    },
+    /// A batch that moves a subtree states anew a subtree that its moves
+    /// name: under a prefix that a move takes a subtree from, or under
+    /// one that a move brings a subtree to. A later batch states the
+    /// subtree anew, under the prefix it has then.
+    ConvertMoved {
+        /// The subtree that is stated anew, by the prefix the statement
+        /// names.
+        subtree: Subtree,
+    },
+    /// A scope that keeps its writes in the write set states a move,
+    /// reads or writes a subtree that a move of the transaction decides,
+    /// or drops or clears a subtree while the transaction's write set
+    /// holds a move (`transactions.md` MV7, MV8). Or a move is stated
+    /// while a pending mark stands under a prefix it names, or a call
+    /// that set such a mark or took one off is among the writes that the
+    /// transaction's frames show (MV8). Or a cursor reads a subtree that
+    /// a move of the transaction decides after a commit was published
+    /// that the cursor's version does not hold, and the transaction's
+    /// writes are laid out over the latest version (MV7).
+    MoveBeside {
+        /// The subtree the refused move takes from its prefix, the first
+        /// subtree the refused batch drops or clears, or the subtree
+        /// whose read or write was refused.
+        subtree: Subtree,
+    },
+    /// The transaction serves its records by key because a commit outside
+    /// it met one of its writes (WT7b), and the operation states a move,
+    /// reads or writes a subtree that a move in its write set decides, or
+    /// drops or clears a subtree while its write set holds a move
+    /// (`transactions.md` MV7): its frames would say what is there, and
+    /// it has none.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]): the transaction's
+    /// commit fails with one unless a rollback to a savepoint takes the
+    /// met writes out, after which it has frames again where the writes
+    /// that are left can be laid out. Nothing was changed, and the
+    /// transaction is still open.
+    MovedByKey {
+        /// The subtree that was read or written, the first one the
+        /// refused batch drops or clears, or the one a move was stated
+        /// for.
         subtree: Subtree,
     },
     /// The tree type of an entered subtree is longer than the subtree
@@ -373,7 +451,40 @@ impl fmt::Display for BatchError {
             Self::SubtreeTwice { subtree } => {
                 write!(
                     f,
-                    "the subtree {subtree} is entered, leaves or is stated anew twice"
+                    "the subtree {subtree} is entered, leaves, is stated anew, or is on one side of a move, twice"
+                )
+            }
+            Self::MoveHost { subtree } => {
+                write!(f, "the subtree {subtree} is moved to a host it cannot have")
+            }
+            Self::MoveUnnamed { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is below a moved one, and no prefix is named for it"
+                )
+            }
+            Self::Moved { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is stated otherwise in a batch whose move takes it"
+                )
+            }
+            Self::ConvertMoved { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is stated anew in a batch whose move names it"
+                )
+            }
+            Self::MoveBeside { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is moved where the move cannot be laid out"
+                )
+            }
+            Self::MovedByKey { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is of a move, in a transaction that a commit has met"
                 )
             }
             Self::TreeTypeTooLong { subtree, len } => {
@@ -386,10 +497,11 @@ impl fmt::Display for BatchError {
 impl Error for BatchError {}
 
 impl BatchError {
-    /// Whether the refusal is [`Self::ValueTaken`]: the one that a caller
-    /// answers as it answers a commit that fails with a conflict.
+    /// Whether the refusal is [`Self::ValueTaken`] or
+    /// [`Self::MovedByKey`]: those that a caller answers as it answers a
+    /// commit that fails with a conflict.
     pub const fn is_conflict(&self) -> bool {
-        matches!(self, Self::ValueTaken { .. })
+        matches!(self, Self::ValueTaken { .. } | Self::MovedByKey { .. })
     }
 }
 
@@ -528,8 +640,8 @@ from! {
 }
 
 impl TxnError {
-    /// Whether the operation refused a batch with
-    /// [`BatchError::ValueTaken`] ([`BatchError::is_conflict`]). The
+    /// Whether the operation was refused with [`BatchError::ValueTaken`]
+    /// or [`BatchError::MovedByKey`] ([`BatchError::is_conflict`]). The
     /// transaction is as it was, and still open.
     pub const fn is_conflict(&self) -> bool {
         matches!(self, Self::Batch(refused) if refused.is_conflict())

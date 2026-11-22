@@ -194,7 +194,8 @@
 //! # A drop and the conflict rule
 //!
 //! A drop deletes every record under every subtree below the dropped one
-//! (CV9), and the key set of its commit names the dropped subtree alone,
+//! (CV9), and the key set of its commit names the dropped subtree and, of
+//! the subtrees below it, those that its transaction had written under,
 //! as its write-set entry does. Two cases follow that record keys do not
 //! decide (CF5), and both are decided here, when the transaction takes in
 //! the commits that were published since it last looked:

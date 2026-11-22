@@ -1,6 +1,8 @@
 //! What a batch holds, and how each call changes it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+
+use lignin_tree::node::NodeHandle;
 
 use super::node::StagedNode;
 use crate::txn::{BatchError, Column, Differs, Hosted, NodePut, Subtree, Unit};
@@ -246,6 +248,25 @@ pub(super) struct Root {
     pub(super) key: Option<Box<[u8]>>,
 }
 
+/// A move of a subtree, as it was stated.
+pub(super) struct Move {
+    generation: u64,
+    pub(super) from: Subtree,
+    pub(super) to: Subtree,
+    pub(super) read: Option<NodeHandle>,
+    pub(super) below: Vec<(Subtree, Subtree)>,
+}
+
+impl Move {
+    fn sources(&self) -> impl Iterator<Item = Subtree> + '_ {
+        std::iter::once(self.from).chain(self.below.iter().map(|(from, _)| *from))
+    }
+
+    fn targets(&self) -> impl Iterator<Item = Subtree> + '_ {
+        std::iter::once(self.to).chain(self.below.iter().map(|(_, to)| *to))
+    }
+}
+
 pub(super) struct Host {
     generation: u64,
     pub(super) order: u64,
@@ -268,6 +289,8 @@ pub(super) struct Staged<C> {
     /// subtree and key.
     pub(super) hosts: BTreeMap<Subtree, BTreeMap<Box<[u8]>, Host>>,
     pub(super) subtrees: BTreeMap<Subtree, SubtreeState>,
+    /// The moves, in the order they were stated.
+    pub(super) moves: Vec<Move>,
     /// The first call that no outcome can stand for.
     pub(super) refused: Option<BatchError>,
 }
@@ -281,6 +304,7 @@ impl<C> Default for Staged<C> {
             roots: BTreeMap::new(),
             hosts: BTreeMap::new(),
             subtrees: BTreeMap::new(),
+            moves: Vec::new(),
             refused: None,
         }
     }
@@ -323,7 +347,8 @@ impl<C> Staged<C> {
             true => state.outcome_below(*subtree).is_ok() && state.entering.is_none(),
             false => matches!(state.outcome(*subtree), Ok((None, Entered::No))),
         };
-        self.refused.is_none() && self.len() == 0 && self.subtrees.iter().all(blank)
+        let nothing = self.len() == 0 && self.moves.is_empty();
+        self.refused.is_none() && nothing && self.subtrees.iter().all(blank)
     }
 
     pub(super) fn next_operation(&mut self) {
@@ -547,6 +572,71 @@ impl<C> Staged<C> {
         }
     }
 
+    /// What the batch holds beside its moves is judged when it is
+    /// finished ([`Self::moved`]).
+    pub(super) fn move_subtree(
+        &mut self,
+        from: Subtree,
+        to: Subtree,
+        read: Option<NodeHandle>,
+        below: &[(Subtree, Subtree)],
+    ) {
+        let generation = self.generation;
+        self.moves.push(Move {
+            generation,
+            from,
+            to,
+            read,
+            below: below.to_vec(),
+        });
+    }
+
+    /// The refusal of what the batch holds beside its moves, if it holds
+    /// anything it does not hold beside them: a move of another operation
+    /// than the first one's, which would not be made together with it
+    /// ([`BatchError::Moved`]); a prefix that its moves name twice as one
+    /// a subtree is taken from, or twice as one a subtree goes to
+    /// ([`BatchError::SubtreeTwice`]); or, under a prefix that a move
+    /// names on either side, an outcome of a key, a root, an enter of
+    /// either kind, a clear, or a drop of anything but the subtree that
+    /// is entered where one is moved to and that no move takes away
+    /// ([`BatchError::Moved`]). That drop is one that the operation of
+    /// the moves states, or an earlier one: the batch applies its drops
+    /// before its moves, and a drop that a later operation states is of
+    /// the subtree that was moved there. It is asked of a batch that is
+    /// settled.
+    fn moved(&self) -> Option<BatchError> {
+        let first = self.moves.first()?;
+        let apart = |moving: &&Move| moving.generation != first.generation;
+        if let Some(later) = self.moves.iter().find(apart) {
+            return Some(BatchError::Moved {
+                subtree: later.from,
+            });
+        }
+        let sources: Vec<Subtree> = self.moves.iter().flat_map(Move::sources).collect();
+        let targets: Vec<Subtree> = self.moves.iter().flat_map(Move::targets).collect();
+        let twice = |names: &[Subtree]| {
+            let mut seen = HashSet::new();
+            names.iter().find(|name| !seen.insert(**name)).copied()
+        };
+        if let Some(subtree) = twice(&sources).or_else(|| twice(&targets)) {
+            return Some(BatchError::SubtreeTwice { subtree });
+        }
+        let named = sources.iter().chain(&targets).copied();
+        let refused = named.into_iter().find(|named| {
+            let held = |column: &BTreeMap<Subtree, Keys<C>>| {
+                column.get(named).is_some_and(|keys| !keys.is_empty())
+            };
+            let makes_room = |state: &SubtreeState| {
+                let dropped = state.leave == Some(Leave::Drop) && state.enter.is_none();
+                dropped && !sources.contains(named) && state.at <= first.generation
+            };
+            let stated = (self.subtrees.get(named)).is_some_and(|state| !makes_room(state));
+            stated || self.roots.contains_key(named) || self.columns.iter().any(held)
+        });
+        refused.map(|subtree| BatchError::Moved { subtree })
+    }
+
     /// What the leave takes the place of is taken out when the operation
     /// ends ([`Self::settle`]).
     pub(super) fn leave(&mut self, subtree: Subtree, leave: Leave) {
@@ -730,7 +820,8 @@ impl<C> Staged<C> {
             .iter()
             .find(|(_, keys)| keys.values().any(lost));
         let lost = lost.map(|(subtree, _)| BatchError::NoValue { subtree: *subtree });
-        (self, refused.or(lost))
+        let moved = self.moved();
+        (self, refused.or(lost).or(moved))
     }
 
     /// Makes every call that `other` holds an outcome of again, in the
@@ -760,6 +851,9 @@ impl<C> Staged<C> {
         }
         for (subtree, root) in other.roots {
             self.set_root(subtree, root.key.as_deref());
+        }
+        for moving in other.moves {
+            self.move_subtree(moving.from, moving.to, moving.read, &moving.below);
         }
         for (column, held) in ORDER.into_iter().zip(other.columns) {
             for (subtree, keys) in held {
