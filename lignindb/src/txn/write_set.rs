@@ -1418,8 +1418,8 @@ impl WriteSet {
     /// something of the Merk's root. An enter of the subtree if it was
     /// absent says nothing of it: it leaves a Merk that is there as it
     /// is. `None` is for a clear of a Merk of whose root those writes say
-    /// nothing: the committed version that is read says there
-    /// (`Opened::below_taken`).
+    /// nothing: the committed version that is read says there, where it
+    /// has the subtree (`Opened::below_taken`).
     pub(crate) fn taking(&self) -> Vec<(Subtree, Option<bool>)> {
         let taking = self.leaving.iter().zip(&self.taking);
         taking
@@ -1577,9 +1577,10 @@ impl WriteSet {
     }
 
     /// [`Self::rooted`], after the operations before `end` only. With
-    /// `found`, an enter of the subtree if it was absent is taken to have
-    /// found it, and says nothing: what is older says, and otherwise the
-    /// committed state, which has the subtree if such an enter found it.
+    /// `found`, an enter of the subtree if it was absent says nothing of
+    /// the root, whether it found the subtree or entered it: what is
+    /// older says, and where nothing does, `None`. The version that is
+    /// read is then asked, which may have no such subtree.
     fn rooted_before(&self, subtree: &Subtree, end: usize, found: bool) -> Option<bool> {
         for op in (0..end).rev() {
             // The change sets of an operation come after what it does to

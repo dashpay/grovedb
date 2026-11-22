@@ -117,8 +117,8 @@ impl Opened {
     /// cleared, each with whether that took the subtrees below it
     /// (`WriteSet::taking`): a drop did, and a clear did where the Merk
     /// had a node, which the transaction's own writes say or do not.
-    /// Where they do not, this version says: its Merk is taken for the
-    /// one that was cleared.
+    /// Where they do not, this version says, if it has the subtree: its
+    /// Merk is taken for the one that was cleared.
     pub(crate) fn below_taken<'s>(
         &mut self,
         path: &WritePath<'s>,

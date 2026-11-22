@@ -1470,7 +1470,7 @@ together with the differences that are not about conflicts.
 | Data loaded outside *T* under keys *T* wrote | never a conflict: file ingestion is invisible to the check (case A18) | `Conflict` (CF5) | no: devnet seeding loads a subtree under which *T* has written nothing (P-30) |
 | A foreign commit writes a Merk node between *T*'s read of it and *T*'s write of it, and *T*'s write keeps the node's value | success: the node holds the value *T* read, and the foreign value is lost (case A19) | `Conflict` (CF2a) | only with two writers of one Merk at a time |
 | A foreign commit writes the node that hosts a subtree between *T*'s read of that node and *T*'s move of the subtree | success: the copy under the new path holds the records *T* read, under the hash *T* states for them, and what the foreign commit wrote under the old path is deleted with it | the batch is refused as a conflict (`ValueTaken`, CF10) | only with two writers of one Merk at a time |
-| A foreign commit moves a subtree away or drops it, so that nothing is entered under its prefix, and *T* then writes into it by a call that lays the writes of *T* out over the latest version (WT7a) | success: *T*'s records are under the old prefix, which no element leads to | the batch is refused: as a conflict (`ValueTaken`) where *T* holds the key set of that commit, and as `NotEntered` where it does not (CF10) | only with two writers at a time |
+| A foreign commit moves a subtree away or drops it, so that nothing is entered under its prefix, and *T* then writes into it by a call that lays the writes of *T* out over the latest version (WT7a) | success: *T*'s records are under the old prefix, which no element leads to | the batch is refused: as a conflict (`ValueTaken`) where *T* holds the key set of a commit that names the subtree as one it moved or dropped, and as `NotEntered` where it holds none (CF10) | only with two writers at a time |
 | A foreign commit meets a write of *T*, and *T* then states a move, reads or writes where a move of its own decides, or drops or clears a subtree while it holds a move | the call is served, and the commit fails with `Busy` | the call is refused as a conflict (`MovedByKey`, MV7), and the commit fails with `Conflict` | only with two writers at a time |
 | A foreign commit is published while *T* holds a cursor, and *T* then reads through that cursor where a move that it holds decides, with none of its writes met by a commit when it calls | the call is served: an iterator reads the snapshot it was made on under the writes of *T* | the call is refused, with no conflict (MV7): with the refusal that stops the layout of the writes of *T* over the latest version where one does, and with `MoveBeside` otherwise | only with two writers at a time |
 
@@ -2735,8 +2735,10 @@ same result.
   or a node at the moment of a rollback, one whose read of a node
   fails, one whose read of a node is under way while another thread uses
   the transaction and commits are published, as many as CF3 keeps key
-  sets of and one more, and one whose read under way shows no node after
-  a rollback; a cursor of another version than the latest, where a move
+  sets of and one more, one whose read under way shows no node after a
+  rollback, and one whose read shows a node that another thread keeps by
+  its handle before the read has ended; a cursor of another version than
+  the latest, where a move
   decides and where none does, with the commit before the move and after
   it; a drop after a clear that took a subtree when it was made again;
   and the scopes of MV8.
@@ -2759,12 +2761,17 @@ same result.
   later calls, two of one version among them, and reads that fail: a
   look at the commits, a change of the prefix that a cursor reads under,
   and a read of a node. It holds against the model what a transaction
-  reads by key and by cursor after its batches, what each cursor that is
-  kept answers or is refused, the outcome of every commit and what it
-  leaves committed, and it runs the physical checker at the end. A
-  history follows from its seed and prints its calls where it fails. The
-  test runs 40 histories of 160 steps; the environment names the seeds
-  and the length of a longer run. No history has an enter of a subtree
+  reads by key and by cursor after each of its batches, or that each of
+  those reads is refused where the transaction serves its records by key
+  and a move decides; what each cursor that is kept answers or is
+  refused; the outcome of every commit, the records and the Merks it
+  leaves, and what the directory shows under every prefix the history
+  has named. It runs the physical checker at the end. A history follows
+  from its seed and prints its calls where it fails. A step draws what
+  is done next: one call, several, or none. The test runs 40 histories
+  of 160 steps, and two of 30 under Miri; the environment names the
+  seeds and the number of steps of a longer run. No history has an enter
+  of a subtree
   if it is absent, a commit of a Merk with no node above a subtree, a
   move to another Merk, a write that keeps a node's value by the handle
   of a cursor's read, a scope beside another, or a second thread, and
