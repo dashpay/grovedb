@@ -6,9 +6,9 @@
 //! counted them (`docs/lignindb/node-store.md`, "What later tasks get",
 //! has the count). The count is of calls and not of time. The keys and the
 //! values are the same on every run. The count is not: runs of one build
-//! on LigninDB differed by a fraction of a call for a transition, of
-//! about 1,696. What the threads of the database have done by the time
-//! of a read or of a commit decides some of the calls.
+//! on LigninDB differed by a fraction of a call for a transition. What
+//! the threads of the database have done by the time of a read or of a
+//! commit decides some of the calls.
 //!
 //! ```text
 //! cargo bench -p grovedb-merk --features lignin_storage --bench allocations

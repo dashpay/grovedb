@@ -21,8 +21,8 @@
 //! The enter is a write of the transaction, also where the handle is a
 //! deferred one whose batch is never applied: it goes with a transaction
 //! that is not committed. So a batch is applied to the transaction that
-//! its handles were opened in: another transaction does not hold the
-//! subtree as entered, and can refuse the batch, where a storage batch of
+//! its handles were opened in: another transaction may lack the entry of
+//! the subtree and can then refuse the batch, where a storage batch of
 //! RocksDB is taken by any transaction.
 //!
 //! The engine does not know what tree the Merk of a handle is: a handle is
