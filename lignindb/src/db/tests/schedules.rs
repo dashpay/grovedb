@@ -1382,6 +1382,16 @@ fn dropped_just_now() -> (Db, History) {
 
 /// [`dropped_just_now`], on the file system `fs`.
 pub(super) fn dropped_on(fs: SimVfs) -> (Db, History) {
+    let (db, history, mut writer) = two_generations_on(fs);
+    let dropped = writer.drop_oldest().expect("a generation is entered");
+    commit(&db, &history, &mut writer, vec![dropped]);
+    (db, history)
+}
+
+/// A new database on the file system `fs` in which a writer has entered
+/// two generations: each a Merk that hosts another, which has a flat
+/// record.
+fn two_generations_on(fs: SimVfs) -> (Db, History, Writer) {
     let db = open_at_rest("/db", &options(Arc::new(fs))).expect("a new database");
     let history = History::new(1);
     let mut writer = Writer::new(1, 11);
@@ -1393,7 +1403,15 @@ pub(super) fn dropped_on(fs: SimVfs) -> (Db, History) {
         let generation = writer.generation();
         commit(&db, &history, &mut writer, vec![generation]);
     }
-    let dropped = writer.drop_oldest().expect("a generation is entered");
+    (db, history, writer)
+}
+
+/// A database in which the latest commit dropped a Merk that another
+/// hosts, alone: the Merk that hosted it stays. With its model and
+/// nothing reclaimed.
+fn dropped_below_just_now() -> (Db, History) {
+    let (db, history, mut writer) = two_generations_on(SimVfs::new(SimConfig::new(11)));
+    let dropped = writer.drop_below_oldest().expect("a generation is entered");
     commit(&db, &history, &mut writer, vec![dropped]);
     (db, history)
 }
@@ -1487,6 +1505,78 @@ fn a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on() {
             beside.join().expect("the drop is reclaimed");
         });
         assert_eq!(db.stats().reclaimed.merks, 1, "{behind:?}");
+        compare_at(&db, &history, &pinned.operation());
+    }
+}
+
+/// **The other half, by the drop of a hosted Merk alone** (D-183): the
+/// test above, with the two pages the other way round. The Merk that
+/// hosted the dropped one stays, and the reclaimer takes the cells of the
+/// dropped Merk out of the newest version of their page, which other
+/// cells keep, and frees no page. A pinned version reads that page
+/// version where no later commit wrote the page, and it reads the
+/// directory's page as it was where a later commit wrote that one.
+///
+/// The state: the latest commit dropped the Merk below a generation alone
+/// ([`Writer::drop_below_oldest`]). That version is pinned, a commit
+/// behind it enters a subtree, which writes the directory, and the drop
+/// is reclaimed.
+///
+/// - **With the reclaimer not held back:** the checker at the pinned
+///   version finds the record of the drop, which names the root of the
+///   dropped Merk, and no cell at that address. The record went from the
+///   directory's newer page version, which the pinned version does not
+///   read, and the cells from the tree page, which it does. The pinned
+///   version reads as the model has it all the same, and the latest
+///   version is sound.
+/// - **With the reclaimer held back from the pin to the end of the
+///   check:** the checker finds nothing, whatever the commit wrote, and
+///   the drop is reclaimed afterwards.
+#[test]
+fn a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_a_drop_inside_a_page_that_stays()
+{
+    let (db, history) = dropped_below_just_now();
+    let pinned = db.snapshot();
+    let before = verify(&db, Scope::Reader, pinned.version());
+    assert!(before.is_sound(), "{before}");
+    commit_behind(&db, &history, Behind::Directory);
+    reclaim_all(&db, &history);
+    // By construction: the cells of the dropped Merk went out of a page
+    // that stays.
+    let reclaimed = db.stats().reclaimed;
+    assert!(
+        reclaimed.merks == 1 && reclaimed.cells > 0 && reclaimed.pages_freed == 0,
+        "{reclaimed:?}"
+    );
+    let report = verify(&db, Scope::Reader, pinned.version());
+    assert!(
+        report.findings.len() == 1 && report.has(Rule::DanglingAddress),
+        "{report}"
+    );
+    compare_at(&db, &history, &pinned.operation());
+    let latest = db.snapshot();
+    let at_latest = verify(&db, Scope::Reader, latest.version());
+    assert!(at_latest.is_sound(), "{at_latest}");
+    drop((pinned, latest));
+
+    for behind in [Behind::Nothing, Behind::Column, Behind::Directory] {
+        let (db, history) = dropped_below_just_now();
+        let held_back = lock(&db.shared.store.reclaiming);
+        let pinned = db.snapshot();
+        commit_behind(&db, &history, behind);
+        thread::scope(|threads| {
+            let beside = threads.spawn(|| reclaim_all(&db, &history));
+            let report = verify(&db, Scope::Reader, pinned.version());
+            assert_eq!(db.stats().reclaimed.merks, 0, "{behind:?}");
+            assert!(report.is_sound(), "{behind:?}: {report}");
+            drop(held_back);
+            beside.join().expect("the drop is reclaimed");
+        });
+        let reclaimed = db.stats().reclaimed;
+        assert!(
+            reclaimed.merks == 1 && reclaimed.pages_freed == 0,
+            "{behind:?}: {reclaimed:?}"
+        );
         compare_at(&db, &history, &pinned.operation());
     }
 }
