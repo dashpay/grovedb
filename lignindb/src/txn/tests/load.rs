@@ -1424,6 +1424,84 @@ fn a_root_that_the_transaction_wrote_is_no_conflict_of_a_load() {
     }
 }
 
+/// A write of the transaction that drops, clears or moves a subtree
+/// forgets its looks (LD6): what leaves with such a write is the
+/// directory's to say. A Merk with a node hosts a subtree with no node.
+/// A transaction looks at that subtree, clears the Merk above it, which
+/// takes the subtree with it, and is refused the load, as one into a
+/// subtree that is not entered. A commit outside then clears the Merk
+/// above as well. The load is refused as before, and not as a conflict
+/// that the look would date: the transaction's own clear took the
+/// subtree first. So it is laid out and by key.
+#[test]
+fn a_clear_of_the_transactions_own_forgets_its_looks() {
+    for by_key in [false, true] {
+        let (db, versions) = Db::new(256);
+        let mut world = World::new(&db, &versions);
+        let merk = items(&mut Rng::new(39), b'c', 40, 2);
+        let (above, below) = (ENTERED + 16, ENTERED + 17);
+        let host = key(b'h', 4);
+        let maker = world.begin();
+        let mut outer = world.merk(&maker, above, |items| {
+            items.insert(host.clone(), b"tree".to_vec());
+        });
+        outer
+            .hosted
+            .insert(host.clone(), vec![model::subtree(below)]);
+        let mut made = batch_of(vec![outer]);
+        made.subtrees = vec![
+            OwnedSubtree::Enter(model::subtree(above), None),
+            OwnedSubtree::Enter(
+                model::subtree(below),
+                Some((model::subtree(above), host.clone(), 0)),
+            ),
+        ];
+        world.apply(&maker, &made).expect("a Merk and one below it");
+        assert!(matches!(world.commit(maker, &[]), Outcome::Committed(_)));
+
+        let tx = world.begin();
+        let rootless = tx.txn.subtree(model::subtree(below), |view| {
+            view.expect("the subtree is entered").root_key.is_none()
+        });
+        assert!(rootless.expect("a look"), "by key: {by_key}");
+        let cleared = OwnedBatch {
+            subtrees: vec![OwnedSubtree::Clear(model::subtree(above))],
+            ..OwnedBatch::default()
+        };
+        world.apply(&tx, &cleared).expect("its own clear");
+        let mut load = whole(below, &merk);
+        load.anchored = true;
+        let alone = OwnedBatch {
+            merks: vec![load],
+            ..OwnedBatch::default()
+        };
+        let gone = BatchError::NotEntered {
+            subtree: model::subtree(below),
+        };
+        let refused = take(&world, &tx, (&alone, below), by_key)
+            .map(drop)
+            .expect_err("it went with the Merk above");
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == gone),
+            "by key: {by_key}: {refused}"
+        );
+        assert!(!refused.is_conflict());
+
+        let theirs = world.write_outside(&cleared, &[&tx]);
+        assert!(matches!(theirs, Outcome::Committed(_)));
+        let refused = take(&world, &tx, (&alone, below), by_key)
+            .map(drop)
+            .expect_err("it went with the Merk above");
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == gone),
+            "by key: {by_key}: {refused}"
+        );
+        assert!(!refused.is_conflict());
+        world.check(&tx);
+        assert_eq!(counted(&db), 0);
+    }
+}
+
 /// What the directory names as the host of a Merk is asked as the batch
 /// of a load leaves it (LD1). A subtree that the batch states anew at
 /// another position among those of its host is hosted there: a node of

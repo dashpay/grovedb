@@ -135,8 +135,10 @@ struct State<'s> {
     /// root, each with the version of its last such look: what a load
     /// that is refused is dated with ([`WriteTxn::since_look`]). A look
     /// that finds anything else forgets the subtree. At most
-    /// [`KEPT_LOOKS`] are kept, and none across a write that is taken
-    /// out of the write set, which the look may have seen.
+    /// [`KEPT_LOOKS`] are kept, none across a write that is taken out of
+    /// the write set, which the look may have seen, and none across a
+    /// write of the transaction that drops, clears or moves a subtree
+    /// ([`forget_looks`]).
     looks: HashMap<Subtree, CommitVersion>,
     /// The scopes that are open, what each has claimed, and the pending
     /// marks (`crate::scope`).
@@ -793,6 +795,16 @@ fn note_look(
     looks.insert(subtree, at);
 }
 
+/// Forgets every look where `batch`, which the write set has just taken,
+/// drops, clears or moves a subtree: what leaves with such a write is the
+/// directory's to say, so a refusal of a load after it may be the
+/// transaction's own doing, and no look tells it as a conflict (LD6).
+fn forget_looks(looks: &mut HashMap<Subtree, CommitVersion>, batch: &Batch<'_>) {
+    if batch.has_leaves() || batch.moves().next().is_some() {
+        looks.clear();
+    }
+}
+
 /// A subtree that is entered once the subtrees of a batch have left and
 /// are entered ([`WriteTxn::entered_after`]).
 #[derive(Debug, Clone, Copy)]
@@ -1088,6 +1100,11 @@ impl<'s> WriteTxn<'s> {
         if writing && state.open.is_none() {
             state.open = Some(path.stats.write_opened());
         }
+        if state.stuck.is_none() {
+            // What a layout that is stopped no more was made of is kept
+            // no longer.
+            state.stopped = None;
+        }
         let mut at = guard.latest();
         loop {
             self.observe(state, &guard, at)?;
@@ -1265,6 +1282,7 @@ impl<'s> WriteTxn<'s> {
                 let stored = frames.take_stored();
                 let (empty, left) = (frames.empty_before(), frames.left_with_moves());
                 let first = state.set.add(batch, op.at, empty, &cut, left, &stored);
+                forget_looks(&mut state.looks, batch);
                 if !kept.met.is_empty() {
                     for (offset, unit, key) in &kept.met {
                         state.set.meet_kept(first + offset, *unit, key);
@@ -1977,6 +1995,7 @@ impl<'s> WriteTxn<'s> {
             state.lease_at = Some(op.at);
         }
         let first = state.set.add(batch, op.at, &empty, &cut, &[], &stored);
+        forget_looks(&mut state.looks, batch);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
         }
@@ -2337,7 +2356,8 @@ impl<'s> WriteTxn<'s> {
     ///   entered with no root ([`State::looks`]), at an earlier version
     ///   than the operation reads;
     /// - the batch drops, clears and moves no subtree: where it does, it
-    ///   may be why;
+    ///   may be why. Nor did a write of the transaction since the look,
+    ///   which forgets every look ([`forget_looks`]);
     /// - no write of the transaction says anything of the Merk's root, an
     ///   enter of the subtree if it was absent aside
     ///   ([`WriteSet::states_root`]);

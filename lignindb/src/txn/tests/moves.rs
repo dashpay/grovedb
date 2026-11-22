@@ -5278,6 +5278,19 @@ fn a_load_beside_a_move() {
     };
     world.apply(&tx, &later).expect("a record by key");
     assert_eq!(db.load_files.filled(), stopped);
+    // Nor is one that a scope beside another takes and that is laid out
+    // when the scope merges: it comes after the write that stops the
+    // layout.
+    let first = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope beside it");
+    let later = OwnedBatch {
+        records: vec![put(aux(TOP), b"later still", b"a record")],
+        ..OwnedBatch::default()
+    };
+    (world.apply_in(&tx, &beside, &later)).expect("a record by key");
+    beside.merge();
+    first.merge();
+    assert_eq!(db.load_files.filled(), stopped);
     // A commit is refused with what stopped the layout, and lays nothing
     // out to say so.
     for _ in 0..2 {
