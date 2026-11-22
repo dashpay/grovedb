@@ -7,8 +7,10 @@
 //! Two transactions stay open, and others are made, written and committed
 //! between their calls. A history is a number of steps: a step draws what
 //! is done next, which is one call, several, or none where what it drew
-//! cannot be made. A step that writes applies one batch, or up to three
-//! that belong together.
+//! cannot be made. A write through one of the two is one batch, or up to
+//! three that belong together. A step that commits a transaction of its
+//! own makes one or two such writes through it first. Where host nodes
+//! are missing, a batch more puts them again before a commit.
 //!
 //! A transaction is read whole and held against the model after each
 //! batch that is applied through it, after a rollback, after a look at
@@ -19,19 +21,23 @@
 //! writes are laid out, each subtree as the directory shows it. Where it
 //! serves its records by key and a move decides what is under a subtree,
 //! every read there is refused: each key that the model has there, and
-//! one more, by key, and the first seek of a cursor over the records and
-//! of one over the nodes of a Merk, each held against the kind of the
-//! refusal and the subtree it names.
+//! one that no history writes, by key, and the first seek of a cursor
+//! over the records and of one over the nodes of a Merk. Each refusal is
+//! held against its kind: a conflict, the refusal of a layout that
+//! stopped, or the refusal of a cursor of another version. The first and
+//! the last are also held against the subtree they name.
 //!
 //! A cursor that is kept is read at later calls, and each of its answers
 //! is held against the records of the version it was opened on with the
 //! writes of its transaction over them. A read that the history has fail
 //! is taken for that only where the model has the call served: a refusal
-//! for a move comes first, and the read fails at a later call. Every
-//! commit is held against the model by its outcome, by the records and
-//! the Merks it leaves, and by the directory as a transaction that wrote
-//! nothing is shown it, for every prefix the history has named. The
-//! store is checked when the history ends.
+//! for a move comes first, and the read can fail at a later call of the
+//! cursor. Every commit, also one that is refused because the writes
+//! cannot be laid out, is held against the model by its outcome, and the
+//! committed state is read after it: the records, the Merks, and the
+//! directory as a transaction that wrote nothing is shown it, for every
+//! prefix the history has named. The store is checked when the history
+//! ends.
 //!
 //! A Merk whose tree has a node is written nodes that its stated root
 //! does not reach, under keys of their own: the engine keeps each as an
@@ -39,15 +45,20 @@
 //! them with their Merk. A subtree is stated anew with the tree type and
 //! the place it has, which changes nothing that is read. A batch that
 //! moves a subtree and states one anew that its moves name is refused,
-//! and so is one that states anew by key a subtree that a move decides:
-//! a history makes each of the two before some of its moves and some of
-//! its writes by key, and holds the refusal against its kind.
+//! and so is one that states anew by key a subtree that a move decides.
+//! A history makes the first before some of its batches that move a
+//! subtree, and the second after some of its writes of records by key,
+//! where a move decides the subtree of those records, and holds each
+//! refusal against its kind.
 //!
 //! A history follows from its seed alone, and one that fails prints the
 //! calls it made.
 //!
-//! A history has none of these: an unlinked record in a Merk with no
-//! node; a subtree that is stated anew with another tree type or at
+//! A history has none of these: a batch that writes an unlinked record
+//! into a Merk with no node, or a commit that leaves one there (a
+//! transaction that a commit has met can read one: it removed the nodes
+//! of a Merk, and the commit left a record in it); a subtree that is
+//! stated anew with another tree type or at
 //! another place; an enter of a subtree if it is absent; a
 //! commit of a Merk with no node that has a subtree below it, which is no
 //! state of a grove; a move to another Merk than the one that hosted the
@@ -89,6 +100,9 @@ fn prefix(kind: u8, serial: u32, renamed: u32) -> Subtree {
 fn kind(subtree: &Subtree) -> u8 {
     subtree.as_bytes()[0]
 }
+
+/// A key that no history writes, in any column.
+const ABSENT: &[u8] = b"z";
 
 /// The first byte of the keys that a history writes unlinked records
 /// under. No node of a tree has such a key.
@@ -1176,8 +1190,9 @@ impl<'s> Run<'s> {
         Some(draft)
     }
 
-    /// One batch of a transaction whose writes are laid out, and whether
-    /// one was made.
+    /// One write of a transaction whose writes are laid out: one batch,
+    /// or up to three that belong together. It says whether one was
+    /// made.
     fn write(&mut self, tx: &Tx<'s>, others: &[&Tx<'s>], who: &str) -> bool {
         let hosts = self.hosts(tx);
         let few = self.live(&hosts).len() < 14;
@@ -1398,18 +1413,14 @@ impl<'s> Run<'s> {
     /// Makes every read of `unit` through `tx`, which serves its records
     /// by key and has a move that decides what is under the unit's
     /// subtree, and holds each refusal against `expected`: each key that
-    /// the model has there, and one more, by key, and the first seek of a
-    /// cursor over the records, and of one over the nodes of a Merk.
+    /// the model has there, and one that no history writes, by key, and
+    /// the first seek of a cursor over the records, and of one over the
+    /// nodes of a Merk.
     fn refused(&self, tx: &Tx<'s>, unit: Unit, expected: Refusal) {
         let view = tx.model.borrow().view(&self.world.model.records, unit);
         let mut keys: Vec<Vec<u8>> = view.keys().cloned().collect();
-        let other = match unit.column {
-            Column::Data => vec![b'n', 0],
-            _ => vec![b'f', 0],
-        };
-        if !keys.contains(&other) {
-            keys.push(other);
-        }
+        assert!(!view.contains_key(ABSENT));
+        keys.push(ABSENT.to_vec());
         for key in &keys {
             let mut out = Vec::new();
             let by_key = match unit.column {
@@ -1663,14 +1674,20 @@ impl<'s> Run<'s> {
                     Some(Val::Flat(_)) => panic!("a record among nodes"),
                     None => None,
                 });
+                // A committed unlinked record is shown as one. One that
+                // the transaction wrote is shown so too, or from the
+                // write set where the transaction serves it by key.
+                let own = tx.model.borrow().own(kept.unit, &key).is_some();
+                let committed = kept.pin == latest && !own;
                 let read = cursor.node(|shown| {
                     let node = node.expect("no refusal");
                     match (node, shown) {
                         (Some(node), Some(shown)) => {
-                            // An unlinked record has no cell: it is shown
-                            // as that, or from the write set where the
-                            // transaction wrote it and serves it by key.
                             let (record, cell) = (shown.is_unlinked(), shown.handle().is_some());
+                            assert!(
+                                !is_unlinked(&key) || !committed || record,
+                                "{key:?} is shown as no unlinked record"
+                            );
                             assert!(
                                 is_unlinked(&key) || !record,
                                 "{key:?} is no unlinked record"
@@ -1804,6 +1821,7 @@ impl<'s> Run<'s> {
             assert_eq!(refusal(&refused), Refusal::Layout, "{refused}");
             self.tally.refused_commits += 1;
             self.check(tx, Some(index));
+            self.check_committed();
             return;
         }
         if !met {

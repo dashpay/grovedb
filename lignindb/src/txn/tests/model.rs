@@ -306,6 +306,19 @@ pub fn hosted(hosts: &mut Hosts, write: &Write) {
     }
 }
 
+/// Takes `write` into `entries`, which has the subtrees that the
+/// directory stores an entry of, each below the one its entry names. It
+/// is [`hosted`], but for a drop and a clear: the subtree that a drop
+/// names has no entry afterwards, and every subtree that goes with one
+/// above it keeps the entry it has.
+pub fn stored(entries: &mut Hosts, write: &Write) {
+    match write {
+        Write::Leave(left) if left.cleared => {}
+        Write::Leave(left) => drop(entries.remove(&left.subtree)),
+        other => hosted(entries, other),
+    }
+}
+
 /// Every subtree that is below `subtree`, at any depth.
 pub fn below(hosts: &Hosts, subtree: Subtree) -> Vec<Subtree> {
     let mut below = vec![subtree];
@@ -352,9 +365,12 @@ impl Left {
     /// every subtree below it, and none for a clear of a Merk that has no
     /// node. Whether the Merk has one is what the earlier writes of the
     /// transaction said of its root (`said`), and where they said nothing
-    /// what `records` have. The two are one for a transaction whose
-    /// writes are laid out, but for a Merk that an enter if it is absent
-    /// found, which the model takes for an enter ([`Said`]), and the
+    /// what `records` have: a node record there is taken for a node of
+    /// the tree. The two are one for a transaction whose writes are laid
+    /// out, but for a Merk that an enter if it is absent found, which the
+    /// model takes for an enter ([`Said`]), and for a Merk whose node
+    /// records are all unlinked: it has no node, and where the writes
+    /// said nothing of its root the model takes it for one that has. The
     /// first is what a transaction that a commit has met answers by
     /// (WT7b). It says whether the Merk has a node.
     pub fn lay(&mut self, hosts: &Hosts, records: &Records, said: Option<bool>) -> bool {
@@ -374,14 +390,16 @@ impl Left {
     /// Whether the write, a clear of a Merk that had no node when it was
     /// stated ([`TxnModel::bare`]), takes the committed records of `unit`
     /// and leaves those that its transaction had written there before
-    /// it: a unit of a subtree below the Merk, which has a node where
-    /// the writes are worked out again.
+    /// it: a unit of a subtree below the Merk, where the version that the
+    /// writes are worked out over has a node in the Merk.
     ///
-    /// A commit gave the Merk that node, and it meets the clear (CF2),
-    /// whose entry covers the data of the Merk. So the transaction serves
-    /// its records by key (WT7b), and reads its own writes as the write
-    /// set has them (RD3): in it, the entry of a clear that cut nothing
-    /// covers no key below its Merk.
+    /// That is a later version, where a commit gave the Merk a node: the
+    /// commit meets the clear (CF2), whose entry covers the data of the
+    /// Merk, and the transaction serves its records by key from then on
+    /// (WT7b). Or it is an older one, which a cursor reads that was
+    /// opened before the Merk lost its nodes. Over both the transaction
+    /// reads its own writes as the write set has them (RD3): in it, the
+    /// entry of a clear that cut nothing covers no key below its Merk.
     fn spares(&self, unit: Unit) -> bool {
         let below = self.below.contains(&unit.subtree);
         below && !self.own(unit) && !self.cut.contains(&unit.subtree)
@@ -597,6 +615,13 @@ pub struct TxnModel {
     /// nothing, and what its transaction had written below the Merk by
     /// then stays written ([`Left::spares`]). A place past the last write
     /// is of a write that was taken back.
+    ///
+    /// The model takes every clear for one that is stated with the
+    /// writes of its transaction laid out. A clear that is stated while
+    /// the transaction serves its records by key takes what the
+    /// transaction itself entered below the Merk, whether the Merk has a
+    /// node or not (`ByKey::below`): the model is not told of such a
+    /// clear.
     pub bare: BTreeSet<usize>,
 }
 

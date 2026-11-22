@@ -261,32 +261,19 @@ impl<'s> World<'s> {
                     .map(|(write, ..)| write.clone())
                     .collect();
                 // The subtrees that the directory has an entry of after
-                // the commit, each below the one its entry names. One
-                // that went with a subtree above it keeps its entry until
-                // it is reclaimed. One that the commit dropped by name,
-                // or that a move of it took from its prefix or let
-                // leave, has none, unless the commit left a subtree
-                // under its prefix.
+                // the commit, each below the one its entry names
+                // (`model::stored`), from those that were entered before
+                // it: its writes are taken one after another. One that
+                // went with a subtree above it keeps its entry, also one
+                // that the commit itself had entered. One that the
+                // commit dropped by name, or that a move of it took from
+                // its prefix or let leave, has none, unless a later write
+                // of the commit left a subtree under its prefix.
                 let mut stored = self.model.hosts.clone();
                 for write in &writes {
-                    match write {
-                        Write::Leave(left) if !left.cleared => drop(stored.remove(&left.subtree)),
-                        Write::Move(moved) => {
-                            let taken = moved.pairs.iter().map(|(from, _)| from);
-                            for unlinked in taken.chain(&moved.gone) {
-                                stored.remove(unlinked);
-                            }
-                        }
-                        _ => {}
-                    }
+                    model::stored(&mut stored, write);
                 }
                 let commit = self.model.commit(&writes);
-                stored.extend(
-                    self.model
-                        .hosts
-                        .iter()
-                        .map(|(below, above)| (*below, *above)),
-                );
                 for other in others {
                     // What the other saw of the subtrees at its last look,
                     // which was before this commit.

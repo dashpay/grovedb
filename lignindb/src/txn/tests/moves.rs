@@ -1710,8 +1710,9 @@ fn a_clear_after_an_enter_if_absent_that_found_the_merk_takes_what_is_below_it()
 
 /// A transaction reads what it wrote (RD3), also below a Merk that it
 /// cleared while the Merk had no node, and that a commit has given a node
-/// since. Such a clear cut nothing: its entry covers no key below its
-/// Merk. The commit meets the clear, and the transaction, which serves
+/// since. Such a clear, stated while the writes are laid out, cut
+/// nothing: its entry covers no key below its Merk. The commit meets
+/// the clear, and the transaction, which serves
 /// its records by key from then on, goes on reading the record it wrote
 /// under the subtree it had entered there, by key and under a cursor.
 #[test]
@@ -3234,6 +3235,84 @@ fn a_record_that_a_move_brings_is_not_the_one_the_transaction_left_under_the_pre
     assert_eq!(unlinked(&reader, A_IN, b"u1"), Some(true));
 }
 
+/// A Merk with no node can hold unlinked records: a batch took every
+/// node out of its tree and stated no root. Below a moved subtree, such a
+/// Merk goes to the prefix that the move names for it, with its records,
+/// which are read there by key and under a cursor and by a reader after
+/// the commit. Where the move names no prefix for it, it leaves with the
+/// move as every subtree with no node does (MV2), and its unlinked
+/// records go with its other flat records: nothing is read of them under
+/// either prefix.
+#[test]
+fn a_merk_with_no_node_takes_its_unlinked_records_where_a_move_names_it_and_they_go_where_it_leaves(
+) {
+    for named in [true, false] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world, b"a", A, A_IN);
+        // Every node of the Merk below leaves its tree, with its value.
+        let tx = world.begin();
+        let below: &[(u8, &[u8])] = &[(A, b"a"), (A_IN, b"in")];
+        let mut batch = edit_at(&world, &tx, below, |_| {});
+        let held = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(A_IN)));
+        let nodes = held.iter().map(|(key, value)| match value {
+            Val::Node(node) => (key.clone(), node.clone(), false),
+            Val::Flat(_) => panic!("a flat record among the nodes"),
+        });
+        batch.merks[0].nodes = nodes.collect();
+        batch.merks[0].root = Some(None);
+        let applied = world.apply(&tx, &batch).expect("no root is stated");
+        assert_eq!(applied.unlinked.len(), 2);
+        assert!(committed(world.commit(tx, &[])));
+        let records = |key: &[u8]| key == b"one" || key == b"two";
+        world.check_committed_but(records);
+        let both: Vec<(Vec<u8>, bool)> = vec![(b"one".to_vec(), true), (b"two".to_vec(), true)];
+        let reader = world.begin();
+        assert_eq!(shown(&reader, A_IN).map(|(root, ..)| root), Some(None));
+        assert_eq!(under_a_cursor(&reader, A_IN), both);
+        drop(reader);
+
+        let tx = world.begin();
+        let pairs: &[(u8, u8)] = match named {
+            true => &[(A, B), (A_IN, B_IN)],
+            false => &[(A, B)],
+        };
+        let batch = rename(&world, &tx, b"a", b"b", pairs);
+        world.apply(&tx, &batch).expect("the subtree is moved");
+        let moved = |tx: &Tx<'_>| {
+            assert_eq!(
+                [b"one", b"two"].map(|key| unlinked(tx, A_IN, key)),
+                [None; 2]
+            );
+            assert!(under_a_cursor(tx, A_IN).is_empty());
+            assert_eq!(shown(tx, A_IN), None);
+            let there = named.then_some(true);
+            assert_eq!(
+                [b"one", b"two"].map(|key| unlinked(tx, B_IN, key)),
+                [there; 2]
+            );
+            match named {
+                true => {
+                    assert_eq!(shown(tx, B_IN).map(|(root, ..)| root), Some(None));
+                    assert_eq!(under_a_cursor(tx, B_IN), both);
+                }
+                false => assert_eq!(shown(tx, B_IN), None, "it left with the move"),
+            }
+        };
+        moved(&tx);
+        world.check(&tx);
+        assert!(committed(world.commit(tx, &[])));
+        world.check_committed_but(records);
+        let reader = world.begin();
+        moved(&reader);
+        if !named {
+            let left = (world.model.records.keys()).any(|(_, key)| records(key));
+            assert!(!left, "the model has the records gone");
+        }
+        assert_eq!(db.private_ids(), 0);
+    }
+}
+
 /// What a transaction knows of whether a Merk holds unlinked records goes
 /// with the Merk where a move takes it: the moves of a batch are made
 /// together. One of two Merks holds an unlinked record, and a
@@ -3396,11 +3475,116 @@ fn a_record_that_a_cursor_shows_with_no_handle_answers_for_no_handle_from_before
     world.check_committed_but(|key| key == b"u");
 }
 
+/// Where a transaction serves its records by key, a clear of a Merk
+/// takes what the transaction itself entered below the Merk, whether the
+/// Merk has a node or not: by key the transaction's own subtrees hang by
+/// the hosts that their enters state (`ByKey::below`). A transaction
+/// enters a subtree under a Merk and writes a record under it; a commit
+/// clears the Merk, and another meets the transaction. The transaction
+/// then clears the Merk, which has no node, by key: it reads no subtree
+/// and no record below it. The model is not told of that clear.
+#[test]
+fn a_clear_by_key_of_a_merk_with_no_node_takes_what_its_transaction_entered_below_it() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    alone(&mut world);
+    let tx = world.begin();
+    let entered = subtrees(vec![OwnedSubtree::Enter(sub(FREE), host(ROOT, b"x"))]);
+    world.apply(&tx, &entered).expect("a subtree with no node");
+    world.write(
+        &tx,
+        vec![
+            put(aux(FREE), b"k", b"mine"),
+            put(aux(ROOT), b"z", b"mine too"),
+        ],
+    );
+    let cleared = subtrees(vec![OwnedSubtree::Clear(sub(ROOT))]);
+    assert!(committed(world.write_outside(&cleared, &[&tx])));
+    world.check(&tx);
+    assert_eq!(tx.txn.stats().overlapped, 0);
+    let beside = OwnedBatch {
+        records: vec![put(aux(ROOT), b"z", b"theirs")],
+        ..OwnedBatch::default()
+    };
+    assert!(committed(world.write_outside(&beside, &[&tx])));
+    world.check(&tx);
+    assert!(tx.txn.stats().overlapped > 0);
+    let read = |tx: &Tx<'_>| get(tx, aux(FREE), b"k").expect("a read");
+    assert_eq!(read(&tx), Some(b"mine".to_vec()));
+    assert!(shown(&tx, FREE).is_some());
+
+    let scope = tx.txn.scope().expect("a scope");
+    (cleared.with(|batch| scope.apply(batch))).expect("a clear by key");
+    scope.merge();
+    assert_eq!(read(&tx), None, "the clear took the record");
+    assert_eq!(shown(&tx, FREE), None, "and the subtree");
+    let ended = world.db.commit(world.versions, &tx.txn).expect("a commit");
+    assert_eq!(ended, Outcome::Conflict);
+    world.check_committed();
+}
+
+/// A Merk whose node records are all unlinked has no node, and a clear
+/// of it takes nothing below it, as a clear of a Merk with no record
+/// does. One batch takes the one node of a Merk out of its tree. A
+/// transaction then enters a subtree under the Merk, writes a record
+/// under it and clears the Merk: the subtree stays entered with its
+/// record, and the unlinked record goes with the clear. The model of
+/// these tests takes a node record for a node of the tree (`Left::lay`),
+/// and is not told of the clear.
+#[test]
+fn a_clear_of_a_merk_whose_records_are_all_unlinked_takes_nothing_below_it() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    alone(&mut world);
+    let tx = world.begin();
+    let held = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(ROOT)));
+    let items = model::Committed::items(&held);
+    let mut merk = OwnedMerk::change(sub(ROOT), &held, &items);
+    let Some(Val::Node(node)) = held.get(&b"x"[..]) else {
+        panic!("the node of the Merk");
+    };
+    merk.nodes = vec![(b"x".to_vec(), node.clone(), false)];
+    merk.root = Some(None);
+    let batch = OwnedBatch {
+        merks: vec![merk],
+        ..OwnedBatch::default()
+    };
+    let applied = world.apply(&tx, &batch).expect("no root is stated");
+    assert_eq!(applied.unlinked.len(), 1);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed_but(|key| key == b"x");
+
+    let tx = world.begin();
+    assert_eq!(unlinked(&tx, ROOT, b"x"), Some(true));
+    let entered = subtrees(vec![OwnedSubtree::Enter(sub(FREE), host(ROOT, b"x"))]);
+    world.apply(&tx, &entered).expect("a subtree with no node");
+    world.write(&tx, vec![put(aux(FREE), b"k", b"mine")]);
+    world.check(&tx);
+    let cleared = subtrees(vec![OwnedSubtree::Clear(sub(ROOT))]);
+    let scope = tx.txn.scope().expect("a scope");
+    (cleared.with(|batch| scope.apply(batch))).expect("a clear");
+    scope.merge();
+    assert_eq!(tx.txn.stats().overlapped, 0, "the writes are laid out");
+    assert!(
+        shown(&tx, FREE).is_some(),
+        "the subtree below stays entered"
+    );
+    assert_eq!(
+        get(&tx, aux(FREE), b"k").expect("a read"),
+        Some(b"mine".to_vec())
+    );
+    assert_eq!(unlinked(&tx, ROOT, b"x"), None, "the clear took the record");
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    world.check_committed_but(|key| key == b"x");
+}
+
 /// A subtree that a move of a batch names is not stated anew by that
 /// batch, under the prefix it has or the one it gets: the batch is
 /// refused whole (`ConvertMoved`), whichever of the two statements comes
-/// first. A subtree that leaves with the move is not entered where the
-/// batch states its subtrees anew, after its moves (MV4). A later batch
+/// first. A subtree that leaves with the move, under a prefix that no
+/// move names, is not entered where the batch states its subtrees anew,
+/// after its moves (MV4). A later batch
 /// states the moved subtree anew under the prefix it then has, and
 /// frames that are made again state it so. Where the transaction serves
 /// its records by key, a subtree that a move decides is not stated anew
