@@ -135,14 +135,6 @@ struct State<'s> {
     /// for what their drops cover (`WriteTxn::meet_below`): the look that
     /// was owed them failed on a read, and the next one makes it.
     owed: Vec<(CommitVersion, Arc<KeySet>)>,
-    /// The reads of a node that are under way and that a cursor makes of
-    /// its own version, outside the transaction's lock: each was handed
-    /// back by [`WriteTxn::cursor_node`] and has not said what it read
-    /// ([`WriteTxn::cursor_read`]). Each is here by the cursor's lease,
-    /// which the transaction remembers until the read ends, and with
-    /// whether it remembers the lease for this read alone: it did not
-    /// when the read was handed back, or it has ended since.
-    showing: Vec<(Lease, bool)>,
     /// The next look at what the drops of commits cover fails once it has
     /// read where the subtrees hang, as a read of the directory does: for
     /// a test of a read that fails there.
@@ -183,16 +175,17 @@ impl State<'_> {
     }
 
     /// Gives the watch on the commits up where nothing needs it: the
-    /// transaction has no write and remembers no lease
-    /// ([`Reads::any`]). Among the leases it remembers are one that a
-    /// cursor over the nodes of a Merk was opened with
-    /// ([`WriteTxn::pin_shown`]), whether or not a node was shown under
-    /// it since, and one of a read of a node that is under way
-    /// ([`WriteTxn::cursor_node`]). The handle of a node that was shown
-    /// can still come back in a write that keeps the node's value, and
-    /// the commits are watched for that: with no write, for the newest
-    /// key sets only, which are all that its reads are dated with
-    /// ([`Commits`](super::Commits)).
+    /// transaction has no write, remembers no lease, and no read of a
+    /// node is under way that a cursor makes of its own version
+    /// ([`Reads::any`]). A lease is remembered from when a cursor over
+    /// the nodes of a Merk is opened with it ([`WriteTxn::pin_shown`]),
+    /// whether or not a node was shown under it since, until the
+    /// transaction ends or the key sets it holds reach back to the
+    /// lease's version no more ([`Reads::took`]). The handle of a node
+    /// that was shown can still come back in a write that keeps the
+    /// node's value, and the commits are watched for that: with no
+    /// write, for the newest key sets only, which are all that its reads
+    /// are dated with ([`Commits`](super::Commits)).
     fn unwatch(&mut self) {
         if !self.set.is_empty() {
             return;
@@ -215,20 +208,17 @@ impl State<'_> {
     /// The handles of the nodes it showed end with it, and it forgets when
     /// it showed them: a write that keeps a value by a handle of a lease
     /// it has shown no node under since is taken to be met
-    /// (`super::reads`). One lease it does not forget: that of a read of
-    /// a node which a cursor is making of its own version while the
-    /// transaction ends (`showing`). That read is of the same version
-    /// after the end as before it, and the key sets that were taken in
-    /// since it was handed back stay for it.
+    /// (`super::reads`). That holds of the lease of a cursor too, also
+    /// while a read of a node that the cursor makes of its own version
+    /// is under way: such a read dates the lease when it ends, if it
+    /// showed a node, and not before ([`Reads::ended`]). The key sets
+    /// that the transaction holds are not given up at its end while such
+    /// a read is under way ([`Reads::clear`]).
     fn end(&mut self) {
         self.set.clear();
         self.savepoints.clear();
         self.scopes.clear_marks();
-        let showing = &mut self.showing;
-        (self.reads).end(|lease| showing.iter().any(|(read, _)| read == lease));
-        for (_, alone) in showing.iter_mut() {
-            *alone = true;
-        }
+        self.reads.clear();
         self.committed = None;
         self.release();
         self.renew_lease();
@@ -687,7 +677,6 @@ impl<'s> WriteTxn<'s> {
                 under: HashMap::new(),
                 above: Vec::new(),
                 owed: Vec::new(),
-                showing: Vec::new(),
                 #[cfg(test)]
                 refuse_look: false,
                 #[cfg(test)]
@@ -2209,11 +2198,11 @@ impl<'s> WriteTxn<'s> {
     /// nothing committed is read: the cursor then reads the node of its
     /// own version (RD6) under the prefix it was told, under its own
     /// lease, and says what it read ([`Self::cursor_read`]). From here
-    /// until it has, the transaction remembers that lease, dated at the
-    /// cursor's version if it did not remember it: so the watch stays,
-    /// and the key sets that are taken in meanwhile are kept for the
-    /// read, whatever else the transaction gives up, also where it ends
-    /// ([`State::end`]).
+    /// until it has, the read is under way ([`Reads::begun`]): the watch
+    /// stays, and the key sets that are taken in meanwhile are kept, as
+    /// many as are kept for a lease, whatever else the transaction gives
+    /// up, also where it ends ([`State::end`]). It answers for no keep
+    /// before it has shown a node.
     ///
     /// `children`, where it is given, takes the key of each child of a
     /// node that is shown from a cell of the frames, in the same operation.
@@ -2267,10 +2256,7 @@ impl<'s> WriteTxn<'s> {
         match (&shown, lease) {
             // The cursor's own read is under way from here on, until the
             // cursor says what it read.
-            (Ok(Err(_)), Some(lease)) => {
-                let alone = state.reads.date(lease, at);
-                state.showing.push((lease, alone));
-            }
+            (Ok(Err(_)), Some(lease)) => state.reads.begun(lease),
             (Ok(_), _) => {}
             (Err(_), _) => state.unwatch(),
         }
@@ -2287,25 +2273,17 @@ impl<'s> WriteTxn<'s> {
     /// transaction does not remember it, and the transaction watches from
     /// here on: a keep by the node's handle is answered for where the key
     /// sets it holds reach back to `pinned`, and is taken to be met
-    /// otherwise. With no node shown, the lease is forgotten where the
-    /// transaction remembered it for this read alone, and the watch is
+    /// otherwise ([`Reads::since`]). With no node shown, the watch is
     /// given up where nothing else needs it ([`State::unwatch`]).
     pub(crate) fn cursor_read(&self, lease: Lease, pinned: CommitVersion, shown: bool) {
         let mut state = self.lock();
         let state = &mut *state;
-        let under_way = state.showing.iter().position(|(read, _)| *read == lease);
-        let alone = under_way.is_some_and(|read| state.showing.swap_remove(read).1);
-        match shown {
-            true => {
-                self.watch(state);
-                state.reads.note(lease, pinned);
-            }
-            false => {
-                if alone {
-                    state.reads.forget(lease);
-                }
-                state.unwatch();
-            }
+        if shown {
+            self.watch(state);
+        }
+        state.reads.ended(lease, pinned, shown);
+        if !shown {
+            state.unwatch();
         }
     }
 

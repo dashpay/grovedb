@@ -114,10 +114,11 @@ impl Opened {
     }
 
     /// [`Self::below`], for subtrees that the transaction dropped or
-    /// cleared, each with whether its Merk had a node then, where the
-    /// transaction's own writes say so (`WriteSet::taking`). Where they
-    /// do not, this version says: its Merk is taken for the one that was
-    /// dropped or cleared.
+    /// cleared, each with whether that took the subtrees below it
+    /// (`WriteSet::taking`): a drop did, and a clear did where the Merk
+    /// had a node, which the transaction's own writes say or do not.
+    /// Where they do not, this version says: its Merk is taken for the
+    /// one that was cleared.
     pub(crate) fn below_taken<'s>(
         &mut self,
         path: &WritePath<'s>,

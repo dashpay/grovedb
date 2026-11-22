@@ -1486,9 +1486,12 @@ fn two_moves_meet_under_a_prefix_that_one_lets_leave_and_the_other_names() {
 /// transaction then removes that node and clears `C` while it has none,
 /// which leaves `C_IN` entered: that transaction is returned.
 ///
-/// The model is not told of the clear: there a clear takes what is
-/// entered below.
-fn cleared_with_no_node<'s>(world: &mut World<'s>) -> Tx<'s> {
+/// With `found`, the transaction also enters `C` if it is absent, as it
+/// is entered, which finds it and leaves it as it is: before it removes
+/// the node (`false`), or in the batch of the clear (`true`).
+///
+/// The model is not told of the clear, nor of that enter.
+fn cleared_with_no_node<'s>(world: &mut World<'s>, found: Option<bool>) -> Tx<'s> {
     let tx = world.begin();
     let mut top = world.merk(&tx, TOP, |items| {
         items.insert(b"f".to_vec(), b"a tree".to_vec());
@@ -1507,6 +1510,13 @@ fn cleared_with_no_node<'s>(world: &mut World<'s>) -> Tx<'s> {
     assert!(committed(world.commit(tx, &[])));
 
     let tx = world.begin();
+    let entered = OwnedSubtree::EnterIfAbsent(sub(C), host(TOP, b"f"));
+    if found == Some(false) {
+        let entered = subtrees(vec![entered.clone()]);
+        let scope = tx.txn.scope().expect("a scope");
+        (entered.with(|batch| scope.apply(batch))).expect("the subtree is found");
+        scope.merge();
+    }
     let removed = edit_at(world, &tx, &[(C, b"f")], |items| {
         items.remove(&b"h"[..]);
     });
@@ -1515,7 +1525,9 @@ fn cleared_with_no_node<'s>(world: &mut World<'s>) -> Tx<'s> {
         shown(&tx, C_IN).is_some(),
         "the subtree below stays entered"
     );
-    let cleared = subtrees(vec![OwnedSubtree::Clear(sub(C))]);
+    let mut cleared = vec![OwnedSubtree::Clear(sub(C))];
+    cleared.extend((found == Some(true)).then_some(entered));
+    let cleared = subtrees(cleared);
     let scope = tx.txn.scope().expect("a scope");
     cleared.with(|batch| scope.apply(batch)).expect("a clear");
     scope.merge();
@@ -1540,22 +1552,32 @@ fn node_again<'s>(world: &World<'s>, tx: &Tx<'s>) {
 /// gets the node back, and is moved with the subtree below it. The record
 /// of that subtree is read under its prefix before the move, and under
 /// its new prefix afterwards, by key and by cursor, and is there after
-/// the commit.
+/// the commit. An enter of the Merk if it is absent, which finds it,
+/// changes nothing of that, before the node is removed or in the batch
+/// of the clear.
 #[test]
 fn a_clear_from_before_a_move_hides_nothing_of_a_subtree_it_left_entered() {
-    let (db, versions) = Db::new(96);
-    let mut world = World::new(&db, &versions);
-    grove(&mut world, b"a", A, A_IN);
-    let tx = cleared_with_no_node(&mut world);
+    for found in [None, Some(false), Some(true)] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world, b"a", A, A_IN);
+        let tx = cleared_with_no_node(&mut world, found);
+        hides_nothing(&mut world, tx);
+    }
+}
+
+/// What [`a_clear_from_before_a_move_hides_nothing_of_a_subtree_it_left_entered`]
+/// asks of the transaction of [`cleared_with_no_node`].
+fn hides_nothing<'s>(world: &mut World<'s>, tx: Tx<'s>) {
     let was = vec![(b"k".to_vec(), b"kept".to_vec())];
     let read = |tx: &Tx<'_>, name: u8| get(tx, aux(name), b"k").expect("a read");
     let mut source = tx.txn.cursor(aux(C_IN));
     assert_eq!(read(&tx, C_IN), Some(b"kept".to_vec()));
     assert_eq!(records(&mut source), was);
-    node_again(&world, &tx);
+    node_again(world, &tx);
     assert_eq!(read(&tx, C_IN), Some(b"kept".to_vec()));
     assert_eq!(records(&mut source), was);
-    let batch = rename(&world, &tx, b"f", b"g", &[(C, FREE), (C_IN, FREE_IN)]);
+    let batch = rename(world, &tx, b"f", b"g", &[(C, FREE), (C_IN, FREE_IN)]);
     world.apply(&tx, &batch).expect("the subtree is moved");
     world.check(&tx);
     let mut target = tx.txn.cursor(aux(FREE_IN));
@@ -1579,6 +1601,113 @@ fn a_clear_from_before_a_move_hides_nothing_of_a_subtree_it_left_entered() {
     kept(&reader);
 }
 
+/// A drop takes what is below its subtree, whatever the committed state
+/// has of the Merk's nodes. A Merk is committed with no node and a
+/// subtree entered below it. A transaction gives it a node again and
+/// drops it: the record of the subtree below is read no more, by key or
+/// by cursor, and the subtree is not entered, before the commit and
+/// after.
+#[test]
+fn a_drop_takes_the_subtree_below_a_merk_that_was_committed_with_no_node() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let mut top = world.merk(&tx, TOP, |items| {
+        items.insert(b"f".to_vec(), b"a tree".to_vec());
+    });
+    top.hosted.insert(b"f".to_vec(), vec![sub(C)]);
+    let mut outer = world.merk(&tx, C, |items| {
+        items.insert(b"h".to_vec(), b"a tree with no node".to_vec());
+    });
+    outer.hosted.insert(b"h".to_vec(), vec![sub(C_IN)]);
+    let made = OwnedBatch {
+        merks: vec![outer, top],
+        records: vec![put(aux(C_IN), b"k", b"kept")],
+        subtrees: vec![hosted(C, TOP, b"f"), hosted(C_IN, C, b"h")],
+    };
+    world.apply(&tx, &made).expect("the subtrees are made");
+    assert!(committed(world.commit(tx, &[])));
+    // The Merk loses its node, and the subtree below it stays entered:
+    // no state of a grove, and committed so here.
+    let tx = world.begin();
+    let removed = edit_at(&world, &tx, &[(C, b"f")], |items| {
+        items.remove(&b"h"[..]);
+    });
+    world.apply(&tx, &removed).expect("the node is removed");
+    assert!(committed(world.commit(tx, &[])));
+
+    let tx = world.begin();
+    node_again(&world, &tx);
+    let top = world.merk(&tx, TOP, |items| {
+        items.remove(&b"f"[..]);
+    });
+    let dropped = OwnedBatch {
+        merks: vec![top],
+        subtrees: vec![OwnedSubtree::Drop(sub(C))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &dropped).expect("a drop");
+    let gone = |tx: &Tx<'_>| {
+        assert_eq!(get(tx, aux(C_IN), b"k").expect("a read"), None);
+        assert!(records(&mut tx.txn.cursor(aux(C_IN))).is_empty());
+        assert_eq!(shown(tx, C_IN), None);
+        assert_eq!(shown(tx, C), None);
+    };
+    gone(&tx);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    let reader = world.begin();
+    gone(&reader);
+}
+
+/// An enter of a Merk if it is absent that finds the Merk says nothing of
+/// the Merk's root. A Merk with nodes hosts a subtree with a flat record.
+/// A transaction enters the Merk if it is absent, as it is entered, and
+/// then clears it: the clear takes the subtree below, and its record is
+/// read no more, by key or by a cursor, before the commit and after.
+///
+/// The model is not told of the enter, which changes nothing.
+#[test]
+fn a_clear_after_an_enter_if_absent_that_found_the_merk_takes_what_is_below_it() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let entered = subtrees(vec![OwnedSubtree::EnterIfAbsent(sub(A), host(TOP, b"a"))]);
+    let scope = tx.txn.scope().expect("a scope");
+    (entered.with(|batch| scope.apply(batch))).expect("the subtree is found");
+    scope.merge();
+    assert_eq!(
+        get(&tx, aux(A_IN), b"ia").expect("a read"),
+        Some(vec![1; 9])
+    );
+    let mut top = world.merk(&tx, TOP, |items| {
+        items.get_mut(&b"a"[..]).expect("the host").push(0);
+    });
+    top.hosted.insert(b"a".to_vec(), vec![sub(A)]);
+    let cleared = OwnedBatch {
+        merks: vec![top],
+        subtrees: vec![OwnedSubtree::Clear(sub(A))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &cleared).expect("a clear");
+    let gone = |tx: &Tx<'_>| {
+        assert_eq!(get(tx, aux(A_IN), b"ia").expect("a read"), None);
+        assert!(records(&mut tx.txn.cursor(aux(A_IN))).is_empty());
+        assert_eq!(shown(tx, A_IN), None);
+        let (root, ..) = shown(tx, A).expect("the Merk is entered");
+        assert_eq!(root, None);
+    };
+    gone(&tx);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    let reader = world.begin();
+    gone(&reader);
+}
+
 /// What a clear took is asked of the transaction's writes and of the
 /// version that is read, and not of the transaction's frames. So a
 /// record of a subtree that no move names, below a Merk that was cleared
@@ -1597,7 +1726,7 @@ fn a_record_below_a_merk_that_was_cleared_with_no_node_is_read_with_frames_and_w
     let mut world = World::new(&db, &versions);
     grove(&mut world, b"a", A, A_IN);
     alone(&mut world);
-    let tx = cleared_with_no_node(&mut world);
+    let tx = cleared_with_no_node(&mut world, None);
     node_again(&world, &tx);
     let was = vec![(b"k".to_vec(), b"kept".to_vec())];
     let read = |tx: &Tx<'_>| get(tx, aux(C_IN), b"k").expect("a read");
@@ -2494,24 +2623,31 @@ fn a_cursor_whose_read_of_a_node_fails_leaves_no_watch() {
 /// The read of a node that a cursor makes of its own version is under
 /// way from the moment the transaction hands it back until the cursor
 /// says what it read, and the transaction's lock is not held meanwhile.
-/// The transaction remembers the cursor's lease for that long: the watch
-/// on the commits stays, and the key sets that it takes in meanwhile are
-/// kept, whatever another thread does with the transaction. Two cursors
-/// stand on a node, and the transaction, which holds nothing, watches no
+/// For that long the watch on the commits stays, and the key sets that
+/// the transaction takes in are kept, as many as it keeps for a lease,
+/// whatever another thread does with the transaction. Two cursors stand
+/// on a node, and the transaction, which holds nothing, watches no
 /// commit. While the read of the first is under way, another thread uses
 /// the transaction and commits are published. In one order the read of
 /// the second cursor fails and two commits follow; in another a commit
 /// comes first and the read of the second cursor, which takes it in,
 /// fails; in a third the transaction takes a commit in by a read and is
-/// rolled back. A write then keeps the node's value by the handle that
-/// the first read gave: the transaction knows what the commits wrote,
-/// and commits.
+/// rolled back; in a fourth it takes in as many commits as it keeps key
+/// sets of. A write then keeps the node's value by the handle that the
+/// first read gave: the transaction knows what the commits wrote, and
+/// commits. With one commit more than it keeps key sets of, it cannot
+/// say what the first of them wrote: the keep is taken to be met, and
+/// its commit is a conflict.
 #[test]
 fn a_read_of_a_node_that_is_under_way_keeps_the_watch_on_the_commits() {
+    use crate::txn::reads::KEPT_COMMITS;
+
     let orders = [
         "two commits after the other read fails",
         "a commit before the other read fails",
         "a commit that is taken in, and a rollback",
+        "as many commits as key sets are kept of",
+        "one commit more than key sets are kept of",
     ];
     for order in orders {
         let (db, versions) = Db::new(96);
@@ -2551,29 +2687,56 @@ fn a_read_of_a_node_that_is_under_way_keeps_the_watch_on_the_commits() {
             };
             assert!(committed(world.write_outside(&beside, &[])));
         };
-        let handle = first.node(|view| {
-            if order != orders[0] {
-                publish(b"u");
-            }
-            // Another thread uses the transaction while this read is
-            // under way: this one waits for it.
+        // Another thread uses the transaction while the read is under
+        // way: the reading thread waits for it.
+        let taken_in = |key: &[u8]| {
             std::thread::scope(|threads| {
                 let used = threads.spawn(|| {
-                    if order == orders[2] {
-                        let mut out = Vec::new();
-                        assert!(txn.get(aux(TOP), b"u", &mut out).expect("a read"));
-                        txn.rollback().expect("no scope is open");
-                    } else {
-                        let refused = other.node(|view| view.is_some()).expect_err("no read");
-                        assert!(matches!(refused, TxnError::Damaged(_)), "{refused}");
-                    }
+                    let mut out = Vec::new();
+                    assert!(txn.get(aux(TOP), key, &mut out).expect("a read"));
                     assert!(txn.watches(), "{order}: a read is under way");
                 });
                 used.join().expect("the other thread");
             });
-            if order == orders[0] {
-                publish(b"u");
-                publish(b"w");
+        };
+        let handle = first.node(|view| {
+            match orders.iter().position(|other| *other == order) {
+                Some(at @ 0..=1) => {
+                    if at == 1 {
+                        publish(b"u");
+                    }
+                    std::thread::scope(|threads| {
+                        let used = threads.spawn(|| {
+                            let refused = other.node(|view| view.is_some());
+                            let refused = refused.expect_err("no read");
+                            assert!(matches!(refused, TxnError::Damaged(_)), "{refused}");
+                            assert!(txn.watches(), "{order}: a read is under way");
+                        });
+                        used.join().expect("the other thread");
+                    });
+                    if at == 0 {
+                        publish(b"u");
+                        publish(b"w");
+                    }
+                }
+                Some(2) => {
+                    publish(b"u");
+                    taken_in(b"u");
+                    std::thread::scope(|threads| {
+                        let used = threads.spawn(|| {
+                            txn.rollback().expect("no scope is open");
+                            assert!(txn.watches(), "{order}: a read is under way");
+                        });
+                        used.join().expect("the other thread");
+                    });
+                }
+                at => {
+                    for commit in 0..KEPT_COMMITS + usize::from(at == Some(4)) {
+                        let key = [b'u', commit as u8];
+                        publish(&key);
+                        taken_in(&key);
+                    }
+                }
             }
             handle_of(view)
         });
@@ -2585,11 +2748,81 @@ fn a_read_of_a_node_that_is_under_way_keeps_the_watch_on_the_commits() {
             false => (tx.txn.node(subtree, key, handle_of)).expect("a read"),
         });
         world.apply_as_read(&tx, &batch).expect("the value is kept");
-        assert_eq!(tx.txn.stats().overlapped, 0, "{order}");
-        world.check(&tx);
-        assert!(committed(world.commit(tx, &[])), "{order}");
+        let met = usize::from(order == orders[4]);
+        assert_eq!(tx.txn.stats().overlapped, met, "{order}");
+        if met == 0 {
+            world.check(&tx);
+            assert!(committed(world.commit(tx, &[])), "{order}");
+        } else {
+            let ended = world.db.commit(world.versions, &tx.txn).expect("a commit");
+            assert_eq!(ended, Outcome::Conflict, "{order}");
+        }
         world.check_committed();
     }
+}
+
+/// A read that is under way answers for no keep before it has shown a
+/// node, and one that shows none answers for none. A cursor shows a
+/// committed node, whose handle is kept, and comes to stand on a node of
+/// the transaction's own. The transaction is rolled back, and the handle
+/// ends with it. The cursor then reads the node it stands on, which is
+/// none, and while that read is under way another thread writes the
+/// first node with its value kept by the handle from before the
+/// rollback. The keep is taken to be met (CF2a), and the commit is a
+/// conflict.
+#[test]
+fn a_read_under_way_answers_for_no_handle_from_before_a_rollback() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    alone(&mut world);
+    let tx = world.begin();
+    let mut cursor = tx.txn.merk_cursor(sub(ROOT)).expect("a cursor");
+    cursor.seek(b"x").expect("a seek");
+    let before = cursor.node(handle_of).expect("the node is read");
+    assert!(before.is_some());
+    world.edit(&tx, ROOT, |items| {
+        items.insert(b"y".to_vec(), b"its own".to_vec());
+    });
+    cursor.seek(b"y").expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"y"[..]));
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    assert!(!tx.txn.watches());
+
+    // A change of the Merk that keeps the value of the committed node.
+    let keeps = (b'a'..=b'w').find_map(|key| {
+        let merk = world.merk(&tx, ROOT, |items| {
+            items.insert(vec![key], b"new".to_vec());
+        });
+        let kept = |(key, _, stated): &(Vec<u8>, _, bool)| key == b"x" && !stated;
+        merk.nodes.iter().any(kept).then_some(merk)
+    });
+    let mut merk = keeps.expect("a change that keeps the node");
+    merk.hints.insert(b"x".to_vec(), before.expect("a handle"));
+    let batch = OwnedBatch {
+        records: World::root_record(&merk).into_iter().collect(),
+        merks: vec![merk],
+        ..OwnedBatch::default()
+    };
+    let txn = &tx.txn;
+    let shown = cursor.node(|view| {
+        assert!(view.is_none(), "the transaction's own node is gone");
+        std::thread::scope(|threads| {
+            let used = threads.spawn(|| {
+                let scope = txn.scope().expect("a scope");
+                (batch.with(|batch| scope.apply(batch))).expect("the batch is taken");
+                scope.merge();
+                assert_eq!(txn.stats().overlapped, 1, "the keep is met");
+            });
+            used.join().expect("the other thread");
+        });
+    });
+    shown.expect("the read ends");
+    drop(cursor);
+    assert_eq!(tx.txn.stats().overlapped, 1);
+    let ended = world.db.commit(world.versions, &tx.txn).expect("a commit");
+    assert_eq!(ended, Outcome::Conflict);
+    world.check_committed();
 }
 
 /// A Merk with no host and one node, `x`, which hosts nothing.
