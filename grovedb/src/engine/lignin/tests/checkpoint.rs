@@ -308,9 +308,8 @@ fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
 /// The key of the tree that counts, which the chunk proofs are of.
 const COUNTED: &[u8] = b"counted";
 
-/// The proof of the trunk of the tree that counts and, where the grove
-/// version makes one, of the branch under each key the trunk ends at:
-/// each with its bytes or its refusal, and its cost.
+/// The proof of the trunk of the tree that counts and of the branch under
+/// each key the trunk ends at, each verified, with its bytes and its cost.
 fn chunk_proofs<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<String> {
     let at = vec![COUNTED.to_vec()];
     let trunk = PathTrunkChunkQuery {
@@ -319,10 +318,8 @@ fn chunk_proofs<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<String> {
         min_depth: None,
     };
     let proved = db.prove_trunk_chunk(&trunk, v);
-    let mut told = vec![format!("trunk: {:?} {:?}", proved.value, proved.cost)];
-    let Ok(proof) = &proved.value else {
-        return told;
-    };
+    let proof = proved.value.as_ref().expect("the trunk is proven");
+    let mut told = vec![format!("trunk: {} {:?}", hex::encode(proof), proved.cost)];
     let verified = GroveDb::verify_trunk_chunk_proof(proof, &trunk, v);
     let (root, trunk) = verified.expect("the trunk is verified");
     assert_eq!(root, root_of(db, v));
@@ -352,20 +349,13 @@ fn chunk_proofs<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<String> {
 
 #[test]
 fn checkpoints_are_kept_on_lignindb_as_platform_keeps_them() {
-    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+    for v in GROVE_VERSIONS.iter() {
         let told = kept_as_platform_keeps_them::<LigninEngine>(v);
-        // The trunk is proven on every grove version that has the call,
-        // with a branch under it.
-        let proven = told.iter().any(|told| told.starts_with("trunk: Ok"));
-        let branches = told
-            .iter()
-            .filter(|told| told.starts_with("branch "))
-            .count();
-        println!(
-            "grove version {}: trunk proven {proven}, {branches} branches",
-            number + 1
-        );
-        assert_eq!(proven, branches > 0);
+        // On every grove version the trunk is proven, with a branch
+        // under each of its leaf keys.
+        let branches = told.iter().filter(|told| told.starts_with("branch "));
+        let branches = branches.count();
+        assert!(branches > 0);
         assert_eq!(told.len(), 5 + branches);
         #[cfg(feature = "rocksdb_storage")]
         assert_eq!(told, kept_as_platform_keeps_them::<crate::RocksDbEngine>(v));
