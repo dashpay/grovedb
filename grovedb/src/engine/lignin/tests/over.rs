@@ -320,6 +320,76 @@ fn the_entry_of_an_emptied_tree_leaves_with_its_element_when_the_tree_is_moved()
     check(dir.path());
 }
 
+/// No operation of GroveDB makes a batch that moves a subtree and states
+/// the same subtree anew: a tree type is stated anew in the storage batch
+/// of `convert_to_big_sum_tree`, which is told no move, and a move is told
+/// to the storage batch of a batch of operations, which states none. At
+/// the seam one batch can hold both. Here it is told the move of the
+/// subtree of `t`, removes the element of `t`, puts it under `u`, and
+/// states the subtree of `t` anew as a tree that sums. The engine states
+/// the move, the transaction refuses the batch whole
+/// (`BatchError::ConvertMoved`), and holds nothing of it afterwards.
+#[test]
+fn a_batch_that_moves_a_subtree_and_states_it_anew_is_refused_by_the_transaction() {
+    let v = version();
+    let (dir, db) = grove(true);
+    {
+        let engine = db.engine();
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let u: &[&[u8]] = &[b"u"];
+        let (from, to) = (build_prefix(T.into()).value, build_prefix(u.into()).value);
+        {
+            let root = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+            let mut merk = Merk::open_base(root, TreeType::NormalTree, NO_COST, v)
+                .unwrap()
+                .expect("the root Merk");
+            let moved = Element::new_tree(Some(b"x".to_vec()));
+            let bytes = moved.serialize(v).expect("the bytes of an element");
+            let ops = [
+                (b"t".to_vec(), Op::Delete),
+                (
+                    b"u".to_vec(),
+                    Op::Put(bytes, TreeFeatureType::BasicMerkNode),
+                ),
+            ];
+            (merk.apply::<_, Vec<u8>>(&ops, &[], None, v))
+                .unwrap()
+                .expect("a write of the root Merk");
+        }
+        batch.move_subtree(&from, &to);
+        {
+            let moved = engine.subtree(T.into(), Some(&batch), &tx).unwrap();
+            (moved.convert(TreeType::SumTree)).expect("the statement is staged");
+        }
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        let refused = applied
+            .map(|_| ())
+            .expect_err("a subtree is moved and stated anew");
+        let said = refused.to_string();
+        assert!(
+            said.contains("is stated anew in a batch whose move names it"),
+            "{said}"
+        );
+        // The transaction holds nothing of the group.
+        let entered = |at: &[&[u8]]| {
+            let handle = engine.subtree(at.into(), None, &tx).unwrap();
+            let entry = handle.entry().expect("the directory answers");
+            entry.map(|entry| entry.tree_type().expect("a tree type"))
+        };
+        assert_eq!(entered(T), Some(TreeType::NormalTree));
+        assert_eq!(entered(u), None);
+        (engine.commit_transaction(tx).unwrap()).expect("a commit of nothing");
+    }
+    let read = (db.get(T, b"x", None, v).unwrap()).expect("the element under the tree");
+    assert_eq!(read, item(1));
+    assert!(db.get(ROOT, b"u", None, v).unwrap().is_err());
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
 /// A group of two batches, of which one writes the element of a tree and
 /// the other the nodes of the tree's Merk. In the order of a partial
 /// batch, the Merk and then its element, the group is applied. The other

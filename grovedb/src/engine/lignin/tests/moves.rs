@@ -20,11 +20,17 @@
 //! - `flat_trees`, `flat_trees_below`: trees that keep their data flat,
 //!   moved with their records, and in trees that are moved.
 //! - `a_met_mover`: what a mover is answered after a commit beside it met
-//!   its move, which differs between the engines one step before the
-//!   commit.
+//!   its move, which differs between the engines before the commit.
+//! - `moved_beside_deletes`: moves in a batch that deletes a tree with
+//!   what it holds, and after such a delete.
+//! - `records_that_no_tree_links_at_a_move`: records that no tree links,
+//!   under trees whose element names a root and under trees whose element
+//!   names none, which is the one place where the two engines leave
+//!   different records behind.
 
 use std::path::Path;
 
+use grovedb_costs::OperationCost;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use super::{
@@ -37,7 +43,8 @@ use super::{
     Lignin, LigninEngine,
 };
 use crate::{
-    engine::Engine, reference_path::ReferencePathType, Element, Error, GroveDb, TransactionArg,
+    engine::Engine, operations::delete::DeleteOptions, reference_path::ReferencePathType, Element,
+    Error, GroveDb, TransactionArg,
 };
 
 fn rename(at: &[&[u8]], key: &[u8], new_key: &[u8]) -> Op {
@@ -1109,9 +1116,10 @@ fn a_tree_does_not_change_places_with_an_emptied_indexed_tree_yet() {
 
 /// What a mover is answered after a commit beside it met its move: a
 /// write into a tree that the move does not name, an item over a tree
-/// with elements, which drops a subtree on LigninDB, and its commit. Each
-/// with whether it was taken and whether its error is the conflict of
-/// the seam.
+/// with elements, which drops a subtree on LigninDB, the clear of a tree
+/// with elements, the delete of a tree with its elements, which drops a
+/// subtree on LigninDB too, and its commit. Each with whether it was
+/// taken and whether its error is the conflict of the seam.
 fn a_met_mover<E: Engine>(
     dir: &Path,
     version: &'static GroveVersion,
@@ -1120,7 +1128,7 @@ fn a_met_mover<E: Engine>(
     let item = || Element::new_item(vec![8; 18]);
     let mut ops = vec![insert(&[], b"met", Element::empty_tree())];
     ops.extend(filled(&[b"met"], b"t", 0, made_by(version)));
-    for tree in [b"b".as_slice(), b"c"] {
+    for tree in [b"b".as_slice(), b"c", b"d", b"e"] {
         ops.push(insert(&[b"met"], tree, Element::empty_tree()));
         ops.push(insert(&[b"met", tree], b"x", item()));
     }
@@ -1144,6 +1152,20 @@ fn a_met_mover<E: Engine>(
     let over = vec![insert(&[b"met"], b"b", item())];
     let dropped = db.apply_batch(over, None, Some(&mover), version);
     answered("an item over a tree", dropped.unwrap());
+    let cleared: &[&[u8]] = &[b"met", b"d"];
+    let cleared = db.clear_subtree(cleared, None, Some(&mover), version);
+    answered(
+        "a clear of a tree",
+        cleared.map(|cleared| assert!(cleared, "the tree holds no tree")),
+    );
+    let above: &[&[u8]] = &[b"met"];
+    let with_its_elements = Some(DeleteOptions {
+        allow_deleting_non_empty_trees: true,
+        deleting_non_empty_trees_returns_error: false,
+        ..Default::default()
+    });
+    let deleted = db.delete(above, b"e", with_its_elements, Some(&mover), version);
+    answered("a delete of a tree", deleted.unwrap());
     answered("the commit", db.commit_transaction(mover).unwrap());
     db.flush().expect("a flush");
     seen
@@ -1153,14 +1175,19 @@ fn a_met_mover<E: Engine>(
 /// on both engines. RocksDB takes every write of the mover until then.
 /// On LigninDB a transaction that a commit met serves its records by
 /// key, and while it holds a move it is refused every drop of a subtree
-/// (`transactions.md`, MV7): the item over a tree is refused as a
-/// conflict, one step before the commit is, and the write that drops
-/// nothing is taken as on RocksDB.
+/// (`transactions.md`, MV7): the item over a tree and the delete of a
+/// tree with its elements, each of which drops a subtree, are refused as
+/// conflicts before the commit is. The writes that drop nothing, into
+/// trees that the move does not name, are taken as on RocksDB: the
+/// write of an item, and the clear of a tree, which removes the tree's
+/// nodes by their keys and states no clear to the transaction.
 #[test]
 fn a_mover_that_a_commit_met_is_refused_a_drop_before_its_commit_is() {
     let on_lignindb = [
         ("a write into another tree", true, false),
         ("an item over a tree", false, true),
+        ("a clear of a tree", true, false),
+        ("a delete of a tree", false, true),
         ("the commit", false, true),
     ];
     for version in [&GROVE_VERSIONS[3], &GROVE_VERSIONS[4]] {
@@ -1173,11 +1200,435 @@ fn a_mover_that_a_commit_met_is_refused_a_drop_before_its_commit_is() {
             let on_rocksdb = [
                 ("a write into another tree", true, false),
                 ("an item over a tree", true, false),
+                ("a clear of a tree", true, false),
+                ("a delete of a tree", true, false),
                 ("the commit", false, true),
             ];
             let dir = tempfile::tempdir().expect("a directory");
             let seen = a_met_mover::<crate::RocksDbEngine>(dir.path(), version);
             assert_eq!(seen, on_rocksdb);
+        }
+    }
+}
+
+/// A tree with an item, a tree in it with an item, and a tree in that
+/// with an item, under `key` at `at`.
+fn three_deep(at: &[&[u8]], key: &[u8]) -> Vec<Op> {
+    let item = |byte: u8| Element::new_item(vec![byte; 14]);
+    let own = [at, &[key]].concat();
+    let inner = [own.as_slice(), &[b"inner"]].concat();
+    let deeper = [inner.as_slice(), &[b"deeper"]].concat();
+    vec![
+        insert(at, key, Element::empty_tree()),
+        insert(&own, b"x", item(1)),
+        insert(&own, b"inner", Element::empty_tree()),
+        insert(&inner, b"y", item(2)),
+        insert(&inner, b"deeper", Element::empty_tree()),
+        insert(&deeper, b"z", item(3)),
+    ]
+}
+
+/// Moves beside the deletes of trees that hold elements, each deleted
+/// with the trees in it. A tree in a tree is deleted and the tree above
+/// it is moved by the next batch. One batch deletes a tree and moves the
+/// tree beside it, with the delete first and with the move first; one
+/// moves a tree to the key that a batch before it deleted a tree under;
+/// one deletes a tree in one tree and moves a tree in another; and one
+/// deletes a tree in the tree beside the moved one. Then the same two
+/// kinds of batch in one write transaction. What GroveDB lets no batch
+/// do with a move is refused before the engine is asked: a delete at the
+/// key a move goes to, a delete under the key it leaves, and a delete of
+/// the tree it is made in.
+fn moved_beside_deletes<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
+    use crate::{batch::SubelementsDeletionBehavior::DeleteChildren, TreeType};
+
+    let db = open::<E>(dir);
+    let mut log = Log::default();
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    let item = |byte: u8| Element::new_item(vec![byte; 14]);
+    let felled = |at: &[&[u8]], key: &[u8]| {
+        Op::delete_tree_op(path(at), key.to_vec(), TreeType::NormalTree, DeleteChildren)
+    };
+    let mut ops = vec![
+        insert(&[], b"p", Element::empty_tree()),
+        insert(&[], b"q", Element::empty_tree()),
+    ];
+    for key in [b"a".as_slice(), b"b", b"c", b"d"] {
+        ops.extend(three_deep(&[b"p"], key));
+    }
+    for key in [b"e".as_slice(), b"f"] {
+        ops.extend(three_deep(&[b"q"], key));
+    }
+    calls.batch("made", ops);
+
+    // The tree in a tree goes with the tree in it, and the tree above is
+    // moved by the next batch.
+    calls.batch("a tree in a tree", vec![felled(&[b"p", b"a"], b"inner")]);
+    calls.batch("the tree above it", vec![rename(&[b"p"], b"a", b"a2")]);
+    calls.get(&[b"p", b"a2"], b"x");
+    calls.refused(|calls| calls.get(&[b"p", b"a2"], b"inner"));
+    calls.refused(|calls| calls.get(&[b"p", b"a"], b"x"));
+    let ops = vec![
+        insert(&[b"p", b"a2"], b"inner", Element::empty_tree()),
+        insert(&[b"p", b"a2", b"inner"], b"y", item(4)),
+    ];
+    calls.batch("a tree made again in it", ops);
+    calls.get(&[b"p", b"a2", b"inner"], b"y");
+
+    // One batch deletes a tree and moves the tree beside it.
+    let ops = vec![felled(&[b"p"], b"b"), rename(&[b"p"], b"c", b"c2")];
+    calls.batch("a delete and a move", ops);
+    calls.refused(|calls| calls.get(&[b"p"], b"b"));
+    calls.get(&[b"p", b"c2", b"inner", b"deeper"], b"z");
+    let ops = vec![rename(&[b"p"], b"c2", b"c"), felled(&[b"p"], b"d")];
+    calls.batch("a move and a delete", ops);
+    calls.get(&[b"p", b"c", b"inner", b"deeper"], b"z");
+    calls.refused(|calls| calls.get(&[b"p"], b"d"));
+    // A tree goes to the key that a tree was deleted under, in a batch
+    // that makes a tree at the key of the other deleted tree.
+    let ops = vec![
+        insert(&[b"p"], b"b", Element::empty_tree()),
+        insert(&[b"p", b"b"], b"new", item(5)),
+        rename(&[b"p"], b"c", b"d"),
+    ];
+    calls.batch("to the key of a deleted tree", ops);
+    calls.get(&[b"p", b"b"], b"new");
+    calls.get(&[b"p", b"d", b"inner"], b"y");
+    calls.refused(|calls| calls.get(&[b"p", b"d"], b"new"));
+
+    // A delete in one tree and a move in another, and a delete in the
+    // tree beside the moved one.
+    let ops = vec![felled(&[b"q"], b"e"), rename(&[b"p"], b"d", b"c")];
+    calls.batch("a delete in another tree", ops);
+    calls.refused(|calls| calls.get(&[b"q"], b"e"));
+    let ops = vec![
+        felled(&[b"p", b"a2"], b"inner"),
+        rename(&[b"p"], b"c", b"c3"),
+    ];
+    calls.batch("a delete in the tree beside it", ops);
+    calls.refused(|calls| calls.get(&[b"p", b"a2", b"inner"], b"y"));
+    calls.get(&[b"p", b"c3", b"inner", b"deeper"], b"z");
+
+    let ops = vec![felled(&[b"p"], b"b"), rename(&[b"p"], b"c3", b"b")];
+    calls.refused(|calls| calls.batch("a delete at the key a move goes to", ops));
+    let ops = vec![
+        felled(&[b"p", b"c3"], b"inner"),
+        rename(&[b"p"], b"c3", b"c"),
+    ];
+    calls.refused(|calls| calls.batch("a delete under the key a move leaves", ops));
+    let ops = vec![felled(&[], b"p"), rename(&[b"p"], b"c3", b"c")];
+    calls.refused(|calls| calls.batch("a delete of the tree a move is made in", ops));
+    calls.get(&[b"p", b"c3", b"inner", b"deeper"], b"z");
+
+    drop(calls);
+    let transaction = db.start_transaction();
+    let mut calls = Calls::new(&db, version, Some(&transaction), &mut log);
+    calls.batch("a tree in a tree", vec![felled(&[b"q", b"f"], b"inner")]);
+    calls.batch("the tree above it", vec![rename(&[b"q"], b"f", b"g")]);
+    calls.get(&[b"q", b"g"], b"x");
+    calls.refused(|calls| calls.get(&[b"q", b"g"], b"inner"));
+    let ops = vec![felled(&[b"p"], b"b"), rename(&[b"p"], b"c3", b"c")];
+    calls.batch("a delete and a move", ops);
+    calls.get(&[b"p", b"c", b"inner", b"deeper"], b"z");
+    calls.batch("moved again", vec![rename(&[b"p"], b"c", b"b")]);
+    drop(calls);
+    let committed = db.commit_transaction(transaction);
+    log.answer("commit".to_owned(), committed);
+
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    calls.root();
+    calls.get(&[b"q", b"g"], b"x");
+    calls.refused(|calls| calls.get(&[b"q", b"g"], b"inner"));
+    calls.get(&[b"p", b"b", b"inner", b"deeper"], b"z");
+    calls.refused(|calls| calls.get(&[b"p", b"b"], b"new"));
+    calls.proven(&[b"p"]);
+    calls.proven(&[b"q"]);
+    calls.verify();
+    db.flush().expect("a flush");
+    log
+}
+
+/// A move in a batch that also deletes a tree with what it holds, and a
+/// move after such a delete, answer and cost the same on both engines.
+/// On LigninDB the deleted tree's subtrees leave the directory with the
+/// batch that removes its element ([`super::super::gone`]), the moved
+/// tree's subtrees go to their new prefixes with the same batch
+/// ([`super::super::moved`]), and the physical checker finds the store
+/// sound: no entry is left under a node that is gone.
+#[test]
+fn a_tree_is_moved_beside_the_delete_of_a_tree_on_grove_v4_and_v5() {
+    for version in [&GROVE_VERSIONS[3], &GROVE_VERSIONS[4]] {
+        on_both_engines!(moved_beside_deletes, version);
+    }
+}
+
+/// Puts, at the seam, one node under `key` into the Merk of the tree at
+/// `at` that the tree of the Merk does not reach: a change set with the
+/// put and no root, as a storage batch that keeps a put over a later
+/// delete of the same key hands a store one. RocksDB keeps the node as a
+/// record under its key. LigninDB keeps it as an unlinked record of the
+/// subtree (`transactions.md`, "Unlinked records"), and the write enters
+/// the subtree where nothing was written into the tree before.
+fn put_unlinked<E: Engine>(db: &GroveDb<E>, at: &[&[u8]], key: &[u8], v: &GroveVersion) {
+    use grovedb_merk::{
+        store::{NodeChange, NodeChangeSet, NodeStore},
+        tree::TreeNode,
+        TreeFeatureType,
+    };
+
+    let engine = db.engine();
+    let tx = engine.start_transaction();
+    let batch = E::Batch::default();
+    let handle = engine.subtree(at.into(), Some(&batch), &tx).unwrap();
+    let value = (Element::new_item(vec![6; 30]).serialize(v)).expect("the bytes of an element");
+    let node = TreeNode::new(key.to_vec(), value, None, TreeFeatureType::BasicMerkNode).unwrap();
+    let mut change_set = handle.change_set();
+    let prepared = change_set.prepare_node(&node, NodeChange::ValueWritten);
+    (change_set.put_node(key, prepared, None)).expect("the node is put");
+    (handle.commit(change_set).unwrap()).expect("the change set is staged");
+    drop(handle);
+    (engine.apply_batch(batch, &tx).unwrap()).expect("a batch");
+    (engine.commit_transaction(tx).unwrap()).expect("a commit");
+}
+
+/// Whether the store holds a node or a record under `key` for the path
+/// `at`, read at the seam with no element asked for on the way.
+fn holds<E: Engine>(db: &GroveDb<E>, at: &[&[u8]], key: &[u8]) -> bool {
+    use grovedb_merk::store::NodeStore;
+
+    let engine = db.engine();
+    let tx = engine.start_read_transaction();
+    let handle = engine.subtree(at.into(), None, &tx).unwrap();
+    handle.has_node(key).unwrap().expect("a read of the store")
+}
+
+/// The trees of [`records_that_no_tree_links_at_a_move`] under the paths
+/// they have before the moves, with whether the element of each names a
+/// root, and under the paths they have afterwards.
+const WITH_LOOSE_RECORDS: [(&[&[u8]], bool, &[&[u8]]); 6] = [
+    (&[b"t"], true, &[b"u"]),
+    (&[b"t", b"full"], true, &[b"u", b"full"]),
+    (&[b"t", b"never"], false, &[b"u", b"never"]),
+    (&[b"t", b"emptied"], false, &[b"u", b"emptied"]),
+    (&[b"bare"], false, &[b"erab"]),
+    (&[b"spent"], false, &[b"tneps"]),
+];
+
+/// Trees whose Merk holds a record that no tree links, and their moves
+/// (D-267). The tree `t` holds an item, a tree `full` with an item, a
+/// tree `never` that nothing else was written into, and a tree `emptied`
+/// that was written into and emptied; `bare` and `spent` under the root
+/// are trees of those last two kinds. Each of the six holds one such
+/// record, put at the seam. `t` is moved, and then `bare` and `spent`
+/// are, in one batch. GroveDB asks the engine to walk the trees whose
+/// element names a root, which are `t` and `full`, and no other.
+///
+/// Then a tree `whole` with three elements changes places with a tree
+/// `hollow` that was written into and emptied and holds such a record.
+///
+/// Gives the log of its calls up to the swap and the two reads after it,
+/// with what the store holds of the six records under the paths the
+/// trees have after the moves among them: read at the seam, and logged as
+/// the answer with no cost. Apart from the log it gives what is read at
+/// the end, where the two engines keep different records: whether each of
+/// the six records is held under the path its tree had before and
+/// whether one is held under each key of the swap, `whole` and then
+/// `hollow`; and what GroveDB answers a `get` of the record's key in the
+/// tree that the swap brought to `hollow`. `moved` is called between the
+/// moves and the writes that follow them.
+fn records_that_no_tree_links_at_a_move<E: Engine>(
+    db: &GroveDb<E>,
+    version: &'static GroveVersion,
+    moved: impl FnOnce(&GroveDb<E>),
+) -> (Log, Vec<bool>, Result<Element, Error>) {
+    let mut log = Log::default();
+    let mut calls = Calls::new(db, version, None, &mut log);
+    let item = |byte: u8| Element::new_item(vec![byte; 14]);
+    let ops = vec![
+        insert(&[], b"t", Element::empty_tree()),
+        insert(&[b"t"], b"x", item(1)),
+        insert(&[b"t"], b"full", Element::empty_tree()),
+        insert(&[b"t", b"full"], b"y", item(2)),
+        insert(&[b"t"], b"never", Element::empty_tree()),
+        insert(&[b"t"], b"emptied", Element::empty_tree()),
+        insert(&[b"t", b"emptied"], b"gone", item(3)),
+        insert(&[], b"bare", Element::empty_tree()),
+        insert(&[], b"spent", Element::empty_tree()),
+        insert(&[b"spent"], b"gone", item(4)),
+        insert(&[], b"whole", Element::empty_tree()),
+        insert(&[b"whole"], b"a", item(6)),
+        insert(&[b"whole"], b"m", item(6)),
+        insert(&[b"whole"], b"z", item(6)),
+        insert(&[], b"hollow", Element::empty_tree()),
+        insert(&[b"hollow"], b"gone", item(7)),
+    ];
+    calls.batch("made", ops);
+    let ops = vec![
+        delete(&[b"t", b"emptied"], b"gone"),
+        delete(&[b"spent"], b"gone"),
+        delete(&[b"hollow"], b"gone"),
+    ];
+    calls.batch("emptied", ops);
+    let hollow: &[&[u8]] = &[b"hollow"];
+    for tree in WITH_LOOSE_RECORDS
+        .iter()
+        .map(|(tree, ..)| *tree)
+        .chain([hollow])
+    {
+        put_unlinked(db, tree, b"loose", version);
+        assert!(holds(db, tree, b"loose"), "{tree:?}");
+    }
+    // No element says anything of the records.
+    calls.root();
+    calls.get(&[], b"t");
+    calls.get(&[b"t"], b"never");
+    calls.get(&[b"t"], b"emptied");
+    calls.get(&[], b"bare");
+    calls.get(&[], b"spent");
+
+    calls.batch("the tree above", vec![rename(&[], b"t", b"u")]);
+    let ops = vec![
+        rename(&[], b"bare", b"erab"),
+        rename(&[], b"spent", b"tneps"),
+    ];
+    calls.batch("the trees themselves", ops);
+    for (.., tree) in WITH_LOOSE_RECORDS {
+        let held = holds(db, tree, b"loose");
+        let name = tree
+            .iter()
+            .fold(String::from("holds"), |mut name, segment| {
+                name.push('/');
+                name.push_str(&String::from_utf8_lossy(segment));
+                name
+            });
+        let read = (name, OperationCost::default(), held.to_string());
+        calls.log.answers.push(read);
+    }
+    moved(db);
+
+    // Each tree is written under the path it has now.
+    let written = |&(.., tree): &(&[&[u8]], bool, &[&[u8]])| insert(tree, b"new", item(5));
+    let ops = WITH_LOOSE_RECORDS.iter().map(written).collect();
+    calls.batch("written afterwards", ops);
+    for (.., tree) in WITH_LOOSE_RECORDS {
+        calls.get(tree, b"new");
+    }
+    calls.proven(&[b"u"]);
+    calls.proven(&[b"erab"]);
+    calls.verify();
+
+    // The tree with elements changes places with the tree that has no
+    // node and holds such a record.
+    let ops = vec![
+        rename(&[], b"whole", b"hollow"),
+        rename(&[], b"hollow", b"whole"),
+    ];
+    calls.batch("a swap", ops);
+    calls.get(hollow, b"m");
+    calls.refused(|calls| calls.get(&[b"whole"], b"m"));
+    let left = WITH_LOOSE_RECORDS.map(|(tree, ..)| holds(db, tree, b"loose"));
+    let mut left = left.to_vec();
+    // Under the key the tree with no node went to, and under the key it
+    // left, where the tree with elements is now: by the store, and then
+    // by a read of GroveDB. Merk looks for a key among the nodes it has
+    // loaded, which after an open is the root, and asks the store for the
+    // key where a link leads on from them: the key of the record is on
+    // the side of the root where the tree has a node.
+    left.push(holds(db, &[b"whole"], b"loose"));
+    left.push(holds(db, hollow, b"loose"));
+    let read = db.get(hollow, b"loose", None, version).unwrap();
+    (log, left, read)
+}
+
+/// D-267, and row D12 of `transactions.md` 14.5. A record that no tree
+/// links goes where the walk of a move takes its Merk, and nowhere
+/// otherwise:
+///
+/// - **Under a tree whose element names a root** (the moved tree, and a
+///   tree in it) the record is read under the new path and not under the
+///   old one, on both engines, and the move is charged the same on both.
+/// - **Under a tree whose element names no root**, nothing of the record
+///   is read under the new path on either engine. On LigninDB the look
+///   names no pair for such a tree. One below the moved tree leaves the
+///   directory with the move, and one that is moved itself, to a key
+///   that held no element, leaves it with the node of its element under
+///   the old key ([`super::super::gone`]): no move is stated for it,
+///   nothing is entered under either prefix afterwards, and its record is
+///   gone. On RocksDB the copy walks no such tree, and the record stays
+///   under the old prefix, which no element leads to: the difference
+///   that is written down as D12.
+/// - **Where a tree with elements changes places with such a tree**, the
+///   subtree with no node makes room on LigninDB and its record goes
+///   with it ([`super::super::moved`]). On RocksDB the record stays
+///   under the prefix, the records of the tree with elements land beside
+///   it, and `get` of GroveDB under the record's key answers with it
+///   here, as an element of a tree that no write put it into: Merk asks
+///   the store for a key where a link leads on from the nodes it has
+///   loaded. That is D12 again, read under a path that an element leads
+///   to.
+///
+/// Every call in the log that the two engines share answers and costs
+/// the same, and the store is read to hold the same under the new paths
+/// after the moves. The reads that the history gives apart are not in
+/// that log: each engine is held to its own answer there, and the cost of
+/// the `get` after the swap is not compared. The grove's own check, which
+/// the history runs before the swap, finds nothing, and the physical
+/// checker reads the LigninDB store.
+#[test]
+fn a_record_that_no_tree_links_goes_only_where_the_walk_of_a_move_takes_its_merk() {
+    let entered = |db: &Lignin, at: &[&[u8]]| {
+        let engine = db.engine();
+        let tx = engine.start_read_transaction();
+        let handle = engine.subtree(at.into(), None, &tx).unwrap();
+        handle.entry().expect("the directory answers").is_some()
+    };
+    for version in [&GROVE_VERSIONS[3], &GROVE_VERSIONS[4]] {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (log, left, read) = {
+            let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
+            let history = records_that_no_tree_links_at_a_move(&db, version, |db| {
+                for (before, rooted, after) in WITH_LOOSE_RECORDS {
+                    assert!(!entered(db, before), "{before:?}");
+                    assert_eq!(entered(db, after), rooted, "{after:?}");
+                }
+            });
+            // After the swap the subtree of the tree with elements is
+            // entered under the key it went to, and nothing is entered
+            // under the key it left.
+            assert!(entered(&db, &[b"hollow"]));
+            assert!(!entered(&db, &[b"whole"]));
+            db.flush().expect("a flush");
+            history
+        };
+        log.assert_refusals();
+        check(dir.path(), version);
+        let held: Vec<bool> = (log.answers.iter())
+            .filter(|(call, ..)| call.starts_with("holds"))
+            .map(|(.., held)| held == "true")
+            .collect();
+        let rooted = WITH_LOOSE_RECORDS.map(|(_, rooted, _)| rooted);
+        assert_eq!(held, rooted);
+        assert_eq!(left, [false; 8]);
+        assert!(matches!(read, Err(Error::PathKeyNotFound(_))), "{read:?}");
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
+                .expect("a database on RocksDB");
+            let (on_rocksdb, left, read) =
+                records_that_no_tree_links_at_a_move(&db, version, |_| {});
+            assert_same(&log, &on_rocksdb);
+            // The copy cleared the prefixes it walked, and left the
+            // records of the trees it did not walk: under the paths
+            // that no element leads to any more, and under the prefix
+            // of `hollow`, where the records of the tree with elements
+            // landed beside the one that was there. GroveDB reads that
+            // one as an element of the tree.
+            let mut kept = rooted.map(|rooted| !rooted).to_vec();
+            kept.extend([false, true]);
+            assert_eq!(left, kept);
+            let read = read.expect("the record is read as an element");
+            assert_eq!(read, Element::new_item(vec![6; 30]));
         }
     }
 }
