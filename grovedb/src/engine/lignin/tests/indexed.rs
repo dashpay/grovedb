@@ -11,6 +11,7 @@
 use grovedb_costs::{CostResult, OperationCost};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions,
     proofs::{query::AggregateFold, Query},
     store::lignin::{LigninEntry, LigninHost, LigninNodeStore, LigninSubtree},
     TreeType,
@@ -913,6 +914,459 @@ fn the_merks_of_an_indexed_tree_are_entered_together_under_their_element() {
     check(dir.path(), v);
 }
 
+/// Fills a tree of each kind that keeps a 64-bit sum in one Merk and
+/// converts it to its counterpart with a 128-bit sum (GroveDB #1063).
+/// Returns what the conversions cost and the root hash they leave.
+fn converted_trees<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> (Vec<OperationCost>, [u8; 32]) {
+    let mut costs = Vec::new();
+    for (key, narrow, ..) in TREES_OF_ONE_MERK {
+        let top: &[&[u8]] = &[key];
+        db.insert(ROOT, key, narrow(), None, None, v)
+            .unwrap()
+            .expect("a tree");
+        for n in 0..12u8 {
+            let item = Element::new_sum_item(i64::from(n) - 4);
+            db.insert(top, &[n.wrapping_mul(41)], item, None, None, v)
+                .unwrap()
+                .expect("a sum item");
+        }
+        let converted = db.convert_to_big_sum_tree(ROOT, key, None, v);
+        costs.push(converted.cost);
+        converted.value.expect("the tree is converted");
+
+        // And a tree that nothing was written into.
+        let empty = [key, b", empty"].concat();
+        db.insert(ROOT, &empty, narrow(), None, None, v)
+            .unwrap()
+            .expect("a tree");
+        let converted = db.convert_to_big_sum_tree(ROOT, &empty, None, v);
+        costs.push(converted.cost);
+        converted.value.expect("the empty tree is converted");
+
+        // And a tree whose one child was deleted again.
+        let emptied = [key, b", emptied"].concat();
+        let top: &[&[u8]] = &[&emptied];
+        db.insert(ROOT, &emptied, narrow(), None, None, v)
+            .unwrap()
+            .expect("a tree");
+        db.insert(top, b"child", Element::new_sum_item(9), None, None, v)
+            .unwrap()
+            .expect("a sum item");
+        (db.delete(top, b"child", None, None, v).unwrap()).expect("a delete of the child");
+        let converted = db.convert_to_big_sum_tree(ROOT, &emptied, None, v);
+        costs.push(converted.cost);
+        converted.value.expect("the emptied tree is converted");
+    }
+    (costs, db.root_hash(None, v).unwrap().expect("a root hash"))
+}
+
+/// The trees that keep a 64-bit sum in one Merk: a key, the element of an
+/// empty one, its tree type and the tree type of its counterpart.
+const TREES_OF_ONE_MERK: [(&[u8], fn() -> Element, TreeType, TreeType); 5] = [
+    (
+        b"sum",
+        Element::empty_sum_tree,
+        TreeType::SumTree,
+        TreeType::BigSumTree,
+    ),
+    (
+        b"count and sum",
+        Element::empty_count_sum_tree,
+        TreeType::CountSumTree,
+        TreeType::CountBigSumTree,
+    ),
+    (
+        b"provable sum",
+        Element::empty_provable_sum_tree,
+        TreeType::ProvableSumTree,
+        TreeType::ProvableBigSumTree,
+    ),
+    (
+        b"provable count and sum",
+        Element::empty_provable_count_sum_tree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableCountProvableBigSumTree,
+    ),
+    (
+        b"provable count and provable sum",
+        Element::empty_provable_count_provable_sum_tree,
+        TreeType::ProvableCountProvableSumTree,
+        TreeType::ProvableCountProvableBigSumTree,
+    ),
+];
+
+/// The conversion of a tree of one Merk that has a node states the
+/// subtree of that Merk anew in the subtree directory. Merk says it
+/// through the handle it writes with (`NodeStore::state_tree_type`), so
+/// the statement is in the batch that writes the nodes of the wide tree
+/// and its element. Of each of five kinds, a tree with children, a tree
+/// that nothing was written into and a tree whose one child was deleted
+/// are converted here. After its conversion the directory names the wide
+/// tree type for the first, under the same element, at the same position
+/// and with the root the element names, and has no entry of the other
+/// two, whose conversions state nothing. The grove is the one RocksDB
+/// holds after the same calls, at the same costs.
+#[test]
+fn the_directory_names_the_wide_tree_type_of_a_converted_tree_of_one_merk() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        let on_lignin = converted_trees(&db, v);
+        // A tree with nodes, one that nothing was written into and one
+        // that was emptied, of each kind.
+        assert_eq!(on_lignin.0.len(), 3 * TREES_OF_ONE_MERK.len());
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+            let on_rocksdb = converted_trees(&rocksdb.expect("RocksDB"), v);
+            assert_eq!(on_lignin, on_rocksdb);
+        }
+        for (key, _, narrow, wide) in TREES_OF_ONE_MERK {
+            let top: &[&[u8]] = &[key];
+            let entry = entry(&db, build_prefix(top.into()).value).expect("an entry");
+            assert_eq!(entry.tree_type().expect("a tree type"), wide, "{narrow}");
+            let host = entry.host.expect("a host");
+            assert_eq!(
+                (host.subtree, host.key.as_slice(), host.position),
+                ([0; 32], key, 0)
+            );
+            // The entry and the element name one root and one tree type.
+            let element = db.get(ROOT, key, None, v).unwrap().expect("the element");
+            let named = element.root_key_and_tree_type_owned().expect("a tree");
+            assert!(named.0.is_some(), "{narrow}");
+            assert_eq!((entry.root_key, wide), named, "{narrow}");
+        }
+        // A tree that nothing was written into has no entry. Neither has
+        // a tree that was emptied: its entry left with the write of its
+        // element as another tree
+        // (`a_tree_that_was_emptied_states_nothing_with_its_conversion`
+        // reads it before the conversion). After the first write into
+        // either, its entry names the wide tree type and a root.
+        for (key, _, narrow, wide) in TREES_OF_ONE_MERK {
+            for emptied in [false, true] {
+                let kind: &[u8] = if emptied { b", emptied" } else { b", empty" };
+                let name = [key, kind].concat();
+                let top: &[&[u8]] = &[&name];
+                let prefix = build_prefix(top.into()).value;
+                assert_eq!(entry(&db, prefix), None, "{narrow}, emptied: {emptied}");
+                db.insert(top, b"first", Element::new_sum_item(3), None, None, v)
+                    .unwrap()
+                    .expect("a sum item");
+                let entry = entry(&db, prefix).expect("an entry");
+                assert_eq!(entry.tree_type().expect("a tree type"), wide, "{narrow}");
+                assert!(entry.root_key.is_some(), "{narrow}");
+            }
+        }
+        // A tree that is not converted keeps the tree type it was entered
+        // with.
+        db.insert(ROOT, b"kept", Element::empty_sum_tree(), None, None, v)
+            .unwrap()
+            .expect("a tree");
+        let kept: &[&[u8]] = &[b"kept"];
+        db.insert(kept, b"item", Element::new_sum_item(5), None, None, v)
+            .unwrap()
+            .expect("a sum item");
+        let entry = entry(&db, build_prefix(kept.into()).value).expect("an entry");
+        assert_eq!(entry.tree_type().expect("a tree type"), TreeType::SumTree);
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
+}
+
+/// A sum-indexed tree with nine children, under the key `indexed`.
+fn sum_indexed_tree<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) {
+    let top: &[&[u8]] = &[b"indexed"];
+    db.insert(ROOT, b"indexed", Sum::empty(), None, None, v)
+        .unwrap()
+        .expect("an indexed tree");
+    for n in 0..9usize {
+        Sum::insert(db, top, &[n as u8 * 29], Sum::leaf(n), None, v)
+            .unwrap()
+            .expect("a child");
+    }
+}
+
+/// Converts the tree of [`sum_indexed_tree`] to its counterpart with a
+/// 128-bit sum. Returns what the conversion cost and the root hash it
+/// leaves.
+fn converted_sum_indexed_tree<E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+) -> (OperationCost, [u8; 32]) {
+    let converted = db.convert_to_big_sum_tree(ROOT, b"indexed", None, v);
+    converted.value.expect("the tree is converted");
+    let root_hash = db.root_hash(None, v).unwrap().expect("a root hash");
+    (converted.cost, root_hash)
+}
+
+/// Writes a child into the converted tree of [`sum_indexed_tree`], and
+/// returns the root hash that is left.
+fn child_of_the_converted_tree<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> [u8; 32] {
+    let top: &[&[u8]] = &[b"indexed"];
+    BigSum::insert(db, top, b"after", BigSum::leaf(7), None, v)
+        .unwrap()
+        .expect("a child of the converted tree");
+    db.root_hash(None, v).unwrap().expect("a root hash")
+}
+
+/// The conversion of an indexed tree writes its primary Merk again, and
+/// Merk states that Merk anew: the directory names the wide indexed tree
+/// type for the primary, at position 0 under the element. The secondary
+/// of a sum-indexed tree stays where the element names it, and its entry
+/// keeps its tree type and its host. The converted tree takes a write,
+/// and the grove is the one RocksDB holds after the same calls, with the
+/// conversion at the same cost.
+#[test]
+fn the_primary_of_a_converted_indexed_tree_is_stated_anew_and_its_secondary_is_not() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        let top: &[&[u8]] = &[b"indexed"];
+        let primary = build_prefix(top.into()).value;
+        let secondary = secondary_prefix_for(&primary, IndexAxis::Sum.tag()).value;
+        sum_indexed_tree(&db, v);
+        let narrow = entry(&db, primary).expect("the primary is entered");
+        assert_eq!(
+            narrow.tree_type().expect("a tree type"),
+            TreeType::ProvableSumIndexedTree
+        );
+        let before = entry(&db, secondary).expect("the secondary is entered");
+
+        let on_lignin = converted_sum_indexed_tree(&db, v);
+        let wide = entry(&db, primary).expect("the primary is entered");
+        let after = entry(&db, secondary).expect("the secondary is entered");
+        // The converted tree takes a write.
+        let written = child_of_the_converted_tree(&db, v);
+        assert_ne!(written, on_lignin.1, "the write moved no root hash");
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+            let rocksdb = rocksdb.expect("RocksDB");
+            sum_indexed_tree(&rocksdb, v);
+            assert_eq!(on_lignin, converted_sum_indexed_tree(&rocksdb, v));
+            assert_eq!(written, child_of_the_converted_tree(&rocksdb, v));
+        }
+        assert_eq!(
+            wide.tree_type().expect("a tree type"),
+            TreeType::ProvableBigSumIndexedTree
+        );
+        let host = wide.host.expect("a host");
+        assert_eq!(
+            (host.subtree, host.key.as_slice(), host.position),
+            ([0; 32], b"indexed".as_slice(), 0)
+        );
+        assert_eq!(
+            (&after.tree_type, &after.host),
+            (&before.tree_type, &before.host)
+        );
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
+}
+
+/// A commit beside the transaction of the conversion of a tree with
+/// children deletes the tree between the look of the group and its
+/// application. The transaction refuses the group as a conflict
+/// (`CommitError::Conflict`), the engine does not look again, and the
+/// conversion fails with that conflict, with no write of the group in
+/// the caller's transaction.
+#[test]
+fn a_conversion_beside_a_commit_that_takes_its_tree_is_refused_after_one_look() {
+    use std::sync::Arc;
+
+    use crate::engine::lignin::{Between, AFTER_A_LOOK, REFUSED};
+
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+        let top: &[&[u8]] = &[b"sum"];
+        db.insert(ROOT, b"sum", Element::empty_sum_tree(), None, None, v)
+            .unwrap()
+            .expect("a tree");
+        for n in 0..5u8 {
+            db.insert(top, &[n], Element::new_sum_item(n.into()), None, None, v)
+                .unwrap()
+                .expect("a sum item");
+        }
+        let prefix = build_prefix(top.into()).value;
+        assert!(entry(&db, prefix).is_some());
+
+        let taken: Between = {
+            let db = db.clone();
+            Box::new(move |_| {
+                let allowed = crate::operations::delete::DeleteOptions {
+                    allow_deleting_non_empty_trees: true,
+                    deleting_non_empty_trees_returns_error: false,
+                    ..Default::default()
+                };
+                db.delete(ROOT, b"sum", Some(allowed), None, v)
+                    .unwrap()
+                    .expect("a delete beside the conversion");
+            })
+        };
+        REFUSED.take();
+        // A second look would take the second of these.
+        AFTER_A_LOOK.set([taken, Box::new(|_| ())].into());
+        let tx = db.start_transaction();
+        let converted = db.convert_to_big_sum_tree(ROOT, b"sum", Some(&tx), v);
+        let refused = converted
+            .unwrap()
+            .expect_err("the tree left beside the conversion");
+        assert!(refused.is_commit_conflict(), "{refused}");
+        assert_eq!(REFUSED.take().len(), 1);
+        assert_eq!(AFTER_A_LOOK.take().len(), 1, "one look");
+        // The caller's transaction holds no write of the refused group.
+        let written = tx.write_transaction().expect("a write transaction");
+        assert_eq!(written.stats().writes, 0);
+        drop(tx);
+
+        // The grove is as the delete left it.
+        assert_eq!(entry(&db, prefix), None);
+        assert!(db.get(ROOT, b"sum", None, v).unwrap().is_err());
+        db.flush().expect("a flush");
+        drop(Arc::into_inner(db).expect("the only handle on the database"));
+    }
+    check(dir.path(), v);
+}
+
+/// A sum tree and a sum-indexed tree, each with one child that is
+/// deleted again.
+fn emptied_trees<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) {
+    let (plain, indexed): (&[&[u8]], &[&[u8]]) = (&[b"plain"], &[b"indexed"]);
+    db.insert(ROOT, b"plain", Element::empty_sum_tree(), None, None, v)
+        .unwrap()
+        .expect("a tree");
+    db.insert(plain, b"child", Element::new_sum_item(4), None, None, v)
+        .unwrap()
+        .expect("a sum item");
+    (db.delete(plain, b"child", None, None, v).unwrap()).expect("a delete of the child");
+    db.insert(ROOT, b"indexed", Sum::empty(), None, None, v)
+        .unwrap()
+        .expect("an indexed tree");
+    (Sum::insert(db, indexed, b"child", Sum::leaf(4), None, v).unwrap()).expect("a child");
+    let deleted = Sum::delete(db, indexed, b"child", None, v).unwrap();
+    assert!(deleted.expect("a delete of the child"));
+}
+
+/// Converts the two trees of [`emptied_trees`]. Returns what the
+/// conversions cost and the root hash they leave.
+fn emptied_trees_converted<E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+) -> (Vec<OperationCost>, [u8; 32]) {
+    let mut costs = Vec::new();
+    for key in [&b"plain"[..], b"indexed"] {
+        let converted = db.convert_to_big_sum_tree(ROOT, key, None, v);
+        costs.push(converted.cost);
+        converted.value.expect("the emptied tree is converted");
+    }
+    (costs, db.root_hash(None, v).unwrap().expect("a root hash"))
+}
+
+/// Writes a child into each of the two converted trees, and returns the
+/// root hash that is left.
+fn emptied_trees_written<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> [u8; 32] {
+    let (plain, indexed): (&[&[u8]], &[&[u8]]) = (&[b"plain"], &[b"indexed"]);
+    db.insert(plain, b"after", Element::new_sum_item(6), None, None, v)
+        .unwrap()
+        .expect("a sum item");
+    (BigSum::insert(db, indexed, b"after", BigSum::leaf(7), None, v).unwrap()).expect("a child");
+    db.root_hash(None, v).unwrap().expect("a root hash")
+}
+
+/// A tree whose last child was deleted has an entry with no root, and
+/// its conversion states nothing: its Merk has no node. The entry of a
+/// sum tree leaves with the write of its element as another tree, and the
+/// next write into the tree enters it as the wide one. The Merks of a
+/// sum-indexed tree are left as they are entered (`GROVE-04-F1`): the
+/// entry of the primary, which names the narrow tree type here, is after
+/// the conversion what it was before, and names that tree type after the
+/// next write into the tree, which gives it a root. The costs of the
+/// conversions and the root hashes are RocksDB's.
+#[test]
+fn a_tree_that_was_emptied_states_nothing_with_its_conversion() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        let (plain, indexed): (&[&[u8]], &[&[u8]]) = (&[b"plain"], &[b"indexed"]);
+        let plain = build_prefix(plain.into()).value;
+        let primary = build_prefix(indexed.into()).value;
+        let secondary = secondary_prefix_for(&primary, IndexAxis::Sum.tag()).value;
+        // What the directory holds of a subtree: its root key and its
+        // tree type.
+        let held = |prefix: [u8; 32]| {
+            let entry = entry(&db, prefix)?;
+            let tree_type = entry.tree_type().expect("a tree type");
+            Some((entry.root_key, tree_type))
+        };
+        let narrow = TreeType::ProvableSumIndexedTree;
+
+        emptied_trees(&db, v);
+        assert_eq!(held(plain), Some((None, TreeType::SumTree)));
+        let before = entry(&db, primary).expect("the primary is entered");
+        assert_eq!(held(primary), Some((None, narrow)));
+        let beside = entry(&db, secondary).expect("the secondary is entered");
+        assert_eq!(beside.root_key, None);
+
+        let converted = emptied_trees_converted(&db, v);
+        assert_eq!(held(plain), None);
+        assert_eq!(entry(&db, primary), Some(before));
+        assert_eq!(entry(&db, secondary), Some(beside.clone()));
+
+        let written = emptied_trees_written(&db, v);
+        assert_ne!(written, converted.1, "the writes moved no root hash");
+        let (root_key, tree_type) = held(plain).expect("the sum tree is entered again");
+        assert!(root_key.is_some() && tree_type == TreeType::BigSumTree);
+        let (root_key, tree_type) = held(primary).expect("the primary is entered");
+        assert!(root_key.is_some() && tree_type == narrow);
+        let after = entry(&db, secondary).expect("the secondary is entered");
+        assert!(after.root_key.is_some());
+        assert_eq!(
+            (after.tree_type, after.host),
+            (beside.tree_type, beside.host)
+        );
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+            let rocksdb = rocksdb.expect("RocksDB");
+            emptied_trees(&rocksdb, v);
+            assert_eq!(converted, emptied_trees_converted(&rocksdb, v));
+            assert_eq!(written, emptied_trees_written(&rocksdb, v));
+        }
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
+}
+
+/// An engine whose handles pass the seam on to the handles of LigninDB
+/// passes on what a conversion states (`FaultableReads`, the handle of
+/// `RefusedReads`): the directory names the wide tree type as it does
+/// with the engine's own handles.
+#[test]
+fn a_conversion_through_a_handle_that_passes_the_seam_on_is_stated() {
+    use crate::tests::faultable_reads::RefusedReads;
+
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = GroveDb::<RefusedReads<LigninEngine>>::open_with_engine(dir.path());
+        converted_trees(&db.expect("a database"), v);
+    }
+    let db = Lignin::open_with_engine(dir.path()).expect("the database opens again");
+    for (key, _, narrow, wide) in TREES_OF_ONE_MERK {
+        let top: &[&[u8]] = &[key];
+        let entry = entry(&db, build_prefix(top.into()).value).expect("an entry");
+        assert_eq!(entry.tree_type().expect("a tree type"), wide, "{narrow}");
+    }
+}
+
 /// The Merks of an indexed tree leave the directory with its element:
 /// after the delete of the tree with the children it holds, and after a
 /// flat drop of it, none of them is entered, and the key takes an indexed
@@ -1196,6 +1650,9 @@ fn an_indexed_tree_over_subtrees_that_an_earlier_element_left_elsewhere_is_refus
     // its axes in another order, and its secondaries stay where they are
     // entered.
     let before = db.root_hash(None, v).unwrap().expect("a root");
+    let same: &[&[u8]] = &[b"same"];
+    let primary = build_prefix(same.into()).value;
+    let entered = entry(&db, primary).expect("the primary is entered");
     let converted = db.convert_to_big_sum_tree(ROOT, b"same", None, v).unwrap();
     let refused = converted.expect_err("subtrees that hang elsewhere");
     assert!(
@@ -1204,6 +1661,9 @@ fn an_indexed_tree_over_subtrees_that_an_earlier_element_left_elsewhere_is_refus
     );
     let after = db.root_hash(None, v).unwrap().expect("a root");
     assert_eq!(after, before, "a refused write changed the root hash");
+    // Nothing of the group was applied: the primary is not stated anew
+    // either, which the conversion staged with its nodes.
+    assert_eq!(entry(&db, primary), Some(entered));
 
     // A record of the primary alone, by a batch that states no element:
     // the Merks of the tree hang where its element names them, and the
@@ -1790,5 +2250,109 @@ fn a_child_of_an_indexed_tree_that_is_written_over_is_swept_as_on_rocksdb() {
         let dir = tempfile::tempdir().expect("a directory");
         let on_rocksdb = written_over_a_child::<crate::RocksDbEngine>(dir.path());
         assert_eq!(on_lignin, on_rocksdb);
+    }
+}
+
+/// A count-and-sum indexed tree of three axes whose one child was
+/// deleted, and its conversion. Returns what the conversion cost and what the write of a
+/// child into the converted tree answers.
+fn emptied_tree_whose_axes_change_places<E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+    before_the_conversion: impl FnOnce(),
+    after_the_conversion: impl FnOnce(),
+) -> (OperationCost, Result<(), Error>) {
+    let at: &[&[u8]] = &[b"idx"];
+    db.insert(ROOT, b"idx", CountSum::empty(), None, None, v)
+        .unwrap()
+        .expect("an indexed tree");
+    (CountSum::insert(db, at, b"child", CountSum::leaf(4), None, v).unwrap()).expect("a child");
+    let deleted = CountSum::delete(db, at, b"child", None, v).unwrap();
+    assert!(deleted.expect("a delete of the child"));
+    before_the_conversion();
+    let converted = db.convert_to_big_sum_tree(ROOT, b"idx", None, v);
+    converted.value.expect("the emptied tree is converted");
+    after_the_conversion();
+    let written = CountBigSum::insert(db, at, b"after", CountBigSum::leaf(7), None, v);
+    (converted.cost, written.value)
+}
+
+/// The conversion of a count-and-sum indexed tree that keeps its three
+/// axes names them in another order and moves no subtree
+/// (`GROVE-04-F1`). Of such a tree with a child it is refused
+/// ([`an_indexed_tree_over_subtrees_that_an_earlier_element_left_elsewhere_is_refused`]).
+/// Of such a tree whose one child was deleted it is taken, at RocksDB's
+/// cost, and the primary and each secondary keep the entry they had. The
+/// next write into the tree is refused and leaves the root hash as it
+/// was, where RocksDB takes it.
+#[test]
+fn an_emptied_indexed_tree_whose_axes_change_places_is_converted_and_takes_no_write() {
+    use std::cell::Cell;
+
+    let v = GroveVersion::latest();
+    let (_dir, engine) = super::engine();
+    let db = GroveDb::from_engine(engine);
+    let at: &[&[u8]] = &[b"idx"];
+    let primary = build_prefix(at.into()).value;
+    let narrow = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg];
+    let secondaries = || {
+        let entries = narrow.map(|axis| {
+            let entry = entry(&db, secondary_prefix_for(&primary, axis.tag()).value);
+            entry.expect("a secondary is entered")
+        });
+        let places = entries.each_ref().map(|entry| {
+            let host = entry.host.as_ref().expect("a host");
+            host.position
+        });
+        assert_eq!(places, [1, 2, 3]);
+        entries
+    };
+    // The entries of the primary and of the three secondaries.
+    let entries = || {
+        let primary = entry(&db, primary).expect("the primary is entered");
+        (primary, secondaries())
+    };
+    let narrow_type = CountSum::empty().tree_type().expect("a tree");
+    let entered = Cell::new(None);
+    let root = Cell::new(None);
+
+    let (cost, written) = emptied_tree_whose_axes_change_places(
+        &db,
+        v,
+        || {
+            let (primary, secondaries) = entries();
+            let tree_type = primary.tree_type().expect("a tree type");
+            assert_eq!((&primary.root_key, tree_type), (&None, narrow_type));
+            entered.set(Some((primary, secondaries)));
+        },
+        || {
+            let before = entered.take();
+            assert_eq!(Some(entries()), before, "the conversion changed an entry");
+            entered.set(before);
+            root.set(Some(db.root_hash(None, v).unwrap().expect("a root hash")));
+        },
+    );
+    let refused = written.expect_err("secondaries that hang elsewhere");
+    assert!(
+        matches!(&refused, Error::NotSupported(words) if words.contains("other places")),
+        "{refused}"
+    );
+    assert_eq!(
+        Some(entries()),
+        entered.take(),
+        "a refused write changed an entry"
+    );
+    let after = db.root_hash(None, v).unwrap().expect("a root hash");
+    assert_eq!(Some(after), root.take(), "a refused write changed the root");
+
+    #[cfg(feature = "rocksdb_storage")]
+    {
+        let dir = tempfile::tempdir().expect("a directory");
+        let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+        let rocksdb = rocksdb.expect("RocksDB");
+        let (on_rocksdb, written) =
+            emptied_tree_whose_axes_change_places(&rocksdb, v, || (), || ());
+        assert_eq!(cost, on_rocksdb);
+        written.expect("RocksDB takes the write");
     }
 }

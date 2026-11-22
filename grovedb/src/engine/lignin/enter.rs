@@ -72,7 +72,7 @@
 //!   where the subtree is not entered and its writes are not left out
 //!   ([`gone`](super::gone)): where the group puts a node or a record
 //!   into it, or a batch of the group enters, drops or clears a subtree
-//!   itself. A handle that names no
+//!   itself, or states one anew. A handle that names no
 //!   element, by prefix or beside the
 //!   path of the root, is not held to an element.
 //! - **In a group of more than one batch, the element of a tree whose
@@ -157,13 +157,16 @@
 //!   that is named as the subtree of its own element does: no commit
 //!   made that so.
 //! - **No batch of the group enters, drops or clears a subtree
-//!   itself**: the enters that the look states, and the drops that it
+//!   itself, or states one anew**: the enters that the look states, and
+//!   the drops that it
 //!   states for the subtrees under removed nodes ([`gone`](super::gone)),
 //!   are the group's only writes of subtrees. Where a batch makes one itself, the group can
 //!   be refused for an entry by its own doing, with nothing published
 //!   beside it, and the engine does not tell that from a stale look:
-//!   such a group is not looked for again. No operation of GroveDB
-//!   makes such a group today.
+//!   such a group is not looked for again. One operation of GroveDB
+//!   makes such a group: the conversion of a tree to its 128-bit
+//!   counterpart, in whose batch Merk states the converted Merk anew
+//!   where the Merk has a node (`NodeStore::state_tree_type`).
 //! - **A commit was published since before that look**: the latest
 //!   version of the database is another than it was then.
 //!

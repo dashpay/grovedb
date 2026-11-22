@@ -2328,8 +2328,9 @@ fn a_refusal_that_is_of_no_entry_is_answered_after_one_application() {
     check(dir.path());
 }
 
-/// A group in which a batch enters, drops or clears a subtree itself is
-/// not looked for again, whatever is published beside it: the entry it
+/// A group in which a batch enters, drops or clears a subtree itself,
+/// or states one anew, is not looked for again, whatever is published
+/// beside it: the entry it
 /// is refused for can be gone by its own doing. Here the first batch of
 /// a group drops a keyspace and the second writes a record into it,
 /// which a transaction that lays the group out where it is applied
