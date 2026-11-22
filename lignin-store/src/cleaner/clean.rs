@@ -60,7 +60,8 @@ pub struct Pass {
     pub sealed: Vec<FileId>,
     /// Segments whose blocks the pass had listed to move and that were
     /// out of the store when it came to them, with no link left to the
-    /// blocks it asked for ([`CleanerStats::segments_gone`]).
+    /// blocks it asked for
+    /// ([`CleanerStats::segments_gone`](super::CleanerStats::segments_gone)).
     pub gone: usize,
     /// Whether the throttle ended the moving of blocks before the dead
     /// space was within its target: the next pass goes on.
