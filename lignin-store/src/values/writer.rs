@@ -163,7 +163,13 @@ impl ValueWriter {
         value_len: u32,
         records: &[u8],
     ) -> Result<ValuePointer, ValueStoreError> {
+        // Admitted and handed to the file layer in one order with the
+        // syncs of the file: none comes between the two, so nothing is
+        // appended to a file after a sync of it has failed.
+        let _in_order = self.file.in_order();
         self.file.check_appendable()?;
+        #[cfg(test)]
+        super::file::hooks::run(super::file::hooks::Point::Admitted);
         hold.add(&self.file);
         let offset = self
             .appender

@@ -707,7 +707,10 @@ impl ValueStore {
     /// is writing.
     ///
     /// It may run while writers append. A value is covered if its append
-    /// returned before this was called.
+    /// returned before this was called. An append to a file and a sync
+    /// of that file wait for each other: an append that the file admitted
+    /// is in the file before a sync of it that fails, and the file
+    /// admits none after that sync.
     ///
     /// Every file is synced, whatever happens to another one, and the first
     /// error is returned. A file whose sync has failed keeps failing this

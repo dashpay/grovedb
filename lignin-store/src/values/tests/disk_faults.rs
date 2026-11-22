@@ -317,6 +317,77 @@ fn a_file_whose_sync_failed_ends_where_it_was_last_synced() {
     assert_eq!(store.named(), [value_file(1, FileState::Closed, durable)]);
 }
 
+/// An append to a file and a sync of that file are in one order: an
+/// append that the file admitted reaches the file before a sync of it
+/// that fails, and none reaches it after that sync. Here another thread
+/// syncs the value log while the writer stands between the admission of
+/// its append and the file layer: the sync waits for the append.
+#[test]
+fn an_append_that_a_file_admitted_reaches_it_before_a_sync_of_the_file_that_fails() {
+    use std::sync::mpsc;
+
+    use lignin_io::sim::{Event, Outcome as Ended};
+
+    use crate::values::file::hooks::{self, Point};
+
+    let mut store = Store::new();
+    let mut writer = store.writer();
+    let mut hold = ValueHold::new();
+    writer.append(&mut hold, page(1), b"dirty").unwrap();
+    fail(&store.fs, OpKind::SyncData, "00000001.val");
+    let before = store.fs.stats().ops;
+    let on_the_file = |fs: &SimVfs| -> Vec<(OpKind, bool)> {
+        let ops = fs.trace().into_iter().filter_map(|event| match event {
+            Event::Op(op) if op.op > before && op.path.ends_with("00000001.val") => Some(op),
+            _ => None,
+        });
+        ops.filter(|op| matches!(op.kind, OpKind::Append | OpKind::SyncData))
+            .map(|op| (op.kind, op.outcome == Ended::Ok))
+            .collect()
+    };
+
+    let values = &store.values;
+    let (go, gone) = mpsc::channel();
+    let (tell, told) = mpsc::channel();
+    let admitted = std::thread::scope(|scope| {
+        let waits = tell.clone();
+        scope.spawn(move || {
+            gone.recv().expect("the writer stands at its append");
+            hooks::set(Point::Waits, move || {
+                waits.send("waits").expect("the writer")
+            });
+            let synced = values.sync();
+            assert!(
+                matches!(synced, Err(ValueStoreError::Io { op: "sync", .. })),
+                "{synced:?}"
+            );
+            // Nobody listens any more where the sync waited.
+            let _ = tell.send("returned");
+        });
+        hooks::set(Point::Admitted, move || {
+            go.send(()).expect("the syncing thread");
+            let heard = told.recv().expect("the syncing thread");
+            assert_eq!(heard, "waits", "the sync did not wait for the append");
+        });
+        writer.append(&mut hold, page(1), b"admitted")
+    });
+    admitted.expect("the append was admitted before the sync failed");
+    assert_eq!(
+        on_the_file(&store.fs),
+        [(OpKind::Append, true), (OpKind::SyncData, false)],
+        "the append is in the file before the sync that failed"
+    );
+    assert!(matches!(
+        writer.append(&mut hold, page(1), b"more"),
+        Err(ValueStoreError::FileFailed { .. })
+    ));
+    assert!(matches!(
+        store.values.sync(),
+        Err(ValueStoreError::FileFailed { .. })
+    ));
+    assert_eq!(on_the_file(&store.fs).len(), 2, "nothing more reached it");
+}
+
 #[test]
 fn a_finish_whose_sync_fails_closes_the_file_where_it_was_last_synced() {
     let mut store = Store::new();
