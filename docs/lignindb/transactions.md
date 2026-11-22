@@ -1156,9 +1156,10 @@ commit.
 **LD1. A load is a change set that is its whole Merk.** A change set (ST6)
 with a node may state that it is the whole of its Merk: every node once, a
 child before its parent, each with its value and every hash, and as its
-root the one node that no link names. It is refused, with nothing changed,
-where it states this and is not that, and where the Merk has a root once
-the drops and the clears of its batch are made. A change set that states
+root the one node that no link names. It is refused, and its batch adds
+nothing to the write set (WT10), where it states this and is not that,
+and where the Merk has a root once the drops and the clears of its batch
+are made. A change set that states
 this and has no node is taken as any other. The records a load writes are
 the ones the same change set writes without the statement. A load is a
 layout: it adds nothing to the logical state (section 2). What it is to
@@ -1241,9 +1242,16 @@ frames that are no more is dead space, and so is one that was appended
 for no page (LD3). The records are what they were. The pages need not be:
 they are again the loader's.
 
-One layout appends nothing: the one that is made only to tell the refusal
-that stops the layout of *T*'s writes (MV7), and is dropped. Its cells
-name the places the write set has.
+A layout of *T*'s writes that a refusal stops is not made again to tell
+that refusal. *T* keeps it, and tells it again to each read and each
+write that a move decides (MV7) and to each commit, for as long as *T*
+reads the version that the layout was stopped at and its writes are the
+ones it held then. Where *T* holds a load, the layout is not made again
+for a write that *T* takes afterwards either: writes are laid out in
+their order, so the layout is stopped with more of them too, and each try
+would lay the loads out again. At another version, and after a rollback
+to a savepoint or of a scope that takes a write out, the layout is made
+again (WT7a), and a load with it.
 
 **LD5. The commit of a load takes its values over.** This is the exception
 to CM7 and to the first case of PV6.
@@ -1310,16 +1318,18 @@ which is held to in three places:
   operation reads is in that reading.
 - **Between a look and the write.** *T* remembers each subtree that a read
   of the subtree (`subtree`, of *T* or of a scope of it) showed it entered
-  with no root, with the version the read was of. Where the first item
-  refuses a load, *T* was shown the subtree so at an earlier version than
-  the operation reads, and neither *T*'s writes nor the batch say
-  anything of the Merk's root or took the subtree out, a commit in
-  between gave the Merk a root or took the subtree out: the refusal is
-  `MerkTaken`, which is a conflict (CF6). A load into a subtree that a commit dropped or moved
-  away is told before that as any write into such a subtree is
-  (`ValueTaken`, CF10), where *T* holds the key set of that commit. A
-  *T* that holds a move, and a batch that states one, are told no
-  refusal by a look.
+  with no root, with the version the read was of. A read that shows the
+  subtree with a root, or not entered, forgets it. The refusal of the
+  first item is `MerkTaken`, which is a conflict (CF6), where all of this
+  holds: *T* was shown the subtree so at an earlier version than the
+  operation reads; the committed version that the operation reads has
+  the subtree with a root, where the load is refused for a root, or has
+  no subtree there, where it is refused for a subtree that is not
+  entered; no write of *T* gave the Merk a root, put another subtree in
+  its place or took it out; and no move of *T* or of the batch decides
+  what is under it (MV7). A load into a subtree that a commit dropped or
+  moved away is told before that as any write into such a subtree is
+  (`ValueTaken`, CF10), where *T* holds the key set of that commit.
 - **From the write to the commit.** A commit of another transaction that
   puts or deletes a node of the Merk, or deletes a range that holds a key
   of them, after the load's operation meets the load (CF2), and *T*'s
@@ -1330,19 +1340,23 @@ which is held to in three places:
 A refusal of the first two items is the refusal of a write (WT10): the
 batch adds nothing to the write set, and *T* is left open with what it
 wrote before. The claims that the scope took for the batch stay with the
-scope (SC3). Where *T* remembers no such look, the refusal is the one of
-LD1, which is no conflict: the operation cannot tell a root that a commit
-gave the Merk since *T*'s caller looked from one the Merk had before. *T*
-remembers 1,024 looks, and forgets all of them when one more subtree is
-shown. It forgets them too at a rollback to a savepoint, at the rollback
-of a scope that takes writes out, and when it ends, by a commit or by a
-rollback. A caller of a load adds no clear and no range for any item.
+scope (SC3). Where neither CF10 nor a look tells the refusal, it is the
+one of the first item as it is, which is no conflict: the operation
+cannot tell a root that a commit gave the Merk since *T*'s caller looked
+from one the Merk had before. *T* remembers such looks of 1,024 subtrees.
+When a read shows it one more subtree entered with no root, it forgets
+the others. It forgets all of them at a rollback to a savepoint, at the
+rollback of a scope that takes writes out, and when it ends, by a commit
+or by a rollback. A caller of a load adds no clear and no range for any
+item.
 
 By key, the first item is asked of the write set as every answer by key
 is (WT7b), which is the frames' answer with one difference: where the
 batch clears a Merk with no node, a subtree that *T* itself entered below
 that Merk is taken as gone, and a load into it is refused as one into a
-subtree that is not entered. An enter of the
+subtree that is not entered, unless the batch enters the subtree again.
+A subtree that the committed state has below such a Merk stays entered,
+as with frames. An enter of the
 load's subtree as a new one is held to by key as well: the load is
 refused where the subtree is still entered once the drops and the clears
 are made (`Entered`), and where the host the enter states is in a subtree
@@ -1735,9 +1749,10 @@ entered with no root (LD6).
 None is `Conflict`, because it is the answer to a read or
 a write and not to a commit, and it leaves the transaction open with what
 it wrote before (WT10). A caller that takes it as a conflict rolls the
-transaction back and makes its reads and writes again. The seam does not
-map them to the engine-neutral conflict error yet: that is GROVE-10's,
-which tells them by `TxnError::is_conflict()`.
+transaction back and makes its reads and writes again. Merk's node store
+on LigninDB and GroveDB's LigninDB engine give each of them to their
+callers as the engine-neutral conflict error, told by
+`TxnError::is_conflict()`.
 
 **CF7. A second write transaction is the same rule.** TXN-05 says "a second
 write transaction fails at commit with a conflict". Read through CF2: of two

@@ -134,8 +134,8 @@
 //! made and the root named. Such a change set that has a node is a
 //! **load** (`transactions.md` LD1 to LD8). A state-sync restore, the
 //! load hatch and the migrator from RocksDB hand their Merks over so.
-//! One that is not what it says is refused with nothing changed
-//! ([`BatchError::NotWhole`], [`WholeFault`]).
+//! One that is not what it says is refused, and its batch adds nothing to
+//! the write set ([`BatchError::NotWhole`], [`WholeFault`]).
 //!
 //! **The records are those of the same change set that does not say so.**
 //! A load is in the write set as the puts of its nodes, one entry each, so
@@ -184,9 +184,12 @@
 //! pages, and each value out of line is read from where the write set has
 //! it and appended again, for the page its cell is in now. The records
 //! are what they were. The copies that no cell holds are dead space of
-//! the value log. One layout appends nothing: the one that is made only
-//! to tell the refusal which stops the layout of the transaction's
-//! writes, and is dropped. Its cells name the places the write set has.
+//! the value log. A layout that a refusal stops is not made again to
+//! tell that refusal: the transaction keeps it, and tells it again to a
+//! read or a write that a move decides and to a commit, while it reads
+//! the version and holds the writes that the layout was stopped at.
+//! Where it holds a load, the layout is not made again for a write it
+//! takes afterwards either, which is then served by key.
 //!
 //! **A load that is applied where no frames take it has no page then**:
 //! where a write of the transaction is met (WT7b), and for a scope that
