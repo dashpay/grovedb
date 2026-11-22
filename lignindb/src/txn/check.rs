@@ -35,7 +35,8 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// that hosts the subtree before); and that nothing else is stated of a
 /// prefix a move
 /// names, but the drop of a subtree that is entered where one is moved to
-/// and that no move takes away.
+/// and that no move takes away. A subtree that is stated anew under such
+/// a prefix is refused as that ([`BatchError::ConvertMoved`]).
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
@@ -86,7 +87,10 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
         // A drop makes room where a subtree is moved to.
         let makes_room = matches!(write, SubtreeWrite::Drop { .. }) && !sources.contains(&subtree);
         if named(&subtree) && !makes_room {
-            return moved(subtree);
+            return match write {
+                SubtreeWrite::Convert { .. } => Err(BatchError::ConvertMoved { subtree }),
+                _ => moved(subtree),
+            };
         }
         let enter = write.entering();
         let once = match (enter, write) {

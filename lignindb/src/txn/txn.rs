@@ -1272,8 +1272,8 @@ impl<'s> WriteTxn<'s> {
     ///   ([`ByKey`]), and those do not have a moved subtree where it is;
     /// - or the batch writes or reads a subtree that a move decides
     ///   ([`Self::refuse_moved`]): one it changes, puts a record under,
-    ///   enters, enters a subtree under, or names as one that a node it
-    ///   puts hosts, whose entry the batch reads (SC2).
+    ///   enters, states anew, enters a subtree under, or names as one
+    ///   that a node it puts hosts, whose entry the batch reads (SC2).
     ///
     /// The refusal is that of [`Self::unlaid`]. Where that is
     /// [`BatchError::MovedByKey`] or [`BatchError::MoveBeside`], it names

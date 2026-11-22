@@ -3269,6 +3269,94 @@ fn two_merks_that_change_places_take_what_is_known_of_their_unlinked_records() {
     world.check(&reader);
 }
 
+/// A subtree that a move of a batch names is not stated anew by that
+/// batch, under the prefix it has or the one it gets: the batch is
+/// refused whole (`ConvertMoved`), whichever of the two statements comes
+/// first. A subtree that leaves with the move is not entered where the
+/// batch states its subtrees anew, after its moves (MV4). A later batch
+/// states the moved subtree anew under the prefix it then has, and
+/// frames that are made again state it so. Where the transaction serves
+/// its records by key, a subtree that a move decides is not stated anew
+/// (MV7).
+#[test]
+fn a_subtree_is_stated_anew_after_its_move_and_not_in_the_batch_of_the_move() {
+    const WIDE: &[u8] = b"a wide merk";
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    emptied(&mut world);
+    let pairs = [(A, B), (A_IN, B_IN)];
+    let convert = |name: u8| OwnedSubtree::Convert(sub(name), WIDE.to_vec(), None);
+    let tree_type = |tx: &Tx<'_>, name: u8| shown(tx, name).map(|(_, tree_type, _)| tree_type);
+
+    let tx = world.begin();
+    for (named, first) in [A, B, A_IN, B_IN]
+        .into_iter()
+        .zip([false, true].into_iter().cycle())
+    {
+        let mut batch = rename(&world, &tx, b"a", b"b", &pairs);
+        batch.subtrees.insert(usize::from(!first), convert(named));
+        let refused = batch_error(world.apply(&tx, &batch));
+        let stated = BatchError::ConvertMoved {
+            subtree: sub(named),
+        };
+        assert_eq!(refused, stated, "{named}");
+        world.check(&tx);
+        assert_eq!(tx.txn.stats().writes, 0, "the batch changed nothing");
+    }
+    let mut batch = rename(&world, &tx, b"a", b"b", &pairs);
+    batch.subtrees.push(convert(EMPTY));
+    let refused = batch_error(world.apply(&tx, &batch));
+    let left = BatchError::NotEntered {
+        subtree: sub(EMPTY),
+    };
+    assert_eq!(refused, left, "the subtree that leaves with the move");
+    world.check(&tx);
+    assert_eq!(tx.txn.stats().writes, 0, "the batch changed nothing");
+    let batch = rename(&world, &tx, b"a", b"b", &pairs);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    // Nothing is entered under the prefix it had.
+    let old = world.apply(&tx, &subtrees(vec![convert(A)]));
+    let old = batch_error(old);
+    assert!(matches!(old, BatchError::NotEntered { .. }), "{old}");
+    world
+        .apply(&tx, &subtrees(vec![convert(B)]))
+        .expect("the moved subtree is stated anew");
+    assert_eq!(tree_type(&tx, B), Some(WIDE.to_vec()));
+    assert_eq!(tree_type(&tx, A), None);
+    world.check(&tx);
+    let beside = OwnedBatch {
+        records: vec![put(aux(TOP), b"u", b"beside")],
+        ..OwnedBatch::default()
+    };
+    assert!(committed(world.write_outside(&beside, &[&tx])));
+    assert_eq!(tree_type(&tx, B), Some(WIDE.to_vec()));
+    world.check(&tx);
+
+    // A commit meets the move: by key, the moved subtree is not stated
+    // anew, and the refusal is the conflict that names it.
+    let other = world.begin();
+    world.write(&other, vec![put(aux(A), b"f", b"foreign")]);
+    assert!(committed(world.commit(other, &[&tx])));
+    let refused = world.apply_as_read(&tx, &subtrees(vec![convert(B)]));
+    let refused = refused.expect_err("a refusal");
+    assert!(moved_by_key(&refused, B), "{refused}");
+    assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+
+    // With no commit in between, the statement is committed with the move.
+    let tx = world.begin();
+    let batch = rename(&world, &tx, b"a", b"b", &pairs);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    world
+        .apply(&tx, &subtrees(vec![convert(B)]))
+        .expect("the moved subtree is stated anew");
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    let reader = world.begin();
+    assert_eq!(tree_type(&reader, B), Some(WIDE.to_vec()));
+    assert_eq!(tree_type(&reader, A), None);
+}
+
 /// A Merk with no host and one node, `x`, which hosts nothing.
 fn alone<'s>(world: &mut World<'s>) {
     let tx = world.begin();

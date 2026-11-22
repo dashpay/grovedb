@@ -430,7 +430,9 @@ pub struct HostPut<'a> {
 ///   mismatch). It states
 ///   nothing else of a prefix that one of its moves names, but the drop
 ///   of a subtree that is entered where one goes
-///   ([`BatchError::Moved`](super::BatchError::Moved)). Its moves are
+///   ([`BatchError::Moved`](super::BatchError::Moved), and
+///   [`BatchError::ConvertMoved`](super::BatchError::ConvertMoved) for
+///   one that it states anew). Its moves are
 ///   made together, after its drops and clears and before its enters.
 /// - **The move is dated at `read`**, as a kept value is dated at its
 ///   read: a commit beside the transaction that wrote the node which
@@ -509,7 +511,12 @@ pub enum SubtreeWrite<'a> {
     /// caller's to do, in the batch that states the places.
     ///
     /// The subtree is entered before the batch, which neither enters nor
-    /// drops nor clears it.
+    /// drops nor clears it. A batch that moves a subtree states none anew
+    /// that its moves name, under the prefix a move takes a subtree from
+    /// or under the one it brings a subtree to
+    /// ([`BatchError::ConvertMoved`](super::BatchError::ConvertMoved)): a
+    /// later batch states the subtree anew, under the prefix it has
+    /// then.
     Convert {
         /// The subtree.
         subtree: Subtree,

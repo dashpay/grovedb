@@ -302,9 +302,19 @@ pub enum BatchError {
     /// new prefix for a subtree that is entered and is not below the one
     /// it moves. The one statement a batch makes beside a move of a prefix
     /// the move names is the drop of the subtree that is entered where a
-    /// subtree is moved to.
+    /// subtree is moved to. A subtree that is stated anew there has a
+    /// refusal of its own ([`Self::ConvertMoved`]).
     Moved {
         /// The subtree the other statement names.
+        subtree: Subtree,
+    },
+    /// A batch that moves a subtree states anew a subtree that its moves
+    /// name: under a prefix that a move takes a subtree from, or under
+    /// one that a move brings a subtree to. A later batch states the
+    /// subtree anew, under the prefix it has then.
+    ConvertMoved {
+        /// The subtree that is stated anew, by the prefix the statement
+        /// names.
         subtree: Subtree,
     },
     /// A scope that keeps its writes in the write set states a move,
@@ -457,6 +467,12 @@ impl fmt::Display for BatchError {
                 write!(
                     f,
                     "the subtree {subtree} is stated otherwise in a batch whose move takes it"
+                )
+            }
+            Self::ConvertMoved { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is stated anew in a batch whose move names it"
                 )
             }
             Self::MoveBeside { subtree } => {

@@ -158,7 +158,9 @@
 //!   tree type of its entry, and its place among the subtrees of its
 //!   host, as a conversion in place leaves them
 //!   ([`Directory::restate`](lignin_tree::directory::Directory::restate)).
-//!   The subtree keeps its nodes, its root and what is below it.
+//!   The subtree keeps its nodes, its root and what is below it. A batch
+//!   that moves a subtree states none anew that its moves name
+//!   ([`BatchError::ConvertMoved`]).
 //! - **No record of a subtree is read without its entry.** In every
 //!   column the committed records under a prefix belong to the entry the
 //!   directory has under that prefix, so where the version that is read
