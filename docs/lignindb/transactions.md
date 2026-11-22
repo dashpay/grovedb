@@ -346,6 +346,8 @@ run on RocksDB.
 - The committed side is fixed at the *L* of the instant the cursor was
   opened. The cursor holds a version pin on it (PN1). A foreign commit made
   after that is not seen by this cursor. It is seen by the next cursor.
+  Once such a commit is published, this cursor is refused where a move
+  that *T* holds decides what is under its subtree (MV7).
 - *T*'s own writes are live: a write *T* makes after the cursor was opened
   is seen when the cursor reaches that key. A delete by *T* hides the
   committed record.
@@ -992,10 +994,10 @@ another move of the batch takes one from.
 under each prefix that a subtree went to what it read under the prefix the
 subtree was taken from: the committed records there and its own writes
 from before the move, in every column, and what it writes under the new
-prefix afterwards (RD3, RD5, RD6). A cursor reads the committed records of
-the version it was opened on (RD6): under the new prefix, those that
-version has under the old one, whichever commits were published between
-that version and the move. What the subtree held in its data
+prefix afterwards (RD3, RD5, RD6). A cursor reads so too, over the
+committed records of the version it was opened on (RD6), until a commit is
+published after that version: from then on it is refused under these
+prefixes (MV7). What the subtree held in its data
 column, the nodes of a Merk or flat records, it holds under the new prefix
 (ST1). Under a prefix that a subtree was taken from, or that a subtree
 which left with the move had (MV2), and that no move of the batch brought a
@@ -1083,8 +1085,19 @@ and a step or a read from a key the cursor stands on, begins as each
 operation of *T* does (WT7), at the latest version. So such a call that is
 the first after a commit is refused where a move decides what is under the
 cursor's subtree, if that commit met *T* or left the writes of *T* with no
-layout. Which subtrees the committed state has below a prefix is asked of
-the version the cursor reads, by the seek and by the read of a node alike.
+layout.
+
+Such a call lays the writes of *T* out over the latest version where it
+can (WT7a), and a cursor reads the version it was opened on (RD6). Once a
+commit has been published after that version, whichever commit, the two
+are not one version, and the call is refused where a move decides what is
+under the cursor's subtree: with `MoveBeside`, which is no conflict and
+names that subtree, where neither of the two refusals above holds. It
+makes no difference whether the move was stated before the cursor was
+opened or afterwards. A cursor over a subtree that no move decides is not
+refused for a move. Which subtrees the committed state has below a prefix
+is asked of the version the cursor reads, by the seek and by the read of
+a node alike.
 
 A call that this rule refuses has taken no claim (SC3), and a batch is
 refused by it before it is judged by what the write set holds of a subtree
@@ -1457,6 +1470,7 @@ together with the differences that are not about conflicts.
 | A foreign commit writes the node that hosts a subtree between *T*'s read of that node and *T*'s move of the subtree | success: the copy under the new path holds the records *T* read, under the hash *T* states for them, and what the foreign commit wrote under the old path is deleted with it | the batch is refused as a conflict (`ValueTaken`, CF10) | only with two writers of one Merk at a time |
 | A foreign commit moves a subtree away or drops it, so that nothing is entered under its prefix, and *T*, of whose writes that commit met none, then writes into it | success: *T*'s records are under the old prefix, which no element leads to | the batch is refused: as a conflict (`ValueTaken`) where *T* holds the key set of that commit, and as `NotEntered` where it does not (CF10) | only with two writers at a time |
 | A foreign commit meets a write of *T*, and *T* then states a move, reads or writes where a move of its own decides, or drops or clears a subtree while it holds a move | the call is served, and the commit fails with `Busy` | the call is refused as a conflict (`MovedByKey`, MV7), and the commit fails with `Conflict` | only with two writers at a time |
+| A foreign commit that meets no write of *T* is published while *T* holds a cursor, and *T*, which holds a move, reads through that cursor where the move decides | the call is served: an iterator reads the snapshot it was made on under the writes of *T* | the call is refused, with no conflict (`MoveBeside`, MV7); where the writes of *T* are laid out over the commit, a cursor that *T* opens after it is served | only with two writers at a time |
 
 LigninDB is stricter in the second and the third because the alternative is
 to commit *T*'s older records on top of a range that was deleted or loaded
@@ -2540,6 +2554,7 @@ document or of the engine.
 | D8 | A move of a subtree whose host a foreign commit wrote between *T*'s read of the host and *T*'s batch | success; the copy holds what *T* read, and the foreign write under the old path is lost | the batch is refused as a conflict, and the transaction stays open (`ValueTaken`, CF10) | a move of LigninDB re-keys the Merk as it is at the batch (`tree-layout.md` D5). Needs two writers at a time; a caller that retries makes the move again from a new read. |
 | D9 | A write into a subtree that a foreign commit moved away or dropped, so that nothing is entered under its prefix, by a transaction of whose writes that commit met none | success; the records are under the old prefix, which no element leads to | the batch is refused, as a conflict where the engine can tell (CF10) | needs two writers at a time. RocksDB then holds records that only a read of the prefix made directly returns, or a caller that makes the path again, as in D3. |
 | D10 | A move that *T* states, a read or a write where a move of *T* decides, or a drop or a clear by a *T* that holds a move, after a foreign commit has met a write of *T* | served; the commit fails | refused as a conflict (`MovedByKey`, MV7); the commit fails | needs two writers at a time. The transaction fails on both engines, on LigninDB one step earlier. |
+| D11 | A read through a cursor of *T* that was opened before a foreign commit, where a move of *T* decides what is under the cursor's subtree and the commit met no write of *T* | served; an iterator reads the snapshot it was made on under the writes of *T* | refused, with no conflict (`MoveBeside`, MV7); where the writes of *T* are laid out over the commit, a cursor that *T* opens after it is served; the commit of *T* is decided as before | a move of LigninDB is laid out over the latest version, and not over the one that the cursor reads. Needs two writers at a time, and a cursor that is held across the other's commit |
 
 Three things that might look like differences are not. A second write
 transaction is allowed on both engines and conflicts by the same rule (CF7).
@@ -2700,8 +2715,8 @@ same result.
   after it; two movers of which one names a prefix that the other let
   leave, in both orders; a range delete with a key in it and one with
   none, against a move, in both orders; a drop above a prefix that a
-  second move takes its subtree from, with a look of the mover before it
-  and without; a commit that enters subtrees
+  second move takes its subtree from, where the mover took the commit
+  before it in and where it did not; a commit that enters subtrees
   below the moved one with their hosts; the refusals that a foreign commit
   explains, with
   a drop in the batch and without; by key, the reads and the writes where
@@ -2709,9 +2724,12 @@ same result.
   clear, a write of a subtree that holds flat data, a cursor of either
   kind as the first call after the commit, a cursor that steps after a
   look at a commit failed, a cursor that reads the node it found once a
-  commit has entered its subtree below a target, and one that reads a node
-  at the moment of a rollback; a cursor from before a commit and a move
-  (MV5); and the scopes of MV8.
+  commit has entered its subtree below a target, one that reads a record
+  or a node at the moment of a rollback, and one whose read of a node
+  fails; a cursor of another version than the latest, where a move
+  decides and where none does, with the commit before the move and after
+  it; a drop after a clear that took a subtree when it was made again;
+  and the scopes of MV8.
 - T-MV6: the power is cut after every change of a session whose commit
   moves subtrees: two change places, with flat records under each and
   under the subtree below it, and a subtree with no node leaves. Every cut

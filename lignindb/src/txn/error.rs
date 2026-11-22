@@ -313,7 +313,9 @@ pub enum BatchError {
     /// holds a move (`transactions.md` MV7, MV8). Or a move is stated
     /// while a pending mark stands under a prefix it names, or a call
     /// that set such a mark or took one off is among the writes that the
-    /// transaction's frames show (MV8).
+    /// transaction's frames show (MV8). Or a cursor reads a subtree that
+    /// a move of the transaction decides after a commit was published
+    /// that the cursor's version does not hold (MV7).
     MoveBeside {
         /// The subtree the refused move takes from its prefix, the first
         /// subtree the refused batch drops or clears, or the subtree
