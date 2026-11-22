@@ -22,7 +22,8 @@ impl<E: Engine> GroveDb<E> {
     /// cut can leave that directory. It is no checkpoint: it is not
     /// opened, and whoever lists a directory of checkpoints does not
     /// count it. It keeps disk space until it goes: a later creation at
-    /// `path` takes it over, and [`Self::delete_checkpoint_with_engine`]
+    /// `path` that gets as far as building takes it over, and
+    /// [`Self::delete_checkpoint_with_engine`] says when a deletion
     /// removes it. A `path` whose own name ends in `.creating`, in any
     /// case of its ASCII letters, is refused.
     pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
@@ -50,33 +51,38 @@ impl<E: Engine> GroveDb<E> {
     /// to say, and the engines differ:
     ///
     /// - **The RocksDB engine** opens the checkpoint first. Where that
-    ///   fails, it removes nothing.
-    /// - **The LigninDB engine** opens nothing, and removes more than a
-    ///   checkpoint (`docs/lignindb/engine.md`, "Checkpoints", has the
-    ///   whole rule):
-    ///   - a directory, and not a link to one, that holds a manifest of
-    ///     the engine and that no handle has open, with everything in
-    ///     it: a checkpoint, and any other closed database of the engine;
-    ///   - a directory that holds the manifest under the name
-    ///     `MANIFEST.deleting`, which a deletion that was cut short left,
-    ///     and a whole database beside a file of that name which
-    ///     something else made;
-    ///   - an empty directory, and one that holds an empty file named
-    ///     `LOCK` and nothing else;
+    ///   fails, it removes nothing. The open does not tell a checkpoint
+    ///   from another database of the engine: a database that is no
+    ///   checkpoint and opens as one is removed too.
+    /// - **The LigninDB engine** opens nothing. Its removal is
+    ///   `lignindb::checkpoint::delete`, whose documentation is the
+    ///   contract, and **it removes more than a checkpoint**. Besides a
+    ///   checkpoint that no handle has open, the call can remove:
+    ///   - any other closed database of the engine, which it does not
+    ///     tell from a checkpoint;
+    ///   - what a deletion left that was cut short, and a whole database
+    ///     beside a file named `MANIFEST.deleting` which something else
+    ///     made: that is the name a deletion gives the manifest;
+    ///   - an empty directory, and a directory that holds an empty file
+    ///     named `LOCK` and nothing else;
     ///   - **a directory whose name ends in `.creating`, in that
-    ///     spelling, with whatever it holds**, unless its lock is held:
-    ///     the engine takes every directory of such a name for what a
-    ///     creation of a checkpoint left, and looks for no database in
-    ///     it;
-    ///   - the directory of `path`'s name with `.creating` added, in the
-    ///     same way, after it removed `path` and where nothing has the
-    ///     name `path`. An error of that removal is returned though
-    ///     `path` is gone.
+    ///     spelling, whatever else it holds.** The engine takes every
+    ///     directory of such a name for what a creation of a checkpoint
+    ///     left, and looks for no database in it. It leaves one that a
+    ///     look of `lignindb::checkpoint` refuses: among them, one whose
+    ///     lock is held, and one whose `LOCK` entry is no file;
+    ///   - for a `path` whose own name does not end so, the directory of
+    ///     `path`'s name with `.creating` added, in the same way: once
+    ///     it has removed `path`, and where nothing has the name `path`.
+    ///     Where `path` is refused, that directory is not looked for.
+    ///     Where it removed `path`, an error of that second removal is
+    ///     returned though `path` is gone, and a directory whose lock is
+    ///     held stays, with no error. Where nothing has the name `path`,
+    ///     such a directory is the error of the call.
     ///
-    ///   It refuses, with nothing removed, a file, a link, a database
-    ///   that a handle has open, and a directory of any other name that
-    ///   holds files and no manifest of the engine. It goes by the name
-    ///   as the directory above lists it, byte for byte.
+    ///   The call goes by the name as the directory above lists it, byte
+    ///   for byte. It removes nothing where `path` is a file or a link,
+    ///   and nothing of a database that a handle has open.
     pub fn delete_checkpoint_with_engine<P: AsRef<Path>>(path: P) -> Result<(), Error> {
         let path = path.as_ref();
 
@@ -104,15 +110,16 @@ impl GroveDb {
     /// This removes the checkpoint directory and all its contents.
     ///
     /// # Safety
-    /// On the RocksDB engine this function verifies that the path is a
-    /// valid GroveDB checkpoint by attempting to open it first. If the
-    /// checkpoint cannot be opened, deletion is refused to prevent
-    /// accidental deletion of arbitrary directories.
+    /// On the RocksDB engine this function attempts to open the path as
+    /// a checkpoint first. If that fails, deletion is refused, to prevent
+    /// accidental deletion of arbitrary directories. The open does not
+    /// tell a checkpoint from another database of the engine: a database
+    /// that is no checkpoint and opens as one is removed too.
     ///
     /// On the LigninDB engine the checkpoint is not opened, and more than
     /// a checkpoint is removed: [`Self::delete_checkpoint_with_engine`]
-    /// lists what, an empty directory and any directory whose name ends
-    /// in `.creating` among it.
+    /// lists what, an empty directory and a directory whose name ends in
+    /// `.creating` among it.
     pub fn delete_checkpoint<P: AsRef<Path>>(path: P) -> Result<(), Error> {
         Self::delete_checkpoint_with_engine(path)
     }
