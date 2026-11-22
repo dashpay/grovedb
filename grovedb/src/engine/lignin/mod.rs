@@ -40,9 +40,13 @@
 //! ([`Engine::subtree_beside`]). Where a group of batches is applied that
 //! holds a write for one of these Merks through a handle that names the
 //! element, and no batch of the group enters that Merk itself, the engine
-//! reads what the element hosts, enters those of its Merks that no batch
-//! of the group enters itself if none of them is entered, and says to the
-//! store which Merks the element's node names ([`enter`]).
+//! reads what the element hosts, enters those of its Merks that are not
+//! entered and that no batch of the group enters itself, states anew
+//! those that are entered under the element otherwise than it names
+//! them, drops a secondary that the element hosts no more, and says to
+//! the store which Merks the element's node names ([`enter`]). A Merk of
+//! an indexed tree that a batch empties after the element was written as
+//! an empty tree is cleared with that batch ([`over`]).
 //!
 //! # A subtree leaves with its element
 //!
@@ -86,8 +90,8 @@ use grovedb_merk::{
     store::{
         lignin::{
             hash::MerkHashRules, tree_type_bytes, LigninApplied, LigninBatch, LigninCursor,
-            LigninFlatCursor, LigninHost, LigninKeyspace, LigninNodeStore, LigninSettled,
-            LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
+            LigninFlatCursor, LigninHost, LigninHosted, LigninKeyspace, LigninNodeStore,
+            LigninSettled, LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
         },
         NodeStore,
     },
@@ -1103,6 +1107,7 @@ impl Engine for LigninEngine {
                 part.forget_hosts();
                 part.forget_drops();
                 part.forget_moves();
+                part.forget_stated();
                 let stated = (owed.hosts.iter().chain(&owed.apart)).chain(&left.hosts);
                 for host in stated.chain(&moved.hosts) {
                     part.host(host);
@@ -1112,9 +1117,52 @@ impl Engine for LigninEngine {
                 }
             }
             // What is entered under a removed node leaves with the batch
-            // that removes the node.
+            // that removes the node. A clear takes what is below the
+            // Merk it clears, and nothing below such a Merk is dropped
+            // by name.
             for (part, dropped) in &gone.drops {
-                parts[*part].drop_subtree(dropped);
+                let above = match left.clears.is_empty() {
+                    true => None,
+                    false => match enter::entered(view, *dropped) {
+                        Ok(entry) => entry.and_then(|entry| entry.host),
+                        Err(error) => return Err(error).wrap_with_cost(OperationCost::default()),
+                    },
+                };
+                let cleared = |host: LigninHosted| {
+                    let mut clears = left.clears.iter();
+                    clears.any(|(_, cleared)| *cleared == host.subtree)
+                };
+                if !above.is_some_and(cleared) {
+                    parts[*part].drop_subtree(dropped);
+                }
+            }
+            // A secondary that hangs under an indexed tree whose element
+            // hosts it no more leaves with the batch that writes the
+            // element, and what the group removes from it is not handed
+            // over.
+            for (part, stray) in &owed.strays {
+                parts[*part].drop_subtree(stray);
+                for part in &mut parts {
+                    part.leave_out(stray);
+                }
+            }
+            // A Merk of an indexed tree that a batch empties after the
+            // element was written as an empty tree is cleared with that
+            // batch, unless it leaves as one that the element hosts no
+            // more.
+            for (part, cleared) in &left.clears {
+                if owed.strays.iter().all(|(_, stray)| stray != cleared) {
+                    parts[*part].clear_subtree(cleared);
+                }
+            }
+            // A Merk of an indexed tree that its element names at another
+            // place, or as a tree of another type, than it is entered
+            // with is stated anew with the batch that puts the element's
+            // node.
+            for (part, subtree, tree_type) in &owed.restated {
+                if let Err(error) = parts[*part].state_anew(subtree, tree_type) {
+                    return Err(merk_error(error)).wrap_with_cost(OperationCost::default());
+                }
             }
             // What an element was written over leaves with the first
             // batch, which is the one that enters again what the group
