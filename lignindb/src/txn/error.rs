@@ -183,10 +183,10 @@ pub enum BatchError {
     /// transaction or the batch wrote is why.
     ///
     /// **It is a conflict** ([`Self::is_conflict`]), as
-    /// [`Self::ValueTaken`] is. The batch has changed nothing and the
-    /// transaction is as it was (WT10), so a caller that takes it as a
-    /// conflict rolls the transaction back and makes its reads and its
-    /// writes again.
+    /// [`Self::ValueTaken`] is. The batch adds nothing to the write set
+    /// (WT10), and the claims its scope took for it stay with the scope.
+    /// A caller that takes it as a conflict rolls the transaction back
+    /// and makes its reads and its writes again.
     MerkTaken {
         /// The Merk's subtree.
         subtree: Subtree,

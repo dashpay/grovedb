@@ -5157,14 +5157,17 @@ fn hand_over<'s>(world: &World<'s>, tx: &Tx<'s>, batch: &OwnedBatch) -> Result<A
 ///
 /// A node of a load names no subtree that a move of its batch brings a
 /// Merk to: here one below the moved subtree, whose host is a node of the
-/// Merk that goes with the move. And the layout that is made only to tell
-/// what stops the layout of the transaction's writes (MV7) appends no
-/// value of a load: the file that the loads fill ends where it ended when
-/// the layout was stopped, however often the transaction is asked.
+/// Merk that goes with the move. And a layout that is stopped is not made
+/// again to tell what stopped it (LD4, MV7): the file that the loads fill
+/// ends where it ended when the layout was stopped, however often the
+/// transaction is asked and however often its commit is refused. The
+/// layout that is stopped lays out a load that was taken by key, and
+/// takes a node of it out of its tree with its value kept, which is read
+/// where that layout put it.
 #[test]
 fn a_load_beside_a_move() {
     use super::{
-        load::{items, whole},
+        load::{items, whole, Items},
         store::Rng,
     };
     let load = hand_over;
@@ -5190,6 +5193,41 @@ fn a_load_beside_a_move() {
     );
     world.check(&tx);
     assert_eq!(tx.txn.stats().tree_pages, 0, "nothing was laid out");
+
+    // A Merk of one node whose value is out of line is handed over
+    // through a scope that keeps its writes in the write set. The node is
+    // then written out of its tree, with its value kept.
+    let long = lignin_tree::value::InlinePolicy::DEFAULT_THRESHOLD + 50;
+    let single: Items = [(b"one".to_vec(), vec![7; long])].into_iter().collect();
+    let by_key = OwnedBatch {
+        merks: vec![whole(2, &single)],
+        ..OwnedBatch::default()
+    };
+    let first = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope beside it");
+    let first_write = world.latest().get();
+    let applied = by_key.loading(&[sub(2)], |batch| beside.apply(batch));
+    assert!(applied.expect("a load by key").load.is_none());
+    world.note(&tx, &by_key, first_write);
+    first.merge();
+    beside.merge();
+    world.check(&tx);
+    let tree = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(2)));
+    let Some(model::Val::Node(node)) = tree.get(&b"one"[..]) else {
+        panic!("the node of the load");
+    };
+    let out_of_its_tree = OwnedMerk {
+        nodes: vec![(b"one".to_vec(), node.clone(), false)],
+        root: Some(None),
+        ..OwnedMerk::change(sub(2), &tree, &model::Committed::items(&tree))
+    };
+    let batch = OwnedBatch {
+        merks: vec![out_of_its_tree],
+        ..OwnedBatch::default()
+    };
+    let applied = world.apply(&tx, &batch).expect("the node leaves its tree");
+    assert_eq!(applied.unlinked, vec![0]);
+    world.check(&tx);
 
     // The load, and then the move, which a commit beside them stops from
     // being made again.
@@ -5232,6 +5270,20 @@ fn a_load_beside_a_move() {
         .expect("a node");
     let read = (tx.txn).node(sub(1), key, |view| view.map(|view| value_of(&view)));
     assert_eq!(read.expect("a read").as_ref(), Some(value));
+    // A write that the transaction takes while its layout is stopped is
+    // kept by key, and is no reason to try the layout again.
+    let later = OwnedBatch {
+        records: vec![put(aux(TOP), b"later", b"a record")],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &later).expect("a record by key");
+    assert_eq!(db.load_files.filled(), stopped);
+    // A commit is refused with what stopped the layout, and lays nothing
+    // out to say so.
+    for _ in 0..2 {
+        let refused = db.commit(&versions, &tx.txn).expect_err("no layout");
+        assert!(stops(&refused), "{refused}");
+    }
     assert_eq!(db.load_files.filled(), stopped);
     tx.txn.rollback().expect("no scope is open");
     tx.forget();
