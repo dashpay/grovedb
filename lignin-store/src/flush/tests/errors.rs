@@ -140,6 +140,87 @@ fn a_pool_of_another_page_size_is_refused() {
     );
 }
 
+/// A page step that finds the log with no file that takes items is
+/// refused with what had left the log so when the step asked: under the
+/// lock on the counts, where no turn gives the log a file and no append
+/// of another fails. Here the log is rolled as soon as the step has
+/// given its locks back, and a page step of another is refused its
+/// record in the file the log turned to. The pass fails with the refusal
+/// that kept its own record out, and not with the later one.
+#[test]
+fn a_page_step_is_refused_with_what_had_left_the_log_without_a_file_when_it_asked() {
+    use std::{cell::RefCell, rc::Rc};
+
+    use crate::flush::place::AFTER_A_REFUSED_STEP;
+
+    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    let db = Arc::new(db);
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    // The next record that is appended to the file the log ends in is
+    // refused. Returns that file.
+    let refuse_a_record = {
+        let fs = fs.clone();
+        move |db: &Db| {
+            let file = db.log.end().expect("the log has a file").file();
+            let path = FileNames::WAL.path(db_dir(), file);
+            let record = FaultRule::new(Fault::Enospc).on(OpKind::Append).at(&path);
+            fs.add_rule(record.torn_append(false));
+            path
+        }
+    };
+    // The page step of the value is refused its record: the value stays
+    // ready, and the log has no file that takes items.
+    let first = refuse_a_record(&db);
+    let error = db.wb().pass().expect_err("the record of the step");
+    assert!(
+        matches!(error, FlushError::Log(LogError::TakenBack { .. })),
+        "{error}"
+    );
+    assert!(db.log.is_due());
+
+    let second = Rc::new(RefCell::new(None));
+    AFTER_A_REFUSED_STEP.with(|hook| {
+        let (db, second) = (db.clone(), second.clone());
+        *hook.borrow_mut() = Some(Box::new(move || {
+            assert!(db.wb().roll_log().expect("a roll beside the pass"));
+            *second.borrow_mut() = Some(refuse_a_record(&db));
+            let (slot, pending) = db.pending(page(1))[0];
+            let file = FileId::new(1).expect("a file id");
+            let to = ValuePointer::new(file, 4096, pending.value_len()).expect("a pointer");
+            let step = ValueMove::in_tree(page(1), slot, ValuePlace::Pending(pending), to);
+            let mut bytes = Vec::new();
+            step.expect("a move").write(&mut bytes).expect("a record");
+            let error = db.wb().append_change(&bytes);
+            let error = error.expect_err("the record of the other step");
+            assert!(matches!(error, LogError::TakenBack { .. }), "{error}");
+            db.log.settle().expect("the log is settled");
+        }));
+    });
+    let error = db
+        .wb()
+        .pass()
+        .expect_err("the log has no file for the record");
+    let FlushError::Log(LogError::NoActiveFileSince { path, .. }) = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(path, &first, "{error}");
+    let second = second
+        .borrow()
+        .clone()
+        .expect("the step gave its locks back");
+    assert_ne!(first, second);
+    let Some(LogError::NoActiveFileSince { path: now, .. }) = db.log.refusal() else {
+        panic!("the log has kept no refusal");
+    };
+    assert_eq!(now, second, "what the log has kept is the later refusal");
+
+    // A turn rolls the log, and the step is made.
+    let tick = db.wb().tick().expect("a turn of the loop");
+    assert!(tick.rolled);
+    assert_eq!(db.pointers(page(1)).len(), 1, "the value is placed");
+    db.check_cold();
+}
+
 /// The log fails the record of the page step that places a value, with
 /// the append taken back or left torn in the file. Nothing is installed,
 /// the value keeps its hold, the pass returns what the log answered, and

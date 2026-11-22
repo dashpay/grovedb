@@ -15,9 +15,23 @@ use super::{
 };
 use crate::{
     cache::PageRef,
-    values::{ValueChange, ValueHold, ValueStoreError},
+    values::{CountStep, ValueChange, ValueHold, ValueStoreError},
     wal::LogError,
 };
+
+/// What a test does when a page step whose record the log refused has
+/// given its locks back.
+#[cfg(test)]
+pub(super) type AfterARefusedStep = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has run, once, when a page step whose record the log
+    /// refused has given back its lock on the page and the lock on the
+    /// counts: what another does to the log from then on.
+    pub(super) static AFTER_A_REFUSED_STEP: std::cell::RefCell<Option<AfterARefusedStep>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// What became of one value that was ready for its page step.
 enum Step {
@@ -318,10 +332,15 @@ impl<'s> WriteBack<'s> {
         blank.detach(ready.cell.pending.id());
 
         if let Err(error) = self.append_change(&record) {
+            let cause = self.cause_of(&counts, error);
             drop(blank);
             drop(step);
             drop(counts);
-            return self.record_not_written(error).map(Step::Refused);
+            #[cfg(test)]
+            if let Some(then) = AFTER_A_REFUSED_STEP.with(|hook| hook.borrow_mut().take()) {
+                then();
+            }
+            return self.record_not_written(cause).map(Step::Refused);
         }
         step.replace(&old, blank)
             .map_err(|source| FlushError::StepRefused { page, source })?;
@@ -334,30 +353,47 @@ impl<'s> WriteBack<'s> {
         Ok(Step::Placed)
     }
 
+    /// What the log answered a page step whose record it did not take,
+    /// with the cause of it where the log had no file that takes items:
+    /// what left the log so, if the log has kept it
+    /// ([`LogStore::refusal`](crate::wal::LogStore::refusal)).
+    ///
+    /// The step asks while it holds the lock on the counts, whose guard
+    /// it shows as `held`: under that lock no turn gives the log a file
+    /// and no append of another fails, so what the log has kept then is
+    /// what kept this record out.
+    fn cause_of(&self, held: &CountStep<'_>, error: LogError) -> LogError {
+        let _ = held;
+        match error {
+            LogError::NoActiveFile => self.stores.log.refusal().unwrap_or(error),
+            error => error,
+        }
+    }
+
     /// What a page step does when the append of its record failed, with
-    /// its locks given back. Nothing was installed.
+    /// its locks given back. Nothing was installed. `error` is what the
+    /// log answered, with its cause ([`Self::cause_of`]).
     ///
     /// - The record is not in the log, and the log takes none until it has
-    ///   been rolled: the value stays ready, and the step is made later.
-    ///   If the append was taken back, a crash could still bring the
-    ///   record back, so the log is settled first (`wal`, "When the file
-    ///   layer fails"). What the log answered is returned as the refusal
-    ///   of the step. Where the log had no file that takes items, that is
-    ///   what left it so, if the log has kept it
-    ///   ([`LogStore::refusal`](crate::wal::LogStore::refusal)).
+    ///   been rolled: the value stays ready for a later call. If the
+    ///   append was taken back, a crash could still bring the record
+    ///   back, so the log is settled first (`wal`, "When the file layer
+    ///   fails"), and a settling that fails is the error of the call.
+    ///   Otherwise what the log answered is returned as the refusal of
+    ///   the step.
     /// - The log cannot find out what became of the append: the record may
     ///   be in the log, so the value keeps its hold for as long as the
     ///   session lasts, and the log takes nothing more in it. That is the
     ///   caller's to know, and is returned as the error of the call.
     fn record_not_written(&self, error: LogError) -> Result<LogError, FlushError> {
-        let log = self.stores.log;
         match error {
             LogError::TakenBack { .. } => {
-                log.settle()?;
+                self.stores.log.settle()?;
                 Ok(error)
             }
-            LogError::NotAppended { .. } => Ok(error),
-            LogError::NoActiveFile => Ok(log.refusal().unwrap_or(error)),
+            LogError::NotAppended { .. }
+            | LogError::NoActiveFile
+            | LogError::NoActiveFileSince { .. } => Ok(error),
             error => Err(error.into()),
         }
     }
