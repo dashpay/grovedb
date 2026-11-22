@@ -6,7 +6,8 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError,
     },
-    thread::Thread,
+    thread::{self, Thread},
+    time::{Duration, Instant},
 };
 
 use lignin_format::{CommitVersion, PageId, PageSize};
@@ -74,6 +75,15 @@ impl Catalog {
 pub(super) struct Signal {
     thread: OnceLock<Thread>,
     stop: AtomicBool,
+    /// How often the thread was woken, how many rounds it has begun, and
+    /// after how many of them it took its idle wait: what a test of its
+    /// pace counts.
+    #[cfg(test)]
+    pub(super) wakes: AtomicU64,
+    #[cfg(test)]
+    pub(super) rounds: AtomicU64,
+    #[cfg(test)]
+    pub(super) idled: AtomicU64,
 }
 
 impl Signal {
@@ -85,6 +95,8 @@ impl Signal {
     /// Wakes the thread. It takes no lock and waits for nothing, so a
     /// reader may call it (`Reclaim::wake`).
     pub(super) fn wake(&self) {
+        #[cfg(test)]
+        self.wakes.fetch_add(1, Ordering::Relaxed);
         if let Some(thread) = self.thread.get() {
             thread.unpark();
         }
@@ -93,6 +105,19 @@ impl Signal {
     pub(super) fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.wake();
+    }
+
+    /// Has the calling thread, which is the one that is woken, sleep for
+    /// `wait`, whoever wakes it meanwhile. Only [`Self::stop`] ends the
+    /// sleep before that.
+    pub(super) fn sleep(&self, wait: Duration) {
+        let began = Instant::now();
+        while !self.stopping() {
+            let Some(left) = wait.checked_sub(began.elapsed()) else {
+                break;
+            };
+            thread::park_timeout(left);
+        }
     }
 
     pub(super) fn stopping(&self) -> bool {
@@ -292,6 +317,7 @@ impl Store {
                 None
             }
             Failed::Segments => Some(Reopen::SegmentsNotDurable),
+            Failed::LogFileIds => Some(Reopen::LogFileIdsUsedUp),
         };
         #[cfg(test)]
         if let Some(change) = BEFORE_A_REASON_IS_KEPT.with(|hook| hook.borrow_mut().take()) {
@@ -342,7 +368,10 @@ impl Store {
         if let Some(failed) = self.log.sync_failed() {
             return Some(Failed::Log(failed));
         }
-        (self.flush.segments_not_durable()).then_some(Failed::Segments)
+        if self.flush.segments_not_durable() {
+            return Some(Failed::Segments);
+        }
+        (self.log.file_ids_used_up()).then_some(Failed::LogFileIds)
     }
 
     /// Whether a replacement of the manifest left it in doubt, as far as
@@ -378,6 +407,8 @@ enum Failed {
     Log(LogError),
     /// A sync of a segment.
     Segments,
+    /// The log has used its last file id.
+    LogFileIds,
 }
 
 /// What the reclaimers of a store do when the oldest pin may have moved

@@ -292,10 +292,42 @@ impl ValueFile {
         }
     }
 
-    /// Syncs the file. One sync runs at a time, and `life` is not held while
-    /// it does, so that ending a writer waits for no sync.
+    /// The lock that puts the appends to the file and its syncs in one
+    /// order. One sync runs at a time under it, and an append is admitted
+    /// and handed to the file layer under it
+    /// ([`ValueWriter::append`](super::ValueWriter::append)). So the
+    /// file layer has answered an append that the file admitted before
+    /// a sync that fails begins, and none is admitted after that sync:
+    /// no append is handed to the file layer for a file of which a sync
+    /// has failed.
+    pub(super) fn in_order(&self) -> MutexGuard<'_, ()> {
+        #[cfg(test)]
+        if matches!(
+            self.syncing.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ) {
+            hooks::run(hooks::Point::Waits);
+        }
+        self.syncing.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Syncs the file through the handle the store reads it by. One sync
+    /// runs at a time, and `life` is not held while it does, so that
+    /// ending a writer waits for no sync.
     pub(super) fn sync(&self) -> Result<u64, ValueStoreError> {
-        let _one_at_a_time = self.syncing.lock().unwrap_or_else(PoisonError::into_inner);
+        self.sync_through(&*self.file)
+    }
+
+    /// Syncs the file through `handle`, which is a handle on this file:
+    /// what [`Self::sync`] does, for a writer that syncs through the
+    /// handle it appended by.
+    ///
+    /// A file that is closed, or of which a sync has failed, is not
+    /// synced again, through whichever handle: after a sync that failed,
+    /// a later one that succeeded would say nothing of the bytes the
+    /// failed one was for.
+    pub(super) fn sync_through(&self, handle: &dyn VfsFile) -> Result<u64, ValueStoreError> {
+        let _one_at_a_time = self.in_order();
         let end = {
             let mut life = self.life();
             if life.phase == Phase::Closed {
@@ -311,7 +343,7 @@ impl ValueFile {
             }
             end
         };
-        let synced = self.file.sync_data();
+        let synced = handle.sync_data();
         let mut life = self.life();
         let result = match synced {
             Ok(()) => {
@@ -333,6 +365,45 @@ impl ValueFile {
         life.has_writer = false;
         self.appendable.store(false, Ordering::Release);
         self.settle(&mut life);
+    }
+}
+
+/// What a test has happen on the thread that comes to a point of an
+/// append or of a sync.
+#[cfg(test)]
+pub(super) mod hooks {
+    use std::cell::RefCell;
+
+    /// A point that a thread comes to.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(in crate::values) enum Point {
+        /// An append was admitted, and is not handed to the file layer
+        /// yet.
+        Admitted,
+        /// Another thread has the lock that orders the appends and the
+        /// syncs of the file, and this one is about to wait for it.
+        Waits,
+    }
+
+    type Then = Box<dyn FnOnce()>;
+
+    thread_local! {
+        static NEXT: RefCell<Vec<(Point, Then)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(in crate::values) fn set(point: Point, then: impl FnOnce() + 'static) {
+        NEXT.with(|next| next.borrow_mut().push((point, Box::new(then))));
+    }
+
+    pub(in crate::values) fn run(point: Point) {
+        let then = NEXT.with(|next| {
+            let mut next = next.borrow_mut();
+            let at = next.iter().position(|(set, _)| *set == point)?;
+            Some(next.remove(at).1)
+        });
+        if let Some(then) = then {
+            then();
+        }
     }
 }
 

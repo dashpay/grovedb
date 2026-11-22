@@ -892,7 +892,8 @@ fn a_turn_that_fails_leaves_the_log_where_it_was() {
 
 #[test]
 fn a_file_that_cannot_be_created_or_named_or_deleted_leaves_the_log_as_it_was() {
-    // A creation that fails takes its id with it for the session.
+    // A creation that fails uses up no id: the next one makes the file
+    // that it could not make.
     for op in [OpKind::Open, OpKind::Append] {
         let mut run = traced_run(9, 64, small_files(500));
         while !run.db.as_ref().unwrap().log.is_due() {
@@ -908,10 +909,10 @@ fn a_file_that_cannot_be_created_or_named_or_deleted_leaves_the_log_as_it_was() 
             .fs
             .open(&wal_path(3), lignin_io::OpenMode::Read)
             .is_err());
-        assert_eq!(db.log.create().unwrap(), file_id(4));
+        assert_eq!(db.log.create().unwrap(), file_id(3));
         db.log.commit(&mut db.manifest).unwrap();
         let last = db.manifest.manifest().unwrap().last_file_ids().wal;
-        assert_eq!(last, Some(file_id(4)));
+        assert_eq!(last, Some(file_id(3)));
         run.check_crash_states();
         run.append();
         run.restart();
@@ -919,7 +920,8 @@ fn a_file_that_cannot_be_created_or_named_or_deleted_leaves_the_log_as_it_was() 
 
     // A file that was created is made durable with the manifest that
     // names it, in one set of syncs. Where its sync fails, no manifest
-    // names it: it is given up, and the next file takes the next id.
+    // names it: it is given up and removed, and the next creation makes a
+    // file under the same id.
     let mut run = traced_run(9, 64, small_files(500));
     while !run.db.as_ref().unwrap().log.is_due() {
         run.append();
@@ -936,14 +938,15 @@ fn a_file_that_cannot_be_created_or_named_or_deleted_leaves_the_log_as_it_was() 
     assert!(matches!(error, LogError::Io { .. }), "{error}");
     assert!(db.named().iter().all(|file| file.id() != file_id(3)));
     assert!(!db.log.has_file_ready());
-    assert_eq!(db.log.create().unwrap(), file_id(4));
-    db.log.commit(&mut db.manifest).unwrap();
-    assert!(db.log.has_file_ready());
-    assert!(db.named().iter().all(|file| file.id() != file_id(3)));
     assert!(run
         .fs
         .open(&wal_path(3), lignin_io::OpenMode::Read)
         .is_err());
+    assert_eq!(db.log.create().unwrap(), file_id(3));
+    db.log.commit(&mut db.manifest).unwrap();
+    assert!(db.log.has_file_ready());
+    let last = db.manifest.manifest().unwrap().last_file_ids().wal;
+    assert_eq!(last, Some(file_id(3)));
     run.check_crash_states();
     run.append();
     run.restart();
@@ -1240,30 +1243,38 @@ fn faults_and_crashes_as_they_fall_leave_a_log_that_agrees_with_what_was_reporte
 
 /// A file layer that fails one append after it has written other bytes in
 /// the place of the ones it was given, and that says of every file that it
-/// has another length when it is told to.
+/// has another length when it is told to. And one that, while it is told
+/// to, writes what it is given behind the header of a log file and answers
+/// that it has no room, or that has no room for the record of a page step
+/// in a log file, writes nothing of it, and takes everything else.
 #[derive(Debug, Default)]
-struct Lies {
+pub(crate) struct Lies {
     swap: Mutex<Option<Vec<u8>>>,
     len: Mutex<Option<u64>>,
+    pub(crate) kept_and_refused: Mutex<bool>,
+    pub(crate) steps_refused: Mutex<bool>,
 }
 
 #[derive(Debug)]
-struct Swapping {
-    inner: Arc<dyn Vfs>,
-    lies: Arc<Lies>,
+pub(crate) struct Swapping {
+    pub(crate) inner: Arc<dyn Vfs>,
+    pub(crate) lies: Arc<Lies>,
 }
 
 #[derive(Debug)]
 struct SwappingFile {
     inner: Box<dyn VfsFile>,
     lies: Arc<Lies>,
+    /// Whether the file is a log file.
+    log: bool,
 }
 
 impl Vfs for Swapping {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
         let inner = self.inner.open(path, mode)?;
         let lies = self.lies.clone();
-        Ok(Box::new(SwappingFile { inner, lies }))
+        let log = path.extension().is_some_and(|extension| extension == "log");
+        Ok(Box::new(SwappingFile { inner, lies, log }))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -1313,6 +1324,24 @@ impl VfsFile for SwappingFile {
     }
 
     fn append(&self, buf: &[u8]) -> io::Result<u64> {
+        if self.log && *self.lies.kept_and_refused.lock().unwrap() && self.inner.len()? > 0 {
+            self.inner.append(buf)?;
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "no room, says the device that wrote the bytes",
+            ));
+        }
+        let step = || {
+            use lignin_format::{wal::Record, FormatVersion};
+            let record = Record::decode(buf, FormatVersion::CURRENT);
+            matches!(record, Ok((Record::Change(_), _)))
+        };
+        if self.log && *self.lies.steps_refused.lock().unwrap() && step() {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "no room for the record of a page step",
+            ));
+        }
         let Some(other) = self.lies.swap.lock().unwrap().take() else {
             return self.inner.append(buf);
         };
@@ -1439,4 +1468,103 @@ fn an_append_that_leaves_other_bytes_is_settled_by_what_a_recovery_would_take_of
         ));
         assert!(matches!(db.log.rotate(), Err(LogError::Unsettled { .. })));
     }
+}
+
+/// A device that stays full uses up no log file id (D-204): a creation
+/// that is refused where the file is made, or where its header is
+/// appended, leaves no file, and the creation after it asks for the same
+/// one, however often that goes on. With room the file is made under the
+/// id that every refused creation had asked for.
+#[test]
+fn a_creation_that_is_refused_again_and_again_uses_up_no_log_file_id() {
+    for op in [OpKind::Open, OpKind::Append] {
+        let mut run = traced_run(9, 64, small_files(500));
+        while !run.db.as_ref().unwrap().log.is_due() {
+            run.append();
+        }
+        let db = run.db.as_mut().unwrap();
+        assert!(db.log.rotate().unwrap());
+        let full = FaultRule::new(Fault::Enospc).on(op).at(wal_path(3));
+        run.fs.add_rule(full.torn_append(false).forever());
+        for _ in 0..40 {
+            let error = db.log.create().unwrap_err();
+            let said = error.to_string();
+            assert!(said.contains("00000003.log"), "{op}: {said}");
+            assert!(
+                run.fs.open(&wal_path(3), OpenMode::Read).is_err(),
+                "{op}: a refused creation left a file"
+            );
+        }
+        assert!(!db.log.file_ids_used_up());
+        run.fs.clear_rules();
+        assert_eq!(db.log.create().unwrap(), file_id(3));
+        db.log.commit(&mut db.manifest).unwrap();
+        let last = db.manifest.manifest().unwrap().last_file_ids().wal;
+        assert_eq!(last, Some(file_id(3)));
+        run.check_crash_states();
+        run.append();
+        run.restart();
+    }
+}
+
+/// An id is used up by a file that is found under it, and by nothing
+/// else: the creation that finds the name taken fails and leaves the file
+/// as it is, and the one after it takes the next id.
+#[test]
+fn a_log_file_id_is_used_up_by_a_file_that_is_found_under_it() {
+    let mut run = traced_run(9, 64, small_files(500));
+    while !run.db.as_ref().unwrap().log.is_due() {
+        run.append();
+    }
+    let db = run.db.as_mut().unwrap();
+    assert!(db.log.rotate().unwrap());
+    put_file(&run.fs, &wal_path(3), b"not the log's");
+    let error = db.log.create().unwrap_err();
+    let kind = error.io_error().map(io::Error::kind);
+    assert_eq!(kind, Some(io::ErrorKind::AlreadyExists), "{error}");
+    assert_eq!(file_bytes(&run.fs, &wal_path(3)), b"not the log's");
+    assert_eq!(db.log.create().unwrap(), file_id(4));
+    db.log.commit(&mut db.manifest).unwrap();
+    let last = db.manifest.manifest().unwrap().last_file_ids().wal;
+    assert_eq!(last, Some(file_id(4)));
+    assert_eq!(file_bytes(&run.fs, &wal_path(3)), b"not the log's");
+}
+
+/// After the last id there is none: the creation fails, the log says
+/// that its ids are used up, and it goes on taking items in the file it
+/// has. The ids do not begin again.
+#[test]
+fn log_file_ids_run_out_at_the_largest_one_and_do_not_begin_again() {
+    let fs = sim::sim_fs(SimConfig::new(3));
+    let vfs = sim::shared(&fs);
+    let dir = sim::db_dir();
+    let last = lignin_format::manifest::LastFileIds {
+        wal: FileId::new(FileId::MAX.get() - 1),
+        ..Default::default()
+    };
+    let manifest = Manifest::new(PageSize::DEFAULT, last, None, Vec::new()).expect("a manifest");
+    ManifestStore::create(vfs.clone(), dir, manifest).expect("a manifest");
+    let mut db = Db::open(vfs, dir, LogOptions::default()).expect("the log");
+    assert!(!db.log.file_ids_used_up());
+
+    // The session's first file takes the last id. The file to turn to
+    // after it has none.
+    let error = db.roll().expect_err("a file after the last id");
+    assert!(matches!(error, LogError::FileIdsExhausted), "{error}");
+    assert!(db.log.file_ids_used_up());
+    let mut rng = Rng(5);
+    db.commit(&mut rng)
+        .expect("the log takes items in its last file");
+    assert_eq!(db.log.end().expect("the end").file(), FileId::MAX);
+    for _ in 0..3 {
+        let error = db.log.create().expect_err("an id after the last");
+        assert!(matches!(error, LogError::FileIdsExhausted), "{error}");
+    }
+    let entries = fs.read_dir(&FileNames::WAL.dir(dir)).expect("a listing");
+    let names: Vec<_> = entries.iter().map(|entry| entry.name.clone()).collect();
+    assert_eq!(
+        names,
+        ["4294967294.log"],
+        "a file under an id that began again"
+    );
 }

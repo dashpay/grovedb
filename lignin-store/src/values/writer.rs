@@ -163,7 +163,13 @@ impl ValueWriter {
         value_len: u32,
         records: &[u8],
     ) -> Result<ValuePointer, ValueStoreError> {
+        // Admitted and handed to the file layer in one order with the
+        // syncs of the file: none comes between the two, so no append
+        // is handed to the file layer after a sync of the file has failed.
+        let _in_order = self.file.in_order();
         self.file.check_appendable()?;
+        #[cfg(test)]
+        super::file::hooks::run(super::file::hooks::Point::Admitted);
         hold.add(&self.file);
         let offset = self
             .appender
@@ -193,6 +199,21 @@ impl ValueWriter {
     /// the sync fails, the file has failed as described at [`Self::sync`].
     pub fn finish(mut self) -> Result<u64, ValueStoreError> {
         self.sync()
+    }
+
+    /// Ends the use of a file that takes no more values because an append
+    /// to it failed, or a step that wrote to it did: makes every value
+    /// appended durable **through the handle that appended them**, which
+    /// is open until that sync has returned, and closes the file. Returns
+    /// the file's length.
+    ///
+    /// If the sync fails, or one of this file failed before, the file is
+    /// closed at the length that was durable before, and is never synced
+    /// again: the values behind that length are in no file for this
+    /// session, and no manifest covers them
+    /// ([`ValueStore::covers`](super::ValueStore::covers)).
+    pub fn give_up(self) -> Result<u64, ValueStoreError> {
+        self.file.sync_through(&*self.appender)
     }
 }
 

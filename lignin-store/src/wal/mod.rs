@@ -217,8 +217,8 @@
 //! | A sync of a file this session writes | [`LogError::SyncFailed`] | Nothing behind what was durable becomes durable in this session: this and every later sync fail, without a call of the file layer. The log still takes items. |
 //! | The same, while an append that was taken back waits for its sync | [`LogError::SyncFailed`] | Besides, that append is unsettled from here on: nothing keeps a crash from bringing the item back. Every later append and turn fails with [`LogError::Unsettled`]. |
 //! | The append of a start record, in [`LogStore::rotate`] | [`LogError::NotAppended`], or `Ok` if the record is in the file, or [`LogError::Unsettled`] if the log cannot find out | The log has not turned and ends where it did. The file it would have turned to is given up, and deleted once no manifest names it. If the record is in the file, the log has turned to a file that takes no items, and turns again. |
-//! | [`LogStore::create`] | [`LogError::Io`] | No file that a manifest names. Its id is not used again in this session, and no manifest records it. If what was written cannot be removed either, a file stays that no manifest names, and the next open removes it. |
-//! | [`LogStore::commit`] | as [`ManifestStore::update`] | The old manifest, or the manifest in doubt. A file that was created is not turned to until a manifest names it. Where the syncs that were to make such a file durable with the manifest failed, the old manifest is in force and the file is given up, since no later sync can vouch for it: the log needs another, under the next id. The file is removed, and if that fails as well, a file stays that no manifest names, and the next open removes it. |
+//! | [`LogStore::create`] | [`LogError::Io`] | No file that a manifest names, and no id that is used up: the next creation asks for a file under the same id. If what was written cannot be removed either, a file stays that no manifest names. The next creation finds it under that id and fails as well, the one after it takes the next id, and the next open removes the file. After the last id there is none ([`LogError::FileIdsExhausted`], [`LogStore::file_ids_used_up`]): the ids do not begin again. |
+//! | [`LogStore::commit`] | as [`ManifestStore::update`] | The old manifest, or the manifest in doubt. A file that was created is not turned to until a manifest names it. Where the syncs that were to make such a file durable with the manifest failed, the old manifest is in force and the file is given up, since no later sync can vouch for it: the log needs another. The file is removed and its id is given back, so the next creation makes a file under the same id. If the removal fails as well, a file stays that no manifest names: the next creation finds it and fails, the one after it takes the next id, and the next open removes the file. |
 //! | The deletion of a dropped file | [`LogError::NotDeleted`] | The new manifest, in force, and the file, which the next call or the next session deletes. |
 //!
 //! **After a failed append of an item the failed bytes are cut off before
@@ -229,7 +229,11 @@
 //! syncs the log, replaces the manifest and turns. So the cut is made by
 //! whoever keeps the log's files, before the next commit and not by one,
 //! and until it is made the log takes no item (CM9 item 5): every append
-//! fails with [`LogError::NoActiveFile`]. Reads go on. The next file's
+//! fails with [`LogError::NoActiveFile`]. What the file layer answered the
+//! append that left the log so is kept until a turn gives the log a file
+//! that takes items, for whoever has turned the log in vain and has to
+//! say why ([`LogStore::refusal`], [`LogError::NoActiveFileSince`]).
+//! Reads go on. The next file's
 //! start record says where this one ends (LG9), and the next commit takes
 //! the version of the one that failed. A turn whose start record fails is
 //! another matter: the log has not turned, the file it would have turned
@@ -540,7 +544,7 @@ mod reader;
 mod store;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use error::LogError;
 pub use reader::{FileEnd, LogEnd, LogRead, LogReader, DEFAULT_READ_WINDOW_LEN};

@@ -57,6 +57,11 @@ pub struct FlushConfig {
     pub checkpoint_log_bytes: u64,
     /// How long the background loop sleeps when nobody wakes it.
     pub idle: Duration,
+    /// The longest wait of the background loop after a turn that failed
+    /// ([`Self::wait_after_failure`]). Where it is shorter than
+    /// [`Self::idle`], or than a millisecond, the longer of those two is
+    /// the wait after every failed turn.
+    pub max_failed_wait: Duration,
 }
 
 impl FlushConfig {
@@ -64,7 +69,9 @@ impl FlushConfig {
     /// half a page of delta blocks after a base image, segments of 64 MiB,
     /// at most 4096 page versions and 32 MiB of pending values waiting, at
     /// most 256 MiB of log that no table checkpoint covers, and a table
-    /// checkpoint for every 64 MiB of log.
+    /// checkpoint for every 64 MiB of log. The background loop sleeps
+    /// 50 ms when nobody wakes it, and a second at most after a turn that
+    /// failed.
     pub const fn new(page_size: PageSize) -> Self {
         Self {
             max_chain_deltas: DEFAULT_CHAIN_DELTAS,
@@ -75,7 +82,30 @@ impl FlushConfig {
             max_log_held: 256 << 20,
             checkpoint_log_bytes: 64 << 20,
             idle: Duration::from_millis(50),
+            max_failed_wait: Duration::from_secs(1),
         }
+    }
+
+    /// How long the background loop waits after a turn that failed, before
+    /// its next turn. `in_vain` is how many turns in a row, that one
+    /// included, failed and moved nothing on: 0 after a failed turn that
+    /// moved something on.
+    ///
+    /// For 0 and for 1 it is [`Self::idle`], or a millisecond where the
+    /// idle time is shorter. It is twice as long for each turn more, up
+    /// to [`Self::max_failed_wait`], and never shorter than for 1,
+    /// whatever the bound is set to.
+    pub fn wait_after_failure(&self, in_vain: u32) -> Duration {
+        let first = self.idle.max(Duration::from_millis(1));
+        let bound = self.max_failed_wait.max(first);
+        let mut wait = first;
+        for _ in 1..in_vain {
+            if wait >= bound {
+                break;
+            }
+            wait = wait.saturating_mul(2);
+        }
+        wait.min(bound)
     }
 }
 
@@ -117,9 +147,20 @@ pub struct FlushStats {
     pub value_bytes: u64,
     /// Pending values that were given their pointer in a page step.
     pub values_placed: u64,
-    /// Values that were appended and then given up, because their cell was
-    /// gone before it could be given the pointer. They are dead space.
+    /// Values that were appended and then given up. Their cell was gone
+    /// before it could be given the pointer, or the value log did not
+    /// come to know a manifest that covers them: a sync of their file
+    /// was refused, or the manifest was not replaced, or its replacement
+    /// was left in doubt. A value of the second kind that a cell still
+    /// needs is appended again by a later pass. What a file keeps of a
+    /// value that was given up is dead space.
     pub values_given_up: u64,
+    /// Value-log files that write-back gave up while it was filling
+    /// them: an append to the file was refused, a sync of it failed,
+    /// also the one that was to close it, or a regrouping that wrote to
+    /// it did. Such a file is closed, where it ends or where it was last
+    /// durable, and the next value goes to another file.
+    pub value_files_given_up: u64,
     /// Values that were appended again and repointed when the values of
     /// their page were regrouped.
     pub values_regrouped: u64,
@@ -146,6 +187,10 @@ pub struct FlushStats {
     pub log_files_dropped: u64,
     /// Calls of the background loop that ended with an error.
     pub errors: u64,
+    /// Waits of the background loop after a failed turn in which a turn
+    /// was asked for, which the wait put off to its end
+    /// ([`WriteBack::run`](super::WriteBack::run)).
+    pub turns_put_off: u64,
     /// Commit groups write-back was told of ([`WriteBack::committed`]).
     ///
     /// [`WriteBack::committed`]: super::WriteBack::committed
@@ -194,6 +239,7 @@ pub(super) struct Counters {
     pub(super) value_bytes: AtomicU64,
     pub(super) values_placed: AtomicU64,
     pub(super) values_given_up: AtomicU64,
+    pub(super) value_files_given_up: AtomicU64,
     pub(super) values_regrouped: AtomicU64,
     pub(super) steps_put_off: AtomicU64,
     pub(super) held_for_readers: AtomicU64,
@@ -203,6 +249,7 @@ pub(super) struct Counters {
     pub(super) checkpoints_failed: AtomicU64,
     pub(super) log_files_dropped: AtomicU64,
     pub(super) errors: AtomicU64,
+    pub(super) turns_put_off: AtomicU64,
     pub(super) groups: AtomicU64,
     pub(super) node_records: AtomicU64,
     pub(super) node_record_bytes: AtomicU64,
@@ -235,6 +282,7 @@ impl Counters {
             value_bytes: read(&self.value_bytes),
             values_placed: read(&self.values_placed),
             values_given_up: read(&self.values_given_up),
+            value_files_given_up: read(&self.value_files_given_up),
             values_regrouped: read(&self.values_regrouped),
             steps_put_off: read(&self.steps_put_off),
             held_for_readers: read(&self.held_for_readers),
@@ -244,6 +292,7 @@ impl Counters {
             checkpoints_failed: read(&self.checkpoints_failed),
             log_files_dropped: read(&self.log_files_dropped),
             errors: read(&self.errors),
+            turns_put_off: read(&self.turns_put_off),
             groups: read(&self.groups),
             node_records: read(&self.node_records),
             node_record_bytes: read(&self.node_record_bytes),

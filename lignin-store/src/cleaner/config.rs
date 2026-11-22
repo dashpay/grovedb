@@ -144,6 +144,11 @@ pub struct CleanerStats {
     /// Segments that could not be read when their blocks were to be moved.
     /// They are left as they are until the store is opened again.
     pub segments_unreadable: u64,
+    /// Segments whose blocks a pass had listed to move and that were out
+    /// of the store when the pass came to them, with no link left to the
+    /// blocks it asked for: a second cleaner of the same store had
+    /// dropped them. With one cleaner to a store it stays 0.
+    pub segments_gone: u64,
     /// Table checkpoints the cleaner asked for and that were installed.
     pub checkpoints: u64,
     /// Table checkpoints it asked for that were put off or failed.
@@ -168,8 +173,21 @@ pub struct CleanerStats {
     pub value_bytes_copied: u64,
     /// Value-log files that were taken out of the store.
     pub value_files_dropped: u64,
+    /// Value-log files for the cleaner's own copies that it gave up
+    /// after a cleaning into the file failed, whether a copy had been
+    /// written to it by then or not. Such a file is closed, where it
+    /// ends or where it was last durable.
+    pub value_files_given_up: u64,
     /// Passes that ended with an error.
     pub errors: u64,
+    /// Segments that the cleaner moved blocks into and of which a sync
+    /// has failed, whoever made that sync: the cleaner's own, after an
+    /// append or a sealing that failed, or the sync that a table
+    /// checkpoint makes of every segment that is being written. Each is
+    /// counted once, by the segment store's own record of it
+    /// ([`SyncRecord`](crate::segment::SyncRecord)), so the count is right
+    /// before the cleaner has met the failure itself.
+    pub segments_not_durable: u64,
 }
 
 #[derive(Debug, Default)]
@@ -186,6 +204,7 @@ pub(super) struct Counters {
     pub(super) segments_dropped: AtomicU64,
     pub(super) bytes_dropped: AtomicU64,
     pub(super) segments_unreadable: AtomicU64,
+    pub(super) segments_gone: AtomicU64,
     pub(super) checkpoints: AtomicU64,
     pub(super) checkpoints_missed: AtomicU64,
     pub(super) segments_sealed: AtomicU64,
@@ -196,6 +215,7 @@ pub(super) struct Counters {
     pub(super) values_left: AtomicU64,
     pub(super) value_bytes_copied: AtomicU64,
     pub(super) value_files_dropped: AtomicU64,
+    pub(super) value_files_given_up: AtomicU64,
     pub(super) errors: AtomicU64,
 }
 
@@ -219,6 +239,7 @@ impl Counters {
             segments_dropped: read(&self.segments_dropped),
             bytes_dropped: read(&self.bytes_dropped),
             segments_unreadable: read(&self.segments_unreadable),
+            segments_gone: read(&self.segments_gone),
             checkpoints: read(&self.checkpoints),
             checkpoints_missed: read(&self.checkpoints_missed),
             segments_sealed: read(&self.segments_sealed),
@@ -229,7 +250,9 @@ impl Counters {
             values_left: read(&self.values_left),
             value_bytes_copied: read(&self.value_bytes_copied),
             value_files_dropped: read(&self.value_files_dropped),
+            value_files_given_up: read(&self.value_files_given_up),
             errors: read(&self.errors),
+            segments_not_durable: 0,
         }
     }
 }

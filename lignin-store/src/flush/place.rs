@@ -15,17 +15,34 @@ use super::{
 };
 use crate::{
     cache::PageRef,
-    values::{ValueChange, ValueHold, ValueStoreError},
+    values::{CountStep, ValueChange, ValueHold, ValueStoreError},
     wal::LogError,
 };
+
+/// What a test does when a page step whose record the log refused has
+/// given its locks back.
+#[cfg(test)]
+pub(super) type AfterARefusedStep = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has run, once, when a page step whose record the log
+    /// refused has given back its lock on the page and the lock on the
+    /// counts: what another does to the log from then on.
+    pub(super) static AFTER_A_REFUSED_STEP: std::cell::RefCell<Option<AfterARefusedStep>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// What became of one value that was ready for its page step.
 enum Step {
     /// The cell holds the pointer, and the value is counted.
     Placed,
-    /// A write transaction holds a private copy of the page, or the log
-    /// takes no record now. The value stays ready.
+    /// A write transaction holds a private copy of the page, or no
+    /// manifest covers the value. The value stays ready.
     PutOff,
+    /// The log refused the record of the step, with what it answered.
+    /// Nothing was installed, and the value stays ready.
+    Refused(LogError),
     /// The current version of the page has no cell with that pending
     /// value any more: a commit replaced or removed it, carried it to
     /// another page or freed the page. The value is dead space.
@@ -114,20 +131,34 @@ impl<'s> WriteBack<'s> {
         ended.and(covered)
     }
 
-    /// Makes the values in `fresh`, which were appended to the value-log
-    /// file that write-back fills, durable under a manifest that covers
-    /// them, and has them wait for their page steps.
+    /// Makes the values in `fresh`, which a pass appended to the value
+    /// log, durable under a manifest that covers them, and has them wait
+    /// for their page steps.
+    ///
+    /// Whatever became of the sync, and of the manifest where the sync
+    /// did not fail, the value log is asked of each value last
+    /// ([`ValueStore::covers`](crate::values::ValueStore::covers)). A
+    /// value that it then knows a manifest to cover waits for its page
+    /// step, and every other one is given up with its hold
+    /// ([`FlushStats::values_given_up`](super::FlushStats::values_given_up)).
+    /// A pass can fill one file and go on in the next: the values of the
+    /// first are covered by the manifest that named the second, whatever
+    /// becomes of the sync of the second.
     fn cover(&self, files: &mut Files, fresh: Vec<Ready>) -> Result<(), FlushError> {
         let values = self.stores.values;
         let synced = files.values.as_mut().map(|writer| writer.sync());
-        if let Some(Err(error)) = synced {
-            // The values cannot be made durable in that file any more.
-            // They are given up with their holds, and appended to
-            // another file by the next pass.
-            files.values = None;
-            return Err(error.into());
-        }
-        values.commit(&mut *self.manifest()?)?;
+        let covered = match synced {
+            Some(Err(error)) => {
+                // What that sync was for cannot be made durable in the
+                // file any more. The file is closed where it was durable,
+                // and is not synced again.
+                self.give_up_value_file(files);
+                Err(error.into())
+            }
+            _ => self
+                .manifest()
+                .and_then(|mut manifest| Ok(values.commit(&mut manifest)?)),
+        };
         let mut placing = lock(&self.state.placing);
         for appended in fresh {
             if values.covers(appended.pointer) {
@@ -136,7 +167,7 @@ impl<'s> WriteBack<'s> {
                 count(&self.state.counters.values_given_up, 1);
             }
         }
-        Ok(())
+        covered
     }
 
     /// Appends the bytes of one pending value to the value log, for the
@@ -177,7 +208,10 @@ impl<'s> WriteBack<'s> {
             Ok(pointer) => pointer,
             Err(error) => {
                 if !matches!(error, ValueStoreError::Format { .. }) {
-                    files.values = None;
+                    // The values that went into the file before this one
+                    // are made durable there, and the manifest of this
+                    // pass covers them ([`Self::cover`]).
+                    self.give_up_value_file(files);
                 }
                 return Err(error.into());
             }
@@ -211,10 +245,32 @@ impl<'s> WriteBack<'s> {
     ///
     /// It touches no file but the log, to which it appends one record for
     /// each value it places, with no sync. One call runs at a time.
+    ///
+    /// A step whose record the log answers with
+    /// [`LogError::NotAppended`], with [`LogError::NoActiveFile`], or
+    /// with [`LogError::TakenBack`] where the log is settled after it,
+    /// is put off like one that a private copy holds back, and this call
+    /// returns no error for it: the refusal has asked the loop for a
+    /// turn, for the cut the log needs, and a pass in which a record is
+    /// refused so ends with an error ([`Self::pass`]).
     pub fn place_ready(&self) -> Result<usize, FlushError> {
+        let mut placed = 0;
+        self.place_each(&mut placed, &mut None)?;
+        Ok(placed)
+    }
+
+    /// [`Self::place_ready`] for a pass. `placed` counts the values that
+    /// were placed, also where the call ends with an error, and `refused`
+    /// is given what the log answered the first record that it refused.
+    /// Such a step is made again by a later call, so the pass has failed
+    /// by it, and the loop waits before its next turn.
+    pub(super) fn place_each(
+        &self,
+        placed: &mut usize,
+        refused: &mut Option<LogError>,
+    ) -> Result<(), FlushError> {
         let mut placing = lock(&self.state.placing);
         let counters = &self.state.counters;
-        let mut placed = 0;
         let mut at = 0;
         while at < placing.len() {
             match self.place(&placing[at])? {
@@ -222,16 +278,20 @@ impl<'s> WriteBack<'s> {
                     // The hold goes now that the value is counted.
                     drop(placing.swap_remove(at));
                     count(&counters.values_placed, 1);
-                    placed += 1;
+                    *placed += 1;
                 }
                 Step::GivenUp => {
                     drop(placing.swap_remove(at));
                     count(&counters.values_given_up, 1);
                 }
                 Step::PutOff => at += 1,
+                Step::Refused(error) => {
+                    refused.get_or_insert(error);
+                    at += 1;
+                }
             }
         }
-        Ok(placed)
+        Ok(())
     }
 
     /// The page step that places one value (`transactions.md` PV7, with
@@ -276,10 +336,15 @@ impl<'s> WriteBack<'s> {
         blank.detach(ready.cell.pending.id());
 
         if let Err(error) = self.append_change(&record) {
+            let cause = self.cause_of(&counts, error);
             drop(blank);
             drop(step);
             drop(counts);
-            return self.record_not_written(error).map(|()| Step::PutOff);
+            #[cfg(test)]
+            if let Some(then) = AFTER_A_REFUSED_STEP.with(|hook| hook.borrow_mut().take()) {
+                then();
+            }
+            return self.record_not_written(cause).map(Step::Refused);
         }
         step.replace(&old, blank)
             .map_err(|source| FlushError::StepRefused { page, source })?;
@@ -292,22 +357,47 @@ impl<'s> WriteBack<'s> {
         Ok(Step::Placed)
     }
 
+    /// What the log answered a page step whose record it did not take,
+    /// with the cause of it where the log had no file that takes items:
+    /// what left the log so, if the log has kept it
+    /// ([`LogStore::refusal`](crate::wal::LogStore::refusal)).
+    ///
+    /// The step asks while it holds the lock on the counts, whose guard
+    /// it shows as `held`: under that lock no turn gives the log a file
+    /// and no append of another fails, so what the log has kept then is
+    /// what kept this record out.
+    fn cause_of(&self, held: &CountStep<'_>, error: LogError) -> LogError {
+        let _ = held;
+        match error {
+            LogError::NoActiveFile => self.stores.log.refusal().unwrap_or(error),
+            error => error,
+        }
+    }
+
     /// What a page step does when the append of its record failed, with
-    /// its locks given back. Nothing was installed.
+    /// its locks given back. Nothing was installed. `error` is what the
+    /// log answered, with its cause ([`Self::cause_of`]).
     ///
     /// - The record is not in the log, and the log takes none until it has
-    ///   been rolled: the value stays ready, and the step is made later.
-    ///   If the append was taken back, a crash could still bring the
-    ///   record back, so the log is settled first (`wal`, "When the file
-    ///   layer fails").
+    ///   been rolled: the value stays ready for a later call. If the
+    ///   append was taken back, a crash could still bring the record
+    ///   back, so the log is settled first (`wal`, "When the file layer
+    ///   fails"), and a settling that fails is the error of the call.
+    ///   Otherwise what the log answered is returned as the refusal of
+    ///   the step.
     /// - The log cannot find out what became of the append: the record may
     ///   be in the log, so the value keeps its hold for as long as the
     ///   session lasts, and the log takes nothing more in it. That is the
-    ///   caller's to know, and is returned.
-    fn record_not_written(&self, error: LogError) -> Result<(), FlushError> {
+    ///   caller's to know, and is returned as the error of the call.
+    fn record_not_written(&self, error: LogError) -> Result<LogError, FlushError> {
         match error {
-            LogError::TakenBack { .. } => Ok(self.stores.log.settle()?),
-            LogError::NotAppended { .. } | LogError::NoActiveFile => Ok(()),
+            LogError::TakenBack { .. } => {
+                self.stores.log.settle()?;
+                Ok(error)
+            }
+            LogError::NotAppended { .. }
+            | LogError::NoActiveFile
+            | LogError::NoActiveFileSince { .. } => Ok(error),
             error => Err(error.into()),
         }
     }

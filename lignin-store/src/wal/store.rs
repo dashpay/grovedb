@@ -414,6 +414,10 @@ impl Files {
 #[derive(Debug)]
 struct Tail {
     unsettled: Option<Sticky>,
+    /// What the file layer answered the append after which the file the
+    /// log ends in takes no more items, until a turn gives the log a
+    /// file that does.
+    refused: Option<Sticky>,
     /// The file the log ends in, with the cursor behind its last item. It
     /// takes items until it is finished.
     active: Option<(Arc<LogFile>, LogCursor)>,
@@ -560,9 +564,14 @@ pub struct LogStore {
     options: LogOptions,
     /// Tells this log's places from another's.
     session: u64,
-    /// The highest id a creation has taken. It is held for the length of a
-    /// creation, so that files enter the log in the order of their ids.
+    /// The highest id of a file that entered the log, that a creation
+    /// found, or that was created and waits for its manifest. It is held
+    /// for the length of a creation, so that files enter the log in the
+    /// order of their ids.
     creating: Mutex<Option<FileId>>,
+    /// Whether a creation found that the last id was used
+    /// ([`Self::file_ids_used_up`]).
+    ids_used_up: AtomicBool,
     /// Held by the one sync that runs.
     syncing: Mutex<()>,
     files: RwLock<Files>,
@@ -735,6 +744,7 @@ impl LogStore {
             options,
             session: SESSIONS.fetch_add(1, Ordering::Relaxed),
             creating: Mutex::new(last_id),
+            ids_used_up: AtomicBool::new(false),
             syncing: Mutex::new(()),
             files: RwLock::new(Files {
                 live,
@@ -746,6 +756,7 @@ impl LogStore {
             }),
             tail: Mutex::new(Tail {
                 unsettled: None,
+                refused: None,
                 active: None,
                 first_start,
                 adopted_end: end.place(),
@@ -840,6 +851,20 @@ impl LogStore {
     /// durable, which is in [`Self::commit`]. A manifest that is made of
     /// [`Self::describe`] before that neither names the file nor records
     /// its id, whoever writes it.
+    ///
+    /// **An id is used up by a file that entered the log, or that a
+    /// creation found under it, and by nothing else.** A creation that
+    /// fails uses up none, however often it is made again, and neither
+    /// does a file that was created and is given up before a manifest
+    /// named it ([`Self::commit`]): the next creation asks for a new file
+    /// under the same id. The file layer makes one only where no file has
+    /// that name. Where it answers that one has (what an earlier attempt
+    /// made and could not remove, or a file that is not the log's), that
+    /// creation fails too, the id is that file's from then on, and the
+    /// creation after it takes the next id.
+    ///
+    /// After the last id there is none ([`LogError::FileIdsExhausted`],
+    /// [`Self::file_ids_used_up`]): the ids do not begin again.
     pub fn create(&self) -> Result<FileId, LogError> {
         let mut taken = lock(&self.creating);
         {
@@ -850,11 +875,27 @@ impl LogStore {
             }
         }
         let next = taken.map_or(1, |last| last.get().wrapping_add(1));
-        let id = FileId::new(next).ok_or(LogError::FileIdsExhausted)?;
-        *taken = Some(id);
+        let Some(id) = FileId::new(next) else {
+            self.ids_used_up.store(true, Ordering::Release);
+            return Err(LogError::FileIdsExhausted);
+        };
 
-        let handle = create_unsynced_file(&*self.vfs, &self.dir, &FileNames::WAL, id)?;
         let path = FileNames::WAL.path(&self.dir, id);
+        let handle = match create_unsynced_file(&*self.vfs, &self.dir, &FileNames::WAL, id) {
+            Ok(handle) => handle,
+            Err(error) => {
+                let name_taken = matches!(
+                    &error,
+                    crate::segment::SegmentStoreError::Io { source, .. }
+                        if source.kind() == ErrorKind::AlreadyExists
+                );
+                if name_taken {
+                    *taken = Some(id);
+                }
+                return Err(error.into());
+            }
+        };
+        *taken = Some(id);
         let file = Arc::new(LogFile::created(id, path, handle));
         self.tail().spare = Some((file, false));
         Ok(id)
@@ -985,7 +1026,10 @@ impl LogStore {
                     wal::read_file_start(&file).is_ok()
                 };
                 match settle(&spare, HEADER_LEN, &record, verifies) {
-                    Settled::InLog => false,
+                    Settled::InLog => {
+                        tail.refused = Some(Sticky::of(spare.path(), &error));
+                        false
+                    }
                     Settled::Absent | Settled::Torn => {
                         // Whatever the file holds, its handle may append
                         // no more.
@@ -1005,7 +1049,9 @@ impl LogStore {
             before.finish();
         }
         spare.begin(start, FIRST_ITEM_OFFSET);
-        if !takes_items {
+        if takes_items {
+            tail.refused = None;
+        } else {
             spare.finish();
         }
         tail.active = Some((spare, cursor));
@@ -1316,7 +1362,12 @@ impl LogStore {
             }
             false
         };
-        match settle(&file, offset, bytes, verifies) {
+        let settled = settle(&file, offset, bytes, verifies);
+        if !matches!(settled, Settled::Unknown(_)) {
+            // The file takes no more items, whatever became of this one.
+            tail.refused = Some(Sticky::of(file.path(), &error));
+        }
+        match settled {
             Settled::InLog => {
                 self.took(tail, &file, after);
                 self.appended.count(kind, bytes.len());
@@ -1626,6 +1677,39 @@ impl LogStore {
         })
     }
 
+    /// What the file layer answered the append that left the log with no
+    /// file that takes items, as [`LogError::NoActiveFileSince`]: an item that it
+    /// refused, also one whose bytes the log found whole in the file and
+    /// counts as appended, or the start record of a file the log turned
+    /// to all the same. `None` once a turn has given the log a file that
+    /// takes items, and where the log has none for another reason: before
+    /// the first turn of the session.
+    ///
+    /// Like [`Self::sync_failed`] it says what is and decides nothing: an
+    /// append to a log with no such file fails with
+    /// [`LogError::NoActiveFile`] as before.
+    pub fn refusal(&self) -> Option<LogError> {
+        let tail = self.tail();
+        let refused = tail.refused.as_ref()?;
+        Some(LogError::NoActiveFileSince {
+            path: refused.path.clone(),
+            source: refused.error(),
+        })
+    }
+
+    /// Whether a creation of this session found every log file id used
+    /// ([`LogError::FileIdsExhausted`]): the log can be given no file
+    /// after the ones it has in this session, so it takes items only
+    /// until the file it ends in is full. A later session is given none
+    /// either where a manifest has recorded the last id as used.
+    ///
+    /// Like [`Self::sync_failed`] this says what is and decides nothing:
+    /// it is one read of a flag, makes no operation on a file, and nothing
+    /// in the log acts on it. It is for whoever answers for the session.
+    pub fn file_ids_used_up(&self) -> bool {
+        self.ids_used_up.load(Ordering::Acquire)
+    }
+
     /// Reads the pending value `pending`, for the cell of the page `owner`
     /// that holds it, into `buf`: the value's bytes, or the name of the
     /// record in the value log that holds them.
@@ -1893,7 +1977,8 @@ impl LogStore {
     /// files. If the set fails, the file is given up, as a file is whose
     /// creation failed: it is removed, or left for the next open to
     /// remove if it cannot be, and the log needs another
-    /// ([`Self::create`]), under the next id.
+    /// ([`Self::create`]): under the same id where the file was removed,
+    /// and under the next id where the creation finds it.
     ///
     /// After [`LogError::NotDeleted`] the new manifest is in force. After
     /// any other error [`ManifestStore::manifest`] tells where things
@@ -1954,11 +2039,17 @@ impl LogStore {
                 files.last_id = files.last_id.max(Some(new.id()));
             }
             // Each file of a set that failed is as after a failed sync:
-            // no later sync of this one vouches for its header.
+            // no later sync of this one vouches for its header. It never
+            // entered the log, so its id is not used up: the next
+            // creation asks for a new file under it.
             (Some(false), _) => {
+                let mut taken = lock(&self.creating);
                 new.kill();
                 self.tail().spare = None;
                 let _ = self.vfs.remove_file(new.path());
+                if *taken == Some(new.id()) {
+                    *taken = new.id().get().checked_sub(1).and_then(FileId::new);
+                }
             }
             // The replacement failed before its syncs. The file waits
             // for the next one.

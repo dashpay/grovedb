@@ -58,6 +58,12 @@ impl SegmentWriter {
         self.segment.id()
     }
 
+    /// The segment store's record of whether a sync of this segment has
+    /// failed.
+    pub fn sync_record(&self) -> SyncRecord {
+        SyncRecord(self.segment.clone())
+    }
+
     /// The file offset where the blocks appended so far end, which is where
     /// the next one starts.
     pub fn end(&self) -> u64 {
@@ -152,6 +158,33 @@ impl SegmentWriter {
                 .map_err(SegmentStoreError::io("append to", segment.path()))?;
             Ok(offset + buf.len() as u64)
         })
+    }
+}
+
+/// The segment store's record of whether a sync of one segment has
+/// failed, for whoever writes the segment ([`SegmentWriter::sync_record`]).
+///
+/// A segment that is being written is synced by others than its writer:
+/// [`SegmentStore::sync`](super::SegmentStore::sync) syncs every one, and
+/// a table checkpoint calls it. Such a sync that fails is answered to its
+/// caller, and the writer learns of it at its next append. This says so
+/// before that.
+///
+/// It keeps the segment's file open, so whoever holds one gives it up
+/// once the segment is sealed.
+#[derive(Debug, Clone)]
+pub struct SyncRecord(Arc<Segment>);
+
+impl SyncRecord {
+    /// The id of the segment.
+    pub fn file_id(&self) -> FileId {
+        self.0.id()
+    }
+
+    /// Whether a sync of the segment has failed in this session, whoever
+    /// made it.
+    pub fn failed(&self) -> bool {
+        self.0.has_failed()
     }
 }
 

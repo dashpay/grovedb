@@ -1,8 +1,9 @@
 //! The background loop of the cleaner.
 
-use std::sync::atomic::Ordering;
+use std::{sync::atomic::Ordering, time::Duration};
 
-use super::{clean::Cleaner, error::CleanerError, state::lock, values::ValuePass};
+use super::{clean::Cleaner, error::CleanerError, values::ValuePass};
+use crate::flush::FlushConfig;
 
 impl Cleaner<'_> {
     /// The background loop: a pass over the segments ([`Self::pass`]) and
@@ -11,6 +12,14 @@ impl Cleaner<'_> {
     /// which with the bytes a pass may move is the cleaner's throttle. A
     /// pass that fails is counted, its error is passed to `failed`, and
     /// the loop goes on.
+    ///
+    /// **A turn that failed does not bring the next turn forward**, as in
+    /// write-back's loop ([`WriteBack::run`](crate::flush::WriteBack::run)):
+    /// after a turn in which a pass failed the loop waits its idle time,
+    /// and twice as long after each further such turn in a row, up to
+    /// [`FlushConfig::max_failed_wait`] of the store's write-back, whoever
+    /// wakes it. The wait is the idle time again after the first turn in
+    /// which no pass fails. Only [`Self::stop`] ends it before that.
     ///
     /// `values` makes the pass over the value log
     /// ([`Self::pass_values`]). It is the caller's because the owners of
@@ -25,24 +34,44 @@ impl Cleaner<'_> {
         mut failed: impl FnMut(CleanerError),
     ) {
         let state = self.state;
+        // The turns in a row, up to the last one, in which a pass failed.
+        let mut failed_turns = 0_u32;
         while !state.stopping.load(Ordering::Acquire) {
-            if let Err(error) = self.pass() {
-                failed(error);
-            }
-            if let Err(error) = values(self) {
-                failed(error);
-            }
-            let mut woken = lock(&state.wake);
-            if !*woken && !state.stopping.load(Ordering::Acquire) {
-                let (next, _) = state
-                    .woken
-                    .wait_timeout(woken, state.config.idle)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                woken = next;
-            }
-            *woken = false;
+            let failed_wait = self.paced_turn(&mut values, &mut failed, &mut failed_turns);
+            state.sleep(failed_wait);
         }
         state.stopping.store(false, Ordering::Release);
+    }
+
+    /// One turn of the background loop: the two passes, each made
+    /// whatever became of the other. What is returned is how long the
+    /// loop waits before its next turn, whoever wakes it, or `None` after
+    /// a turn in which no pass failed. `failed_turns` is the loop's count
+    /// of the turns in a row in which one did.
+    pub(super) fn paced_turn(
+        &self,
+        values: &mut dyn FnMut(&Self) -> Result<ValuePass, CleanerError>,
+        failed: &mut dyn FnMut(CleanerError),
+        failed_turns: &mut u32,
+    ) -> Option<Duration> {
+        let mut turn_failed = false;
+        if let Err(error) = self.pass() {
+            turn_failed = true;
+            failed(error);
+        }
+        if let Err(error) = values(self) {
+            turn_failed = true;
+            failed(error);
+        }
+        *failed_turns = match turn_failed {
+            true => failed_turns.saturating_add(1),
+            false => 0,
+        };
+        let pacing = FlushConfig {
+            idle: self.state.config.idle,
+            ..self.write_back.state().config()
+        };
+        turn_failed.then(|| pacing.wait_after_failure(*failed_turns))
     }
 
     /// Ends the background loop after its current turn. A loop that has

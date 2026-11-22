@@ -58,6 +58,11 @@ pub struct Pass {
     /// The segments that were being filled and that the pass had sealed:
     /// write-back's, the cleaner's own, or both.
     pub sealed: Vec<FileId>,
+    /// Segments whose blocks the pass had listed to move and that were
+    /// out of the store when it came to them, with no link left to the
+    /// blocks it asked for
+    /// ([`CleanerStats::segments_gone`](super::CleanerStats::segments_gone)).
+    pub gone: usize,
     /// Whether the throttle ended the moving of blocks before the dead
     /// space was within its target: the next pass goes on.
     pub more: bool,
@@ -520,6 +525,14 @@ impl<'s> Cleaner<'s> {
     /// that is left with no live block is retired. The first damaged block
     /// it meets is put into `failed`, unless `failed` holds an error
     /// already, and the move goes on with the other victims.
+    ///
+    /// The blocks are listed first and read then. One cleaner drops a
+    /// segment only in its own pass, between two such listings, so every
+    /// segment it has listed is in the store when it reads. A second
+    /// cleaner of the same store ([`CleanerState`]) is not held to that:
+    /// it can drop a listed segment once the links into it are gone. A
+    /// block of such a segment is passed by, and the segment is counted
+    /// ([`Pass::gone`]).
     fn move_out(
         &self,
         work: &mut Work,
@@ -556,6 +569,7 @@ impl<'s> Cleaner<'s> {
             left[*at] += 1;
         }
         let mut buf = Vec::new();
+        let mut gone = BTreeSet::new();
         for (at, from, page) in blocks {
             if work.unreadable.contains(&from.file) {
                 continue;
@@ -577,6 +591,22 @@ impl<'s> Cleaner<'s> {
                     count(&counters.blocks_lost, 1);
                     count(&counters.bytes_lost, u64::from(to.len));
                 }
+                // The store has the segment no more, and no link of the
+                // page points to the block: the block lost its link after
+                // the table was read, and a second cleaner of this store
+                // has dropped the segment. Nothing is left to move. Where
+                // the link stands, it points into a segment that is gone,
+                // which is damage and is dealt with below.
+                Err(CleanerError::Block {
+                    source: SegmentStoreError::UnknownSegment { .. },
+                    ..
+                }) if !self.is_linked(page, from) => {
+                    if gone.insert(from.file) {
+                        pass.gone += 1;
+                        count(&counters.segments_gone, 1);
+                    }
+                    continue;
+                }
                 // A live block that is damaged is damage that its readers
                 // meet too. The segment keeps its link, so it is never
                 // deleted, and moving the rest of it would gain nothing.
@@ -597,6 +627,13 @@ impl<'s> Cleaner<'s> {
             }
         }
         Ok(())
+    }
+
+    /// Whether a link of `page` points to the block at `at` now.
+    fn is_linked(&self, page: PageId, at: BlockLocation) -> bool {
+        let mut chain = Vec::new();
+        self.stores().table.chain(page, &mut chain);
+        chain.iter().any(|link| link.location() == Some(at))
     }
 
     /// Copies the block at `from`, which a link of `page` points to, to
@@ -661,6 +698,7 @@ impl<'s> Cleaner<'s> {
         if work.segment.is_none() {
             let writer = segments.create()?;
             segments.commit(&mut *self.write_back.manifest()?)?;
+            self.state.writes(writer.sync_record());
             work.segment = Some(writer);
         }
         let writer = work.segment.as_mut().expect("a segment was just made");
@@ -691,6 +729,7 @@ impl<'s> Cleaner<'s> {
         if let Err(error) = writer.seal() {
             return Err(self.segment_failed(work, writer, error));
         }
+        self.state.wrote(writer.file_id());
         Ok(())
     }
 
@@ -715,7 +754,10 @@ impl<'s> Cleaner<'s> {
         first: SegmentStoreError,
     ) -> CleanerError {
         let source = match writer.sync() {
-            Ok(_) => return first.into(),
+            Ok(_) => {
+                self.state.wrote(writer.file_id());
+                return first.into();
+            }
             Err(SegmentStoreError::SegmentFailed { .. }) => first,
             Err(source) => source,
         };

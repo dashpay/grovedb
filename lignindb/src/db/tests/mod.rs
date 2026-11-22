@@ -17,6 +17,7 @@ mod kept;
 mod listed;
 mod moves;
 mod open;
+mod pacing;
 mod power;
 mod reads;
 mod reclaim;

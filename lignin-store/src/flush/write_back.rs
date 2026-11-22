@@ -125,8 +125,9 @@ pub struct Pass {
     /// Page versions that were kept in the pool for their readers instead
     /// of being written.
     pub held: usize,
-    /// Pages that could not be written because a value of theirs could not
-    /// be placed: a write transaction holds a private copy of the page.
+    /// Pages that could not be written because their current version
+    /// has a pending value, or bytes attached that could not be taken
+    /// off.
     pub blocked: usize,
     /// Page versions that still wait: the pool lists them as owed.
     pub waiting: usize,
@@ -496,7 +497,10 @@ impl<'s> WriteBack<'s> {
     pub(super) fn append_failed(&self, error: &LogError) {
         let cut_needed = matches!(
             error,
-            LogError::TakenBack { .. } | LogError::NotAppended { .. } | LogError::NoActiveFile
+            LogError::TakenBack { .. }
+                | LogError::NotAppended { .. }
+                | LogError::NoActiveFile
+                | LogError::NoActiveFileSince { .. }
         );
         if cut_needed {
             self.state.wake();
@@ -533,8 +537,10 @@ impl<'s> WriteBack<'s> {
     ///
     /// An error that is about one page does not end the pass: the other
     /// pages are written, and the pass returns the first such error when
-    /// it is done. Whatever it returns, what it wrote and linked stands,
-    /// and it can be called again.
+    /// it is done. Neither does a page step whose record the log refused:
+    /// the value stays ready, and what the log answered is one of those
+    /// errors. Whatever the pass returns, what it wrote and linked
+    /// stands, and it can be called again.
     pub fn pass(&self) -> Result<Pass, FlushError> {
         let (pass, result) = self.pass_through();
         result.map(|()| pass)
@@ -571,9 +577,15 @@ impl<'s> WriteBack<'s> {
         if let Err(error) = self.append_pending(files, &owed, round) {
             round.fail(error);
         }
-        match self.place_ready() {
-            Ok(placed) => round.pass.placed = placed,
-            Err(error) => round.fail(error),
+        // A record that the log refused a page step is an error of the
+        // pass, though the step is only put off: the turn has failed.
+        let mut refused = None;
+        let placed = self.place_each(&mut round.pass.placed, &mut refused);
+        if let Some(refusal) = refused {
+            round.fail(refusal.into());
+        }
+        if let Err(error) = placed {
+            round.fail(error);
         }
         let mut ended = Ok(());
         for (&page, versions) in &owed {
@@ -804,10 +816,46 @@ impl<'s> WriteBack<'s> {
             Err(source) => {
                 // The copies are given up, and the next value goes to
                 // another file: a sync of this one may have failed.
-                files.values = None;
+                self.give_up_value_file(files);
                 Err(FlushError::Regroup { page, source })
             }
         }
+    }
+
+    /// Ends the use of the value-log file that write-back fills, after an
+    /// append to it failed or a step that wrote to it did. The next value
+    /// goes to another file.
+    ///
+    /// The file is synced by its writer, through the handle that
+    /// appended, before the writer goes, and is closed where it ends
+    /// ([`ValueWriter::give_up`]). Whoever cleans the value log takes
+    /// closed files only, and a file whose writer is dropped while it
+    /// holds values that were never synced stays open for as long as the
+    /// session lasts. If the sync fails, or a sync of the file had failed
+    /// before, the file is closed at the length that was durable, and is
+    /// not synced again: no cell points behind that length, since a cell
+    /// is given its pointer only behind a manifest that covers the value
+    /// ([`Self::cover`]). It ends no session.
+    pub(super) fn give_up_value_file(&self, files: &mut Files) {
+        if let Some(writer) = files.values.take() {
+            count(&self.state.counters.value_files_given_up, 1);
+            // Whatever the sync answers, the file is closed once its
+            // writer is gone.
+            let _ = writer.give_up();
+        }
+    }
+
+    /// Makes the value-log file of `writer`, which write-back was
+    /// filling, durable to its end and closes it. If the sync is refused
+    /// the file is given up as [`Self::give_up_value_file`] gives one up
+    /// whose sync failed, and is counted so: it is closed at the length
+    /// that was durable, and is not synced again.
+    pub(super) fn finish_value_file(&self, writer: ValueWriter) -> Result<(), FlushError> {
+        let finished = writer.finish();
+        if finished.is_err() {
+            count(&self.state.counters.value_files_given_up, 1);
+        }
+        Ok(finished.map(drop)?)
     }
 
     /// The value-log file that write-back fills. A new one is made if
@@ -819,7 +867,7 @@ impl<'s> WriteBack<'s> {
         let values = self.stores.values;
         if writer.as_ref().is_none_or(ValueWriter::is_full) {
             if let Some(full) = writer.take() {
-                full.finish()?;
+                self.finish_value_file(full)?;
             }
             let made = values.create()?;
             values.commit(&mut *self.manifest()?)?;
@@ -1264,7 +1312,7 @@ impl<'s> WriteBack<'s> {
         let Some(writer) = files.values.take_if(|writer| writer.file_id() == file) else {
             return Ok(false);
         };
-        writer.finish()?;
+        self.finish_value_file(writer)?;
         Ok(true)
     }
 

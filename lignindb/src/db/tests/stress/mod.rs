@@ -5,7 +5,7 @@
 //!
 //! # What runs
 //!
-//! One open database ([`Db`]), with its two background threads, and
+//! One open database ([`Db`]), with its three background threads, and
 //! beside them:
 //!
 //! | Thread | What it does | Rows of section 13 |
@@ -13,8 +13,7 @@
 //! | the block writer | One write transaction after another. Each has two scopes that are open at once, one of them on a second thread for as long as the scopes last; now and then a scope that is rolled back, a scope that is refused for an overlap, a savepoint that is rolled back to, and a rollback of the whole transaction. It writes Merks of its own, generations of subtrees that it enters and drops, and keys that the other writer writes too. | 7a, 8a, 8b, 9, 10, 12 to 14 |
 //! | the writer with no transaction | One batch after another, each a commit ([`Db::write`]), beside the open block transaction. Every few commits it makes a checkpoint, opens it as a database, reads all of it and deletes it. | 7b, 8b, 12, 15, 18, 20 |
 //! | the reader | Snapshots of three ages, and operations that pin nothing. Each look compares whole subtrees with the model. Every few looks it has the log made durable ([`Db::flush`]), and the physical invariant checker reads the latest version as a reader, with the reclaimer of dropped subtrees held back from the moment the version is pinned to the end of that check. | 1 to 6, and `flush()` beside a commit (DU1a) |
-//! | the cleaner | [`Cleaner::run`], as the engine will run it once it is wired into [`Db`]: the segments, and the value log with the owners of values of both kinds. | 5, 10, 14, 17, 19, 20 |
-//! | write-back, the reclaimer | The engine's own threads, with small files and low bounds, so that committers are slowed (FL5), table checkpoints are taken and log files go all the time. | 4, 9, 13, 16, 17 |
+//! | write-back, the reclaimer, the cleaner | The engine's own threads, with small files and low bounds, so that committers are slowed (FL5), table checkpoints are taken, log files go all the time, and the segments and the value log are cleaned with the owners of values of both kinds. The cleaner is the session's own and the only one: a store has one (`lignin_store::cleaner`). | 4, 5, 9, 10, 13, 14, 16, 17, 19, 20 |
 //!
 //! That is four threads of the test, the second scope's among them, and
 //! three of background work.
@@ -84,13 +83,10 @@ use std::{
 
 use lignin_format::{CommitVersion, PageId};
 use lignin_store::{
-    cleaner::{BothOwners, Cleaner, CleanerConfig, CleanerState, CleanerStats},
+    cleaner::{CleanerConfig, CleanerStats},
     flush::FlushConfig,
 };
-use lignin_tree::{
-    flat::{FlatOwners, FlatTree},
-    value::TreeOwners,
-};
+use lignin_tree::flat::FlatTree;
 
 use self::{
     history::History,
@@ -789,9 +785,17 @@ impl Drop for Failing<'_> {
     }
 }
 
-/// What the cleaner of an epoch did, and the errors it reported.
-fn clean<'a>(db: &'a Db, state: &'a CleanerState) -> Cleaner<'a> {
-    Cleaner::new(db.shared.write_back(), state).with_stats(&db.shared.store.stats)
+/// How the cleaner of an epoch cleans: the session's own cleaner, which
+/// [`Db::open`] starts, with segments as small as write-back's. A store
+/// has one cleaner (`lignin_store::cleaner`, "What the caller does"), so
+/// the test runs none of its own beside it.
+fn stress_cleaner() -> CleanerConfig {
+    CleanerConfig {
+        min_segment_len: 16 << 10,
+        segment_len: 128 << 10,
+        idle: Duration::from_millis(1),
+        ..CleanerConfig::new()
+    }
 }
 
 /// Waits until `done` says so, and fails the test after two minutes.
@@ -820,7 +824,10 @@ fn epoch(
     // in some.
     let pool =
         [1usize << 20, 2 << 20, 6 << 20][(mix(config.seed, &number.to_le_bytes()) % 3) as usize];
-    let options = stress_options(config.syncs, pool);
+    let options = Options {
+        cleaner: Some(stress_cleaner()),
+        ..stress_options(config.syncs, pool)
+    };
     let home = dir.join("db");
     let db = Db::open(&home, &options).unwrap_or_else(|error| panic!("the database: {error}"));
     if number == 0 {
@@ -851,13 +858,7 @@ fn epoch(
         forced: &forced,
         seed: mix(config.seed, &number.to_be_bytes()),
     };
-    let cleaner_state = CleanerState::new(CleanerConfig {
-        min_segment_len: 16 << 10,
-        segment_len: 128 << 10,
-        idle: Duration::from_millis(1),
-        ..CleanerConfig::new()
-    });
-    let cleaner_errors = Mutex::new(Vec::new());
+    let cleaner_state = &db.shared.store.cleaner;
     let before = (
         get(&tally.looks),
         get(&tally.outside),
@@ -866,33 +867,15 @@ fn epoch(
     );
     let (block_writer, outside_writer) = (&mut writers.0, &mut writers.1);
     thread::scope(|threads| {
-        let (run, options, cleaner_state, cleaner_errors) =
-            (&run, &options, &cleaner_state, &cleaner_errors);
-        threads.spawn(move || {
-            let _failing = Failing(run.stop);
-            let store = &*run.db.shared.store;
-            let steps = run.db.shared.steps();
-            let cleaner = clean(run.db, cleaner_state);
-            cleaner.run(
-                |cleaner| {
-                    let owners = BothOwners(
-                        TreeOwners::new(store.loader(), &store.pool, store.page_size, &steps),
-                        FlatOwners::new(store.loader(), &store.pool, store.config(), &steps),
-                    );
-                    cleaner.pass_values(&owners)
-                },
-                |error| lock(cleaner_errors).push(error.to_string()),
-            );
-        });
-        // The cleaner's loop ends when the epoch does, however it ends.
-        struct Stop<'a, 'c>(Cleaner<'c>, &'a AtomicBool);
-        impl Drop for Stop<'_, '_> {
+        let (run, options) = (&run, &options);
+        // The epoch's threads end when it does, however it ends.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
             fn drop(&mut self) {
-                self.1.store(true, Ordering::Release);
-                self.0.stop();
+                self.0.store(true, Ordering::Release);
             }
         }
-        let _stop = Stop(clean(run.db, cleaner_state), run.stop);
+        let _stop = Stop(run.stop);
         threads.spawn(move || {
             let _failing = Failing(run.stop);
             reader(run);
@@ -928,15 +911,6 @@ fn epoch(
                     && cleaner_state.stats().value_passes >= 3)
         });
     });
-    let cleaner_errors = cleaner_errors.into_inner().expect("the errors");
-    assert!(cleaner_errors.is_empty(), "the cleaner: {cleaner_errors:?}");
-    let cleaner = clean(&db, &cleaner_state);
-    let cleaned = cleaner_state.stats();
-    assert_eq!(
-        (cleaned.errors, cleaned.segments_unreadable),
-        (0, 0),
-        "{cleaned:?}"
-    );
 
     // Everything that was dropped is reclaimed. A page that the latest
     // commit wrote is freed after the next one, so commits are made until
@@ -950,24 +924,37 @@ fn epoch(
         tick(&db, history, round);
         add(&tally.ticks, 1);
     }
-    cleaner.finish().expect("the cleaner's files are closed");
+    // The threads of the database are ended before their counts are
+    // read: the cleaner made passes beside those commits too, and nothing
+    // of the background work failed up to its last turn.
+    halt_background(&db);
     let stats = db.stats();
     assert_eq!(stats.reclaimed.given_up, 0, "{stats}");
     assert_eq!(
         (
             stats.background.write_back_errors,
-            stats.background.reclaim_errors
+            stats.background.reclaim_errors,
+            stats.background.cleaner_errors
         ),
-        (0, 0),
+        (0, 0, 0),
         "the background work: {:?}\n{stats}",
         stats.background
+    );
+    let cleaned = cleaner_state.stats();
+    assert_eq!(
+        (
+            cleaned.errors,
+            cleaned.segments_unreadable,
+            cleaned.segments_gone
+        ),
+        (0, 0, 0),
+        "{cleaned:?}"
     );
     assert_eq!(stats.pins, 0, "{stats}");
     assert!(stats.reopen.is_none(), "{stats}");
 
-    // The store at rest: the threads of the database are ended, and the
-    // checker reads everything of the latest version.
-    halt_background(&db);
+    // The store at rest: the checker reads everything of the latest
+    // version.
     let latest = db.version();
     let report = verify(&db, Scope::Still, latest);
     sound(&report, "the store is not sound at rest");
@@ -994,6 +981,7 @@ fn epoch(
     );
     // What a close does once the threads are ended, and the next session.
     db.shared.finish_reclaiming();
+    (db.shared.cleaner().finish()).expect("the cleaner's files are closed");
     (db.shared.write_back().finish()).expect("the checkpoint of the close");
     drop(db);
     cleaned

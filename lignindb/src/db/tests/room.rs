@@ -45,7 +45,7 @@ const SLACK: u64 = 8 << 10;
 
 /// A commit that writes every value of 24 keys again: what it wrote the
 /// last time is dead from then on.
-fn rewrite(state: &State) -> OwnedBatch {
+pub(super) fn rewrite(state: &State) -> OwnedBatch {
     if !state.has(1) {
         return first(state);
     }
@@ -263,7 +263,6 @@ fn said(reserve: u64, found: &Found) -> String {
 }
 
 #[test]
-#[ignore = "a value-log file that write-back gave up is not closed until a reopen (D-209): STORE-06-F3 removes this"]
 fn a_full_device_gives_room_back_through_the_reserve_and_not_without_it() {
     let without = run(0);
     println!("{}", said(0, &without));
@@ -287,7 +286,6 @@ fn a_full_device_gives_room_back_through_the_reserve_and_not_without_it() {
 /// ladder with which the session resumes and the reserve is filled again,
 /// on the database of these runs. Every reserve above it does too.
 #[test]
-#[ignore = "a value-log file that write-back gave up is not closed until a reopen (D-209): STORE-06-F3 removes this"]
 fn how_much_room_the_engine_needs_to_give_room_back() {
     let ladder = [1u64, 4, 16, 32, 64, 128, 256, 384, 512, 1024].map(|kib| kib << 10);
     let mut least = None;

@@ -611,3 +611,179 @@ fn a_checkpoint_whose_log_turn_is_refused_its_start_record_answers_with_what_the
         "{whole} runs left the whole record and {cut} less"
     );
 }
+
+/// A device that keeps what it refuses: it writes the start record of
+/// each file the log turns to, and every item, and answers that it has no
+/// room. The log finds each start record whole in its file, so each turn
+/// is made, to a file that takes no item. A table checkpoint rolls such
+/// a log before its mark, in vain, and fails with what the device
+/// answered, by name: nobody is told only that the log has no file that
+/// takes items.
+#[test]
+fn a_checkpoint_that_rolls_its_log_in_vain_fails_with_what_the_device_answered() {
+    use std::error::Error;
+
+    use crate::{
+        segment::tests::sim::{db_dir, shared, sim_fs},
+        wal::{
+            tests::faults::{Lies, Swapping},
+            LogError,
+        },
+    };
+
+    let fs = sim_fs(SimConfig::new(61));
+    let lies = Arc::new(Lies::default());
+    let vfs: Arc<dyn Vfs> = Arc::new(Swapping {
+        inner: shared(&fs),
+        lies: lies.clone(),
+    });
+    let db = Db::create(
+        vfs,
+        db_dir(),
+        FlushConfig::new(Db::SIZE),
+        LogOptions::default(),
+    );
+    db.commit(&[insert((1, 1), b"a", inline(b"one"))]);
+    installed(db.wb().checkpoint().expect("a first checkpoint"));
+    db.commit(&[hash((1, 1), 1)]);
+    assert_eq!(db.log.refusal().map(|error| error.to_string()), None);
+
+    *lies.kept_and_refused.lock().expect("the lie") = true;
+    let error = db
+        .wb()
+        .checkpoint()
+        .expect_err("a mark in a log that takes no item");
+    assert!(
+        matches!(error, FlushError::Log(LogError::NoActiveFileSince { .. })),
+        "{error}"
+    );
+    let mut cause: &dyn Error = &error;
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    let cause = cause
+        .downcast_ref::<std::io::Error>()
+        .expect("the file layer's error");
+    assert_eq!(cause.kind(), std::io::ErrorKind::StorageFull, "{error}");
+    assert!(error.to_string().contains("no room"), "{error}");
+    assert!(db.log.refusal().is_some());
+
+    // With a device that takes what it is given, the next checkpoint
+    // rolls the log and is installed, and the log keeps no refusal.
+    *lies.kept_and_refused.lock().expect("the lie") = false;
+    let (covers, ..) = installed(db.wb().checkpoint().expect("a checkpoint"));
+    assert_eq!(covers, db.latest());
+    assert_eq!(db.log.refusal().map(|error| error.to_string()), None);
+    db.check_cold();
+}
+
+/// A table checkpoint looks for a file for its mark while appends of
+/// another fail beside it: while its pass writes a page, and after each
+/// roll it makes, a page step of another is refused its record, so the
+/// log has no file again. After the last roll the checkpoint fails with
+/// what the device answered the append that left the log so, as the log
+/// had it when it was found with no file. A roll that another makes
+/// right after that look, and that gives the log a file, does not turn
+/// the error into one that names no cause.
+#[test]
+fn a_checkpoint_fails_with_the_cause_it_found_though_the_log_is_rolled_beside_it() {
+    use std::{cell::RefCell, rc::Rc};
+
+    use lignin_io::sim::{Fault, FaultRule, OpKind};
+
+    use crate::{
+        flush::{
+            checkpoint::{AtTheMark, AT_THE_MARK, MARK_ROLLS},
+            write_back::AFTER_THE_LOOK,
+        },
+        segment::{
+            tests::sim::{db_dir, shared, sim_fs},
+            FileNames,
+        },
+        wal::LogError,
+    };
+
+    let fs = sim_fs(SimConfig::new(61));
+    let config = FlushConfig::new(Db::SIZE);
+    let db = Arc::new(Db::create(
+        shared(&fs),
+        db_dir(),
+        config,
+        LogOptions::default(),
+    ));
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    // The checkpoint takes its mark in the file the log is in.
+    db.state.checkpoints.lock().expect("the checkpoints").turned = true;
+
+    // A page step of another, beside the checkpoint: the cell of the
+    // value is to be given another pointer, and the record of that step
+    // is refused in the file the log ends in. Nothing is installed, and
+    // the log has no file that takes items.
+    let refused_step = {
+        let fs = fs.clone();
+        move |db: &Db| {
+            let file = db.log.end().expect("the log has a file").file();
+            let path = FileNames::WAL.path(db_dir(), file);
+            let record = FaultRule::new(Fault::Enospc).on(OpKind::Append).at(&path);
+            fs.add_rule(record.torn_append(false));
+            let from = db.pointer(page(1), slot(1));
+            let to = ValuePointer::new(from.file(), from.offset() + 1, from.value_len());
+            let to = to.expect("a pointer");
+            let step = ValueMove::in_tree(page(1), slot(1), ValuePlace::Placed(from), to);
+            let mut bytes = Vec::new();
+            step.expect("a move").write(&mut bytes).expect("a record");
+            let error = db.wb().append_change(&bytes);
+            let error = error.expect_err("the record of the step is refused");
+            assert!(matches!(error, LogError::TakenBack { .. }), "{error}");
+            db.log.settle().expect("the log is settled");
+            assert!(db.log.refusal().is_some(), "the record was taken");
+            path
+        }
+    };
+    let refused = Rc::new(RefCell::new(Vec::new()));
+    // The first of them comes while the pass of the checkpoint writes
+    // the page, with the value placed: the pass does not fail by it.
+    AFTER_THE_LOOK.with(|hook| {
+        let (db, refused, refused_step) = (db.clone(), refused.clone(), refused_step.clone());
+        *hook.borrow_mut() = Some(Box::new(move |_| {
+            refused.borrow_mut().push(refused_step(&db));
+        }));
+    });
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let hook = {
+        let (db, refused, seen) = (db.clone(), refused.clone(), seen.clone());
+        move |at: AtTheMark| {
+            seen.borrow_mut().push(at);
+            match at {
+                AtTheMark::Rolled => {
+                    assert!(db.log.refusal().is_none(), "a roll left the refusal");
+                    refused.borrow_mut().push(refused_step(&db));
+                }
+                AtTheMark::GivenUp => {
+                    assert!(db.wb().roll_log().expect("a roll beside the checkpoint"));
+                    assert!(db.log.refusal().is_none(), "a roll left the refusal");
+                }
+            }
+        }
+    };
+    AT_THE_MARK.with(|at| *at.borrow_mut() = Some(Box::new(hook)));
+    let error = db.wb().checkpoint();
+    AT_THE_MARK.with(|at| *at.borrow_mut() = None);
+
+    let error = error.expect_err("a mark in a log that takes no item");
+    let mut expected = vec![AtTheMark::Rolled; MARK_ROLLS];
+    expected.push(AtTheMark::GivenUp);
+    assert_eq!(*seen.borrow(), expected);
+    assert_eq!(refused.borrow().len(), MARK_ROLLS + 1);
+    let FlushError::Log(LogError::NoActiveFileSince { path, source }) = &error else {
+        panic!("{error}");
+    };
+    assert_eq!(Some(path), refused.borrow().last(), "{error}");
+    assert_eq!(source.kind(), std::io::ErrorKind::StorageFull, "{error}");
+
+    // The log has a file again, and the next checkpoint is installed.
+    let (covers, ..) = installed(db.wb().checkpoint().expect("a checkpoint"));
+    assert_eq!(covers, db.latest());
+    assert_eq!(db.pointers(page(1)).len(), 1, "the value is placed");
+    db.check_cold();
+}

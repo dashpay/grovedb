@@ -3,7 +3,11 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::{atomic::AtomicBool, Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Condvar, Mutex, MutexGuard, PoisonError,
+    },
+    time::{Duration, Instant},
 };
 
 use lignin_format::{CommitVersion, FileId};
@@ -15,7 +19,7 @@ use super::{
 use crate::{
     alloc::Epoch,
     flush::trim_bound::TrimBound,
-    segment::SegmentWriter,
+    segment::{SegmentWriter, SyncRecord},
     values::{ChangeMark, Retired, ValueWriter},
 };
 
@@ -98,6 +102,9 @@ pub struct CleanerState {
     pub(super) config: CleanerConfig,
     pub(super) counters: Counters,
     pub(super) work: Mutex<Work>,
+    /// The segment store's record of each segment that the cleaner has
+    /// moved blocks into and that is not sealed, or whose sync failed.
+    pub(super) written: Mutex<Vec<SyncRecord>>,
     /// What the last read of the page table found.
     pub(super) space: Mutex<Space>,
     pub(super) wake: Mutex<bool>,
@@ -130,6 +137,7 @@ impl CleanerState {
             config,
             counters: Counters::default(),
             work: Mutex::default(),
+            written: Mutex::default(),
             space: Mutex::default(),
             wake: Mutex::new(false),
             woken: Condvar::new(),
@@ -146,7 +154,26 @@ impl CleanerState {
 
     /// What the cleaner has done so far.
     pub fn stats(&self) -> CleanerStats {
-        self.counters.snapshot()
+        let failed = lock(&self.written)
+            .iter()
+            .filter(|segment| segment.failed())
+            .count();
+        CleanerStats {
+            segments_not_durable: failed as u64,
+            ..self.counters.snapshot()
+        }
+    }
+
+    /// Notes that the cleaner moves blocks into the segment of `record`.
+    pub(super) fn writes(&self, record: SyncRecord) {
+        lock(&self.written).push(record);
+    }
+
+    /// Gives up the record of the segment `file`, which was sealed or
+    /// was synced as a whole just now with its writer still held: no
+    /// sync of it has failed, and none can fail any more.
+    pub(super) fn wrote(&self, file: FileId) {
+        lock(&self.written).retain(|segment| segment.file_id() != file);
     }
 
     /// What the segments held when a pass last read the page table
@@ -158,5 +185,39 @@ impl CleanerState {
     pub(super) fn wake(&self) {
         *lock(&self.wake) = true;
         self.woken.notify_all();
+    }
+
+    /// The sleep of the background loop between two turns: until it is
+    /// woken or its idle time has passed after a turn in which no pass
+    /// failed (`failed_wait` is `None`), and for `failed_wait` after one in
+    /// which a pass did, whoever wakes it. The end of the loop ends both.
+    pub(super) fn sleep(&self, failed_wait: Option<Duration>) {
+        let stopping = || self.stopping.load(Ordering::Acquire);
+        let mut woken = lock(&self.wake);
+        match failed_wait {
+            None => {
+                if !*woken && !stopping() {
+                    let (next, _) = self
+                        .woken
+                        .wait_timeout(woken, self.config.idle)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    woken = next;
+                }
+            }
+            Some(wait) => {
+                let began = Instant::now();
+                while !stopping() {
+                    let Some(left) = wait.checked_sub(began.elapsed()) else {
+                        break;
+                    };
+                    let (next, _) = self
+                        .woken
+                        .wait_timeout(woken, left)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    woken = next;
+                }
+            }
+        }
+        *woken = false;
     }
 }

@@ -249,7 +249,9 @@
 //! commit: a turn of write-back does, a table checkpoint, the creation of
 //! a checkpoint of the database. A session in one of these states would
 //! take commits that can never become durable, keep a log that only
-//! grows, or refuse every commit for a failure that is over.
+//! grows, or refuse every commit for a failure that is over. A log that
+//! has used the last of its file ids ends the session in the same way
+//! ([`Reopen::LogFileIdsUsedUp`], DF12).
 //!
 //! So every commit looks at the store before it begins and after it has
 //! ended, and so does [`Db::reopen`]: the session has ended from the first
@@ -332,7 +334,9 @@
 //!   write-back's last checkpoint names them.
 //!
 //! An error of any of them changes nothing that is committed. It is counted
-//! and kept as text ([`DbStats::background`]).
+//! and kept as text ([`DbStats::background`]). After a turn that failed,
+//! each of the three waits before its next turn, whoever wakes it
+//! (`disk-full-and-backup.md`, DF12).
 //!
 //! **Closing waits for a reclaiming that holds cells.** From the moment
 //! the record of a dropped Merk is out of the directory, the cells that
@@ -716,11 +720,12 @@ impl fmt::Display for DbStats {
         writeln!(
             f,
             "cleaner: {} blocks moved and {} segments dropped, {} values moved and {} value-log \
-             files dropped",
+             files dropped, {} segments not durable",
             self.cleaner.blocks_moved,
             self.cleaner.segments_dropped,
             self.cleaner.values_moved,
-            self.cleaner.value_files_dropped
+            self.cleaner.value_files_dropped,
+            self.cleaner.segments_not_durable
         )?;
         writeln!(
             f,

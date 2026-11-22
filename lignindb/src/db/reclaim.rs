@@ -2,9 +2,10 @@
 //! the directory records and the flat pages of dropped subtrees out of the
 //! store (`transactions.md` CL6, `lignin_tree::drop`).
 
-use std::{collections::HashSet, thread};
+use std::{collections::HashSet, sync::atomic::Ordering, thread};
 
 use lignin_format::CommitVersion;
+use lignin_store::flush::FlushConfig;
 use lignin_tree::{
     directory::{Directory, Dropped},
     drop::{Busy, DropError, FlatDrop, FlatReclaimed, Progress, Reclaim, Reclaimer, Wait},
@@ -140,6 +141,10 @@ pub struct Round {
     /// Whether the round left one of them at its bound of calls, with
     /// nothing in its way: the next round goes on at once.
     pub more: bool,
+    /// Whether something of this round failed: a call of the reclaimer,
+    /// or a read the round makes for one. A call that a page held back
+    /// is no failure.
+    pub failed: bool,
 }
 
 /// What a round does after one call of the reclaimer.
@@ -243,6 +248,11 @@ impl Shared {
         let store = &*self.store;
         let mut work = lock(&store.reclaiming);
         let work = &mut *work;
+        // Every failure of a round is counted under the lock on the
+        // work, so what is counted between here and the end of the round
+        // is this round's, whoever makes a round beside it.
+        let failures = || store.troubles.reclaim.load(Ordering::Relaxed);
+        let failed_before = failures();
         for (version, dropped) in lock(&store.dropped).drain(..) {
             work.merks.push(MerkJob {
                 reclaim: Reclaim::new(dropped),
@@ -342,6 +352,7 @@ impl Shared {
         }
         round.waiting = (work.merks.len() + work.flats.len()) as u64;
         round.holds_cells = work.holds_cells();
+        round.failed = failures() != failed_before;
         *lock(&store.reclaimed) = work.stats();
         round
     }
@@ -413,22 +424,63 @@ impl Shared {
     /// version (`Reclaim::wake`), and one every `idle` while nothing wakes
     /// it. When the session ends, whoever closes it goes on with the
     /// reclaimings that hold cells ([`Self::finish_reclaiming`]).
+    ///
+    /// **A round that failed does not bring the next round forward**, as
+    /// in write-back's loop (`lignin_store::flush::WriteBack::run`): after
+    /// a round in which a call of the reclaimer failed the thread waits
+    /// `idle`, and twice as long after each further such round in a row,
+    /// up to `FlushConfig::max_failed_wait` of the session's write-back,
+    /// whoever wakes it. The wait is `idle` again after the first round in
+    /// which nothing fails. A call that a page held back is no failure.
     pub(super) fn reclaim_loop(&self, idle: std::time::Duration) {
         let store = &*self.store;
         store.signal.attach(thread::current());
+        // The rounds in a row, up to the last one, in which a call failed.
+        let mut failed_rounds = 0_u32;
         while !store.signal.stopping() {
-            let round = self.reclaim_round(false);
+            #[cfg(test)]
+            store.signal.rounds.fetch_add(1, Ordering::Relaxed);
+            let (round, failed_wait) = self.paced_round(idle, &mut failed_rounds);
             if store.signal.stopping() {
                 break;
             }
-            // A round goes on at once only where it left a reclaiming at
-            // its bound of calls. Everything else waits for a commit, a
-            // reader or a write transaction, which wake the thread or are
-            // asked for again after the idle time.
-            if !round.more {
-                thread::park_timeout(idle);
+            match failed_wait {
+                Some(wait) => store.signal.sleep(wait),
+                // A round goes on at once only where it left a reclaiming
+                // at its bound of calls. Everything else waits for a
+                // commit, a reader or a write transaction, which wake the
+                // thread or are asked for again after the idle time.
+                None if !round.more => {
+                    #[cfg(test)]
+                    store.signal.idled.fetch_add(1, Ordering::Relaxed);
+                    thread::park_timeout(idle)
+                }
+                None => {}
             }
         }
+    }
+
+    /// One round of the thread that reclaims, and how long the thread
+    /// waits after it, whoever wakes it: `None` after a round in which no
+    /// call of the reclaimer failed. `failed_rounds` is the thread's count
+    /// of the rounds in a row in which one did.
+    pub(super) fn paced_round(
+        &self,
+        idle: std::time::Duration,
+        failed_rounds: &mut u32,
+    ) -> (Round, Option<std::time::Duration>) {
+        let store = &*self.store;
+        let round = self.reclaim_round(false);
+        if !round.failed {
+            *failed_rounds = 0;
+            return (round, None);
+        }
+        *failed_rounds = failed_rounds.saturating_add(1);
+        let pacing = FlushConfig {
+            idle,
+            ..store.flush.config()
+        };
+        (round, Some(pacing.wait_after_failure(*failed_rounds)))
     }
 
     /// What is done for the reclaiming when a session ends: every

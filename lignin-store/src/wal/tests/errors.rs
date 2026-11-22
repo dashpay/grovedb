@@ -228,6 +228,14 @@ fn every_error_says_what_failed_and_where() {
             true,
         ),
         (
+            LogError::NoActiveFileSince {
+                path: path(),
+                source: io(),
+            },
+            &["no file that takes items since", "the disk is gone"],
+            true,
+        ),
+        (
             LogError::Unsettled {
                 path: path(),
                 source: io(),
@@ -292,6 +300,7 @@ fn every_error_says_what_failed_and_where() {
             LogError::Io { .. }
                 | LogError::NotDeleted { .. }
                 | LogError::NotAppended { .. }
+                | LogError::NoActiveFileSince { .. }
                 | LogError::TakenBack { .. }
                 | LogError::Unsettled { .. }
                 | LogError::SyncFailed { .. }
