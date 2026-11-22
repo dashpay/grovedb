@@ -171,7 +171,7 @@ impl<'s> World<'s> {
                 let written = |subtree: &Subtree| {
                     let units = Column::ALL.map(|column| Unit::new(column, *subtree));
                     (model.writes.iter())
-                        .any(|(write, ..)| units.iter().any(|unit| write.touches(*unit)))
+                        .any(|(write, ..)| units.iter().any(|unit| write.indexed(*unit)))
                 };
                 left.cut = left.below.iter().copied().filter(written).collect();
             }
@@ -184,15 +184,6 @@ impl<'s> World<'s> {
             }
             model.writes.push((write, first_write, false));
         }
-        // The write looked at the committed state before it was made.
-        model.look(&self.model.hosts);
-    }
-
-    /// Tells the model of `tx` that the transaction looked at the
-    /// committed state: a test that calls the transaction by itself
-    /// between two commits says so.
-    pub(crate) fn looked(&self, tx: &Tx<'s>) {
-        tx.model.borrow_mut().look(&self.model.hosts);
     }
 
     /// Applies one change of one Merk.
@@ -243,7 +234,12 @@ impl<'s> World<'s> {
                     .collect();
                 let commit = self.model.commit(&writes);
                 for other in others {
+                    // What the other saw of the subtrees at its last look,
+                    // which was before this commit.
+                    let looked = other.txn.looked_at().map(CommitVersion::get);
+                    let saw = looked.map(|at| self.model.hosts_at(at));
                     let mut other = other.model.borrow_mut();
+                    other.look(&saw.unwrap_or_default());
                     other.foreign(commit, &writes);
                     // Its moves are made again over the commit.
                     other.lay(&self.model.hosts);
@@ -325,7 +321,6 @@ impl<'s> World<'s> {
     /// key (RD3, RD5), the committed read of each key (RD10), and a cursor
     /// over each unit of flat records, in both directions (RD6).
     pub(crate) fn check(&self, tx: &Tx<'s>) {
-        self.looked(tx);
         let committed = &self.model.records;
         let model = tx.model.borrow();
         for unit in self.units(tx) {

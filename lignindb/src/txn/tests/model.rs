@@ -321,11 +321,16 @@ pub struct Left {
     /// Every subtree below it, which goes with it: the model works them
     /// out from the hosts of the subtrees that were entered, where the
     /// write is stated, and again where the transaction's writes are
-    /// applied over a commit ([`TxnModel::lay`]).
+    /// applied over a commit ([`TxnModel::lay`]). For the model they go
+    /// with a clear whether or not the cleared Merk has a node. The
+    /// engine's clear of a Merk with no node leaves the subtrees below it
+    /// entered: the model does not tell that case.
     pub below: Vec<Subtree>,
-    /// Those of them that the transaction had written when it stated the
-    /// write, which the write covers in its write set and in the key set
-    /// of its commit. They stay as they were stated.
+    /// Those of them that the transaction had a write under when it
+    /// stated this one ([`Write::indexed`]): with the write's own
+    /// subtree, what the write covers in its write set and in the key
+    /// set of its commit. They stay as they were stated, whatever `below`
+    /// becomes.
     pub cut: Vec<Subtree>,
 }
 
@@ -369,6 +374,19 @@ impl Write {
             Self::Enter(..) | Self::Stated(_) => false,
             Self::Move(moved) => moved.covers(unit.subtree),
             _ => self.unit() == unit,
+        }
+    }
+
+    /// Whether the write set of its transaction has the write under
+    /// `unit`: what a later drop or clear of a subtree above takes for
+    /// written there (CF5). A drop or a clear is under the columns it
+    /// takes of its own subtree and under every column of the subtrees it
+    /// cut, as that was stated, and under no other subtree that went with
+    /// it.
+    pub fn indexed(&self, unit: Unit) -> bool {
+        match self {
+            Self::Leave(left) => left.own(unit) || left.cut.contains(&unit.subtree),
+            _ => self.touches(unit),
         }
     }
 
@@ -510,7 +528,7 @@ pub struct TxnModel {
     pub writes: Vec<(Write, u64, bool)>,
     /// Of the subtrees whose place among the Merks the transaction keeps
     /// ([`Write::watched`]), those that the committed state had below a
-    /// Merk when the transaction last looked at it ([`Self::look`]).
+    /// Merk where the transaction last looked at it ([`Self::look`]).
     pub seen: BTreeSet<Subtree>,
 }
 
@@ -642,12 +660,12 @@ impl TxnModel {
         }
     }
 
-    /// The transaction looked at the committed state, whose subtrees hang
-    /// as `committed` has them: each of its operations does (WT7). Of the
-    /// subtrees whose place it keeps, it saw those there that hang below
-    /// a Merk. Whoever calls the transaction says so: the model is told
-    /// of a commit when it is made, and the transaction learns of it at
-    /// its next call.
+    /// The transaction last looked at the committed state where its
+    /// subtrees hung as `committed` has them: of the subtrees whose place
+    /// it keeps, it saw those there that hang below a Merk. At which
+    /// version a transaction last looked is asked of the engine
+    /// (`WriteTxn::looked_at`); what it saw there is the model's to say
+    /// (`World::commit`).
     pub fn look(&mut self, committed: &Hosts) {
         let watched = self.writes.iter().flat_map(|(write, ..)| write.watched());
         self.seen = watched
@@ -657,10 +675,12 @@ impl TxnModel {
 
     /// Works out again what each drop, clear and move of the transaction
     /// takes, with its writes applied in their order over the committed
-    /// subtrees `committed`: what a layout of the transaction's writes
-    /// over a commit does (WT7). A drop or a clear takes what hangs below
-    /// its subtree there, and a move what [`Moved::lay`] says. What each
-    /// write covers stays as it was stated.
+    /// subtrees `committed`, as a layout of the transaction's writes over
+    /// a commit does (WT7) but for a clear of a Merk with no node
+    /// ([`Left::below`]). A drop or a clear takes what hangs below its
+    /// subtree there, and a move what [`Moved::lay`] says. What each
+    /// write covers in the write set stays as it was stated
+    /// ([`Left::cut`], [`Moved::covered`]).
     pub fn lay(&mut self, committed: &Hosts) {
         let mut hosts = committed.clone();
         for (write, ..) in &mut self.writes {
@@ -689,6 +709,8 @@ pub struct Committed {
     pub version: u64,
     /// Which committed subtree is below which.
     pub hosts: Hosts,
+    /// `hosts` as each version that was committed here left it.
+    pub past: BTreeMap<u64, Hosts>,
 }
 
 impl Committed {
@@ -699,7 +721,15 @@ impl Committed {
             hosted(&mut self.hosts, write);
         }
         self.version += 1;
+        self.past.insert(self.version, self.hosts.clone());
         self.version
+    }
+
+    /// Which committed subtree was below which at `version`: none before
+    /// the first version that was committed here.
+    pub fn hosts_at(&self, version: u64) -> Hosts {
+        let left = self.past.range(..=version).next_back();
+        left.map(|(_, hosts)| hosts.clone()).unwrap_or_default()
     }
 
     /// The items of the Merk `subtree` as a reader of `records` has them.

@@ -512,6 +512,10 @@ pub struct Cursor<'t, 's, C = FlatSide<'s>> {
     seen: Option<(u64, bool)>,
     key: Option<Vec<u8>>,
     way: Way,
+    /// The next change of the prefix that the committed side is read
+    /// under fails, as a read of the directory does: for a test.
+    #[cfg(test)]
+    refuse_place: bool,
 }
 
 impl<'t, 's> Cursor<'t, 's> {
@@ -544,24 +548,23 @@ impl<'t, 's> Cursor<'t, 's> {
         };
         let key = key.clone();
         let key = &key;
+        // One look at what the transaction holds says what is under the
+        // key: its own record, or the record of the cursor's version, and
+        // then under which prefix that version has it.
         let guard = self.txn.path().versions().guard();
-        let reads = self.reads(&guard)?;
-        let unit = self.unit;
-        let own = self
-            .txn
-            .with_set(self.who, self.unit, |set| match set.own(unit, key) {
-                Own::Put(value) => {
-                    out.extend_from_slice(value);
-                    Ok(Some(true))
-                }
-                Own::Deleted => Ok(Some(false)),
-                Own::Unwritten => Ok(None),
-                Own::Node(_) => Err(TxnError::Damaged("a Merk node under a cursor of records")),
-            })??;
-        match own {
-            Some(found) => Ok(found),
-            None if reads => self.side.value(&guard, key, out),
-            None => Ok(false),
+        let pinned = Pinned {
+            opened: &mut self.opened,
+            guard: &guard,
+            at: self.pin.version(),
+            seen: self.seen,
+        };
+        let side = match (self.txn).cursor_record(self.who, self.unit, key, pinned, out)? {
+            Ok(found) => return Ok(found),
+            Err(side) => side,
+        };
+        match self.placed(&guard, side)? {
+            true => self.side.value(&guard, key, out),
+            false => Ok(false),
         }
     }
 }
@@ -711,23 +714,20 @@ impl<'t, 's> MerkCursor<'t, 's> {
             Ok(shown) => return Ok(shown),
             Err(rest) => rest,
         };
-        let reads = self.placed(&guard, side)?;
         let mut found = false;
-        let shown = match reads {
+        let shown = self.placed(&guard, side).and_then(|reads| match reads {
             true => self.side.node(&guard, &key, children, |view| {
                 found = view.is_some();
                 read(view)
             }),
             false => Ok(read(None)),
-        };
+        });
         // The transaction's lock is not held over the cursor's own read,
         // and another thread may have ended the transaction, or had it
-        // forget the lease, meanwhile. So the cursor says what it read
-        // whenever the read was made, and the transaction decides by what
-        // it holds then.
-        if shown.is_ok() {
-            (self.txn).cursor_read(self.side.lease, self.side.at, found);
-        }
+        // forget the lease, meanwhile. So the cursor says what it read,
+        // which is no node where the read failed, and the transaction
+        // decides by what it holds then.
+        (self.txn).cursor_read(self.side.lease, self.side.at, found);
         shown
     }
 }
@@ -891,7 +891,16 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             seen: None,
             key: None,
             way: Way::Forward,
+            #[cfg(test)]
+            refuse_place: false,
         }
+    }
+
+    /// Has the next change of the prefix that the committed side is read
+    /// under fail, as a read of the directory does.
+    #[cfg(test)]
+    pub(crate) fn refuse_place(&mut self) {
+        self.refuse_place = true;
     }
 
     /// Whether the committed side is read: the cursor's version has the
@@ -905,15 +914,16 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     ///
     /// Where the transaction moved the subtree, the committed side is the
     /// records that the cursor's version has under the prefix the subtree
-    /// was taken from, where that version has a subtree entered there and
-    /// the transaction's own writes have not dropped the one it moved,
-    /// and never where a move took a subtree from the cursor's prefix and
-    /// brought none (`WriteTxn::committed_side`). A subtree that no move
-    /// names and that leaves with one is not read
-    /// ([`Opened::leaves_with_a_move`]). Whoever has no frames that show
-    /// the moves is refused where a move decides what is under the
-    /// subtree ([`BatchError::MovedByKey`](super::BatchError)), by the
-    /// directory of the cursor's version (`WriteTxn::cursor_side`).
+    /// was taken from, where the transaction's own writes left the Merk
+    /// the one that version has there, and never where a move took a
+    /// subtree from the cursor's prefix and brought none
+    /// (`WriteTxn::committed_side`). A subtree that no move names and
+    /// that leaves with one is not read ([`Opened::leaves_with_a_move`]).
+    /// Whoever has no frames that show the moves over the cursor's
+    /// version is refused where a move decides what is under the subtree,
+    /// by the directory of that version (`WriteTxn::cursor_side`): one
+    /// that is answered from the write set, and a cursor that was opened
+    /// before a commit which the transaction has taken in since.
     fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
         let pinned = Pinned {
             opened: &mut self.opened,
@@ -931,6 +941,10 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     fn placed(&mut self, guard: &OperationGuard<'s>, side: Sided) -> Result<bool, TxnError> {
         let Sided { left, reads, under } = side;
         if let Some(under) = under.filter(|under| *under != self.side.under()) {
+            #[cfg(test)]
+            if std::mem::take(&mut self.refuse_place) {
+                return Err(TxnError::Damaged("a change of prefix that a test refuses"));
+            }
             self.side.point(guard, under)?;
         }
         if self.seen != Some((left, reads)) {
