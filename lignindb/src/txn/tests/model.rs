@@ -327,10 +327,14 @@ pub struct Left {
     /// entered: the model does not tell that case.
     pub below: Vec<Subtree>,
     /// Those of them that the transaction had a write under when it
-    /// stated this one ([`Write::indexed`]): with the write's own
-    /// subtree, what the write covers in its write set and in the key
-    /// set of its commit. They stay as they were stated, whatever `below`
-    /// becomes.
+    /// stated this one ([`Write::indexed`]). They stay as they were
+    /// stated, whatever `below` becomes. With the write's own subtree
+    /// they are what the write covers in its write set and in the key
+    /// set of its commit, where the write is the one drop or clear of its
+    /// batch. The engine keeps what the drops and clears of one batch cut
+    /// as one list, with the first of them, and the model keeps for each
+    /// its own: for such a batch the two can count the overlap
+    /// differently, by which of its drops and clears a commit meets.
     pub cut: Vec<Subtree>,
 }
 
@@ -382,7 +386,9 @@ impl Write {
     /// written there (CF5). A drop or a clear is under the columns it
     /// takes of its own subtree and under every column of the subtrees it
     /// cut, as that was stated, and under no other subtree that went with
-    /// it.
+    /// it. Asked of every write of the transaction, as a later cut asks
+    /// it, the answer does not depend on which drop or clear of a batch
+    /// the engine keeps the cut with ([`Left::cut`]).
     pub fn indexed(&self, unit: Unit) -> bool {
         match self {
             Self::Leave(left) => left.own(unit) || left.cut.contains(&unit.subtree),

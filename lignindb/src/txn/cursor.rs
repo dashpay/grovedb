@@ -714,21 +714,44 @@ impl<'t, 's> MerkCursor<'t, 's> {
             Ok(shown) => return Ok(shown),
             Err(rest) => rest,
         };
-        let mut found = false;
+        // The transaction's lock is not held over the cursor's own read,
+        // and another thread may have ended the transaction, or had it
+        // forget the lease, meanwhile. So the cursor says what it read
+        // when the read ends, however it ends, and the transaction
+        // decides by what it holds then.
+        let mut told = Told {
+            txn: self.txn,
+            lease: self.side.lease,
+            at: self.side.at,
+            found: false,
+        };
+        let found = &mut told.found;
         let shown = self.placed(&guard, side).and_then(|reads| match reads {
             true => self.side.node(&guard, &key, children, |view| {
-                found = view.is_some();
+                *found = view.is_some();
                 read(view)
             }),
             false => Ok(read(None)),
         });
-        // The transaction's lock is not held over the cursor's own read,
-        // and another thread may have ended the transaction, or had it
-        // forget the lease, meanwhile. So the cursor says what it read,
-        // which is no node where the read failed, and the transaction
-        // decides by what it holds then.
-        (self.txn).cursor_read(self.side.lease, self.side.at, found);
+        drop(told);
         shown
+    }
+}
+
+/// The read of a node that a cursor makes of its own version, once the
+/// transaction has handed it back (`WriteTxn::cursor_node`): the
+/// transaction is told that the read ended, and whether a node was found,
+/// when this goes, however the read ends (`WriteTxn::cursor_read`).
+struct Told<'t, 's> {
+    txn: &'t WriteTxn<'s>,
+    lease: Lease,
+    at: CommitVersion,
+    found: bool,
+}
+
+impl Drop for Told<'_, '_> {
+    fn drop(&mut self) {
+        (self.txn).cursor_read(self.lease, self.at, self.found);
     }
 }
 
@@ -904,9 +927,11 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     }
 
     /// Whether the committed side is read: the cursor's version has the
-    /// subtree entered, and the transaction has not dropped or cleared a
-    /// Merk it is below (`transactions.md` CV9). No record is read under a
-    /// subtree without its entry.
+    /// subtree entered, and the transaction has not taken it with a
+    /// subtree that it dropped, or with a Merk that it cleared
+    /// (`transactions.md` CV9). No record is read under a subtree without
+    /// its entry. `WriteTxn::committed_side` says by what that is
+    /// decided.
     ///
     /// The subtree is opened once, and asked for again whenever the
     /// transaction has dropped or cleared a subtree since, or has taken
@@ -916,9 +941,9 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// records that the cursor's version has under the prefix the subtree
     /// was taken from, where the transaction's own writes left the Merk
     /// the one that version has there, and never where a move took a
-    /// subtree from the cursor's prefix and brought none
-    /// (`WriteTxn::committed_side`). A subtree that no move names and
-    /// that leaves with one is not read ([`Opened::leaves_with_a_move`]).
+    /// subtree from the cursor's prefix and brought none. A subtree that
+    /// no move names and that leaves with one is not read
+    /// ([`Opened::leaves_with_a_move`]).
     /// Whoever has no frames that show the moves over the cursor's
     /// version is refused where a move decides what is under the subtree,
     /// by the directory of that version (`WriteTxn::cursor_side`): one

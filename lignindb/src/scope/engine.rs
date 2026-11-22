@@ -1103,6 +1103,10 @@ impl<'s> WriteTxn<'s> {
     ///   the stated host's, and the later one drops that Merk.
     /// - **The transaction dropped or cleared a subtree, and a commit
     ///   wrote, dropped or cleared one below it.** The drop is met.
+    ///
+    /// A look that fails on a read keeps nothing of where it found the
+    /// subtrees: the next one holds the commits against what the last
+    /// look that was made saw.
     pub(super) fn meet_below(
         &self,
         state: &mut State<'s>,
@@ -1114,9 +1118,7 @@ impl<'s> WriteTxn<'s> {
             return Ok(());
         }
         #[cfg(test)]
-        if std::mem::take(&mut state.refuse_look) {
-            return Err(TxnError::Damaged("a look that a test refuses"));
-        }
+        let refused = std::mem::take(&mut state.refuse_look);
         let State {
             directory,
             set,
@@ -1132,13 +1134,14 @@ impl<'s> WriteTxn<'s> {
             }
         }
         let opened = Opened::at(directory, &self.path, guard, at)?;
-        for (subtree, was) in under.iter_mut() {
+        // Where the subtrees hang now is read before anything is kept of
+        // it: a look that fails on a read has seen none of them.
+        let mut seen = Vec::with_capacity(under.len());
+        for subtree in under.keys() {
             let now: Option<Vec<MerkId>> = opened.lineage(&self.path, guard, subtree)?;
-            if was.is_some() && now != *was {
-                set.meet_subtree(*subtree, at);
-            }
-            *was = now;
+            seen.push((*subtree, now));
         }
+        let mut met = Vec::new();
         let mut leaving: Vec<Subtree> = set.leaving().collect();
         leaving.sort_unstable();
         leaving.dedup();
@@ -1162,11 +1165,25 @@ impl<'s> WriteTxn<'s> {
                         break;
                     }
                     if below {
-                        set.meet_leaving(above, *version);
+                        met.push((above, *version));
                         break;
                     }
                 }
             }
+        }
+        #[cfg(test)]
+        if refused {
+            return Err(TxnError::Damaged("a look that a test refuses"));
+        }
+        for (subtree, now) in seen {
+            let was = under.get_mut(&subtree).expect("a subtree that was read");
+            if was.is_some() && now != *was {
+                set.meet_subtree(subtree, at);
+            }
+            *was = now;
+        }
+        for (above, version) in met {
+            set.meet_leaving(above, version);
         }
         Ok(())
     }
