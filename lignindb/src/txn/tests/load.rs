@@ -1432,8 +1432,10 @@ fn a_root_that_the_transaction_wrote_is_no_conflict_of_a_load() {
 /// subtree that is not entered. A commit outside then clears the Merk
 /// above as well. The load is refused as before, and not as a conflict
 /// that the look would date: the transaction's own clear took the
-/// subtree first. The clear and the load are laid out in one run, and
-/// taken by key in the other.
+/// subtree first. The clear and the first attempt of the load are laid
+/// out in one run and taken by key in the other. The second attempt is
+/// taken by key in both: the commit outside meets the transaction's
+/// clear.
 #[test]
 fn a_clear_of_the_transactions_own_forgets_its_looks() {
     for by_key in [false, true] {

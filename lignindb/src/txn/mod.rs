@@ -185,11 +185,9 @@
 //! it and appended again, for the page its cell is in now. The records
 //! are what they were. The copies that no cell holds are dead space of
 //! the value log. A layout that a refusal stops is not made again to
-//! tell that refusal: the transaction keeps it, and tells it again to a
-//! read or a write that a move decides and to a commit, for as long as
-//! the layout would be the same (`transactions.md` LD4). Where it holds
-//! a load, the layout is not made again for a write it takes afterwards
-//! either, which is then served by key.
+//! tell that refusal: the transaction keeps it, and what is refused
+//! because the layout is stopped is told it from there (`transactions.md`
+//! LD4, which says for how long).
 //!
 //! **A load that is applied where no frames take it has no page then**:
 //! where a write of the transaction is met (WT7b), and for a scope that

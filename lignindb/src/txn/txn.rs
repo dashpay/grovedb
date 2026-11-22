@@ -1120,8 +1120,8 @@ impl<'s> WriteTxn<'s> {
                     // Writes are laid out in their order, so a layout
                     // that was stopped at this version is stopped with
                     // more of them too. Where the transaction holds a
-                    // load, it is not tried again for each write: every
-                    // try lays the loads out again.
+                    // load, it is not tried again for each write: a try
+                    // lays out again every load that it comes to.
                     state.stuck = Some((at, state.set.ops()));
                 }
             }
@@ -1395,8 +1395,8 @@ impl<'s> WriteTxn<'s> {
         }
         if let Some((at, _)) = state.stuck.filter(|(_, ops)| *ops == state.set.ops()) {
             // The refusal that stopped the layout is told again as it was
-            // kept: frames that are made again would lay every load out
-            // again, and append its values again.
+            // kept: frames that are made again lay out every load they
+            // come to, and append its values again.
             if let Some(refused) = state.kept_refusal() {
                 return refused;
             }
