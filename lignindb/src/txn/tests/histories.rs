@@ -8,7 +8,8 @@
 //! model after each step that writes through it, after a rollback, after
 //! a look at the commits that failed, and after some of the commits
 //! beside it: each record and each node by its key and by a cursor, each
-//! subtree as the directory shows it, and each refusal by its kind. A
+//! refusal by its kind, and, where no commit has met the transaction and
+//! its writes are laid out, each subtree as the directory shows it. A
 //! cursor that is kept is read at later calls, and each of its answers is
 //! held against the records of the version it was opened on with the
 //! writes of its transaction over them. Every commit is held against the
@@ -21,8 +22,10 @@
 //! A history has none of these: an enter of a subtree if it is absent; a
 //! commit of a Merk with no node that has a subtree below it, which is no
 //! state of a grove; a move to another Merk than the one that hosted the
-//! subtree; a scope that is open beside another, or one that is rolled
-//! back; a call of another thread.
+//! subtree; a write that keeps the value of a node by the handle that a
+//! read through a cursor gave; a scope that is open beside another, or
+//! one that is rolled back; a call of another thread. No history asks
+//! whether a transaction watches the commits.
 
 use std::{ops::Bound, rc::Rc};
 

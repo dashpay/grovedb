@@ -1470,7 +1470,7 @@ together with the differences that are not about conflicts.
 | Data loaded outside *T* under keys *T* wrote | never a conflict: file ingestion is invisible to the check (case A18) | `Conflict` (CF5) | no: devnet seeding loads a subtree under which *T* has written nothing (P-30) |
 | A foreign commit writes a Merk node between *T*'s read of it and *T*'s write of it, and *T*'s write keeps the node's value | success: the node holds the value *T* read, and the foreign value is lost (case A19) | `Conflict` (CF2a) | only with two writers of one Merk at a time |
 | A foreign commit writes the node that hosts a subtree between *T*'s read of that node and *T*'s move of the subtree | success: the copy under the new path holds the records *T* read, under the hash *T* states for them, and what the foreign commit wrote under the old path is deleted with it | the batch is refused as a conflict (`ValueTaken`, CF10) | only with two writers of one Merk at a time |
-| A foreign commit moves a subtree away or drops it, so that nothing is entered under its prefix, and *T*, of whose writes that commit met none and whose writes are laid out when it calls (WT7a), then writes into it | success: *T*'s records are under the old prefix, which no element leads to | the batch is refused: as a conflict (`ValueTaken`) where *T* holds the key set of that commit, and as `NotEntered` where it does not (CF10) | only with two writers at a time |
+| A foreign commit moves a subtree away or drops it, so that nothing is entered under its prefix, and *T* then writes into it by a call that lays the writes of *T* out over the latest version (WT7a) | success: *T*'s records are under the old prefix, which no element leads to | the batch is refused: as a conflict (`ValueTaken`) where *T* holds the key set of that commit, and as `NotEntered` where it does not (CF10) | only with two writers at a time |
 | A foreign commit meets a write of *T*, and *T* then states a move, reads or writes where a move of its own decides, or drops or clears a subtree while it holds a move | the call is served, and the commit fails with `Busy` | the call is refused as a conflict (`MovedByKey`, MV7), and the commit fails with `Conflict` | only with two writers at a time |
 | A foreign commit is published while *T* holds a cursor, and *T* then reads through that cursor where a move that it holds decides, with none of its writes met by a commit when it calls | the call is served: an iterator reads the snapshot it was made on under the writes of *T* | the call is refused, with no conflict (MV7): with the refusal that stops the layout of the writes of *T* over the latest version where one does, and with `MoveBeside` otherwise | only with two writers at a time |
 
@@ -2554,7 +2554,7 @@ document or of the engine.
 | D6 | Records loaded outside *T* under a key *T* wrote | success | `Conflict` (CF9) | devnet seeding only; not reached there |
 | D7 | A Merk node that a foreign commit wrote between *T*'s read of it and *T*'s write of it with its value kept | success; the node holds the value *T* read, and the foreign write is lost | `Conflict` (CF2a, CF9); where the foreign commit took the node away, the write is refused, as a conflict where the engine can tell (`ValueTaken`, CF2a) | needs two writers of one Merk at a time. A caller that retries on a conflict sees one where RocksDB would have dropped the other writer's value. |
 | D8 | A move of a subtree whose host a foreign commit wrote between *T*'s read of the host and *T*'s batch | success; the copy holds what *T* read, and the foreign write under the old path is lost | the batch is refused as a conflict, and the transaction stays open (`ValueTaken`, CF10) | a move of LigninDB re-keys the Merk as it is at the batch (`tree-layout.md` D5). Needs two writers at a time; a caller that retries makes the move again from a new read. |
-| D9 | A write into a subtree that a foreign commit moved away or dropped, so that nothing is entered under its prefix, by a transaction of whose writes that commit met none and whose writes are laid out at the call (WT7a) | success; the records are under the old prefix, which no element leads to | the batch is refused, as a conflict where the engine can tell (CF10) | needs two writers at a time. RocksDB then holds records that only a read of the prefix made directly returns, or a caller that makes the path again, as in D3. |
+| D9 | A write into a subtree that a foreign commit moved away or dropped, so that nothing is entered under its prefix, by a call that lays the writes of its transaction out over the latest version (WT7a) | success; the records are under the old prefix, which no element leads to | the batch is refused, as a conflict where the engine can tell (CF10) | needs two writers at a time. RocksDB then holds records that only a read of the prefix made directly returns, or a caller that makes the path again, as in D3. |
 | D10 | A move that *T* states, a read or a write where a move of *T* decides, or a drop or a clear by a *T* that holds a move, after a foreign commit has met a write of *T* | served; the commit fails | refused as a conflict (`MovedByKey`, MV7); the commit fails | needs two writers at a time. The transaction fails on both engines, on LigninDB one step earlier. |
 | D11 | A read through a cursor of *T* that was opened before a foreign commit, where a move of *T* decides what is under the cursor's subtree and no commit has met a write of *T* when the call is made | served; an iterator reads the snapshot it was made on under the writes of *T* | refused, with no conflict (MV7): with the refusal that stops the layout of the writes of *T* over the latest version where one does, and with `MoveBeside` otherwise. The commit of *T* is decided as before | a move of LigninDB is laid out over the latest version, and not over the one that the cursor reads. Needs two writers at a time, and a cursor that is held across the other's commit. A caller of LigninDB itself meets it with one writer too, where it keeps a cursor across the commit of the cursor's own transaction and uses the transaction again; GroveDB ends its transaction with the commit |
 
@@ -2687,10 +2687,11 @@ same result.
   that cleared the Merk while it had no node and then moved it with the
   subtree below it, alone and with an enter of that Merk if it is absent
   before its node is removed or in the batch of the clear; one that
-  enters a Merk with nodes if it is absent and then clears it; one that
-  drops a Merk which was committed with no node and a subtree below it;
-  one that clears the moved Merk with its nodes, before the move and
-  after it; and what another transaction reads after the commit
+  clears the moved Merk with its nodes, before the move and after it;
+  and what another transaction reads after the commit. With no move,
+  what a clear and a drop take below their subtree: a clear after an
+  enter of a Merk with nodes if it is absent, and a drop of a Merk that
+  was committed with no node and a subtree below it
   (`lignindb/src/txn/tests/moves.rs`).
 - T-MV2: after a move the directory and every flat column hold, record for
   record, what they hold where the subtree was written under the new
@@ -2765,7 +2766,9 @@ same result.
   test runs 40 histories of 160 steps; the environment names the seeds
   and the length of a longer run. No history has an enter of a subtree
   if it is absent, a commit of a Merk with no node above a subtree, a
-  move to another Merk, a scope beside another, or a second thread.
+  move to another Merk, a write that keeps a node's value by the handle
+  of a cursor's read, a scope beside another, or a second thread, and
+  none asks whether a transaction watches the commits.
 
 **Rebase (TXN-03)**
 
