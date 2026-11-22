@@ -3311,6 +3311,91 @@ fn two_merks_that_change_places_take_what_is_known_of_their_unlinked_records() {
     world.check(&reader);
 }
 
+/// An unlinked record that a cursor shows has no handle, and its read
+/// dates nothing: it answers for no keep (`MerkWrite`, "Unlinked
+/// records"). A cursor shows a committed node, whose handle is kept, and
+/// comes to stand on an unlinked record of the Merk. The transaction is
+/// rolled back, and the handle ends with it. The cursor then reads the
+/// record, and while the caller has it another thread writes the node
+/// with its value kept by the handle from before the rollback. The keep
+/// is taken to be met (CF2a), and the commit is a conflict.
+#[test]
+fn a_record_that_a_cursor_shows_with_no_handle_answers_for_no_handle_from_before_a_rollback() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    alone(&mut world);
+    // The nodes of the tree of the Merk, without the record beside it.
+    let tree = |world: &World<'_>, tx: &Tx<'_>| {
+        let mut tree = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(ROOT)));
+        tree.remove(&b"u"[..]);
+        tree
+    };
+    let made = world.begin();
+    let held = tree(&world, &made);
+    let items = model::Committed::items(&held);
+    let mut merk = OwnedMerk::change(sub(ROOT), &held, &items);
+    merk.root = Some(model::records(&items).0);
+    merk.nodes.push((b"u".to_vec(), loose(7), true));
+    let batch = OwnedBatch {
+        merks: vec![merk],
+        ..OwnedBatch::default()
+    };
+    let applied = world
+        .apply(&made, &batch)
+        .expect("a record that no node links");
+    assert_eq!(applied.unlinked.len(), 1);
+    assert!(committed(world.commit(made, &[])));
+
+    let tx = world.begin();
+    let mut cursor = tx.txn.merk_cursor(sub(ROOT)).expect("a cursor");
+    cursor.seek(b"x").expect("a seek");
+    let before = cursor.node(handle_of).expect("the node is read");
+    assert!(before.is_some());
+    world.write(&tx, vec![put(aux(ROOT), b"s", b"taken back")]);
+    cursor.seek(b"u").expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"u"[..]));
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    assert!(!tx.txn.watches());
+
+    // A change of the tree that keeps the value of the committed node.
+    let keeps = (b'a'..=b't').find_map(|key| {
+        let held = tree(&world, &tx);
+        let mut items = model::Committed::items(&held);
+        items.insert(vec![key], b"new".to_vec());
+        let merk = OwnedMerk::change(sub(ROOT), &held, &items);
+        let kept = |(key, _, stated): &(Vec<u8>, _, bool)| key == b"x" && !stated;
+        merk.nodes.iter().any(kept).then_some(merk)
+    });
+    let mut merk = keeps.expect("a change that keeps the node");
+    merk.hints.insert(b"x".to_vec(), before.expect("a handle"));
+    let batch = OwnedBatch {
+        records: World::root_record(&merk).into_iter().collect(),
+        merks: vec![merk],
+        ..OwnedBatch::default()
+    };
+    let txn = &tx.txn;
+    let shown = cursor.node(|view| {
+        let view = view.expect("the record under the cursor");
+        assert!(view.is_unlinked() && view.handle().is_none());
+        std::thread::scope(|threads| {
+            let used = threads.spawn(|| {
+                let scope = txn.scope().expect("a scope");
+                (batch.with(|batch| scope.apply(batch))).expect("the batch is taken");
+                scope.merge();
+                assert_eq!(txn.stats().overlapped, 1, "the keep is met");
+            });
+            used.join().expect("the other thread");
+        });
+    });
+    shown.expect("the read ends");
+    drop(cursor);
+    assert_eq!(tx.txn.stats().overlapped, 1);
+    let ended = world.db.commit(world.versions, &tx.txn).expect("a commit");
+    assert_eq!(ended, Outcome::Conflict);
+    world.check_committed_but(|key| key == b"u");
+}
+
 /// A subtree that a move of a batch names is not stated anew by that
 /// batch, under the prefix it has or the one it gets: the batch is
 /// refused whole (`ConvertMoved`), whichever of the two statements comes

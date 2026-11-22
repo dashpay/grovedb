@@ -2263,9 +2263,10 @@ impl<'s> WriteTxn<'s> {
         shown
     }
 
-    /// A cursor found a node in the read of its own version, `pinned`,
-    /// under its `lease`, that [`Self::cursor_node`] handed back to it,
-    /// and is about to give the node to its caller. The lease is dated at
+    /// A cursor found a node that has a handle in the read of its own
+    /// version, `pinned`, under its `lease`, that [`Self::cursor_node`]
+    /// handed back to it, and is about to give the node to its caller. An
+    /// unlinked record has no handle, and is not told. The lease is dated at
     /// `pinned`, if the transaction does not remember it, and the
     /// transaction watches, as when the read has ended
     /// ([`Self::cursor_read`]): the caller can hand the node's handle to
@@ -2279,7 +2280,8 @@ impl<'s> WriteTxn<'s> {
 
     /// A cursor ended the read of a node of its own version, `pinned`,
     /// under its `lease`, that [`Self::cursor_node`] handed back to it:
-    /// `shown` says whether it was shown a node. The transaction's lock
+    /// `shown` says whether it was shown a node that has a handle, which
+    /// an unlinked record has not. The transaction's lock
     /// was not held over that read, so what the transaction holds is
     /// looked at here, as it is now.
     ///

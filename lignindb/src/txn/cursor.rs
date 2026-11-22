@@ -746,7 +746,9 @@ impl<'t, 's> MerkCursor<'t, 's> {
                 Err(TxnError::Damaged("a read of a node that a test refuses"))
             }
             true => self.side.node(&guard, &key, children, |view| {
-                if view.is_some() {
+                // An unlinked record has no handle for a write to name:
+                // it dates nothing, as a read that finds no node.
+                if view.as_ref().is_some_and(|view| view.handle().is_some()) {
                     told.shown();
                 }
                 read(view)
@@ -760,10 +762,11 @@ impl<'t, 's> MerkCursor<'t, 's> {
 
 /// The read of a node that a cursor makes of its own version, once the
 /// transaction has handed it back (`WriteTxn::cursor_node`): the
-/// transaction is told of a node that is found before the caller is
-/// given it (`WriteTxn::cursor_shown`), and that the read ended, and
-/// whether a node was found, when this goes, however the read ends
-/// (`WriteTxn::cursor_read`).
+/// transaction is told of a node with a handle that is found, before the
+/// caller is given it (`WriteTxn::cursor_shown`), and that the read
+/// ended, and whether such a node was found, when this goes, however the
+/// read ends (`WriteTxn::cursor_read`). An unlinked record has no handle
+/// ([`NodeView::handle`]): it is told as a read that found no node.
 struct Told<'t, 's> {
     txn: &'t WriteTxn<'s>,
     lease: Lease,
@@ -772,7 +775,8 @@ struct Told<'t, 's> {
 }
 
 impl Told<'_, '_> {
-    /// A node is found, and the caller is about to be given it.
+    /// A node with a handle is found, and the caller is about to be given
+    /// it.
     fn shown(&mut self) {
         self.found = true;
         (self.txn).cursor_shown(self.lease, self.at);
