@@ -38,7 +38,9 @@
 //!   makes room where it is entered at the first position of its host,
 //!   and is the Merk with no node of a tree whose data is one Merk, or
 //!   the subtree of a tree that keeps its data flat with no record in
-//!   its data keyspace ([`makes_room`]).
+//!   its data keyspace, or the primary with no node of an indexed tree
+//!   whose secondaries have none either, which leave with it
+//!   ([`makes_room`]).
 //!   Such is the Merk of a tree that was written into and emptied, which
 //!   GroveDB asks no walk for when it moves the tree away. The look
 //!   states the drop, the drop takes what is entered under the prefix
@@ -52,8 +54,7 @@
 //! - **Whatever else the look finds entered where a moved subtree goes,
 //!   and that the batch does not move away, is left as it is**: the
 //!   engine states no drop of it, and the transaction refuses a batch
-//!   that brings a subtree to a prefix where one is entered. The primary
-//!   of an indexed tree that was emptied is such a subtree (GROVE-04-F1).
+//!   that brings a subtree to a prefix where one is entered.
 //!   Where a commit beside the transaction wrote under that prefix since
 //!   the mover's read, the transaction's refusal is a conflict. The look
 //!   for the trees that are written over ([`super::over`]) says nothing
@@ -129,6 +130,7 @@
 //!   the copy of a moved tree lands under that prefix and writes a
 //!   record under its key (D12).
 
+use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     store::lignin::{
@@ -137,7 +139,9 @@ use grovedb_merk::{
     },
     TreeType,
 };
-use grovedb_storage::{error::CommitError, Error, FlatStore, RawIterator};
+use grovedb_storage::{
+    error::CommitError, prefix::secondary_prefix_for, Error, FlatStore, RawIterator,
+};
 
 use super::{
     enter::{element_of, entered, hosted_by},
@@ -165,30 +169,58 @@ struct Pair {
     entry: LigninEntry,
 }
 
-/// Whether the subtree under `prefix`, whose entry is `entry`, makes room
-/// for a moved subtree. It does where it is entered at the first position
-/// of its host, and is the Merk with no node of a tree whose data is one
-/// Merk, whatever records that no node links it holds, or the subtree of
-/// a tree that keeps its data flat with no record in its data keyspace.
-fn makes_room(view: LigninView<'_>, prefix: [u8; 32], entry: &LigninEntry) -> Result<bool, Error> {
-    let first = entry.host.as_ref().is_some_and(|host| host.position == 0);
-    let Ok(tree) = entry.tree_type() else {
-        return Ok(false);
+/// What leaves where the subtree under `prefix`, whose entry is `entry`,
+/// makes room for a moved subtree: that subtree, and with the primary of
+/// an indexed tree the secondaries that are entered under its element.
+/// None, where it makes no room.
+///
+/// A subtree makes room where it is entered at the first position of its
+/// host, and is the Merk with no node of a tree whose data is one Merk,
+/// whatever records that no node links it holds; or the subtree of a
+/// tree that keeps its data flat with no record in its data keyspace; or
+/// the primary with no node of an indexed tree whose secondaries have
+/// none either.
+fn makes_room(
+    view: LigninView<'_>,
+    prefix: [u8; 32],
+    entry: &LigninEntry,
+) -> Result<Vec<[u8; 32]>, Error> {
+    let first = entry.host.as_ref().filter(|host| host.position == 0);
+    let (Some(host), Ok(tree)) = (first, entry.tree_type()) else {
+        return Ok(Vec::new());
     };
-    if !first || entry.root_key.is_some() || tree.is_indexed_primary() {
-        return Ok(false);
+    if entry.root_key.is_some() {
+        return Ok(Vec::new());
+    }
+    if tree.is_indexed_primary() {
+        // A secondary is stored under the tag of its axis, and the big
+        // sum axis under that of the sum axis: these are all.
+        let mut leaving = vec![prefix];
+        for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+            let secondary = secondary_prefix_for(&prefix, axis.tag()).value;
+            let under = |at: &LigninEntry| {
+                let at = at.host.as_ref();
+                at.is_some_and(|at| (at.subtree, &at.key) == (host.subtree, &host.key))
+            };
+            match entered(view, secondary)?.filter(under) {
+                Some(entry) if entry.root_key.is_some() => return Ok(Vec::new()),
+                Some(_) => leaving.push(secondary),
+                None => {}
+            }
+        }
+        return Ok(leaving);
     }
     if !tree.uses_non_merk_data_storage() {
-        return Ok(true);
+        return Ok(vec![prefix]);
     }
     let subtree = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
     let mut records = FlatStore::cursor(&subtree);
     records.seek_to_first().unwrap();
     if records.valid().unwrap() {
-        return Ok(false);
+        return Ok(Vec::new());
     }
     // A cursor that stopped on an error shows no record either.
-    records.status().map(|()| true)
+    records.status().map(|()| vec![prefix])
 }
 
 /// What `parts` do to the subtrees they were told to move.
@@ -280,14 +312,13 @@ pub(super) fn moved(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Mov
             }
             // What is entered where the subtree goes, and stays, is
             // dropped where it makes room, and nothing else is.
-            if source(&pair.to).is_none() {
-                let room = match entered(view, pair.to)? {
-                    Some(there) => makes_room(view, pair.to, &there)?,
-                    None => false,
-                };
-                if room {
-                    moved.drops.push((at, pair.to));
-                }
+            if source(&pair.to).is_none()
+                && let Some(there) = entered(view, pair.to)?
+            {
+                let leaving = makes_room(view, pair.to, &there)?;
+                moved
+                    .drops
+                    .extend(leaving.into_iter().map(|left| (at, left)));
             }
         }
         // A node that hosted a moved subtree and is put again hosts what
