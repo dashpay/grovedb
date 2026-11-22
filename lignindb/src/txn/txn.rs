@@ -3234,3 +3234,133 @@ impl<'s> WriteTxn<'s> {
 mod scopes;
 
 pub use scopes::Scope;
+
+#[cfg(test)]
+mod kept {
+    //! What a transaction keeps beside its write set, asked of the two
+    //! functions that keep it: the refusal of a layout that is stopped,
+    //! and the looks at subtrees with no root.
+
+    use lignin_format::{PageId, SlotId};
+    use lignin_tree::fragment::WriteError;
+
+    use super::*;
+
+    /// Every refusal that stops a layout ([`is_refusal`]) is kept as it
+    /// is: the copy says what the refusal says, variant by variant. What
+    /// is no refusal is not kept.
+    #[test]
+    fn a_refusal_that_stops_a_layout_is_kept_as_it_is() {
+        use DirectoryError as D;
+        let prefix = [7; 32];
+        let subtree = Subtree::new(prefix);
+        let page = PageId::new(3).expect("a page id");
+        let address = CellAddress::new(page, SlotId::new(4).expect("a slot"));
+        let id = MerkId::new(9).expect("an id");
+        let position = 1;
+        let directory = [
+            D::Exists { prefix },
+            D::NotFound { prefix },
+            D::NoParent { parent: prefix },
+            D::HostTaken {
+                parent: prefix,
+                position,
+            },
+            D::Inside { prefix },
+            D::NoHost { prefix },
+            D::Unnamed { prefix },
+            D::NotEmpty { prefix },
+            D::UnknownRoot { address },
+            D::RootTaken { address },
+            D::Twice { prefix },
+            D::TooLong {
+                what: "a key",
+                len: 70_000,
+            },
+            D::TooDeep,
+            D::IdsExhausted,
+            D::InUse { prefix },
+            D::Nested { id },
+            D::NotDropped { id },
+        ];
+        let others = [
+            TxnError::Batch(BatchError::NotEntered { subtree }),
+            TxnError::Batch(BatchError::Entered { subtree }),
+            TxnError::Fragment(FragmentError::Write(WriteError::KeyChanged { node: 3 })),
+            TxnError::Fragment(FragmentError::NoRoom { page: None }),
+            TxnError::Fragment(FragmentError::NoRoom { page: Some(page) }),
+        ];
+        let refusals = (directory.into_iter().map(TxnError::Directory)).chain(others);
+        let mut kept = 0;
+        for refused in refusals {
+            assert!(is_refusal(&refused), "{refused}");
+            let again = refusal_again(&refused).expect("a refusal is kept");
+            assert_eq!(format!("{again:?}"), format!("{refused:?}"));
+            assert_eq!(again.to_string(), refused.to_string());
+            kept += 1;
+        }
+        assert_eq!(kept, 22);
+
+        let damaged = D::Damaged {
+            key: vec![1],
+            what: "an entry",
+        };
+        for other in [
+            TxnError::Damaged("a page"),
+            TxnError::ScopeOpen,
+            TxnError::Directory(damaged),
+        ] {
+            assert!(!is_refusal(&other), "{other}");
+            assert!(refusal_again(&other).is_none(), "{other}");
+        }
+    }
+
+    /// A transaction keeps its looks at [`KEPT_LOOKS`] subtrees. A look
+    /// again at one of them keeps the others, and so does a look that
+    /// shows a root or no subtree, which forgets that subtree alone. A
+    /// look at one subtree more forgets the others (LD6).
+    #[test]
+    fn a_look_at_one_subtree_more_than_are_kept_forgets_the_others() {
+        let subtree = |number: usize| {
+            let mut prefix = [0; 32];
+            let number = u64::try_from(number).expect("a count");
+            prefix[..8].copy_from_slice(&number.to_be_bytes());
+            Subtree::new(prefix)
+        };
+        let version = |raw| CommitVersion::new(raw).expect("a version");
+        let (rootless, rooted) = (
+            SubtreeView::ROOTLESS,
+            SubtreeView {
+                root_key: Some(b"root"),
+                ..SubtreeView::ROOTLESS
+            },
+        );
+        let mut looks = HashMap::new();
+        for number in 0..KEPT_LOOKS {
+            note_look(&mut looks, subtree(number), version(5), Some(&rootless));
+        }
+        assert_eq!(looks.len(), KEPT_LOOKS);
+
+        note_look(&mut looks, subtree(3), version(6), Some(&rootless));
+        assert_eq!(looks.len(), KEPT_LOOKS);
+        assert_eq!(looks[&subtree(3)], version(6));
+        assert_eq!(looks[&subtree(2)], version(5));
+
+        note_look(&mut looks, subtree(4), version(6), Some(&rooted));
+        note_look(&mut looks, subtree(5), version(6), None);
+        assert_eq!(looks.len(), KEPT_LOOKS - 2);
+        assert!(!looks.contains_key(&subtree(4)) && !looks.contains_key(&subtree(5)));
+        // A subtree that was not remembered, shown with a root: nothing
+        // is forgotten for it.
+        let unseen = subtree(KEPT_LOOKS + 7);
+        note_look(&mut looks, unseen, version(6), Some(&rooted));
+        assert_eq!(looks.len(), KEPT_LOOKS - 2);
+
+        note_look(&mut looks, subtree(4), version(7), Some(&rootless));
+        note_look(&mut looks, subtree(5), version(7), Some(&rootless));
+        assert_eq!(looks.len(), KEPT_LOOKS);
+        note_look(&mut looks, subtree(KEPT_LOOKS), version(7), Some(&rootless));
+        assert_eq!(looks.len(), 1);
+        assert_eq!(looks[&subtree(KEPT_LOOKS)], version(7));
+    }
+}
