@@ -1279,7 +1279,7 @@ fn records(answers: &[Answer]) -> Vec<&str> {
 /// 1 to 3 take the batch, and the level of the child runs as a Merk under
 /// the prefix of the tree (upstream refuses it from grove version 4).
 #[cfg(all(feature = "rocksdb_storage", debug_assertions))]
-fn keyed_child<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
+fn keyed_child_walked<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
     let mut h = History::new(db, v);
     let tree = T::NAME.as_bytes();
     let ops = vec![
@@ -1316,7 +1316,7 @@ fn a_keyed_child_under_a_tree_of_flat_records_is_walked_as_on_rocksdb() {
             let dir = tempfile::tempdir().expect("a directory");
             let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
                 .expect("a database on RocksDB");
-            let on_rocksdb = keyed_child::<T, _>(&db, v);
+            let on_rocksdb = keyed_child_walked::<T, _>(&db, v);
             let shown = records(&on_rocksdb);
             assert_eq!(shown.len(), 2, "{} on v{number}: {shown:?}", T::NAME);
             assert!(shown[0].starts_with("true Some([99, 104, 105, 108, 100]) Some("));
@@ -1325,7 +1325,7 @@ fn a_keyed_child_under_a_tree_of_flat_records_is_walked_as_on_rocksdb() {
 
             let dir = tempfile::tempdir().expect("a directory");
             let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
-            let on_lignin = keyed_child::<T, _>(&db, v);
+            let on_lignin = keyed_child_walked::<T, _>(&db, v);
             assert_eq!(on_lignin, on_rocksdb, "{} on v{number}", T::NAME);
             let found = found_at_close(db).expect("D-287: the checker's rule refuses the state");
             let known = "the element has 0 Merks and its cell hosts 1";
@@ -1403,4 +1403,234 @@ fn a_flat_tree_over_an_emptied_indexed_tree_is_walked_by_the_tree_type_of_its_st
     let found = found_at_close(db).expect("GROVE-04-F1: the entries of the indexed tree stay");
     let known = "the element has 0 Merks and its cell hosts 2";
     assert!(found.contains(known), "{found}");
+}
+
+/// What a history does with a keyed child under a tree that keeps flat
+/// records ([`keyed_child`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Keyed {
+    /// One batch makes the tree and the child, and values are appended
+    /// afterwards.
+    BeforeAppends,
+    /// The tree is made and values are appended, and a batch inserts the
+    /// child afterwards.
+    AfterAppends,
+    /// One batch makes the tree and the child, and nothing is appended.
+    NoAppend,
+}
+
+/// A keyed child under a tree that keeps flat records. Grove versions 1
+/// to 3 take a batch that inserts one (the refusal begins with grove
+/// version 4), and its level runs as a Merk under the prefix of the
+/// tree, beside the flat records of the tree. The history: the tree and
+/// the child, with two appends before the child, after it or not at all;
+/// the element, the typed reads, the child read by its key and by
+/// queries, the emptiness, the grove's own check, the delete of the
+/// tree, and the element and the check after it.
+fn keyed_child<T: Appended, E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+    how: Keyed,
+) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let tree = T::NAME.as_bytes();
+    let at_tree: &[&[u8]] = &[tree];
+    let made = || QualifiedGroveDbOp::insert_or_replace_op(vec![], tree.to_vec(), T::empty(None));
+    let child = || {
+        let item = Element::new_item(b"a keyed child".to_vec());
+        QualifiedGroveDbOp::insert_or_replace_op(owned(ROOT, tree), b"child".to_vec(), item)
+    };
+    let appends = |h: &mut History<'_, E>| {
+        for n in 0..2 {
+            h.write("append", T::append(db, ROOT, tree, n, None, v));
+        }
+    };
+    match how {
+        Keyed::BeforeAppends => {
+            h.write(
+                "batch",
+                db.apply_batch(vec![made(), child()], None, None, v),
+            );
+            appends(&mut h);
+        }
+        Keyed::AfterAppends => {
+            h.write("batch", db.apply_batch(vec![made()], None, None, v));
+            appends(&mut h);
+            h.write("batch", db.apply_batch(vec![child()], None, None, v));
+        }
+        Keyed::NoAppend => {
+            h.write(
+                "batch",
+                db.apply_batch(vec![made(), child()], None, None, v),
+            );
+        }
+    }
+    h.element("element", db.get(ROOT, tree, None, v));
+    T::reads(&mut h, ROOT, tree, 1, None);
+    h.element("get child", db.get(at_tree, b"child", None, v));
+    let elements = QueryResultType::QueryKeyElementPairResultType;
+    let mut keyed = Query::new();
+    keyed.insert_key(b"child".to_vec());
+    let mut all = Query::new();
+    all.insert_all();
+    for (name, query) in [("query child", keyed), ("query all", all)] {
+        let query = PathQuery::new_unsized(owned(ROOT, tree), query);
+        let read = db.query_raw(&query, true, true, true, elements, None, v);
+        h.read(
+            name,
+            read.map_ok(|(found, skipped)| (format!("{found:?}"), skipped)),
+        );
+    }
+    h.read("empty", db.is_empty_tree(at_tree, None, v));
+    verified(&mut h);
+    let allowed = Some(DeleteOptions {
+        allow_deleting_non_empty_trees: true,
+        deleting_non_empty_trees_returns_error: false,
+        ..Default::default()
+    });
+    h.write("delete", db.delete(ROOT, tree, allowed, None, v));
+    h.element("element", db.get(ROOT, tree, None, v));
+    verified(&mut h);
+    h.answers
+}
+
+/// Runs [`keyed_child`] on RocksDB and on LigninDB on the grove version
+/// `v`. Gives the answers of each, and whether the store that LigninDB
+/// leaves is sound: at its close, which reads it with the physical
+/// checker in a debug build, and read by the checker afterwards.
+#[cfg(feature = "rocksdb_storage")]
+fn keyed_child_on_both<T: Appended>(
+    v: &GroveVersion,
+    how: Keyed,
+) -> (Vec<Answer>, Vec<Answer>, bool) {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let on_rocksdb = {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+        keyed_child::<T, _>(&db.expect("a database on RocksDB"), v, how)
+    };
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Lignin::open_with_engine(dir.path()).expect("a database");
+    let on_lignin = keyed_child::<T, _>(&db, v, how);
+    db.flush().expect("a flush");
+    let closed = catch_unwind(AssertUnwindSafe(move || drop(db))).is_ok();
+    let sound = closed && catch_unwind(|| check(dir.path(), v)).is_ok();
+    (on_rocksdb, on_lignin, sound)
+}
+
+/// Grove versions 1 to 3 take a batch that inserts a keyed child under a
+/// tree that keeps flat records, and a node that replays them has to
+/// answer as RocksDB does (D-282). RocksDB's answers are asserted as the
+/// required ones: the batch, both appends and the delete of the tree are
+/// taken, the typed reads count both values, and the grove's own check
+/// finds nothing wrong once the tree is deleted.
+///
+/// On LigninDB:
+///
+/// - **With no append** every answer, cost and root hash is RocksDB's,
+///   and the store is sound.
+/// - **A known difference, with the child before the appends** (D-282,
+///   `TXN-03-F5`): every step before the first append is RocksDB's, and
+///   the append is refused, because the transaction takes no flat data
+///   record beside the nodes of a Merk. The store is sound.
+/// - **A defect, with the child after the appends** (D-283,
+///   `TXN-03-F5`): the batch is taken, and every step before the delete
+///   of the tree is RocksDB's but the query of every key under the tree,
+///   which fails on both engines with different errors. The delete is
+///   refused, and the store is not sound: the cell of the tree's element
+///   points at the root of the child's Merk, and the element of such a
+///   tree hosts none. The test catches the checker's finding at the
+///   close.
+///
+/// Both turn with the change of the transaction: this test fails then,
+/// and is to hold LigninDB to RocksDB's answers in all three.
+#[cfg(feature = "rocksdb_storage")]
+fn a_keyed_child_under<T: Appended>() {
+    let step = |answers: &[Answer], call: &str| {
+        let found = answers.iter().position(|(named, ..)| named == call);
+        found.unwrap_or_else(|| panic!("no {call} in the history"))
+    };
+    for how in [Keyed::BeforeAppends, Keyed::AfterAppends, Keyed::NoAppend] {
+        for (number, v) in GROVE_VERSIONS.iter().enumerate().take(3) {
+            let case = format!("{}, {how:?}, grove version {}", T::NAME, number + 1);
+            let (on_rocksdb, on_lignin, sound) = keyed_child_on_both::<T>(v, how);
+            assert_eq!(on_rocksdb.len(), on_lignin.len(), "{case}");
+
+            // What is required.
+            let appends = if how == Keyed::NoAppend { 0 } else { 2 };
+            let batches = if how == Keyed::AfterAppends { 2 } else { 1 };
+            let required = [("batch", batches), ("append", appends), ("delete", 1)];
+            for (call, times) in required {
+                assert_eq!(taken(&on_rocksdb, call), times, "{case}: {call}");
+            }
+            let counted = &on_rocksdb[step(&on_rocksdb, "count")].2;
+            assert_eq!(counted, &format!("Ok({appends})"), "{case}");
+            let last = on_rocksdb.last().expect("a last step");
+            assert_eq!((last.0.as_str(), last.2.as_str()), ("verified", "Ok([])"));
+
+            let same = |steps: std::ops::Range<usize>, but: &str| {
+                for at in steps {
+                    if on_rocksdb[at].0 != but {
+                        assert_eq!(on_lignin[at], on_rocksdb[at], "{case}: step {at}");
+                    }
+                }
+            };
+            match how {
+                Keyed::NoAppend => {
+                    same(0..on_rocksdb.len(), "");
+                    assert!(sound, "{case}");
+                }
+                Keyed::BeforeAppends => {
+                    let append = step(&on_rocksdb, "append");
+                    same(0..append, "");
+                    let refused = &on_lignin[append].2;
+                    assert!(
+                        refused.contains("a flat record is written among the Merk nodes"),
+                        "{case}: {refused}"
+                    );
+                    assert_eq!(taken(&on_lignin, "append"), 0, "{case}");
+                    assert!(sound, "{case}");
+                }
+                Keyed::AfterAppends => {
+                    let delete = step(&on_rocksdb, "delete");
+                    same(0..delete, "query all");
+                    let all = step(&on_rocksdb, "query all");
+                    for answers in [&on_rocksdb, &on_lignin] {
+                        assert!(answers[all].2.starts_with("Err("), "{case}");
+                    }
+                    let refused = &on_lignin[delete].2;
+                    assert!(
+                        refused.contains("a flat record among the nodes of a Merk"),
+                        "{case}: {refused}"
+                    );
+                    assert!(!sound, "{case}");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_keyed_child_under_an_mmr_tree_is_held_to_what_rocksdb_answers() {
+    a_keyed_child_under::<Mmr>();
+}
+
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_keyed_child_under_a_bulk_append_tree_is_held_to_what_rocksdb_answers() {
+    a_keyed_child_under::<Bulk>();
+}
+
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_keyed_child_under_a_dense_tree_is_held_to_what_rocksdb_answers() {
+    a_keyed_child_under::<Dense>();
+}
+
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_keyed_child_under_a_commitment_tree_is_held_to_what_rocksdb_answers() {
+    a_keyed_child_under::<Commitment>();
 }
