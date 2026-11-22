@@ -434,6 +434,50 @@ fn a_roll_that_ends_in_a_file_that_takes_no_item_is_a_turn_that_failed() {
     db.check_cold();
 }
 
+/// The roll alone fails the turn. On the same device a write transaction
+/// holds a private copy of the page, so the page step of each turn is
+/// held back and no record is offered to the log: the pass is refused
+/// nothing. The turn has failed all the same, by its roll, with what
+/// the device answered, and is followed by its wait.
+#[test]
+fn a_roll_that_ends_in_vain_fails_a_turn_whose_pass_is_refused_nothing() {
+    let config = FlushConfig {
+        idle: ms(10),
+        max_failed_wait: ms(80),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (_lies, db) = stuck_where_the_device_keeps_what_it_refuses(config);
+    let wb = db.wb();
+    let mut txn = db.begin();
+    assert!(!txn.copy(page(1)), "the page is there");
+    let held_back = db.stats().steps_put_off;
+    let mut errors = Vec::new();
+    let mut in_vain = 0;
+    let mut waits = Vec::new();
+    let turns = 3;
+    for _ in 0..turns {
+        let wait = wb.paced_turn(&mut in_vain, &mut |error| errors.push(error));
+        waits.push(wait.map(|wait| wait.as_millis()));
+        // No page step was refused its record, so none asked for a turn.
+        assert!(!std::mem::take(&mut *lock(&db.state.wake)));
+    }
+    assert_eq!(waits, [Some(10), Some(20), Some(40)]);
+    assert_eq!(errors.len(), turns);
+    for error in &errors {
+        let FlushError::Log(LogError::NoActiveFileSince { source, .. }) = error else {
+            panic!("{error}");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::StorageFull, "{error}");
+    }
+    let held_back = db.stats().steps_put_off - held_back;
+    assert_eq!(
+        held_back, turns as u64,
+        "the step of each turn was held back"
+    );
+    assert_eq!(lock(&db.state.placing).len(), 1, "the value is ready");
+    txn.roll_back();
+}
+
 /// The same device under the loop itself, with somebody who asks for a
 /// turn all the time: each turn is followed by its whole wait.
 #[test]
