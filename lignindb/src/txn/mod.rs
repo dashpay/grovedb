@@ -155,11 +155,12 @@
 //!   write. No Merk is laid out inside the fragment of its host. A node of
 //!   a load does not host a Merk that the batch writes node by node, nor
 //!   one that another node of the batch states it hosts: the batch is
-//!   refused before anything is changed. Nor does it host a Merk that
-//!   was entered with another host, or with none
-//!   ([`WholeFault::NotItsHost`]): that is refused where the batch is
-//!   laid out, before a page of it is started. A node that is written as
-//!   any other can host a load.
+//!   refused before anything is changed. Nor does it host a Merk whose
+//!   entry names another host, or none, once the batch has made what it
+//!   states of subtrees, nor one that a move of the batch brings to its
+//!   prefix ([`WholeFault::NotItsHost`]): that is refused where the batch
+//!   is laid out, before a page of it is started. A node that is written
+//!   as any other can host a load.
 //! - **The hashes are the ones the change set states.** The loader asks
 //!   for each hash of a node when the node arrives, and is answered with
 //!   what the change set says: no rule is known here. The hash of the
@@ -183,7 +184,9 @@
 //! pages, and each value out of line is read from where the write set has
 //! it and appended again, for the page its cell is in now. The records
 //! are what they were. The copies that no cell holds are dead space of
-//! the value log.
+//! the value log. One layout appends nothing: the one that is made only
+//! to tell the refusal which stops the layout of the transaction's
+//! writes, and is dropped. Its cells name the places the write set has.
 //!
 //! **A load that is applied where no frames take it has no page then**:
 //! where a write of the transaction is met (WT7b), and for a scope that
@@ -197,7 +200,11 @@
 //! **To the conflict rule a load is the puts of its nodes and a range
 //! over the nodes of its subtree** (LD6). That the Merk is entered and
 //! has no root is checked where the load is taken, laid out or by key
-//! ([`BatchError::NotEntered`], [`WholeFault::HasRoot`]). From then on a
+//! ([`BatchError::NotEntered`], [`WholeFault::HasRoot`]). Where that
+//! refuses a load after the transaction was shown the subtree entered
+//! with no root at an earlier version, and nothing the transaction or
+//! the batch wrote is why, the refusal is a conflict
+//! ([`BatchError::MerkTaken`]). From then on a
 //! commit outside that puts or deletes a node of the Merk meets the load,
 //! whatever its key, and the commit of the load ends with the conflict.
 //! The commit of a load has the range in its key set, so a transaction
@@ -697,8 +704,10 @@
 //!   its own, with the log of its page steps ([`crate::db`], "Background
 //!   work").
 //! - **While the transaction serves its records by key**, a batch is not
-//!   checked against the directory: what it says of subtrees is checked
-//!   when the frames are made, and its commit is refused then.
+//!   checked against the directory, but for a load: its subtree is
+//!   entered and its Merk has no root, as the write set says it over the
+//!   committed version (LD6). What else a batch says of subtrees is
+//!   checked when the frames are made, and its commit is refused then.
 //! - **A flat write among the nodes of a Merk** is refused
 //!   ([`BatchError::NotFlat`]).
 //! - **Scopes, claims and pending marks**, and the conflict rule for what

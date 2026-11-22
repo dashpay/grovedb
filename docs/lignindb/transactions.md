@@ -1165,13 +1165,16 @@ layout: it adds nothing to the logical state (section 2). What it is to
 the conflict rule beside the puts of its nodes is in LD6.
 
 A node of a load hosts a Merk that is entered only where the subtree
-directory names that node as the Merk's host: the Merk was entered with
-the node's Merk, its key and that position (`lignin_tree::directory`,
-`SubtreeWrite::Enter`). Where the directory names another host or none,
-the load is refused when it is laid out, before a page of it is started.
-The cell of a node of a load is written with the root of the Merk it
-hosts, and a root that the directory gives another host would have a
-pointer the directory does not know.
+directory names that node as the Merk's host: the node's Merk, its key
+and that position (`lignin_tree::directory`). The directory is asked as
+the batch leaves it before its change sets (MV4): a subtree that the
+batch enters has the host its enter states, and one that the batch states
+anew has the position stated for it. A subtree that a move of the batch
+brings a Merk to has no node of a load as its host. Where the directory
+names another host or none, the load is refused when it is laid out,
+before a page of it is started. The cell of a node of a load is written
+with the root of the Merk it hosts, and a root that the directory gives
+another host would have a pointer the directory does not know.
 
 **LD2. Where a load is laid out in the frames of *T*, its values that are
 too long for their cells are in the value log before the commit.** This is
@@ -1201,7 +1204,7 @@ nothing that recovery keeps points at one (DU3).
 in the place of its bytes.** The record in the value log is written once
 and never changed (`value-log-format.md`), and *T* holds its file, so WT3
 holds for the entry as long as the record can be read. A read of the
-record by key (WT7b) reads the value log.
+node's value by key (WT7b) reads the bytes from the value log.
 
 The record can be read until a sync of its file fails. A value-log file
 whose sync failed takes no more values, and what it took after its last
@@ -1227,14 +1230,20 @@ set keeps where they are, as above, and LD2's three items hold for them.
 When frames are made, LD4 lays the load out from there. A value that fits
 its cell is in the write set, like that of any write.
 
-**LD4. Private frames that are made from the write set lay a load out
-again**, as they apply every write again (WT7a): the bulk loader lays it
-out in new pages, and each value that is too long for its cell is read
-from where the write set has it and appended to the value log again, for
-the page its cell is in now. A copy that was appended for frames that are
-no more is dead space, and so is one that was appended for no page (LD3).
-The records are what they were. The pages need not be: they are again the
-loader's.
+**LD4. Private frames that are made from the write set lay out again each
+load they apply.** They apply the writes that are laid out (WT7a), and
+pass over those of a scope that keeps its writes in the write set
+(TXN-09), a load among them, until that scope is laid out. The bulk loader
+lays a load out in new pages, and each value that is too long for its
+cell is read from where the write set has it and appended to the value
+log again, for the page its cell is in now. A copy that was appended for
+frames that are no more is dead space, and so is one that was appended
+for no page (LD3). The records are what they were. The pages need not be:
+they are again the loader's.
+
+One layout appends nothing: the one that is made only to tell the refusal
+that stops the layout of *T*'s writes (MV7), and is dropped. Its cells
+name the places the write set has.
 
 **LD5. The commit of a load takes its values over.** This is the exception
 to CM7 and to the first case of PV6.
@@ -1290,29 +1299,55 @@ over the nodes of its subtree.** Its key set is the keys of its nodes
 with the first-write version of its operation (WT5). A load keeps no
 value, so CF2a has no read to date.
 
-So "the Merk is entered and has no root" is a precondition of a load that
-holds from the operation that takes it to its commit:
+So "the Merk is entered and has no root" is a precondition of a load,
+which is held to in three places:
 
-- **Where the write is taken.** The operation refuses the load, with
-  nothing changed, where the subtree is not entered or the Merk has a root
-  in what *T* reads at that operation (LD1, RD3): be the load laid out in
-  *T*'s frames or taken by key (WT7b, TXN-09). What commits did to the
-  Merk up to the version the operation reads is in that reading, whatever
-  *T*'s caller read before. A commit after that version is one of the
-  next item.
-- **From then to the commit.** A commit of another transaction that puts
-  or deletes a node of the Merk, or deletes a range of them, after the
-  load's operation meets the load (CF2), and *T*'s commit ends with
-  `Conflict`. *T*'s commit publishes the range, so a transaction that
-  wrote a node of the Merk before *T*'s commit is met by it in turn.
+- **Where the write is taken.** The operation refuses the load where the
+  subtree is not entered or the Merk has a root in what *T* reads at that
+  operation (LD1, RD3), once the drops, the clears and the enters of its
+  batch are made: be the load laid out in *T*'s frames or taken by key
+  (WT7b, TXN-09). What commits did to the Merk up to the version the
+  operation reads is in that reading.
+- **Between a look and the write.** *T* remembers each subtree that a read
+  of the subtree (`subtree`, of *T* or of a scope of it) showed it entered
+  with no root, with the version the read was of. Where the first item
+  refuses a load, *T* was shown the subtree so at an earlier version than
+  the operation reads, and neither *T*'s writes nor the batch say
+  anything of the Merk's root or took the subtree out, a commit in
+  between gave the Merk a root or took the subtree out: the refusal is
+  `MerkTaken`, which is a conflict (CF6). A load into a subtree that a commit dropped or moved
+  away is told before that as any write into such a subtree is
+  (`ValueTaken`, CF10), where *T* holds the key set of that commit. A
+  *T* that holds a move, and a batch that states one, are told no
+  refusal by a look.
+- **From the write to the commit.** A commit of another transaction that
+  puts or deletes a node of the Merk, or deletes a range that holds a key
+  of them, after the load's operation meets the load (CF2), and *T*'s
+  commit ends with `Conflict`. *T*'s commit publishes the range, so a
+  transaction that wrote a node of the Merk before *T*'s commit is met by
+  it in turn.
 
-The refusal of the first item is the refusal of a write (WT10): it leaves
-*T* open with what it wrote before, and nothing of the load is taken. It
-is not `Conflict`, and it is not counted as a conflict as `ValueTaken` is
-(CF6): a load names no read of the subtree, so the operation cannot tell
-a root that a commit gave the Merk since *T*'s caller looked from one the
-Merk had before. A caller of a load adds no clear and no range for either
-item.
+A refusal of the first two items is the refusal of a write (WT10): the
+batch adds nothing to the write set, and *T* is left open with what it
+wrote before. The claims that the scope took for the batch stay with the
+scope (SC3). Where *T* remembers no such look, the refusal is the one of
+LD1, which is no conflict: the operation cannot tell a root that a commit
+gave the Merk since *T*'s caller looked from one the Merk had before. *T*
+remembers 1,024 looks, and forgets all of them when one more subtree is
+shown. It forgets them too at a rollback to a savepoint, at the rollback
+of a scope that takes writes out, and when it ends, by a commit or by a
+rollback. A caller of a load adds no clear and no range for any item.
+
+By key, the first item is asked of the write set as every answer by key
+is (WT7b), which is the frames' answer with one difference: where the
+batch clears a Merk with no node, a subtree that *T* itself entered below
+that Merk is taken as gone, and a load into it is refused as one into a
+subtree that is not entered. An enter of the
+load's subtree as a new one is held to by key as well: the load is
+refused where the subtree is still entered once the drops and the clears
+are made (`Entered`), and where the host the enter states is in a subtree
+that is not entered then (`NotEntered`). The layout judges everything
+else the batch states of subtrees, as for any batch that is taken by key.
 
 **LD7. What *T* holds in memory of a load that is laid out in its frames**,
 from the operation to its commit:
@@ -1361,13 +1396,17 @@ that covers the values of one, wait
   that names it, with a manifest in doubt settled first (LD2); where an
   append failed, a sync of the file; and the sync of a commit that covers
   values
+- for the close of the file that the loads fill, which whoever cleans the
+  value log makes under the first lock, and which takes no other: the
+  sync that closes the file
 - for whoever holds the lock on the manifest, as write-back does over a
-  replacement of the manifest and a checkpoint does while it links files
+  replacement of the manifest and a checkpoint does while it links files.
+  The thread of any commit has write-back make such a replacement before
+  it takes the commit lock, where an append to the log failed and the log
+  has to go on in its next file (CM9 item 4)
 
-One more call takes the first lock, and no other: the close of the file
-that the loads fill, for whoever cleans the value log. Where a commit of
-a load waits for either lock under the commit lock (LD5), the commits
-behind it wait with it.
+Where a commit of a load waits for either lock under the commit lock
+(LD5), the commits behind it wait with it.
 
 ## 8. Commit
 
@@ -1684,13 +1723,16 @@ else.** GROVE-01 maps it to the engine-neutral conflict error of SEAM-04, the
 one RocksDB's `Busy` also satisfies. A commit that fails for another reason
 must not return it, and a conflict must not be reported as anything else.
 
-Two refusals are conflicts too, and say so. `ValueTaken` is the refusal of
+Three refusals are conflicts too, and say so. `ValueTaken` is the refusal of
 a write: the keep of a value that a foreign commit took away since its read
 (CF2a), and what CF10 tells in the same way for a move and for a write
 into a subtree that a foreign commit took. `MovedByKey` is the refusal of
 what MV7 names, once a foreign commit has met *T*: a read or a write that
 a move of *T* decides, a move, and a drop or a clear beside a move.
-Neither is `Conflict`, because it is the answer to a read or
+`MerkTaken` is the refusal of a load into a Merk that a foreign commit
+gave a root, or whose subtree it took out, after *T* was shown the subtree
+entered with no root (LD6).
+None is `Conflict`, because it is the answer to a read or
 a write and not to a commit, and it leaves the transaction open with what
 it wrote before (WT10). A caller that takes it as a conflict rolls the
 transaction back and makes its reads and writes again. The seam does not
@@ -2564,13 +2606,13 @@ whether either can be made to wait for the other.
 | 7a | Writer, writer in the same transaction | units, private frames, the transaction's merged writes | SC3, SC4, SC6, SC7, LT1 to LT5 | one physical step (LT3); a claim never waits |
 | 7b | Writer, writer in another transaction | nothing until one commits, but for the value-log file that loads fill and the manifest that names it (LD2) | RD8, WT1, WT4, LD8 | never, but for two that load (LD8) |
 | 8a | Writer, commit of its own transaction | the write set | CM1, SC8 | commit is refused while a scope is open |
-| 8b | Writer, a foreign commit | *L*, the keys both wrote, and locations the writer kept | RD3, RD4, WT7, WT7a, WT7b, PN8, CF2, CF3, LD8 | never, but for a writer that loads and the commit of a load, each of which waits for what the other does under the lock of the file that loads fill (LD8); the writer rebases at its next operation |
+| 8b | Writer, a foreign commit | *L*, the keys both wrote, and locations the writer kept | RD3, RD4, WT7, WT7a, WT7b, PN8, CF2, CF3, LD8 | never, but for a writer that loads: it and the commit of a load each wait for what the other does under the lock of the file that loads fill, and it waits for the manifest while the thread of a commit has the log go on in its next file (LD8); the writer rebases at its next operation |
 | 9 | Writer, flusher | the committed pages a writer has copied; never a private frame, and no data file: a writer writes to none but for a load (WT4, LD2) | FL1, FL5, FL7, WT4, PV7, LD8 | never, but for a writer that loads (LD8); the flusher leaves a copied page's values as they are, the pending ones pending and the placed ones in place |
 | 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, what a dropped subtree left in them, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, WT11, CL5, CL6, ID1, ID2, LD8 | never, but for a writer that loads (LD8); the cleaner leaves a copied page for later |
 | 11 | Writer, checkpoint | nothing: uncommitted writes are not captured; the manifest, for a writer that loads (LD2) | CK1, CK8, LD8 | never, but for a writer that loads (LD8) |
 | 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8, LD8 | the second waits for the commit lock; two commits of loads also as LD8 says |
 | 13 | Committer, flusher | the log, the page versions just born with their pending values, pages whose values the flusher places or regroups, and the counts of live values | CM3 steps 6 and 7, CM8, CM9, FL1, FL4 to FL7, PV6, PV7, LT7 | the committer, before it takes the lock (FL5); otherwise one page step, or one hold of the counts lock by either; a commit that fsyncs the log (CM7) waits for an fsync of the log that the flusher is making (CM8); the commit of a load waits for the flusher's hold of the file-set lock (LD8) |
-| 14 | Committer, cleaner | page-table entries; pages and ids the commit frees; pages whose value pointers the cleaner rewrites or whose left-over cells it removes; the counts of live values | CL4 to CL7, PV6, PV7, ID2, PN6, LT7, LD8 | one page step, or one hold of the counts lock by either; the commit of a load waits for the cleaner's hold of the file-set lock (LD8) |
+| 14 | Committer, cleaner | page-table entries; pages and ids the commit frees; pages whose value pointers the cleaner rewrites or whose left-over cells it removes; the counts of live values | CL4 to CL7, PV6, PV7, ID2, PN6, LT7, LD8 | one page step, or one hold of the counts lock by either; the commit of a load waits for the cleaner's hold of the file-set lock, and for its close of the file that loads fill (LD8) |
 | 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling; a commit that fsyncs the log (CM7) waits for an fsync of the log that the checkpoint is making (CM8, CK5); the commit of a load waits for the checkpoint's hold of the file-set lock (LD8) |
 | 16 | Flusher, flusher | the pages being written back, and the counts of live values | PV4, FL3, FL7, LT7 levels 4a and 5 | one page step, or one hold of the counts lock |
 | 17 | Flusher, cleaner | page-table locations, segment and value-log files, the manifest, pages both would change in a page step, and the counts of live values | PV4, PV7, FL1, FL3, FL7, CL2, CL4, CL5, LT7 levels 3, 4a and 5 | the file-set lock; one page step, or one hold of the counts lock |
@@ -3208,7 +3250,11 @@ TREE-09, VER-05)**
 - T-LD4: a load and the conflict rule (LD6), owed by TXN-10: two loads of
   one Merk; a first node of the Merk that another transaction commits
   before the load is taken, after it is taken, and after the load's
-  commit, each where the load is laid out and where it is taken by key; a
+  commit, each where the load is laid out and where it is taken by key;
+  the first of those after the transaction was shown the subtree with no
+  root, which is told as a conflict (`MerkTaken`), and the same from a
+  commit that took the subtree out; a commit of a range that holds no
+  key, which meets no load; a
   load after more commits than a transaction keeps key sets of; and a
   commit of a load that is met while the look at what its drop covers
   fails, which ends with the conflict.
@@ -3688,7 +3734,7 @@ that takes the values of a load over (plan draft 40).
 | A change set may state that it is its whole Merk. It writes the records it would write otherwise, and is laid out by the bulk loader. | LD1 (new), LD4 (new), LD7 (new) |
 | Where a load is laid out, its long values are appended to the value log before the commit, under a hold, and the write set keeps where they are. | LD2 (new), LD3 (new), WT4, FL1, FL7 |
 | The commit of a load has a durable manifest cover those values before its frames are taken, lists the pointers its cells hold as acquired, and counts them. | LD5 (new), PV6, CM3, CM7, CM8 |
-| A load is counted by the conflict rule as the puts of its nodes and as a range over the nodes of its subtree. | LD6 (new), CF5 |
+| A load is counted by the conflict rule as the puts of its nodes and as a range over the nodes of its subtree. A load that is refused for what a commit did since the transaction was shown the subtree is told as a conflict. | LD6 (new), CF5, CF6 |
 | A load and its commit take the lock of the file that loads fill and the lock on the manifest. | LD8 (new), section 13 rows 7b, 8b and 9 to 15 |
 
 New tests: T-LD1 to T-LD4.
