@@ -72,6 +72,28 @@ pub trait CommittedSide<'s> {
     /// records the committed version has under the prefix the subtree was
     /// taken from.
     fn point(&mut self, guard: &OperationGuard<'s>, under: Subtree) -> Result<(), TxnError>;
+
+    /// [`Self::point`], as a cursor calls it: `asked` hands the side what
+    /// the cursor keeps of its version. A side that asks nothing of it is
+    /// pointed as by [`Self::point`].
+    #[doc(hidden)]
+    fn point_asking(
+        &mut self,
+        asked: Asked<'_, 's>,
+        guard: &OperationGuard<'s>,
+        under: Subtree,
+    ) -> Result<(), TxnError> {
+        let _ = asked;
+        self.point(guard, under)
+    }
+}
+
+/// What a cursor hands its committed side where it has the side pointed
+/// at another prefix: the cursor's transaction, and what the cursor keeps
+/// of the directory of its version.
+pub struct Asked<'a, 's> {
+    txn: &'a WriteTxn<'s>,
+    kept: &'a mut Opened,
 }
 
 /// The committed flat records of one unit at one version.
@@ -440,6 +462,22 @@ impl<'s> CommittedSide<'s> for MerkSide<'s> {
         // looked up for it. No record is read under a subtree that is
         // not entered.
         let records = entered.is_some() && directory.has_unlinked(&self.path, guard, &under)?;
+        self.open_at(guard, under, entered.flatten(), records);
+        Ok(())
+    }
+
+    fn point_asking(
+        &mut self,
+        asked: Asked<'_, 's>,
+        guard: &OperationGuard<'s>,
+        under: Subtree,
+    ) -> Result<(), TxnError> {
+        let Asked { txn, kept } = asked;
+        let entered = kept.root(&self.path, guard, &under)?;
+        // As in `point`, but the directory is the one that the cursor
+        // keeps, and whether the Merk holds unlinked records is asked as
+        // where the cursor is opened (`holds_unlinked`).
+        let records = entered.is_some() && holds_unlinked(txn, kept, guard, self.at, &under)?;
         self.open_at(guard, under, entered.flatten(), records);
         Ok(())
     }
@@ -1014,7 +1052,10 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             if std::mem::take(&mut self.refuse_place) {
                 return Err(TxnError::Damaged("a change of prefix that a test refuses"));
             }
-            self.side.point(guard, under)?;
+            let path = *self.txn.path();
+            let kept = Opened::at(&mut self.opened, &path, guard, self.pin.version())?;
+            let txn = self.txn;
+            self.side.point_asking(Asked { txn, kept }, guard, under)?;
         }
         if self.seen != Some((left, reads)) {
             // The transaction dropped or cleared a subtree, or took such a

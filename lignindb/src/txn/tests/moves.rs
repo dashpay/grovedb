@@ -3313,6 +3313,50 @@ fn a_merk_with_no_node_takes_its_unlinked_records_where_a_move_names_it_and_they
     }
 }
 
+/// A cursor keeps whether the Merk it was opened on holds unlinked
+/// records. Its transaction then moves the Merk, and the cursor is
+/// pointed at the Merk's new prefix and sought, four times: each time its
+/// committed side is pointed at the prefix that the cursor's version has
+/// the Merk under, and not once is it looked up whether the Merk holds
+/// unlinked records.
+#[test]
+fn a_cursor_over_a_merk_it_was_opened_on_asks_no_more_for_unlinked_records_after_a_move() {
+    use crate::txn::unlinked::probe::lookups;
+
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let batch = unlinked_in(
+        &world,
+        &tx,
+        &[(A, b"a")],
+        vec![(b"u1", loose(7), true)],
+        &[],
+    );
+    world
+        .apply(&tx, &batch)
+        .expect("a record that no node links");
+    assert!(committed(world.commit(tx, &[])));
+
+    let tx = world.begin();
+    let mut cursor = tx.txn.merk_cursor(sub(A)).expect("a cursor");
+    cursor.seek_to_first().expect("a seek");
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    let asked = lookups();
+    for _ in 0..4 {
+        cursor.retarget(sub(B)).expect("a retarget");
+        cursor.seek(b"u1").expect("a seek");
+        assert_eq!(cursor.key(), Some(&b"u1"[..]));
+        let record = cursor.node(|view| view.expect("the record").is_unlinked());
+        assert!(record.expect("the node is read"));
+    }
+    assert_eq!(lookups(), asked, "the cursor keeps what it found");
+    drop(cursor);
+    world.check(&tx);
+}
+
 /// What a transaction knows of whether a Merk holds unlinked records goes
 /// with the Merk where a move takes it: the moves of a batch are made
 /// together. One of two Merks holds an unlinked record, and a
