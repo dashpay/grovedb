@@ -6,6 +6,7 @@
 //! counts. It needs io_uring: Linux 5.6, and a process that is allowed the
 //! calls. Where whoever runs the tests says that the system has none
 //! (`LIGNIN_IO_URING=absent`), it holds the system to that.
+//! `LIGNIN_IO_URING=present` says what the variable not being set says.
 //!
 //! Where the system gives rings, a batch of two reads makes one whether
 //! or not the ring takes the reads, which it does not where the file
@@ -61,7 +62,7 @@ fn the_mappings_of_a_ring_go_when_the_file_layer_goes() {
     assert_eq!(bufs, [[9; 1000]; 2]);
     match std::env::var("LIGNIN_IO_URING").as_deref() {
         // The queues, and the entries of the submission queue.
-        Err(_) => assert_eq!(
+        Err(_) | Ok("present") => assert_eq!(
             ring_mappings(),
             2,
             "this test needs io_uring: LIGNIN_IO_URING=absent says that the system has none"
@@ -71,7 +72,7 @@ fn the_mappings_of_a_ring_go_when_the_file_layer_goes() {
             assert_eq!(ring_mappings(), 0, "there is a ring");
             return;
         }
-        Ok(other) => panic!("LIGNIN_IO_URING is `absent` or is not set: {other}"),
+        Ok(other) => panic!("LIGNIN_IO_URING is `absent`, `present` or not set: {other}"),
     }
 
     // The ring is kept by the file layer, which the file shares.

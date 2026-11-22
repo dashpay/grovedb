@@ -162,6 +162,13 @@ jobs:
         if: runner.environment == 'github-hosted'
       - uses: taiki-e/install-action@cargo-nextest
         if: runner.environment == 'github-hosted'
+      # The tests of the file layer's direct I/O path make io_uring
+      # instances, which a runner in a container can be refused. This prints
+      # in one line what the runner answers and sets LIGNIN_IO_URING for the
+      # tests, which hold the runner to it (docs/lignindb/ci.md, "The
+      # platforms of DEC-06").
+      - name: Ask the runner for an io_uring instance
+        run: .github/scripts/lignin-ci.sh rings
       - name: Run tests (shard ${{ matrix.partition }}/3)
         # --exclude removes the imported crates from both tests and coverage.
         # Their own checks run in the bincode job only when their files change.

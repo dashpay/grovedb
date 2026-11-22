@@ -7,10 +7,15 @@
 #   lignin-ci.sh machine [--every S] the machine: cores, memory, swap, free disk;
 #                                    with --every, again every S seconds (S a
 #                                    whole number above 0)
-#   lignin-ci.sh test [ARGS]         the tests of every LigninDB crate on this
-#                                    machine (ARGS follow `cargo test`), then
-#                                    those of Merk's node store on LigninDB and
-#                                    of GroveDB's LigninDB engine
+#   lignin-ci.sh rings               whether the machine gives io_uring
+#                                    instances, in one line, and
+#                                    LIGNIN_IO_URING set to it for the tests
+#                                    of the later steps of a job
+#   lignin-ci.sh test [ARGS]         `rings`, then the tests of every LigninDB
+#                                    crate on this machine (ARGS follow
+#                                    `cargo test`), then those of Merk's node
+#                                    store on LigninDB and of GroveDB's
+#                                    LigninDB engine
 #   lignin-ci.sh features            the feature sets that must build apart:
 #                                    GroveDB with no engine and on each engine
 #                                    alone, Merk on each engine alone, the
@@ -172,9 +177,93 @@ machine() {
         "$cores" "$memory" "$(probe disk_free .)" "$(probe disk_free "${TMPDIR:-/tmp}")" "${TMPDIR:-/tmp}"
 }
 
+# What the system answers when it is asked for an io_uring instance of the
+# size the file layer asks for: `given`, or `refused: ` and the error. A
+# program in C makes the call, so the answer is not that of the code the
+# tests are of.
+ring_answer() {
+    local dir compiler answer=""
+    dir=$(mktemp -d)
+    cat >"$dir/probe.c" <<'PROBE'
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#ifndef __NR_io_uring_setup
+#define __NR_io_uring_setup 425
+#endif
+
+int main(void) {
+    /* struct io_uring_params is 120 bytes: all zero asks for no flag. */
+    unsigned long long params[15];
+    long ring;
+
+    memset(params, 0, sizeof params);
+    ring = syscall(__NR_io_uring_setup, 32, params);
+    if (ring < 0) {
+        printf("refused: %s\n", strerror(errno));
+        return 0;
+    }
+    close((int)ring);
+    puts("given");
+    return 0;
+}
+PROBE
+    for compiler in "${CC:-cc}" clang gcc; do
+        if "$compiler" -o "$dir/probe" "$dir/probe.c" >/dev/null 2>&1; then
+            answer=$("$dir/probe") || answer=""
+            break
+        fi
+    done
+    rm -rf "$dir"
+    echo "$answer"
+}
+
+# Says in one line whether this machine gives io_uring instances, which the
+# tests of the file layer's direct I/O path make, and sets LIGNIN_IO_URING
+# to what it found: for the tests this script runs, and in $GITHUB_ENV for
+# the later steps of a job. The tests hold the machine to the variable:
+# with `present` those of a ring fail without one, with `absent` they fail
+# with one. A value the variable has already is kept.
+rings() {
+    local answer found
+    if [ "$(uname -s)" != Linux ]; then
+        say "io_uring: this is not Linux, the direct I/O path is not built and no test makes a ring"
+        return
+    fi
+    answer=$(ring_answer)
+    case $answer in
+    given) found=present ;;
+    "refused: "*) found=absent ;;
+    *) fail "no answer to a request for an io_uring instance (is there a C compiler?): $answer" ;;
+    esac
+    if [ -n "${LIGNIN_IO_URING+set}" ]; then
+        case $LIGNIN_IO_URING in
+        present | absent) ;;
+        *) fail "LIGNIN_IO_URING is present, absent or not set: $LIGNIN_IO_URING" ;;
+        esac
+        say "io_uring: $answer. LIGNIN_IO_URING=$LIGNIN_IO_URING was set before, and the tests hold the machine to it"
+        return
+    fi
+    export LIGNIN_IO_URING=$found
+    [ -z "${GITHUB_ENV:-}" ] || echo "LIGNIN_IO_URING=$found" >>"$GITHUB_ENV"
+    if [ "$found" = present ]; then
+        say "io_uring: given. LIGNIN_IO_URING=present: the tests of a ring run on rings of this machine"
+    else
+        say "io_uring: $answer. LIGNIN_IO_URING=absent: the tests of a ring check that the machine refuses one and end there, the rest of the direct I/O path runs on single reads"
+    fi
+}
+
 case "${1:-}" in
 crates)
     listed crates
+    ;;
+
+rings)
+    [ $# -eq 1 ] || fail "usage: lignin-ci.sh rings"
+    rings
     ;;
 
 machine)
@@ -192,6 +281,7 @@ test)
     shift
     package_args
     raise_open_files
+    rings
     say "cargo test ${packages[*]} --all-features $* (open files: $(ulimit -n))"
     status=0
     cargo test "${packages[@]}" --all-features --no-fail-fast "$@" || status=$?
@@ -308,7 +398,7 @@ miri)
             cargo "+$nightly" miri test -p lignin-io --no-fail-fast || status=$?
     done
     for borrows in "" -Zmiri-tree-borrows; do
-        say "Miri: the ring of the direct I/O path ${borrows:-(Stacked Borrows)}"
+        say "Miri: the ring of the direct I/O path ${borrows:-(Stacked Borrows)}, on a model of the system's side: no ring of the system is made"
         MIRIFLAGS="${MIRIFLAGS:-} $borrows" \
             cargo "+$nightly" miri test -p lignin-io --features direct_io --lib --no-fail-fast linux:: ||
             status=$?
