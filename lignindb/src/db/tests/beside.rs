@@ -26,8 +26,8 @@ fn a_checkpoint_opens_while_the_live_database_appends_to_the_log_they_share() {
         vfs: Arc::new(vfs.clone()),
         ..options()
     };
-    let live = Arc::new(Db::open(dir.path().join("live"), &options).expect("a new database"));
-    halt_background(&live);
+    let live = open_at_rest(dir.path().join("live"), &options).expect("a new database");
+    let live = Arc::new(live);
     plant(&live, subtree(1), Merk::sized(b'k', 10, 20));
     let target = dir.path().join("checkpoint");
     let created = live

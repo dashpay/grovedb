@@ -61,9 +61,8 @@ fn session(seed: u64) -> Session {
 #[test]
 fn the_facade_makes_a_checkpoint_that_opens_as_the_database_of_its_version() {
     let dir = temp();
-    let db = Db::open(dir.path().join("live"), &options()).expect("a new database");
     // Nothing but the calls below writes the log back.
-    halt_background(&db);
+    let db = open_at_rest(dir.path().join("live"), &options()).expect("a new database");
     plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
     let held = items_of(&db.snapshot().operation(), subtree(1)).expect("the subtree");
     let target = dir.path().join("checkpoint");

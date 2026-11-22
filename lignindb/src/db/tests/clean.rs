@@ -153,8 +153,7 @@ fn the_cleaner_moves_what_lives_beside_what_a_drop_left_dead() {
         cleaner: Some(policy()),
         ..options()
     };
-    let db = Db::open(dir.path(), &cleaning).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest(dir.path(), &cleaning).expect("a new database");
     let (stays, goes) = half_dead(&db);
 
     let mut turns = 0;

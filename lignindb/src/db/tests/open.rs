@@ -71,11 +71,10 @@ fn a_database_that_was_not_closed_is_recovered_from_its_log() {
         ..options()
     };
     let dir = Path::new("/db");
-    let db = Db::open(dir, &options).expect("a new database");
-    // The background work is ended first, so that no table checkpoint
-    // covers a commit: write-back takes one when it is due, and the
-    // cleaner asks for one.
-    halt_background(&db);
+    // With no background work, so that no table checkpoint covers a
+    // commit: write-back takes one when it is due, and the cleaner asks
+    // for one.
+    let db = open_at_rest(dir, &options).expect("a new database");
     plant(&db, subtree(1), Merk::sized(b'k', 30, 400));
     plant(&db, subtree(2), Merk::sized(b'k', 30, 8));
     db.flush().expect("the log is synced");
@@ -386,11 +385,9 @@ fn entries_that_are_not_the_engines_are_left_alone() {
     db.close().expect("the session ends");
     assert_eq!(foreign(path), before, "after a close");
 
-    // A session that is not closed, so that the next one recovers: its
-    // background work is ended before its commit, which no table
-    // checkpoint covers then.
-    let db = Db::open(path, &options()).expect("the database is opened again");
-    halt_background(&db);
+    // A session that is not closed, so that the next one recovers: it
+    // has no background work, and no table checkpoint covers its commit.
+    let db = open_at_rest(path, &options()).expect("the database is opened again");
     plant(&db, subtree(9), Merk::sized(b'k', 50, 300));
     drop(db);
     let db = Db::open(path, &options()).expect("the database is recovered");

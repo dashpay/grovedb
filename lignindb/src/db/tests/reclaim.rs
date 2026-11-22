@@ -412,8 +412,7 @@ fn a_pass_that_holds_a_page_while_it_is_freed_links_nothing_of_it() {
         vfs: Arc::new(watched.clone()),
         ..options()
     };
-    let db = Db::open(dir.path(), &options).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest(dir.path(), &options).expect("a new database");
     let store = &*db.shared.store;
     let pass = || db.shared.write_back().pass().expect("a pass");
     let settle = |merks: u64| {
