@@ -144,6 +144,11 @@ pub struct CleanerStats {
     /// Segments that could not be read when their blocks were to be moved.
     /// They are left as they are until the store is opened again.
     pub segments_unreadable: u64,
+    /// Segments whose blocks a pass had listed to move and that were out
+    /// of the store when the pass came to them, with no link left to the
+    /// blocks it asked for: a second cleaner of the same store had
+    /// dropped them. With one cleaner to a store it stays 0.
+    pub segments_gone: u64,
     /// Table checkpoints the cleaner asked for and that were installed.
     pub checkpoints: u64,
     /// Table checkpoints it asked for that were put off or failed.
@@ -198,6 +203,7 @@ pub(super) struct Counters {
     pub(super) segments_dropped: AtomicU64,
     pub(super) bytes_dropped: AtomicU64,
     pub(super) segments_unreadable: AtomicU64,
+    pub(super) segments_gone: AtomicU64,
     pub(super) checkpoints: AtomicU64,
     pub(super) checkpoints_missed: AtomicU64,
     pub(super) segments_sealed: AtomicU64,
@@ -232,6 +238,7 @@ impl Counters {
             segments_dropped: read(&self.segments_dropped),
             bytes_dropped: read(&self.bytes_dropped),
             segments_unreadable: read(&self.segments_unreadable),
+            segments_gone: read(&self.segments_gone),
             checkpoints: read(&self.checkpoints),
             checkpoints_missed: read(&self.checkpoints_missed),
             segments_sealed: read(&self.segments_sealed),

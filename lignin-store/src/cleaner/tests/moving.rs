@@ -157,6 +157,156 @@ fn a_block_that_loses_its_link_while_it_is_copied_is_not_brought_back() {
     db.check_cold();
 }
 
+/// D-252. **Two cleaners on one store, by a schedule that forces what the
+/// second does to the first.** A pass lists the blocks of its victims and
+/// then reads them one by one. While it copies a block of a segment of
+/// which it has listed another block behind that one, every page with a
+/// block in that segment is written again and trimmed, so no link points
+/// into the segment, and a cleaner of a second state on the same store
+/// retires the segment and drops it. The pass then comes to the block it
+/// listed: the store has the segment no more.
+///
+/// No link points to that block, so nothing is lost and nothing is left
+/// to move: the pass counts the segment as gone and goes on, with no
+/// error and no segment taken for unreadable. Every version reads as it
+/// did.
+#[test]
+fn a_listed_block_whose_segment_a_second_cleaner_dropped_is_passed_by() {
+    let db = std::sync::Arc::new(churned(13));
+    db.versions.pin(db.latest());
+    for round in 14..=16 {
+        churn(&db, round);
+    }
+    let state = CleanerState::new(moving_only());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    // The second cleaner moves nothing: it retires what is empty, asks
+    // for the table checkpoint a deletion waits for, and drops.
+    let second = std::sync::Arc::new(CleanerState::new(CleanerConfig {
+        target_dead_percent: 100,
+        ..eager()
+    }));
+    let dropped = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (seen, raced, other) = (dropped.clone(), db.clone(), second.clone());
+    let meanwhile = super::super::state::AtSwitch(Box::new(move |_, from| {
+        if seen.lock().expect("seen").is_some() {
+            return;
+        }
+        let into: Vec<(PageId, BlockLocation)> = links_of(&raced)
+            .into_iter()
+            .filter_map(|(id, link)| Some((id, link.location()?)))
+            .filter(|(_, location)| location.file == from.file)
+            .collect();
+        // The pass reads the blocks of a segment in the order of their
+        // offsets: one behind this one is listed and not read yet.
+        let behind = into.iter().filter(|(_, at)| at.offset > from.offset);
+        let Some(&(_, listed)) = behind.max_by_key(|(_, at)| at.offset) else {
+            return;
+        };
+        raced.versions.unpin();
+        let pages: std::collections::BTreeSet<u32> = into.iter().map(|(id, _)| id.get()).collect();
+        for byte in 51..=53 {
+            let changes: Vec<Op> = pages.iter().map(|&id| hash((id, 1), byte)).collect();
+            raced.commit(&changes);
+            raced.wb().pass().expect("a pass");
+        }
+        let left = links_of(&raced)
+            .into_iter()
+            .filter(|(_, link)| link.location().is_some_and(|at| at.file == from.file))
+            .count();
+        assert_eq!(left, 0, "links into segment {}", from.file);
+        let did = settle(&Cleaner::new(raced.wb(), &other));
+        assert_eq!((did.blocks_moved, did.blocks_lost), (0, 0), "{did:?}");
+        assert!(
+            !segment_ids(&raced).contains(&from.file),
+            "the second cleaner left segment {}: {did:?}",
+            from.file
+        );
+        *seen.lock().expect("seen") = Some(listed);
+    }));
+    *state.at_switch.lock().expect("the hook") = Some(meanwhile);
+    let pass = cleaner.pass();
+    *state.at_switch.lock().expect("the hook") = None;
+    let listed = (dropped.lock().expect("seen")).expect("a segment with two listed blocks");
+    assert!(second.stats().segments_dropped >= 1);
+
+    let pass = pass.unwrap_or_else(|error| panic!("the pass met {listed:?}: {error}"));
+    assert_eq!(pass.gone, 1, "{pass:?}");
+    let stats = state.stats();
+    assert_eq!(
+        (stats.segments_gone, stats.segments_unreadable, stats.errors),
+        (1, 0, 0),
+        "{stats:?}"
+    );
+    db.check_warm();
+    // What the two left is cleaned by either: the store comes to rest.
+    rest(&db, &cleaner);
+    db.check_cold();
+    assert_eq!(state.stats().segments_gone, 1);
+}
+
+/// A block whose link stands and whose segment the store does not have
+/// is another matter: something that a reader needs is gone. The segment
+/// is taken out of the store by hand here, while the pass copies a block
+/// of it and has listed another one behind that. The pass ends with the
+/// error of that block, whose link is as it was, and the segment is
+/// counted as unreadable and not as gone.
+#[test]
+fn a_listed_block_that_is_linked_in_a_segment_that_is_gone_is_damage() {
+    let db = std::sync::Arc::new(churned(13));
+    db.versions.pin(db.latest());
+    for round in 14..=16 {
+        churn(&db, round);
+    }
+    let state = CleanerState::new(moving_only());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let taken = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (seen, raced) = (taken.clone(), db.clone());
+    let meanwhile = super::super::state::AtSwitch(Box::new(move |_, from| {
+        if seen.lock().expect("seen").is_some() {
+            return;
+        }
+        let behind = links_of(&raced)
+            .into_iter()
+            .filter_map(|(id, link)| Some((id, link.location()?)))
+            .filter(|(_, at)| at.file == from.file && at.offset > from.offset)
+            .min_by_key(|(_, at)| at.offset);
+        let Some(listed) = behind else {
+            return;
+        };
+        (raced.segments.drop_segment(from.file)).expect("the segment is taken out of the store");
+        *seen.lock().expect("seen") = Some(listed);
+    }));
+    *state.at_switch.lock().expect("the hook") = Some(meanwhile);
+    let met = cleaner.pass();
+    *state.at_switch.lock().expect("the hook") = None;
+    let (page, at) = (taken.lock().expect("seen")).expect("a segment with two listed blocks");
+
+    let met = met.expect_err("a link into a segment that is gone");
+    let CleanerError::Block {
+        page: of,
+        location,
+        source,
+    } = &met
+    else {
+        panic!("{met}");
+    };
+    assert_eq!((*of, *location), (page, at), "{met}");
+    assert!(
+        matches!(source, crate::segment::SegmentStoreError::UnknownSegment { file } if *file == at.file),
+        "{met}"
+    );
+    assert!(
+        (db.chain(page).iter()).any(|link| link.location() == Some(at)),
+        "the block of page {page} has no link: {met}"
+    );
+    let stats = state.stats();
+    assert_eq!(
+        (stats.segments_gone, stats.segments_unreadable, stats.errors),
+        (0, 1, 1),
+        "{stats:?}"
+    );
+}
+
 /// A copy whose link was gone when it was to be switched was written all
 /// the same, and counts against the throttle: a pass does not go on
 /// copying because its copies come to nothing.

@@ -436,6 +436,16 @@
 //!   closure that makes the owners of values and calls
 //!   [`Cleaner::pass_values`]. It hands over the store's [`Stats`]
 //!   ([`Cleaner::with_stats`]).
+//! - **One [`CleanerState`] to a store.** A pass lists the blocks it
+//!   moves and reads them then, and nothing but a pass of the cleaner
+//!   drops a segment: with one state, whose passes run one at a time,
+//!   every segment a pass has listed is in the store when the pass reads
+//!   it. Nothing else here is stated for a store with a second state.
+//!   One thing a second state does is known and dealt with: it drops a
+//!   segment that the first has listed, once no link points into it. The
+//!   first passes those blocks by and counts the segment
+//!   ([`CleanerStats::segments_gone`]). A block whose link still stands
+//!   in a segment that is gone is damage, with one state or two.
 //! - **Whoever closes it** stops the loop ([`Cleaner::stop`]) and calls
 //!   [`Cleaner::finish`], before write-back's own.
 //! - **A checkpoint of the database** (TXN-06) holds the manifest's lock
