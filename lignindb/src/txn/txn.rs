@@ -210,10 +210,10 @@ impl State<'_> {
     /// it has shown no node under since is taken to be met
     /// (`super::reads`). That holds of the lease of a cursor too, also
     /// while a read of a node that the cursor makes of its own version
-    /// is under way: such a read dates the lease when it ends, if it
-    /// showed a node, and not before ([`Reads::ended`]). The key sets
-    /// that the transaction holds are not given up at its end while such
-    /// a read is under way ([`Reads::clear`]).
+    /// is under way: such a read dates the lease when it finds a node,
+    /// and again when it ends, if it found one ([`Reads::ended`]). The
+    /// key sets that the transaction holds are not given up at its end
+    /// while such a read is under way ([`Reads::clear`]).
     fn end(&mut self) {
         self.set.clear();
         self.savepoints.clear();
@@ -2202,7 +2202,7 @@ impl<'s> WriteTxn<'s> {
     /// stays, and the key sets that are taken in meanwhile are kept, as
     /// many as are kept for a lease, whatever else the transaction gives
     /// up, also where it ends ([`State::end`]). It answers for no keep
-    /// before it has shown a node.
+    /// before it has found a node ([`Self::cursor_shown`]).
     ///
     /// `children`, where it is given, takes the key of each child of a
     /// node that is shown from a cell of the frames, in the same operation.
@@ -2263,18 +2263,33 @@ impl<'s> WriteTxn<'s> {
         shown
     }
 
+    /// A cursor found a node in the read of its own version, `pinned`,
+    /// under its `lease`, that [`Self::cursor_node`] handed back to it,
+    /// and is about to give the node to its caller. The lease is dated at
+    /// `pinned`, if the transaction does not remember it, and the
+    /// transaction watches, as when the read has ended
+    /// ([`Self::cursor_read`]): the caller can hand the node's handle to
+    /// another thread before that.
+    pub(crate) fn cursor_shown(&self, lease: Lease, pinned: CommitVersion) {
+        let mut state = self.lock();
+        let state = &mut *state;
+        self.watch(state);
+        state.reads.note(lease, pinned);
+    }
+
     /// A cursor ended the read of a node of its own version, `pinned`,
     /// under its `lease`, that [`Self::cursor_node`] handed back to it:
     /// `shown` says whether it was shown a node. The transaction's lock
     /// was not held over that read, so what the transaction holds is
     /// looked at here, as it is now.
     ///
-    /// A node that is shown dates the lease at `pinned`, if the
-    /// transaction does not remember it, and the transaction watches from
-    /// here on: a keep by the node's handle is answered for where the key
-    /// sets it holds reach back to `pinned`, and is taken to be met
-    /// otherwise ([`Reads::since`]). With no node shown, the watch is
-    /// given up where nothing else needs it ([`State::unwatch`]).
+    /// A node that was shown dates the lease at `pinned` here as well, if
+    /// the transaction does not remember it: it may have ended since the
+    /// node was found. The transaction watches from here on: a keep by
+    /// the node's handle is answered for where the key sets it holds
+    /// reach back to `pinned`, and is taken to be met otherwise
+    /// ([`Reads::since`]). With no node shown, the watch is given up
+    /// where nothing else needs it ([`State::unwatch`]).
     pub(crate) fn cursor_read(&self, lease: Lease, pinned: CommitVersion, shown: bool) {
         let mut state = self.lock();
         let state = &mut *state;

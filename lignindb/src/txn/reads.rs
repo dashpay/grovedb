@@ -71,8 +71,9 @@ pub(crate) struct Reads {
     /// Their versions follow one another with no gap.
     sets: VecDeque<(CommitVersion, Arc<KeySet>)>,
     /// The reads of a node that are under way outside the transaction's
-    /// lock, each by the lease it is made under ([`Self::begun`]). Such a
-    /// read answers for no keep: it has shown no node yet. The key sets
+    /// lock, each by the lease it is made under ([`Self::begun`]). To be
+    /// under way dates no lease and answers for no keep: a read that
+    /// finds a node dates its lease then ([`Self::note`]). The key sets
     /// are kept while one is under way, as they are for a lease.
     under_way: Vec<Lease>,
 }
@@ -87,8 +88,8 @@ impl Reads {
     /// Forgets every lease, and every key set where no read is under way:
     /// the transaction has ended, and with it the handle of every node it
     /// showed. A read that is under way stays: it is of the same version
-    /// after the end as before it, and it answers for a keep only once it
-    /// has shown a node ([`Self::ended`]).
+    /// after the end as before it, and it dates its lease again when it
+    /// ends, if it showed a node ([`Self::ended`]).
     pub(crate) fn clear(&mut self) {
         self.leases.clear();
         self.last = None;
@@ -101,7 +102,7 @@ impl Reads {
     /// A read of a node under `lease` is about to be made outside the
     /// transaction's lock. Until it has ended ([`Self::ended`]) the key
     /// sets that are taken in are kept, as many as [`Self::took`] keeps:
-    /// if it shows a node, a keep by the node's handle is answered from
+    /// if it finds a node, a keep by the node's handle is answered from
     /// them where they reach back to the version of the read
     /// ([`Self::since`]).
     pub(crate) fn begun(&mut self, lease: Lease) {
@@ -110,9 +111,10 @@ impl Reads {
 
     /// The read under `lease` that was under way has ended, at the
     /// version `at`: `shown` says whether it showed a node. A node that
-    /// is shown dates the lease, if it is not remembered
-    /// ([`Self::note`]). With none shown, the key sets go where nothing
-    /// is left that they are kept for.
+    /// was shown dates the lease, if it is not remembered
+    /// ([`Self::note`]): it was dated when the node was found, and the
+    /// transaction may have ended since. With none shown, the key sets go
+    /// where nothing is left that they are kept for.
     pub(crate) fn ended(&mut self, lease: Lease, at: CommitVersion, shown: bool) {
         if let Some(read) = self.under_way.iter().position(|read| *read == lease) {
             self.under_way.swap_remove(read);

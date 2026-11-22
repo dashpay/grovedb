@@ -722,23 +722,26 @@ impl<'t, 's> MerkCursor<'t, 's> {
         };
         // The transaction's lock is not held over the cursor's own read,
         // and another thread may have ended the transaction, or had it
-        // forget the lease, meanwhile. So the cursor says what it read
-        // when the read ends, however it ends, and the transaction
-        // decides by what it holds then.
+        // forget the lease, meanwhile. So the cursor tells the
+        // transaction of a node before `read` is given it, whose handle
+        // another thread can use from then on, and says what it read
+        // when the read ends, however it ends: the transaction decides
+        // each time by what it holds then.
         let mut told = Told {
             txn: self.txn,
             lease: self.side.lease,
             at: self.side.at,
             found: false,
         };
-        let found = &mut told.found;
         let shown = self.placed(&guard, side).and_then(|reads| match reads {
             #[cfg(test)]
             true if std::mem::take(&mut self.refuse_node) => {
                 Err(TxnError::Damaged("a read of a node that a test refuses"))
             }
             true => self.side.node(&guard, &key, children, |view| {
-                *found = view.is_some();
+                if view.is_some() {
+                    told.shown();
+                }
                 read(view)
             }),
             false => Ok(read(None)),
@@ -750,13 +753,23 @@ impl<'t, 's> MerkCursor<'t, 's> {
 
 /// The read of a node that a cursor makes of its own version, once the
 /// transaction has handed it back (`WriteTxn::cursor_node`): the
-/// transaction is told that the read ended, and whether a node was found,
-/// when this goes, however the read ends (`WriteTxn::cursor_read`).
+/// transaction is told of a node that is found before the caller is
+/// given it (`WriteTxn::cursor_shown`), and that the read ended, and
+/// whether a node was found, when this goes, however the read ends
+/// (`WriteTxn::cursor_read`).
 struct Told<'t, 's> {
     txn: &'t WriteTxn<'s>,
     lease: Lease,
     at: CommitVersion,
     found: bool,
+}
+
+impl Told<'_, '_> {
+    /// A node is found, and the caller is about to be given it.
+    fn shown(&mut self) {
+        self.found = true;
+        (self.txn).cursor_shown(self.lease, self.at);
+    }
 }
 
 impl Drop for Told<'_, '_> {

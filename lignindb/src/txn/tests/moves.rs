@@ -2825,6 +2825,132 @@ fn a_read_under_way_answers_for_no_handle_from_before_a_rollback() {
     world.check_committed();
 }
 
+/// A node that a cursor shows is the caller's from the moment it is
+/// given it: another thread can keep its value by the handle before the
+/// read has ended. A cursor stands on a committed node and the
+/// transaction is rolled back, which ends every handle. The cursor reads
+/// the node again, and while the caller has it, another thread writes
+/// the Merk with that node's value kept by the handle it was just shown.
+/// No commit was published since: the keep is answered for, and the
+/// transaction commits.
+#[test]
+fn a_node_that_a_cursor_shows_is_kept_by_its_handle_before_the_read_has_ended() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    alone(&mut world);
+    let tx = world.begin();
+    let mut cursor = tx.txn.merk_cursor(sub(ROOT)).expect("a cursor");
+    cursor.seek(b"x").expect("a seek");
+    assert!(cursor
+        .node(|view| view.is_some())
+        .expect("the node is read"));
+    tx.txn.rollback().expect("no scope is open");
+    assert!(!tx.txn.watches());
+
+    // A change of the Merk that keeps the value of the committed node.
+    let keeps = (b'a'..=b'w').find_map(|key| {
+        let merk = world.merk(&tx, ROOT, |items| {
+            items.insert(vec![key], b"new".to_vec());
+        });
+        let kept = |(key, _, stated): &(Vec<u8>, _, bool)| key == b"x" && !stated;
+        merk.nodes.iter().any(kept).then_some(merk)
+    });
+    let merk = keeps.expect("a change that keeps the node");
+    let txn = &tx.txn;
+    let shown = cursor.node(|view| {
+        let mut merk = merk.clone();
+        (merk.hints).insert(b"x".to_vec(), handle_of(view).expect("the node is shown"));
+        let batch = OwnedBatch {
+            records: World::root_record(&merk).into_iter().collect(),
+            merks: vec![merk],
+            ..OwnedBatch::default()
+        };
+        std::thread::scope(|threads| {
+            let used = threads.spawn(|| {
+                let scope = txn.scope().expect("a scope");
+                (batch.with(|batch| scope.apply(batch))).expect("the batch is taken");
+                scope.merge();
+                assert_eq!(txn.stats().overlapped, 0, "the keep is answered for");
+            });
+            used.join().expect("the other thread");
+        });
+        batch
+    });
+    let batch = shown.expect("the read ends");
+    drop(cursor);
+    assert_eq!(tx.txn.stats().overlapped, 0);
+    world.note(&tx, &batch, world.latest().get());
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+}
+
+/// What a commit below a subtree that a transaction cleared meets goes by
+/// the entries that the directory has stored (CF5), and the model's
+/// answer with it. A Merk loses its one node and is cleared while it has
+/// none, which leaves the subtree below it entered. A commit that drops
+/// that subtree by name, and writes nothing else, takes its entry away:
+/// nothing leads from it to the cleared Merk, and the clear is not met.
+/// A commit that writes a record under that subtree leaves the entry,
+/// and meets the clear.
+#[test]
+fn a_commit_below_a_cleared_merk_meets_the_clear_by_the_entries_that_are_stored() {
+    for unlinks in [true, false] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world, b"a", A, A_IN);
+        let tx = world.begin();
+        let mut top = world.merk(&tx, TOP, |items| {
+            items.insert(b"f".to_vec(), b"a tree".to_vec());
+        });
+        top.hosted.insert(b"f".to_vec(), vec![sub(C)]);
+        let mut outer = world.merk(&tx, C, |items| {
+            items.insert(b"h".to_vec(), b"a tree with no node".to_vec());
+        });
+        outer.hosted.insert(b"h".to_vec(), vec![sub(C_IN)]);
+        let made = OwnedBatch {
+            merks: vec![outer, top],
+            records: vec![put(aux(C_IN), b"k", b"kept")],
+            subtrees: vec![hosted(C, TOP, b"f"), hosted(C_IN, C, b"h")],
+        };
+        world.apply(&tx, &made).expect("the subtrees are made");
+        assert!(committed(world.commit(tx, &[])));
+
+        let tx = world.begin();
+        let removed = edit_at(&world, &tx, &[(C, b"f")], |items| {
+            items.remove(&b"h"[..]);
+        });
+        world.apply(&tx, &removed).expect("the node is removed");
+        let cleared = subtrees(vec![OwnedSubtree::Clear(sub(C))]);
+        world.apply(&tx, &cleared).expect("a clear");
+        assert!(shown(&tx, C_IN).is_some(), "the subtree below stays");
+        world.check(&tx);
+
+        let beside = match unlinks {
+            true => subtrees(vec![OwnedSubtree::Drop(sub(C_IN))]),
+            false => OwnedBatch {
+                records: vec![put(aux(C_IN), b"z", b"beside")],
+                ..OwnedBatch::default()
+            },
+        };
+        assert!(committed(world.write_outside(&beside, &[&tx])));
+        // The transaction takes the commit in at its next call.
+        let read = get(&tx, aux(TOP), b"t").expect("a read");
+        assert_eq!(read, Some(b"top".to_vec()));
+        let met = usize::from(!unlinks);
+        assert_eq!(tx.txn.stats().overlapped, met, "unlinks: {unlinks}");
+        assert_eq!(tx.model.borrow().conflicts(), !unlinks);
+        match unlinks {
+            true => {
+                world.check(&tx);
+                assert!(committed(world.commit(tx, &[])));
+            }
+            false => assert_eq!(world.commit(tx, &[]), Outcome::Conflict),
+        }
+        world.check_committed();
+    }
+}
+
 /// A Merk with no host and one node, `x`, which hosts nothing.
 fn alone<'s>(world: &mut World<'s>) {
     let tx = world.begin();
@@ -3617,6 +3743,17 @@ fn a_move_goes_where_the_batch_drops_what_is_entered() {
     };
     world.apply(&tx, &batch).expect("the subtree is moved");
     world.check(&tx);
+    // The model has the move made too, when it is stated and when the
+    // writes are made again over a commit.
+    assert!(!tx.model.borrow().stopped(), "the drop frees the prefix");
+    let beside = OwnedBatch {
+        records: vec![put(aux(TOP), b"u", b"beside")],
+        ..OwnedBatch::default()
+    };
+    assert!(committed(world.write_outside(&beside, &[&tx])));
+    world.check(&tx);
+    assert!(!tx.model.borrow().stopped(), "and where it is made again");
+    assert_eq!(tx.txn.stats().overlapped, 0);
     assert_eq!([shown(&tx, A), shown(&tx, A_IN)], [None, None]);
     assert_eq!(get(&tx, aux(C), b"a").expect("a read"), Some(vec![1; 3]));
     assert_eq!(
