@@ -11,7 +11,7 @@ use std::{
 
 use lignin_format::PageId;
 use lignin_io::{
-    sim::{FaultOdds, SimVfs},
+    sim::{FaultOdds, SimVfs, WriteBackOdds},
     Vfs,
 };
 use lignin_store::recovery::RecoveryReport;
@@ -130,6 +130,14 @@ pub fn expected_ids(history: &History, expect: &Expect) -> BTreeSet<PageId> {
         .collect()
 }
 
+/// Has `state` draw no fault and fail no write-back by chance from now on.
+/// A state that a crash left has the odds of the file system it was taken
+/// from.
+fn quiet(state: &SimVfs) {
+    state.set_faults(FaultOdds::NONE);
+    state.set_write_back(WriteBackOdds::NONE);
+}
+
 fn opened(state: &SimVfs, tuning: &Tuning, kind: Kind) -> Result<Option<Session>, Violation> {
     let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
     match Session::open(vfs, db_dir(), tuning) {
@@ -150,7 +158,7 @@ pub fn check_state(
     expect: &Expect,
     tuning: &Tuning,
 ) -> Result<Recovered, Violation> {
-    state.set_faults(FaultOdds::NONE);
+    quiet(state);
     let Some(session) = opened(state, tuning, Kind::NotRecovered)? else {
         return match expect.created {
             true => Err(Violation::new(
@@ -283,9 +291,10 @@ pub enum Faulted {
     NoStore,
 }
 
-/// Recovers `state` with `odds` of faults injected: a state that a crash
-/// left as a recovery with no fault found it on a copy of its own, at the
-/// version `landed` with `pages`, or with no store if `landed` is `None`.
+/// Recovers `state` with `odds` of faults and of write-backs that fail
+/// injected: a state that a crash left as a recovery with no fault found
+/// it on a copy of its own, at the version `landed` with `pages`, or with
+/// no store if `landed` is `None`.
 ///
 /// A recovery is a function of the files it finds, so one that a fault
 /// does not fail returns that same store. One that a fault fails says that
@@ -295,16 +304,17 @@ pub enum Faulted {
 /// injected has no excuse.
 pub fn check_with_faults(
     state: &SimVfs,
-    odds: FaultOdds,
+    odds: (FaultOdds, WriteBackOdds),
     tuning: &Tuning,
     landed: Option<u64>,
     pages: &Pages,
 ) -> Result<Faulted, Violation> {
     let before = state.stats().faults;
-    state.set_faults(odds);
+    state.set_faults(odds.0);
+    state.set_write_back(odds.1);
     let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
     let opened_with_faults = Session::open(vfs, db_dir(), tuning);
-    state.set_faults(FaultOdds::NONE);
+    quiet(state);
     let injected = state.stats().faults > before;
     let other = |said: &str| Violation::new(Kind::NotTheSame, said);
     match (opened_with_faults, landed) {
@@ -348,6 +358,9 @@ mod tests {
     use lignin_store::segment::ManifestStore;
 
     use super::*;
+
+    const NO_FAULTS: (FaultOdds, WriteBackOdds) = (FaultOdds::NONE, WriteBackOdds::NONE);
+
     use crate::crash::{
         model::{Change, Value},
         store::Committed,
@@ -458,7 +471,7 @@ mod tests {
         let (fs, landed, pages) = killed();
         let tuning = Tuning::small();
         let check = |state: &SimVfs, landed: Option<u64>| {
-            check_with_faults(state, FaultOdds::NONE, &tuning, landed, &pages)
+            check_with_faults(state, NO_FAULTS, &tuning, landed, &pages)
         };
         // No fault is drawn: the recovery is the one that was made before.
         assert_eq!(check(&copy(&fs), Some(landed)), Ok(Faulted::Returned));

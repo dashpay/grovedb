@@ -46,7 +46,7 @@
 //! | [`store::Session`] | An open store, and what `lignin-store` asks of its callers: the committer of `transactions.md` CM3, in the order of the engine's (`lignindb::commit`), with the sync of a commit before its version is published; the keeper of the pins, a writer's on the version it was begun at among them; the owners of values for the value log's cleaner; the regrouping of a page's values; and the page steps that take cells out of a page or free one. |
 //! | [`workload`] | The operations of a session, drawn from the seed: commits to tree pages and flat leaves with values in and out of line, write transactions that hold copies, reclaiming steps, passes, turns, table checkpoints, syncs and rolls of the log, passes of the cleaner over the segments and over the value log, pins, kills and closes. |
 //! | [`model`] | What the pages say after each item of the log that changes them. It knows no frame, block or file. |
-//! | [`observe::Observer`] | The file layer of a run: it takes a crash image after every operation that changed what a crash can leave. |
+//! | [`observe::Observer`] | The file layer of the sessions of a lineage: it takes a crash image after every operation that changed what a crash can leave, and knows which handles wrote to a file since its last sync. |
 //! | [`check`] | One state a crash left, recovered and held to the model. |
 //! | [`campaign`] | Runs, their lineages, and what is counted. |
 //!
@@ -171,7 +171,10 @@
 //!   session sees them: what a process that is killed leaves. Of every
 //!   image, that state is at the last point, or at the item that is being
 //!   appended, and at no point before, as the store is when it is opened
-//!   again with no crash.
+//!   again with no crash. An image that was taken after a write-back
+//!   failed can be the exception, until a recovery with no write-back
+//!   failing under it has returned the store: see "A write-back that
+//!   fails" under [Faults](self#faults).
 //! - **Not after the last point**, but for one case: an item whose append
 //!   has begun and has not been reported as in the log or as out of it for
 //!   good. The model is told what that item makes of the pages before it
@@ -214,13 +217,14 @@
 //! | `Inconsistent` | It opened, and is not at one with itself: an id without a page, a value that is not read, counts that are not the pointers, a file that the manifest does not name, or a finding of the engine's invariant checker. |
 //! | `NotCommitted` | It is at no point it may be at: below the floor, above the last, or with pages of no point. |
 //! | `NotTheSame` | One state in a few is recovered a second time with another tuning, goes on until everything is written back and a table checkpoint covers it, is closed and is opened again; and in a run with faults, one in four is recovered once more with the faults injected. Each time it is at the same point, with the same pages. |
-//! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, a call failed that no fault excuses, or the log left an item in doubt with no fault. |
+//! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, a call failed that no fault excuses, the log left an item in doubt with no fault, or a sync was asked through a handle of a file to which another handle had written since the file was made or since its last sync that was answered. |
 //! | `Panicked` | The store panicked over a state a crash left, or the run did: it is reported with its seed like the others. |
 //!
 //! # Faults
 //!
-//! Two runs in four inject no fault: a call that fails there is a
-//! violation. One in four fails syncs, and one in four fails every kind of
+//! Two runs in four inject no fault into a call: a call that fails there
+//! is a violation, but for what a write-back that failed leaves (below).
+//! One in four fails syncs, and one in four fails every kind of
 //! operation, leaves appends torn, fills the device for a while, and has
 //! the workload fail the next write or the next removal of a file, so that
 //! a file the store has dropped stays behind wherever the store removes
@@ -230,10 +234,59 @@
 //! point, write-back is asked again, and a log that cannot say what it
 //! holds ends the session.
 //!
+//! **A write-back that fails** is no call that fails (`lignin_io::sim`, "A
+//! write-back that fails"). By default in the runs of the odd seeds, which are one of
+//! the two that inject no fault into a call and the one that injects
+//! every kind ([`campaign::write_backs_of_seed`]), the system's own write
+//! of a file fails now and then, after a write to the file. What storage has of the file's unsynced
+//! changes is settled then, as the run's setting for unknown changes says
+//! ([`campaign::unknown_of_seed`]): no later sync covers them, and no
+//! crash plan chooses among them. Reads go on returning what was written.
+//! The file layer tells the handles that made those changes, each by the
+//! next sync through it, and no other handle: the least its contract
+//! promises (`lignin_io::sim::Told::Writers`). So:
+//!
+//! - A store that syncs a file through the handle that wrote it meets a
+//!   sync that failed, which is a fault like any other of this section.
+//! - A store that syncs the file through another handle is told nothing
+//!   there, and can be answered `Ok` over bytes that storage does not
+//!   have. It then names them, in a manifest or in what a table
+//!   checkpoint points to, and a crash can leave a state that does not
+//!   recover, is not at one with itself or is at no point it may be at.
+//!   Two planted defects are that store, for what is appended to a
+//!   segment and to a value-log file.
+//! - From the failure on, storage can lack bytes that the session still
+//!   reads. The plan that keeps every unsynced change then need not leave
+//!   the files as the session sees them. The observer keeps what the
+//!   session saw at each boundary ([`observe::Taken::seen`]), and that
+//!   plan's state is held to the last point or the item that is being
+//!   appended, as what a killed process leaves, only where it is the
+//!   same. Elsewhere it is held to what every other state is. That lasts
+//!   until a recovery has returned the store with no write-back failing
+//!   under it, which has made durable what the store reads of its files.
+//!   A store that is opened again with no crash is at the last point or
+//!   at that item all the same: it reads what was written.
+//!
+//! **In the sessions of a lineage, every sync of a file is held to the
+//! handle that wrote**, whether or not a write-back fails in the run. The store's rule is that
+//! a file's changes are synced through the handle that made them
+//! (`docs/lignindb/sync-handles.md`), because the file layer's contract
+//! has a sync through any other handle prove nothing of them once a
+//! write-back has failed. The observer knows which of its handles wrote
+//! to a file since the file was made or since its last sync that was
+//! answered, and a sync that is asked through a handle while another one
+//! has written so is a violation
+//! ([`observe::Observer::take_foreign_sync`], which says what counts as
+//! writing). The recoveries of crash
+//! states ([`check`]) are made on the simulator with no observer between,
+//! and are not held to this. A state that goes on as a lineage of its own
+//! is, from its first session.
+//!
 //! **An error is a fault's** in three cases, and a violation in every
 //! other ([`observe::Observer::lasting_faults`]):
 //!
-//! - A fault was injected into the operation that failed.
+//! - A fault was injected into the operation that failed: a sync that is
+//!   told of a write-back that failed counts as one.
 //! - Since the store was opened, a sync failed of a file of the log or of
 //!   a segment. A failed sync cannot be made good: the log makes nothing
 //!   more durable in the session, and a segment keeps every table
@@ -268,8 +321,11 @@
 //! `lignin-crash planted` plants defects and requires each to be found
 //! ([`cli::DEFECTS`]): a file layer that reports a sync it did not make,
 //! of the log, of a segment, of a value-log file, of a table checkpoint,
-//! of the manifest and of a directory, and a model that is wrong by one
-//! hash. A defect counts as found by a violation of the kind it makes
+//! of the manifest and of a directory, a model that is wrong by one
+//! hash, and a file layer that makes the syncs of what is appended to a
+//! segment, or to a value-log file, through a second handle beside the
+//! one that appends, in the sessions of the lineages of runs whose
+//! write-backs fail. A defect counts as found by a violation of the kind it makes
 //! ([`cli::Defect`]), in a run in which it did what it is planted to do
 //! ([`campaign::ACTED`]), of a seed that gives no violation with no defect
 //! planted.
@@ -289,6 +345,14 @@
 //!   workload interleaves commits with passes, turns and checkpoints of
 //!   write-back, never inside one. What write-back does beside a committer
 //!   is `lignin-store`'s own tests on threads and VER-05's.
+//! - **A write-back whose lost bytes the system forgets at once.** The
+//!   simulator can have reads return what storage has from the moment a
+//!   write-back fails (`lignin_io::sim::WriteBackOdds::forgotten`). A
+//!   session can then read other bytes than it wrote before any call has
+//!   failed, which the campaign would take for a store that says other
+//!   than the model. Its write-backs fail with nothing forgotten.
+//!   `lignin-store`'s own tests of a failed write-back run both ways
+//!   (`segment::tests::write_back`, `values::tests::write_back`).
 //! - **Damage.** A crash loses and tears what was not synced. A device
 //!   that changes bytes that were durable is the security review's
 //!   (VER-10) and the decoders' fuzzing (FMT-08).

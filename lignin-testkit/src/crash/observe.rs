@@ -13,6 +13,7 @@
 //! find what it is there to find.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fmt, io,
     path::{Path, PathBuf},
     sync::{
@@ -23,7 +24,7 @@ use std::{
 
 use lignin_io::{
     sim::{CrashImage, SimVfs},
-    DirEntry, OpenMode, Vfs, VfsFile, VfsLock,
+    Create, DirEntry, OpenMode, Vfs, VfsFile, VfsLock,
 };
 
 use super::model::Expect;
@@ -45,6 +46,21 @@ pub enum Sabotage {
     /// A sync of a directory whose path ends in this text returns `Ok`
     /// and makes no change of names durable.
     LostDirSync(&'static str),
+    /// Beside each handle that is opened to write a file whose path
+    /// contains this text, the file layer opens a second one to read it,
+    /// and makes through the second every sync that is asked of the first
+    /// after its first sync. So the sync that makes a new file's header
+    /// durable goes through the handle that wrote the header, and the
+    /// syncs of what is appended later go through a handle that appended
+    /// nothing: the two handles that the stores kept of a segment and of
+    /// a value-log file before they synced through the one that appends.
+    /// A sync through the second handle is a sync of the file, and its
+    /// answer is given as it is. The second handle is told of no
+    /// write-back that failed where the file layer tells the handles
+    /// that wrote and no other (`lignin_io::sim::Told::Writers`). A
+    /// handle whose second one could not be opened is synced through
+    /// itself every time, as with no defect planted.
+    OtherHandle(&'static str),
 }
 
 /// A crash image, with the moment it was taken at.
@@ -57,6 +73,14 @@ pub struct Taken {
     /// The number of the write boundary: how many operations had changed
     /// what a crash can leave.
     pub boundary: u64,
+    /// What operations saw of the file system then
+    /// ([`SimVfs::fingerprint`]), where a write-back has failed since the
+    /// store was last recovered ([`Observer::recovered`]). Storage can
+    /// then lack bytes that the session still reads and that no crash
+    /// plan keeps, so the plan that keeps every unsynced change leaves
+    /// what a killed process leaves only where its state is this one.
+    /// `None` where no write-back has failed since.
+    pub seen: Option<u64>,
 }
 
 struct Watch {
@@ -71,6 +95,68 @@ struct Watch {
     lasting: u64,
     /// How many removals of a file a fault failed.
     removals: u64,
+    /// How many write-backs the file system had failed at the last call.
+    write_backs: u64,
+    /// Whether one has failed since the store was last recovered.
+    write_back_failed: bool,
+    /// The files whose write-back failed, each until a sync of it is
+    /// answered.
+    unreported: BTreeSet<u64>,
+    /// How many handles were opened: each has its number.
+    handles: u64,
+    /// How many files were told apart: each has its number.
+    files: u64,
+    /// The file that each path names, of the paths a handle was opened by
+    /// and those a rename or a link gave such a file.
+    named: BTreeMap<PathBuf, u64>,
+    /// The handles that wrote to each file since the last sync of it that
+    /// was answered.
+    written_by: BTreeMap<u64, BTreeSet<u64>>,
+    /// The first sync that was asked through a handle of a file to which
+    /// another handle had written since its last sync: the path that
+    /// handle was opened by.
+    foreign_sync: Option<PathBuf>,
+}
+
+impl Watch {
+    /// The number of the file that `path` names.
+    fn file_at(&mut self, path: &Path) -> u64 {
+        if let Some(file) = self.named.get(path) {
+            return *file;
+        }
+        self.files += 1;
+        self.named.insert(path.to_path_buf(), self.files);
+        self.files
+    }
+
+    /// The file or directory at `from` is at `to` now, in place of what
+    /// was there. Where both paths name one file nothing has changed, as
+    /// the file layer has it. A file that lost its name is still the file
+    /// its open handles are on, and no file that is made later has its
+    /// number.
+    fn renamed(&mut self, from: &Path, to: &Path) {
+        let one_file = (self.named.get(from)).is_some_and(|file| self.named.get(to) == Some(file));
+        if from == to || one_file {
+            return;
+        }
+        let under = |names: &BTreeMap<PathBuf, u64>, dir: &Path| -> Vec<PathBuf> {
+            let inside = names.keys().filter(|name| name.starts_with(dir));
+            inside.cloned().collect()
+        };
+        for replaced in under(&self.named, to) {
+            self.named.remove(&replaced);
+        }
+        for name in under(&self.named, from) {
+            let rest = name.strip_prefix(from).expect("it begins with the path");
+            let moved = match rest.as_os_str().is_empty() {
+                true => to.to_path_buf(),
+                false => to.join(rest),
+            };
+            if let Some(file) = self.named.remove(&name) {
+                self.named.insert(moved, file);
+            }
+        }
+    }
 }
 
 /// Whether a sync that fails of the file at `path` lasts for the session of
@@ -125,6 +211,14 @@ impl Observer {
             faults: stats.faults,
             lasting: 0,
             removals: 0,
+            write_backs: stats.write_backs,
+            write_back_failed: false,
+            unreported: BTreeSet::new(),
+            handles: 0,
+            files: 0,
+            named: BTreeMap::new(),
+            written_by: BTreeMap::new(),
+            foreign_sync: None,
         };
         Self {
             fs,
@@ -177,7 +271,19 @@ impl Observer {
             image: self.fs.crash_image(),
             expect: watch.expect.clone(),
             boundary: watch.changes,
+            seen: watch.write_back_failed.then(|| self.fs.fingerprint()),
         }
+    }
+
+    /// Tells the observer that a recovery returned the store with no
+    /// write-back failing meanwhile. What such a store reads of its files
+    /// is durable: the manifest, the other files up to the lengths the
+    /// manifest gives them, and the log to its end
+    /// (`lignin_store::recovery`, step 9). So the images from here on are
+    /// of a file system that has what the session reads, until the next
+    /// write-back fails.
+    pub fn recovered(&self) {
+        self.watch().write_back_failed = false;
     }
 
     /// How many write boundaries the file system has passed.
@@ -207,16 +313,86 @@ impl Observer {
         self.watch().removals
     }
 
-    /// Looks at the file system after a call on `path`, a sync of that
-    /// file if `synced`: a fault that was injected into the call is
-    /// counted, and an image is taken if the call changed what a crash can
-    /// leave.
-    fn after(&self, path: &Path, synced: bool) {
+    /// The path by which the handle was opened that first, since the last
+    /// call, was asked for a sync of a file to which another handle of
+    /// this observer had written since the last sync of the file that was
+    /// answered. The file layer's contract has such a sync prove nothing
+    /// of what the other handle wrote (`lignin_io::vfs`, "A write-back can
+    /// fail unreported").
+    ///
+    /// - A handle has written to a file once it has made a call that can
+    ///   change it: a `write_at` or an `append` of one byte or more, or a
+    ///   `set_len` to another length than the file has, whatever the call
+    ///   returned. A call that failed can have left bytes. The observer
+    ///   asks the file for its length before a `set_len`, which is one
+    ///   call of the file layer more than its caller made; a length it is
+    ///   not told counts as another.
+    /// - What was written counts until a sync of the file is answered:
+    ///   with `Ok`, which covers it absent a failed write-back, or with an
+    ///   error, after which no sync covers it (`lignin_io::vfs`,
+    ///   "Durability").
+    /// - A file is followed from the first handle this observer opens on
+    ///   it, under every name that a rename or a link gives it. It is
+    ///   another file than one that is made under one of its names later.
+    /// - The campaign calls the file layer from one thread. What another
+    ///   thread wrote while a sync was in flight would be taken for
+    ///   written before it.
+    pub fn take_foreign_sync(&self) -> Option<PathBuf> {
+        self.watch().foreign_sync.take()
+    }
+
+    /// The handle `handle` wrote to the file `file`.
+    fn wrote(&self, file: u64, handle: u64) {
+        let mut watch = self.watch();
+        watch.written_by.entry(file).or_default().insert(handle);
+    }
+
+    /// A sync of the file `file` is asked through the handle `handle`,
+    /// which was opened by `path`.
+    fn syncing(&self, path: &Path, file: u64, handle: u64) {
+        let mut watch = self.watch();
+        let foreign = (watch.written_by.get(&file))
+            .is_some_and(|by| by.iter().any(|writer| *writer != handle));
+        if foreign && watch.foreign_sync.is_none() {
+            watch.foreign_sync = Some(path.to_path_buf());
+        }
+    }
+
+    /// A sync of the file `file` was answered: nothing that was written
+    /// before it is left for a later sync to cover, and a write-back of
+    /// the file that failed is behind it.
+    fn synced(&self, file: u64) {
+        let mut watch = self.watch();
+        watch.written_by.remove(&file);
+        watch.unreported.remove(&file);
+    }
+
+    /// The planted defect had a sync of the file `file` made through the
+    /// handle beside the one it was asked of, which answered `synced`. The
+    /// defect has acted where the answer is `Ok` and a write-back of the
+    /// file had failed with no sync of the file answered since: the handle
+    /// that wrote would have been told.
+    fn substituted(&self, file: u64, synced: &io::Result<()>) {
+        let mut watch = self.watch();
+        watch.lies += u64::from(synced.is_ok() && watch.unreported.contains(&file));
+    }
+
+    /// Looks at the file system after a call on `path`, a call on the
+    /// open file `file` if it names one, and a sync of that file if
+    /// `synced`: a fault that was injected into the call is counted, and
+    /// an image is taken if the call changed what a crash can leave.
+    fn after(&self, path: &Path, file: Option<u64>, synced: bool) {
         let mut watch = self.watch();
         let stats = self.fs.stats();
         if stats.faults != watch.faults {
             watch.faults = stats.faults;
             watch.lasting += u64::from(synced && lasts(path));
+        }
+        if stats.write_backs != watch.write_backs {
+            // A write-back fails after an operation on its open file.
+            watch.write_backs = stats.write_backs;
+            watch.write_back_failed = true;
+            watch.unreported.extend(file);
         }
         if stats.changes != watch.changes {
             watch.changes = stats.changes;
@@ -224,13 +400,14 @@ impl Observer {
                 image: self.fs.crash_image(),
                 expect: watch.expect.clone(),
                 boundary: stats.changes,
+                seen: watch.write_back_failed.then(|| self.fs.fingerprint()),
             };
             watch.taken.push(taken);
         }
     }
 
     fn observed<T>(&self, path: &Path, result: io::Result<T>) -> io::Result<T> {
-        self.after(path, false);
+        self.after(path, None, false);
         result
     }
 
@@ -248,6 +425,21 @@ impl Observer {
         lost
     }
 
+    /// The handle that the planted defect opens beside one that was just
+    /// opened by `path` in `mode`, if it opens one: the syncs of the first
+    /// after its first are made through it.
+    fn handle_beside(&self, path: &Path, mode: OpenMode) -> Option<Box<dyn VfsFile>> {
+        let sabotage = self.watch().sabotage;
+        match sabotage {
+            Some(Sabotage::OtherHandle(part))
+                if mode != OpenMode::Read && path.to_string_lossy().contains(part) =>
+            {
+                self.fs.open(path, OpenMode::Read).ok()
+            }
+            _ => None,
+        }
+    }
+
     fn loses_dir_sync(&self, path: &Path) -> bool {
         let mut watch = self.watch();
         let lost = match watch.sabotage {
@@ -261,21 +453,48 @@ impl Observer {
 
 impl Vfs for Observer {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        let file = self.observed(path, self.fs.open(path, mode))?;
+        let file = match self.fs.open(path, mode) {
+            Ok(file) => file,
+            Err(error) => return self.observed(path, Err(error)),
+        };
+        let (number, id) = {
+            let mut watch = self.watch();
+            if let OpenMode::Write(Create::New) | OpenMode::Append(Create::New) = mode {
+                watch.named.remove(path);
+            }
+            watch.handles += 1;
+            (watch.file_at(path), watch.handles)
+        };
+        let beside = self.handle_beside(path, mode);
+        // An open is a call on its file: a write-back can fail after it.
+        self.after(path, Some(number), false);
         Ok(Box::new(ObservedFile {
             file,
+            beside,
             path: path.to_path_buf(),
+            number,
+            id,
             syncs: AtomicU64::new(0),
             observer: self.clone(),
         }))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        self.observed(to, self.fs.rename(from, to))
+        let renamed = self.fs.rename(from, to);
+        if renamed.is_ok() {
+            self.watch().renamed(from, to);
+        }
+        self.observed(to, renamed)
     }
 
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
-        self.observed(link, self.fs.hard_link(original, link))
+        let linked = self.fs.hard_link(original, link);
+        if linked.is_ok() {
+            let mut watch = self.watch();
+            let file = watch.file_at(original);
+            watch.named.insert(link.to_path_buf(), file);
+        }
+        self.observed(link, linked)
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
@@ -283,6 +502,9 @@ impl Vfs for Observer {
         let removed = self.fs.remove_file(path);
         if self.fs.stats().faults > before {
             self.watch().removals += 1;
+        }
+        if removed.is_ok() {
+            self.watch().named.remove(path);
         }
         self.observed(path, removed)
     }
@@ -317,20 +539,51 @@ impl Vfs for Observer {
 
 struct ObservedFile {
     file: Box<dyn VfsFile>,
+    /// The handle that a planted defect opened beside this one
+    /// ([`Sabotage::OtherHandle`]).
+    beside: Option<Box<dyn VfsFile>>,
     path: PathBuf,
+    /// The number of the file among those its observer tells apart.
+    number: u64,
+    /// The number of this handle among those of its observer.
+    id: u64,
     /// How many syncs were asked of this handle.
     syncs: AtomicU64,
     observer: Observer,
 }
 
 impl ObservedFile {
+    fn observed<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        (self.observer).after(&self.path, Some(self.number), false);
+        result
+    }
+
+    /// Notes a call that was made and answered `made`: its handle has
+    /// written to the file if `writes` says that the call can change it.
+    fn change<T>(&self, writes: bool, made: io::Result<T>) -> io::Result<T> {
+        if writes {
+            self.observer.wrote(self.number, self.id);
+        }
+        self.observed(made)
+    }
+
     fn sync(&self, sync: impl FnOnce(&dyn VfsFile) -> io::Result<()>) -> io::Result<()> {
         let made = self.syncs.fetch_add(1, Ordering::SeqCst);
+        (self.observer).syncing(&self.path, self.number, self.id);
         if self.observer.loses_sync(&self.path, made) {
+            self.observer.synced(self.number);
             return Ok(());
         }
-        let synced = sync(&*self.file);
-        self.observer.after(&self.path, true);
+        let synced = match &self.beside {
+            Some(beside) if made >= 1 => {
+                let synced = sync(&**beside);
+                self.observer.substituted(self.number, &synced);
+                synced
+            }
+            _ => sync(&*self.file),
+        };
+        self.observer.synced(self.number);
+        (self.observer).after(&self.path, Some(self.number), true);
         synced
     }
 }
@@ -343,15 +596,15 @@ impl fmt::Debug for ObservedFile {
 
 impl VfsFile for ObservedFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-        (self.observer).observed(&self.path, self.file.read_at(buf, offset))
+        self.observed(self.file.read_at(buf, offset))
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
-        (self.observer).observed(&self.path, self.file.write_at(buf, offset))
+        self.change(!buf.is_empty(), self.file.write_at(buf, offset))
     }
 
     fn append(&self, buf: &[u8]) -> io::Result<u64> {
-        self.observer.observed(&self.path, self.file.append(buf))
+        self.change(!buf.is_empty(), self.file.append(buf))
     }
 
     fn sync_data(&self) -> io::Result<()> {
@@ -363,11 +616,12 @@ impl VfsFile for ObservedFile {
     }
 
     fn len(&self) -> io::Result<u64> {
-        self.observer.observed(&self.path, self.file.len())
+        self.observed(self.file.len())
     }
 
     fn set_len(&self, len: u64) -> io::Result<()> {
-        self.observer.observed(&self.path, self.file.set_len(len))
+        let another = self.file.len().map_or(true, |now| now != len);
+        self.change(another, self.file.set_len(len))
     }
 }
 
@@ -566,5 +820,305 @@ mod tests {
             .open(Path::new("/db/log"), OpenMode::Read)
             .expect("opened");
         assert_eq!(format!("{file:?}"), "ObservedFile(/db/log)");
+    }
+
+    /// A segment as the store writes it: the header synced, then blocks,
+    /// with the write-back failing after the second of them and telling
+    /// the handle that wrote alone.
+    fn written(observer: &Observer) -> Box<dyn VfsFile> {
+        use lignin_io::sim::{Fault, Told, WriteBackRule};
+
+        let (fs, vfs) = (observer.fs().clone(), observer.vfs());
+        vfs.create_dir(Path::new("/db/seg")).expect("made");
+        let path = Path::new("/db/seg/1.seg");
+        let file = vfs
+            .open(path, OpenMode::Append(Create::New))
+            .expect("opened");
+        file.append(b"header").expect("appended");
+        file.sync_data().expect("synced");
+        let rule = WriteBackRule::new(Fault::Eio).at(path).skip(1);
+        fs.add_write_back(rule.told(Told::Writers).forgotten(false));
+        file.append(b"one").expect("appended");
+        assert_eq!(observer.now().seen, None);
+        file.append(b"two").expect("appended");
+        file.append(b"three").expect("appended");
+        assert_eq!(fs.stats().write_backs, 1);
+        file
+    }
+
+    #[test]
+    fn an_image_has_what_was_seen_once_a_write_back_has_failed() {
+        use lignin_io::sim::UnknownFate;
+
+        // A file system on which the bytes of a write-back that failed
+        // have the fate `unknown`.
+        let with = |unknown| {
+            let fs = SimVfs::new(SimConfig {
+                unknown,
+                ..SimConfig::new(3)
+            });
+            fs.create_dir(Path::new("/db")).expect("a directory");
+            fs.sync_dir(Path::new("/")).expect("synced");
+            Observer::new(fs, Expect::of_new_store())
+        };
+        let observer = with(UnknownFate::Lost);
+        let file = written(&observer);
+        let taken = observer.drain();
+        let failed: Vec<bool> = taken.iter().map(|taken| taken.seen.is_some()).collect();
+        // The directory, the open, the header, its sync and the first
+        // block; then the block the failure came after, and the third.
+        assert_eq!(failed, [false, false, false, false, false, true, true]);
+        // What was seen is the file system of that moment. The plan that
+        // keeps every unsynced change leaves another where storage lost
+        // the two blocks before the failure, and the same where it kept
+        // them.
+        let kept = |taken: &Taken| {
+            let all = taken.image.keep_all();
+            Some(taken.image.recover(&all).expect("fits").fingerprint())
+        };
+        let seen = Some(observer.fs().fingerprint());
+        let last = taken.last().expect("an image");
+        assert_eq!((last.seen, observer.now().seen), (seen, seen));
+        assert_ne!(kept(last), seen);
+        let whole = with(UnknownFate::Kept);
+        let _file = written(&whole);
+        let last = whole.now();
+        assert!(last.seen.is_some());
+        assert_eq!(kept(&last), last.seen);
+        // The handle that wrote is told, and no defect acted.
+        assert!(file.sync_data().is_err());
+        assert_eq!(observer.lies(), 0);
+        observer.recovered();
+        assert_eq!(observer.now().seen, None);
+        observer.vfs().create_dir(Path::new("/db/b")).expect("made");
+        assert!(observer.drain().iter().all(|taken| taken.seen.is_none()));
+    }
+
+    #[test]
+    fn a_sync_through_a_handle_that_did_not_write_is_found() {
+        use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet, Told, WriteBackRule};
+
+        let observer = Observer::new(fs(), Expect::of_new_store());
+        let vfs = observer.vfs();
+        let path = Path::new("/db/file");
+        let found = || observer.take_foreign_sync();
+        let append = OpenMode::Append(Create::New);
+        let writer = vfs.open(path, append).expect("opened");
+        let reader = vfs.open(path, OpenMode::Read).expect("opened");
+
+        // Through the handle that wrote, and through any handle where
+        // there is nothing to cover.
+        writer.append(b"one").expect("appended");
+        writer.sync_data().expect("synced");
+        reader.sync_data().expect("synced");
+        assert_eq!(found(), None);
+
+        // Through another handle, over a change the writer made: found,
+        // and said once.
+        writer.append(b"two").expect("appended");
+        reader.sync_all().expect("synced");
+        assert_eq!(found(), Some(path.to_path_buf()));
+        assert_eq!(found(), None);
+        // That sync was answered, so nothing is left for the next.
+        reader.sync_data().expect("synced");
+        assert_eq!(found(), None);
+
+        // A file that is removed and made again under its name is another
+        // file: the new one owes nothing to the handle that wrote the
+        // first, and the first is still the file its handles are on.
+        writer.append(b"three").expect("appended");
+        vfs.remove_file(path).expect("removed");
+        let again = vfs.open(path, append).expect("opened");
+        again.append(b"four").expect("appended");
+        again.sync_data().expect("synced");
+        assert_eq!(found(), None);
+        reader.sync_data().expect("synced");
+        assert_eq!(found(), Some(path.to_path_buf()));
+
+        // A file is the same file under the name a rename gives it,
+        // whichever name a handle was opened by.
+        let temporary = Path::new("/db/file.tmp");
+        let create = OpenMode::Write(Create::New);
+        let replacement = vfs.open(temporary, create).expect("opened");
+        replacement.write_at(b"new", 0).expect("written");
+        replacement.set_len(2).expect("cut");
+        vfs.rename(temporary, path).expect("renamed");
+        let other = vfs.open(path, OpenMode::Read).expect("opened");
+        other.sync_data().expect("synced");
+        assert_eq!(found(), Some(path.to_path_buf()));
+        replacement.write_at(b"er", 2).expect("written");
+        replacement.sync_all().expect("synced");
+        assert_eq!(found(), None);
+        // The file that had the name before the rename is another file.
+        again.append(b"five").expect("appended");
+        other.sync_data().expect("synced");
+        assert_eq!(found(), None);
+        // A rename that changes nothing leaves the file what it was.
+        replacement.write_at(b"!", 4).expect("written");
+        vfs.rename(path, path).expect("renamed");
+        other.sync_data().expect("synced");
+        assert_eq!(found(), Some(path.to_path_buf()));
+
+        // A call that changes nothing leaves nothing to cover.
+        replacement.set_len(5).expect("the length it has");
+        replacement.write_at(&[], 0).expect("nothing is written");
+        other.sync_data().expect("synced");
+        assert_eq!(found(), None);
+
+        // Nor does a sync that fails: no later sync covers the changes
+        // that were made before it.
+        replacement.write_at(b"?", 5).expect("written");
+        (observer.fs()).add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS));
+        assert!(replacement.sync_all().is_err());
+        other.sync_data().expect("synced");
+        assert_eq!(found(), None);
+
+        // A change of length that is one is a change of its handle. One
+        // that is none is not, also where a write-back fails after it and
+        // settles what another handle wrote: that handle made every
+        // change, and its sync is told.
+        let settled = Path::new("/db/settled");
+        let first = vfs.open(settled, create).expect("opened");
+        let second = (vfs.open(settled, OpenMode::Write(Create::Never))).expect("opened");
+        first.write_at(b"a byte", 0).expect("written");
+        second.set_len(7).expect("grown");
+        first.sync_all().expect("synced");
+        assert_eq!(found(), Some(settled.to_path_buf()));
+        first.write_at(b"A", 0).expect("written");
+        let rule = WriteBackRule::new(Fault::Eio).on(OpKind::SetLen);
+        (observer.fs()).add_write_back(rule.told(Told::Writers).forgotten(false));
+        second.set_len(7).expect("the length it has");
+        assert_eq!(observer.fs().stats().write_backs, 1);
+        assert!(first.sync_all().is_err());
+        assert_eq!(found(), None);
+
+        // Under a link, and in a directory that was renamed, a file is
+        // the same file as well.
+        let dir = Path::new("/db/built");
+        vfs.create_dir(dir).expect("made");
+        let copy = vfs.open(&dir.join("copy"), create).expect("opened");
+        copy.write_at(b"a copy", 0).expect("written");
+        vfs.hard_link(&dir.join("copy"), &dir.join("link"))
+            .expect("linked");
+        vfs.rename(dir, Path::new("/db/placed")).expect("renamed");
+        let placed = Path::new("/db/placed/link");
+        let linked = vfs.open(placed, OpenMode::Read).expect("opened");
+        linked.sync_data().expect("synced");
+        assert_eq!(found(), Some(placed.to_path_buf()));
+        // A rename of one of its names onto the other changes nothing.
+        copy.write_at(b"more", 6).expect("written");
+        vfs.rename(Path::new("/db/placed/copy"), placed)
+            .expect("renamed");
+        linked.sync_data().expect("synced");
+        assert_eq!(found(), Some(placed.to_path_buf()));
+        // One name of the two is removed: the file is still the file.
+        copy.write_at(b"most", 10).expect("written");
+        vfs.remove_file(Path::new("/db/placed/copy"))
+            .expect("removed");
+        linked.sync_data().expect("synced");
+        assert_eq!(found(), Some(placed.to_path_buf()));
+    }
+
+    #[test]
+    fn a_planted_defect_syncs_through_a_handle_that_is_told_nothing() {
+        use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet, Told, WriteBackRule};
+
+        let other = Sabotage::OtherHandle("seg/");
+        let planted = || Observer::sabotaged(fs(), Expect::of_new_store(), other);
+        let append = OpenMode::Append(Create::New);
+        let fails = |rule: WriteBackRule| rule.told(Told::Writers).forgotten(false);
+        let observer = planted();
+        let file = written(&observer);
+        // The sync of the header went through the handle that wrote it.
+        // The next one goes through the handle beside it, which is told
+        // nothing.
+        assert_eq!(observer.lies(), 0);
+        file.sync_data()
+            .expect("the handle beside was told nothing");
+        assert_eq!(observer.lies(), 1);
+        // The defect acts once for a write-back that failed.
+        file.append(b"four").expect("appended");
+        file.sync_data().expect("synced");
+        assert_eq!(observer.lies(), 1);
+
+        // The handle beside is on the file, whatever becomes of its name:
+        // the sync covers what was appended to the file, and nothing of
+        // the file that has its name by then.
+        let observer = planted();
+        let file = written(&observer);
+        let vfs = observer.vfs();
+        let (path, moved) = (Path::new("/db/seg/1.seg"), Path::new("/db/seg/9.seg"));
+        vfs.rename(path, moved).expect("renamed");
+        let again = vfs.open(path, append).expect("opened");
+        again.append(b"of another file").expect("appended");
+        for dir in ["/db", "/db/seg"] {
+            vfs.sync_dir(Path::new(dir)).expect("synced");
+        }
+        let durable = |path: &Path| {
+            let image = observer.now().image;
+            let lost = image.recover(&image.lose_all()).expect("fits");
+            let file = lost.open(path, OpenMode::Read).expect("opened");
+            file.len().expect("a length")
+        };
+        assert_eq!(durable(path), 0);
+        assert!(durable(moved) < 17);
+        file.sync_data()
+            .expect("the handle beside was told nothing");
+        assert_eq!(observer.lies(), 1);
+        assert_eq!((durable(path), durable(moved)), (0, 17));
+
+        // A write-back that fails after the open of another handle on the
+        // file is one of the file's.
+        let observer = planted();
+        let vfs = observer.vfs();
+        vfs.create_dir(Path::new("/db/seg")).expect("made");
+        let path = Path::new("/db/seg/2.seg");
+        let file = vfs.open(path, append).expect("opened");
+        file.append(b"header").expect("appended");
+        file.sync_data().expect("synced");
+        file.append(b"block").expect("appended");
+        let rule = WriteBackRule::new(Fault::Eio).on(OpKind::Open).at(path);
+        observer.fs().add_write_back(fails(rule));
+        let _reader = vfs.open(path, OpenMode::Read).expect("opened");
+        assert_eq!(observer.fs().stats().write_backs, 1);
+        file.sync_data()
+            .expect("the handle beside was told nothing");
+        assert_eq!(observer.lies(), 1);
+
+        // The defect has not acted where the sync through the handle
+        // beside fails for a reason of its own.
+        let observer = planted();
+        let file = written(&observer);
+        (observer.fs()).add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS));
+        assert!(file.sync_data().is_err());
+        assert_eq!(observer.lies(), 0);
+        // Nor where no write-back failed.
+        let observer = planted();
+        let vfs = observer.vfs();
+        vfs.create_dir(Path::new("/db/seg")).expect("made");
+        let file = (vfs.open(Path::new("/db/seg/2.seg"), append)).expect("opened");
+        for block in [b"header", b"blocks"] {
+            file.append(block).expect("appended");
+            file.sync_data().expect("synced");
+        }
+        assert_eq!(observer.lies(), 0);
+        // Nor at a header: a write-back that fails under it is told to
+        // the sync of the handle that wrote it.
+        let path = Path::new("/db/seg/3.seg");
+        let file = vfs.open(path, append).expect("opened");
+        observer
+            .fs()
+            .add_write_back(fails(WriteBackRule::new(Fault::Eio).at(path)));
+        file.append(b"header").expect("appended");
+        assert_eq!(observer.fs().stats().write_backs, 1);
+        assert!(file.sync_data().is_err());
+        assert_eq!(observer.lies(), 0);
+        // The files that the defect does not name are synced through the
+        // handle that wrote.
+        let observer =
+            Observer::sabotaged(fs(), Expect::of_new_store(), Sabotage::OtherHandle("val/"));
+        let file = written(&observer);
+        assert!(file.sync_data().is_err());
+        assert_eq!(observer.lies(), 0);
     }
 }

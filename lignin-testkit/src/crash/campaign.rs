@@ -27,8 +27,8 @@ use std::{
 use lignin_format::{wal::LogPlace, PageId};
 use lignin_io::{
     sim::{
-        Chance, CrashImage, CrashPlan, Fault, FaultOdds, FaultRule, OpKind, OpSet, SimConfig,
-        SimVfs, UnknownFate,
+        Chance, CrashImage, CrashPlan, Event, Fault, FaultOdds, FaultRule, OpKind, OpSet,
+        SimConfig, SimVfs, Told, UnknownFate, WriteBackOdds,
     },
     Vfs,
 };
@@ -110,6 +110,14 @@ pub fn unknown_of_seed(seed: u64) -> UnknownFate {
     }
 }
 
+/// Whether the system's own write of a file fails in the run of `seed`
+/// with no call reporting it (`lignin_io::sim`, "A write-back that
+/// fails"): in the runs of the odd seeds, which are one of the two in
+/// four that inject no fault and the one that injects every kind.
+pub fn write_backs_of_seed(seed: u64) -> bool {
+    seed % 2 == 1
+}
+
 /// A defect planted for a run that must find it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Planted {
@@ -146,6 +154,9 @@ pub struct RunShape {
     /// The faults of the run, or `None` for those of its seed
     /// ([`Faults::of_seed`]).
     pub faults: Option<Faults>,
+    /// Whether write-backs fail with no call reporting it, or `None` for
+    /// what the seed says ([`write_backs_of_seed`]).
+    pub write_backs: Option<bool>,
     /// How large the stores get.
     pub shape: Shape,
     /// A defect to find.
@@ -163,6 +174,7 @@ impl Default for RunShape {
             samples: 3,
             again_one_in: 8,
             faults: None,
+            write_backs: None,
             shape: Shape::default(),
             planted: None,
         }
@@ -330,6 +342,7 @@ struct Run {
     seed: u64,
     shape: RunShape,
     faults: Faults,
+    write_backs: bool,
     tally: Tally,
     fingerprints: HashSet<u64>,
     order: Vec<u64>,
@@ -482,6 +495,7 @@ impl Run {
             seed,
             shape,
             faults: shape.faults.unwrap_or(Faults::of_seed(seed)),
+            write_backs: shape.write_backs.unwrap_or(write_backs_of_seed(seed)),
             tally: Tally::default(),
             fingerprints: HashSet::new(),
             order: Vec::new(),
@@ -494,6 +508,42 @@ impl Run {
 
     fn done(&self) -> bool {
         self.violations.len() >= MAX_VIOLATIONS
+    }
+
+    /// The write-backs that fail unreported in this run. Of each, the
+    /// file layer tells the handles that made the changes it was to write
+    /// and no other, which is the least its contract promises
+    /// (`Told::Writers`): a sync through a handle that made none of them
+    /// is told nothing of the failure, and can return `Ok` over bytes that
+    /// storage does not have. The system forgets none of
+    /// them, so reads go on seeing what was written, and a session learns
+    /// of the failure from its syncs alone.
+    fn write_back(&self) -> WriteBackOdds {
+        let fail = match (self.write_backs, self.faults) {
+            (false, _) => Chance::NEVER,
+            // A run with every kind of fault meets enough beside them.
+            (true, Faults::All) => Chance::one_in(300),
+            (true, Faults::None | Faults::Syncs) => Chance::one_in(48),
+        };
+        WriteBackOdds {
+            fail,
+            ops: OpSet::WRITES,
+            fault: Fault::Eio,
+            told: Told::Writers,
+            forgotten: Chance::NEVER,
+        }
+    }
+
+    /// Has `fs` inject what this run injects, from now on.
+    fn inject(&self, fs: &SimVfs) {
+        fs.set_faults(self.faults.odds());
+        fs.set_write_back(self.write_back());
+    }
+
+    /// Has `fs` inject nothing from now on.
+    fn calm(fs: &SimVfs) {
+        fs.set_faults(FaultOdds::NONE);
+        fs.set_write_back(WriteBackOdds::NONE);
     }
 
     fn found(&mut self, lineage: &Lineage, violation: Violation, crash: Option<(u64, &CrashPlan)>) {
@@ -583,6 +633,10 @@ impl Run {
         }
         self.tally.count("runs", 1);
         self.tally.count(self.faults.name(), 1);
+        self.tally.count(
+            "runs with write-backs that fail",
+            u64::from(self.write_backs),
+        );
         RunReport {
             seed: self.seed,
             tally: self.tally,
@@ -606,6 +660,20 @@ impl Run {
         self.end_session(&mut lineage);
         self.tally.count(ACTED, lineage.observer.lies());
         self.tally.count("faults injected", fs.stats().faults);
+        for event in fs.trace() {
+            let name = match event {
+                Event::WriteBack(failed) => match failed.path.split('/').nth(2) {
+                    Some("wal") => "write-backs that failed of a log file",
+                    Some("seg") => "write-backs that failed of a segment",
+                    Some("val") => "write-backs that failed of a value-log file",
+                    Some("table") => "write-backs that failed of a table checkpoint",
+                    _ => "write-backs that failed of the manifest",
+                },
+                Event::Reported { .. } => "syncs told of a write-back that failed",
+                _ => continue,
+            };
+            self.tally.count(name, 1);
+        }
         let removals = lineage.observer.removals_failed();
         self.tally
             .count("removals of a file that a fault failed", removals);
@@ -644,7 +712,7 @@ impl Run {
         if !lineage.observer.expect().created {
             // The store is made with no fault injected: a session that
             // cannot make its store has nothing to crash.
-            fs.set_faults(FaultOdds::NONE);
+            Self::calm(&fs);
             if let Err(error) = Session::create(lineage.observer.vfs(), db_dir()) {
                 self.session_fault(lineage, format!("no store was made: {error}"));
                 return false;
@@ -652,7 +720,7 @@ impl Run {
             lineage.observer.expecting(|expect| expect.created = true);
             self.check_images(lineage);
         }
-        fs.set_faults(self.faults.odds());
+        self.inject(&fs);
         self.open(lineage, "open")
     }
 
@@ -663,9 +731,9 @@ impl Run {
 
     /// Runs `work` with no fault injected into `fs`.
     fn quietly<T>(&self, fs: &SimVfs, work: impl FnOnce() -> T) -> T {
-        fs.set_faults(FaultOdds::NONE);
+        Self::calm(fs);
         let done = work();
-        fs.set_faults(self.faults.odds());
+        self.inject(fs);
         done
     }
 
@@ -729,6 +797,7 @@ impl Run {
         let tuning = tuning_of(turn);
         lineage.sessions += 1;
         let before = fs.stats().faults;
+        let mut write_backs = fs.stats().write_backs;
         let mut opened = Session::open(vfs.clone(), db_dir(), &tuning);
         if let Err(error) = &opened
             && fs.stats().faults > before
@@ -742,6 +811,7 @@ impl Run {
             }
             self.tally.count("recoveries failed by a fault", 1);
             lineage.full = false;
+            write_backs = fs.stats().write_backs;
             opened = self.quietly(&fs, || {
                 fs.clear_rules();
                 Session::open(vfs, db_dir(), &tuning)
@@ -800,6 +870,11 @@ impl Run {
             expect.latest = latest;
             expect.floor = latest;
         });
+        // And the files hold what the session reads of them, unless a
+        // write-back failed under the recovery itself.
+        if fs.stats().write_backs == write_backs {
+            lineage.observer.recovered();
+        }
         lineage.op_before = fs.stats().faults;
         lineage.faults_before = lineage.op_before;
         lineage.lasting_before = lineage.observer.lasting_faults();
@@ -1126,6 +1201,14 @@ impl Run {
     /// Goes through the crash images taken since the last call: every
     /// state that their plans leave.
     fn check_images(&mut self, lineage: &mut Lineage) {
+        if let Some(path) = lineage.observer.take_foreign_sync() {
+            let said = format!(
+                "a sync of {} was asked through a handle, and another handle had written to \
+                 the file since its last sync",
+                path.display()
+            );
+            self.session_fault(lineage, said);
+        }
         for taken in lineage.observer.drain() {
             self.tally.count("write boundaries", 1);
             let plans = plans_of(&taken.image, &self.shape);
@@ -1145,10 +1228,29 @@ impl Run {
     ///   process that is killed leaves: the files as the session sees
     ///   them. The store is then where an open with no crash finds it, at
     ///   the last point or at the item that is being appended, and at no
-    ///   point before.
+    ///   point before. After a write-back has failed, storage can lack
+    ///   bytes that the session still reads and that no plan keeps. From
+    ///   there until a recovery has returned the store
+    ///   ([`Observer::recovered`]), that plan's state is held to more than
+    ///   the others only where it is what the session saw
+    ///   ([`Taken::seen`]).
     fn check_image(&mut self, lineage: &mut Lineage, mut taken: Taken, plans: Vec<CrashPlan>) {
         taken.expect.floor = taken.expect.floor.max(lineage.durable);
         let whole = taken.image.keep_all();
+        let as_seen = taken.seen.is_none_or(|seen| {
+            let kept = (taken.image.recover(&whole)).expect("a plan of the image fits it");
+            kept.fingerprint() == seen
+        });
+        // An image is checked once for each time it is taken: a boundary
+        // that ends an operation is checked a second time.
+        self.tally.count(
+            "images checked after a write-back that failed",
+            u64::from(taken.seen.is_some()),
+        );
+        self.tally.count(
+            "images checked in which storage lacks what the session saw",
+            u64::from(!as_seen),
+        );
         let killed = Expect {
             floor: taken.expect.latest,
             ..taken.expect.clone()
@@ -1157,14 +1259,13 @@ impl Run {
             if self.done() {
                 return;
             }
-            let expect = match plan == whole {
+            let is_whole = as_seen && plan == whole;
+            let expect = match is_whole {
                 true => &killed,
                 false => &taken.expect,
             };
-            self.tally.count(
-                "states that a killed process leaves",
-                u64::from(plan == whole),
-            );
+            self.tally
+                .count("states that a killed process leaves", u64::from(is_whole));
             let landing = self.check_plan(lineage, &taken, expect, plan);
             if let (0, Some(Landing::Point(at))) = (turn, landing) {
                 self.tally.count(
@@ -1246,9 +1347,10 @@ impl Run {
         };
         // The same state once more, as the crash left it, recovered with
         // the run's faults.
-        if self.faults != Faults::None && (fingerprint >> 19).is_multiple_of(4) {
+        let injects = self.faults != Faults::None || self.write_backs;
+        if injects && (fingerprint >> 19).is_multiple_of(4) {
             let other = (taken.image.recover(&plan)).expect("a plan of the image fits it");
-            let odds = self.faults.odds();
+            let odds = (self.faults.odds(), self.write_back());
             let faulted = no_panic("a recovery with faults injected", || {
                 check_with_faults(&other, odds, &tuning, landed, &pages)
             });
@@ -1598,6 +1700,7 @@ mod tests {
     fn quiet() -> RunShape {
         RunShape {
             faults: Some(Faults::None),
+            write_backs: Some(false),
             ..RunShape::default()
         }
     }
@@ -1781,7 +1884,7 @@ mod tests {
                 latest: 2,
                 ..early.expect.clone()
             },
-            boundary: early.boundary,
+            ..early.clone()
         }
     }
 
@@ -1824,11 +1927,7 @@ mod tests {
         let plans = || vec![early.image.lose_all(), early.image.keep_all()];
         // As the image was taken, one commit was made: the state with
         // every change is at it.
-        let then = Taken {
-            image: early.image.clone(),
-            expect: early.expect.clone(),
-            boundary: early.boundary,
-        };
+        let then = early.clone();
         run.check_image(&mut lineage, then, plans());
         assert!(run.violations.is_empty(), "{:?}", run.violations);
         assert_eq!(lineage.durable, 0);
@@ -1855,6 +1954,72 @@ mod tests {
             found.violation.detail.contains("which was durable"),
             "{found}"
         );
+
+        // After a write-back that failed, storage can lack bytes that the
+        // session reads. Where the state with every change is not what
+        // the session saw, it is held to what the others are, and may be
+        // a point short.
+        let whole = (early.image.recover(&early.image.keep_all())).expect("fits");
+        let whole = whole.fingerprint();
+        let after_a_failure = |seen| Taken {
+            seen: Some(seen),
+            ..later(&early)
+        };
+        let counts = |run: &Run| {
+            let count = |name| run.tally.get(name);
+            (
+                count("states that a killed process leaves"),
+                count("images checked after a write-back that failed"),
+                count("images checked in which storage lacks what the session saw"),
+            )
+        };
+        lineage.seen.clear();
+        lineage.durable = 0;
+        let (killed, ..) = counts(&run);
+        run.check_image(&mut lineage, after_a_failure(!whole), plans());
+        assert_eq!(run.violations.len(), 2, "{:?}", run.violations);
+        assert_eq!(counts(&run), (killed, 1, 1));
+        // Where it is what the session saw, it is what a killed process
+        // leaves, as before the failure.
+        lineage.seen.clear();
+        lineage.durable = 0;
+        run.check_image(&mut lineage, after_a_failure(whole), plans());
+        assert_eq!(run.violations.len(), 3, "{:?}", run.violations);
+        assert_eq!(counts(&run), (killed + 1, 2, 1));
+    }
+
+    /// A write-back that failed is behind the store once a recovery has
+    /// returned it: the images from there on are of files that hold what
+    /// the session reads.
+    #[test]
+    fn a_recovery_puts_a_write_back_that_failed_behind_the_store() {
+        use lignin_io::sim::WriteBackRule;
+
+        let (mut run, mut lineage) = begun();
+        let fs = lineage.observer.fs().clone();
+        let rule = WriteBackRule::new(Fault::Eio).told(Told::Writers);
+        fs.add_write_back(rule.forgotten(false));
+        let op = commit(&mut lineage, false);
+        assert!(run.step(&mut lineage, op));
+        assert_eq!(fs.stats().write_backs, 1);
+        assert!(lineage.observer.now().seen.is_some());
+        // The run of this seed loses what a failed write-back was to
+        // write: the item of the commit is not in storage.
+        assert_eq!(unknown_of_seed(run.seed), UnknownFate::Lost);
+        let lacking = run
+            .tally
+            .get("images checked in which storage lacks what the session saw");
+        assert!(lacking > 0);
+
+        assert!(run.open(&mut lineage, "the store was opened again"));
+        assert_eq!(lineage.observer.now().seen, None);
+        // From here a crash that loses nothing is held to the last point
+        // again.
+        let killed = run.tally.get("states that a killed process leaves");
+        let op = commit(&mut lineage, false);
+        assert!(run.step(&mut lineage, op));
+        assert!(run.tally.get("states that a killed process leaves") > killed);
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
     }
 
     #[test]

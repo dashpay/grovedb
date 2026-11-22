@@ -34,6 +34,12 @@ options:
   --faults KIND       the faults every run injects into the file layer:
                       none, syncs or all (default: by the seed, none for two
                       seeds in four, then syncs, then all)
+  --write-backs on|off
+                      run, seed: whether the system's own write of a file
+                      fails now and then with no call reporting it (default:
+                      by the seed, on for the odd seeds). planted sets it
+                      for each defect: on for segment-handle and
+                      value-handle, off for the others
   --ops N             the operations of one lineage (default: 60)
   --lineages N        the most lineages of one run: the first, and those
                       that go on from a state a crash left (default: 5)
@@ -41,12 +47,14 @@ options:
   --again N           one state in N is recovered a second time, goes on, is
                       closed and is opened again; 0 for none (default: 8)
   --defect NAME       planted: log-sync, new-log-sync, segment-sync,
-                      value-sync, table-sync, manifest-sync, dir-sync or
-                      forgotten-hash (default: each in turn)
+                      value-sync, table-sync, manifest-sync, dir-sync,
+                      forgotten-hash, segment-handle or value-handle
+                      (default: each in turn)
   --quiet             print no line for a run
 
-A run is a function of its seed and of --faults, --ops, --lineages, --depth
-and --again, so `seed` takes them as the campaign had them: a campaign that
+A run is a function of its seed and of --faults, --write-backs, --ops,
+--lineages, --depth and --again, so `seed` takes them as the campaign had
+them: a campaign that
 found a violation prints the command. run and seed exit with 0 when nothing
 was found and with 1 when a violation was. planted exits with 0 when every
 defect was found and with 1 when one was not. A defect is found by a
@@ -67,6 +75,9 @@ pub struct Defect {
     /// Whether the defect shows in a state that a crash left, and not in
     /// the store that was not crashed.
     pub crash: bool,
+    /// Whether the runs that are to find it fail write-backs with no call
+    /// reporting it: the defect shows only where one fails.
+    pub write_backs: bool,
 }
 
 /// The defects `planted` knows.
@@ -81,7 +92,9 @@ pub struct Defect {
 /// | `manifest-sync` | No sync of the manifest's temporary file does anything: a manifest is renamed into place that is not durable. | As `new-log-sync`. |
 /// | `dir-sync` | No sync of the database directory does anything: a manifest that was replaced can come back. | As `new-log-sync`. |
 /// | `forgotten-hash` | The model misses one changed hash of each commit that changes a key-value hash. | The store that was not crashed says other than the model. |
-pub const DEFECTS: [Defect; 8] = [
+/// | `segment-handle` | In the sessions of a lineage, every sync of a segment after the one that made its header durable is made through a second handle, which the file layer opens read-only beside the one that appends: the defect of a store that syncs its blocks and its footer through a handle that did not write them. The runs fail write-backs unreported and tell only the handle that wrote, so such a sync can return `Ok` over blocks that storage does not have. | As `new-log-sync`. |
+/// | `value-handle` | The same, of a value-log file and its values. | As `new-log-sync`. |
+pub const DEFECTS: [Defect; 10] = [
     file("log-sync", lost("wal/", 1), &[Kind::NotCommitted]),
     file("new-log-sync", lost("wal/", 0), &CRASH),
     file(
@@ -98,7 +111,10 @@ pub const DEFECTS: [Defect; 8] = [
         planted: Planted::ForgottenHash,
         kinds: &[Kind::Session],
         crash: false,
+        write_backs: false,
     },
+    other_handle("segment-handle", "seg/"),
+    other_handle("value-handle", "val/"),
 ];
 
 /// What a state that a crash left can be found to be.
@@ -110,6 +126,14 @@ const fn file(name: &'static str, sabotage: Sabotage, kinds: &'static [Kind]) ->
         planted: Planted::File(sabotage),
         kinds,
         crash: true,
+        write_backs: false,
+    }
+}
+
+const fn other_handle(name: &'static str, part: &'static str) -> Defect {
+    Defect {
+        write_backs: true,
+        ..file(name, Sabotage::OtherHandle(part), &CRASH)
     }
 }
 
@@ -173,6 +197,13 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
                 let faults = all.into_iter().find(|faults| faults.name() == named);
                 shape.faults = Some(faults.ok_or(format!("`{named}` is no kind of faults"))?);
             }
+            "--write-backs" => {
+                shape.write_backs = Some(match value()?.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => return Err(format!("`{other}` is neither on nor off")),
+                });
+            }
             "--ops" => shape.ops = number(value()?)?.max(1) as usize,
             "--lineages" => shape.lineages = number(value()?)?.max(1) as usize,
             "--depth" => shape.depth = number(value()?)? as usize,
@@ -199,6 +230,9 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
         }
         Command::Planted if bounded => {
             return Err("planted takes --runs, not --points or --duration".to_string());
+        }
+        Command::Planted if shape.write_backs.is_some() => {
+            return Err("planted sets --write-backs for each defect".to_string());
         }
         _ => {}
     }
@@ -238,6 +272,9 @@ fn again(seed: u64, shape: &RunShape) -> String {
     let mut line = format!("lignin-crash seed --seed {seed}");
     if let Some(faults) = shape.faults {
         line += &format!(" --faults {}", faults.name());
+    }
+    if let Some(fail) = shape.write_backs {
+        line += [" --write-backs off", " --write-backs on"][usize::from(fail)];
     }
     for (option, value, usual) in [
         ("--ops", shape.ops as u64, usual.ops as u64),
@@ -339,29 +376,34 @@ pub fn run_command(arguments: &[String], out: &mut dyn Write) -> u8 {
             };
             settings.runs = Some(settings.runs.unwrap_or(PLANTED_RUNS));
             // A planted defect is to be found by a store that meets
-            // nothing else: every error is then the defect's.
+            // nothing but what the defect needs: every other error is then
+            // the defect's.
             settings.shape.faults = Some(Faults::None);
-            let clean = Settings {
-                runs: Some(1),
-                jobs: 1,
-                ..settings.clone()
-            };
-            let mut controls: BTreeMap<u64, bool> = BTreeMap::new();
-            let mut control = |seed| {
-                let run = || {
-                    campaign(
-                        &Settings {
-                            seed,
-                            ..clean.clone()
-                        },
-                        &mut |_, _| {},
-                    )
-                    .clean()
-                };
-                *controls.entry(seed).or_insert_with(run)
-            };
+            let mut controls: BTreeMap<(u64, bool), bool> = BTreeMap::new();
             let mut missed = 0;
             for defect in defects {
+                settings.shape.write_backs = Some(defect.write_backs);
+                settings.shape.planted = None;
+                let clean = Settings {
+                    runs: Some(1),
+                    jobs: 1,
+                    ..settings.clone()
+                };
+                let mut control = |seed| {
+                    let run = || {
+                        campaign(
+                            &Settings {
+                                seed,
+                                ..clean.clone()
+                            },
+                            &mut |_, _| {},
+                        )
+                        .clean()
+                    };
+                    *controls
+                        .entry((seed, defect.write_backs))
+                        .or_insert_with(run)
+                };
                 settings.shape.planted = Some(defect.planted);
                 let mut acted = 0;
                 let done = campaign(&settings, &mut |run, _| {
@@ -396,7 +438,7 @@ mod tests {
     fn the_options_set_the_campaign() {
         let invocation = parse(&arguments(
             "run --seed 0x10 --runs 3 --points 500 --duration 9 --jobs 2 --faults syncs \
-             --ops 7 --lineages 2 --depth 1 --again 0 --quiet",
+             --write-backs on --ops 7 --lineages 2 --depth 1 --again 0 --quiet",
         ))
         .expect("parsed");
         let Settings {
@@ -410,6 +452,7 @@ mod tests {
         assert_eq!((seed, runs, points, jobs), (16, Some(3), Some(500), 2));
         assert_eq!(duration, Some(Duration::from_secs(9)));
         assert_eq!(shape.faults, Some(Faults::Syncs));
+        assert_eq!(shape.write_backs, Some(true));
         assert_eq!((shape.ops, shape.lineages, shape.depth), (7, 2, 1));
         assert_eq!(shape.again_one_in, 0);
         assert!(invocation.quiet && invocation.command == Command::Run);
@@ -441,10 +484,12 @@ mod tests {
             "run --seed",
             "run --seed x",
             "run --faults some",
+            "run --write-backs some",
             "run --fast",
             "run --defect log-sync",
             "planted --defect none",
             "planted --points 4",
+            "planted --write-backs on",
             "seed --runs 2",
             "seed --duration 2",
         ] {
@@ -493,6 +538,22 @@ mod tests {
         let parsed = parse(&arguments(command)).expect("parsed");
         assert_eq!((parsed.settings.seed, parsed.settings.shape), (7, shape));
         assert_eq!(again(3, &RunShape::default()), "lignin-crash seed --seed 3");
+        for (fail, option) in [(false, "off"), (true, "on")] {
+            let shape = RunShape {
+                write_backs: Some(fail),
+                ..RunShape::default()
+            };
+            let line = again(3, &shape);
+            assert_eq!(
+                line,
+                format!("lignin-crash seed --seed 3 --write-backs {option}")
+            );
+            let command = line.strip_prefix("lignin-crash ").expect("the command");
+            assert_eq!(
+                parse(&arguments(command)).expect("parsed").settings.shape,
+                shape
+            );
+        }
 
         let found = Found {
             seed: 7,
