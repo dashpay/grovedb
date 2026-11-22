@@ -215,6 +215,11 @@ struct Swept {
 /// begin before the value-log file of the loads is created and before a
 /// manifest names it. Otherwise the Merk of before was a load too, and
 /// the load that is cut appends to the file that one left.
+///
+/// Every session of the sweep is opened at rest ([`open_at_rest`]): no
+/// thread of the session changes a file, so the changes of the swept span
+/// are the same in every run, and a cut after each of them is a cut at
+/// every point of one execution.
 fn sweep_power_cuts(merk: &Merk, every: bool, first: bool) -> Swept {
     let before = mixed(b'b', 120);
     let whole = Merk::len(merk);
@@ -233,8 +238,7 @@ fn sweep_power_cuts(merk: &Merk, every: bool, first: bool) -> Swept {
     // What a reader finds of the two Merks in a store that no cut touched.
     let (want_before, want_loaded) = {
         let fs = SimVfs::new(SimConfig::new(4_010));
-        let db = Db::open("/db", &options(&fs)).expect("a new database");
-        halt_background(&db);
+        let db = open_at_rest("/db", &options(&fs)).expect("a new database");
         entered(&db, &[subtree(1), subtree(9)]);
         lay_before(&db);
         load(&db, subtree(1), merk.clone());
@@ -248,8 +252,7 @@ fn sweep_power_cuts(merk: &Merk, every: bool, first: bool) -> Swept {
     let mut swept = Swept::default();
     for cut in 1.. {
         let fs = SimVfs::new(SimConfig::new(4_010));
-        let db = Db::open("/db", &options(&fs)).expect("a new database");
-        halt_background(&db);
+        let db = open_at_rest("/db", &options(&fs)).expect("a new database");
         entered(&db, &[subtree(1), subtree(9)]);
         lay_before(&db);
         db.flush().expect("what was there before is durable");
@@ -305,9 +308,8 @@ fn sweep_power_cuts(merk: &Merk, every: bool, first: bool) -> Swept {
                 continue;
             };
             swept.states += 1;
-            let db = Db::open("/db", &options(&left))
+            let db = open_at_rest("/db", &options(&left))
                 .unwrap_or_else(|error| panic!("{context}: the next open: {error}"));
-            halt_background(&db);
             let kept = dump(&db, subtree(9)).expect("the subtree of before");
             assert!(kept == want_before, "{context}: the Merk of before");
             let loaded = dump(&db, subtree(1)).expect("the subtree of the load");
@@ -546,8 +548,7 @@ fn write_back_regroups_next_to_no_value_of_a_load() {
     use lignin_tree::value::{RegroupPolicy, Regrouping};
 
     let dir = temp();
-    let db = Db::open(dir.path(), &options()).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest(dir.path(), &options()).expect("a new database");
     let merk = Uniform::new(12_000, 600);
     let txn = db.begin();
     let scope = txn.scope().expect("a scope");
