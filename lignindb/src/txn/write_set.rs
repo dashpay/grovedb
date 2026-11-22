@@ -1090,10 +1090,10 @@ impl WriteSet {
         }
         for op in 0..self.ops.len() {
             let (from, to, merks_from, merks_to) = self.op_bounds(op);
-            // The drops and the clears of an operation stand before the
-            // entries of its change sets.
-            let leaving = |entry: &&Entry| !entry.kind.leaves().is_empty();
-            let mut first = from + self.entries[from..to].iter().take_while(leaving).count();
+            // What an operation did to subtrees as a whole stands before
+            // the entries of its change sets.
+            let whole = |entry: &&Entry| entry.kind.is_whole();
+            let mut first = from + self.entries[from..to].iter().take_while(whole).count();
             for merk in &self.merks[merks_from..merks_to] {
                 if merk.whole && merk.nodes > 0 {
                     loads.push((merk.subtree, first as EntryId));
@@ -1110,7 +1110,7 @@ impl WriteSet {
     fn stored(&self, op: usize) -> Vec<(u32, StoredValue)> {
         let (from, to, ..) = self.op_bounds(op);
         let entries = self.entries[from..to].iter();
-        let entries = entries.skip_while(|entry| !entry.kind.leaves().is_empty());
+        let entries = entries.skip_while(|entry| entry.kind.is_whole());
         let stored = entries
             .enumerate()
             .filter_map(|(place, entry)| match entry.kind {

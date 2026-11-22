@@ -582,8 +582,9 @@ struct Resolver<'a> {
     /// node of a load, which the loader writes.
     places: Vec<Option<usize>>,
     /// The root of each Merk that the batch loads, where the loader put
-    /// it. The nodes of such a Merk are in their pages before any other
-    /// name of the batch is looked for, and none of them is written again.
+    /// it, and nothing for a batch with no load. The nodes of such a Merk
+    /// are in their pages before any other name of the batch is looked
+    /// for, and none of them is written again.
     loaded: Vec<Option<CellAddress>>,
 }
 
@@ -616,9 +617,15 @@ impl Resolver<'_> {
         self.written[merk].get(key).copied()
     }
 
+    /// Where the loader put the root of the Merk `merk`, if the batch
+    /// loads that Merk.
+    fn loaded(&self, merk: usize) -> Option<CellAddress> {
+        self.loaded.get(merk).copied().flatten()
+    }
+
     /// The root of the Merk `merk` after the batch.
     fn root(&self, tree: &mut TreePages<'_>, merk: usize) -> Result<Option<Target>, TxnError> {
-        if let Some(root) = self.loaded[merk] {
+        if let Some(root) = self.loaded(merk) {
             return Ok(Some(Target::At(root)));
         }
         match self.merks[merk].root {
@@ -1466,7 +1473,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             written,
             by_subtree,
             places: Vec::new(),
-            loaded: vec![None; merks.len()],
+            loaded: Vec::new(),
         };
 
         // What every name of the batch stands for is found before anything
@@ -1477,8 +1484,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // is a node of a load.
         let reach = self.reach(view, &resolver).map_err(Refused::clean)?;
         let mut place = 0;
-        let loads = (merks.iter())
-            .flat_map(|merk| std::iter::repeat_n(is_load(merk), merk.nodes.len()));
+        let loads =
+            (merks.iter()).flat_map(|merk| std::iter::repeat_n(is_load(merk), merk.nodes.len()));
         let places = reach.linked.iter().zip(loads).map(|(linked, load)| {
             (*linked && !load).then(|| {
                 place += 1;
@@ -1499,7 +1506,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // The loads, before the names of the other change sets are looked
         // for: a host of a loaded Merk is written with the cell of its
         // root.
-        let mut handles: Vec<Vec<NodeHandle>> = vec![Vec::new(); merks.len()];
+        let mut handles: Vec<Vec<NodeHandle>> = Vec::new();
         let mut load = None;
         if merks.iter().any(is_load) {
             let stored = again.map_or(&[][..], |again| again.stored);
@@ -1755,28 +1762,31 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         }
         let unlinked = (0..total).filter(|node| !reach.linked[*node]).collect();
         // The handles in the order of the batch: those the write reports,
-        // with the nodes of each load where its change set stands. A cell
-        // of a load that the write carried is where the write says.
-        let now: HashMap<CellAddress, NodeHandle> = match load {
-            Some(_) => (report.carried.iter())
-                .map(|carried| (carried.from, carried.to))
-                .collect(),
-            None => HashMap::new(),
-        };
-        let mut reported = report.nodes.into_iter();
-        let mut nodes = Vec::with_capacity(total);
-        for ((merk, loaded), offset) in merks.iter().zip(handles).zip(&resolver.offsets) {
-            match is_load(merk) {
-                true => nodes.extend(
-                    (loaded.into_iter())
-                        .map(|handle| now.get(&handle.address()).copied().unwrap_or(handle)),
-                ),
-                false => {
+        // and for a batch with a load the nodes of each load among them,
+        // where its change set stands. A cell of a load that the write
+        // carried is where the write says.
+        let nodes = match load {
+            None => report.nodes,
+            Some(_) => {
+                let now: HashMap<CellAddress, NodeHandle> = (report.carried.iter())
+                    .map(|carried| (carried.from, carried.to))
+                    .collect();
+                let mut reported = report.nodes.into_iter();
+                let mut nodes = Vec::with_capacity(total);
+                for ((merk, loaded), offset) in merks.iter().zip(handles).zip(&resolver.offsets) {
+                    if is_load(merk) {
+                        let now = |handle: NodeHandle| {
+                            now.get(&handle.address()).copied().unwrap_or(handle)
+                        };
+                        nodes.extend(loaded.into_iter().map(now));
+                        continue;
+                    }
                     let places = &resolver.places[*offset..offset + merk.nodes.len()];
                     nodes.extend(reported.by_ref().take(places.iter().flatten().count()));
                 }
+                nodes
             }
-        }
+        };
         let applied = Applied {
             carried: (report.carried.iter())
                 .map(|carried| (carried.from, carried.to))
@@ -1790,22 +1800,50 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     }
 
     /// Whether the entry of `subtree` names `host` as the element that
-    /// hosts it, once the subtrees of the batch have left and are
-    /// entered, of which `entering` has the hosts: `None` for a subtree
-    /// that is not entered then.
+    /// hosts it, once the subtrees of `batch` have left, are moved, are
+    /// stated anew and are entered: `None` for a subtree that is not
+    /// entered then.
+    ///
+    /// A subtree that a move of the batch brings a Merk to names no node
+    /// of a load. The element that hosts the moved subtree is in the Merk
+    /// its host was in before, and a Merk that is loaded had no node: the
+    /// element that takes such a host's place hosts no Merk
+    /// (`transactions.md` MV3). A subtree below the moved one is hosted
+    /// in a Merk that goes with the move, which no change set of the
+    /// batch writes.
     fn names_host(
         &self,
+        batch: &Batch<'_>,
         view: &Subtrees,
-        entering: &HashMap<Subtree, Option<HostPut<'_>>>,
         subtree: &Subtree,
         host: HostPut<'_>,
     ) -> Result<Option<bool>, TxnError> {
-        if let Some(named) = entering.get(subtree) {
-            return Ok(Some(*named == Some(host)));
+        let mut enters = batch.subtrees.iter().filter_map(SubtreeWrite::entering);
+        if view.entering.contains(subtree)
+            && let Some(enter) = enters.find(|enter| enter.subtree == *subtree)
+        {
+            return Ok(Some(enter.host == Some(host)));
         }
+        if view.moved.contains_key(subtree) {
+            return Ok(Some(false));
+        }
+        if view.taken.contains(subtree) {
+            return Ok(None);
+        }
+        // The position that the batch states anew for the subtree, which
+        // it then neither enters nor drops nor clears.
+        let restated = batch.subtrees.iter().find_map(|write| match write {
+            SubtreeWrite::Convert {
+                subtree: stated,
+                position,
+                ..
+            } if stated == subtree => *position,
+            _ => None,
+        });
         let names = |entry: &Entry| {
             entry.host().is_some_and(|named| {
-                (named.parent, named.key, named.position)
+                let position = restated.unwrap_or(named.position);
+                (named.parent, named.key, position)
                     == (host.subtree.as_bytes(), host.key, host.position)
             })
         };
@@ -1836,12 +1874,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     ) -> Result<LoadPlan, TxnError> {
         let merks = batch.merks;
         let order = load_order(batch)?;
-        let entering: HashMap<Subtree, Option<HostPut<'_>>> = (batch.subtrees.iter())
-            .filter_map(|write| match write {
-                SubtreeWrite::Enter { subtree, host, .. } => Some((*subtree, *host)),
-                _ => None,
-            })
-            .collect();
         let mut outside = HashMap::new();
         for &merk in &order {
             let write = &merks[merk];
@@ -1859,7 +1891,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         key: node.key,
                         position: u8::try_from(position).map_err(|_| not_its_host())?,
                     };
-                    if self.names_host(view, &entering, subtree, host)? == Some(false) {
+                    if self.names_host(batch, view, subtree, host)? == Some(false) {
                         return Err(not_its_host().into());
                     }
                     if resolver.load(subtree).is_none() && !outside.contains_key(subtree) {
@@ -2343,7 +2375,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for (merk, write) in merks.iter().enumerate() {
             let subtree = write.subtree;
             let offset = resolver.offsets[merk];
-            if resolver.loaded[merk].is_some() {
+            if resolver.loaded(merk).is_some() {
                 // The nodes of a load are in their pages, and those that
                 // host a Merk of the batch hold the pointer to its root:
                 // it is no pointer that the directory alone holds.

@@ -1228,7 +1228,9 @@ impl<'s> WriteTxn<'s> {
             return BatchError::MovedByKey { subtree }.into();
         }
         if let Some((at, _)) = state.stuck.filter(|(_, ops)| *ops == state.set.ops()) {
-            let mut loaded = Loaded::default();
+            // The frames are made to be asked, and are dropped: the values
+            // of a load stay where the write set has them.
+            let mut loaded = Loaded::trial();
             let (set, scopes) = (&state.set, &state.scopes);
             let frames = Self::build(&self.path, guard, at, set, scopes, &mut loaded);
             if let Err(refused) = frames {

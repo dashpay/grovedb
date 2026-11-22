@@ -301,6 +301,14 @@ impl LoadFiles {
         Ok(())
     }
 
+    /// Where the file that the loads fill ends, or 0 while they fill none.
+    #[cfg(test)]
+    pub(crate) fn filled(&self) -> u64 {
+        lock(&self.writer)
+            .as_ref()
+            .map_or(0, |filling| filling.writer.end())
+    }
+
     /// Ends the holds of commits that are kept for the session, as the
     /// end of the session does, and returns how many they were.
     #[cfg(test)]
@@ -473,9 +481,22 @@ pub(crate) struct Loaded {
     /// nothing, in the order of their appends: by file, and in a file by
     /// offset.
     runs: Vec<Run>,
+    /// Whether the frames it is for are made only to be asked, and are
+    /// dropped ([`Self::trial`]).
+    trial: bool,
 }
 
 impl Loaded {
+    /// For frames that are made only to learn whether they can be made,
+    /// and are dropped with it: a value that the write set has in the
+    /// value log stays where it is, and the cell of such frames names
+    /// that place. Nothing is appended for them.
+    pub(crate) fn trial() -> Self {
+        Self {
+            trial: true,
+            ..Self::default()
+        }
+    }
     fn note(&mut self, pointer: ValuePointer) {
         let (file, from) = (pointer.file(), pointer.offset());
         let to = pointer.end(FormatVersion::CURRENT);
@@ -650,9 +671,16 @@ impl LoadValues for Placing<'_, '_, '_> {
         let Some((entry, source)) = self.held.remove(&pending.id()) else {
             return Err(self.refuse(TxnError::Damaged("a load placed a value it was not given")));
         };
-        let appended = self.append_held(source, page);
-        let pointer = appended.map_err(|error| self.refuse(error))?;
-        self.loaded.note(pointer);
+        let pointer = match source {
+            // Frames that nobody reads ([`Loaded::trial`]).
+            Source::Stored(stored) if self.loaded.trial => stored.pointer,
+            source => {
+                let appended = self.append_held(source, page);
+                let pointer = appended.map_err(|error| self.refuse(error))?;
+                self.loaded.note(pointer);
+                pointer
+            }
+        };
         let stored = StoredValue {
             pointer,
             owner: page,
