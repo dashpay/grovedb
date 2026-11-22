@@ -5,7 +5,9 @@
 //! the operating system's files. [`SimVfs`] is the backend in memory that
 //! storage code is tested on: it crashes at a chosen operation, gives every
 //! state the contract lets the crash leave, and injects `ENOSPC` and `EIO`,
-//! all from a seed. The [`sim`] module describes it.
+//! all from a seed. The [`sim`] module describes it. On Linux, with the
+//! feature `direct_io`, `linux::DirectVfs` is the backend whose reads go
+//! past the page cache.
 //!
 //! This crate knows files as bytes and nothing above them. A module that
 //! needs `unsafe` code has to allow it for itself.
@@ -15,6 +17,8 @@
 
 #[cfg(test)]
 mod conformance;
+#[cfg(all(target_os = "linux", feature = "direct_io"))]
+pub mod linux;
 pub mod sim;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod std_fs;

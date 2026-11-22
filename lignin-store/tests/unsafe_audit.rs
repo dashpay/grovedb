@@ -9,13 +9,16 @@
 //!   file of a LigninDB crate, whatever target the file belongs to, and in
 //!   no documentation test
 //! - every library forbids unsafe code, the two that may hold some deny it,
-//!   and the one `allow` is the one on the buffer pool's `frame` module
+//!   and the two `allow` are the one on the buffer pool's `frame` module and
+//!   the one on the direct I/O path's `ring` module
 //! - every unsafe block, `unsafe impl` and `unsafe extern` block has a
 //!   `SAFETY:` comment directly above it, and every `unsafe fn` a
 //!   `# Safety` section
-//! - the unsafe code of the buffer pool is, site for site, what the audit's
-//!   inventory lists, and every test the inventory names exists and is not
-//!   ignored
+//! - the unsafe code of the buffer pool and of the direct I/O path's ring
+//!   is, site for site, what the audit's inventories list, and every test
+//!   an inventory names exists and is not ignored, but for the tests of the
+//!   ring's system calls under Miri: every other row of the ring's
+//!   inventory names first a test of the model that Miri runs
 //! - the places of the buffer pool that hand out a way to reach a frame are
 //!   as many as the audit read
 //!
@@ -44,8 +47,40 @@ const CACHE: &str = "lignin-store/src/cache";
 /// allow it. Every other library forbids it.
 const DENY: [&str; 2] = ["lignin-io/src/lib.rs", "lignin-store/src/lib.rs"];
 
-/// The file with the one `allow`, and the module it is on.
-const ALLOW: (&str, &str) = ("lignin-store/src/cache/mod.rs", "frame");
+/// The file that holds the unsafe code of the direct I/O path.
+const RING: &str = "lignin-io/src/linux/ring.rs";
+
+/// Where the tests of the direct I/O path are.
+const LINUX: &str = "lignin-io/src/linux";
+
+/// The files with an `allow`, and the module it is on in each.
+const ALLOW: [(&str, &str); 2] = [
+    ("lignin-store/src/cache/mod.rs", "frame"),
+    ("lignin-io/src/linux.rs", "ring"),
+];
+
+/// The inventories of the audit: the file each is of, its table, and where
+/// the tests it names are.
+const INVENTORIES: [(&str, &str, &str); 2] = [(FRAME, "frame", CACHE), (RING, "ring", LINUX)];
+
+/// What may be on a test that the ring's inventory names beside `#[test]`
+/// and the build of a model, where [`NOT_UNDER_MIRI`] lets it: that Miri
+/// leaves the test out.
+const LEFT_OUT_UNDER_MIRI: &str = "cfg_attr(miri,ignore=)";
+
+/// The sites of the ring's inventory that no test executes under Miri: the
+/// system calls of a ring and the advice for a mapping, which Miri does not
+/// have, and the `unsafe impl` whose tests make a ring of the system. Every
+/// other row names first a test in `ring.rs` that nothing leaves out.
+const NOT_UNDER_MIRI: [&str; 7] = [
+    "Memory::wipe_on_fork",
+    "impl Send for Queues",
+    "impl Send for Mapping",
+    "Mapping::of",
+    "Mapping::drop",
+    "Ring::new",
+    "Ring::read",
+];
 
 /// What is scanned beside the directories of the LigninDB crates: the code
 /// another crate holds for LigninDB.
@@ -849,6 +884,7 @@ fn unsafe_code_is_in_the_files_the_audit_lists_and_nowhere_else() {
     let mut listed: BTreeSet<String> = rows.iter().map(|row| names(&row[0])[0].clone()).collect();
     assert_eq!(listed.len(), rows.len());
     listed.insert(FRAME.to_string());
+    listed.insert(RING.to_string());
 
     let sources = sources();
     let found: BTreeSet<String> = sources
@@ -1028,7 +1064,8 @@ fn every_library_forbids_unsafe_code_and_one_module_is_allowed_it() {
                 );
             }
         }
-        let expected = usize::from(file.ends_with("src/lib.rs") || file == ALLOW.0);
+        let allows = ALLOW.iter().any(|(allowed, _)| file == allowed);
+        let expected = usize::from(file.ends_with("src/lib.rs") || allows);
         assert_eq!(
             occurrences(&tokens(&blank(source)), "unsafe_code"),
             expected,
@@ -1037,12 +1074,14 @@ fn every_library_forbids_unsafe_code_and_one_module_is_allowed_it() {
     }
     assert!(libraries >= 7, "{libraries} libraries");
 
-    let module = tokens(&blank(&sources[ALLOW.0]));
-    let declared = (0..module.len())
-        .find(|&at| is_word(&module, at, "mod") && is_word(&module, at + 1, ALLOW.1))
-        .expect("the module with the unsafe code");
-    assert_eq!(attributes_before(&module, declared), ["allow(unsafe_code)"]);
-    assert!(sources.contains_key(FRAME));
+    for (file, name) in ALLOW {
+        let module = tokens(&blank(&sources[file]));
+        let declared = (0..module.len())
+            .find(|&at| is_word(&module, at, "mod") && is_word(&module, at + 1, name))
+            .expect("the module with the unsafe code");
+        assert_eq!(attributes_before(&module, declared), ["allow(unsafe_code)"]);
+    }
+    assert!(sources.contains_key(FRAME) && sources.contains_key(RING));
 
     let nested = "mod inner {\n    #![forbid(unsafe_code)]\n}\n";
     assert!(!has_crate_lint(nested, "forbid"));
@@ -1065,25 +1104,27 @@ fn every_unsafe_block_says_why_it_is_sound() {
 }
 
 #[test]
-fn the_inventory_is_the_unsafe_code_of_the_buffer_pool() {
-    let source = &sources()[FRAME];
-    let found = keys(&sites(source));
-    let rows = table(&audit(), "frame");
-    let listed: Vec<String> = rows
-        .iter()
-        .map(|row| format!("{} | {}", names(&row[0])[0], row[1]))
-        .collect();
-    assert_eq!(
-        found, listed,
-        "the unsafe code of {FRAME}, in its order, against the inventory of {AUDIT}"
-    );
-    for row in &rows {
-        assert!(!row[2].is_empty(), "{} says what it rests on", row[0]);
-        assert!(
-            !names(row.last().expect("a row has cells")).is_empty(),
-            "{} names a test",
-            row[0]
+fn the_inventories_are_the_unsafe_code_of_the_buffer_pool_and_of_the_ring() {
+    for (file, name, _) in INVENTORIES {
+        let source = &sources()[file];
+        let found = keys(&sites(source));
+        let rows = table(&audit(), name);
+        let listed: Vec<String> = rows
+            .iter()
+            .map(|row| format!("{} | {}", names(&row[0])[0], row[1]))
+            .collect();
+        assert_eq!(
+            found, listed,
+            "the unsafe code of {file}, in its order, against the inventory of {AUDIT}"
         );
+        for row in &rows {
+            assert!(!row[2].is_empty(), "{} says what it rests on", row[0]);
+            assert!(
+                !names(row.last().expect("a row has cells")).is_empty(),
+                "{} names a test",
+                row[0]
+            );
+        }
     }
 }
 
@@ -1138,8 +1179,8 @@ fn library_of(source: &str) -> Vec<Placed> {
 /// a function with `#[test]`, with nothing on it, on a module it is in or
 /// on its file that ignores it or leaves it out of a build. The conditions
 /// of [`CONDITIONS`] are let through, and for the function itself only the
-/// one that leaves it out of a build for a model.
-fn is_a_test_that_runs(source: &str, name: &str) -> bool {
+/// one that leaves it out of a build for a model, and what `also` names.
+fn is_a_test_that_runs(source: &str, name: &str, also: &[&str]) -> bool {
     let tokens = tokens(&blank(source));
     let found: Vec<usize> = (0..tokens.len())
         .filter(|&at| {
@@ -1170,9 +1211,9 @@ fn is_a_test_that_runs(source: &str, name: &str) -> bool {
                 .map(|(_, attribute)| attribute),
         );
     own.iter().any(|attribute| attribute == "test")
-        && own
-            .iter()
-            .all(|attribute| passes(attribute, &CONDITIONS[1..2]))
+        && own.iter().all(|attribute| {
+            also.contains(&attribute.as_str()) || passes(attribute, &CONDITIONS[1..2])
+        })
         && around
             .into_iter()
             .all(|attribute| passes(&attribute, &CONDITIONS))
@@ -1182,23 +1223,46 @@ fn is_a_test_that_runs(source: &str, name: &str) -> bool {
 fn every_test_the_inventory_names_is_a_test_that_runs() {
     let sources = sources();
     let audit = audit();
-    let mut named = BTreeSet::new();
-    for row in table(&audit, "frame") {
-        named.extend(names(row.last().expect("a row has cells")));
-    }
-    assert!(named.len() > 10, "{} tests", named.len());
-    for test in named {
-        // `tests::basic::name` is in `tests/basic.rs`, and `frame::tests::name`
-        // in the test module of `frame.rs`.
-        let (module, name) = test.rsplit_once("::").expect("a module and a name");
-        let whole = format!("{CACHE}/{}.rs", module.replace("::", "/"));
-        let outer = module.rsplit_once("::").map_or(module, |(outer, _)| outer);
-        let inline = format!("{CACHE}/{}.rs", outer.replace("::", "/"));
-        let source = sources
-            .get(&whole)
-            .or_else(|| sources.get(&inline))
-            .unwrap_or_else(|| panic!("{test}: no {whole} and no {inline}"));
-        assert!(is_a_test_that_runs(source, name), "{test} is not a test");
+    for (file, table_name, directory) in INVENTORIES {
+        let mut named = BTreeSet::new();
+        for row in table(&audit, table_name) {
+            let site = &names(&row[0])[0];
+            let tests = names(row.last().expect("a row has cells"));
+            for (at, test) in tests.iter().enumerate() {
+                // The first test of a row of the ring is on the model, in
+                // `ring.rs` itself, and Miri runs it, unless the row is of
+                // what Miri does not have. No test of the buffer pool is
+                // left out under Miri.
+                let on_the_model =
+                    file == RING && at == 0 && !NOT_UNDER_MIRI.contains(&site.as_str());
+                assert!(
+                    !on_the_model || test.starts_with("ring::tests::"),
+                    "{site}: its first test, {test}, is not one of the model in {RING}"
+                );
+                let also: &[&str] = if file == RING && !on_the_model {
+                    &[LEFT_OUT_UNDER_MIRI]
+                } else {
+                    &[]
+                };
+                // `tests::basic::name` is in `tests/basic.rs`, and
+                // `frame::tests::name` in the test module of `frame.rs`.
+                let (module, name) = test.rsplit_once("::").expect("a module and a name");
+                let whole = format!("{directory}/{}.rs", module.replace("::", "/"));
+                let outer = module.rsplit_once("::").map_or(module, |(outer, _)| outer);
+                let inline = format!("{directory}/{}.rs", outer.replace("::", "/"));
+                let source = sources
+                    .get(&whole)
+                    .or_else(|| sources.get(&inline))
+                    .unwrap_or_else(|| panic!("{test}: no {whole} and no {inline}"));
+                assert!(
+                    is_a_test_that_runs(source, name, also),
+                    "{site}: {test} is not a test that runs"
+                );
+            }
+            named.extend(tests);
+        }
+        let least = if file == FRAME { 10 } else { 5 };
+        assert!(named.len() > least, "{} tests", named.len());
     }
 
     // A test under a counting allocator is in the file that has the
@@ -1209,7 +1273,7 @@ fn every_test_the_inventory_names_is_a_test_that_runs() {
         assert!(!tests.is_empty(), "{file} names a test");
         for name in tests {
             assert!(
-                is_a_test_that_runs(&sources[file], &name),
+                is_a_test_that_runs(&sources[file], &name, &[]),
                 "{file}: {name} is not a test"
             );
         }
@@ -1476,8 +1540,17 @@ fn the_reader_knows_a_test_that_runs_from_one_that_is_left_out() {
             false,
         ),
     ] {
-        assert_eq!(is_a_test_that_runs(source, name), runs, "{source:?} {name}");
+        assert_eq!(is_a_test_that_runs(source, name, &[]), runs, "{source:?} {name}");
     }
+    // What a table may have on its tests is let through for that table,
+    // as it is written and in no other form.
+    let left_out = "#[test]\n#[cfg_attr(miri, ignore = \"no io_uring\")]\nfn one() {}";
+    assert!(is_a_test_that_runs(left_out, "one", &[LEFT_OUT_UNDER_MIRI]));
+    assert!(!is_a_test_that_runs(left_out, "one", &[]));
+    let ignored = "#[test]\n#[ignore = \"slow\"]\nfn one() {}";
+    assert!(!is_a_test_that_runs(ignored, "one", &[LEFT_OUT_UNDER_MIRI]));
+    let both = "#[test]\n#[cfg_attr(miri, ignore = \"a\")]\n#[ignore]\nfn one() {}";
+    assert!(!is_a_test_that_runs(both, "one", &[LEFT_OUT_UNDER_MIRI]));
 }
 
 #[test]

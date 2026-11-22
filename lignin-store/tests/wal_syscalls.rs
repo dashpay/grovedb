@@ -6,6 +6,11 @@
 //! one call, of exactly the group's bytes. It runs alone in its binary, so
 //! that nothing else writes while it counts.
 //!
+//! With the feature `direct_io` it counts a second time, on the file layer
+//! that opens the files it reads with `O_DIRECT`
+//! (`lignin_io::linux::DirectVfs`): the log appends through the std
+//! backend's handle there, and is read back past the page cache.
+//!
 //! To see the calls themselves, give the test a directory and trace it:
 //!
 //! ```text
@@ -92,33 +97,53 @@ fn a_commit_is_one_write_system_call() {
             kept.path().to_path_buf()
         }
     };
-    let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
+    commits_are_single_writes(Arc::new(StdVfs), &dir);
+
+    #[cfg(feature = "direct_io")]
+    {
+        let direct = lignin_io::linux::DirectVfs::new();
+        let dir = tempfile::tempdir().expect("a directory");
+        let logged = commits_are_single_writes(Arc::new(direct.clone()), dir.path());
+        // The log was read back through handles that are open for direct
+        // reads.
+        let read = direct.stats();
+        assert!(read.preads > 0 && read.bytes >= logged, "{read:?}");
+    }
+}
+
+/// Commits groups to a log in `dir` on `vfs`, each counted as one `write`
+/// of the group's bytes, and reads the log back. Returns the bytes of the
+/// groups.
+fn commits_are_single_writes(vfs: Arc<dyn Vfs>, dir: &Path) -> u64 {
     let empty = Manifest::new(PageSize::DEFAULT, Default::default(), None, Vec::new()).unwrap();
-    let mut manifest = ManifestStore::create(vfs.clone(), &dir, empty).expect("a manifest");
+    let mut manifest = ManifestStore::create(vfs.clone(), dir, empty).expect("a manifest");
     let options = LogOptions {
         sync: SyncPolicy::Never,
         ..LogOptions::default()
     };
-    let end = LogReader::new(vfs.clone(), &dir, manifest.manifest().unwrap())
+    let end = LogReader::new(vfs.clone(), dir, manifest.manifest().unwrap())
         .into_end()
         .expect("an empty log");
     let log = LogStore::open(&manifest, &end, options).expect("a log");
     log.roll(&mut manifest).expect("a first file");
 
     let mut longest = 0;
+    let mut logged = 0;
     for round in 0..300 {
         // From a commit that changes nothing to a block of many pages with
         // several values: one record or a dozen, one call.
         let len = commit(&log, round % 5, 700, (round % 40) as u32);
         longest = longest.max(len);
+        logged += len as u64;
     }
     assert!(longest > 4000, "{longest}");
     // A group of several megabytes, whose values take many records each,
     // is one call as well.
     let len = commit(&log, 3, 3 << 20, 12);
     assert!(len > 9 << 20, "{len}");
+    logged += len as u64;
 
-    let mut reader = LogReader::new(vfs, Path::new(&dir), manifest.manifest().unwrap());
+    let mut reader = LogReader::new(vfs, dir, manifest.manifest().unwrap());
     let mut commits = 0;
     while let Some(is_commit) = reader
         .next_item(|read| matches!(read.item, LogItem::Commit(_)))
@@ -127,4 +152,5 @@ fn a_commit_is_one_write_system_call() {
         commits += u32::from(is_commit);
     }
     assert_eq!(commits, 301);
+    logged
 }

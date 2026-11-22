@@ -8,10 +8,18 @@ homepage = "https://www.grovedb.org"
 repository = "https://github.com/dashpay/grovedb"
 publish = false
 
+[features]
+# The direct I/O path of Linux (`lignin_io::linux`). On any other system the
+# feature builds nothing.
+direct_io = ["dep:rustix"]
+
 [dependencies]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rustix = { version = "1", features = ["fs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs", "io_uring", "mm"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
