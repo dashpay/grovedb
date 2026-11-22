@@ -526,10 +526,19 @@ fn the_values_of_a_fragment_are_placed_in_the_order_of_a_scan() {
             fragments += 1;
             followed += positions.len().saturating_sub(1);
         }
-        // Every cell of the page is in one fragment, and the order of the
-        // page is that of its fragments.
+        // Every cell of the page is in one fragment, and the order a
+        // scan of the page reads them in has each fragment in one piece,
+        // in the order of this walk.
         assert_eq!(cells, tree_page.cell_count());
-        assert_eq!(scan_order(&tree_page).len(), cells);
+        let of_the_page = scan_order(&tree_page);
+        assert_eq!(of_the_page.len(), cells);
+        for root in tree_page.fragment_roots() {
+            let mut order = Vec::new();
+            scan(&tree_page, root, &mut order);
+            let from = of_the_page.iter().position(|slot| *slot == order[0]);
+            let from = from.expect("a cell of the page");
+            assert_eq!(of_the_page[from..from + order.len()], order[..]);
+        }
     }
     assert!(fragments >= report.pages.len(), "{fragments} fragments");
     assert!(
