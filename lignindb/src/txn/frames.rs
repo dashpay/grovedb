@@ -232,8 +232,10 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// data column of a subtree it has written a node into since it last
     /// dropped or cleared the subtree (ST1), and a drop and a clear take
     /// the subtree's keys out. The keys of a subtree that went with one
-    /// above it stay until the subtree is entered again, and nothing is
-    /// read or written under it until then.
+    /// above it stay until a subtree is entered under its prefix again or
+    /// a move brings one there, and nothing is read or written under it
+    /// until then. The keys of a Merk that is moved go with it to its
+    /// new prefix.
     own: HashSet<Vec<u8>>,
     /// The subtrees that left with the moves of the batch that was applied
     /// last.
@@ -1171,6 +1173,47 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             // What the transaction left under a subtree goes with it.
             let prefix = write.subtree();
             (self.own).retain(|key| !key.starts_with(prefix.as_bytes()));
+        }
+        // A Merk that is moved has its flat records under its new prefix,
+        // the unlinked ones among them: what is known of whether it holds
+        // any goes there with it, and so do the keys of the records that
+        // the transaction left. The moves of a batch are made together,
+        // and what leaves with them takes its own out. A key that was
+        // left under a prefix by a subtree which went with one above it
+        // is not of the Merk that a move brings there.
+        if let Some(plan) = &view.rekey {
+            let moved: Vec<(Subtree, Subtree)> = (plan.moved())
+                .map(|(from, to, _)| (Subtree::new(*from), Subtree::new(*to)))
+                .collect();
+            let known: Vec<(Subtree, Option<bool>)> = (moved.iter())
+                .map(|(from, to)| (*to, self.unlinked.remove(from)))
+                .collect();
+            for left in plan.left() {
+                self.unlinked.remove(&Subtree::new(*left));
+            }
+            for (to, known) in known {
+                match known {
+                    Some(known) => drop(self.unlinked.insert(to, known)),
+                    None => drop(self.unlinked.remove(&to)),
+                }
+            }
+            // Each key is asked first of the prefixes that a Merk is taken
+            // from: the key of a Merk that leaves a prefix which another
+            // comes to goes with its Merk.
+            let goes: HashMap<&[u8], &Subtree> = (moved.iter())
+                .map(|(from, to)| (&from.as_bytes()[..], to))
+                .collect();
+            let mut gone: HashSet<&[u8]> = plan.left().iter().map(|left| &left[..]).collect();
+            gone.extend(moved.iter().map(|(_, to)| &to.as_bytes()[..]));
+            let own = std::mem::take(&mut self.own);
+            let rekeyed = own.into_iter().filter_map(|key| {
+                let (prefix, rest) = key.split_at(Subtree::LEN.min(key.len()));
+                if let Some(to) = goes.get(prefix) {
+                    return Some([&to.as_bytes()[..], rest].concat());
+                }
+                (!gone.contains(prefix)).then_some(key)
+            });
+            self.own = rekeyed.collect();
         }
         for subtree in unlinked.holding {
             self.unlinked.insert(subtree, true);

@@ -59,8 +59,14 @@ fn top(hosts: &[(&[u8], u8, &[u8])]) -> Merk {
     })
 }
 
+/// The key that the subtrees under `a` and `c` have an unlinked record
+/// under, which the one under `b` has not.
+const LOOSE: &[u8] = b"loose";
+
 /// A Merk with nodes of its own, whose node `in` hosts `inner` and whose
-/// node `e` hosts `empty`, if it has one.
+/// node `e` hosts `empty`, if it has one. But for the one that `b` leads,
+/// it has one more node stated, which its tree does not reach: an
+/// unlinked record.
 fn outer(lead: u8, inner: u8, empty: Option<u8>) -> Merk {
     let mut items = BTreeMap::new();
     items.insert(b"in".to_vec(), vec![lead; 4]);
@@ -70,6 +76,10 @@ fn outer(lead: u8, inner: u8, empty: Option<u8>) -> Merk {
         items.insert(b"e".to_vec(), vec![lead; 2]);
     }
     let merk = Merk::of(&items).hosting(b"in", subtree(inner));
+    let merk = match lead {
+        b'b' => merk,
+        _ => merk.with_unlinked(LOOSE, &[lead ^ 0x33; 60]),
+    };
     match empty {
         Some(empty) => merk.hosting(b"e", subtree(empty)),
         None => merk,
@@ -271,6 +281,82 @@ fn a_commit_that_moves_subtrees_is_sound_and_is_read_by_the_next_session() {
         ..Writes::default()
     };
     more.commit(&db);
+    assert_eq!(found(&db, &NAMES), after);
+    let report = db.close_and_verify(None).expect("the close");
+    assert!(report.is_sound(), "{report}");
+}
+
+/// D-264 item 1, through a database: the unlinked records of a Merk go
+/// with it to its new prefix. Of the two subtrees that change places one
+/// holds an unlinked record and the other none, and a third that holds
+/// one goes to a prefix that had no subtree. A reader of the version
+/// before the moves and one of the version after them each find a record
+/// under the prefixes whose Merks hold one at their version and none
+/// under the others, by key and in a walk of the nodes, and each asks
+/// once of a subtree whether it holds any. The next session reads the
+/// same.
+#[test]
+fn a_reader_finds_the_unlinked_records_of_a_moved_merk_under_its_new_prefix() {
+    use crate::txn::unlinked::probe;
+
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    let (writes, before) = grove();
+    writes.commit(&db);
+    let earlier = db.snapshot();
+    let (_, after) = commit_moves(&db, &before).expect("the moves are committed");
+    // What a reader is shown under `LOOSE` of the subtree `name`: `None`
+    // where no subtree is entered, and otherwise whether a record is
+    // there, and its value. It reads a key with no node first, a node of
+    // the tree, and then walks the Merk.
+    let shown = |snapshot: &crate::snapshot::Snapshot<'_>, name: u8| {
+        let operation = snapshot.operation();
+        let opened = operation.open(subtree(name)).expect("a lookup")?;
+        let lookups = probe::lookups();
+        let read = |key: &[u8]| {
+            let read = opened.node(key, None, |view| {
+                view.map(|view| {
+                    let mut value = lignin_tree::value::ValueBuf::new();
+                    let value = view.value(&mut value).expect("a value").to_vec();
+                    (view.is_unlinked(), value)
+                })
+            });
+            read.expect("a read")
+        };
+        assert_eq!(read(b"absent"), None);
+        assert!(matches!(read(b"k1"), Some((false, _))));
+        let record = read(LOOSE).map(|(unlinked, value)| {
+            assert!(unlinked);
+            value
+        });
+        let mut walk = opened.walk().expect("a lookup");
+        walk.seek(&operation, LOOSE).expect("a move");
+        assert_eq!(walk.key() == Some(LOOSE), record.is_some());
+        assert_eq!(probe::lookups(), lookups + 1, "one lookup for {name}");
+        Some(record)
+    };
+    let record = |lead: u8| Some(Some(vec![lead ^ 0x33; 60]));
+    let at =
+        |snapshot: &crate::snapshot::Snapshot<'_>| [A, B, C, D].map(|name| shown(snapshot, name));
+    let was = [record(b'a'), Some(None), record(b'c'), None];
+    let is = [Some(None), record(b'a'), None, record(b'c')];
+    assert_eq!(at(&earlier), was);
+    let later = db.snapshot();
+    assert_eq!(at(&later), is);
+    assert_eq!(
+        at(&earlier),
+        was,
+        "the version before the moves is as it was"
+    );
+    assert_eq!(found(&db, &NAMES), after);
+    let has = |held: &Held| held.0.iter().any(|(key, _)| key == LOOSE);
+    assert!(has(&after[&B]) && has(&after[&D]) && !has(&after[&A]));
+    drop((earlier, later));
+    let report = db.close_and_verify(None).expect("the close");
+    assert!(report.is_sound(), "{report}");
+
+    let db = Db::open(dir.path(), &options()).expect("the database is opened again");
+    assert_eq!(at(&db.snapshot()), is);
     assert_eq!(found(&db, &NAMES), after);
     let report = db.close_and_verify(None).expect("the close");
     assert!(report.is_sound(), "{report}");

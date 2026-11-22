@@ -2951,6 +2951,324 @@ fn a_commit_below_a_cleared_merk_meets_the_clear_by_the_entries_that_are_stored(
     }
 }
 
+/// A node record that no link of a tree leads to: `n` tells one from
+/// another.
+fn loose(n: u8) -> model::NodeRec {
+    model::NodeRec {
+        value: vec![n; 40],
+        feature: vec![3, 1],
+        value_hash: [n; 32],
+        kv_hash: [n + 1; 32],
+        left: None,
+        right: None,
+    }
+}
+
+/// The batch that writes `nodes` into the Merk at the end of `path`,
+/// which has, from `TOP` down, each Merk with the key of the node that
+/// hosts it, and states the root that the Merk has: its tree reaches
+/// none of them, and the transaction keeps each as an unlinked record
+/// (`MerkWrite`, "Unlinked records"). `beside` has the keys that hold
+/// such a record already, which are no nodes of the tree.
+fn unlinked_in<'s>(
+    world: &World<'s>,
+    tx: &Tx<'s>,
+    path: &[(u8, &[u8])],
+    nodes: Vec<(&[u8], model::NodeRec, bool)>,
+    beside: &[&[u8]],
+) -> OwnedBatch {
+    let (name, _) = *path.last().expect("a Merk");
+    let mut tree = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(name)));
+    tree.retain(|key, _| !beside.contains(&&key[..]));
+    let items = model::Committed::items(&tree);
+    let mut merk = OwnedMerk::change(sub(name), &tree, &items);
+    assert!(merk.nodes.is_empty() && merk.removed.is_empty());
+    merk.root = Some(model::records(&items).0);
+    (merk.nodes)
+        .extend((nodes.into_iter()).map(|(key, node, stated)| (key.to_vec(), node, stated)));
+    let mut batch = edit_at(world, tx, path, |_| {});
+    batch.merks[0] = merk;
+    batch
+}
+
+/// Whether `tx` shows the node under `key` of the Merk `name` as an
+/// unlinked record, as a node of the tree (`Some(false)`), or not at all.
+fn unlinked(tx: &Tx<'_>, name: u8, key: &[u8]) -> Option<bool> {
+    let shown = (tx.txn).node(sub(name), key, |view| {
+        view.map(|view| {
+            assert_eq!(view.handle().is_none(), view.is_unlinked());
+            view.is_unlinked()
+        })
+    });
+    shown.expect("the node is read")
+}
+
+/// Every key that a cursor of `tx` over the nodes of the Merk `name`
+/// shows, in order, each with whether it is an unlinked record.
+fn under_a_cursor(tx: &Tx<'_>, name: u8) -> Vec<(Vec<u8>, bool)> {
+    let mut cursor = tx.txn.merk_cursor(sub(name)).expect("a cursor");
+    let mut keys = Vec::new();
+    cursor.seek_to_first().expect("a seek");
+    while let Some(key) = cursor.key().map(<[u8]>::to_vec) {
+        let loose = cursor.node(|view| view.expect("a node").is_unlinked());
+        keys.push((key, loose.expect("the node is read")));
+        cursor.next().expect("a step");
+    }
+    keys
+}
+
+/// The keys of the flat records that `tx`, which has written no node
+/// under the prefix `name`, reads in the data column there: those of the
+/// unlinked records of a Merk.
+fn beside_the_tree(tx: &Tx<'_>, name: u8) -> Vec<Vec<u8>> {
+    let mut cursor = tx.txn.cursor(Unit::data(sub(name)));
+    (records(&mut cursor).into_iter())
+        .map(|(key, _)| key)
+        .collect()
+}
+
+/// A move takes the unlinked records of a Merk with the Merk: they are
+/// flat records of its data column (`MerkWrite`, "Unlinked records";
+/// MV5). A Merk holds one that is committed, and the mover leaves a
+/// second. After the move the transaction finds each under the new
+/// prefix, by key and under a cursor over the nodes, among the nodes in
+/// key order, and none under the old one, with frames that were made
+/// again as well; and so does a transaction that reads the committed
+/// state after the commit. The record that the mover left is its own
+/// node still, under the new prefix: a later write of it keeps its
+/// value. The committed one has no value for a write to keep.
+#[test]
+fn a_move_carries_the_unlinked_records_of_a_merk() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let batch = unlinked_in(
+        &world,
+        &tx,
+        &[(A, b"a")],
+        vec![(b"u1", loose(7), true)],
+        &[],
+    );
+    world
+        .apply(&tx, &batch)
+        .expect("a record that no node links");
+    assert!(committed(world.commit(tx, &[])));
+
+    let tx = world.begin();
+    let below: &[(u8, &[u8])] = &[(A, b"a")];
+    let batch = unlinked_in(&world, &tx, below, vec![(b"u2", loose(9), true)], &[b"u1"]);
+    let applied = world.apply(&tx, &batch).expect("a second one");
+    assert_eq!(applied.unlinked.len(), 1);
+    assert_eq!(
+        [b"u1", b"u2", b"k1"].map(|key| unlinked(&tx, A, key)),
+        [Some(true), Some(true), Some(false)]
+    );
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    let all: Vec<(Vec<u8>, bool)> = [(&b"in"[..], false), (b"k1", false), (b"k2", false)]
+        .into_iter()
+        .chain([(&b"u1"[..], true), (b"u2", true)])
+        .map(|(key, loose)| (key.to_vec(), loose))
+        .collect();
+    let moved = |tx: &Tx<'_>| {
+        assert_eq!(
+            [b"u1", b"u2", b"k1"].map(|key| unlinked(tx, B, key)),
+            [Some(true), Some(true), Some(false)]
+        );
+        assert_eq!([b"u1", b"u2"].map(|key| unlinked(tx, A, key)), [None, None]);
+        assert_eq!(under_a_cursor(tx, B), all);
+        assert!(under_a_cursor(tx, A).is_empty());
+    };
+    moved(&tx);
+    world.check(&tx);
+    // Frames that are made again over a commit make the move again.
+    let rebuilds = tx.txn.stats().rebuilds;
+    let beside = OwnedBatch {
+        records: vec![put(aux(TOP), b"u", b"beside")],
+        ..OwnedBatch::default()
+    };
+    assert!(committed(world.write_outside(&beside, &[&tx])));
+    moved(&tx);
+    world.check(&tx);
+    assert!(tx.txn.stats().rebuilds > rebuilds);
+
+    // The committed record has no value to keep, and the mover's own has.
+    let kept = |key: &'static [u8]| {
+        let now = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(B)));
+        let Some(Val::Node(node)) = now.get(key) else {
+            panic!("{key:?} is no node");
+        };
+        let node = model::NodeRec {
+            kv_hash: [0x77; 32],
+            ..node.clone()
+        };
+        let at: &[(u8, &[u8])] = &[(B, b"b")];
+        unlinked_in(&world, &tx, at, vec![(key, node, false)], &[b"u1", b"u2"])
+    };
+    let refused = batch_error(world.apply(&tx, &kept(b"u1")));
+    assert!(matches!(refused, BatchError::NoValue { .. }), "{refused}");
+    world.apply(&tx, &kept(b"u2")).expect("its own node");
+    moved(&tx);
+    world.check(&tx);
+
+    assert!(committed(world.commit(tx, &[])));
+    let reader = world.begin();
+    world.check(&reader);
+    moved(&reader);
+    assert_eq!(
+        beside_the_tree(&reader, B),
+        [b"u1".to_vec(), b"u2".to_vec()]
+    );
+    assert!(beside_the_tree(&reader, A).is_empty());
+    let trees = db.check_trees(&versions, world.latest());
+    let nodes: Vec<Vec<u8>> = [&b"in"[..], b"k1", b"k2"].map(<[u8]>::to_vec).into();
+    assert_eq!(trees.get(&sub(B)), Some(&nodes), "the nodes of the tree");
+    assert_eq!(trees.get(&sub(A)), None);
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// The unlinked record that a move brings under a prefix is the record
+/// of the Merk that was moved, and not one that the transaction left
+/// there before. A transaction leaves a node out of the tree of a Merk
+/// and drops the subtree above it, and then moves another Merk to that
+/// prefix, which holds a committed unlinked record under the same key.
+/// The record it reads there is the committed one, which has no value
+/// for a write to keep.
+#[test]
+fn a_record_that_a_move_brings_is_not_the_one_the_transaction_left_under_the_prefix() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let second = nested(&world, &tx, b"c", C, C_IN, 50);
+    world.apply(&tx, &second).expect("a second subtree");
+    let below_c: &[(u8, &[u8])] = &[(C, b"c"), (C_IN, b"in")];
+    let batch = unlinked_in(&world, &tx, below_c, vec![(b"u1", loose(7), true)], &[]);
+    world
+        .apply(&tx, &batch)
+        .expect("a record that no node links");
+    assert!(committed(world.commit(tx, &[])));
+
+    let tx = world.begin();
+    let below_a: &[(u8, &[u8])] = &[(A, b"a"), (A_IN, b"in")];
+    let batch = unlinked_in(&world, &tx, below_a, vec![(b"u1", loose(9), true)], &[]);
+    world
+        .apply(&tx, &batch)
+        .expect("the transaction's own record");
+    assert_eq!(unlinked(&tx, A_IN, b"u1"), Some(true));
+    let top = world.merk(&tx, TOP, |items| {
+        items.remove(&b"a"[..]).expect("the host");
+    });
+    let dropped = OwnedBatch {
+        merks: vec![top],
+        subtrees: vec![OwnedSubtree::Drop(sub(A))],
+        ..OwnedBatch::default()
+    };
+    world
+        .apply(&tx, &dropped)
+        .expect("the subtree above is dropped");
+    assert_eq!(unlinked(&tx, A_IN, b"u1"), None);
+    let batch = rename(&world, &tx, b"c", b"d", &[(C, FREE), (C_IN, A_IN)]);
+    world.apply(&tx, &batch).expect("another Merk comes there");
+    world.check(&tx);
+    let brought = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(A_IN)));
+    let Some(Val::Node(node)) = brought.get(&b"u1"[..]) else {
+        panic!("the record that the move brought");
+    };
+    assert_eq!(node.value, loose(7).value, "the committed record");
+    let again = model::NodeRec {
+        kv_hash: [0x77; 32],
+        ..node.clone()
+    };
+    let moved: &[(u8, &[u8])] = &[(FREE, b"d"), (A_IN, b"in")];
+    let kept = unlinked_in(&world, &tx, moved, vec![(b"u1", again, false)], &[b"u1"]);
+    let refused = batch_error(world.apply(&tx, &kept));
+    assert!(matches!(refused, BatchError::NoValue { .. }), "{refused}");
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    let reader = world.begin();
+    world.check(&reader);
+    assert_eq!(unlinked(&reader, A_IN, b"u1"), Some(true));
+}
+
+/// What a transaction knows of whether a Merk holds unlinked records goes
+/// with the Merk where a move takes it: the moves of a batch are made
+/// together. One of two Merks holds an unlinked record, and a
+/// transaction that has asked of both has them change places. It finds
+/// the record under the prefix the Merk went to and none under the other,
+/// and asks the data column no more for either.
+#[test]
+fn two_merks_that_change_places_take_what_is_known_of_their_unlinked_records() {
+    use crate::txn::unlinked::probe::lookups;
+
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let second = nested(&world, &tx, b"b", B, B_IN, 50);
+    world.apply(&tx, &second).expect("a second subtree");
+    let batch = unlinked_in(
+        &world,
+        &tx,
+        &[(A, b"a")],
+        vec![(b"u1", loose(7), true)],
+        &[],
+    );
+    world
+        .apply(&tx, &batch)
+        .expect("a record that no node links");
+    assert!(committed(world.commit(tx, &[])));
+
+    let tx = world.begin();
+    // A write gives the transaction frames, and a read of a key with no
+    // node asks once of each Merk.
+    world.write(&tx, vec![put(aux(TOP), b"w", b"frames")]);
+    let asked = lookups();
+    assert_eq!(
+        [unlinked(&tx, A, b"none"), unlinked(&tx, B, b"none")],
+        [None, None]
+    );
+    assert_eq!(lookups(), asked + 2);
+    assert_eq!(
+        [unlinked(&tx, A, b"u1"), unlinked(&tx, B, b"u1")],
+        [Some(true), None]
+    );
+    assert_eq!(lookups(), asked + 2);
+
+    world
+        .apply(&tx, &swap(&world, &tx))
+        .expect("the two change places");
+    let asked = lookups();
+    assert_eq!(
+        [unlinked(&tx, A, b"u1"), unlinked(&tx, B, b"u1")],
+        [None, Some(true)]
+    );
+    assert_eq!(
+        [unlinked(&tx, A, b"none"), unlinked(&tx, B, b"none")],
+        [None, None]
+    );
+    assert_eq!(lookups(), asked, "what was known went with each Merk");
+    world.check(&tx);
+    assert_eq!(beside_the_tree(&tx, B), [b"u1".to_vec()]);
+    assert!(beside_the_tree(&tx, A).is_empty());
+    assert!(committed(world.commit(tx, &[])));
+
+    // A transaction that reads the committed state asks once of each.
+    let reader = world.begin();
+    let asked = lookups();
+    assert_eq!(
+        [unlinked(&reader, A, b"u1"), unlinked(&reader, B, b"u1")],
+        [None, Some(true)]
+    );
+    assert_eq!(
+        [unlinked(&reader, A, b"none"), unlinked(&reader, B, b"none")],
+        [None, None]
+    );
+    assert_eq!(lookups(), asked + 2);
+    world.check(&reader);
+}
+
 /// A Merk with no host and one node, `x`, which hosts nothing.
 fn alone<'s>(world: &mut World<'s>) {
     let tx = world.begin();

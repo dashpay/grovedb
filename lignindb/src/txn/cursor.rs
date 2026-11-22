@@ -188,7 +188,10 @@ impl<'s> FlatSide<'s> {
 /// over the records, and stands on the nearer of their keys. A subtree
 /// that holds none has the cursor over the tree alone. Whether it holds
 /// any is asked when the cursor is opened, and again of each Merk that
-/// the cursor is pointed at ([`MerkCursor::retarget`]).
+/// the cursor is pointed at ([`MerkCursor::retarget`]), and where the
+/// side is pointed at the prefix that its version has a subtree under
+/// which the transaction moved: the unlinked records of that Merk are
+/// read there with its nodes.
 pub struct MerkSide<'s> {
     path: WritePath<'s>,
     at: CommitVersion,
@@ -431,9 +434,13 @@ impl<'s> CommittedSide<'s> for MerkSide<'s> {
     fn point(&mut self, guard: &OperationGuard<'s>, under: Subtree) -> Result<(), TxnError> {
         let mut opened = None;
         let directory = Opened::at(&mut opened, &self.path, guard, self.at)?;
-        let root = directory.root(&self.path, guard, &under)?.flatten();
-        self.cursor = tree::Cursor::open(&self.reader(guard), root);
-        self.under = under;
+        let entered = directory.root(&self.path, guard, &under)?;
+        // The unlinked records are those under the prefix that the
+        // version has the Merk under, and whether it holds any there is
+        // looked up for it. No record is read under a subtree that is
+        // not entered.
+        let records = entered.is_some() && directory.has_unlinked(&self.path, guard, &under)?;
+        self.open_at(guard, under, entered.flatten(), records);
         Ok(())
     }
 }
