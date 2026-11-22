@@ -1247,14 +1247,15 @@ that refusal. *T* keeps it, and what is refused because the layout is
 stopped is told it from there: a read or a write that a move decides
 (MV7), and a commit (MV6). That holds from the stop until the first of
 these: *T* reads another version; *T* takes a write; a rollback, to a
-savepoint or of a scope, takes a write out; a scope's writes are laid
-out, or a scope is merged or rolled back; a pending mark is set or taken
-off. From then on *T* may make the layout again (WT7a), and each load
-that the new layout comes to is laid out with it. One of these does not
-end it where *T* holds a load: *T* may take writes, and the refusal is
-told from what was kept as before. Writes are laid out in their order,
-so the layout is stopped before any that comes later, and a load is not
-laid out again for each of them.
+savepoint or of a scope, takes a write or a pending mark out; a scope's
+writes are laid out, or a scope is merged or rolled back; a pending mark
+is set or taken off; an operation of *T* panics. From then on *T* may
+make the layout again (WT7a), and each load that the new layout comes to
+is laid out with it. One of these does not end it where *T* holds a
+load: *T* may take writes, and the refusal is told from what was kept as
+before. Writes are laid out in their order, so the layout is stopped
+before any that comes later, and a load is not laid out again for each
+of them.
 
 **LD5. The commit of a load takes its values over.** This is the exception
 to CM7 and to the first case of PV6.
