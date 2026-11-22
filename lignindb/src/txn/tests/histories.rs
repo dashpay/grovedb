@@ -304,9 +304,11 @@ struct Run<'s> {
     /// Subtrees with no node that no transaction has entered, and whose
     /// host node a write put: a later batch enters one and writes no node.
     reserved: Vec<Subtree>,
-    /// Subtrees that were entered under the host node of another prefix,
-    /// each with the Merk that node is in and its key.
-    loose: BTreeMap<Subtree, (Subtree, Vec<u8>)>,
+    /// Subtrees that were entered under the host node of another prefix:
+    /// by the subtree and the Merk that node is in, its key. Two
+    /// transactions can each have a subtree under one prefix, below
+    /// different Merks.
+    loose: BTreeMap<(Subtree, Subtree), Vec<u8>>,
     /// The committed state of the latest version, for the cursors that
     /// are opened on it.
     latest: Option<(u64, Rc<Records>, Rc<Hosts>)>,
@@ -378,10 +380,9 @@ impl<'s> Run<'s> {
     /// as `hosts` has them: the key its prefix says, or the key it was
     /// entered under where it hangs in the Merk it was entered in so.
     fn key_of(&self, hosts: &Hosts, subtree: &Subtree) -> Vec<u8> {
-        match self.loose.get(subtree) {
-            Some((merk, key)) if hosts.get(subtree) == Some(merk) => key.clone(),
-            _ => host_key(subtree),
-        }
+        let above = hosts.get(subtree);
+        let loose = above.and_then(|above| self.loose.get(&(*subtree, *above)));
+        loose.cloned().unwrap_or_else(|| host_key(subtree))
     }
 
     /// Whether the node that hosts `subtree` is there.
@@ -721,7 +722,7 @@ impl<'s> Run<'s> {
                     true => to,
                     false => moved.map_or(above, |(_, to)| *to),
                 };
-                self.loose.insert(*new, (above, key));
+                self.loose.insert((*new, above), key);
             }
         }
         pairs
@@ -902,7 +903,7 @@ impl<'s> Run<'s> {
         draft.subtrees.push(OwnedSubtree::Enter(new, host));
         draft.entered.push((new, merk));
         if taken.is_some() {
-            self.loose.insert(new, (merk, host_key(&absent)));
+            self.loose.insert((new, merk), host_key(&absent));
             self.tally.targets_taken += 1;
         }
         draft.what = format!("enter {} under {} and write no node", tag(&new), tag(&merk));

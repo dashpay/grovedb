@@ -842,9 +842,11 @@ impl TxnModel {
 /// Whether a Merk has a node, as the writes of a transaction said it of
 /// its root, for the Merks they said it of: a change set that set the
 /// root, and an enter, a drop or a clear of the subtree, alone or with one
-/// above it that covers it, after which it has none. An enter if it is
-/// absent is taken as an enter: the model does not tell one that found
-/// the subtree from one that entered it.
+/// above it that covers it, after which it has none. What is said of a
+/// Merk goes with it to the prefix that a move takes it to, and nothing
+/// is said of a prefix that a move took a subtree from and brought none
+/// to. An enter if it is absent is taken as an enter: the model does not
+/// tell one that found the subtree from one that entered it.
 #[derive(Debug, Clone, Default)]
 pub struct Said(pub BTreeMap<Subtree, bool>);
 
@@ -857,6 +859,23 @@ impl Said {
             Write::Leave(left) => {
                 for subtree in std::iter::once(&left.subtree).chain(&left.cut) {
                     self.0.insert(*subtree, false);
+                }
+            }
+            Write::Move(moved) => {
+                // The moves of a batch are made together: every Merk is
+                // taken from its prefix before one is brought to its new
+                // prefix.
+                let taken: Vec<(Subtree, Option<bool>)> = (moved.pairs.iter())
+                    .map(|(from, to)| (*to, self.0.remove(from)))
+                    .collect();
+                for gone in &moved.gone {
+                    self.0.remove(gone);
+                }
+                for (to, said) in taken {
+                    match said {
+                        Some(said) => drop(self.0.insert(to, said)),
+                        None => drop(self.0.remove(&to)),
+                    }
                 }
             }
             _ => {}
