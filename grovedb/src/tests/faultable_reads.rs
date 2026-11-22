@@ -275,6 +275,7 @@ thread_local! {
 /// engine, with a storage error: the step of the kind `step` after
 /// `passes` of that kind went through. The step is not made. Also returns
 /// whether `body` got as far as that step.
+#[cfg(feature = "lignin_storage")]
 pub(crate) fn with_one_failed_drain_step<T>(
     step: DrainStep,
     passes: usize,
