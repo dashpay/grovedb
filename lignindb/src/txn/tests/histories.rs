@@ -20,11 +20,9 @@
 //!
 //! A history has none of these: an enter of a subtree if it is absent; a
 //! commit of a Merk with no node that has a subtree below it, which is no
-//! state of a grove; a subtree that is entered under a prefix which one
-//! was dropped or moved from, but for two that change places; a move to
-//! another Merk than the one that hosted the subtree; a scope that is
-//! open beside another, or one that is rolled back; a call of another
-//! thread.
+//! state of a grove; a move to another Merk than the one that hosted the
+//! subtree; a scope that is open beside another, or one that is rolled
+//! back; a call of another thread.
 
 use std::{ops::Bound, rc::Rc};
 
@@ -878,14 +876,18 @@ impl<'s> Run<'s> {
         self.reserved.retain(|reserved| *reserved != absent);
         // A prefix that a move of another transaction brings a subtree
         // with no node to, under another Merk than this one: which of the
-        // two a subtree under that prefix is, the Merk above it tells.
+        // two a subtree under that prefix is, the Merk above it tells. So
+        // no subtree was entered under that prefix in this Merk before.
         let mut targets = Vec::new();
         for other in others {
             let model = other.model.borrow();
             let theirs = model.hosts(&self.world.model.hosts);
             for (write, ..) in &model.writes {
                 if let Write::Move(moved) = write {
-                    let free = |to: &Subtree| kind(to) == BARE && !hosts.contains_key(to);
+                    let free = |to: &Subtree| {
+                        let entered = hosts.contains_key(to);
+                        kind(to) == BARE && !entered && !self.loose.contains_key(&(*to, merk))
+                    };
                     let apart = |from: &Subtree, to: &Subtree| {
                         let above = theirs.get(to).or(theirs.get(from));
                         above.is_some_and(|above| *above != merk)
