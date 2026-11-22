@@ -24,7 +24,7 @@ use super::{
     sync::{assert_answered, assert_shape, open, reads, records, writes, Made, Side},
     version, Lignin, LigninEngine, ROOT,
 };
-use crate::{engine::Engine, Element, Error, GroveDb};
+use crate::{engine::Engine, Element, Error, GroveDb, PathBranchChunkQuery, PathTrunkChunkQuery};
 
 /// The names a directory lists, in their order.
 fn listed(dir: &Path) -> BTreeSet<String> {
@@ -200,8 +200,10 @@ fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
     let dir = tempfile::tempdir().expect("a directory");
     let db = open::<E>(dir.path());
     put(&db, b"tree", Element::empty_tree(), v);
-    for n in 0..20u8 {
-        let inserted = db.insert([&b"tree"[..]].as_ref(), &[n], item(n), None, None, v);
+    put(&db, COUNTED, Element::empty_provable_count_tree(), v);
+    for n in 0..70u8 {
+        let at = if n < 20 { &b"tree"[..] } else { COUNTED };
+        let inserted = db.insert([at].as_ref(), &[n], item(n), None, None, v);
         inserted.unwrap().expect("an item");
     }
     let kept = dir.path().join("checkpoints");
@@ -258,9 +260,16 @@ fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
         let proven = second.prove_query(&query, None, v);
         let live = db.prove_query(&query, None, v);
         assert_eq!(proven.cost, live.cost);
+        let cost = proven.cost.clone();
         let proof = proven.unwrap().expect("a proof");
         assert_eq!(proof, live.unwrap().expect("a proof"));
-        told.push(format!("8: {}", hex::encode(&proof)));
+        told.push(format!("8: {} {cost:?}", hex::encode(&proof)));
+        // The chunk proofs that Platform serves from a checkpoint (P-16):
+        // the trunk of a tree that counts, and the branch under each key
+        // the trunk ends at.
+        let chunks = chunk_proofs(&second, v);
+        assert_eq!(chunks, chunk_proofs(&db, v));
+        told.extend(chunks);
     }
     told.push(format!("7 written: {}", hex::encode(root_7_written)));
 
@@ -296,11 +305,68 @@ fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
     told
 }
 
+/// The key of the tree that counts, which the chunk proofs are of.
+const COUNTED: &[u8] = b"counted";
+
+/// The proof of the trunk of the tree that counts and, where the grove
+/// version makes one, of the branch under each key the trunk ends at:
+/// each with its bytes or its refusal, and its cost.
+fn chunk_proofs<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<String> {
+    let at = vec![COUNTED.to_vec()];
+    let trunk = PathTrunkChunkQuery {
+        path: at.clone(),
+        max_depth: 3,
+        min_depth: None,
+    };
+    let proved = db.prove_trunk_chunk(&trunk, v);
+    let mut told = vec![format!("trunk: {:?} {:?}", proved.value, proved.cost)];
+    let Ok(proof) = &proved.value else {
+        return told;
+    };
+    let verified = GroveDb::verify_trunk_chunk_proof(proof, &trunk, v);
+    let (root, trunk) = verified.expect("the trunk is verified");
+    assert_eq!(root, root_of(db, v));
+    assert!(
+        !trunk.leaf_keys.is_empty(),
+        "the trunk ends above its leaves"
+    );
+    for (key, leaf) in trunk.leaf_keys {
+        let branch = PathBranchChunkQuery {
+            path: at.clone(),
+            key: key.clone(),
+            depth: 3,
+        };
+        let proved = db.prove_branch_chunk(&branch, v);
+        let proof = proved.value.as_ref().expect("a branch is proven");
+        (GroveDb::verify_branch_chunk_proof(proof, &branch, leaf.hash, v))
+            .expect("the branch is verified");
+        told.push(format!(
+            "branch {}: {} {:?}",
+            hex::encode(&key),
+            hex::encode(proof),
+            proved.cost
+        ));
+    }
+    told
+}
+
 #[test]
 fn checkpoints_are_kept_on_lignindb_as_platform_keeps_them() {
-    for v in GROVE_VERSIONS.iter() {
+    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
         let told = kept_as_platform_keeps_them::<LigninEngine>(v);
-        assert_eq!(told.len(), 4);
+        // The trunk is proven on every grove version that has the call,
+        // with a branch under it.
+        let proven = told.iter().any(|told| told.starts_with("trunk: Ok"));
+        let branches = told
+            .iter()
+            .filter(|told| told.starts_with("branch "))
+            .count();
+        println!(
+            "grove version {}: trunk proven {proven}, {branches} branches",
+            number + 1
+        );
+        assert_eq!(proven, branches > 0);
+        assert_eq!(told.len(), 5 + branches);
         #[cfg(feature = "rocksdb_storage")]
         assert_eq!(told, kept_as_platform_keeps_them::<crate::RocksDbEngine>(v));
     }

@@ -349,10 +349,12 @@ pub(super) fn assert_shape(shape: &Shape, number: usize) {
     assert_eq!(shape.indexed.len(), 2 * with_axes);
 }
 
-/// A grove on the engine `E`, with its directory.
+/// A grove on the engine `E`, with its directory. The database is
+/// declared before the directory, so that a `Made` that is dropped whole
+/// closes its database in a directory that is still there.
 pub(super) struct Made<E: Engine> {
-    pub(super) dir: tempfile::TempDir,
     pub(super) db: GroveDb<E>,
+    pub(super) dir: tempfile::TempDir,
     pub(super) shape: Shape,
     pub(super) root: [u8; 32],
 }
@@ -368,8 +370,8 @@ impl<E: Engine> Made<E> {
         let shape = grove(&db, v);
         let root = db.root_hash(None, v).unwrap().expect("a root hash");
         Self {
-            dir,
             db,
+            dir,
             shape,
             root,
         }

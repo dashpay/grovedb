@@ -116,6 +116,7 @@ fn verify_grovedb_reports_what_a_restore_that_stopped_left_on_lignindb() {
             let told = format!("grove version {}", number + 1);
             assert_eq!(reports, stopped::<Rocks, Rocks>(v), "{told}");
             assert_eq!(reports, stopped::<Rocks, LigninEngine>(v), "{told}");
+            assert_eq!(reports, stopped::<LigninEngine, Rocks>(v), "{told}");
         }
         assert_eq!(reports.len(), 4, "grove version {}", number + 1);
     }
