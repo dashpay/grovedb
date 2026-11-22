@@ -251,6 +251,11 @@ pub enum RootPut<'a> {
 /// - **A key has one record.** A node that is linked under a key takes the
 ///   place of an unlinked record there. A delete of the key takes
 ///   whichever is there, and so does a drop or a clear of the subtree.
+/// - **A move takes the unlinked records of a Merk with it**
+///   ([`SubtreeWrite::Move`]): they are read under its new prefix, by key
+///   and under a cursor, as its nodes are. A node that the transaction
+///   left out of its tree before the move is its own node under the new
+///   prefix.
 /// - **A node the transaction wrote keeps its value, in its tree or out
 ///   of it** ([`ValuePut::Keep`]). A node that leaves its tree and keeps
 ///   its value takes the value of the cell it had, by the read its write
