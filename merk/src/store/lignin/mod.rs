@@ -334,6 +334,9 @@ fn refused(what: &str) -> Error {
 /// takes (`cost-model.md` N1). It is measured from the cell alone: a link
 /// holds the length of its child's key.
 fn record_len(node: &StoredNode) -> Result<usize, Error> {
+    if let Some(record) = &node.record {
+        return Ok(record.len());
+    }
     let child =
         |link: &Option<StoredLink>| link.as_ref().map(|link| (link.key_len, link.aggregate));
     cost_model::node_record_len_from_sizes(
@@ -484,6 +487,14 @@ impl<'db> LigninNodeStore<'db> {
                 self.loose.set(key, false);
                 return Ok(None);
             };
+            if node.record.is_some() {
+                // A flat record is no cell and no unlinked record: the
+                // read changes nothing of what the handle remembers of
+                // the key. What is decoded from the record is marked as
+                // a node from a flat record where it is decoded
+                // ([`TreeNode::from_flat_record`]).
+                return Ok(Some(node));
+            }
             hash::refuse_stale(node.stale)?;
             hint = None;
             let mut found = Vec::new();
@@ -571,6 +582,7 @@ impl<'db> LigninNodeStore<'db> {
         let stored = self
             .access
             .node(prefix, node.key(), self.hint(node.key()), true)?
+            .filter(|stored| stored.record.is_none())
             .ok_or_else(|| refused("a node was removed before its value was read"))?;
         hash::refuse_stale(stored.stale)?;
         if stored.value_hash != *node.value_hash() || stored.kv_hash != *node.kv_hash() {
@@ -691,34 +703,60 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     ) -> CostResult<Option<TreeNode>, Error> {
         self.read(key, true)
             .map_ok(|node| {
-                node.map(|node| {
-                    let mut inner = node_inner(key.to_vec(), node)?;
-                    if let Some(value_defined_cost_fn) = &value_defined_cost_fn {
-                        inner.kv.value_defined_cost =
-                            value_defined_cost_fn(inner.kv.value_as_slice(), grove_version);
-                    }
-                    Ok(TreeNode::new_with_tree_inner(inner))
-                })
-                .transpose()
+                let Some(mut node) = node else {
+                    return Ok(None);
+                };
+                if let Some(record) = node.record.take() {
+                    let key = key.to_vec();
+                    let cost_fn = value_defined_cost_fn;
+                    let mut node = TreeNode::decode_raw(&record, key, cost_fn, grove_version)?;
+                    node.mark_from_flat_record();
+                    return Ok(Some(node));
+                }
+                let mut inner = node_inner(key.to_vec(), node)?;
+                if let Some(value_defined_cost_fn) = &value_defined_cost_fn {
+                    inner.kv.value_defined_cost =
+                        value_defined_cost_fn(inner.kv.value_as_slice(), grove_version);
+                }
+                Ok(Some(TreeNode::new_with_tree_inner(inner)))
             })
             .flatten()
     }
 
     fn get_node_for_read(&self, key: &[u8]) -> CostResult<Option<TreeNodeInner>, Error> {
         self.read(key, true)
-            .map_ok(|node| node.map(|node| node_inner(Vec::new(), node)).transpose())
+            .map_ok(|node| match node {
+                None => Ok(None),
+                Some(StoredNode {
+                    record: Some(record),
+                    ..
+                }) => {
+                    let mut inner = TreeNode::decode_raw_for_read(&record)?;
+                    inner.marks.from_flat_record = true;
+                    Ok(Some(inner))
+                }
+                Some(node) => node_inner(Vec::new(), node).map(Some),
+            })
             .flatten()
     }
 
     fn fetch_node_without_value(
         &self,
         link: &Link,
-        _grove_version: &GroveVersion,
+        grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
         let key = link.key();
         self.read(key, false)
             .map_ok(|node| {
-                let node = node.ok_or(Error::KeyNotFoundError("Key not found for fetch"))?;
+                let mut node = node.ok_or(Error::KeyNotFoundError("Key not found for fetch"))?;
+                // A flat record holds its value: the node is read whole.
+                if let Some(record) = node.record.take() {
+                    let no_cost = None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+                    let mut node =
+                        TreeNode::decode_raw(&record, key.to_vec(), no_cost, grove_version)?;
+                    node.mark_from_flat_record();
+                    return Ok(node);
+                }
                 node_without_value(key.to_vec(), node)
             })
             .flatten()
@@ -746,10 +784,11 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
         // A value is kept by the read it was kept from. Of a node this
         // handle has not loaded there is none to name, and an unlinked
-        // record has no cell that keeps one. The value of such a node is
-        // stated: it is written only where other bytes are held.
+        // record has no cell that keeps one, nor has a node that was
+        // decoded from a flat record. The value of such a node is stated.
         let loaded = self.reads.borrow().contains_key(node.key());
-        let change = match loaded && !self.loose.holds(node.key()) {
+        let kept_by_a_cell = loaded && !self.loose.holds(node.key());
+        let change = match kept_by_a_cell && !node.from_flat_record() {
             true => change,
             false => NodeChange::ValueWritten,
         };

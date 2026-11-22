@@ -109,6 +109,17 @@ pub struct LigninEntry {
     pub host: Option<LigninHosted>,
 }
 
+/// Whether `tree_type`, the bytes a subtree is entered with, is of a tree
+/// that keeps its data as flat records and no Merk
+/// ([`TreeType::uses_non_merk_data_storage`]). A flat record of such a
+/// subtree is read as RocksDB reads it wherever a node is asked for: as
+/// the bytes it is stored with (`node-store.md`, "Reads" and "The cursor"
+/// of the LigninDB store). The engine is told with this which subtrees
+/// those are (`lignindb::txn::FlatKinds`).
+pub(super) fn keeps_flat_records(tree_type: &[u8]) -> bool {
+    tree_type_from_bytes(tree_type).is_ok_and(|tree_type| tree_type.uses_non_merk_data_storage())
+}
+
 impl LigninEntry {
     /// The tree type of the subtree, if the directory holds the bytes of
     /// one for it ([`tree_type_bytes`]).

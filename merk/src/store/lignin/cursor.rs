@@ -66,7 +66,12 @@ impl std::fmt::Debug for LigninCursor<'_> {
 /// The record Merk encodes of `node`. A node with a stale hash has none:
 /// the bytes its cell stores there are no hash, and a record would give
 /// them out as one (`node-store.md`, "Hashes").
-fn record(node: StoredNode) -> Result<Vec<u8>, Error> {
+fn record(mut node: StoredNode) -> Result<Vec<u8>, Error> {
+    // A flat record of a tree that keeps its data so is shown as it is
+    // stored.
+    if let Some(record) = node.record.take() {
+        return Ok(record);
+    }
     hash::refuse_stale(node.stale)?;
     // A record does not hold the key of its own node.
     let inner = node_inner(Vec::new(), node)?;

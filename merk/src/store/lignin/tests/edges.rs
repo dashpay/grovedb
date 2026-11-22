@@ -438,9 +438,10 @@ fn write_rocks<'a>(storage: &'a TempStorage, steps: &[Step]) -> RocksTransaction
 type Answers = BTreeMap<(Prefix, Space, String), Vec<Shown>>;
 
 /// The subtrees and the spaces a test reads: every space of every subtree,
-/// but not the flat data of a subtree that holds a Merk, and not the nodes
-/// of one that keeps its data flat. A tree keeps the one or the other, and
-/// the cursor of the one does not show the other.
+/// but not the flat data of a subtree that holds a Merk. A node cursor
+/// over a tree that keeps its data flat shows the flat records, as
+/// RocksDB's does (D-197). The flat cursor of a Merk's subtree does not
+/// show the nodes.
 fn readings(model: &Model) -> Vec<(Prefix, Space)> {
     let mut readings = Vec::new();
     // Three subtrees that were never entered: before every other, among
@@ -455,11 +456,7 @@ fn readings(model: &Model) -> Vec<(Prefix, Space)> {
             .iter()
             .any(|(column, key)| *column == 0 && key.starts_with(prefix));
         for space in SPACES {
-            let other = match space {
-                Space::Nodes => holds_data && *flat,
-                Space::Flat => holds_data && !*flat,
-                Space::Aux | Space::Meta => false,
-            };
+            let other = space == Space::Flat && holds_data && !*flat;
             if !other {
                 readings.push((*prefix, space));
             }
@@ -929,5 +926,755 @@ fn a_descending_range_past_the_last_key_answers_as_on_rocksdb() {
             let found = keys_of(NodeStore::cursor(&handle), &query);
             assert_eq!(found, expected, "{at}, in a snapshot");
         }
+    }
+}
+
+/// The key and the record of every node of a Merk of the keys `keys`, as
+/// RocksDB stores them, with the key of its root.
+fn merk_records(keys: std::ops::Range<u64>) -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<u8>) {
+    let storage = TempStorage::new();
+    let transaction = write_rocks(&storage, &[Step::Merk(P1, keys.collect(), Vec::new())]);
+    let context = storage
+        .get_transactional_storage_context_by_subtree_prefix(P1, None, &transaction)
+        .unwrap();
+    let mut cursor = NodeStore::cursor(&context);
+    let mut stored = Vec::new();
+    cursor.seek_to_first().unwrap();
+    while let Some(key) = cursor.key().unwrap().map(<[u8]>::to_vec) {
+        let record = cursor.value().unwrap().expect("a record").to_vec();
+        stored.push((key, record));
+        cursor.next().unwrap();
+    }
+    // The root is the node that no other names.
+    let linked = |candidate: &Vec<u8>| {
+        stored.iter().any(|(_, record)| {
+            let node = TreeNode::decode_raw_for_read(record).expect("a node");
+            let links = [node.left, node.right];
+            (links.iter().flatten()).any(|link| link.key() == candidate.as_slice())
+        })
+    };
+    let root = stored.iter().map(|(key, _)| key).find(|key| !linked(key));
+    let root = root.cloned();
+    (stored, root.expect("a root"))
+}
+
+/// What the reads of a node by its key answer for `key`, and what each is
+/// charged.
+fn node_reads<'db, S: NodeStore<'db>>(store: &S, key: &[u8]) -> Vec<(String, OperationCost)> {
+    let got = store.get_node(key, NO_VALUE_DEFINED_COST, version());
+    let got = (
+        format!("{:?}", got.value.map(|node| node.map(|node| node.encode()))),
+        got.cost,
+    );
+    let for_read = store.get_node_for_read(key);
+    let for_read = (
+        format!(
+            "{:?}",
+            for_read.value.map(|node| node.map(|node| {
+                let links =
+                    [node.left, node.right].map(|link| link.map(|link| link.key().to_vec()));
+                (node.kv.value_as_slice().to_vec(), links)
+            }))
+        ),
+        for_read.cost,
+    );
+    let has = store.has_node(key);
+    let has = (format!("{:?}", has.value), has.cost);
+    vec![got, for_read, has]
+}
+
+/// D-197: a subtree of a tree that keeps its data as flat records holds
+/// no Merk, and RocksDB reads a node there all the same, by its key and
+/// under a cursor: the flat record, with its bytes. The store answers the
+/// same and charges the same, for records that are in the form of Merk's
+/// nodes, as a state sync can be asked for, and for records that are not:
+/// in the transaction that put them, in the next, in a writer's scope and
+/// in a snapshot. A Merk that is opened there with the key of a record as
+/// its root is read whole on both.
+#[test]
+fn a_flat_record_is_read_as_a_node_where_its_tree_keeps_flat_records() {
+    let (nodes, root) = merk_records(0..7);
+    assert_eq!(nodes.len(), 7);
+    let other: [(Vec<u8>, Vec<u8>); 3] = [
+        (b"empty".to_vec(), Vec::new()),
+        (b"short".to_vec(), vec![1]),
+        (b"some bytes".to_vec(), vec![0x5a; 77]),
+    ];
+    let records: Vec<_> = nodes.iter().chain(&other).cloned().collect();
+    let absent = b"no record".to_vec();
+    let keys = || records.iter().map(|(key, _)| key).chain([&absent]);
+    for tree_type in [
+        TreeType::MmrTree,
+        TreeType::BulkAppendTree(3),
+        TreeType::DenseAppendOnlyFixedSizeTree(3),
+        TreeType::CommitmentTree(3),
+        TreeType::PrivateDocumentStore(3),
+    ] {
+        let storage = &TempStorage::new();
+        let rocks_transaction = storage.start_transaction();
+        let context = storage
+            .get_immediate_storage_context_by_subtree_prefix(P2, &rocks_transaction)
+            .unwrap();
+        let facade = &Facade::new();
+        let transaction = facade.db.begin();
+        let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(P2));
+        handle.enter(tree_type).expect("the subtree is entered");
+        for (key, record) in &records {
+            (FlatStore::put(&context, key, record, None).unwrap()).expect("a put");
+            (FlatStore::put(&handle, key, record, None).unwrap()).expect("a put");
+        }
+
+        // What RocksDB answers, by key and for a Merk with the root's
+        // key: through a context that writes at once, whose reads are
+        // charged nothing, and through one that stages, whose reads are
+        // charged.
+        let deferred = storage
+            .get_transactional_storage_context_by_subtree_prefix(P2, None, &rocks_transaction)
+            .unwrap();
+        let at_once: Vec<_> = keys().map(|key| node_reads(&context, key)).collect();
+        let charged: Vec<_> = keys().map(|key| node_reads(&deferred, key)).collect();
+        let decoded = |reads: &[(String, OperationCost)]| reads[0].0.starts_with("Ok(Some(");
+        let refused = |reads: &[(String, OperationCost)]| reads[0].0.starts_with("Err(");
+        for expected in [&at_once, &charged] {
+            assert_eq!(expected.iter().filter(|reads| decoded(reads)).count(), 7);
+            assert_eq!(expected.iter().filter(|reads| refused(reads)).count(), 3);
+        }
+        let loaded = |reads: &[(String, OperationCost)]| reads[0].1.storage_loaded_bytes;
+        assert!(at_once.iter().all(|reads| loaded(reads) == 0));
+        // Also a read of a record that does not decode is charged its
+        // bytes.
+        assert_eq!(charged.iter().filter(|reads| loaded(reads) > 0).count(), 9);
+        assert_eq!(super::records(&context, Some(root.clone())), nodes);
+
+        let moves = [vec![Move::First], vec![Move::Next; records.len()]].concat();
+        let there = walk(NodeStore::cursor(&context), &moves);
+        let check = |store: &LigninNodeStore<'_>, expected: &Vec<_>, view: &str| {
+            for (key, expected) in keys().zip(expected) {
+                let found = node_reads(store, key);
+                assert_eq!(&found, expected, "{tree_type:?}, {view}: {key:?}");
+            }
+            assert_eq!(super::records(store, Some(root.clone())), nodes, "{view}");
+            // The node cursor shows every record with its bytes.
+            let found = walk(NodeStore::cursor(store), &moves);
+            assert_eq!(found, there, "{tree_type:?}, {view}: the cursor");
+            let shown = found.iter().filter(|shown| shown.value.is_some()).count();
+            assert_eq!(shown, records.len());
+        };
+        let subtree = || LigninSubtree::alone(P2);
+        check(&handle, &at_once, "the handle that put them");
+        drop(handle);
+        check(
+            &LigninNodeStore::read_only(&transaction, subtree()),
+            &charged,
+            "the transaction that put them",
+        );
+        facade.commit(&transaction);
+
+        let transaction = facade.db.begin();
+        check(
+            &LigninNodeStore::read_only(&transaction, subtree()),
+            &charged,
+            "the next transaction",
+        );
+        let writer = LigninWriter::new(transaction.scope().expect("a scope"));
+        check(
+            &LigninNodeStore::read_only(&writer, subtree()),
+            &charged,
+            "a writer's scope",
+        );
+        writer.into_scope().merge();
+        let snapshot = LigninSnapshot::new(facade.db.snapshot());
+        check(
+            &LigninNodeStore::read_only(&snapshot, subtree()),
+            &charged,
+            "a snapshot",
+        );
+    }
+}
+
+/// A cursor reads the state it was opened on, and a flat record with it:
+/// the record under the cursor's key is read by the tree type that the
+/// cursor's own version has the subtree entered with, whatever is
+/// committed beside the cursor. Here the subtree is dropped by a commit
+/// between the seek and the read of the value. RocksDB's iterator shows
+/// the record it stands on, and the store's cursor shows the same, at the
+/// same charges. A read by key through the same handle reads the latest
+/// committed state on both, which has no record.
+#[test]
+fn a_cursor_reads_a_flat_record_by_the_tree_type_of_its_own_version() {
+    let (key, value) = (b"a".to_vec(), vec![0x5a]);
+    let moves = [Move::First];
+
+    let storage = &TempStorage::new();
+    let rocks_transaction = storage.start_transaction();
+    {
+        let context = storage
+            .get_immediate_storage_context_by_subtree_prefix(P2, &rocks_transaction)
+            .unwrap();
+        (FlatStore::put(&context, &key, &value, None).unwrap()).expect("a put");
+    }
+    (storage.commit_transaction(rocks_transaction).unwrap()).expect("a commit");
+    let reader = storage.start_transaction();
+    let context = storage
+        .get_transactional_storage_context_by_subtree_prefix(P2, None, &reader)
+        .unwrap();
+    let mut on_rocks = NodeStore::cursor(&context);
+    on_rocks.seek_to_first().unwrap();
+    let rocks_transaction = storage.start_transaction();
+    {
+        let other = storage
+            .get_immediate_storage_context_by_subtree_prefix(P2, &rocks_transaction)
+            .unwrap();
+        (FlatStore::clear(&other).unwrap()).expect("the data is removed");
+    }
+    (storage.commit_transaction(rocks_transaction).unwrap()).expect("a commit");
+    type Read = (bool, Option<Vec<u8>>, Option<Vec<u8>>, bool, OperationCost);
+    fn read<C: NodeCursor>(cursor: &mut C) -> Read {
+        let mut cost = OperationCost::default();
+        let valid = cursor.valid().unwrap_add_cost(&mut cost);
+        let at = cursor.key().unwrap_add_cost(&mut cost).map(<[u8]>::to_vec);
+        let shown = (cursor.value().unwrap_add_cost(&mut cost)).map(<[u8]>::to_vec);
+        (valid, at, shown, cursor.status().is_ok(), cost)
+    }
+    let there = read(&mut on_rocks);
+    assert!(there.0 && there.3);
+    assert_eq!(
+        (&there.1, &there.2),
+        (&Some(key.clone()), &Some(value.clone()))
+    );
+    let gone_there = node_reads(&context, &key);
+
+    let facade = &Facade::new();
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(P2));
+    (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+    (FlatStore::put(&handle, &key, &value, None).unwrap()).expect("a put");
+    drop(handle);
+    facade.commit(&transaction);
+    let reader = facade.db.begin();
+    let store = LigninNodeStore::read_only(&reader, LigninSubtree::alone(P2));
+    let mut on_lignin = NodeStore::cursor(&store);
+    on_lignin.seek_to_first().unwrap();
+    let transaction = write_lignin(facade, &[Step::Drop(P2), Step::Commit]);
+    drop(transaction);
+    assert_eq!(read(&mut on_lignin), there);
+    assert_eq!(node_reads(&store, &key), gone_there);
+    // A cursor that is opened now shows no record on either.
+    assert_eq!(
+        walk(NodeStore::cursor(&store), &moves),
+        walk(NodeStore::cursor(&context), &moves)
+    );
+}
+
+/// A flat record of a tree that keeps flat records, in the form of a
+/// node's record, is read as that node, and the node can be written back
+/// through a change set of the handle that read it with a change that
+/// keeps its value (`NodeChange::HashOnly`): no cell keeps a value for
+/// the node, so the store writes the value that the node holds. RocksDB
+/// writes the whole record with every write. The handle then reads the
+/// node on both, and on LigninDB the key holds another record than the
+/// one that was put: the node was written.
+#[test]
+fn a_node_that_was_read_from_a_flat_record_is_written_back_with_its_value() {
+    fn rewrite<'db, S: NodeStore<'db>>(store: &S, key: &[u8]) -> Vec<String> {
+        let node = store.get_node(key, NO_VALUE_DEFINED_COST, version());
+        let node = node.unwrap().expect("a read").expect("a node");
+        let mut change_set = store.change_set();
+        let prepared = change_set.prepare_node(&node, NodeChange::HashOnly);
+        change_set.put_node(key, prepared, None).unwrap();
+        store.commit(change_set).unwrap().expect("a commit");
+        let reads = node_reads(store, key);
+        reads.into_iter().map(|(answer, _)| answer).collect()
+    }
+    let (nodes, _) = merk_records(0..1);
+    let (key, record) = &nodes[0];
+
+    let storage = &TempStorage::new();
+    let rocks_transaction = storage.start_transaction();
+    let context = storage
+        .get_immediate_storage_context_by_subtree_prefix(P2, &rocks_transaction)
+        .unwrap();
+    (FlatStore::put(&context, key, record, None).unwrap()).expect("a put");
+    let there = rewrite(&context, key);
+    assert!(there[0].starts_with("Ok(Some("), "{there:?}");
+
+    let facade = &Facade::new();
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(P2));
+    (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+    (FlatStore::put(&handle, key, record, None).unwrap()).expect("a put");
+    drop(handle);
+    facade.commit(&transaction);
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(P2));
+    assert_eq!(rewrite(&handle, key), there);
+    drop(handle);
+    facade.commit(&transaction);
+    let reader = facade.db.begin();
+    let store = LigninNodeStore::read_only(&reader, LigninSubtree::alone(P2));
+    let stored = FlatStore::get(&store, key).unwrap().expect("a read");
+    let stored = stored.expect("the key holds a record");
+    assert_ne!(&stored, record, "the node was written");
+}
+
+/// A delete of a node that states no cost is charged from the committed
+/// record under the key (`cost-model.md` D2). Here that record is a flat
+/// record that was put with 21 bytes under a tree that keeps flat
+/// records. It is read with the bytes it is stored with, by the tree type
+/// that the committed state has the subtree entered with: the batch is
+/// charged what RocksDB charges it, and the record is gone on both.
+#[test]
+fn a_delete_with_no_cost_of_a_flat_record_is_charged_from_its_stored_bytes() {
+    fn delete<'db, S: NodeStore<'db>>(store: &S, key: &[u8]) {
+        let mut change_set = store.change_set();
+        change_set.delete_node(key, None);
+        store
+            .commit(change_set)
+            .unwrap()
+            .expect("the delete is staged");
+    }
+    let (key, value) = (b"k".to_vec(), vec![0x5a; 21]);
+
+    let storage = &TempStorage::new();
+    let rocks_transaction = storage.start_transaction();
+    {
+        let context = storage
+            .get_immediate_storage_context_by_subtree_prefix(P2, &rocks_transaction)
+            .unwrap();
+        (FlatStore::put(&context, &key, &value, None).unwrap()).expect("a put");
+    }
+    (storage.commit_transaction(rocks_transaction).unwrap()).expect("a commit");
+    let rocks_transaction = storage.start_transaction();
+    let staged = StorageBatch::new();
+    {
+        let context = storage
+            .get_transactional_storage_context_by_subtree_prefix(
+                P2,
+                Some(&staged),
+                &rocks_transaction,
+            )
+            .unwrap();
+        delete(&context, &key);
+    }
+    let there = storage.commit_multi_context_batch(staged, Some(&rocks_transaction));
+    there.value.expect("the batch is applied on RocksDB");
+    assert!(there.cost.storage_cost.removed_bytes.total_removed_bytes() > 0);
+    assert_eq!(there.cost.storage_loaded_bytes, 21);
+    let context = storage
+        .get_transactional_storage_context_by_subtree_prefix(P2, None, &rocks_transaction)
+        .unwrap();
+    let gone_there = node_reads(&context, &key);
+    assert_eq!(gone_there[2].0, "Ok(false)");
+
+    let facade = &Facade::new();
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(P2));
+    (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+    (FlatStore::put(&handle, &key, &value, None).unwrap()).expect("a put");
+    drop(handle);
+    facade.commit(&transaction);
+    let transaction = facade.db.begin();
+    let staged = LigninBatch::new();
+    let subtree = LigninSubtree::alone(P2);
+    let store = LigninNodeStore::deferred(&transaction, subtree, Some(&staged));
+    delete(&store, &key);
+    drop(store);
+    let here = staged.apply(&transaction);
+    here.value.expect("the batch is applied on LigninDB");
+    assert_eq!(here.cost, there.cost);
+    let store = LigninNodeStore::read_only(&transaction, LigninSubtree::alone(P2));
+    assert_eq!(node_reads(&store, &key), gone_there);
+}
+
+/// Writes the Merk of `P2` through `transaction`: puts of the first keys
+/// and deletes of the others, from the root `root`. Returns the root that
+/// is left.
+fn merk_of_p2(
+    transaction: &WriteTxn<'_>,
+    root: Option<Vec<u8>>,
+    puts: &[u64],
+    deletes: &[u64],
+) -> Option<Vec<u8>> {
+    merk_batch_of_p2(transaction, root, &node_batch(puts, deletes))
+}
+
+/// Applies `batch` to the Merk of `P2` through `transaction`, from the
+/// root `root`. Returns the root that is left.
+fn merk_batch_of_p2(
+    transaction: &WriteTxn<'_>,
+    root: Option<Vec<u8>>,
+    batch: &[(Vec<u8>, Op)],
+) -> Option<Vec<u8>> {
+    let staged = LigninBatch::new();
+    let subtree = LigninSubtree::alone(P2);
+    let store = LigninNodeStore::deferred(transaction, subtree, Some(&staged));
+    let mut merk = open_layered(store, root);
+    apply(&mut merk, batch);
+    let root = merk.root_key();
+    drop(merk);
+    (staged.apply(transaction).unwrap()).expect("the batch is applied");
+    root
+}
+
+/// A read that comes to a flat record is no read of a cell, and changes
+/// nothing of what the handle remembers of the cells it read under the
+/// key. Here a handle that has read nothing else under the key sees a
+/// flat record there that is no node, and reads a node of a Merk's tree
+/// there after the commits of other transactions. It writes that node
+/// back with a change that keeps its value: the keep names the cell it
+/// read.
+#[test]
+fn a_handle_that_saw_a_flat_record_keeps_a_value_by_the_cell_it_reads_later() {
+    let key = be(1);
+    let facade = &Facade::new();
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(P2));
+    (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+    (FlatStore::put(&handle, &key, &[0x5a], None).unwrap()).expect("a put");
+    drop(handle);
+    facade.commit(&transaction);
+
+    let first = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&first, LigninSubtree::alone(P2));
+    let no_node = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+    no_node.value.expect_err("the record is no node");
+
+    // Two commits beside the handle: the record is removed, and a Merk
+    // is written under the prefix with a node under the key.
+    let other = facade.db.begin();
+    let flat = LigninNodeStore::immediate(&other, LigninSubtree::alone(P2));
+    (FlatStore::delete(&flat, &key, None).unwrap()).expect("the record is removed");
+    drop(flat);
+    facade.commit(&other);
+    let other = facade.db.begin();
+    assert_eq!(merk_of_p2(&other, None, &[1], &[]), Some(key.clone()));
+    facade.commit(&other);
+
+    let node = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+    let node = node
+        .value
+        .expect("a read")
+        .expect("the node of the other commit");
+    let kept = handle.write_node(&node, NodeChange::HashOnly);
+    kept.value.expect("a keep by the cell that was read");
+}
+
+/// The other way round: a handle read a node of a Merk's tree, and
+/// commits beside it take the node and put a flat record under its key.
+/// The handle's next read comes to the flat record, which is no node. A
+/// write of the node it read before, with a change that keeps its value,
+/// still names the cell that is gone: it does not go through as a write
+/// that states the value, and the record of the other commit stays.
+#[test]
+fn a_flat_record_under_a_key_does_not_free_a_keep_from_the_cell_it_was_read_from() {
+    let key = be(1);
+    let facade = &Facade::new();
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(P2));
+    (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+    drop(handle);
+    assert_eq!(merk_of_p2(&transaction, None, &[1], &[]), Some(key.clone()));
+    facade.commit(&transaction);
+
+    let first = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&first, LigninSubtree::alone(P2));
+    let old = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+    let old = old.value.expect("a read").expect("the node");
+
+    // Two commits beside the handle: the Merk is emptied, and a flat
+    // record is put under the key.
+    let other = facade.db.begin();
+    assert_eq!(merk_of_p2(&other, Some(key.clone()), &[], &[1]), None);
+    facade.commit(&other);
+    let other = facade.db.begin();
+    let flat = LigninNodeStore::immediate(&other, LigninSubtree::alone(P2));
+    (FlatStore::put(&flat, &key, &[0x5a], None).unwrap()).expect("a put");
+    drop(flat);
+    facade.commit(&other);
+
+    let no_node = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+    no_node.value.expect_err("the record is no node");
+    let written = handle.write_node(&old, NodeChange::HashOnly).value;
+    drop(handle);
+    let published = written.is_ok()
+        && matches!(
+            facade.db.commit(&first, &mut NoStaleHashes),
+            Ok(Committed::Published(_))
+        );
+    assert!(!published, "the keep of a value whose cell is gone");
+    let reader = facade.db.begin();
+    let store = LigninNodeStore::read_only(&reader, LigninSubtree::alone(P2));
+    let stored = FlatStore::get(&store, &key).unwrap().expect("a read");
+    assert_eq!(stored, Some(vec![0x5a]));
+}
+
+/// A node with no child.
+fn leaf(key: &[u8], value: &[u8]) -> TreeNode {
+    let feature = TreeFeatureType::BasicMerkNode;
+    TreeNode::new(key.to_vec(), value.to_vec(), None, feature).unwrap()
+}
+
+/// The value of the node that `handle` reads under `key`.
+fn value_under(handle: &LigninNodeStore<'_>, key: &[u8]) -> Vec<u8> {
+    let node = handle.get_node(key, NO_VALUE_DEFINED_COST, version());
+    let node = node.value.expect("a read").expect("a node");
+    node.value_as_slice().to_vec()
+}
+
+/// A node that a handle read from a flat record was read from no cell,
+/// whatever the handle reads under its key afterwards. Here the record is
+/// removed and a Merk's node with another value is committed under the
+/// key, and the handle reads that node. A write of the node from the flat
+/// record, with a change that keeps its value, states the value it has:
+/// the handle then reads that node whole, and not its hashes over the
+/// value of the cell. It is so through the handle and through a change
+/// set of it, and also where the handle read a second flat record under
+/// the key in between.
+#[test]
+fn a_node_from_a_flat_record_does_not_keep_the_value_of_a_cell_read_later() {
+    fn run(through_change_set: bool, a_second_record: bool) {
+        let key = be(1);
+        let from_flat = leaf(&key, b"the value of the flat record");
+        let facade = &Facade::new();
+        let subtree = || LigninSubtree::alone(P2);
+        let transaction = facade.db.begin();
+        let handle = LigninNodeStore::immediate(&transaction, subtree());
+        (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+        (FlatStore::put(&handle, &key, &from_flat.encode(), None).unwrap()).expect("a put");
+        drop(handle);
+        facade.commit(&transaction);
+
+        let first = facade.db.begin();
+        let handle = LigninNodeStore::immediate(&first, subtree());
+        let saved = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+        let saved = saved
+            .value
+            .expect("a read")
+            .expect("the node of the record");
+        assert_eq!(saved.encode(), from_flat.encode());
+
+        if a_second_record {
+            let second = leaf(&key, b"the value of a second flat record");
+            let other = facade.db.begin();
+            let flat = LigninNodeStore::immediate(&other, subtree());
+            (FlatStore::put(&flat, &key, &second.encode(), None).unwrap()).expect("a put");
+            drop(flat);
+            facade.commit(&other);
+            assert_eq!(value_under(&handle, &key), second.value_as_slice());
+        }
+        let other = facade.db.begin();
+        let flat = LigninNodeStore::immediate(&other, subtree());
+        (FlatStore::delete(&flat, &key, None).unwrap()).expect("the record is removed");
+        drop(flat);
+        facade.commit(&other);
+        let other = facade.db.begin();
+        assert_eq!(merk_of_p2(&other, None, &[1], &[]), Some(key.clone()));
+        facade.commit(&other);
+
+        let of_the_cell = value_under(&handle, &key);
+        assert_ne!(of_the_cell, saved.value_as_slice());
+        match through_change_set {
+            false => {
+                let written = handle.write_node(&saved, NodeChange::HashOnly);
+                written.value.expect("the node is written with its value");
+            }
+            true => {
+                let mut change_set = handle.change_set();
+                let prepared = change_set.prepare_node(&saved, NodeChange::HashOnly);
+                change_set.put_node(&key, prepared, None).unwrap();
+                let written = handle.commit(change_set);
+                written.value.expect("the node is written with its value");
+            }
+        }
+        let back = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+        let back = back.value.expect("a read").expect("a node");
+        let case = (through_change_set, a_second_record);
+        assert_eq!(back.encode(), saved.encode(), "{case:?}");
+    }
+    for through_change_set in [false, true] {
+        for a_second_record in [false, true] {
+            run(through_change_set, a_second_record);
+        }
+    }
+}
+
+/// A node that a handle read from a cell is written as it would be with
+/// no read of a flat record: here, where the handle has read nothing
+/// else under the key, it is kept by that cell, also though the flat
+/// record that the handle read before had the same value. The handle
+/// reads such a flat record, the record is removed, a Merk's node with
+/// that value is committed under the key and read by the handle, and
+/// then another transaction commits another value to the node. A write of the node the handle read from the cell,
+/// with a change that keeps its value, is not published over that
+/// commit.
+#[test]
+fn a_node_from_a_cell_is_kept_by_its_cell_after_a_flat_record_of_the_same_value() {
+    let key = be(1);
+    let value = flat_value(&key);
+    let facade = &Facade::new();
+    let subtree = || LigninSubtree::alone(P2);
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, subtree());
+    (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+    let record = leaf(&key, &value).encode();
+    (FlatStore::put(&handle, &key, &record, None).unwrap()).expect("a put");
+    drop(handle);
+    facade.commit(&transaction);
+
+    let first = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&first, subtree());
+    assert_eq!(value_under(&handle, &key), value);
+
+    let other = facade.db.begin();
+    let flat = LigninNodeStore::immediate(&other, subtree());
+    (FlatStore::delete(&flat, &key, None).unwrap()).expect("the record is removed");
+    drop(flat);
+    facade.commit(&other);
+    let other = facade.db.begin();
+    assert_eq!(merk_of_p2(&other, None, &[1], &[]), Some(key.clone()));
+    facade.commit(&other);
+
+    let of_the_cell = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+    let of_the_cell = of_the_cell.value.expect("a read").expect("the node");
+    assert_eq!(of_the_cell.value_as_slice(), value);
+    assert!(!of_the_cell.from_flat_record());
+
+    let other = facade.db.begin();
+    let batch = [basic(1, b"the value of another commit")];
+    assert_eq!(
+        merk_batch_of_p2(&other, Some(key.clone()), &batch),
+        Some(key.clone())
+    );
+    facade.commit(&other);
+
+    let written = handle.write_node(&of_the_cell, NodeChange::HashOnly).value;
+    drop(handle);
+    let published = written.is_ok()
+        && matches!(
+            facade.db.commit(&first, &mut NoStaleHashes),
+            Ok(Committed::Published(_))
+        );
+    assert!(
+        !published,
+        "the keep of a value that another commit replaced"
+    );
+    let reader = facade.db.begin();
+    let store = LigninNodeStore::read_only(&reader, subtree());
+    assert_eq!(value_under(&store, &key), b"the value of another commit");
+}
+
+/// The same for a handle that remembers an unlinked record under the key
+/// and then its absence: the node it reads from a flat record afterwards
+/// is written back with the value it has, though the handle's first read
+/// of the key had no cell and its last read before found none.
+#[test]
+fn a_node_from_a_flat_record_is_written_back_after_reads_of_other_kinds() {
+    fn put<'db, S: NodeStore<'db>>(store: &S, node: &TreeNode) {
+        let mut change_set = store.change_set();
+        let prepared = change_set.prepare_node(node, NodeChange::ValueWritten);
+        change_set.put_node(node.key(), prepared, None).unwrap();
+        store.commit(change_set).unwrap().expect("a commit");
+    }
+    let key = be(1);
+    let unlinked = leaf(&key, b"a record no node links");
+    let from_flat = leaf(&key, b"the value of the flat record");
+    let facade = &Facade::new();
+    let subtree = || LigninSubtree::alone(P2);
+    let transaction = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&transaction, subtree());
+    (handle.enter(TreeType::NormalTree)).expect("the subtree is entered");
+    put(&handle, &unlinked);
+    drop(handle);
+    facade.commit(&transaction);
+
+    let first = facade.db.begin();
+    let handle = LigninNodeStore::immediate(&first, subtree());
+    assert_eq!(value_under(&handle, &key), unlinked.value_as_slice());
+
+    let other = facade.db.begin();
+    let removes = LigninNodeStore::immediate(&other, subtree());
+    let mut change_set = removes.change_set();
+    change_set.delete_node(&key, None);
+    (removes.commit(change_set).unwrap()).expect("the record is removed");
+    drop(removes);
+    facade.commit(&other);
+    let none = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+    assert!(none.value.expect("a read").is_none());
+
+    let other = facade.db.begin();
+    let flat = LigninNodeStore::immediate(&other, subtree());
+    flat.convert(TreeType::MmrTree)
+        .expect("the subtree is stated anew");
+    (FlatStore::put(&flat, &key, &from_flat.encode(), None).unwrap()).expect("a put");
+    drop(flat);
+    facade.commit(&other);
+
+    let read = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+    let read = read.value.expect("a read").expect("the node of the record");
+    assert_eq!(read.encode(), from_flat.encode());
+    assert!(read.from_flat_record());
+    let written = handle.write_node(&read, NodeChange::HashOnly);
+    written.value.expect("the node is written with its value");
+    assert_eq!(value_under(&handle, &key), from_flat.value_as_slice());
+    drop(handle);
+    facade.commit(&first);
+    let reader = facade.db.begin();
+    let store = LigninNodeStore::read_only(&reader, subtree());
+    let stored = FlatStore::get(&store, &key).unwrap().expect("a read");
+    let stored = stored.expect("the key holds a record");
+    assert_ne!(stored, from_flat.encode(), "the node was written");
+}
+
+/// A value that is stated over a flat record is written, and is not
+/// compared with the record's bytes, which are no node's value. Here the
+/// value of the node a handle read from a flat record is, byte for byte,
+/// the record that another commit puts under the key afterwards. The
+/// write of the saved node states its value, and the handle reads the
+/// node back, through the handle and through a change set of it.
+#[test]
+fn a_value_stated_over_a_flat_record_is_not_compared_with_its_bytes() {
+    for through_change_set in [false, true] {
+        let key = be(1);
+        let second = leaf(&key, b"the value of the second record");
+        let first = leaf(&key, &second.encode());
+        let facade = &Facade::new();
+        let subtree = || LigninSubtree::alone(P2);
+        let transaction = facade.db.begin();
+        let handle = LigninNodeStore::immediate(&transaction, subtree());
+        (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+        (FlatStore::put(&handle, &key, &first.encode(), None).unwrap()).expect("a put");
+        drop(handle);
+        facade.commit(&transaction);
+
+        let reader = facade.db.begin();
+        let handle = LigninNodeStore::immediate(&reader, subtree());
+        let saved = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+        let saved = saved
+            .value
+            .expect("a read")
+            .expect("the node of the record");
+        let other = facade.db.begin();
+        let flat = LigninNodeStore::immediate(&other, subtree());
+        (FlatStore::put(&flat, &key, &second.encode(), None).unwrap()).expect("a put");
+        drop(flat);
+        facade.commit(&other);
+        assert_eq!(value_under(&handle, &key), second.value_as_slice());
+
+        match through_change_set {
+            false => {
+                let written = handle.write_node(&saved, NodeChange::HashOnly);
+                written.value.expect("the node is written with its value");
+            }
+            true => {
+                let mut change_set = handle.change_set();
+                let prepared = change_set.prepare_node(&saved, NodeChange::HashOnly);
+                change_set.put_node(&key, prepared, None).unwrap();
+                let written = handle.commit(change_set);
+                written.value.expect("the node is written with its value");
+            }
+        }
+        let back = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
+        let back = back.value.expect("a read").expect("a node");
+        assert_eq!(back.encode(), saved.encode(), "{through_change_set}");
     }
 }

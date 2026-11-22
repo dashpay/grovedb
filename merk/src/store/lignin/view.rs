@@ -23,6 +23,7 @@ use super::{
         column, stored_node, with_child_keys, Access, BatchPart, Child, LigninEntryRefused,
         Location, Prefix, Seek, StoredNode, SubtreeChange, Walk, Write, Written,
     },
+    directory::keeps_flat_records,
     flat::{FlatAccess, FlatWalk},
     refused, LigninEntry, LigninHosted, LigninWriter,
 };
@@ -155,7 +156,7 @@ fn node_of(
 ) -> Result<Option<StoredNode>, Error> {
     let mut children = ChildKeys::new();
     let node = opened
-        .node(key, Some(&mut children), |view| {
+        .node_by_kind(key, Some(&mut children), keeps_flat_records, |view| {
             view.map(|view| stored_node(&view, with_value)).transpose()
         })
         .map_err(unread)??;
@@ -219,8 +220,10 @@ impl Walk for SnapshotNodes<'_, '_> {
     }
 
     fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
-        self.walk =
-            (self.snapshot).reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
+        self.walk = (self.snapshot).reading(subtree, |opened| {
+            let walk = opened.walk_by_kind(keeps_flat_records);
+            walk.map(Some).map_err(unread)
+        })?;
         self.subtree = Subtree::new(*subtree);
         Ok(())
     }
@@ -280,7 +283,10 @@ impl FlatAccess for LigninSnapshot<'_> {
 
 impl Access for LigninSnapshot<'_> {
     fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
-        let walk = self.reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
+        let walk = self.reading(subtree, |opened| {
+            let walk = opened.walk_by_kind(keeps_flat_records);
+            walk.map(Some).map_err(unread)
+        })?;
         Ok(Box::new(SnapshotNodes {
             snapshot: self,
             subtree: Subtree::new(*subtree),

@@ -1385,6 +1385,7 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
 
     // A link whose child's key was not read with the node is no record.
     let mut unread = StoredNode {
+        record: None,
         feature: BASIC,
         value_hash: [1; 32],
         kv_hash: [2; 32],

@@ -196,7 +196,9 @@ impl LigninChangeSet {
 
     /// The change set, which prepares its nodes by what its handle knows
     /// of their keys: a node under a key in `loose` has its value stated
-    /// whatever change is named, as no cell keeps a value for it.
+    /// whatever change is named, as no cell keeps a value for it. So has
+    /// a node that was decoded from a flat record
+    /// ([`TreeNode::from_flat_record`]), with or without a handle.
     pub(super) fn of_handle(mut self, loose: Loose) -> Self {
         self.loose = Some(loose);
         self
@@ -427,6 +429,7 @@ impl NodeChangeSet for LigninChangeSet {
 
     fn prepare_node(&mut self, node: &TreeNode, change: NodeChange) -> PreparedNode {
         let loose = (self.loose.as_ref()).is_some_and(|loose| loose.holds(node.key()));
+        let loose = loose || node.from_flat_record();
         PreparedNode(prepare(
             node,
             match loose {

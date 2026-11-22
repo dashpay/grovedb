@@ -22,11 +22,18 @@ struct Step<'a> {
     lignin: &'a Lignin,
     transaction: WriteTxn<'a>,
     staged: LigninBatch,
+    place: Prefix,
 }
 
 impl<'a> Step<'a> {
     fn new(rocks: &'a TempStorage, lignin: &'a Lignin) -> Self {
+        Self::at(rocks, lignin, PLACE)
+    }
+
+    /// A step on the subtree `place`.
+    fn at(rocks: &'a TempStorage, lignin: &'a Lignin, place: Prefix) -> Self {
         Self {
+            place,
             rocks,
             rocks_transaction: rocks.start_transaction(),
             storage_batch: StorageBatch::new(),
@@ -36,24 +43,24 @@ impl<'a> Step<'a> {
         }
     }
 
-    /// A deferred context of [`PLACE`] on RocksDB, which stages in the
-    /// step's batch.
+    /// A deferred context of the step's subtree on RocksDB, which stages
+    /// in the step's batch.
     fn on_rocks(&self) -> PrefixedRocksDbTransactionContext<'_> {
         self.rocks
             .get_transactional_storage_context_by_subtree_prefix(
-                PLACE,
+                self.place,
                 Some(&self.storage_batch),
                 &self.rocks_transaction,
             )
             .unwrap()
     }
 
-    /// A deferred handle of [`PLACE`] on LigninDB, which stages in the
-    /// step's batch.
+    /// A deferred handle of the step's subtree on LigninDB, which stages
+    /// in the step's batch.
     fn on_lignin(&self) -> LigninNodeStore<'_> {
         LigninNodeStore::deferred(
             &self.transaction,
-            LigninSubtree::alone(PLACE),
+            LigninSubtree::alone(self.place),
             Some(&self.staged),
         )
     }
@@ -193,20 +200,41 @@ fn required_space(len: u64) -> u64 {
     len.required_space() as u64
 }
 
-/// The node cursor of a subtree that keeps flat records and no Merk, as
-/// an append-only tree does. RocksDB keeps both kinds of record under one
-/// prefix, and its cursor shows the flat record with its bytes. LigninDB's
-/// node cursor shows the key of every flat record of the data column and
-/// the value only of one that is in the form of an unlinked record: of
-/// another, as the record of this test, it gives no value, and says why
-/// in its status. (`MERK-05-F1` part 2 changes it, D-197.)
+/// A flat record that is no node, in the data of a subtree that is
+/// entered as a `NormalTree`, whose tree type keeps a Merk. RocksDB keeps
+/// both kinds of record under one prefix, and its node cursor shows the
+/// flat record with its bytes. The store tells the two kinds by the tree
+/// type of the subtree and not by the bytes (D-197): under a tree that
+/// keeps its data as flat records it shows the bytes, as RocksDB does
+/// (`edges::a_flat_record_is_read_as_a_node_where_its_tree_keeps_flat_records`),
+/// and under a Merk it reads a flat record as a node that no node links.
+/// One that is not in that form, as the record of this test, has no
+/// value under the cursor, which says why in its status, and a read of
+/// the node by its key is refused. GroveDB comes to this state on grove
+/// versions 1 to 3, under an entry that outlived its element
+/// (`engine::lignin::tests::append_only`, D-280).
 #[test]
-fn a_node_cursor_over_flat_records_shows_the_key_and_refuses_the_value() {
+fn a_flat_record_that_is_no_node_has_no_value_under_the_node_cursor_of_a_merk() {
+    const MERK: Prefix = [251; 32];
     let rocks = TempStorage::new();
     let lignin = Lignin::with_stated_value_hashes();
     let (key, value) = (b"a flat record".to_vec(), vec![0x5a; 40]);
 
-    let step = Step::new(&rocks, &lignin);
+    let transaction = lignin.path().begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(MERK));
+    (handle.enter(TreeType::NormalTree)).expect("the subtree is entered");
+    drop(handle);
+    let committed = lignin.commit(&transaction);
+    assert!(matches!(committed, Outcome::Committed(_)), "{committed:?}");
+    let reader = lignin.path().begin();
+    let entry = (Access::subtree(&reader, &MERK).expect("a lookup")).expect("entered");
+    assert_eq!(
+        entry.tree_type().expect("a tree type"),
+        TreeType::NormalTree
+    );
+    drop(reader);
+
+    let step = Step::at(&rocks, &lignin, MERK);
     StorageContext::put(&step.on_rocks(), &key, &value, None, None)
         .unwrap()
         .expect("a put on RocksDB");
@@ -215,7 +243,7 @@ fn a_node_cursor_over_flat_records_shows_the_key_and_refuses_the_value() {
         .expect("a put on LigninDB");
     step.commit();
 
-    let step = Step::new(&rocks, &lignin);
+    let step = Step::at(&rocks, &lignin, MERK);
     let mut on_rocks = NodeStore::cursor(&step.on_rocks());
     let mut on_lignin = NodeStore::cursor(&step.on_lignin());
     on_rocks.seek_to_first().unwrap();
@@ -234,6 +262,18 @@ fn a_node_cursor_over_flat_records_shows_the_key_and_refuses_the_value() {
         matches!(&refused, grovedb_storage::Error::StorageError(_)),
         "{refused:?}"
     );
+    // By its key RocksDB hands the bytes to Merk's decoder, and the store
+    // refuses the record.
+    let by_key = |refused: Result<Option<TreeNode>, Error>| refused.expect_err("no node");
+    let on_rocks_by_key = step
+        .on_rocks()
+        .get_node(&key, NO_VALUE_DEFINED_COST, version());
+    assert!(matches!(by_key(on_rocks_by_key.value), Error::EdError(_)));
+    let on_lignin_by_key = step
+        .on_lignin()
+        .get_node(&key, NO_VALUE_DEFINED_COST, version());
+    let refused = by_key(on_lignin_by_key.value);
+    assert!(matches!(&refused, Error::StorageError(_)), "{refused:?}");
     // The flat side of the handle reads the record on both.
     for read in [
         FlatStore::get(&step.on_rocks(), &key),
@@ -245,4 +285,93 @@ fn a_node_cursor_over_flat_records_shows_the_key_and_refuses_the_value() {
     on_rocks.next().unwrap();
     on_lignin.next().unwrap();
     assert!(!on_rocks.valid().unwrap() && !on_lignin.valid().unwrap());
+}
+
+/// What a read of the node under `key` answers, and what the node cursor
+/// shows at its first record: the key, the value, and its status after
+/// the read of the value.
+fn node_and_cursor<'db, S: NodeStore<'db>>(
+    store: &S,
+    key: &[u8],
+) -> (Result<Option<Vec<u8>>, String>, [Option<Vec<u8>>; 2], bool) {
+    let got = store.get_node(key, NO_VALUE_DEFINED_COST, version()).value;
+    let got = got
+        .map(|node| node.map(|node| node.encode()))
+        .map_err(|error| error.to_string());
+    let mut cursor = NodeStore::cursor(store);
+    cursor.seek_to_first().unwrap();
+    let under = [
+        cursor.key().unwrap().map(<[u8]>::to_vec),
+        cursor.value().unwrap().map(<[u8]>::to_vec),
+    ];
+    (got, under, cursor.status().is_ok())
+}
+
+/// A node that a change set puts with no root, in a subtree that is
+/// entered as a tree that keeps its data as flat records. RocksDB keeps
+/// the node's record under its key and reads it as a node, by key and
+/// under the cursor. On LigninDB such a node is a flat record in a form
+/// of the engine's own, and under a tree of that kind a flat record is
+/// read with the bytes it is stored with, whatever they are (D-197): the
+/// tree type says which a record is, and the bytes do not. The
+/// transaction that wrote the node reads it as its node. After its commit
+/// the cursor shows the record in the engine's form, and by key those
+/// bytes go to Merk's decoder, which refuses the bytes of this test and
+/// is not promised to refuse every such record. A node of a Merk's tree
+/// under such an entry, which GroveDB writes on grove versions 1 to 3
+/// (`engine::lignin::tests::append_only`, D-280), is a cell and is read
+/// as a node: only a node that no node links is read so.
+#[test]
+fn a_node_that_no_node_links_under_a_tree_that_keeps_flat_records_is_read_as_it_is_stored() {
+    const FLAT: Prefix = [250; 32];
+    let rocks = TempStorage::new();
+    let lignin = Lignin::with_stated_value_hashes();
+    let node = lone(b"a node", &[7; 40]);
+    let key = Some(node.key().to_vec());
+    let as_a_node = (
+        Ok(Some(node.encode())),
+        [key.clone(), Some(node.encode())],
+        true,
+    );
+
+    let rocks_transaction = rocks.start_transaction();
+    {
+        let context = rocks
+            .get_immediate_storage_context_by_subtree_prefix(FLAT, &rocks_transaction)
+            .unwrap();
+        put_unlinked(&context, &node);
+        assert_eq!(node_and_cursor(&context, node.key()), as_a_node);
+    }
+    rocks
+        .commit_transaction(rocks_transaction)
+        .unwrap()
+        .expect("the transaction commits on RocksDB");
+    let rocks_transaction = rocks.start_transaction();
+    let context = rocks
+        .get_immediate_storage_context_by_subtree_prefix(FLAT, &rocks_transaction)
+        .unwrap();
+    assert_eq!(node_and_cursor(&context, node.key()), as_a_node);
+
+    let transaction = lignin.path().begin();
+    let handle = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(FLAT));
+    (handle.enter(TreeType::MmrTree)).expect("the subtree is entered");
+    put_unlinked(&handle, &node);
+    // The transaction that wrote the node reads its node.
+    assert_eq!(node_and_cursor(&handle, node.key()), as_a_node);
+    drop(handle);
+    let committed = lignin.commit(&transaction);
+    assert!(matches!(committed, Outcome::Committed(_)), "{committed:?}");
+
+    // After the commit: the record as the engine keeps it.
+    let transaction = lignin.path().begin();
+    let handle = LigninNodeStore::read_only(&transaction, LigninSubtree::alone(FLAT));
+    let (got, [at, shown], status) = node_and_cursor(&handle, node.key());
+    got.expect_err("the engine's form is no record of Merk's");
+    assert_eq!((at, status), (key, true));
+    let shown = shown.expect("the bytes of the record");
+    assert_ne!(shown, node.encode());
+    let stored = FlatStore::get(&handle, node.key())
+        .unwrap()
+        .expect("a read");
+    assert_eq!(stored, Some(shown));
 }
