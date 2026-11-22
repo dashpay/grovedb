@@ -2711,7 +2711,10 @@ same result.
   that are made again and for a reader, with the value of the mover's
   own kept by a later write and none of the committed one; two Merks
   that change places, of which one holds an unlinked record, with no
-  lookup for either afterwards; a Merk that is moved to a prefix under
+  lookup for either afterwards; a cursor that was opened on a Merk and
+  is pointed at its new prefix after a move, again and again, for which
+  it is not looked up again whether the Merk holds unlinked records; a
+  Merk that is moved to a prefix under
   which the transaction had left a record of its own; a Merk with no
   node that holds unlinked records, below a moved subtree, where the
   move names it and where it leaves with the move. With no move,
@@ -2721,9 +2724,10 @@ same result.
   Merk with no node under which its transaction had entered a subtree
   and written a record, which the transaction goes on reading by key
   after a commit gave the Merk a node and met the clear; the same clear
-  stated by key, after a commit met the transaction, which takes what
-  the transaction entered below the Merk; and a clear of a Merk whose
-  node records are all unlinked, which takes nothing below it
+  stated by key, after a commit met the transaction, which takes the
+  subtree that the transaction entered under a node of the Merk; and a
+  clear of a Merk whose node records are all unlinked, stated with the
+  writes laid out, which takes nothing below it
   (`lignindb/src/txn/tests/moves.rs`).
 - T-MV2: after a move the directory and every flat column hold, record for
   record, what they hold where the subtree was written under the new
@@ -2777,9 +2781,11 @@ same result.
   sets of and one more, one whose read under way shows no node after a
   rollback, and one whose read shows a node that another thread keeps by
   its handle before the read has ended, and one whose read shows an
-  unlinked record, which has no handle, while another thread keeps a
-  value by a handle from before a rollback; a cursor of another version
-  than
+  unlinked record, which has no handle, where a value is kept by a
+  handle from before a rollback while that read is under way and after
+  it; a commit whose move states a pair for the prefix of a subtree
+  that went with the clear of a Merk, beside a transaction that has
+  cleared that Merk again; a cursor of another version than
   the latest, where a move
   decides and where none does, with the commit before the move and after
   it; a drop after a clear that took a subtree when it was made again;
