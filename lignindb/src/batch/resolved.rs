@@ -345,6 +345,12 @@ impl<C> Resolved<C> {
                 .filter(|(_, entry)| matches!(entry.write, Write::Node { .. }));
             puts.map(move |(key, _)| (subtree, &**key))
         });
-        (nodes.zip(&applied.nodes)).map(|((subtree, key), handle)| (subtree, key, *handle))
+        // A node that the transaction keeps as an unlinked record has no
+        // cell, and so no handle.
+        let mut unlinked = applied.unlinked.iter().copied().peekable();
+        let cells = (nodes.enumerate())
+            .filter(move |(place, _)| unlinked.next_if_eq(place).is_none())
+            .map(|(_, node)| node);
+        (cells.zip(&applied.nodes)).map(|((subtree, key), handle)| (subtree, key, *handle))
     }
 }

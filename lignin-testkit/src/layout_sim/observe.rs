@@ -106,6 +106,12 @@ impl Observer {
         &self.grove
     }
 
+    /// The type of the tree that the element of `host` is, as of the last
+    /// observation, or `None` for a node whose element is no tree.
+    pub fn tree_type(&self, host: NodeId) -> Option<TreeType> {
+        self.tree_types.get(&host).copied()
+    }
+
     /// Brings the mirror up to date with what `transaction` sees, and
     /// returns what changed since the last observation.
     ///
@@ -595,6 +601,7 @@ impl<'db> Walk<'_, 'db> {
                     self.grove.merk_mut(*merk).axis = *axis;
                 }
                 self.grove.node_mut(id).hosted = hosted.clone();
+                self.changes.retyped.push(id);
             }
         }
         let same_trees = hosted.len() == roots.len()

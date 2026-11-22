@@ -158,6 +158,13 @@ enum SubtreeEntry {
     },
     Drop(Subtree),
     Clear(Subtree),
+    /// The subtree is stated anew: its tree type, and its position among
+    /// the subtrees of its host where it takes another.
+    Convert {
+        subtree: Subtree,
+        tree_type: Span,
+        position: Option<u8>,
+    },
 }
 
 /// Where the entries of one operation begin.
@@ -206,8 +213,12 @@ pub(crate) enum OwnSubtree<'a> {
     /// No write of the transaction entered the subtree or took it out: it
     /// is what the committed state has. `root` is the key of the root its
     /// writes left its Merk with, if one of them set the root, or cleared
-    /// the subtree.
-    Unwritten { root: Option<Option<&'a [u8]>> },
+    /// the subtree. `stated` is what its writes stated the subtree anew
+    /// with.
+    Unwritten {
+        root: Option<Option<&'a [u8]>>,
+        stated: Restated<'a>,
+    },
     /// The transaction entered the subtree in its operation `op`, and
     /// this is what it holds of it since, unless a later operation took a
     /// subtree above it ([`WriteSet::left_after`]).
@@ -230,6 +241,29 @@ pub(crate) struct Said<'a> {
     /// or an enter before, left it entered, and no subtree above it left
     /// since.
     pub(crate) if_absent: Vec<(SubtreeView<'a>, usize)>,
+}
+
+/// What a transaction's writes stated a subtree anew with, since it was
+/// entered: the tree type its newest such write gave it, and the position
+/// the newest that gave one put it at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Restated<'a> {
+    pub(crate) tree_type: Option<&'a [u8]>,
+    pub(crate) position: Option<u8>,
+}
+
+impl<'a> Restated<'a> {
+    /// `view` as these statements leave it.
+    pub(crate) fn of(&self, view: SubtreeView<'a>) -> SubtreeView<'a> {
+        SubtreeView {
+            tree_type: self.tree_type.unwrap_or(view.tree_type),
+            host: view.host.map(|host| HostPut {
+                position: self.position.unwrap_or(host.position),
+                ..host
+            }),
+            ..view
+        }
+    }
 }
 
 /// The writes of one unit, by key.
@@ -346,6 +380,15 @@ impl<'a> OpBatch<'a> {
                 .write(),
                 SubtreeEntry::Drop(subtree) => SubtreeWrite::Drop { subtree },
                 SubtreeEntry::Clear(subtree) => SubtreeWrite::Clear { subtree },
+                SubtreeEntry::Convert {
+                    subtree,
+                    tree_type,
+                    position,
+                } => SubtreeWrite::Convert {
+                    subtree,
+                    tree_type: self.arena.get(tree_type),
+                    position,
+                },
             })
             .collect()
     }
@@ -554,9 +597,11 @@ impl WriteSet {
     ///
     /// The entries come in the order the batch is applied in: a drop or a
     /// clear is one entry each (CF5), and they come first. Then, in the
-    /// order of [`Applied::nodes`](super::Applied), for each Merk its nodes
-    /// and then its deletes, and the records last. A subtree that is
-    /// entered is no entry: it writes no record. The batch has passed
+    /// order of the batch, for each Merk its nodes and then its deletes,
+    /// and the records last. A node is one entry under its key whether or
+    /// not its tree reaches it: an unlinked record is a record of its key
+    /// (`super::unlinked`). A subtree that is entered or stated anew is no
+    /// entry: it writes no record. The batch has passed
     /// [`check`](super::check::check).
     ///
     /// `empty` says of each Merk of the batch whether it had no root in the
@@ -600,6 +645,15 @@ impl WriteSet {
                 },
                 SubtreeWrite::Drop { subtree } => SubtreeEntry::Drop(subtree),
                 SubtreeWrite::Clear { subtree } => SubtreeEntry::Clear(subtree),
+                SubtreeWrite::Convert {
+                    subtree,
+                    tree_type,
+                    position,
+                } => SubtreeEntry::Convert {
+                    subtree,
+                    tree_type: self.arena.put(tree_type),
+                    position,
+                },
             };
             self.subtrees.push(entry);
         }
@@ -608,7 +662,9 @@ impl WriteSet {
             let kind = match write {
                 SubtreeWrite::Drop { .. } => Kind::Dropped,
                 SubtreeWrite::Clear { .. } => Kind::Cleared,
-                SubtreeWrite::Enter { .. } | SubtreeWrite::EnterIfAbsent { .. } => continue,
+                SubtreeWrite::Enter { .. }
+                | SubtreeWrite::EnterIfAbsent { .. }
+                | SubtreeWrite::Convert { .. } => continue,
             };
             let below = std::mem::take(&mut cut);
             let id = self.push(Unit::data(write.subtree()), &below, kind, first_write);
@@ -1135,6 +1191,7 @@ impl WriteSet {
                 SubtreeEntry::Enter { subtree: named, .. }
                 | SubtreeEntry::Drop(named)
                 | SubtreeEntry::Clear(named) => named == subtree,
+                SubtreeEntry::Convert { .. } => false,
             };
             // A Merk below one that the operation dropped or cleared went
             // with it.
@@ -1157,6 +1214,7 @@ impl WriteSet {
         // first, after the write that says of the subtree what does not
         // depend on that.
         let mut if_absent: Vec<(SubtreeView<'_>, usize)> = Vec::new();
+        let mut stated = Restated::default();
         for op in (0..end.min(self.ops.len())).rev() {
             // In one operation the change sets come last, the enters
             // before them, and the drops and the clears first.
@@ -1168,6 +1226,20 @@ impl WriteSet {
                 root = stated.map(|root| root.map(|key| self.arena.get(key)));
             }
             let named = self.op_subtrees(op);
+            // A subtree is stated anew by an operation after the one that
+            // entered it: the newest statement stands.
+            for entry in named {
+                if let SubtreeEntry::Convert {
+                    subtree: named,
+                    tree_type,
+                    position,
+                } = entry
+                    && named == subtree
+                {
+                    stated.tree_type = stated.tree_type.or(Some(self.arena.get(*tree_type)));
+                    stated.position = stated.position.or(*position);
+                }
+            }
             let entered = named.iter().rev().find_map(|entry| match entry {
                 SubtreeEntry::Enter {
                     subtree: entered,
@@ -1187,6 +1259,7 @@ impl WriteSet {
                         position,
                     }),
                 };
+                let view = stated.of(view);
                 if !absent {
                     let base = OwnSubtree::Entered { view, op };
                     return Said { base, if_absent };
@@ -1212,7 +1285,7 @@ impl WriteSet {
                 root = root.or(Some(None));
             }
         }
-        let base = OwnSubtree::Unwritten { root };
+        let base = OwnSubtree::Unwritten { root, stated };
         Said { base, if_absent }
     }
 
@@ -1232,7 +1305,7 @@ impl WriteSet {
         let named = ops.flat_map(|op| self.op_subtrees(op));
         let left = named.filter_map(|entry| match entry {
             SubtreeEntry::Drop(subtree) | SubtreeEntry::Clear(subtree) => Some(*subtree),
-            SubtreeEntry::Enter { .. } => None,
+            SubtreeEntry::Enter { .. } | SubtreeEntry::Convert { .. } => None,
         });
         left.collect()
     }

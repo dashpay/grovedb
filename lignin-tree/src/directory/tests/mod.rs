@@ -6,6 +6,7 @@ mod lookup;
 mod model;
 mod moves;
 mod records;
+mod restated;
 mod roots;
 mod store;
 

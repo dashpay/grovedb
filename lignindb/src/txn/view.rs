@@ -15,6 +15,7 @@ use lignin_tree::{
 use super::{
     error::TxnError,
     key::Subtree,
+    unlinked::Unlinked,
     write::HostPut,
     write_set::{hash_of, EntryId, Kind, LinkEntry, NodeEntry, WriteSet},
 };
@@ -65,9 +66,10 @@ pub struct LinkView<'a> {
     /// The child's aggregate data.
     pub aggregate: &'a [u8],
     /// The child's key, where the node is a record of the transaction's
-    /// write set. A cell names its child by an address, which is followed
-    /// through the node's handle ([`Scope::child`](super::Scope::child)),
-    /// or read with the node under a cursor ([`ChildKeys`]).
+    /// write set or an unlinked record. A cell names its child by an
+    /// address, which is followed through the node's handle
+    /// ([`Scope::child`](super::Scope::child)), or read with the node
+    /// under a cursor ([`ChildKeys`]).
     pub key: Option<&'a [u8]>,
 }
 
@@ -150,15 +152,18 @@ enum Source<'a> {
         set: &'a WriteSet,
         id: EntryId,
     },
+    Unlinked(Unlinked<'a>),
 }
 
 /// One node as an operation of a write transaction reads it
 /// (`transactions.md` RD3, RD5): the cell of the node in the transaction's
 /// frames or in a committed page, or, while the transaction serves its
-/// records by key (WT7b), the record it wrote.
+/// records by key (WT7b), the record it wrote. A key that no node of the
+/// Merk's tree is under can hold an unlinked record, which is shown as the
+/// node its writer stated ([`Self::is_unlinked`]).
 ///
 /// It borrows the frame or the write set, which do not change while the
-/// operation runs (LT2).
+/// operation runs (LT2), or the bytes of the record that was read.
 #[derive(Clone, Copy)]
 pub struct NodeView<'a> {
     source: Source<'a>,
@@ -170,6 +175,7 @@ impl fmt::Debug for NodeView<'_> {
             .field("key", &self.key())
             .field("value_len", &self.value_len())
             .field("is_record", &self.is_record())
+            .field("is_unlinked", &self.is_unlinked())
             .finish_non_exhaustive()
     }
 }
@@ -210,6 +216,13 @@ impl<'a> NodeView<'a> {
         }
     }
 
+    /// An unlinked record.
+    pub(crate) const fn unlinked(record: Unlinked<'a>) -> Self {
+        Self {
+            source: Source::Unlinked(record),
+        }
+    }
+
     fn entry(set: &'a WriteSet, id: EntryId) -> NodeEntry {
         match set.entry(id).kind {
             Kind::Node(node) => node,
@@ -222,6 +235,7 @@ impl<'a> NodeView<'a> {
         match self.source {
             Source::Cell { node, .. } => node.key(),
             Source::Record { set, id } => set.key(id),
+            Source::Unlinked(record) => record.key,
         }
     }
 
@@ -230,6 +244,7 @@ impl<'a> NodeView<'a> {
         match self.source {
             Source::Cell { node, .. } => node.feature(),
             Source::Record { set, id } => set.bytes_at(Self::entry(set, id).feature),
+            Source::Unlinked(record) => record.feature,
         }
     }
 
@@ -238,6 +253,7 @@ impl<'a> NodeView<'a> {
         match self.source {
             Source::Cell { node, .. } => node.value_hash(),
             Source::Record { set, id } => hash_of(set.bytes_at(Self::entry(set, id).value_hash)),
+            Source::Unlinked(record) => record.value_hash,
         }
     }
 
@@ -246,6 +262,7 @@ impl<'a> NodeView<'a> {
         match self.source {
             Source::Cell { node, .. } => node.kv_hash(),
             Source::Record { set, id } => hash_of(set.bytes_at(Self::entry(set, id).kv_hash)),
+            Source::Unlinked(record) => record.kv_hash,
         }
     }
 
@@ -269,6 +286,7 @@ impl<'a> NodeView<'a> {
             // A record is shown only once the transaction has its own copy
             // of every value its write set refers to (WT7).
             Source::Record { set, id } => Ok(set.node_value(id).unwrap_or_default()),
+            Source::Unlinked(record) => Ok(record.value),
         }
     }
 
@@ -277,6 +295,7 @@ impl<'a> NodeView<'a> {
         match self.source {
             Source::Cell { node, .. } => node.value_len(),
             Source::Record { set, id } => set.node_value(id).map_or(0, |value| value.len() as u32),
+            Source::Unlinked(record) => record.value.len() as u32,
         }
     }
 
@@ -287,6 +306,8 @@ impl<'a> NodeView<'a> {
         match self.source {
             Source::Cell { stale, .. } => stale,
             Source::Record { set, id } => Self::entry(set, id).stale,
+            // An unlinked record is in no hash: nothing of it is evaluated.
+            Source::Unlinked(_) => Stale::NONE,
         }
     }
 
@@ -314,17 +335,33 @@ impl<'a> NodeView<'a> {
                     key: Some(set.bytes_at(link.key)),
                 })
             }
+            Source::Unlinked(record) => record.link(side).map(|link| LinkView {
+                hash: link.hash,
+                heights: link.heights,
+                child_key_len: link.key.len() as u8,
+                aggregate: link.aggregate,
+                key: Some(link.key),
+            }),
         }
     }
 
     /// The node's name, to keep: good until a cell leaves the node's page
     /// or the lease it was read under ends (PN8). A record of the write set
-    /// has no cell and so no handle: it is read by its key.
+    /// has no cell and so no handle, and neither has an unlinked record:
+    /// they are read by key.
     pub fn handle(&self) -> Option<NodeHandle> {
         match self.source {
             Source::Cell { node, .. } => Some(node.handle()),
-            Source::Record { .. } => None,
+            Source::Record { .. } | Source::Unlinked(_) => None,
         }
+    }
+
+    /// Whether the node is an unlinked record: a record under a key that
+    /// no node of the Merk's tree is under, kept in the data column of the
+    /// subtree and in no hash (`lignindb::txn`, "Unlinked records"). Its
+    /// links name their children by key, and a child need not be there.
+    pub fn is_unlinked(&self) -> bool {
+        matches!(self.source, Source::Unlinked(_))
     }
 
     /// Whether the node is shown from the transaction's write set, by its

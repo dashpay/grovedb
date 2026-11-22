@@ -69,8 +69,11 @@ pub(super) struct StoredNode {
     /// bytes. None is in a committed node.
     pub(super) stale: Stale,
     /// Where the node's cell is. A node the transaction serves from its
-    /// write set has no cell.
+    /// write set has no cell, and neither has an unlinked record.
     pub(super) location: Option<Location>,
+    /// Whether the node is an unlinked record, which no cell keeps a
+    /// value for.
+    pub(super) unlinked: bool,
 }
 
 /// What following a link from a parent's cell found.
@@ -183,6 +186,14 @@ pub(super) enum SubtreeChange {
         /// it is where it has (`SubtreeWrite::EnterIfAbsent`).
         if_absent: bool,
     },
+    /// The subtree is stated anew, as a conversion in place leaves it:
+    /// its tree type, and its position among the subtrees its host hosts,
+    /// where it has a host.
+    Convert {
+        subtree: Prefix,
+        tree_type: Vec<u8>,
+        position: Option<u8>,
+    },
 }
 
 /// The writes of one operation: what it does to whole subtrees, the change
@@ -199,9 +210,12 @@ pub(super) struct Write {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Written {
     /// For each Merk of the write, where each of its written nodes is, in
-    /// the order they were given. Empty for a transaction that serves its
-    /// records by key and has no cells.
-    pub(super) locations: Vec<Vec<Location>>,
+    /// the order they were given: `None` for a node that the tree of its
+    /// Merk does not reach, which the transaction keeps as an unlinked
+    /// record with no cell. Of a write that the transaction kept in its
+    /// write set by key it reports no place, and the list of each Merk is
+    /// empty.
+    pub(super) locations: Vec<Vec<Option<Location>>>,
     /// How many values the write stated that the transaction did not hold.
     pub(super) values_written: usize,
     /// How many values the write stated that the transaction held already,
@@ -334,8 +348,8 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
 
     /// Applies the batches of `parts` to the transaction, one operation
     /// each and in their order, and all of them or none. `enters` are
-    /// subtrees that are entered with them, each with the part it is
-    /// entered by, besides those the part enters itself. Where the
+    /// subtrees that are entered or stated anew with them, each with the
+    /// part it goes with, besides those the part enters itself. Where the
     /// transaction refuses a batch with one of the two refusals that
     /// [`LigninEntryRefused`] names, `entry` is given which.
     fn apply_parts(
@@ -462,6 +476,7 @@ pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<Store
         right: view.link(Side::Right).map(stored_link).transpose()?,
         stale: view.stale(),
         location: view.handle().map(Location),
+        unlinked: view.is_unlinked(),
     })
 }
 
@@ -786,6 +801,9 @@ fn held(scope: &Scope<'_, '_>, subtree: Subtree, node: &NodePut<'_>) -> Result<H
             return Ok(Held::default());
         };
         let value = match stated {
+            // No cell holds the value of an unlinked record: a value
+            // that is stated over one is written, with no comparison.
+            Some(_) if view.is_unlinked() => false,
             // A value of another length is not read to be compared.
             Some(stated) if view.value_len() as usize == stated.len() => {
                 view.value(&mut ValueBuf::new())? == stated
@@ -834,6 +852,15 @@ fn subtree_write(change: &SubtreeChange) -> SubtreeWrite<'_> {
             };
             entering.write()
         }
+        SubtreeChange::Convert {
+            subtree,
+            tree_type,
+            position,
+        } => SubtreeWrite::Convert {
+            subtree: Subtree::new(*subtree),
+            tree_type,
+            position: *position,
+        },
     }
 }
 
@@ -883,11 +910,12 @@ pub(super) fn apply_batch(
     let mut written = Written::default();
     let fresh = |subtree: Subtree| {
         (batch.subtrees.iter()).any(|write| match write {
-            SubtreeWrite::EnterIfAbsent { .. } => false,
+            // A subtree that is stated anew keeps its nodes.
+            SubtreeWrite::EnterIfAbsent { .. } | SubtreeWrite::Convert { .. } => false,
             write => write.subtree() == subtree,
         })
     };
-    let leaves = batch.subtrees.iter().any(|write| !write.enters());
+    let leaves = batch.subtrees.iter().any(SubtreeWrite::leaves);
     let restated = |subtree: Subtree| {
         let mut writes = batch.subtrees.iter();
         leaves
@@ -954,11 +982,30 @@ pub(super) fn apply_batch(
         })?;
 
     // The handles come in the order of the batch: the nodes of the first
-    // Merk, then those of the second. A transaction that serves its records
-    // by key reports none.
+    // Merk, then those of the second, without those that the transaction
+    // keeps as unlinked records, which it names by their places. Of a
+    // write that it keeps in its write set by key it reports neither.
+    if applied.nodes.is_empty() && applied.unlinked.is_empty() {
+        written.locations = vec![Vec::new(); batch.merks.len()];
+        return Ok(written);
+    }
+    debug_assert_eq!(
+        applied.nodes.len() + applied.unlinked.len(),
+        batch
+            .merks
+            .iter()
+            .map(|merk| merk.nodes.len())
+            .sum::<usize>(),
+        "a written node has a cell or is an unlinked record"
+    );
+    let mut unlinked = applied.unlinked.iter().copied().peekable();
     let mut handles = applied.nodes.into_iter().map(Location);
+    let mut places = (0..).map(|place| match unlinked.next_if_eq(&place) {
+        Some(_) => None,
+        None => handles.next(),
+    });
     written.locations = (batch.merks.iter())
-        .map(|merk| handles.by_ref().take(merk.nodes.len()).collect())
+        .map(|merk| places.by_ref().take(merk.nodes.len()).collect())
         .collect();
     Ok(written)
 }
@@ -1063,7 +1110,7 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
 }
 
 /// Applies the batches of `parts` through `scope`, in their order, each
-/// with the subtrees of `enters` that are entered by it.
+/// with the subtrees of `enters` that are entered or stated anew with it.
 fn apply_parts(
     scope: &Scope<'_, '_>,
     parts: &[&dyn BatchPart],
@@ -1099,8 +1146,10 @@ fn apply_parts(
 }
 
 /// The subtree writes of a batch with `enters` among them: what leaves
-/// first, as the batch has it, and then every enter after the enter of the
-/// subtree its host is in, and otherwise in the order they came.
+/// first, as the batch has it, then what is stated anew, and then the
+/// enters by how many subtrees above each are entered here too, so that
+/// a subtree comes after the one its host is in, and in the order they
+/// came where that number is the same.
 fn with_enters<'a>(own: &[SubtreeWrite<'a>], enters: &[SubtreeWrite<'a>]) -> Vec<SubtreeWrite<'a>> {
     let (mut ordered, entered): (Vec<_>, Vec<_>) =
         (own.iter().chain(enters).copied()).partition(|write| !write.enters());

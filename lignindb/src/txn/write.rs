@@ -212,6 +212,81 @@ pub enum RootPut<'a> {
 /// [`BatchError::NotMerk`](super::BatchError::NotMerk)). Whether the
 /// committed state holds flat records under a subtree that had no Merk is
 /// not looked up: which of the two a subtree holds is its writer's to know.
+///
+/// # Unlinked records
+///
+/// A change set states a record for each key, as a storage batch holds
+/// one outcome for a key (GM0), and the tree is what its root reaches. The
+/// two can differ: a batch that keeps a put of a node over a later delete
+/// of it inside one operation can write a node that no link of its tree
+/// leads to. An engine that keeps one record for a key holds that record,
+/// shows it to a read by key and to a cursor, and has it in no hash. So
+/// does this one:
+///
+/// - **A written node that the tree does not reach once the batch is
+///   applied is kept as an unlinked record**: no cell, but a flat record
+///   in the data column of the subtree, under the node's key, which
+///   follows the subtree's entry in the directory as every flat record
+///   does. A cell the node had leaves its tree. The node names no Merk
+///   that it hosts
+///   ([`BatchError::HostUnlinked`](super::BatchError::HostUnlinked)): what
+///   its cell hosted is its batch's to drop, as for a node that is deleted.
+///   It leaves no hash to be made
+///   ([`BatchError::StaleUnlinked`](super::BatchError::StaleUnlinked)):
+///   nobody makes a hash of an unlinked record. And with its value it is
+///   no longer than the value of a flat record may be
+///   ([`BatchError::ValueTooLong`](super::BatchError::ValueTooLong)).
+/// - **Which written nodes the tree reaches** is found from the root the
+///   change set states, through the links it states for the nodes it
+///   writes and the links the cells have for all others. Under a root
+///   that is kept, a written node that has a cell is taken to stay in its
+///   tree, and a new node is in the tree where a written node of the tree
+///   links it.
+/// - **Only written nodes are looked at.** A cell that the batch neither
+///   writes nor deletes, and that no node links any more, stays in its
+///   page with no link to it, and no record is kept for it. So does a
+///   written node with a cell that its parent stops linking under a root
+///   that is kept. A commit of a Merk leaves neither: it states its root,
+///   and puts or deletes every node that leaves its tree.
+/// - **A key has one record.** A node that is linked under a key takes the
+///   place of an unlinked record there. A delete of the key takes
+///   whichever is there, and so does a drop or a clear of the subtree.
+/// - **A node the transaction wrote keeps its value, in its tree or out
+///   of it** ([`ValuePut::Keep`]). A node that leaves its tree and keeps
+///   its value takes the value of the cell it had, by the read its write
+///   names, as a node that stays does. A later write of that node that
+///   keeps its value keeps the value of the record the transaction left,
+///   whether the write links the node again or leaves it out of its tree:
+///   the record is the node as the transaction last wrote it.
+/// - **A committed unlinked record has no value for a write to keep**: it
+///   is no node, and no read of it is dated. A node that keeps its value
+///   under a key that has neither a node of the tree nor a record the
+///   transaction left is refused
+///   ([`BatchError::NoValue`](super::BatchError::NoValue), or
+///   [`BatchError::ValueTaken`](super::BatchError::ValueTaken) where a
+///   commit outside the transaction took the node away after the read the
+///   write names), whatever record the committed state holds under the
+///   key.
+/// - **It is read as a node**: by its key where the tree has none, and
+///   under a cursor over the Merk, in key order among the nodes. A read
+///   that finds it in the pages, the transaction's or the committed ones,
+///   shows it as an unlinked record
+///   ([`NodeView::is_unlinked`](super::NodeView::is_unlinked)).
+/// - **Whether the tree reaches a node is found when its batch is laid
+///   out on the transaction's pages.** A batch that the transaction keeps
+///   in its write set by key (one of a scope beside another scope, and
+///   one of a transaction that serves its records by key) is laid out
+///   later or not at all. Until then its nodes are the write set's
+///   records of their keys, whether or not their tree reaches them, and
+///   [`Applied`] names none of them.
+///   [`BatchError::HostUnlinked`](super::BatchError::HostUnlinked),
+///   [`BatchError::StaleUnlinked`](super::BatchError::StaleUnlinked) and
+///   the [`BatchError::ValueTooLong`](super::BatchError::ValueTooLong) of
+///   a record come when the batch is laid out.
+///
+/// A Merk that holds no such record pays a lookup of whether its subtree
+/// holds any. When the lookup is made, and for how long its answer is
+/// kept, is said where the records are kept (`txn/unlinked.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MerkWrite<'a> {
     /// The Merk's subtree.
@@ -366,6 +441,37 @@ pub enum SubtreeWrite<'a> {
         /// The subtree.
         subtree: Subtree,
     },
+    /// States the subtree anew in the subtree directory. The subtree
+    /// stays entered and keeps its nodes, its host and the subtrees below
+    /// it, and is from here on a tree of `tree_type`, at `position` among
+    /// the subtrees of its host. The statement changes the subtree
+    /// directory and nothing else: no node, and no pointer in the cell of
+    /// its host.
+    ///
+    /// It is what a conversion in place states beside its writes
+    /// (GroveDB's `convert_to_big_sum_tree`): a tree whose element takes
+    /// another type is neither dropped nor entered again, and an element
+    /// that hosts several subtrees can name them in another order
+    /// afterwards. The subtrees of one element that change places are
+    /// stated by one batch: a place that one of them takes is free, or
+    /// left by another of the batch. The cell of the host points at its
+    /// subtrees in the new order where a batch puts the host's node and
+    /// states what it hosts in that order ([`Hosted::Set`]), which is its
+    /// caller's to do, in the batch that states the places.
+    ///
+    /// The subtree is entered before the batch, which neither enters nor
+    /// drops nor clears it.
+    Convert {
+        /// The subtree.
+        subtree: Subtree,
+        /// The tree type it has from here on, as bytes that are kept and
+        /// given back: up to 255.
+        tree_type: &'a [u8],
+        /// The position it has among the subtrees of its host from here
+        /// on: its place in the host's [`Hosted::Set`]. `None` keeps the
+        /// position it has, and is what a subtree with no host states.
+        position: Option<u8>,
+    },
 }
 
 /// An enter of a subtree, of either kind ([`SubtreeWrite::entering`]).
@@ -407,14 +513,13 @@ impl<'a> Entering<'a> {
 }
 
 impl<'a> SubtreeWrite<'a> {
-    /// Whether the write is an enter of its subtree, of either kind. The
-    /// others take it out, or what it holds.
+    /// Whether the write is an enter of its subtree, of either kind.
     pub const fn enters(&self) -> bool {
         matches!(self, Self::Enter { .. } | Self::EnterIfAbsent { .. })
     }
 
-    /// The enter the write is, of either kind, or `None` for a drop and a
-    /// clear.
+    /// The enter the write is, of either kind, or `None` for any other
+    /// write.
     pub const fn entering(&self) -> Option<Entering<'a>> {
         match *self {
             Self::Enter {
@@ -432,8 +537,14 @@ impl<'a> SubtreeWrite<'a> {
                 host,
                 if_absent: matches!(self, Self::EnterIfAbsent { .. }),
             }),
-            Self::Drop { .. } | Self::Clear { .. } => None,
+            Self::Drop { .. } | Self::Clear { .. } | Self::Convert { .. } => None,
         }
+    }
+
+    /// Whether the write takes its subtree out, or what it holds: a drop
+    /// or a clear.
+    pub const fn leaves(&self) -> bool {
+        matches!(self, Self::Drop { .. } | Self::Clear { .. })
     }
 
     /// The subtree the write names.
@@ -442,7 +553,8 @@ impl<'a> SubtreeWrite<'a> {
             Self::Enter { subtree, .. }
             | Self::EnterIfAbsent { subtree, .. }
             | Self::Drop { subtree }
-            | Self::Clear { subtree } => subtree,
+            | Self::Clear { subtree }
+            | Self::Convert { subtree, .. } => subtree,
         }
     }
 }
@@ -459,8 +571,9 @@ impl<'a> SubtreeWrite<'a> {
 /// the batch above this one (TXN-08).
 ///
 /// The parts of a batch are applied in this order, wherever they stand in
-/// it: the drops and the clears, the enters of both kinds in the order
-/// they are given, the change sets, and the records.
+/// it: the drops and the clears, the subtrees that are stated anew, the
+/// enters of both kinds in the order they are given, the change sets, and
+/// the records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Batch<'a> {
     /// The writes of flat records.
@@ -484,12 +597,12 @@ impl Batch<'_> {
 
     /// Whether the batch drops or clears `subtree`.
     pub(crate) fn leaves(&self, subtree: Subtree) -> bool {
-        (self.subtrees.iter()).any(|write| !write.enters() && write.subtree() == subtree)
+        (self.subtrees.iter()).any(|write| write.leaves() && write.subtree() == subtree)
     }
 
     /// The subtrees the batch drops and clears, in its order.
     pub(crate) fn leaving(&self) -> Vec<Subtree> {
-        let leaves = (self.subtrees.iter()).filter(|write| !write.enters());
+        let leaves = (self.subtrees.iter()).filter(|write| write.leaves());
         leaves.map(SubtreeWrite::subtree).collect()
     }
 }
@@ -509,8 +622,17 @@ impl Batch<'_> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Applied {
     /// The handles of the written nodes, in the order of the batch: the
-    /// nodes of the first Merk, then those of the second, and so on.
+    /// nodes of the first Merk, then those of the second, and so on. A
+    /// node that is kept as an unlinked record has no cell and no handle,
+    /// and is left out here ([`Self::unlinked`]).
     pub nodes: Vec<NodeHandle>,
+    /// The nodes of the batch that are kept as unlinked records
+    /// ([`MerkWrite`], "Unlinked records"), each by its place among the
+    /// nodes of the batch, in ascending order. Empty for a batch of whose
+    /// nodes every tree reaches each, and for a batch that is kept in the
+    /// write set by key: what its trees reach is found when it is laid
+    /// out.
+    pub unlinked: Vec<usize>,
     /// Every cell the write carried to another page: where it was, and the
     /// node where it is now.
     pub carried: Vec<(CellAddress, NodeHandle)>,

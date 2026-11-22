@@ -21,8 +21,9 @@
 //! - **The element that hosts it** ([`LigninHosted`]).
 
 use super::{
-    access::Write, change_set::entering, node_inner, refused, LigninBatch, LigninChangeSet,
-    LigninNodeStore, LigninSubtree, Mode,
+    access::Write,
+    change_set::{converting, entering},
+    node_inner, refused, LigninBatch, LigninChangeSet, LigninNodeStore, LigninSubtree, Mode,
 };
 use crate::{tree::TreeNode, Error, TreeType};
 
@@ -121,6 +122,12 @@ impl LigninBatch {
     pub fn enter_tree(&self, subtree: &LigninSubtree, tree_type: TreeType) -> Result<(), Error> {
         self.enter(subtree, &tree_type_bytes(tree_type))
     }
+
+    /// States `subtree` anew as a tree of `tree_type`: [`Self::convert`]
+    /// with the bytes of that type ([`tree_type_bytes`]).
+    pub fn convert_tree(&self, subtree: &LigninSubtree, tree_type: TreeType) -> Result<(), Error> {
+        self.convert(subtree, &tree_type_bytes(tree_type))
+    }
 }
 
 impl LigninNodeStore<'_> {
@@ -156,6 +163,39 @@ impl LigninNodeStore<'_> {
                 let enter = entering(&self.subtree, &tree_type_bytes(tree_type), false)?;
                 let write = Write {
                     subtrees: vec![enter],
+                    ..Write::default()
+                };
+                self.apply(&write)
+            }
+        }
+    }
+
+    /// States the handle's subtree anew in the subtree directory as a tree
+    /// of `tree_type`, at the place the handle names among the subtrees of
+    /// its host ([`LigninSubtree::host`]): staged on a deferred handle, in
+    /// the batch it was opened with, and made at once on an immediate one.
+    ///
+    /// It is what a conversion in place states beside the nodes it writes
+    /// again: in the same batch on a deferred handle, and as a write of
+    /// its own on an immediate one. The subtree is entered already. It is
+    /// no write of a record, so it is charged nothing.
+    ///
+    /// The cell of the host names its Merks in the new order when a batch
+    /// writes the host's node and states the Merks it hosts with it, as
+    /// the batch of a deferred handle does. A statement that is made at
+    /// once writes no node: after one that gives the Merk another place,
+    /// the host's cell has the old order until a write states what the
+    /// host hosts.
+    pub fn convert(&self, tree_type: TreeType) -> Result<(), Error> {
+        match self.mode {
+            Mode::ReadOnly | Mode::Deferred(None) => {
+                Err(refused("a conversion through a handle that only reads"))
+            }
+            Mode::Deferred(Some(batch)) => batch.convert_tree(&self.subtree, tree_type),
+            Mode::Immediate => {
+                let convert = converting(&self.subtree, &tree_type_bytes(tree_type))?;
+                let write = Write {
+                    subtrees: vec![convert],
                     ..Write::default()
                 };
                 self.apply(&write)

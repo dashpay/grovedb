@@ -609,6 +609,7 @@ impl<'s> WriteTxn<'s> {
                 SubtreeWrite::Drop { .. } => {
                     units.extend(Column::ALL.map(|column| Unit::new(column, subtree)));
                 }
+                SubtreeWrite::Convert { .. } => units.push(Unit::data(subtree)),
             }
         }
         let nodes = batch.merks.iter().flat_map(|merk| merk.nodes);
@@ -725,7 +726,8 @@ impl<'s> WriteTxn<'s> {
     /// The value of the node under `key` of the Merk `subtree` as the
     /// frames have it, for a write that keeps it and is kept in the write
     /// set: the node is one of an operation that is laid out, which did not
-    /// state the value either.
+    /// state the value either. It is a cell of its tree, or the unlinked
+    /// record that operation left of it.
     pub(super) fn framed_value(
         &self,
         state: &mut State<'s>,
@@ -738,6 +740,11 @@ impl<'s> WriteTxn<'s> {
         };
         let root = frames.root(subtree)?;
         let at = find(&mut frames.tree, root, key)?;
+        if at.is_none() {
+            // The node left its tree in an operation that is laid out:
+            // the frames have it as an unlinked record.
+            return frames.own_unlinked_value(&self.path, subtree, key);
+        }
         show_framed(&mut frames, at, |view| {
             let mut buf = ValueBuf::new();
             view.map(|view| view.value(&mut buf).map(<[u8]>::to_vec))
@@ -972,7 +979,7 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<(), TxnError> {
         let merks = batch.merks.iter().map(|merk| merk.subtree);
         let records = batch.records.iter().map(|record| record.unit().subtree);
-        let leaving = (batch.subtrees.iter()).filter(|write| !write.enters());
+        let leaving = (batch.subtrees.iter()).filter(|write| write.leaves());
         for subtree in merks
             .chain(records)
             .chain(leaving.map(SubtreeWrite::subtree))

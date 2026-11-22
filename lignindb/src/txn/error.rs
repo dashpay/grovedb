@@ -116,7 +116,9 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
-    /// A value is longer than the value log holds.
+    /// A value is longer than the value log holds, or a node that is kept
+    /// as an unlinked record is longer with its value than a flat record
+    /// may be: the value shares that length with the node's other parts.
     ValueTooLong {
         /// The length of the value.
         len: usize,
@@ -220,6 +222,24 @@ pub enum BatchError {
         /// The subtree that is not entered.
         subtree: Subtree,
     },
+    /// A node that the tree of its Merk does not reach once the batch is
+    /// applied is said to host a Merk
+    /// ([`Hosted::Set`](super::Hosted::Set)). Such a node is kept as an
+    /// unlinked record, which hosts nothing: the batch that leaves it
+    /// drops what its element hosted, and states that it hosts none.
+    HostUnlinked {
+        /// The subtree of the Merk the node is written in.
+        subtree: Subtree,
+    },
+    /// A node that the tree of its Merk does not reach once the batch is
+    /// applied leaves a hash to be made
+    /// ([`NodePut::stale`](super::NodePut::stale)). Such a node is kept as
+    /// an unlinked record, and nobody makes a hash of one: its writer
+    /// states them all.
+    StaleUnlinked {
+        /// The subtree of the Merk the node is written in.
+        subtree: Subtree,
+    },
     /// A subtree is entered that is entered already in the transaction's
     /// view, and that the batch does not drop.
     Entered {
@@ -247,7 +267,8 @@ pub enum BatchError {
         /// The subtree.
         subtree: Subtree,
     },
-    /// A batch enters one subtree twice, or drops or clears it twice.
+    /// A batch enters one subtree twice, drops or clears it twice, or
+    /// states it anew twice, or beside its enter, its drop or its clear.
     SubtreeTwice {
         /// The subtree.
         subtree: Subtree,
@@ -323,6 +344,19 @@ impl fmt::Display for BatchError {
                     "the host of the Merk {subtree} keeps its pointers in a batch that writes the Merk"
                 )
             }
+            Self::HostUnlinked { subtree } => {
+                write!(
+                    f,
+                    "a node of the Merk {subtree} that its tree does not reach hosts a Merk"
+                )
+            }
+            Self::StaleUnlinked { subtree } => {
+                write!(
+                    f,
+                    "a node of the Merk {subtree} that its tree does not reach leaves a hash to \
+                     be made"
+                )
+            }
             Self::NotEntered { subtree } => write!(f, "the subtree {subtree} is not entered"),
             Self::Entered { subtree } => {
                 write!(f, "the subtree {subtree} is entered already")
@@ -337,7 +371,10 @@ impl fmt::Display for BatchError {
                 )
             }
             Self::SubtreeTwice { subtree } => {
-                write!(f, "the subtree {subtree} is entered, or leaves, twice")
+                write!(
+                    f,
+                    "the subtree {subtree} is entered, leaves or is stated anew twice"
+                )
             }
             Self::TreeTypeTooLong { subtree, len } => {
                 write!(f, "a tree type of {len} bytes for the subtree {subtree}")

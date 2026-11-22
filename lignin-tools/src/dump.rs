@@ -9,7 +9,14 @@
 //! aggregate, the value hash and the key-value hash, each link with the
 //! child's key, hash, heights and aggregate, the Merks the node hosts and
 //! the value), and every record of its aux, roots and meta columns, and of
-//! its data column where it has no Merk (an append-only tree's entries).
+//! its data column where its entry names no root: an append-only tree's
+//! entries, and the unlinked records of a Merk with no node
+//! (`lignindb::txn::MerkWrite`, "Unlinked records"), each with the bytes
+//! the engine keeps there. Under a Merk that has a root, an unlinked
+//! record is dumped among the nodes, as the node it was written as, with
+//! the keys its links name, and a load writes it with the nodes of the
+//! Merk, whose root does not reach it, so the engine keeps it as such a
+//! record again.
 //! `--all` dumps every subtree that no element hosts, each with every
 //! subtree below it: the whole database.
 //!
@@ -377,45 +384,55 @@ fn write_data<W: Write>(
     let opened = operation.open(entered.subtree)?;
     let opened = opened.ok_or_else(|| dump_error("a subtree went while it was dumped"))?;
     let (mut nodes, mut records) = (0, 0);
-    let mut walk = opened.walk();
-    walk.seek_to_first(operation)?;
-    let mut children = ChildKeys::new();
-    let mut buf = ValueBuf::new();
-    while walk.key().is_some() {
-        let read = walk.node_with_children(operation, &mut children, |view| {
-            let view = view.expect("the walk stands on a node");
-            let link = |side| {
-                view.link(side).map(|link| Link {
-                    key: Vec::new(),
-                    hash: *link.hash,
-                    heights: link.heights,
-                    aggregate: link.aggregate.to_vec(),
-                })
-            };
-            let value = view.value(&mut buf).map(<[u8]>::to_vec);
-            value.map(|value| Node {
-                key: view.key().to_vec(),
-                feature: view.feature().to_vec(),
-                value_hash: *view.value_hash(),
-                kv_hash: *view.kv_hash(),
-                left: link(Side::Left),
-                right: link(Side::Right),
-                hosted: Vec::new(),
-                value,
-            })
-        })?;
-        let mut node = read?;
-        for (side, link) in [(Side::Left, &mut node.left), (Side::Right, &mut node.right)] {
-            if let Some(link) = link {
-                link.key = children.take(side);
+    // The walk of a Merk shows its nodes and, among them, the records of
+    // its data column that no node links. A subtree with no root has no
+    // node: the records of its data column are written below.
+    if entered.root.is_some() {
+        let mut walk = opened.walk()?;
+        walk.seek_to_first(operation)?;
+        let mut children = ChildKeys::new();
+        let mut buf = ValueBuf::new();
+        while walk.key().is_some() {
+            let read = walk.node_with_children(operation, &mut children, |view| {
+                let view = view.expect("the walk stands on a node");
+                let link = |side| {
+                    view.link(side).map(|link| Link {
+                        // An unlinked record names each child by its key.
+                        key: link.key.map(<[u8]>::to_vec).unwrap_or_default(),
+                        hash: *link.hash,
+                        heights: link.heights,
+                        aggregate: link.aggregate.to_vec(),
+                    })
+                };
+                let value = view.value(&mut buf).map(<[u8]>::to_vec);
+                let node = value.map(|value| Node {
+                    key: view.key().to_vec(),
+                    feature: view.feature().to_vec(),
+                    value_hash: *view.value_hash(),
+                    kv_hash: *view.kv_hash(),
+                    left: link(Side::Left),
+                    right: link(Side::Right),
+                    hosted: Vec::new(),
+                    value,
+                });
+                node.map(|node| (node, view.is_unlinked()))
+            })?;
+            let (mut node, unlinked) = read?;
+            // A cell names each child by its place: the key was read from the
+            // child's cell.
+            let links = [(Side::Left, &mut node.left), (Side::Right, &mut node.right)];
+            for (side, link) in links.into_iter().filter(|_| !unlinked) {
+                if let Some(link) = link {
+                    link.key = children.take(side);
+                }
             }
+            node.hosted = (hosted.and_then(|hosted| hosted.get(&node.key)))
+                .cloned()
+                .unwrap_or_default();
+            out.node(&node)?;
+            nodes += 1;
+            walk.next(operation)?;
         }
-        node.hosted = (hosted.and_then(|hosted| hosted.get(&node.key)))
-            .cloned()
-            .unwrap_or_default();
-        out.node(&node)?;
-        nodes += 1;
-        walk.next(operation)?;
     }
     let columns = COLUMNS.iter().enumerate();
     for (code, &column) in columns {

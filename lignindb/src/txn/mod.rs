@@ -114,6 +114,17 @@
 //! it (`tree-layout.md` P5). [`Applied`] gives the caller the handles of
 //! the nodes it wrote.
 //!
+//! A change set states one outcome for each key, and the tree is what its
+//! root reaches. A written node that the tree does not reach once the
+//! batch is laid out is kept as a record of its key, with no cell and in
+//! no hash, by the rule of [`MerkWrite`] ("Unlinked records"): a storage
+//! batch can leave such a node where a put stood over a later delete of
+//! its key inside one operation (GM0). A read by key and a cursor over
+//! the Merk show it, and it follows its subtree. A batch that is laid out
+//! as it is applied reports it ([`Applied::unlinked`]). A batch that is
+//! kept in the write set by key is looked at when it is laid out, and its
+//! nodes are read as the write set's records until then.
+//!
 //! # Subtrees and the directory
 //!
 //! Where the root of a Merk is, the subtree directory says
@@ -134,6 +145,11 @@
 //!   again apply it again, so it finds a subtree that a commit beside the
 //!   transaction entered since, where the first kind is refused and the
 //!   transaction's commit with it. Neither is a key of the conflict rule.
+//! - **A batch states a subtree anew** ([`SubtreeWrite::Convert`]): the
+//!   tree type of its entry, and its place among the subtrees of its
+//!   host, as a conversion in place leaves them
+//!   ([`Directory::restate`](lignin_tree::directory::Directory::restate)).
+//!   The subtree keeps its nodes, its root and what is below it.
 //! - **No record of a subtree is read without its entry.** In every
 //!   column the committed records under a prefix belong to the entry the
 //!   directory has under that prefix, so where the version that is read
@@ -316,7 +332,10 @@
 //!   enters the write set ([`BatchError::NoValue`]). Where its subtree
 //!   was dropped, a write to the frames says [`BatchError::NotEntered`],
 //!   and one that is taken by key says `NoValue`. Where a node is under
-//!   the key again, a commit wrote the key, and the keep is met.
+//!   the key again, a commit wrote the key, and the keep is met. A node
+//!   that the transaction wrote and left out of its tree is there for as
+//!   long as the unlinked record it left of it is ([`MerkWrite`],
+//!   "Unlinked records").
 //! - **Where a commit outside took the node away after the read, the
 //!   refusal says so** ([`BatchError::ValueTaken`]), and is a conflict to
 //!   the caller ([`TxnError::is_conflict`]). A commit took a node away
@@ -505,6 +524,13 @@
 //!    with the transaction that wrote it. The frames keep the values of
 //!    their cells in a [`TreeValues`](lignin_tree::value::TreeValues),
 //!    which is what the commit logs, attaches and counts from.
+//! 10. **The transaction finds which nodes of a batch are in the tree**:
+//!     from the root the change set states, through the links it states.
+//!     The writer does not say which of its nodes the tree does not
+//!     reach. Such a node is kept as an unlinked record, in a form of the
+//!     transaction's own, in the flat keyspace of the data column. Under
+//!     a root that is kept, a written node that has a cell stays in its
+//!     tree ([`MerkWrite`], "Unlinked records").
 //!
 //! # What is not here
 //!
@@ -544,6 +570,7 @@ mod path;
 pub(crate) mod reads;
 #[allow(clippy::module_inception)]
 mod txn;
+pub(crate) mod unlinked;
 mod view;
 mod write;
 pub(crate) mod write_set;

@@ -60,10 +60,11 @@ impl<'a> From<&'a LigninSnapshot<'_>> for LigninView<'a> {
 /// A snapshot of a LigninDB database as the store reads it: one committed
 /// version, pinned for as long as this lives (`transactions.md` RD1).
 ///
-/// Every read through it is one operation of the snapshot. A subtree is
-/// looked up in the subtree directory once, and its entry is kept for the
-/// reads that follow: a snapshot's version does not change. A write
-/// through it is refused with `SnapshotReadOnlyTransaction`.
+/// Every read through it is one operation of the snapshot. The entry of
+/// a subtree that was looked up in the subtree directory is kept, and the
+/// reads that follow open the subtree from the kept entry: a snapshot's
+/// version does not change. A write through it is refused with
+/// `SnapshotReadOnlyTransaction`.
 pub struct LigninSnapshot<'s> {
     snapshot: Snapshot<'s>,
     /// The subtrees that were opened, each with its entry, or with none
@@ -118,13 +119,16 @@ impl<'s> LigninSnapshot<'s> {
             None => {
                 let found = operation.open(Subtree::new(*subtree)).map_err(unread)?;
                 let kept = found.map(|found| found.keep());
-                let opened = match &kept {
-                    Some(kept) => operation.resume(kept).map_err(unread)?,
-                    None => None,
+                // Of two first opens of one subtree, the entry that was
+                // kept first is the one both read through.
+                let kept = {
+                    let mut all = self.opened.lock().unwrap_or_else(PoisonError::into_inner);
+                    all.entry(*subtree).or_insert(kept).clone()
                 };
-                let mut all = self.opened.lock().unwrap_or_else(PoisonError::into_inner);
-                all.insert(*subtree, kept);
-                Ok(opened)
+                match &kept {
+                    Some(kept) => operation.resume(kept).map_err(unread),
+                    None => Ok(None),
+                }
             }
         }
     }
@@ -208,7 +212,8 @@ impl Walk for SnapshotNodes<'_, '_> {
     }
 
     fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
-        self.walk = (self.snapshot).reading(subtree, |opened| Ok(Some(opened.walk())))?;
+        self.walk =
+            (self.snapshot).reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
         Ok(())
     }
 }
@@ -259,7 +264,7 @@ impl FlatAccess for LigninSnapshot<'_> {
 
 impl Access for LigninSnapshot<'_> {
     fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
-        let walk = self.reading(subtree, |opened| Ok(Some(opened.walk())))?;
+        let walk = self.reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
         Ok(Box::new(SnapshotNodes {
             snapshot: self,
             walk,

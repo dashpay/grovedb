@@ -101,6 +101,9 @@ impl State {
                 Write::Enter(subtree, _) => {
                     (self.entered.entry(*subtree).or_default()).push((version, true));
                 }
+                // A subtree that is stated anew keeps its records and
+                // stays entered.
+                Write::Stated(_) => {}
                 Write::Range(..) => unreachable!("the stress writes no range delete of its own"),
             }
         }

@@ -1,7 +1,10 @@
 //! The private frames of a write transaction, and how a batch is applied
 //! to them by key.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 use lignin_format::{
     tree_page::{HashField, Side},
@@ -9,7 +12,9 @@ use lignin_format::{
 };
 use lignin_store::alloc::PageAllocator;
 use lignin_tree::{
-    directory::{Directory, DirectoryError, Dropped, Entry, Host, MerkId, Root, RootChange},
+    directory::{
+        Directory, DirectoryError, Dropped, Entry, Host, MerkId, Restated, Root, RootChange,
+    },
     drop::{self, DropError, Flats, Leaving as Left},
     flat::Private,
     fragment::{
@@ -18,7 +23,7 @@ use lignin_tree::{
     },
     hash::{Hashes, Stale},
     node::{Lease, NodeError, NodeHandle},
-    value::{TreeValues, ValueSource},
+    value::{TreeValues, ValueBuf, ValueSource},
 };
 
 use super::{
@@ -26,6 +31,7 @@ use super::{
     key::{Column, Subtree},
     pages::{find, follow, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
+    unlinked,
     write::{
         Applied, Batch, Entering, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, SubtreeWrite,
         ValuePut,
@@ -212,7 +218,27 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// For each Merk of the batch that was applied last, whether it had no
     /// root before.
     empty: Vec<bool>,
+    /// For the subtrees it was looked up for: whether the data column
+    /// holds a record under the subtree, which for a Merk is an unlinked
+    /// record (`super::unlinked`). It is of these pages, so it is made
+    /// again with them.
+    unlinked: HashMap<Subtree, bool>,
+    /// The stored key of each unlinked record that a write applied to
+    /// these frames left where it is: the transaction's own node under
+    /// that key, whose value a later write of the node keeps. A record
+    /// that the committed state left is not among them. A flat write
+    /// meets none of them: the transaction writes no flat record into the
+    /// data column of a subtree it has written a node into since it last
+    /// dropped or cleared the subtree (ST1), and a drop and a clear take
+    /// the subtree's keys out. The keys of a subtree that went with one
+    /// above it stay until the subtree is entered again, and nothing is
+    /// read or written under it until then.
+    own: HashSet<Vec<u8>>,
 }
+
+/// The most cells a search by key passes before the pages are taken for
+/// damaged. A Merk of 2^64 nodes is at most 93 levels deep.
+const MAX_DEPTH: usize = 128;
 
 /// The frames of a transaction between two of its operations.
 pub(crate) type Parked<'s> = Frames<'s, 's, Idle>;
@@ -393,6 +419,32 @@ fn same(entry: &Entry, enter: &Entering<'_>) -> Result<(), BatchError> {
     differs(Differs::Host { entered, stated })
 }
 
+/// Where each node of a batch is before the batch, and whether the tree of
+/// its Merk reaches it once the batch is applied, both by the node's place
+/// among the nodes of the batch. A node that its tree does not reach is
+/// kept as an unlinked record (`super::unlinked`).
+struct Reach {
+    ats: Vec<Option<CellAddress>>,
+    linked: Vec<bool>,
+}
+
+/// What the change sets of one batch do to the unlinked records.
+#[derive(Default)]
+struct UnlinkedWrites {
+    /// The stored keys whose records go, each with its subtree: a node is
+    /// linked under the key, or the key is deleted.
+    taken: Vec<(Subtree, Vec<u8>)>,
+    /// The records of the nodes that the trees do not reach, by stored
+    /// key.
+    kept: Vec<(Vec<u8>, Vec<u8>)>,
+    /// The subtrees that hold an unlinked record afterwards.
+    holding: Vec<Subtree>,
+    /// The value of each node that is new to its tree and keeps the value
+    /// of the record the transaction left under its key, by the node's
+    /// place among the nodes of the batch.
+    relinked: HashMap<usize, Vec<u8>>,
+}
+
 impl Subtrees {
     /// Whether the Merk of `entry` is below one that the batch drops or
     /// clears. A Merk with no node hosts none, and a clear of it leaves
@@ -457,9 +509,15 @@ struct Resolver<'a> {
     merks: &'a [MerkWrite<'a>],
     /// The root of each Merk before the batch.
     roots: Vec<Option<CellAddress>>,
-    /// The nodes each Merk's change set writes, by key.
+    /// The place of each Merk's first node among the nodes of the batch.
+    offsets: Vec<usize>,
+    /// The nodes each Merk's change set writes, by key: each by its place
+    /// among the nodes of the batch.
     written: Vec<HashMap<&'a [u8], usize>>,
     by_subtree: HashMap<Subtree, usize>,
+    /// For each node of the batch, its place among the nodes of the tree
+    /// write, or none for a node that the batch leaves unlinked.
+    places: Vec<Option<usize>>,
 }
 
 impl Resolver<'_> {
@@ -472,9 +530,17 @@ impl Resolver<'_> {
         key: &[u8],
     ) -> Result<Option<Target>, TxnError> {
         if let Some(node) = self.written[merk].get(key) {
-            return Ok(Some(Target::Node(*node)));
+            // A node that the batch leaves unlinked is no node of a tree.
+            return Ok(self.places[*node].map(Target::Node));
         }
         Ok(find(tree, self.roots[merk], key)?.map(Target::At))
+    }
+
+    /// The node of the Merk `merk` that the batch writes under `key`, by
+    /// its place among the nodes of that Merk's change set.
+    fn local(&self, merk: usize, key: &[u8]) -> Option<usize> {
+        let node = self.written[merk].get(key)?;
+        Some(node - self.offsets[merk])
     }
 
     /// The root of the Merk `merk` after the batch.
@@ -551,6 +617,8 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             fragments: self.fragments,
             key: self.key,
             empty: self.empty,
+            unlinked: self.unlinked,
+            own: self.own,
         }
     }
 }
@@ -584,6 +652,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             fragments: Fragments::new(path.layout),
             key: Vec::new(),
             empty: Vec::new(),
+            unlinked: HashMap::new(),
+            own: HashSet::new(),
             base: at,
         })
     }
@@ -629,7 +699,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let (subtree, dropped) = match *write {
                 SubtreeWrite::Drop { subtree } => (subtree, true),
                 SubtreeWrite::Clear { subtree } => (subtree, false),
-                SubtreeWrite::Enter { .. } | SubtreeWrite::EnterIfAbsent { .. } => continue,
+                SubtreeWrite::Enter { .. }
+                | SubtreeWrite::EnterIfAbsent { .. }
+                | SubtreeWrite::Convert { .. } => continue,
             };
             let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
             let entry = entry.ok_or(BatchError::NotEntered { subtree })?;
@@ -686,6 +758,21 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 return Err(BatchError::NotEntered { subtree }.into());
             }
             view.entering.insert(subtree);
+        }
+        // A subtree that is stated anew stays as it is: it is entered, and
+        // the batch neither enters it nor takes it out.
+        for write in batch.subtrees {
+            let SubtreeWrite::Convert { subtree, .. } = write else {
+                continue;
+            };
+            let named = view.entering.contains(subtree)
+                || view.leaving.iter().any(|left| left.subtree == *subtree);
+            if named {
+                return Err(BatchError::SubtreeTwice { subtree: *subtree }.into());
+            }
+            if self.entered(&view, subtree)?.is_none() {
+                return Err(BatchError::NotEntered { subtree: *subtree }.into());
+            }
         }
         Ok(view)
     }
@@ -746,10 +833,86 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         follow(&mut self.tree, lease, handle, key)
     }
 
+    /// Whether the data column holds a record under `subtree` in these
+    /// frames: for a subtree whose data are the nodes of a Merk, whether
+    /// it holds unlinked records (`super::unlinked`). It is one lookup,
+    /// whose answer is kept for the frames, and kept right by the writes
+    /// that are applied to them or forgotten: the next call then looks
+    /// again. The caller has found the subtree entered.
+    pub(crate) fn has_unlinked(
+        &mut self,
+        path: &WritePath<'s>,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        if let Some(known) = self.unlinked.get(subtree) {
+            return Ok(*known);
+        }
+        let has = unlinked::any(&path.keyspaces.data, &*self.flat, subtree)?;
+        self.unlinked.insert(*subtree, has);
+        Ok(has)
+    }
+
+    /// Appends the bytes of the unlinked record under `key` of `subtree`
+    /// to `out`, and says whether the frames hold one. The caller has
+    /// found the subtree entered, and no node of its tree under the key.
+    pub(crate) fn unlinked(
+        &mut self,
+        path: &WritePath<'s>,
+        subtree: &Subtree,
+        key: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<bool, TxnError> {
+        if !self.has_unlinked(path, subtree)? {
+            return Ok(false);
+        }
+        let data = &path.keyspaces.data;
+        Ok(unlinked::get(data, &*self.flat, subtree, key, out)?)
+    }
+
+    /// The value of the unlinked record under `key` of `subtree`, if a
+    /// write that was applied to these frames left the record there: the
+    /// transaction's own node, as it last wrote it. `None` for a key with
+    /// no record and for a record the committed state left.
+    pub(crate) fn own_unlinked_value(
+        &mut self,
+        path: &WritePath<'s>,
+        subtree: &Subtree,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, TxnError> {
+        stored_key(&mut self.key, subtree, key);
+        if !self.own.contains(&self.key) {
+            return Ok(None);
+        }
+        let mut record = Vec::new();
+        let data = &path.keyspaces.data;
+        if !unlinked::get(data, &*self.flat, subtree, key, &mut record)? {
+            return Ok(None);
+        }
+        Ok(Some(unlinked::decode(key, &record)?.value.to_vec()))
+    }
+
+    /// The bytes of the value of the cell at `address`, wherever the value
+    /// is.
+    fn cell_value(&mut self, address: CellAddress) -> Result<Vec<u8>, TxnError> {
+        let Frames {
+            tree,
+            values,
+            source,
+            ..
+        } = self;
+        let read = tree.page(address.page(), |page| {
+            let node = page.node(address.slot())?;
+            let mut buf = ValueBuf::new();
+            Some(values.read(source, node, &mut buf).map(<[u8]>::to_vec))
+        })?;
+        Ok(read.ok_or(NodeError::NoNode { address })??)
+    }
+
     /// Applies `batch` to the frames: the change sets of its Merks as one
     /// write of the tree layer, in which the root of each Merk that leaves
     /// is named as dropped, then what the write did to the subtree
-    /// directory, and then its records.
+    /// directory, then the unlinked records its change sets leave and
+    /// take, and then its records.
     ///
     /// The batch has passed [`check`](super::check::check). `made` is given
     /// for a batch that is applied again (WT7): it says of each Merk
@@ -784,32 +947,94 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 return Err(Refused::clean(BatchError::NotFlat { unit }));
             }
         }
-        let applied = self.apply_merks(path, batch, &view, made)?;
+        let (applied, unlinked) = self.apply_merks(path, batch, &view, made)?;
         // The flat records of a dropped subtree went with its drop, in
         // every column. A cleared one keeps its own (`tree-layout.md` D6)
         // but for its data, which a clear takes: the same lazy range
         // delete, which reads and writes the two ends of the range and
         // leaves the pages between to the reclaimer.
+        let data = path.keyspaces.of(Column::Data);
         for left in view.leaving.iter().filter(|left| !left.dropped) {
-            let data = path.keyspaces.of(Column::Data);
             let prefix = left.subtree.as_bytes();
             (path.flat_drops)
                 .unlink_prefix(&mut *self.flat, &data, prefix, self.base)
                 .map_err(Refused::dropping)?;
         }
+        // The unlinked records: those under the keys that the change sets
+        // link a node under or delete go, and the nodes that the trees do
+        // not reach are kept as records. A subtree that is entered or
+        // cleared starts with none, and the memory of what each subtree
+        // holds follows.
+        for (subtree, key) in &unlinked.taken {
+            let taken = data.delete(&mut *self.flat, key);
+            if taken.map_err(Refused::dirty)? {
+                // Whether the subtree holds another one is not known any
+                // more: it is looked up when it is next asked.
+                self.unlinked.remove(subtree);
+            }
+        }
+        for (key, record) in &unlinked.kept {
+            let kept = data.put(&mut *self.flat, key, record);
+            kept.map_err(Refused::dirty)?;
+        }
+        for write in batch.subtrees {
+            match write {
+                SubtreeWrite::Enter { subtree, .. } | SubtreeWrite::Clear { subtree } => {
+                    self.unlinked.insert(*subtree, false);
+                }
+                // A subtree that was found entered keeps its records.
+                SubtreeWrite::EnterIfAbsent { subtree, .. } => {
+                    if !view.entering.contains(subtree) {
+                        continue;
+                    }
+                    self.unlinked.insert(*subtree, false);
+                }
+                SubtreeWrite::Drop { subtree } => {
+                    self.unlinked.remove(subtree);
+                }
+                SubtreeWrite::Convert { .. } => continue,
+            }
+            // What the transaction left under a subtree goes with it.
+            let prefix = write.subtree();
+            (self.own).retain(|key| !key.starts_with(prefix.as_bytes()));
+        }
+        for subtree in unlinked.holding {
+            self.unlinked.insert(subtree, true);
+        }
+        for (_, key) in &unlinked.taken {
+            self.own.remove(key);
+        }
+        (self.own).extend(unlinked.kept.into_iter().map(|(key, _)| key));
         for record in batch.records {
             let tree = path.keyspaces.of(record.unit().column);
             let subtree = record.unit().subtree;
+            // A delete in the data column can take the last record out:
+            // whether the subtree holds one is looked up when it is next
+            // asked.
+            let forget = |known: &mut HashMap<Subtree, bool>| {
+                if record.unit().column == Column::Data {
+                    known.remove(&subtree);
+                }
+            };
             let done = match *record {
                 RecordWrite::Put { key, value, .. } => {
+                    // What is known of the data column of the subtree
+                    // stays true.
+                    if record.unit().column == Column::Data
+                        && let Some(holds) = self.unlinked.get_mut(&subtree)
+                    {
+                        *holds = true;
+                    }
                     stored_key(&mut self.key, &subtree, key);
                     tree.put(&mut *self.flat, &self.key, value)
                 }
                 RecordWrite::Delete { key, .. } => {
+                    forget(&mut self.unlinked);
                     stored_key(&mut self.key, &subtree, key);
                     tree.delete(&mut *self.flat, &self.key).map(|_| ())
                 }
                 RecordWrite::DeleteRange { start, end, .. } => {
+                    forget(&mut self.unlinked);
                     stored_key(&mut self.key, &subtree, start);
                     let end = match end {
                         Some(end) => {
@@ -833,11 +1058,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         batch: &Batch<'_>,
         view: &Subtrees,
         made: Option<&[bool]>,
-    ) -> Result<Applied, Refused> {
+    ) -> Result<(Applied, UnlinkedWrites), Refused> {
         self.empty.clear();
         let merks = batch.merks;
         if merks.is_empty() && batch.subtrees.is_empty() {
-            return Ok(Applied::default());
+            return Ok(Default::default());
         }
         let mut offsets = Vec::with_capacity(merks.len());
         let mut total = 0;
@@ -870,18 +1095,32 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let by_subtree = (merks.iter().enumerate())
             .map(|(merk, write)| (write.subtree, merk))
             .collect();
-        let resolver = Resolver {
+        let mut resolver = Resolver {
             merks,
             roots,
+            offsets,
             written,
             by_subtree,
+            places: Vec::new(),
         };
 
         // What every name of the batch stands for is found before anything
         // is changed, so a batch that names what is not there is refused
-        // with every page as it was.
+        // with every page as it was. First, where each node is and whether
+        // the tree of its Merk reaches it once the batch is applied: a
+        // node it does not reach is no node of the tree write.
+        let reach = self.reach(view, &resolver).map_err(Refused::clean)?;
+        let mut place = 0;
+        let places = reach.linked.iter().map(|linked| {
+            linked.then(|| {
+                place += 1;
+                place - 1
+            })
+        });
+        resolver.places = places.collect();
+        let loose = (self.loose(path, view, &resolver, &reach)).map_err(Refused::clean)?;
         let mut held = Vec::new();
-        let resolved = self.resolve(view, &resolver, total, &mut held);
+        let resolved = self.resolve(view, &resolver, &reach, &loose.relinked, &mut held);
         let ResolvedBatch {
             nodes,
             hosted,
@@ -895,7 +1134,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 return Err(Refused::clean(error));
             }
         };
-        let node_writes: Vec<NodeWrite<'_>> = (merks.iter().flat_map(|merk| merk.nodes))
+        let linked = || {
+            let puts = merks.iter().flat_map(|merk| merk.nodes);
+            puts.zip(&reach.linked)
+                .filter_map(|(put, linked)| linked.then_some(put))
+        };
+        let node_writes: Vec<NodeWrite<'_>> = linked()
             .zip(&nodes)
             .map(|(put, node)| NodeWrite {
                 at: node.at,
@@ -989,9 +1233,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // report gives: a hash the writer made is stale no more. Where
         // nothing is or was stale, nothing is done.
         self.hashes.follow(&write, &report);
-        let puts = merks.iter().flat_map(|merk| merk.nodes);
-        let marks = !self.hashes.is_empty() || puts.clone().any(|put| !put.stale.is_empty());
-        for (put, node) in puts.zip(&report.nodes).filter(|_| marks) {
+        let marks = !self.hashes.is_empty() || linked().any(|put| !put.stale.is_empty());
+        for (put, node) in linked().zip(&report.nodes).filter(|_| marks) {
             let links = [(Side::Left, &put.left), (Side::Right, &put.right)];
             let missing = links.iter().filter(|(_, link)| link.is_none());
             let stale = missing.fold(put.stale, |stale, (side, _)| {
@@ -1014,14 +1257,36 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         #[cfg(all(test, not(loom)))]
         probe::strike();
 
-        // The directory: the Merks that are entered, each so that it starts
-        // with no flat record, and then every root the write changed. A
+        // The directory: the Merks that are stated anew, the Merks that are
+        // entered, each so that it starts with no flat record, and then
+        // every root the write changed. A
         // subtree that the directory refuses has changed no page: where
         // nothing of the batch was written before it, the frames are as
         // they were. A subtree that is entered if it is absent, and was
         // found entered, keeps its entry and its records: nothing is done
         // for it.
         let mut untouched = merks.is_empty() && view.leaving.is_empty();
+        let restated: Vec<Restated<'_>> = (batch.subtrees.iter())
+            .filter_map(|write| match write {
+                SubtreeWrite::Convert {
+                    subtree,
+                    tree_type,
+                    position,
+                } => Some(Restated {
+                    prefix: subtree.as_bytes(),
+                    tree_type,
+                    position: *position,
+                }),
+                _ => None,
+            })
+            .collect();
+        if !restated.is_empty() {
+            match self.directory.restate(flats.pages, &restated) {
+                Ok(()) => untouched = false,
+                Err(error) if untouched && refuses(&error) => return Err(Refused::clean(error)),
+                Err(error) => return Err(Refused::dirty(error)),
+            }
+        }
         let enters = batch.subtrees.iter().filter_map(SubtreeWrite::entering);
         for enter in enters.filter(|enter| view.entering.contains(&enter.subtree)) {
             let host = enter.host.as_ref().map(|host| Host {
@@ -1063,12 +1328,15 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         if !changes.is_empty() {
             (self.directory.set_roots(&mut *self.flat, &changes)).map_err(Refused::dirty)?;
         }
-        Ok(Applied {
+        let unlinked = (0..total).filter(|node| !reach.linked[*node]).collect();
+        let applied = Applied {
             carried: (report.carried.iter())
                 .map(|carried| (carried.from, carried.to))
                 .collect(),
             nodes: report.nodes,
-        })
+            unlinked,
+        };
+        Ok((applied, loose))
     }
 
     /// Gives up the pending values of a write that was refused.
@@ -1103,14 +1371,270 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         }
     }
 
-    /// Finds what every key of the batch names: the cell of each written
-    /// and each deleted node, the child of each link, and the root of each
-    /// Merk, by a hint that is still good or by the key (PN8).
+    /// Finds the cell of each node the batch writes, by a hint that is
+    /// still good or by the key (PN8), and which of the nodes the tree of
+    /// their Merk reaches once the batch is applied.
+    ///
+    /// A node is reached from the root its change set states, through the
+    /// links the batch states. That finds every node of a commit of a
+    /// Merk, which writes the path from the root to each node it writes,
+    /// with no page read. What it does not find is asked of the pages:
+    ///
+    /// - a node with a cell can hang below a node the batch does not
+    ///   write, so the tree is asked for it by its key ([`Self::hangs`]);
+    /// - under a root that is kept, a node with a cell stays where the
+    ///   tree has it;
+    /// - a node with no cell that no reached node links is in no tree.
+    fn reach(&mut self, view: &Subtrees, resolver: &Resolver<'_>) -> Result<Reach, TxnError> {
+        let mut ats = Vec::new();
+        let mut linked = Vec::new();
+        for (merk, write) in resolver.merks.iter().enumerate() {
+            let (offset, nodes) = (resolver.offsets[merk], write.nodes);
+            for put in nodes {
+                // No hint is followed in a batch that drops or clears a
+                // Merk: its cells stay in their pages, and a handle from
+                // before would name one of them.
+                let hint = put.at.filter(|_| view.leaving.is_empty());
+                let hinted = hint.and_then(|handle| self.follow(handle, put.key));
+                ats.push(match hinted {
+                    Some(at) => Some(at),
+                    None => find(&mut self.tree, resolver.roots[merk], put.key)?,
+                });
+            }
+            linked.resize(offset + nodes.len(), false);
+            let (ats, linked) = (&ats[offset..], &mut linked[offset..]);
+            let index = |key: &[u8]| resolver.local(merk, key);
+            let mut ahead: Vec<usize> = match write.root {
+                RootPut::Keep => (0..nodes.len())
+                    .filter(|node| ats[*node].is_some())
+                    .collect(),
+                RootPut::Set(None) => Vec::new(),
+                RootPut::Set(Some(root)) => index(root).into_iter().collect(),
+            };
+            let spread = |ahead: &mut Vec<usize>, linked: &mut [bool]| {
+                while let Some(node) = ahead.pop() {
+                    if std::mem::replace(&mut linked[node], true) {
+                        continue;
+                    }
+                    let links = [&nodes[node].left, &nodes[node].right];
+                    ahead.extend(
+                        links
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|link| index(link.key)),
+                    );
+                }
+            };
+            spread(&mut ahead, linked);
+            if linked.iter().all(|linked| *linked) || !matches!(write.root, RootPut::Set(Some(_))) {
+                continue;
+            }
+            let cells: HashMap<CellAddress, usize> = (ats.iter().enumerate())
+                .filter_map(|(node, at)| Some(((*at)?, node)))
+                .collect();
+            for node in 0..nodes.len() {
+                if linked[node] || ats[node].is_none() {
+                    continue;
+                }
+                if self.hangs(resolver, merk, &cells, nodes[node].key)? {
+                    ahead.push(node);
+                    spread(&mut ahead, linked);
+                }
+            }
+        }
+        Ok(Reach { ats, linked })
+    }
+
+    /// Whether the tree of the Merk `merk` holds a node under `key` once
+    /// the batch is applied: asked by the key, from the root the change
+    /// set states, through the links the batch states for the nodes it
+    /// writes and the links the cells have for all others. `cells` has the
+    /// written nodes of the Merk by their cells.
+    fn hangs(
+        &mut self,
+        resolver: &Resolver<'_>,
+        merk: usize,
+        cells: &HashMap<CellAddress, usize>,
+        key: &[u8],
+    ) -> Result<bool, TxnError> {
+        /// A node of the tree: one the batch writes, or the cell of another.
+        enum At {
+            Written(usize),
+            Cell(CellAddress),
+        }
+        let write = &resolver.merks[merk];
+        let RootPut::Set(Some(root)) = write.root else {
+            return Ok(false);
+        };
+        let before = resolver.roots[merk];
+        let named = |tree: &mut TreePages<'_>, key: &[u8]| match resolver.local(merk, key) {
+            Some(node) => Ok::<_, TxnError>(Some(At::Written(node))),
+            None => Ok(find(tree, before, key)?.map(At::Cell)),
+        };
+        let mut at = named(&mut self.tree, root)?;
+        for _ in 0..MAX_DEPTH {
+            let node = match at {
+                None => return Ok(false),
+                Some(At::Written(node)) => node,
+                Some(At::Cell(cell)) => match cells.get(&cell) {
+                    Some(node) => *node,
+                    None => {
+                        let step = self.tree.page(cell.page(), |page| {
+                            let node = page.node(cell.slot())?;
+                            let side = match key.cmp(node.key()) {
+                                Ordering::Equal => return Some(None),
+                                Ordering::Less => Side::Left,
+                                Ordering::Greater => Side::Right,
+                            };
+                            Some(Some(node.link(side).map(|link| link.child)))
+                        })?;
+                        match step.ok_or(NodeError::NoNode { address: cell })? {
+                            None => return Ok(true),
+                            Some(child) => at = child.map(At::Cell),
+                        }
+                        continue;
+                    }
+                },
+            };
+            let put = &write.nodes[node];
+            let link = match key.cmp(put.key) {
+                Ordering::Equal => return Ok(true),
+                Ordering::Less => &put.left,
+                Ordering::Greater => &put.right,
+            };
+            at = match link {
+                None => None,
+                Some(link) => named(&mut self.tree, link.key)?,
+            };
+        }
+        Err(TxnError::Damaged("a Merk deeper than any tree of nodes"))
+    }
+
+    /// What the change sets of a batch do to the unlinked records, found
+    /// before anything is changed: the records they take, and the nodes
+    /// they leave as records.
+    ///
+    /// A node that leaves its tree and keeps its value takes the value of
+    /// its cell with it. A node with no cell that keeps its value keeps
+    /// the value of the record the transaction left under its key, and is
+    /// refused where it left none: a record that the committed state left
+    /// is no node, and has no value to keep.
+    ///
+    /// A change set whose nodes all have a cell that stays, and that
+    /// deletes none, asks nothing. Any other, in a subtree that the batch
+    /// neither enters nor drops nor clears, asks whether its subtree holds
+    /// unlinked records, where the frames do not know
+    /// ([`Self::has_unlinked`]), and where it holds none and leaves none,
+    /// nothing more.
+    fn loose(
+        &mut self,
+        path: &WritePath<'s>,
+        view: &Subtrees,
+        resolver: &Resolver<'_>,
+        reach: &Reach,
+    ) -> Result<UnlinkedWrites, TxnError> {
+        let mut writes = UnlinkedWrites::default();
+        let data = path.keyspaces.of(Column::Data);
+        for (merk, write) in resolver.merks.iter().enumerate() {
+            let (offset, subtree) = (resolver.offsets[merk], write.subtree);
+            let state = |node: usize| (reach.linked[offset + node], reach.ats[offset + node]);
+            let states = || (0..write.nodes.len()).map(state);
+            let leaves = states().any(|(linked, _)| !linked);
+            let news = states().any(|(linked, at)| linked && at.is_none());
+            if !leaves && !news && write.removed.is_empty() {
+                continue;
+            }
+            // A subtree that the batch enters, drops or clears holds no
+            // record when its change sets are applied.
+            let fresh = view.entering.contains(&subtree)
+                || view.leaving.iter().any(|left| left.subtree == subtree);
+            let holds = !fresh && self.has_unlinked(path, &subtree)?;
+            if !leaves && !holds {
+                continue;
+            }
+            let stored = |key: &[u8]| {
+                let mut stored = Vec::with_capacity(Subtree::LEN + key.len());
+                stored_key(&mut stored, &subtree, key);
+                stored
+            };
+            for (node, put) in write.nodes.iter().enumerate() {
+                let (linked, at) = state(node);
+                if linked {
+                    // A key has a node of the tree or an unlinked record,
+                    // so only a node that is new to its tree can have a
+                    // record under its key, which it takes the place of.
+                    let mut record = Vec::new();
+                    if holds
+                        && at.is_none()
+                        && unlinked::get(&data, &*self.flat, &subtree, put.key, &mut record)?
+                    {
+                        let stored = stored(put.key);
+                        if put.value == ValuePut::Keep && self.own.contains(&stored) {
+                            let value = unlinked::decode(put.key, &record)?.value.to_vec();
+                            writes.relinked.insert(offset + node, value);
+                        }
+                        writes.taken.push((subtree, stored));
+                    }
+                    continue;
+                }
+                unlinked::check(put)?;
+                // A record hosts nothing: what the element of such a node
+                // hosted is dropped by its batch.
+                if matches!(put.hosted, Hosted::Set(hosted) if !hosted.is_empty()) {
+                    return Err(BatchError::HostUnlinked { subtree }.into());
+                }
+                // And nobody makes a hash of one. The hash of a child the
+                // node does not have is none to make.
+                let missing = [(Side::Left, &put.left), (Side::Right, &put.right)];
+                let missing = missing.into_iter().filter(|(_, link)| link.is_none());
+                let stale = missing.fold(put.stale, |stale, (side, _)| {
+                    stale.without(HashField::Child(side))
+                });
+                if !stale.is_empty() {
+                    return Err(BatchError::StaleUnlinked { subtree }.into());
+                }
+                let kept;
+                let value = match (put.value, at) {
+                    (ValuePut::Value(value), _) => value,
+                    (ValuePut::Keep, Some(at)) => {
+                        kept = self.cell_value(at)?;
+                        &kept
+                    }
+                    (ValuePut::Keep, None) => {
+                        let own = match holds {
+                            true => self.own_unlinked_value(path, &subtree, put.key)?,
+                            false => None,
+                        };
+                        kept = own.ok_or(BatchError::NoValue { subtree })?;
+                        &kept
+                    }
+                };
+                unlinked::room(put, value.len())?;
+                let mut bytes = Vec::new();
+                unlinked::encode(&mut bytes, put, value)?;
+                writes.kept.push((stored(put.key), bytes));
+            }
+            if leaves {
+                writes.holding.push(subtree);
+            }
+            if holds {
+                (writes.taken).extend(write.removed.iter().map(|key| (subtree, stored(key))));
+            }
+        }
+        Ok(writes)
+    }
+
+    /// Finds what every key of the batch names for the tree write: the
+    /// child of each link, the root of each Merk, the Merks each node
+    /// hosts and the cell of each deleted node. The nodes are those the
+    /// trees reach ([`Self::reach`]); the cell of a node that leaves its
+    /// tree is taken out with the deleted ones.
     fn resolve<'a>(
         &mut self,
         view: &Subtrees,
         resolver: &Resolver<'a>,
-        total: usize,
+        reach: &Reach,
+        relinked: &'a HashMap<usize, Vec<u8>>,
         held: &mut Vec<lignin_format::value_log::PendingValue>,
     ) -> Result<ResolvedBatch<'a>, TxnError> {
         let merks = resolver.merks;
@@ -1118,22 +1642,21 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for merk in 0..merks.len() {
             root_targets.push(resolver.root(&mut self.tree, merk)?);
         }
-        let mut nodes = Vec::with_capacity(total);
+        let mut nodes = Vec::with_capacity(reach.linked.len());
         let mut hosted: Vec<Vec<Option<Target>>> = Vec::new();
         let mut removed = Vec::new();
         let mut hosted_here = vec![false; merks.len()];
         for (merk, write) in merks.iter().enumerate() {
             let subtree = write.subtree;
-            for put in write.nodes {
-                // No hint is followed in a batch that drops or clears a
-                // Merk: its cells stay in their pages, and a handle from
-                // before would name one of them.
-                let hint = put.at.filter(|_| view.leaving.is_empty());
-                let hinted = hint.and_then(|handle| self.follow(handle, put.key));
-                let at = match hinted {
-                    Some(at) => Some(at),
-                    None => find(&mut self.tree, resolver.roots[merk], put.key)?,
-                };
+            let offset = resolver.offsets[merk];
+            for (node, put) in write.nodes.iter().enumerate() {
+                let at = reach.ats[offset + node];
+                if !reach.linked[offset + node] {
+                    // The node is in no tree: its cell goes, if it has
+                    // one, and its record is kept beside the tree.
+                    removed.extend(at);
+                    continue;
+                }
                 let link = |tree: &mut TreePages<'_>, link: &Option<LinkPut<'a>>| {
                     (link.as_ref())
                         .map(|link| resolver.link(tree, merk, link))
@@ -1164,14 +1687,22 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         Some(hosted.len() - 1)
                     }
                 };
-                let value = match put.value {
+                let stated = match put.value {
+                    ValuePut::Value(value) => Some(value),
+                    // A node that is new to its tree keeps the value of
+                    // the record the transaction left under its key, and
+                    // has none to keep otherwise.
                     ValuePut::Keep if at.is_none() => {
-                        return Err(BatchError::NoValue { subtree }.into())
+                        let own = relinked.get(&(offset + node));
+                        Some(own.ok_or(BatchError::NoValue { subtree })?.as_slice())
                     }
-                    ValuePut::Keep => ValueWrite::Keep,
+                    ValuePut::Keep => None,
+                };
+                let value = match stated {
+                    None => ValueWrite::Keep,
                     // The length alone says where a value goes, and a
                     // value of no bytes is never out of line.
-                    ValuePut::Value(value) => {
+                    Some(value) => {
                         let write = self.values.write(value)?;
                         if let ValueWrite::Pending(pending) = write {
                             held.push(pending);

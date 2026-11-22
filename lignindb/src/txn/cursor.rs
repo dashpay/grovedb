@@ -19,6 +19,7 @@ use super::{
     pages::{child_keys, find},
     path::{FlatReader, Idle, WritePath, IDLE},
     txn::{show_committed, WriteTxn},
+    unlinked,
     view::{ChildKeys, NodeView},
     write_set::{Own, WriteSet},
 };
@@ -158,12 +159,30 @@ impl<'s> FlatSide<'s> {
 /// It reads under a lease of its own, taken when it is opened (PN1): its
 /// handles are of the one version the cursor keeps pinned, whatever the
 /// transaction's frames do meanwhile.
+///
+/// Where the subtree holds unlinked records at that version
+/// (`lignindb::txn`, "Unlinked records"), they are shown among the nodes,
+/// in key order: the side is then two cursors, one over the tree and one
+/// over the records, and stands on the nearer of their keys. A subtree
+/// that holds none has the cursor over the tree alone, and whether it
+/// holds any is looked up once, when the cursor is opened.
 pub struct MerkSide<'s> {
     path: WritePath<'s>,
     at: CommitVersion,
     lease: Lease,
     cursor: tree::Cursor,
     buffers: LoadBuffers,
+    unlinked: Option<UnlinkedSide<'s>>,
+}
+
+/// The unlinked records of one subtree at one version, in key order: the
+/// flat records of the data column under the subtree.
+struct UnlinkedSide<'s> {
+    records: FlatSide<'s>,
+    /// Whether the side was last moved backwards: its two cursors then
+    /// stand each at its last key at or before the place, and otherwise
+    /// each at its first key at or after it.
+    back: bool,
 }
 
 impl fmt::Debug for MerkSide<'_> {
@@ -194,6 +213,15 @@ impl<'s> MerkSide<'s> {
         children: Option<&mut ChildKeys>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
+        // A key has a node of the tree or an unlinked record.
+        if let Some(unlinked) = &mut self.unlinked
+            && unlinked.records.key() == Some(key)
+        {
+            let mut record = Vec::new();
+            let held = unlinked.records.value(guard, key, &mut record)?;
+            let node = held.then(|| unlinked::decode(key, &record)).transpose()?;
+            return Ok(read(node.map(NodeView::unlinked)));
+        }
         if self.cursor.key() == Some(key) {
             let reader = self.reader(guard);
             let node = self.cursor.node(&reader, &mut self.buffers)?;
@@ -219,7 +247,56 @@ impl<'s> MerkSide<'s> {
         if let (Some(found), Some(children)) = (found, children) {
             child_keys(&mut pages, found, children)?;
         }
+        if let (None, Some(unlinked)) = (found, &mut self.unlinked) {
+            let mut record = Vec::new();
+            if unlinked.records.value(guard, key, &mut record)? {
+                return Ok(read(Some(NodeView::unlinked(unlinked::decode(
+                    key, &record,
+                )?))));
+            }
+        }
         show_committed(&mut pages, found, read)
+    }
+
+    /// Has the cursor over the tree and the one over the unlinked records
+    /// stand as a move in the direction `back` leaves them, at `key`: for
+    /// a step that goes the other way than the side was last moved.
+    fn turn(&mut self, guard: &OperationGuard<'s>, back: bool) -> Result<(), TxnError> {
+        let turned = (self.unlinked.as_ref()).is_some_and(|unlinked| unlinked.back != back);
+        if turned && let Some(key) = self.key().map(<[u8]>::to_vec) {
+            match back {
+                false => self.seek(guard, &key)?,
+                true => self.seek_for_prev(guard, &key)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves the cursor over the unlinked records, if the side has one,
+    /// and notes the direction.
+    fn records(
+        &mut self,
+        back: bool,
+        go: impl FnOnce(&mut FlatSide<'s>) -> Result<(), TxnError>,
+    ) -> Result<(), TxnError> {
+        match &mut self.unlinked {
+            None => Ok(()),
+            Some(unlinked) => {
+                unlinked.back = back;
+                go(&mut unlinked.records)
+            }
+        }
+    }
+
+    /// Which of the two cursors stand on the side's key: the one over the
+    /// tree, and the one over the unlinked records.
+    fn on_key(&self) -> (bool, bool) {
+        match &self.unlinked {
+            None => (self.cursor.key().is_some(), false),
+            Some(unlinked) => {
+                unlinked::nearer(self.cursor.key(), unlinked.records.key(), unlinked.back)
+            }
+        }
     }
 }
 
@@ -227,41 +304,62 @@ impl<'s> CommittedSide<'s> for MerkSide<'s> {
     fn seek(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError> {
         let reader = self.reader(guard);
         self.cursor.seek(&reader, &mut self.buffers, key)?;
-        Ok(())
+        self.records(false, |records| records.seek(guard, key))
     }
 
     fn seek_for_prev(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError> {
         let reader = self.reader(guard);
         self.cursor.seek_for_prev(&reader, &mut self.buffers, key)?;
-        Ok(())
+        self.records(true, |records| records.seek_for_prev(guard, key))
     }
 
     fn seek_to_first(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
         let reader = self.reader(guard);
         self.cursor.seek_to_first(&reader, &mut self.buffers)?;
-        Ok(())
+        self.records(false, |records| records.seek_to_first(guard))
     }
 
     fn seek_to_last(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
         let reader = self.reader(guard);
         self.cursor.seek_to_last(&reader, &mut self.buffers)?;
-        Ok(())
+        self.records(true, |records| records.seek_to_last(guard))
     }
 
     fn next(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
-        let reader = self.reader(guard);
-        self.cursor.next(&reader, &mut self.buffers)?;
-        Ok(())
+        self.turn(guard, false)?;
+        let (node, record) = self.on_key();
+        if node {
+            let reader = self.reader(guard);
+            self.cursor.next(&reader, &mut self.buffers)?;
+        }
+        match record {
+            true => self.records(false, |records| records.next(guard)),
+            false => Ok(()),
+        }
     }
 
     fn prev(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
-        let reader = self.reader(guard);
-        self.cursor.prev(&reader, &mut self.buffers)?;
-        Ok(())
+        self.turn(guard, true)?;
+        let (node, record) = self.on_key();
+        if node {
+            let reader = self.reader(guard);
+            self.cursor.prev(&reader, &mut self.buffers)?;
+        }
+        match record {
+            true => self.records(true, |records| records.prev(guard)),
+            false => Ok(()),
+        }
     }
 
     fn key(&self) -> Option<&[u8]> {
-        self.cursor.key()
+        let Some(unlinked) = &self.unlinked else {
+            return self.cursor.key();
+        };
+        match self.on_key() {
+            (true, _) => self.cursor.key(),
+            (false, true) => unlinked.records.key(),
+            (false, false) => None,
+        }
     }
 }
 
@@ -387,7 +485,28 @@ impl<'t, 's> MerkCursor<'t, 's> {
         let at = pin.version();
         let mut opened = None;
         let directory = Opened::at(&mut opened, &path, &guard, at)?;
-        let root = directory.root(&path, &guard, &subtree)?.flatten();
+        let entered = directory.root(&path, &guard, &subtree)?;
+        let root = entered.flatten();
+        // Whether the version holds unlinked records under the subtree
+        // is asked once, and of the transaction, which may know. No record
+        // is read under a subtree that is not entered.
+        let unit = Unit::data(subtree);
+        let records = entered.is_some() && txn.committed_has_unlinked(&guard, at, &subtree)?;
+        let unlinked = records.then(|| {
+            let tree = path.keyspaces().of(unit.column);
+            UnlinkedSide {
+                records: FlatSide {
+                    path,
+                    at,
+                    pages: None,
+                    cursor: tree.cursor_within(subtree.as_bytes()),
+                    tree,
+                    unit,
+                    key: Vec::new(),
+                },
+                back: false,
+            }
+        });
         let reader = NodeReader::new(path.loader, &guard, lease, at);
         let side = MerkSide {
             path,
@@ -395,8 +514,9 @@ impl<'t, 's> MerkCursor<'t, 's> {
             lease,
             cursor: tree::Cursor::open(&reader, root),
             buffers: LoadBuffers::new(),
+            unlinked,
         };
-        let mut cursor = Self::over(txn, who, Unit::data(subtree), pin, side);
+        let mut cursor = Self::over(txn, who, unit, pin, side);
         cursor.opened = opened;
         Ok(cursor)
     }

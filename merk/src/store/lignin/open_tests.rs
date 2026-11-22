@@ -15,8 +15,8 @@ use super::{
     LigninNodeStore, LigninSubtree, LigninWriter,
 };
 use crate::{
-    merk::defaults::ROOT_KEY_KEY, store::NodeStore, CryptoHash, Error, Merk, MerkType, Op,
-    TreeFeatureType, TreeType,
+    merk::defaults::ROOT_KEY_KEY, store::NodeStore, tree::kv::KV, CryptoHash, Error, Merk,
+    MerkType, Op, TreeFeatureType, TreeType,
 };
 
 /// A subtree that the store of the tests is made with, and three that it
@@ -477,6 +477,121 @@ fn a_merk_under_a_parent_element_opens_with_its_root_key_and_from_the_directory(
     assert_eq!((entry.root_key, entry.host), (None, hosted));
     let opened = Merk::open_from_directory(reader, NO_VALUE_DEFINED_COST, version());
     assert_eq!(opened.value.unwrap().unwrap().root_key(), None);
+}
+
+/// Writes the element of the Merk under `CHILD` in the Merk of its parent,
+/// through `staged`, and returns the root key of that Merk.
+fn write_element(
+    writer: &LigninWriter<'_, '_>,
+    staged: &LigninBatch,
+    parent_root: Option<Vec<u8>>,
+    element: &[u8],
+) -> Option<Vec<u8>> {
+    let upper = LigninNodeStore::deferred(writer, LigninSubtree::alone(MADE), Some(staged));
+    let (mut upper, _) = open_layered(upper, parent_root, TreeType::NormalTree);
+    let element = Op::Put(element.to_vec(), TreeFeatureType::BasicMerkNode);
+    apply(&mut upper, &[(be(50), element)]);
+    upper.root_key()
+}
+
+/// A conversion in place (GroveDB #1063) keeps a Merk and gives it another
+/// tree type. The batch that writes its nodes again states it anew, and
+/// from that batch on the directory gives the open by prefix the wide
+/// tree, with the root, the host and the place the Merk had.
+#[test]
+fn a_converted_merk_opens_from_the_directory_as_the_wide_tree() {
+    let narrow = TreeType::SumTree;
+    let wide = narrow.big_sum_counterpart().expect("a sum tree has one");
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let child = LigninSubtree {
+        prefix: CHILD,
+        host: Some(LigninHost {
+            subtree: MADE,
+            key: be(50),
+            hosted: vec![CHILD],
+        }),
+    };
+
+    // The Merk is entered as a sum tree and filled, by the batch that
+    // writes its element, and committed.
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let staged = LigninBatch::new();
+    let lower = LigninNodeStore::deferred(&writer, child.clone(), Some(&staged));
+    lower.enter(narrow).unwrap();
+    let (mut lower, _) = open_layered(lower, None, narrow);
+    apply(&mut lower, &puts(narrow, 0..40, 30));
+    let root = lower.root_key();
+    drop(lower);
+    let parent_root = write_element(&writer, &staged, None, b"a sum tree");
+    (staged.apply(&writer).unwrap()).expect("the batch is applied");
+    writer.into_scope().merge();
+    commit(&lignin, &transaction);
+
+    // The conversion: every node is written again as a node of the wide
+    // tree, by a batch that also writes the element and states the Merk
+    // anew.
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let staged = LigninBatch::new();
+    let lower = LigninNodeStore::deferred(&writer, child.clone(), Some(&staged));
+    let opened = Merk::open_from_directory(lower, NO_VALUE_DEFINED_COST, version());
+    let merk = opened.value.unwrap().expect("the Merk is entered");
+    assert_eq!(merk.tree_type, narrow);
+    let node_type = narrow.inner_node_type();
+    let converted = merk.convert_to_big_sum_tree(
+        &|_key, _value, _widened| Ok(()),
+        &|key, value| {
+            let (key_len, value_len) = (key.len() as u32, value.len() as u32);
+            Ok(KV::node_value_byte_cost_size(key_len, value_len, node_type))
+        },
+        NO_VALUE_DEFINED_COST.as_ref(),
+        version(),
+    );
+    let merk = converted.value.expect("the Merk is converted");
+    assert_eq!((merk.tree_type, merk.root_key()), (wide, root.clone()));
+    let root_hash = merk.root_hash().unwrap();
+    (merk.storage.convert(wide)).expect("the conversion is stated");
+    drop(merk);
+    write_element(&writer, &staged, parent_root, b"a big sum tree");
+    // A handle that only reads states nothing.
+    let reading = LigninNodeStore::deferred(&writer, child.clone(), None);
+    assert!(reading.convert(wide).is_err());
+    // Until the batch is applied the directory has the narrow tree.
+    let entry = entry_of(&writer, CHILD).expect("the Merk is entered");
+    assert_eq!(entry.tree_type().unwrap(), narrow);
+    (staged.apply(&writer).unwrap()).expect("the batch is applied");
+
+    let stated = LigninEntry {
+        root_key: root.clone(),
+        tree_type: tree_type_bytes(wide),
+        host: Some(LigninHosted {
+            subtree: MADE,
+            key: be(50),
+            position: 0,
+        }),
+    };
+    assert_eq!(entry_of(&writer, CHILD), Some(stated.clone()));
+    // Another transaction has the narrow tree until the commit, and the
+    // wide one from then on.
+    let other = path.begin();
+    let outside = LigninNodeStore::read_only(&other, LigninSubtree::alone(CHILD));
+    let before = outside.entry().unwrap().expect("the Merk is entered");
+    assert_eq!(before.tree_type().unwrap(), narrow);
+    writer.into_scope().merge();
+    commit(&lignin, &transaction);
+    assert_eq!(outside.entry().unwrap(), Some(stated));
+    let opened = Merk::open_from_directory(outside, NO_VALUE_DEFINED_COST, version());
+    let opened = opened.value.unwrap().expect("the Merk is entered");
+    assert_eq!(
+        (
+            opened.tree_type,
+            opened.root_key(),
+            opened.root_hash().unwrap()
+        ),
+        (wide, root, root_hash)
+    );
 }
 
 /// A Merk that is opened where no subtree is entered is empty, as on

@@ -157,6 +157,11 @@ pub enum Write {
     /// stands among the writes so that it is taken back with them, and
     /// says which subtree is below which.
     Enter(Subtree, Option<Subtree>),
+    /// A subtree that is stated anew: its tree type, and its place among
+    /// the subtrees of its host. Like an enter it writes no record and
+    /// meets no write, and it stands among the writes so that it is taken
+    /// back with them.
+    Stated(Subtree),
 }
 
 /// Which subtree each hosted subtree is below: the subtree of its host.
@@ -176,7 +181,7 @@ pub fn hosted(hosts: &mut Hosts, write: &Write) {
                 hosts.remove(&left.subtree);
             }
         }
-        Write::Put(..) | Write::Delete(..) | Write::Range(..) => {}
+        Write::Put(..) | Write::Delete(..) | Write::Range(..) | Write::Stated(_) => {}
     }
 }
 
@@ -237,7 +242,7 @@ impl Write {
         match self {
             Self::Put(unit, ..) | Self::Delete(unit, _) | Self::Range(unit, ..) => *unit,
             Self::Leave(left) => Unit::data(left.subtree),
-            Self::Enter(subtree, _) => Unit::data(*subtree),
+            Self::Enter(subtree, _) | Self::Stated(subtree) => Unit::data(*subtree),
         }
     }
 
@@ -245,7 +250,7 @@ impl Write {
     pub fn touches(&self, unit: Unit) -> bool {
         match self {
             Self::Leave(left) => left.takes(unit),
-            Self::Enter(..) => false,
+            Self::Enter(..) | Self::Stated(_) => false,
             _ => self.unit() == unit,
         }
     }
@@ -257,14 +262,16 @@ impl Write {
                 *own == unit && key >= &start[..] && end.as_ref().is_none_or(|end| key < &end[..])
             }
             Self::Leave(left) => left.takes(unit),
-            Self::Enter(..) => false,
+            Self::Enter(..) | Self::Stated(_) => false,
         }
     }
 
     /// Whether the two writes write a key in common (CF2).
     pub fn meets(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Enter(..), _) | (_, Self::Enter(..)) => false,
+            (Self::Enter(..) | Self::Stated(_), _) | (_, Self::Enter(..) | Self::Stated(_)) => {
+                false
+            }
             (Self::Leave(left), Self::Leave(other)) => {
                 let units = |left: &Left| {
                     let own = left.subtree;
@@ -308,7 +315,7 @@ fn apply(records: &mut Records, write: &Write) {
         Write::Range(..) | Write::Leave(_) => {
             records.retain(|(unit, key), _| !write.covers(*unit, key));
         }
-        Write::Enter(..) => {}
+        Write::Enter(..) | Write::Stated(_) => {}
     }
 }
 
@@ -330,7 +337,11 @@ impl TxnModel {
             .find(|(write, ..)| write.covers(unit, key))?;
         Some(match &newest.0 {
             Write::Put(_, _, value) => Some(value),
-            Write::Delete(..) | Write::Range(..) | Write::Leave(_) | Write::Enter(..) => None,
+            Write::Delete(..)
+            | Write::Range(..)
+            | Write::Leave(_)
+            | Write::Enter(..)
+            | Write::Stated(_) => None,
         })
     }
 
@@ -453,6 +464,9 @@ pub enum OwnedSubtree {
     EnterIfAbsent(Subtree, Option<(Subtree, Vec<u8>, u8)>),
     Drop(Subtree),
     Clear(Subtree),
+    /// States the subtree anew: its tree type and, where one is given, its
+    /// position among the subtrees of its host. The model keeps neither.
+    Convert(Subtree, Vec<u8>, Option<u8>),
 }
 
 #[derive(Debug, Clone)]
@@ -529,7 +543,9 @@ impl OwnedBatch {
     pub fn writes(&self) -> Vec<Write> {
         let leaving = self.subtrees.iter().filter_map(|subtree| {
             let (subtree, cleared) = match subtree {
-                OwnedSubtree::Enter(..) | OwnedSubtree::EnterIfAbsent(..) => return None,
+                OwnedSubtree::Enter(..)
+                | OwnedSubtree::EnterIfAbsent(..)
+                | OwnedSubtree::Convert(..) => return None,
                 OwnedSubtree::Drop(subtree) => (*subtree, false),
                 OwnedSubtree::Clear(subtree) => (*subtree, true),
             };
@@ -547,8 +563,12 @@ impl OwnedBatch {
             }
             _ => None,
         });
+        let stated = self.subtrees.iter().filter_map(|subtree| match subtree {
+            OwnedSubtree::Convert(subtree, ..) => Some(Write::Stated(*subtree)),
+            _ => None,
+        });
         let merks = self.merks.iter().flat_map(OwnedMerk::writes);
-        (leaving.chain(entered).chain(merks))
+        (leaving.chain(stated).chain(entered).chain(merks))
             .chain(self.records.iter().cloned())
             .collect()
     }
@@ -649,7 +669,9 @@ impl OwnedBatch {
                     value,
                 },
                 Write::Put(..) => panic!("a node is written in a change set"),
-                Write::Leave(_) | Write::Enter(..) => panic!("a subtree is written as a whole"),
+                Write::Leave(_) | Write::Enter(..) | Write::Stated(_) => {
+                    panic!("a subtree is written as a whole")
+                }
                 Write::Delete(unit, key) => RecordWrite::Delete { unit: *unit, key },
                 Write::Range(unit, start, end) => RecordWrite::DeleteRange {
                     unit: *unit,
@@ -675,6 +697,11 @@ impl OwnedBatch {
                 }
                 OwnedSubtree::Drop(subtree) => SubtreeWrite::Drop { subtree: *subtree },
                 OwnedSubtree::Clear(subtree) => SubtreeWrite::Clear { subtree: *subtree },
+                OwnedSubtree::Convert(subtree, tree_type, position) => SubtreeWrite::Convert {
+                    subtree: *subtree,
+                    tree_type,
+                    position: *position,
+                },
             })
             .collect();
         run(&Batch {

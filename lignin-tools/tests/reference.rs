@@ -561,7 +561,7 @@ fn stored_root_hash(path: &Path) -> Hash {
         .open(Subtree::new([0; 32]))
         .expect("a read")
         .expect("the root");
-    let mut walk = root.walk();
+    let mut walk = root.walk().expect("a lookup");
     walk.seek_to_first(&operation).expect("a move");
     let key = root.entry().root().expect("a root node").key.to_vec();
     walk.seek(&operation, &key).expect("a move");

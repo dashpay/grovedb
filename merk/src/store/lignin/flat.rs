@@ -446,10 +446,9 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
         LigninFlatCursor::open(self.access.records(Keyspace::Data, &self.subtree.prefix))
     }
 
-    /// Removes every record of the subtree's data: the nodes of its Merk,
-    /// where it keeps one that has a node, and its flat records otherwise.
-    /// A data keyspace holds the one or the other
-    /// (`transactions.md` ST1).
+    /// Removes every record of the subtree's data, in one of two ways:
+    /// as the nodes of its Merk, where it keeps one that has a node, and
+    /// as flat records otherwise.
     ///
     /// - **Flat records** go by the walk of their keyspace
     ///   ([`LigninKeyspace`]), at its cost.
@@ -457,17 +456,19 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
     ///   the walk of the node cursor, which shows each node as the record
     ///   Merk encodes of it, at a cursor's cost, and for each key a
     ///   removal that states no cost, staged in the handle's batch as one
-    ///   change set that leaves the Merk with no root. The batch charges
-    ///   each removal from the committed record when it is settled
-    ///   (`cost-model.md` D2). Applied, the change set empties the Merk.
+    ///   change set that leaves the Merk with no root. The cursor shows
+    ///   the unlinked records of the subtree among the nodes, so the key
+    ///   of each of them is removed with them. The batch charges
+    ///   each removal when it is settled, by rule D2 of `cost-model.md`.
+    ///   Applied, the change set empties the Merk.
     ///   Where the element that hosts the subtree leaves in the same group
     ///   of batches, the subtree is dropped with it and the change set is
     ///   not applied ([`LigninSettled::leave_out`](super::LigninSettled::leave_out)).
     ///   A handle that does not stage refuses it with
     ///   [`StorageError::NotSupported`].
     ///
-    /// Which of the two the subtree keeps is read from its entry before
-    /// the walk. A walk that the view refuses or that fails on its way has
+    /// Which of the two ways it goes is read from the subtree's entry
+    /// before the walk. A walk that the view refuses or that fails on its way has
     /// not come to every record: the clear fails with its error then and
     /// stages nothing of a Merk. After the walk of flat records the entry
     /// is read again, and a Merk that has a node by then, from a commit

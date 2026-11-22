@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 
+use ed::Encode;
 use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
 use grovedb_query::Query;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
@@ -37,6 +38,25 @@ pub(super) enum Act {
     Range(Vec<u8>, Vec<u8>, bool),
     /// A cursor that is moved about by the numbers of a seed.
     Wander(u64),
+    /// A change set, through the seam, that states no root: it puts nodes
+    /// with no child, each with its key, its value and its feature, and
+    /// removes the records under keys. A node of it that the tree does
+    /// not link is what a storage batch leaves where a put stood over a
+    /// later delete of its key (GM0).
+    Loose(
+        Vec<(Vec<u8>, Vec<u8>, TreeFeatureType)>,
+        Vec<(Vec<u8>, Option<KeyValueStorageCost>)>,
+    ),
+    /// One node with no child, written outside a change set.
+    WriteNode(Vec<u8>, Vec<u8>, TreeFeatureType),
+    /// Every read of the record under a key: Merk's, and those of the
+    /// seam.
+    Read(Vec<u8>),
+    /// The keys of the nodes the tree links.
+    Linked,
+    /// The node under a key is read and written again as it is, outside
+    /// a change set, with a kind that keeps its value.
+    Rewrite(Vec<u8>, NodeChange),
 }
 
 /// What a cursor shows after one move.
@@ -223,6 +243,55 @@ pub(super) fn act<'db, S: NodeStore<'db>>(
             rows(merk.storage.cursor(), &query, &mut cost)
         }
         Act::Wander(seed) => format!("{:#?}", wander(&merk.storage, *seed, &mut cost)),
+        Act::Loose(puts, removed) => {
+            let mut change_set = merk.storage.change_set();
+            for (key, value, feature) in puts {
+                let node = TreeNode::new(key.clone(), value.clone(), None, *feature);
+                let node = node.unwrap_add_cost(&mut cost);
+                let prepared = change_set.prepare_node(&node, NodeChange::ValueWritten);
+                (change_set.put_node(key, prepared, None)).expect("the node is put");
+            }
+            for (key, removal) in removed {
+                change_set.delete_node(key, removal.clone());
+            }
+            let committed = merk.storage.commit(change_set);
+            format!("{:?}", committed.unwrap_add_cost(&mut cost))
+        }
+        Act::WriteNode(key, value, feature) => {
+            let node = TreeNode::new(key.clone(), value.clone(), None, *feature);
+            let node = node.unwrap_add_cost(&mut cost);
+            let written = merk.storage.write_node(&node, NodeChange::ValueWritten);
+            format!("{:?}", written.unwrap_add_cost(&mut cost))
+        }
+        Act::Read(key) => {
+            let got = merk.get(key, true, NO_VALUE_DEFINED_COST.as_ref(), version());
+            let got = got.unwrap_add_cost(&mut cost);
+            let node = merk.storage.get_node(key, NO_VALUE_DEFINED_COST, version());
+            let node = node.unwrap_add_cost(&mut cost);
+            let node = node.map(|node| node.map(|node| node.encode()));
+            let for_read = merk
+                .storage
+                .get_node_for_read(key)
+                .unwrap_add_cost(&mut cost);
+            let for_read = for_read
+                .map(|node| node.map(|node| node.encode().expect("a stored node is encoded")));
+            let held = merk.storage.has_node(key).unwrap_add_cost(&mut cost);
+            format!("get {got:?}, node {node:?}, for a read {for_read:?}, held {held:?}")
+        }
+        Act::Linked => {
+            let linked = merk.linked_keys(NO_VALUE_DEFINED_COST.as_ref(), version());
+            format!("{:?}", linked.unwrap_add_cost(&mut cost))
+        }
+        Act::Rewrite(key, change) => {
+            let node = merk.storage.get_node(key, NO_VALUE_DEFINED_COST, version());
+            match node.unwrap_add_cost(&mut cost) {
+                Ok(Some(node)) => {
+                    let written = merk.storage.write_node(&node, *change);
+                    format!("{:?}", written.unwrap_add_cost(&mut cost))
+                }
+                other => format!("no node to write: {:?}", other.map(|node| node.is_some())),
+            }
+        }
     };
     (answer, cost)
 }
@@ -1321,6 +1390,7 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
         right: None,
         stale: lignin_tree::hash::Stale::NONE,
         location: None,
+        unlinked: false,
     };
     let keys = &mut lignindb::txn::ChildKeys::new();
     assert_eq!(with_child_keys(unread.clone(), keys).unwrap(), unread);

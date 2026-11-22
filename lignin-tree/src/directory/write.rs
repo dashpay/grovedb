@@ -64,6 +64,21 @@ impl RootChange<'_> {
     }
 }
 
+/// A Merk that keeps its nodes and is stated anew
+/// ([`Directory::restate`]): with the tree type it has from here on, and
+/// with its place among the Merks of its host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Restated<'a> {
+    /// The Merk's prefix.
+    pub prefix: &'a Prefix,
+    /// The tree type it has from here on: bytes that are kept and given
+    /// back, as those it was entered with.
+    pub tree_type: &'a [u8],
+    /// The position it has among the Merks of its host from here on, or
+    /// `None` for the one it has. A Merk with no host has no position.
+    pub position: Option<u8>,
+}
+
 /// The root a Merk has after a change.
 #[derive(Debug, Clone, Copy)]
 enum Now<'a> {
@@ -166,6 +181,106 @@ impl Directory {
         if changed != entry {
             self.tree
                 .put(pages, &entry_key(prefix), changed.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// States anew, in one statement, Merks that keep their nodes: each
+    /// with the tree type it has from here on, and with its place among
+    /// the Merks of its host where that is another ([`Restated`]). It is
+    /// what a conversion of a tree in place asks: the tree is neither
+    /// dropped nor entered again, its element is of another type, and an
+    /// element that hosts several Merks can name them in another order.
+    ///
+    /// Every Merk keeps its id, its root, its host and the Merks below it.
+    /// The Merks are stated together because two of them can trade places:
+    /// a place that one of them takes is free, or is left by another of
+    /// the same statement.
+    ///
+    /// The statement is refused, and nothing is written, if a Merk is
+    /// named twice ([`DirectoryError::Twice`]) or is not in use
+    /// ([`DirectoryError::NotFound`]), if a place is given to a Merk with
+    /// no host ([`DirectoryError::NoParent`], with the Merk's own prefix:
+    /// no Merk holds a host of it), and if a place is taken by a Merk
+    /// that does not leave it, or by two of the statement
+    /// ([`DirectoryError::HostTaken`]).
+    pub fn restate<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        changes: &[Restated<'_>],
+    ) -> Result<(), DirectoryError> {
+        struct Stated {
+            prefix: Prefix,
+            was: Entry,
+            now: Entry,
+            /// The keys of the child record it leaves and of the one it
+            /// takes, where it moves.
+            moved: Option<(Vec<u8>, Vec<u8>)>,
+        }
+        let mut named = HashSet::new();
+        let mut stated = Vec::with_capacity(changes.len());
+        for change in changes {
+            let prefix = *change.prefix;
+            if !named.insert(prefix) {
+                return Err(DirectoryError::Twice { prefix });
+            }
+            let was = self.live(pages, &prefix)?;
+            let host = match (was.host(), change.position) {
+                (None, Some(_)) => return Err(DirectoryError::NoParent { parent: prefix }),
+                (Some(host), Some(position)) => Some(Host { position, ..host }),
+                (host, None) => host,
+            };
+            let fields = Fields {
+                tree_type: change.tree_type,
+                host,
+                ..was.fields()
+            };
+            let now = fields.encode()?;
+            let moved = match (was.child_key(), now.child_key()) {
+                (Some(from), Some(to)) if from != to => Some((from, to)),
+                _ => None,
+            };
+            stated.push(Stated {
+                prefix,
+                was,
+                now,
+                moved,
+            });
+        }
+        let moves = || {
+            stated
+                .iter()
+                .filter_map(|merk| Some((merk, merk.moved.as_ref()?)))
+        };
+        let left: HashSet<&[u8]> = moves().map(|(_, (from, _))| &from[..]).collect();
+        let mut taken = HashSet::new();
+        for (merk, (_, to)) in moves() {
+            let free = left.contains(&to[..]) || self.get(pages, to)?.is_none();
+            if !taken.insert(&to[..]) || !free {
+                let host = merk.now.host();
+                let what = "a hosted Merk whose entry names no host";
+                let host = host.ok_or_else(|| damaged(&entry_key(&merk.prefix), what))?;
+                return Err(DirectoryError::HostTaken {
+                    parent: *host.parent,
+                    position: host.position,
+                });
+            }
+        }
+
+        // Every place that is left is given up before one is taken: a Merk
+        // may be where another was.
+        for (_, (from, _)) in moves() {
+            self.tree.delete(pages, from)?;
+        }
+        for merk in &stated {
+            if let Some((_, to)) = &merk.moved {
+                let record = encode_child(&merk.prefix, merk.now.id());
+                self.tree.put(pages, to, &record)?;
+            }
+            if merk.now != merk.was {
+                let key = entry_key(&merk.prefix);
+                self.tree.put(pages, &key, merk.now.as_bytes())?;
+            }
         }
         Ok(())
     }

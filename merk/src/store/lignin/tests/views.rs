@@ -424,6 +424,136 @@ fn a_merk_that_two_operations_of_one_batch_write_is_charged_for_what_stands() {
     facade.sound();
 }
 
+/// Two commits of one Merk in one operation of a batch (`transactions.md`
+/// GM0): a node that the first put and the second removed stays a put, as
+/// a storage batch keeps it, and the root that the second stated does not
+/// reach it. Both engines are charged the same for the batch and hold the
+/// same records afterwards, by key and under a cursor: in the transaction
+/// that applied the batch, and in a snapshot once it is committed.
+#[test]
+fn a_put_that_stands_over_a_removal_of_its_operation_is_held_as_on_rocksdb() {
+    use super::cursor::{act, Act};
+
+    let facade = Facade::new();
+    let rocks = rocks();
+    let before = puts(1..20, 1);
+    let transaction = facade.db.begin();
+    let batch = LigninBatch::new();
+    let handle = LigninNodeStore::deferred(&transaction, ROOT, Some(&batch));
+    handle
+        .enter(TreeType::NormalTree)
+        .expect("the root is entered");
+    let mut merk = open(handle, TreeType::NormalTree);
+    apply(&mut merk, &before);
+    drop(merk);
+    batch.apply(&transaction).unwrap().expect("a batch");
+    facade.commit(&transaction);
+    rocks.apply(&before);
+
+    // The first commit writes nodes that are committed again and new
+    // ones, and the second removes some of both, and nodes that only the
+    // committed state has. No boundary of an operation is between them.
+    let first = puts(15..40, 2);
+    let mut second = deletes(10..25);
+    second.extend(puts(30..50, 3));
+    second.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let rocks_transaction = rocks.storage.start_transaction();
+    let storage_batch = StorageBatch::new();
+    let context = rocks
+        .storage
+        .get_transactional_storage_context(
+            SubtreePath::empty(),
+            Some(&storage_batch),
+            &rocks_transaction,
+        )
+        .unwrap();
+    let mut on_rocks = open(context, TreeType::NormalTree);
+    let transaction = facade.db.begin();
+    let batch = LigninBatch::new();
+    let mut on_lignin = open(
+        LigninNodeStore::deferred(&transaction, ROOT, Some(&batch)),
+        TreeType::NormalTree,
+    );
+    assert_eq!(apply(&mut on_lignin, &first), apply(&mut on_rocks, &first));
+    assert_eq!(
+        apply(&mut on_lignin, &second),
+        apply(&mut on_rocks, &second)
+    );
+    let root = (on_rocks.root_hash().unwrap(), on_rocks.root_key());
+    assert_eq!((on_lignin.root_hash().unwrap(), on_lignin.root_key()), root);
+    drop((on_lignin, on_rocks));
+
+    let expected = rocks
+        .storage
+        .commit_multi_context_batch(storage_batch, Some(&rocks_transaction));
+    let applied = batch.apply(&transaction);
+    assert_eq!(applied.cost, expected.cost);
+    expected.value.expect("the storage batch is applied");
+    applied.value.expect("the batch is applied");
+    (rocks.storage.commit_transaction(rocks_transaction))
+        .unwrap()
+        .expect("a commit");
+
+    // What each engine answers: every read of each key that the second
+    // commit removed, the whole Merk under a cursor both ways, and the
+    // keys the tree links.
+    let mut looks: Vec<Act> = (10..25).map(|k| Act::Read(plain(k))).collect();
+    looks.extend([Act::Scan(true), Act::Scan(false), Act::Linked]);
+    fn answers<'db, S: NodeStore<'db>>(store: S, looks: &[Act]) -> Vec<(String, OperationCost)> {
+        let mut merk = open(store, TreeType::NormalTree);
+        looks.iter().map(|look| act(&mut merk, look)).collect()
+    }
+    let rocks_transaction = rocks.storage.start_transaction();
+    let context = rocks
+        .storage
+        .get_transactional_storage_context(SubtreePath::empty(), None, &rocks_transaction)
+        .unwrap();
+    let expected = answers(context, &looks);
+    // Every node that the first commit wrote stays, in no tree: those it
+    // put, and those among the committed ones that it wrote again on its
+    // way. A scan shows what a read by key finds.
+    let (scan, linked) = (&expected[15].0, &expected[17].0);
+    let mut rewritten = 0;
+    for k in 10..25 {
+        let key = plain(k);
+        let held = expected[(k - 10) as usize].0.ends_with("held Ok(true)");
+        assert!(held || k < 15, "the record under {k}");
+        rewritten += usize::from(held && k < 15);
+        assert_eq!(
+            scan.matches(&format!("({key:?}, ")).count(),
+            usize::from(held)
+        );
+        assert!(!linked.contains(&format!("{key:?}")), "{k} is linked");
+    }
+    // One of them had a cell, whose value its record keeps.
+    assert!(
+        rewritten > 0,
+        "no committed node was written again and removed"
+    );
+
+    let in_transaction = answers(LigninNodeStore::read_only(&transaction, ROOT), &looks);
+    assert_eq!(in_transaction, expected, "in the transaction");
+    let reader = LigninNodeStore::read_only(&transaction, ROOT);
+    assert_same_records(
+        &records(&reader, root.1.clone()),
+        &rocks.records(root.1.clone()),
+        "in the transaction",
+    );
+    drop(reader);
+    facade.commit(&transaction);
+    let snapshot = LigninSnapshot::new(facade.db.snapshot());
+    let committed = answers(LigninNodeStore::read_only(&snapshot, ROOT), &looks);
+    assert_eq!(committed, expected, "in a snapshot");
+    let reader = LigninNodeStore::read_only(&snapshot, ROOT);
+    assert_same_records(
+        &records(&reader, root.1.clone()),
+        &rocks.records(root.1),
+        "committed",
+    );
+    facade.sound();
+}
+
 /// The calls of one flat keyspace, each with what it was charged and what
 /// it answered, as text.
 fn flat_script<S: FlatStore>(keyspace: &S) -> Vec<(OperationCost, String)> {

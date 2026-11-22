@@ -627,6 +627,20 @@ impl Merk {
         self
     }
 
+    /// The same Merk with one more node stated under `key`, which no link
+    /// of its tree leads to: the engine keeps it as an unlinked record.
+    pub(super) fn with_unlinked(mut self, key: &[u8], value: &[u8]) -> Self {
+        self.nodes.push(Node {
+            key: key.to_vec(),
+            value: value.to_vec(),
+            feature: vec![3, 1, 0, 0, 0, 0, 0, 0, 0],
+            left: None,
+            right: None,
+            hosted: Vec::new(),
+        });
+        self
+    }
+
     pub(super) fn len(&self) -> usize {
         self.nodes.len()
     }
@@ -649,7 +663,7 @@ pub(super) type Items = Vec<(Vec<u8>, Vec<u8>)>;
 /// with the bytes of its value. `None` if the subtree is not entered.
 pub(super) fn items_of(operation: &Operation<'_>, subtree: Subtree) -> Option<Items> {
     let opened = operation.open(subtree).expect("a lookup")?;
-    let mut walk = opened.walk();
+    let mut walk = opened.walk().expect("a lookup");
     let mut items = Items::new();
     walk.seek_to_first(operation).expect("a move");
     while let Some(key) = walk.key().map(<[u8]>::to_vec) {

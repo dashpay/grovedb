@@ -27,7 +27,7 @@ use super::{
     },
     feature::{encode_aggregate, encode_feature},
     hash::{held_link, stale_hashes, HeldLink},
-    record_len, refused, LigninHost, LigninSubtree, LigninView, MODEL,
+    record_len, refused, LigninHost, LigninSubtree, LigninView, Loose, MODEL,
 };
 use crate::{
     cost_model::{self, BatchCharge, ImmediateBatchCharge, Keyspace},
@@ -150,6 +150,9 @@ pub struct LigninChangeSet {
     /// The keys of the written nodes that take the place of the element
     /// of a tree ([`Self::note_trees`]).
     over_trees: Vec<Vec<u8>>,
+    /// The keys the handle of the change set knows to hold an unlinked
+    /// record, where a handle made it to take the nodes of a commit.
+    loose: Option<Loose>,
 }
 
 impl fmt::Debug for LigninChangeSet {
@@ -180,7 +183,16 @@ impl LigninChangeSet {
             records: Vec::new(),
             immediate: immediate.then(|| MODEL.immediate_batch()),
             over_trees: Vec::new(),
+            loose: None,
         }
+    }
+
+    /// The change set, which prepares its nodes by what its handle knows
+    /// of their keys: a node under a key in `loose` has its value stated
+    /// whatever change is named, as no cell keeps a value for it.
+    pub(super) fn of_handle(mut self, loose: Loose) -> Self {
+        self.loose = Some(loose);
+        self
     }
 
     /// A change set of one node, written outside a commit of its Merk. The
@@ -393,7 +405,14 @@ impl NodeChangeSet for LigninChangeSet {
     type Prepared = PreparedNode;
 
     fn prepare_node(&mut self, node: &TreeNode, change: NodeChange) -> PreparedNode {
-        PreparedNode(prepare(node, change))
+        let loose = (self.loose.as_ref()).is_some_and(|loose| loose.holds(node.key()));
+        PreparedNode(prepare(
+            node,
+            match loose {
+                true => NodeChange::ValueWritten,
+                false => change,
+            },
+        ))
     }
 
     fn put_node(
@@ -497,8 +516,9 @@ enum Charge {
 #[derive(Debug, Default)]
 pub struct LigninApplied {
     /// Each batch that was applied, with where its written nodes are, for
-    /// each of its Merks in the order of the batch.
-    parts: Vec<(Resolved<Charge>, Vec<Vec<Location>>)>,
+    /// each of its Merks in the order of the batch. A node that is kept as
+    /// an unlinked record has no cell, and none is named for it.
+    parts: Vec<(Resolved<Charge>, Vec<Vec<Option<Location>>>)>,
     /// How many node values the batch stated that the transaction did not
     /// hold: the values that were written.
     pub values_written: usize,
@@ -514,12 +534,21 @@ impl LigninApplied {
         self.parts.push((part, written.locations));
     }
 
-    /// Shows `seen` where each written node of `subtree` is now, by the key
-    /// it was written under: what a handle that stays open takes in
+    /// Shows `seen` where each batch that was applied left each node of
+    /// `subtree` that it put, by the key it was written under and in the
+    /// order of the batches: what a handle that stays open takes in
     /// ([`LigninNodeStore::take_locations`](super::LigninNodeStore::take_locations))
     /// so that it follows no link to such a node by key (`tree-layout.md`
-    /// P5). A transaction that serves its records by key has none to show.
-    pub(super) fn locations(&self, subtree: &Prefix, mut seen: impl FnMut(&[u8], Location)) {
+    /// P5). A node that its batch left as an unlinked record is shown
+    /// with no place. A removal is not shown, so a key that a later batch
+    /// removed is shown as the earlier one left it. Of a batch that the
+    /// transaction kept in its write set by key when it was applied, it
+    /// reported no place, and none is shown.
+    pub(super) fn locations(
+        &self,
+        subtree: &Prefix,
+        mut seen: impl FnMut(&[u8], Option<Location>),
+    ) {
         let subtree = Subtree::new(*subtree);
         for (part, locations) in &self.parts {
             part.with_batch(|batch| {
@@ -546,19 +575,35 @@ pub(super) fn entering(
 ) -> Result<SubtreeChange, Error> {
     let host = match &subtree.host {
         None => None,
-        Some(host) => {
-            let position = (host.hosted.iter())
-                .position(|hosted| *hosted == subtree.prefix)
-                .and_then(|position| u8::try_from(position).ok())
-                .ok_or_else(|| refused("a subtree is not among those its host hosts"))?;
-            Some((host.subtree, host.key.clone(), position))
-        }
+        Some(host) => Some((host.subtree, host.key.clone(), position(subtree, host)?)),
     };
     Ok(SubtreeChange::Enter {
         subtree: subtree.prefix,
         tree_type: tree_type.to_vec(),
         host,
         if_absent,
+    })
+}
+
+/// The place of `subtree` among the subtrees `host` hosts.
+fn position(subtree: &LigninSubtree, host: &LigninHost) -> Result<u8, Error> {
+    (host.hosted.iter())
+        .position(|hosted| *hosted == subtree.prefix)
+        .and_then(|position| u8::try_from(position).ok())
+        .ok_or_else(|| refused("a subtree is not among those its host hosts"))
+}
+
+/// What states `subtree` anew in the subtree directory as a tree of
+/// `tree_type`, at the place its prefix has in [`LigninHost::hosted`].
+pub(super) fn converting(
+    subtree: &LigninSubtree,
+    tree_type: &[u8],
+) -> Result<SubtreeChange, Error> {
+    let host = subtree.host.as_ref();
+    Ok(SubtreeChange::Convert {
+        subtree: subtree.prefix,
+        tree_type: tree_type.to_vec(),
+        position: host.map(|host| position(subtree, host)).transpose()?,
     })
 }
 
@@ -624,8 +669,9 @@ pub struct LigninBatch {
 }
 
 /// What a batch keeps beside the outcomes: the subtrees that a staged
-/// write is in, in any column, each as its handle named it, and what it
-/// was told of subtrees that are moved.
+/// write is in, in any column, each as its handle named it, what it was
+/// told of subtrees that are moved, and the subtrees that the batch states
+/// anew, each as it was last stated.
 #[derive(Default)]
 struct Marks {
     written: BTreeMap<Prefix, LigninSubtree>,
@@ -654,6 +700,7 @@ struct Marks {
     /// subtrees whose handle was told one
     /// ([`LigninNodeStore::at_path`](super::LigninNodeStore::at_path)).
     paths: BTreeMap<Prefix, Vec<Vec<u8>>>,
+    converted: BTreeMap<Prefix, SubtreeChange>,
 }
 
 impl Marks {
@@ -700,6 +747,7 @@ impl Marks {
             *self.merks.entry(prefix).or_default() |= anew;
         }
         self.paths.extend(other.paths);
+        self.converted.extend(other.converted);
     }
 }
 
@@ -709,6 +757,7 @@ impl fmt::Debug for LigninBatch {
         f.debug_struct("LigninBatch")
             .field("staged", &self.staged)
             .field("written", &marks.written.len())
+            .field("converted", &marks.converted.len())
             .finish()
     }
 }
@@ -726,7 +775,10 @@ impl LigninBatch {
     /// Whether nothing is staged.
     pub fn is_empty(&self) -> bool {
         let marks = self.marks();
-        marks.moved.is_empty() && marks.moves.is_empty() && self.staged.is_empty()
+        marks.moved.is_empty()
+            && marks.moves.is_empty()
+            && self.staged.is_empty()
+            && marks.converted.is_empty()
     }
 
     /// Marks the boundary between two operations that share the batch:
@@ -856,6 +908,26 @@ impl LigninBatch {
         let _held = self.marks();
         self.host(subtree);
         (self.staged).enter(Subtree::new(subtree.prefix), tree_type);
+        Ok(())
+    }
+
+    /// States `subtree` anew in the subtree directory, as a conversion in
+    /// place leaves it: a tree of `tree_type`, at the place its prefix has
+    /// in [`LigninHost::hosted`](super::LigninHost::hosted) among the
+    /// subtrees of its host.
+    ///
+    /// The subtree is entered before the batch, which as it stands when
+    /// it is applied neither enters nor drops it: the transaction refuses
+    /// a batch that does. Of two statements of one subtree the later
+    /// stands. An element that hosts several subtrees and names
+    /// them in another order from here on states each one that changes
+    /// its place, in the batch that writes the element: the node of the
+    /// element then names its subtrees in that order.
+    pub fn convert(&self, subtree: &LigninSubtree, tree_type: &[u8]) -> Result<(), Error> {
+        let convert = converting(subtree, tree_type)?;
+        let mut marks = self.marks();
+        self.host(subtree);
+        marks.converted.insert(subtree.prefix, convert);
         Ok(())
     }
 
@@ -1010,6 +1082,8 @@ pub struct LigninSettled {
     written: BTreeMap<Prefix, LigninSubtree>,
     moves: Vec<(Prefix, Prefix)>,
     absent: Vec<(Prefix, Prefix)>,
+    /// The subtrees the batch states anew.
+    converted: Vec<SubtreeChange>,
     pending: OperationCost,
     /// Whether two handles named different hosts for a subtree the batch
     /// holds a write for.
@@ -1145,6 +1219,7 @@ impl LigninSettled {
             written,
             moves: marks.moves,
             absent: marks.absent,
+            converted: marks.converted.into_values().collect(),
             pending,
             two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
             hosts: Vec::new(),
@@ -1308,9 +1383,9 @@ impl LigninSettled {
         &self.pending
     }
 
-    /// Whether the batch writes nothing.
+    /// Whether the batch writes nothing, and states no subtree anew.
     pub fn is_empty(&self) -> bool {
-        self.resolved.is_empty() && self.moves.is_empty()
+        self.resolved.is_empty() && self.moves.is_empty() && self.converted.is_empty()
     }
 
     /// The subtrees the batch moves, each with the prefix it goes to, in
@@ -1350,10 +1425,11 @@ impl LigninSettled {
         self.resolved.enters().contains(&Subtree::new(*prefix))
     }
 
-    /// Whether the batch itself enters, drops or clears a subtree: what
-    /// whoever applies it has entered with it does not count.
+    /// Whether the batch itself enters, drops or clears a subtree, or
+    /// states one anew: what whoever applies it has entered with it does
+    /// not count.
     pub fn writes_directory(&self) -> bool {
-        self.resolved.leaves() || !self.resolved.enters().is_empty()
+        self.resolved.leaves() || !self.resolved.enters().is_empty() || !self.converted.is_empty()
     }
 
     /// What the batch holds for the node `key` of the Merk under `prefix`,
@@ -1434,10 +1510,14 @@ impl LigninSettled {
         let applied = (enters.iter().zip(entered_by))
             .map(|((subtree, tree_type), part)| Ok((part, entering(subtree, tree_type, true)?)))
             .collect::<Result<Vec<_>, _>>()
-            .and_then(|enters| {
+            .and_then(|mut changes| {
+                // What a part states anew goes with that part.
+                for (at, part) in parts.iter().enumerate() {
+                    changes.extend(part.converted.iter().cloned().map(|stated| (at, stated)));
+                }
                 let batches: Vec<&dyn BatchPart> =
                     parts.iter().map(|part| part as &dyn BatchPart).collect();
-                view.into().0.apply_parts(&batches, &enters, &mut entry)
+                view.into().0.apply_parts(&batches, &changes, &mut entry)
             });
         match applied {
             Ok(written) => {
