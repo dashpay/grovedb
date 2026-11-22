@@ -7,7 +7,7 @@ use lignin_format::{CellAddress, CommitVersion};
 use lignin_store::values::ValueStore;
 use lignin_tree::{
     cursor::CursorError,
-    directory::{Directory, DirectoryError, Entry},
+    directory::{self, Directory, DirectoryError, Entry},
     flat::{self, Committed, FlatError},
     node::NodeError,
 };
@@ -199,6 +199,27 @@ impl<'o> Operation<'o> {
         }))
     }
 
+    /// A walk over every entry of the subtree directory of the version
+    /// the operation reads, in the order of the prefixes
+    /// ([`EntryWalk`]). It reads the directory's keyspace as it goes, one
+    /// page at a time, and holds nothing of it between two steps but its
+    /// place.
+    ///
+    /// It is for the tools that look at a whole database: a reader that
+    /// knows its subtree opens it ([`Self::open`]).
+    pub fn entries(&self) -> Result<EntryWalk<'_, 'o>, ReadError> {
+        let records = self.records.ok_or(ReadError::NoRecords)?;
+        let directory = self.directory(&records)?.clone();
+        Ok(EntryWalk {
+            operation: self,
+            records,
+            entries: directory.entries(),
+            directory,
+            last: None,
+            failed: false,
+        })
+    }
+
     /// Opens a subtree that an earlier operation kept ([`Opened::keep`]).
     /// At the version of the database it was kept at, the entry is the one
     /// that version has, and nothing is read: a subtree leaves with a
@@ -215,6 +236,89 @@ impl<'o> Operation<'o> {
             subtree: kept.subtree,
             entry: kept.entry.clone(),
         }))
+    }
+}
+
+/// One entry of the subtree directory, as a walk over it gives it
+/// ([`EntryWalk`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// The subtree the entry is under.
+    pub subtree: Subtree,
+    /// The entry: the tree type, the root of the Merk with the root's key,
+    /// and the element that hosts it.
+    pub entry: Entry,
+    /// Whether the subtree is in use at the version: `false` for the entry
+    /// of a subtree below one that was dropped or cleared, which stays in
+    /// the directory until the reclaimer takes it. A subtree that is not
+    /// in use is not opened ([`Operation::open`]).
+    pub live: bool,
+}
+
+/// A walk over every entry of the subtree directory of one operation's
+/// version, in the order of the prefixes ([`Operation::entries`]).
+///
+/// **Its end is told from a failure.** [`Self::next`] returns `Ok(None)`
+/// only after the last entry, and a page of the directory that cannot be
+/// read is an error, whichever entry it holds: a caller that stops at the
+/// first error has not seen the end of the directory, and says so. A call
+/// after an error reads the directory again from its first page and gives
+/// the entry after the last one the walk gave, so a walk that goes on
+/// after errors gives each entry once, in order.
+pub struct EntryWalk<'a, 'o> {
+    operation: &'a Operation<'o>,
+    records: Records<'o>,
+    directory: Directory,
+    entries: directory::Entries,
+    /// The prefix of the last entry given.
+    last: Option<[u8; Subtree::LEN]>,
+    /// Whether the last call failed: the next one starts again.
+    failed: bool,
+}
+
+impl EntryWalk<'_, '_> {
+    /// The next entry, or `None` after the last.
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "no iterator: an item that is an error can be passed over as no item, and a \
+                  walk's end is told from a failure only by `Ok(None)`"
+    )]
+    pub fn next(&mut self) -> Result<Option<Listed>, ReadError> {
+        let pages = self.operation.flat_pages(&self.records);
+        // After a failure the place of the walk is not known: it starts
+        // again, and passes over what it gave.
+        let passing = std::mem::take(&mut self.failed);
+        if passing {
+            self.entries = self.directory.entries();
+        }
+        let found = loop {
+            match self.entries.next(&pages) {
+                Err(error) => {
+                    self.failed = true;
+                    return Err(error.into());
+                }
+                Ok(Some((prefix, _)))
+                    if passing && self.last.is_some_and(|last| prefix <= last) => {}
+                Ok(found) => break found,
+            }
+        };
+        let Some((prefix, entry)) = found else {
+            return Ok(None);
+        };
+        self.last = Some(prefix);
+        Ok(Some(Listed {
+            subtree: Subtree::new(prefix),
+            live: self.directory.is_live(&entry),
+            entry,
+        }))
+    }
+}
+
+impl fmt::Debug for EntryWalk<'_, '_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntryWalk")
+            .field("at", &self.operation.at())
+            .finish_non_exhaustive()
     }
 }
 

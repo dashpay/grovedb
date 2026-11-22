@@ -40,6 +40,12 @@ pub struct StoreStats {
     pub hashes: u64,
     /// Searches by key from a tree's root.
     pub keyed_lookups: u64,
+    /// Values read from the value log by their pointers: by readers,
+    /// write transactions and the invariant checker, and not by the
+    /// cleaner.
+    pub value_reads: u64,
+    /// Their bytes.
+    pub value_read_bytes: u64,
     /// What an operator watches.
     pub watch: Watch,
     /// The log's counts, by kind of item.
@@ -200,6 +206,7 @@ impl Stats {
         let flush = state.stats();
         let pool = stores.pool.stats();
         let (open_writes, oldest_write) = self.open_writes();
+        let (value_reads, value_read_bytes) = stores.values.reads();
         let watch = Watch {
             log_held: write_back.log_held(),
             unwritten: state.unwritten(),
@@ -229,6 +236,8 @@ impl Stats {
             cache_hits: pool.hits,
             hashes: self.hashes(),
             keyed_lookups: self.keyed_lookups(),
+            value_reads,
+            value_read_bytes,
             watch,
             log,
             flush,
@@ -260,6 +269,11 @@ impl fmt::Display for StoreStats {
             self.cache_hits,
             self.hashes,
             self.keyed_lookups,
+        )?;
+        writeln!(
+            f,
+            "values read from the value log: {} ({} bytes)",
+            self.value_reads, self.value_read_bytes,
         )?;
         write!(f, "log held: {} bytes", watch.log_held)?;
         for (at, holder) in watch.log_held_by().iter().enumerate() {

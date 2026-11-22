@@ -30,6 +30,7 @@
 //! | [`cache_hits`](StoreStats::cache_hits) | page versions the pool held | [`BufferPool::stats`] (hits) |
 //! | [`hashes`](StoreStats::hashes) | hashes the tree computed | [`Stats::count_hashes`] |
 //! | [`keyed_lookups`](StoreStats::keyed_lookups) | searches by key from a tree's root | [`Stats::count_keyed_lookups`] |
+//! | [`value_reads`](StoreStats::value_reads), [`value_read_bytes`](StoreStats::value_read_bytes) | values read from the value log by their pointers, and their bytes: by readers, write transactions and the invariant checker; not the cleaner's copies | [`ValueStore::reads`] |
 //!
 //! Every count is a running total since the store was opened, and only
 //! goes up. A benchmark takes two readings and subtracts.
@@ -71,6 +72,7 @@
 //! [`FlushState`]: crate::flush::FlushState
 //! [`WriteBack::committed`]: crate::flush::WriteBack::committed
 //! [`WriteBack::run`]: crate::flush::WriteBack::run
+//! [`ValueStore::reads`]: crate::values::ValueStore::reads
 
 mod read;
 mod striped;

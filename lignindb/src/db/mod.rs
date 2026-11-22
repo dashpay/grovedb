@@ -507,6 +507,7 @@ use std::{
 use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
+    alloc::Census,
     cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats},
     flush::{FlushError, Stores, WriteBack},
     recovery::RecoveryReport,
@@ -604,6 +605,43 @@ impl fmt::Display for Opening {
     }
 }
 
+/// The memory of the buffer pool ([`DbStats::memory`]), in bytes.
+///
+/// **What the process holds is not the pool's size, and grows to it.** A
+/// pool of a megabyte of frames or more is a mapping of its own on Linux
+/// and macOS ([`Self::mapped`]): the system gives it zeroed and backs a
+/// frame with memory when the frame is first used. So [`Self::fixed`]
+/// counts the whole of the frames from the open on, the resident size of
+/// the process after an open is far below it, and it grows towards it as
+/// pages are read. The allocator's own statistics do not see a mapping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Memory {
+    /// The size the pool was given ([`Options::cache_size`]).
+    pub capacity: usize,
+    /// What the pool asked the allocator and the system for when it was
+    /// made, a mapping included whole (`BufferPool::fixed_memory`).
+    pub fixed: usize,
+    /// The part of [`Self::fixed`] that is a mapping of its own, backed as
+    /// frames are first used: all of the frames, or none
+    /// (`BufferPool::mapped_memory`).
+    pub mapped: usize,
+    /// What the pool holds now: the fixed part, the frames it could not
+    /// evict beside it and the values attached to frames
+    /// (`BufferPool::memory`).
+    pub held: usize,
+}
+
+impl fmt::Display for Memory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "pool memory: {} bytes asked for ({} of them a mapping, backed as frames are first \
+             used), {} held now, of {} configured",
+            self.fixed, self.mapped, self.held, self.capacity
+        )
+    }
+}
+
 /// Every count of an open database ([`Db::stats`]).
 #[derive(Debug, Clone)]
 pub struct DbStats {
@@ -626,6 +664,12 @@ pub struct DbStats {
     pub cleaner: CleanerStats,
     /// Page ids that reclaims gave back to the allocator.
     pub ids_released: u64,
+    /// How many page ids are in each state, and the highest one that has
+    /// been in use: every page of the latest version has an id at or
+    /// below it.
+    pub ids: Census,
+    /// The memory of the buffer pool.
+    pub memory: Memory,
     /// Version pins and operation guards that are held.
     pub pins: usize,
     /// See [`Self::pins`].
@@ -643,7 +687,16 @@ impl fmt::Display for DbStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "version {}", self.version)?;
         writeln!(f, "{}", self.opening)?;
-        write!(f, "{}", self.store)?;
+        writeln!(f, "{}", self.store)?;
+        writeln!(f, "{}", self.memory)?;
+        writeln!(
+            f,
+            "page ids: {} live, {} held by transactions, {} retired, the highest {}",
+            self.ids.live,
+            self.ids.private,
+            self.ids.retired,
+            self.ids.high_water.map_or(0, |page| page.get())
+        )?;
         writeln!(
             f,
             "commits: {} published, {} conflicts, {} failed, {} rollbacks",
@@ -1500,6 +1553,13 @@ impl Db {
             reclaimed: *lock(&store.reclaimed),
             cleaner: store.cleaner.stats(),
             ids_released: store.ids_released.load(Ordering::Relaxed),
+            ids: store.ids.census(),
+            memory: Memory {
+                capacity: store.pool.capacity(),
+                fixed: store.pool.fixed_memory(),
+                mapped: store.pool.mapped_memory(),
+                held: store.pool.memory(),
+            },
             pins: shared.versions.pins_held(),
             guards: shared.versions.guards_held(),
             directories: store.directories.len(),

@@ -8,4 +8,22 @@ homepage = "https://www.grovedb.org"
 repository = "https://github.com/dashpay/grovedb"
 publish = false
 
+[[bin]]
+name = "lignin"
+path = "src/main.rs"
+
 [dependencies]
+lignin-format = { version = "6.1.1", path = "../lignin-format" }
+lignin-io = { version = "6.1.1", path = "../lignin-io" }
+lignin-store = { version = "6.1.1", path = "../lignin-store" }
+lignin-tree = { version = "6.1.1", path = "../lignin-tree" }
+lignindb = { version = "6.1.1", path = "../lignindb" }
+# Merk's hash rules, by which `lignin verify` makes every stored hash
+# again. Merk on LigninDB alone: no RocksDB is built for the command.
+grovedb-merk = { version = "6.1.1", path = "../merk", default-features = false, features = ["lignin_storage"] }
+grovedb-version = { version = "6.1.1", path = "../grovedb-version" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# Elements as GroveDB serializes them, for the databases of the tests.
+grovedb-element = { version = "6.1.1", path = "../grovedb-element" }
