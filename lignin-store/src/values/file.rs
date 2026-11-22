@@ -295,10 +295,11 @@ impl ValueFile {
     /// The lock that puts the appends to the file and its syncs in one
     /// order. One sync runs at a time under it, and an append is admitted
     /// and handed to the file layer under it
-    /// ([`ValueWriter::append`](super::ValueWriter::append)). So an
-    /// append that the file admitted is in the file before a sync that
-    /// fails begins, and none is admitted after that sync: a file of
-    /// which a sync failed is not appended to again.
+    /// ([`ValueWriter::append`](super::ValueWriter::append)). So the
+    /// file layer has answered an append that the file admitted before
+    /// a sync that fails begins, and none is admitted after that sync:
+    /// no append is handed to the file layer for a file of which a sync
+    /// has failed.
     pub(super) fn in_order(&self) -> MutexGuard<'_, ()> {
         #[cfg(test)]
         if matches!(

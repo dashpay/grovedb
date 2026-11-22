@@ -125,9 +125,9 @@ pub struct Pass {
     /// Page versions that were kept in the pool for their readers instead
     /// of being written.
     pub held: usize,
-    /// Pages that could not be written because a value of theirs could not
-    /// be placed: a write transaction holds a private copy of the page, or
-    /// the log refused the record of the value's page step.
+    /// Pages that could not be written because their current version
+    /// has a pending value, or bytes attached that could not be taken
+    /// off.
     pub blocked: usize,
     /// Page versions that still wait: the pool lists them as owed.
     pub waiting: usize,
@@ -538,8 +538,8 @@ impl<'s> WriteBack<'s> {
     /// An error that is about one page does not end the pass: the other
     /// pages are written, and the pass returns the first such error when
     /// it is done. Neither does a page step whose record the log refused:
-    /// the value stays ready, and the pass returns what the log answered
-    /// as such an error. Whatever it returns, what it wrote and linked
+    /// the value stays ready, and what the log answered is one of those
+    /// errors. Whatever the pass returns, what it wrote and linked
     /// stands, and it can be called again.
     pub fn pass(&self) -> Result<Pass, FlushError> {
         let (pass, result) = self.pass_through();

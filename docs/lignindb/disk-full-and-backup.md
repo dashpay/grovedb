@@ -296,16 +296,15 @@ in full.
 The engine does steps 3 to 5 by itself. Steps 2 and 6 are whoever opens
 the database's until the reserve is wired into `Db` (section 8, item 3).
 
-**A file that write-back gave up is the cleaner's in the same session**
-(D-209). Where the device filled while write-back was appending to the
+**A file that write-back gave up is one the cleaner can take in the same
+session** (D-209). Where the device filled while write-back was appending to the
 value-log file it fills, write-back gives the file up and the next value
 goes to another file (`FlushStats::value_files_given_up`). The file's
 writer syncs what the file holds, through the handle that appended it,
 and is dropped after that sync has returned. The file is then closed
-where it ends. The cleaner chooses among closed files, so this one is
-among them with no close and no open of the database in between, and
-step 4 cleans it once its dead bytes pass the thresholds that hold for
-any closed file.
+where it ends. The cleaner chooses among closed files, by rules that
+hold for every closed file, so this one is among them with no close and
+no open of the database in between.
 
 - If that sync is refused as well, the file is closed at the length that
   the last sync that succeeded had made durable, and in this session it
@@ -385,9 +384,9 @@ write nothing, do not fail, and go on at its idle time.
 
 **What a failed turn of write-back leaves**, in the state in which its
 loop did not wait before this rule: a value waits for its page step, and
-the log takes no record until it is rolled. In the first four rows the
-device takes no new log file. In the last it takes the file, and not the
-record.
+the log takes no record until it is rolled. In the first three rows the
+device takes no new log file. In the fourth it takes the file and keeps
+what it refuses, and in the last it takes the file and not the record.
 
 | The device | Log file ids | Names that no sync of a directory has covered |
 | --- | --- | --- |
@@ -395,14 +394,15 @@ record.
 | makes the file, refuses its header and takes the file away again: a device with no free byte | none, for the same reason | one creation and one removal of that one name for each failed turn |
 | makes the file, refuses its header and does not take the file away | One for every two creations: the next creation finds the file under the id, which is then that file's, and the one after it asks under the next id. | one file for each of those ids. The next open removes them, and fails where the device refuses that as well. |
 | takes the bytes of each record of the log and answers that it has no room | The log finds the start record of its next file whole in that file and turns to it, to a file that takes no item and is one of the log's. A roll makes six turns at most, and a roll whose last turn ends so has failed. So a failed turn of write-back uses six ids at most. | none |
-| takes the log's files with their start records, and refuses the record of each page step | One for each failed turn that rolls the log: the roll succeeds, the page step is refused its record in the file the log turned to, and the turn has failed by it. | none |
+| takes the log's files with their start records, and refuses the record of each page step | A failed turn that rolls the log uses one where the roll finds a file made ready for the log to turn to, and two where the roll has to make that file first, if no other thread attempts an append to the log during the turn: the roll gives the log a file, the page step is refused its record in that file, and the turn has failed by it. A record of another thread that is refused in that file during the roll can make the roll use a further file. | none |
 
 **The rates.** In a row of failed turns that move nothing on, the wait
 grows to its bound, and from then on write-back's loop makes one turn in
 each such wait at most: with the default bound, one a second. That is
 at most one creation and one removal of a name a second in the second
-row, 1,800 ids an hour in the third, 21,600 in the fourth and 3,600 in
-the fifth. A shorter bound gives as many more. These are the rates of
+row, 1,800 ids an hour in the third, 21,600 in the fourth, and 3,600 in
+the fifth where each failed turn uses one id. A shorter bound gives as
+many more. These are the rates of
 write-back's loop. A pass of the cleaner that asks for a table
 checkpoint rolls the log as well, and its loop is paced by the same
 rule. Nothing else that rolls the log is paced by it: the thread of a
@@ -921,10 +921,10 @@ At each of the 3,269 operations:
 | `lignin-io`: `sim::tests::budget` | the capacity: what is counted, what is refused, what a refused operation leaves, a hole, a file that only a lock holds |
 | `lignin-store`: `wal::tests::faults::the_log_says_that_a_sync_failed_and_makes_none_to_say_so` | the accessor says what is and makes no operation |
 | `lignin-store`: `flush::tests::faults::a_manifest_in_doubt_is_settled_when_write_back_is_asked` | the settling, where it works and where the device still refuses |
-| `db::tests::pacing` | DF12 on a session whose three threads run: after a commit that was refused its append, on a device that goes on refusing writes and names, write-back's failed turns in 400 ms are those its waits allow, the log's next file is asked for once in each of them and once by each checkpoint the cleaner asks for, no log file id is used, the session has not ended, and with room it takes the next commit; in the same state no wake reaches the reclaimer's thread, no round of it fails, and after every round it takes its idle wait; the reclaimer's wait after a failed round, which a wake does not end; a log whose ids are used up ends the session and says why |
+| `db::tests::pacing` | DF12 on a session whose three threads run: after a commit that was refused its append, on a device that goes on refusing writes and names, write-back's failed turns in 400 ms are those its waits allow, the log's next file is asked for once in each of them and once by each checkpoint the cleaner asks for, no log file id is used, the session has not ended, and with room it takes the next commit; in the same state no wake reaches the reclaimer's thread, no round of it fails, and after every round but the one at which it is told to end it takes its idle wait; the reclaimer's wait after a failed round, which a wake does not end; a log whose ids are used up ends the session and says why |
 | `lignin-store`: `flush::tests::pacing` | the waits of write-back's loop turn by turn (the idle time, doubling to the bound; from a millisecond where the idle time is nothing), one file operation for each failed turn, no id used and no name changed where names are refused, two changes of one name for each failed turn on a device with no free byte; on a device that keeps the records it refuses, a roll whose turns end in a file that takes no item is a failed turn with the device's answer, with its wait and six log files at most; on a device that takes the log's files and refuses the record of each page step, the step is put off and the turn has failed by it, with its wait and one log file for each turn that rolls, also under the loop with nobody else who asks for a turn; a failed turn that wrote a page ends the row of turns in vain; the wait grows to a bound of any size; a call for a turn ends no wait after a failed turn |
 | `lignin-store`: `cleaner::tests::errors` (two of its tests) | the same wait for the cleaner's loop |
 | `lignin-store`: `wal::tests::faults` (three of its tests) | a creation that is refused again and again uses up no log file id; an id is used up by a file that is found under it; the ids end at the largest one and do not begin again |
 | `lignin-store`: `flush::tests::values`, `cleaner::tests::values` (seven tests) | a value-log file that is given up after a refused append is synced through the handle that appended and closed in the session, with the values before the refused one placed in it; the cleaner cleans and drops it with no open in between; with the sync of the giving up refused too, the file is closed at the length an earlier sync had covered, which the manifest in force names, and is neither appended to nor synced again, the values behind that length are in no cell and go to another file, a table checkpoint is installed, and the cleaner drops the file; where the refused sync is of a second file of the pass, the value in the first keeps its place under the manifest that covers it; a refused sync at the turn to the next file gives the full file up and is counted; the cleaner's own file is given up in the same way |
-| `lignin-store`: `values::tests::disk_faults::an_append_that_a_file_admitted_reaches_it_before_a_sync_of_the_file_that_fails` | an append to a value-log file and a sync of that file are in one order: a sync that another thread asks for waits for an append that was admitted, and nothing reaches the file after the sync that failed |
+| `lignin-store`: `values::tests::disk_faults::an_append_that_a_file_admitted_is_answered_before_a_sync_of_the_file_that_fails` | an append to a value-log file and a sync of that file are in one order: a sync that another thread asks for waits for an append that was admitted, and no append is handed to the file layer for the file after the sync that failed |
 | `lignin-store`: `flush::tests::checkpoint::a_checkpoint_that_rolls_its_log_in_vain_fails_with_what_the_device_answered` | a table checkpoint that cannot be given a log file for its mark fails with the device's refusal by name |

@@ -58,7 +58,9 @@ pub struct FlushConfig {
     /// How long the background loop sleeps when nobody wakes it.
     pub idle: Duration,
     /// The longest wait of the background loop after a turn that failed
-    /// ([`Self::wait_after_failure`]).
+    /// ([`Self::wait_after_failure`]). Where it is shorter than
+    /// [`Self::idle`], or than a millisecond, the longer of those two is
+    /// the wait after every failed turn.
     pub max_failed_wait: Duration,
 }
 
@@ -146,11 +148,12 @@ pub struct FlushStats {
     /// Pending values that were given their pointer in a page step.
     pub values_placed: u64,
     /// Values that were appended and then given up. Their cell was gone
-    /// before it could be given the pointer, or no manifest came to
-    /// cover them: a sync of their file was refused, or the manifest was
-    /// not replaced. A value of the second kind that a cell still needs
-    /// is appended again by a later pass. What a file keeps of a value
-    /// that was given up is dead space.
+    /// before it could be given the pointer, or the value log did not
+    /// come to know a manifest that covers them: a sync of their file
+    /// was refused, or the manifest was not replaced, or its replacement
+    /// was left in doubt. A value of the second kind that a cell still
+    /// needs is appended again by a later pass. What a file keeps of a
+    /// value that was given up is dead space.
     pub values_given_up: u64,
     /// Value-log files that write-back gave up while it was filling
     /// them: an append to the file was refused, a sync of it failed,

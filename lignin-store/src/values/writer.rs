@@ -164,8 +164,8 @@ impl ValueWriter {
         records: &[u8],
     ) -> Result<ValuePointer, ValueStoreError> {
         // Admitted and handed to the file layer in one order with the
-        // syncs of the file: none comes between the two, so nothing is
-        // appended to a file after a sync of it has failed.
+        // syncs of the file: none comes between the two, so no append
+        // is handed to the file layer after a sync of the file has failed.
         let _in_order = self.file.in_order();
         self.file.check_appendable()?;
         #[cfg(test)]

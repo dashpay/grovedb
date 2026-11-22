@@ -279,11 +279,14 @@ impl<'s> WriteBack<'s> {
     ///
     /// The log can have none here. The early turn of the checkpoint was
     /// refused its start record by a device that kept the record
-    /// ([`Self::turn_log_early`]), or an append of another failed since
-    /// the checkpoint rolled the log: one of a commit, or of a page step
-    /// that another makes beside it. A page step of the checkpoint's own
-    /// pass that is refused its record fails that pass, and the
-    /// checkpoint with it. Nothing is appended to the log under the lock
+    /// ([`Self::turn_log_early`]), or an append failed since the
+    /// checkpoint rolled the log: one of a commit or of a page step that
+    /// another makes beside it, or one of the checkpoint's own pass that
+    /// the file layer answered with an error and whose bytes the log
+    /// found whole in the file, which counts as appended and ends the
+    /// file. A page step of the checkpoint's own pass whose record is
+    /// not in the log has failed that pass, and the checkpoint with it.
+    /// Nothing is appended to the log under the lock
     /// on the counts but by its holder, and the log is not turned under
     /// it by another: between a look here that finds a file that takes
     /// items and the append of the mark nobody else's append or turn

@@ -135,9 +135,11 @@ impl<'s> WriteBack<'s> {
     /// log, durable under a manifest that covers them, and has them wait
     /// for their page steps.
     ///
-    /// Whatever becomes of the sync and of the manifest, a value that the
-    /// manifest in force covers waits for its page step, and every other
-    /// one is given up with its hold, for a later pass to append again
+    /// Whatever became of the sync, and of the manifest where the sync
+    /// did not fail, the value log is asked of each value last
+    /// ([`ValueStore::covers`](crate::values::ValueStore::covers)). A
+    /// value that it then knows a manifest to cover waits for its page
+    /// step, and every other one is given up with its hold
     /// ([`FlushStats::values_given_up`](super::FlushStats::values_given_up)).
     /// A pass can fill one file and go on in the next: the values of the
     /// first are covered by the manifest that named the second, whatever
@@ -244,11 +246,13 @@ impl<'s> WriteBack<'s> {
     /// It touches no file but the log, to which it appends one record for
     /// each value it places, with no sync. One call runs at a time.
     ///
-    /// A step whose record the log refused is put off like one that a
-    /// private copy holds back, and is no error of this call: the log
-    /// has woken the loop for the cut it needs, and the pass of that
-    /// turn is told of a record that it is refused
-    /// ([`Self::place_each`]).
+    /// A step whose record the log answers with
+    /// [`LogError::NotAppended`], with [`LogError::NoActiveFile`], or
+    /// with [`LogError::TakenBack`] where the log is settled after it,
+    /// is put off like one that a private copy holds back, and this call
+    /// returns no error for it: the refusal has asked the loop for a
+    /// turn, for the cut the log needs, and a pass in which a record is
+    /// refused so ends with an error ([`Self::pass`]).
     pub fn place_ready(&self) -> Result<usize, FlushError> {
         let mut placed = 0;
         self.place_each(&mut placed, &mut None)?;

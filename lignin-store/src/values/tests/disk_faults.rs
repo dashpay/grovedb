@@ -317,13 +317,14 @@ fn a_file_whose_sync_failed_ends_where_it_was_last_synced() {
     assert_eq!(store.named(), [value_file(1, FileState::Closed, durable)]);
 }
 
-/// An append to a file and a sync of that file are in one order: an
-/// append that the file admitted reaches the file before a sync of it
-/// that fails, and none reaches it after that sync. Here another thread
-/// syncs the value log while the writer stands between the admission of
-/// its append and the file layer: the sync waits for the append.
+/// An append to a file and a sync of that file are in one order: the
+/// file layer has answered an append that the file admitted before a
+/// sync of the file that fails begins, and no append is handed to it for
+/// the file after that sync. Here another thread syncs the value log
+/// while the writer stands between the admission of its append and the
+/// file layer: the sync waits for the append, which the device takes.
 #[test]
-fn an_append_that_a_file_admitted_reaches_it_before_a_sync_of_the_file_that_fails() {
+fn an_append_that_a_file_admitted_is_answered_before_a_sync_of_the_file_that_fails() {
     use std::sync::mpsc;
 
     use lignin_io::sim::{Event, Outcome as Ended};
@@ -385,7 +386,8 @@ fn an_append_that_a_file_admitted_reaches_it_before_a_sync_of_the_file_that_fail
         store.values.sync(),
         Err(ValueStoreError::FileFailed { .. })
     ));
-    assert_eq!(on_the_file(&store.fs).len(), 2, "nothing more reached it");
+    let since = on_the_file(&store.fs).len() - 2;
+    assert_eq!(since, 0, "appends and syncs that reached the file since");
 }
 
 #[test]

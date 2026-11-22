@@ -241,7 +241,8 @@ impl WriteBack<'_> {
     /// before that wait or during it: the idle time after the first turn
     /// that failed and moved nothing on, and twice as long after each
     /// further such turn in a row, up to
-    /// [`FlushConfig::max_failed_wait`]. An idle time of less than a
+    /// [`FlushConfig::max_failed_wait`], or up to the idle time where
+    /// that bound is the shorter. An idle time of less than a
     /// millisecond counts as a millisecond here. After a failed turn
     /// that moved something on the wait is the idle time and the row
     /// begins anew, and a turn that does not fail is followed by the
