@@ -43,12 +43,16 @@ pub(super) enum AtTheMark {
     GivenUp,
 }
 
+/// What a test has run at one of those places.
+#[cfg(test)]
+pub(super) type MarkHook = Box<dyn FnMut(AtTheMark)>;
+
 #[cfg(test)]
 thread_local! {
     /// What a test has run on the thread of a table checkpoint that looks
     /// for a file for its mark: what another thread does to the log
     /// beside it.
-    pub(super) static AT_THE_MARK: std::cell::RefCell<Option<Box<dyn FnMut(AtTheMark)>>> =
+    pub(super) static AT_THE_MARK: std::cell::RefCell<Option<MarkHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
