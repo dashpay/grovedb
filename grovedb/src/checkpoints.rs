@@ -50,23 +50,28 @@ impl<E: Engine> GroveDb<E> {
     /// is asked. What is removed then is [`Engine::delete_checkpoint`]'s
     /// to say, and the engines differ:
     ///
-    /// - **The RocksDB engine** opens the checkpoint first. Where that
-    ///   fails, it removes nothing. The open does not tell a checkpoint
-    ///   from another database of the engine: a database that is no
-    ///   checkpoint and opens as one is removed too.
+    /// - **The RocksDB engine** opens `path` as a checkpoint first. Where
+    ///   that fails, it removes nothing. Where it succeeds, it closes the
+    ///   database and removes `path` with `std::fs::remove_dir_all`. The
+    ///   open does not tell a checkpoint from another database of the
+    ///   engine.
     /// - **The LigninDB engine** opens nothing. Its removal is
-    ///   `lignindb::checkpoint::delete`, whose documentation is the
-    ///   contract, and **it removes more than a checkpoint**. Besides a
-    ///   checkpoint that no handle has open, the call can remove:
-    ///   - any other closed database of the engine, which it does not
-    ///     tell from a checkpoint;
+    ///   `lignindb::checkpoint::delete`. **It can remove more than a
+    ///   checkpoint.** What follows is a warning and not the rule: the
+    ///   rule, with what the call looks at before it removes anything
+    ///   and what it leaves, is the documentation of that function.
+    ///   Among what the call can remove:
+    ///   - a closed database of the engine that is no checkpoint, which
+    ///     it does not tell from one, with everything in its directory:
+    ///     a checkpoint that was made inside that directory goes with
+    ///     it, whoever has it open;
     ///   - what a deletion left that was cut short, and a whole database
     ///     beside a file named `MANIFEST.deleting` which something else
     ///     made: that is the name a deletion gives the manifest;
     ///   - an empty directory, and a directory that holds an empty file
     ///     named `LOCK` and nothing else;
     ///   - **a directory whose name ends in `.creating`, in that
-    ///     spelling, whatever else it holds.** The engine takes every
+    ///     spelling, whatever else it holds.** The engine takes a
     ///     directory of such a name for what a creation of a checkpoint
     ///     left, and looks for no database in it. It leaves one that a
     ///     look of `lignindb::checkpoint` refuses: among them, one whose
@@ -80,9 +85,7 @@ impl<E: Engine> GroveDb<E> {
     ///     held stays, with no error. Where nothing has the name `path`,
     ///     such a directory is the error of the call.
     ///
-    ///   The call goes by the name as the directory above lists it, byte
-    ///   for byte. It removes nothing where `path` is a file or a link,
-    ///   and nothing of a database that a handle has open.
+    ///   So a caller gives this call no path that it does not want gone.
     pub fn delete_checkpoint_with_engine<P: AsRef<Path>>(path: P) -> Result<(), Error> {
         let path = path.as_ref();
 
@@ -113,13 +116,13 @@ impl GroveDb {
     /// On the RocksDB engine this function attempts to open the path as
     /// a checkpoint first. If that fails, deletion is refused, to prevent
     /// accidental deletion of arbitrary directories. The open does not
-    /// tell a checkpoint from another database of the engine: a database
-    /// that is no checkpoint and opens as one is removed too.
+    /// tell a checkpoint from another database of the engine, so the
+    /// path of such a database can be removed too.
     ///
-    /// On the LigninDB engine the checkpoint is not opened, and more than
-    /// a checkpoint is removed: [`Self::delete_checkpoint_with_engine`]
-    /// lists what, an empty directory and a directory whose name ends in
-    /// `.creating` among it.
+    /// On the LigninDB engine the checkpoint is not opened, and the call
+    /// can remove more than a checkpoint:
+    /// [`Self::delete_checkpoint_with_engine`] warns of what, an empty
+    /// directory and a directory whose name ends in `.creating` among it.
     pub fn delete_checkpoint<P: AsRef<Path>>(path: P) -> Result<(), Error> {
         Self::delete_checkpoint_with_engine(path)
     }
