@@ -158,9 +158,14 @@ mod open_tests;
 mod tests;
 mod view;
 
-use std::{cell::RefCell, collections::HashMap, fmt};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_element::ElementType;
 use grovedb_storage::Error as StorageError;
 use grovedb_version::version::GroveVersion;
 
@@ -260,6 +265,21 @@ pub struct LigninNodeStore<'db> {
     /// of the node or the report of a write: the caller may still hold the
     /// node as it was first loaded.
     reads: RefCell<HashMap<Vec<u8>, Option<Location>>>,
+    /// The keys of the nodes that the handle loaded with the element of a
+    /// tree as their value. A write that states another value for one of
+    /// them is told to the batch that takes it
+    /// ([`LigninSettled::over_trees`]).
+    trees: RefCell<HashSet<Vec<u8>>>,
+    /// Whether the writer of the handle's Merk began with no node, once
+    /// the first change set of nodes was staged through the handle
+    /// ([`Self::began_empty`]).
+    began: Cell<Option<bool>>,
+    /// Whether the handle took in where an application put nodes of its
+    /// subtree ([`Self::take_locations`]).
+    placed: Cell<bool>,
+    /// The path the handle was opened by, if it was told one
+    /// ([`Self::at_path`]).
+    path: Option<Vec<Vec<u8>>>,
 }
 
 impl fmt::Debug for LigninNodeStore<'_> {
@@ -335,7 +355,21 @@ impl<'db> LigninNodeStore<'db> {
             mode,
             hints: RefCell::new(HashMap::new()),
             reads: RefCell::new(HashMap::new()),
+            trees: RefCell::new(HashSet::new()),
+            began: Cell::new(None),
+            placed: Cell::new(false),
+            path: None,
         }
+    }
+
+    /// The handle, told the path that it was opened by: the segments that
+    /// its prefix was derived from. The store reads nothing by it. A batch
+    /// that takes a write of the handle keeps it for whoever applies the
+    /// batch ([`LigninSettled::path`]), who derives from it the prefix of
+    /// the subtree under a key of this one.
+    pub fn at_path(mut self, path: Vec<Vec<u8>>) -> Self {
+        self.path = Some(path);
+        self
     }
 
     /// A deferred handle of `subtree`: its writes are staged in `batch`
@@ -373,6 +407,7 @@ impl<'db> LigninNodeStore<'db> {
         let mut hints = self.hints.borrow_mut();
         applied.locations(&self.subtree.prefix, |key, location| {
             hints.insert(key.to_vec(), location);
+            self.placed.set(true);
         });
     }
 
@@ -428,9 +463,34 @@ impl<'db> LigninNodeStore<'db> {
             };
             let mut reads = self.reads.borrow_mut();
             reads.entry(key.to_vec()).or_insert(node.location);
+            self.note_tree(key, node.value.as_deref());
             return Ok(Some(node));
         }
         Err(refused("a node changed under every read of it"))
+    }
+
+    /// Whether a change set of nodes that this handle stages is of a Merk
+    /// whose writer began with no node. The first such change set that
+    /// the handle stages decides it, for every later one of the handle
+    /// too, which are of the same writer: it begins a Merk
+    /// ([`LigninChangeSet::begins_a_merk`]). A handle that took in an
+    /// application of the Merk writes on what that application left,
+    /// whatever it began with.
+    fn began_empty(&self, change_set: &LigninChangeSet) -> bool {
+        if self.placed.get() {
+            return false;
+        }
+        let begins = || change_set.begins_a_merk();
+        self.began.get().unwrap_or_else(begins)
+    }
+
+    /// Keeps the key of a node that was loaded with the element of a tree
+    /// as its value.
+    fn note_tree(&self, key: &[u8], value: Option<&[u8]>) {
+        let element = value.and_then(|value| ElementType::from_serialized_value(value).ok());
+        if element.is_some_and(|element| element.is_tree()) {
+            self.trees.borrow_mut().insert(key.to_vec());
+        }
     }
 
     /// Charges a read: the record length of what it found, and a read that
@@ -470,6 +530,7 @@ impl<'db> LigninNodeStore<'db> {
         let value = stored
             .value
             .ok_or(Error::CorruptedState("a node was read with no value"))?;
+        self.note_tree(node.key(), Some(&value));
         node.put_read_value(value);
         Ok(())
     }
@@ -506,6 +567,7 @@ impl<'db> LigninNodeStore<'db> {
         is_commit: bool,
     ) -> CostResult<(), Error> {
         change_set.hint(&self.hints.borrow(), &self.reads.borrow());
+        change_set.note_trees(&self.trees.borrow());
         match self.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused(&format!("{what} through a handle that only reads")))
@@ -513,7 +575,15 @@ impl<'db> LigninNodeStore<'db> {
             }
             Mode::Deferred(Some(batch)) => {
                 let staged = change_set.check_stale();
-                let staged = staged.and_then(|()| batch.stage(change_set));
+                let writes_nodes = change_set.writes_nodes();
+                let began_empty = writes_nodes && self.began_empty(&change_set);
+                let staged = staged
+                    .and_then(|()| batch.stage(change_set, began_empty, self.path.as_deref()));
+                // The first change set of nodes that is staged decides
+                // what the handle's writer began with.
+                if staged.is_ok() && writes_nodes && self.began.get().is_none() {
+                    self.began.set(Some(began_empty));
+                }
                 staged.wrap_with_cost(MODEL.staged_write())
             }
             Mode::Immediate => {

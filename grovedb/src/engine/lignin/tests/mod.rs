@@ -18,9 +18,12 @@
 
 mod append_only;
 mod axes;
+mod batches;
 mod cases;
 mod indexed;
+mod moves;
 mod nested;
+mod over;
 mod queries;
 mod restore;
 mod sync;
@@ -1081,14 +1084,17 @@ fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     let error = (engine.delete_prefix_ranges(&[[1; 32]])).expect_err("a range delete");
     not_supported(&error, matches!(error, StorageError::NotSupported(_)));
 
+    // A subtree that is not entered has no record and no entry to move:
+    // its walk ends at once, and the batch is told of nothing.
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
-    let mut moving = engine.move_subtree([1; 32], [2; 32], &batch, &tx).unwrap();
-    let moved = moving.move_next(|_, _| Ok(()), |_, _| Default::default());
-    assert_eq!(moved.cost, OperationCost::default());
-    let error = moved.unwrap().expect_err("a move");
-    not_supported(&error, matches!(error, Error::NotSupported(_)));
-    assert_eq!(format!("{moving:?}"), "LigninSubtreeMove");
+    {
+        let mut moving = engine.move_subtree([1; 32], [2; 32], &batch, &tx).unwrap();
+        let moved = moving.move_next(|_, _| Ok(()), |_, _| Default::default());
+        assert_eq!(moved.unwrap().expect("a walk of no record"), None);
+        assert!(format!("{moving:?}").starts_with("LigninSubtreeMove"));
+    }
+    assert!(batch.is_empty());
     drop((batch, tx));
 
     // No checkpoint is opened either, so none is deleted: the directory
@@ -1169,6 +1175,23 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
         )))),
         Error::NotSupported(_)
     ));
+    // A write that the transaction refused because a commit took a value
+    // the write keeps is the conflict of the seam, from an operation and
+    // from a commit that made the write.
+    let taken = || {
+        let subtree = lignindb::txn::Subtree::new([7; 32]);
+        TxnError::Batch(lignindb::txn::BatchError::ValueTaken { subtree })
+    };
+    assert_eq!(
+        error::txn_error(taken()).commit_error(),
+        Some(CommitError::Conflict)
+    );
+    assert!(error::write_error(WriteError::Commit(Commit::Refused(taken()))).is_commit_conflict());
+    // A Merk hands the refusal of its store on as its own error, and
+    // GroveDB's error of a Merk keeps the class.
+    let passed = Error::from(grovedb_merk::Error::StorageError(error::txn_error(taken())));
+    assert!(matches!(passed, Error::MerkError(_)));
+    assert!(passed.is_commit_conflict());
     // The outcomes of a commit by their class.
     let class = |error: WriteError| error::write_error(error).commit_error();
     assert_eq!(

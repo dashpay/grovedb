@@ -51,9 +51,10 @@ pub enum Error {
     #[cfg(feature = "rocksdb_storage")]
     RocksDBError(#[from] rocksdb::Error),
     /// A commit ended in an outcome that an engine reports in terms of its
-    /// own. The RocksDB engine never returns this variant: its conflict is a
-    /// [`Error::RocksDBError`] of kind `Busy`, which [`Error::commit_error`]
-    /// classes as [`CommitError::Conflict`].
+    /// own, or a write was refused as a conflict
+    /// ([`CommitError::Conflict`]). The RocksDB engine never returns this
+    /// variant: its conflict is a [`Error::RocksDBError`] of kind `Busy`,
+    /// which [`Error::commit_error`] classes as [`CommitError::Conflict`].
     #[error("commit error: {0}")]
     Commit(CommitError),
     /// A write scope could not do what was asked of it.
@@ -69,14 +70,22 @@ pub enum Error {
 /// How a commit ended when it did not end in plain success, in terms that
 /// name no engine.
 ///
-/// For each outcome the transaction is over. The outcomes differ in what the
-/// database holds afterwards.
+/// For each outcome of a commit the transaction is over. The outcomes
+/// differ in what the database holds afterwards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum CommitError {
     /// Another commit wrote a key after this transaction first wrote it. The
     /// transaction's writes are discarded and the database is unchanged.
     /// This outcome is reported for a conflict and for nothing else.
-    #[error("conflict: another commit wrote a key after this transaction first wrote it")]
+    ///
+    /// An engine can report it from a write as well, before any commit:
+    /// another commit took away a value that the write keeps as its
+    /// transaction read it. That write changed nothing: its transaction is
+    /// open and holds the writes it held before, and a write scope of the
+    /// caller's keeps what the write claimed in it.
+    #[error(
+        "conflict: another commit wrote a key after this transaction first wrote it, or took a value that a write of this transaction keeps"
+    )]
     Conflict,
     /// The commit happened and is visible, but the engine was asked to make
     /// it durable and could not: a crash may still lose it.
@@ -110,7 +119,8 @@ impl Error {
     /// The engine-neutral class of an error that a commit returned, or
     /// `None` when the commit failed for a reason that has no such class.
     /// The transaction is then over and the database unchanged, as for any
-    /// failed commit.
+    /// failed commit. A write that an engine refused as a conflict has the
+    /// class [`CommitError::Conflict`] too.
     ///
     /// The RocksDB engine reports a conflict as a RocksDB error of kind
     /// `Busy`, and this method classes it as [`CommitError::Conflict`]. A
@@ -128,7 +138,8 @@ impl Error {
     }
 
     /// Whether a commit returned this error because another commit wrote a
-    /// key after the transaction first wrote it.
+    /// key after the transaction first wrote it, or a write returned it as
+    /// a conflict ([`CommitError::Conflict`]).
     pub fn is_commit_conflict(&self) -> bool {
         self.commit_error() == Some(CommitError::Conflict)
     }

@@ -33,6 +33,10 @@ pub(super) fn txn_error(error: TxnError) -> Error {
         // The subtree directory takes a Merk no more than 65,535 Merks
         // deep (`node-store.md`, "A Merk too deep for the directory").
         TxnError::Directory(DirectoryError::TooDeep) => not_supported(&error.to_string()),
+        // A commit outside the transaction took a node whose value the
+        // refused write keeps: the conflict of the seam, with the
+        // transaction as it was and open.
+        error if error.is_conflict() => Error::Commit(CommitError::Conflict),
         error => failed(error),
     }
 }

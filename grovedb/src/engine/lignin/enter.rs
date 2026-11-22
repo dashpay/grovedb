@@ -69,13 +69,25 @@
 //!   delete of a tree removes the records of its subtree with its
 //!   element. A handle that names no element, by prefix or beside the
 //!   path of the root, is not held to an element.
+//! - **In a group of more than one batch, the element of a tree whose
+//!   data is one Merk names that Merk in every batch that puts it**
+//!   ([`Owed::apart`]). One batch can write the nodes of the Merk and a
+//!   later one the node of its element, as the two segments of a partial
+//!   batch do. The first then leaves the root of the Merk for the
+//!   element's node to name (`tree-layout.md` T3), and a node that kept
+//!   what it hosts would point at the root the Merk had before, or at
+//!   none. A group in which a batch writes nodes of the Merk after the
+//!   last batch that puts the element's node is refused with
+//!   `Error::NotSupported`: where that batch moves the root, no node
+//!   would name it.
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
 //!   node or removes it, which gives the element or none. Otherwise it is
 //!   read from the transaction, as a node of the Merk that holds the
 //!   element.
 //! - **The directory has all of them where the element names them, or
-//!   none.** A subtree is not dropped when its element goes (GROVE-05),
+//!   none.** A subtree is not dropped when its element is deleted
+//!   (GROVE-05),
 //!   and a conversion does not move the subtrees of its element
 //!   (MERK-09). So an indexed tree can find, under its key, subtrees that
 //!   are entered already. A group that holds a named write for one of its
@@ -86,9 +98,9 @@
 //!
 //! What this does not do:
 //!
-//! - A subtree is not dropped when its element goes (GROVE-05), and its
-//!   entry keeps the tree type and the host it was entered with when its
-//!   element is written again as a tree of another type.
+//! - A subtree is not dropped when its element is deleted (GROVE-05).
+//!   What a group drops when it writes another element over a tree's,
+//!   and enters again, is worked out beside this ([`super::over`]).
 //!
 //! A subtree is entered **if it is absent**
 //! (`lignindb::txn::SubtreeWrite::EnterIfAbsent`): the look here says
@@ -186,7 +198,7 @@ use crate::{
 
 /// The element that `value` is the bytes of, or `None` for bytes of no
 /// element. The bytes of an element are the same on every grove version.
-fn element_of(value: &[u8]) -> Option<Element> {
+pub(super) fn element_of(value: &[u8]) -> Option<Element> {
     Element::deserialize(value, GroveVersion::latest()).ok()
 }
 
@@ -230,6 +242,14 @@ fn same_element(one: &LigninHost, other: &LigninHost) -> bool {
     (one.subtree, &one.key, one.hosted.first()) == (other.subtree, &other.key, other.hosted.first())
 }
 
+fn unnamed_root(host: &LigninHost) -> Error {
+    let key = key_of(host);
+    not_supported(&format!(
+        "a group of batches that writes nodes of the tree under the key {key} in a batch after \
+         the last one that writes the tree's element"
+    ))
+}
+
 fn named_twice() -> Error {
     not_supported(
         "writes into one subtree through handles that name two elements for it, or one element \
@@ -238,7 +258,7 @@ fn named_twice() -> Error {
 }
 
 /// What the parts make of an element.
-enum Host<'a> {
+pub(super) enum Host<'a> {
     /// The last part that states a value for it states this one.
     Stated(&'a [u8]),
     /// The last part that writes it removes it.
@@ -248,7 +268,7 @@ enum Host<'a> {
     Stored,
 }
 
-fn host_of<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Host<'a> {
+pub(super) fn host_of<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Host<'a> {
     for part in parts.iter().rev() {
         match part.node(&host.subtree, &host.key) {
             Some(LigninOutcome::Put(Some(value))) => return Host::Stated(value),
@@ -296,7 +316,24 @@ pub(super) fn hosting(element: &Element, own: [u8; 32]) -> Result<Hosting, Error
     ))
 }
 
-fn entered(view: LigninView<'_>, prefix: [u8; 32]) -> Result<Option<LigninEntry>, Error> {
+/// The subtrees that the element with the bytes `value` hosts, by
+/// position, where `own` is the subtree of its own path: none for what is
+/// no tree.
+pub(super) fn hosted_by(value: &[u8], own: [u8; 32]) -> Result<Vec<[u8; 32]>, Error> {
+    let Some(element) = element_of(value) else {
+        return Ok(Vec::new());
+    };
+    Ok(match hosting(&element, own)? {
+        Hosting::Nothing | Hosting::One(None) => Vec::new(),
+        Hosting::One(Some(_)) => vec![own],
+        Hosting::Many(merks) => merks.into_iter().map(|(prefix, _)| prefix).collect(),
+    })
+}
+
+pub(super) fn entered(
+    view: LigninView<'_>,
+    prefix: [u8; 32],
+) -> Result<Option<LigninEntry>, Error> {
     let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
     handle.entry().map_err(merk_error)
 }
@@ -336,6 +373,14 @@ pub(super) struct Owed {
     /// Each indexed tree that the group writes a Merk of, with every Merk
     /// it hosts, by position.
     pub(super) hosts: Vec<LigninHost>,
+    /// In a group of more than one batch, each tree whose data is one
+    /// Merk that the group has a named write for, with that Merk. One batch can
+    /// write the nodes of the Merk and a later one the node of its
+    /// element, as the two segments of a partial batch do: the first
+    /// leaves the root of the Merk for the element's node to name
+    /// (`tree-layout.md` T3), and the batch that writes that node has to
+    /// name it.
+    pub(super) apart: Vec<LigninHost>,
     /// The subtrees whose entry the look read and, at its last read of
     /// each, found entered: nothing is stated for them.
     pub(super) found: BTreeSet<[u8; 32]>,
@@ -502,6 +547,23 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                 if entered(prefix)?.is_none() {
                     let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
                     owed.enters.push((subtree.clone(), bytes));
+                }
+                // A tree that keeps its data flat has no Merk to name.
+                let merk = tree_type.is_some_and(|tree| !tree.uses_non_merk_data_storage());
+                if merk && parts.len() > 1 {
+                    // The last batch that writes nodes of the Merk leaves
+                    // its root for the element's node to name, in that
+                    // batch or in a later one.
+                    let puts = |part: &LigninSettled| {
+                        let node = part.node(&host.subtree, &host.key);
+                        matches!(node, Some(LigninOutcome::Put(_)))
+                    };
+                    let named = parts.iter().rposition(puts);
+                    let written = parts.iter().rposition(|part| part.writes_merk(&own));
+                    if written.is_some_and(|at| named.is_none_or(|named| named < at)) {
+                        return Err(unnamed_root(host));
+                    }
+                    owed.apart.push(host.clone());
                 }
             }
             Hosting::Nothing => {

@@ -224,10 +224,13 @@ impl Error {
     /// is then over and the database unchanged, as for any failed commit.
     ///
     /// See [`grovedb_storage::Error::commit_error`] for how each engine's
-    /// own errors are classed.
+    /// own errors are classed. A storage error is classed where this error
+    /// holds it as it is, and where it holds it as the error of a Merk,
+    /// which is how a write through a Merk hands it on.
     pub fn commit_error(&self) -> Option<grovedb_storage::error::CommitError> {
         match self {
-            Self::StorageError(error) => error.commit_error(),
+            Self::StorageError(error)
+            | Self::MerkError(grovedb_merk::Error::StorageError(error)) => error.commit_error(),
             _ => None,
         }
     }
@@ -235,7 +238,9 @@ impl Error {
     /// Whether a commit returned this error because another commit wrote a
     /// key after the transaction first wrote it. Any engine reports that
     /// case so: on the RocksDB engine it holds for the `Busy` error of a
-    /// commit.
+    /// commit. It also holds for a write that an engine refused as the same
+    /// conflict, with the transaction open and as it was
+    /// (`grovedb_storage::error::CommitError::Conflict`).
     pub fn is_commit_conflict(&self) -> bool {
         self.commit_error() == Some(grovedb_storage::error::CommitError::Conflict)
     }

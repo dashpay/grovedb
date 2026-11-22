@@ -274,7 +274,7 @@ use grovedb_merk::{
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
 #[cfg(feature = "engine_generic")]
-use grovedb_path::SubtreePath;
+use grovedb_path::{SubtreePath, SubtreePathBuilder};
 #[cfg(feature = "engine_generic")]
 use grovedb_version::version::GroveVersion;
 #[cfg(feature = "engine_generic")]
@@ -2055,12 +2055,86 @@ impl<E: Engine> GroveDb<E> {
         // What the elements of this Merk contribute to its aggregate, added
         // up as the walk decodes them. Compared with the aggregate the Merk
         // stores once the walk is done.
-        //
-        // This function calls itself once per tree level and its frame is
-        // large, so the aggregate checks live in helpers: what they would
-        // keep on this frame would be paid again at every level.
         let mut contributed = ElementsAggregate::default();
 
+        // This function calls itself once per tree level, so what it keeps
+        // on its frame is paid again at every level. The walk of the
+        // elements, whose frame is large, is a function of its own: it
+        // returns at each tree whose Merk is walked next, and is called
+        // again to go on from the element after that tree.
+        while let Some((below, below_path)) = self.verify_elements_up_to_a_tree(
+            &merk,
+            &mut element_iterator,
+            &mut contributed,
+            path,
+            batch,
+            transaction,
+            verify_references,
+            allow_cache,
+            grove_version,
+            &mut issues,
+        )? {
+            merge_child_issues(
+                &mut issues,
+                self.verify_merk_and_submerks_in_transaction(
+                    below,
+                    &SubtreePath::from(&below_path),
+                    batch,
+                    transaction,
+                    verify_references,
+                    true,
+                    grove_version,
+                )?,
+            );
+        }
+        element_iterator.status().map_err(Error::StorageError)?;
+        drop(element_iterator);
+
+        // The aggregate this Merk stores (its root node's own value plus what
+        // its links record for the subtrees below) must be the total its
+        // elements contribute. The check in the parent's walk only compares
+        // two stored values, the parent element's recorded aggregate and this
+        // same stored aggregate, so node aggregates that drifted from the
+        // elements pass it. A Merk without an aggregate contributes and
+        // stores nothing, so it compares equal here.
+        //
+        // An indexed tree's primary is covered because it is walked through
+        // this function. Its secondaries are not walked through it; each is
+        // compared with its own rows by `verify_indexed_axis_content`, so
+        // nothing is added up twice.
+        //
+        // Reported at this Merk's own path. An issue already recorded at this
+        // path is kept, and the caller merges this map the same way, so a
+        // hash mismatch found for this tree is never replaced by this one.
+        record_elements_aggregate_issue(&merk, &contributed, path.to_vec(), &mut issues);
+        Ok(issues)
+    }
+
+    /// Verifies the elements of `merk` that `element_iterator` comes to,
+    /// up to and with the first tree whose Merk is walked as this one is:
+    /// returns that Merk with its path, or `None` once the elements are at
+    /// an end. Called again, it goes on from the element after that tree.
+    ///
+    /// It is the walk of
+    /// [`verify_merk_and_submerks_in_transaction`](Self::verify_merk_and_submerks_in_transaction),
+    /// which calls itself for the Merk this returns. This function has
+    /// returned by then, so its frame is on the stack once, whatever the
+    /// depth of the grove.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn verify_elements_up_to_a_tree<'a, 'db: 'a, 'p, B: AsRef<[u8]>, S: NodeStore<'a>>(
+        &'db self,
+        merk: &Merk<S>,
+        element_iterator: &mut KVIterator<'_, S::Cursor>,
+        contributed: &mut ElementsAggregate,
+        path: &SubtreePath<'p, B>,
+        batch: Option<&'a E::Batch>,
+        transaction: &'a Transaction<'db, E>,
+        verify_references: bool,
+        allow_cache: bool,
+        grove_version: &GroveVersion,
+        issues: &mut VerificationIssues,
+    ) -> Result<Option<(Merk<E::Subtree<'a>>, SubtreePathBuilder<'p, B>)>, Error> {
         while let Some((key, element_value)) = element_iterator.next_kv().unwrap() {
             // Look through NonCounted: verification dispatches on inner type.
             // The on-disk value bytes are still the wrapper bytes, so the
@@ -2068,7 +2142,7 @@ impl<E: Engine> GroveDb<E> {
             let element = decode_element_adding_its_contribution(
                 &element_value,
                 merk.tree_type,
-                &mut contributed,
+                contributed,
                 grove_version,
             )?
             .into_underlying();
@@ -2141,7 +2215,7 @@ impl<E: Engine> GroveDb<E> {
                         primary_root_hash,
                         secondary_root_hash,
                         new_path.to_vec(),
-                        &mut issues,
+                        issues,
                     );
 
                     // Per-entry content walk (see
@@ -2156,22 +2230,11 @@ impl<E: Engine> GroveDb<E> {
                         grovedb_element::indexed::IndexAxis::Count,
                         "__cidx_",
                         &new_path.to_vec(),
-                        &mut issues,
+                        issues,
                         grove_version,
                     )?;
 
-                    merge_child_issues(
-                        &mut issues,
-                        self.verify_merk_and_submerks_in_transaction(
-                            primary_merk,
-                            &new_path_ref,
-                            batch,
-                            transaction,
-                            verify_references,
-                            true,
-                            grove_version,
-                        )?,
-                    );
+                    return Ok(Some((primary_merk, new_path)));
                 }
                 Element::SumTree(..)
                 | Element::Tree(..)
@@ -2223,17 +2286,16 @@ impl<E: Engine> GroveDb<E> {
                         // below, which all start from that hash or from the
                         // aggregate, can run. The tree is reported at its own
                         // path instead, and what it holds is still walked.
-                        self.verify_tree_with_unreadable_aggregate(
+                        let walked = Self::tree_with_unreadable_aggregate(
                             &element,
                             inner_merk,
                             &new_path_ref,
-                            batch,
-                            transaction,
-                            verify_references,
-                            grove_version,
-                            &mut issues,
-                        )?;
-                        continue;
+                            issues,
+                        );
+                        match walked {
+                            Some(inner_merk) => return Ok(Some((inner_merk, new_path))),
+                            None => continue,
+                        }
                     };
 
                     // Non-Merk tree types use their own root hash as the
@@ -2387,7 +2449,7 @@ impl<E: Engine> GroveDb<E> {
                             &inner_merk,
                             root_hash,
                             new_path.to_vec(),
-                            &mut issues,
+                            issues,
                         );
                     }
 
@@ -2397,18 +2459,7 @@ impl<E: Engine> GroveDb<E> {
                     // verify_merk_and_submerks would try to deserialize
                     // those entries as Elements and fail.
                     if !element.uses_non_merk_data_storage() {
-                        merge_child_issues(
-                            &mut issues,
-                            self.verify_merk_and_submerks_in_transaction(
-                                inner_merk,
-                                &new_path_ref,
-                                batch,
-                                transaction,
-                                verify_references,
-                                true,
-                                grove_version,
-                            )?,
-                        );
+                        return Ok(Some((inner_merk, new_path)));
                     }
                 }
                 Element::Item(..) | Element::SumItem(..) | Element::ItemWithSumItem(..) => {
@@ -2469,7 +2520,7 @@ impl<E: Engine> GroveDb<E> {
                             allow_cache,
                             transaction,
                             grove_version,
-                            &mut issues,
+                            issues,
                         )?;
                     }
                 }
@@ -2564,7 +2615,7 @@ impl<E: Engine> GroveDb<E> {
                             allow_cache,
                             transaction,
                             grove_version,
-                            &mut issues,
+                            issues,
                         )?;
                         if let Element::BidirectionalReference(ref reference, _) = element {
                             self.verify_bidirectional_reference_is_registered(
@@ -2575,7 +2626,7 @@ impl<E: Engine> GroveDb<E> {
                                 transaction,
                                 batch,
                                 grove_version,
-                                &mut issues,
+                                issues,
                             )?;
                         }
                     }
@@ -2647,7 +2698,7 @@ impl<E: Engine> GroveDb<E> {
                         primary_root_hash,
                         secondary_root_hash,
                         new_path.to_vec(),
-                        &mut issues,
+                        issues,
                     );
 
                     // Per-entry content walk over the sum axis (see
@@ -2658,7 +2709,7 @@ impl<E: Engine> GroveDb<E> {
                         sum_axis,
                         "__psit_",
                         &new_path.to_vec(),
-                        &mut issues,
+                        issues,
                         grove_version,
                     )?;
 
@@ -2668,18 +2719,7 @@ impl<E: Engine> GroveDb<E> {
                     // secondary element stored at the right key is the one
                     // canonically derived from the primary element.
 
-                    merge_child_issues(
-                        &mut issues,
-                        self.verify_merk_and_submerks_in_transaction(
-                            primary_merk,
-                            &new_path_ref,
-                            batch,
-                            transaction,
-                            verify_references,
-                            true,
-                            grove_version,
-                        )?,
-                    );
+                    return Ok(Some((primary_merk, new_path)));
                 }
                 // ProvableCountProvableSumIndexedTree integrity: open
                 // each axis's secondary Merk, build the canonical
@@ -2759,7 +2799,7 @@ impl<E: Engine> GroveDb<E> {
                             axis,
                             &format!("__pcpsit_{}_", axis_label(axis)),
                             &new_path.to_vec(),
-                            &mut issues,
+                            issues,
                             grove_version,
                         )?;
                     }
@@ -2789,71 +2829,35 @@ impl<E: Engine> GroveDb<E> {
                         primary_root_hash,
                         axes_digest_value,
                         new_path.to_vec(),
-                        &mut issues,
+                        issues,
                     );
 
-                    merge_child_issues(
-                        &mut issues,
-                        self.verify_merk_and_submerks_in_transaction(
-                            primary_merk,
-                            &new_path_ref,
-                            batch,
-                            transaction,
-                            verify_references,
-                            true,
-                            grove_version,
-                        )?,
-                    );
+                    return Ok(Some((primary_merk, new_path)));
                 }
                 Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_) => {
                     unreachable!("unwrapped above")
                 }
             }
         }
-        element_iterator.status().map_err(Error::StorageError)?;
-        drop(element_iterator);
-
-        // The aggregate this Merk stores (its root node's own value plus what
-        // its links record for the subtrees below) must be the total its
-        // elements contribute. The check in the parent's walk only compares
-        // two stored values, the parent element's recorded aggregate and this
-        // same stored aggregate, so node aggregates that drifted from the
-        // elements pass it. A Merk without an aggregate contributes and
-        // stores nothing, so it compares equal here.
-        //
-        // An indexed tree's primary is covered because it is walked through
-        // this function. Its secondaries are not walked through it; each is
-        // compared with its own rows by `verify_indexed_axis_content`, so
-        // nothing is added up twice.
-        //
-        // Reported at this Merk's own path. An issue already recorded at this
-        // path is kept, and the caller merges this map the same way, so a
-        // hash mismatch found for this tree is never replaced by this one.
-        record_elements_aggregate_issue(&merk, &contributed, path.to_vec(), &mut issues);
-        Ok(issues)
+        Ok(None)
     }
 
     /// Report a tree whose Merk has no root hash to compute because the
     /// aggregate that hash commits to cannot be read or is of another kind
-    /// (see [`root_hash_if_computable`]), and verify what it holds.
+    /// (see [`root_hash_if_computable`]), and say whether what it holds is
+    /// walked: gives back the Merk that is.
     ///
     /// A tree backed by a Merk is walked like any other: its walk records the
     /// unusable aggregate at the tree's path when it is done. A non-Merk
     /// data tree is not walked (its data is not elements); its inner Merk is
     /// empty by design and contributes nothing, so it is reported against
     /// that.
-    #[allow(clippy::too_many_arguments)]
-    fn verify_tree_with_unreadable_aggregate<'a, 'db: 'a, B: AsRef<[u8]>, S: NodeStore<'a>>(
-        &'db self,
+    fn tree_with_unreadable_aggregate<'a, B: AsRef<[u8]>, S: NodeStore<'a>>(
         element: &Element,
         inner_merk: Merk<S>,
         path: &SubtreePath<B>,
-        batch: Option<&'a E::Batch>,
-        transaction: &'a Transaction<'db, E>,
-        verify_references: bool,
-        grove_version: &GroveVersion,
         issues: &mut VerificationIssues,
-    ) -> Result<(), Error> {
+    ) -> Option<Merk<S>> {
         if element.uses_non_merk_data_storage() {
             record_elements_aggregate_issue(
                 &inner_merk,
@@ -2861,21 +2865,10 @@ impl<E: Engine> GroveDb<E> {
                 path.to_vec(),
                 issues,
             );
+            None
         } else {
-            merge_child_issues(
-                issues,
-                self.verify_merk_and_submerks_in_transaction(
-                    inner_merk,
-                    path,
-                    batch,
-                    transaction,
-                    verify_references,
-                    true,
-                    grove_version,
-                )?,
-            );
+            Some(inner_merk)
         }
-        Ok(())
     }
 
     /// Run the PrivateDocumentStore entry-size integrity walk, returning a

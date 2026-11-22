@@ -11,7 +11,6 @@ use std::{
 };
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
     OperationCost,
 };
@@ -26,7 +25,9 @@ use grovedb_storage::{
     Error, RawIterator, Storage, StorageBatch, StorageContext,
 };
 
-use super::{Engine, EngineBatch, SubtreeCursor, SubtreeHandle, SubtreeMove, WriteGroup};
+use super::{
+    move_record, Engine, EngineBatch, SubtreeCursor, SubtreeHandle, SubtreeMove, WriteGroup,
+};
 
 /// The RocksDB engine. It is the engine of a `GroveDb` that names no other.
 pub struct RocksDbEngine {
@@ -130,38 +131,6 @@ impl Drop for RocksDbWriteScope<'_> {
     fn drop(&mut self) {
         self.scope_of.store(NO_SCOPE, Ordering::Release);
     }
-}
-
-/// Moves the record `cursor` is at, if any, and steps past it: shows it to
-/// `inspect`, hands it to `land` and then to `clear`, and returns what
-/// `inspect` found. `None` once the records run out. Fails rather than end
-/// early when the cursor stopped on an error, which `valid` reports like the
-/// end of its records: a move must not leave a partial copy behind.
-pub(super) fn move_record<I: RawIterator, T>(
-    cursor: &mut I,
-    inspect: impl FnOnce(&[u8], &[u8]) -> Result<T, crate::Error>,
-    land: impl FnOnce(&[u8], &[u8]) -> CostResult<(), crate::Error>,
-    clear: impl FnOnce(&[u8]) -> CostResult<(), crate::Error>,
-) -> CostResult<Option<T>, crate::Error> {
-    let mut cost = OperationCost::default();
-    if !cursor.valid().unwrap_add_cost(&mut cost) {
-        cost_return_on_error_no_add!(cost, cursor.status().map_err(crate::Error::StorageError));
-        return Ok(None).wrap_with_cost(cost);
-    }
-    let (Some(key), Some(value)) = (
-        cursor.key().unwrap_add_cost(&mut cost),
-        cursor.value().unwrap_add_cost(&mut cost),
-    ) else {
-        return Err(crate::Error::CorruptedData(
-            "a raw iterator at a record returned no key or value".to_owned(),
-        ))
-        .wrap_with_cost(cost);
-    };
-    let found = cost_return_on_error_no_add!(cost, inspect(key, value));
-    cost_return_on_error!(&mut cost, land(key, value));
-    cost_return_on_error!(&mut cost, clear(key));
-    cursor.next().unwrap_add_cost(&mut cost);
-    Ok(Some(found)).wrap_with_cost(cost)
 }
 
 /// A subtree that the RocksDB engine moves by copying: each record is put
