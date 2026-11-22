@@ -11,6 +11,7 @@ mod enters;
 mod errors;
 mod handles;
 mod hashes;
+mod histories;
 mod moves;
 mod parked;
 pub(crate) mod random;
@@ -160,14 +161,19 @@ impl<'s> World<'s> {
     /// with the first-write version `first_write`.
     fn note(&self, tx: &Tx<'s>, batch: &OwnedBatch, first_write: u64) {
         let mut model = tx.model.borrow_mut();
-        // Which subtree is below which before the batch: its drops come
-        // before its enters.
+        // Which subtree is below which before the batch, and which Merk
+        // has a node: its drops and clears come before its enters and its
+        // change sets.
         let hosts = model.hosts(&self.model.hosts);
+        let records = model.records(&self.model.records);
+        let writes = model.writes.len();
+        model.roots.retain(|(after, ..)| *after <= writes);
+        let said = model.said();
         for mut write in batch.writes() {
             if let Write::Leave(left) = &mut write {
                 // A drop names one subtree: what is below it goes too, and
                 // what the transaction had written there is covered.
-                left.below = model::below(&hosts, left.subtree);
+                left.lay(&hosts, &records, said.0.get(&left.subtree).copied());
                 let written = |subtree: &Subtree| {
                     let units = Column::ALL.map(|column| Unit::new(column, *subtree));
                     (model.writes.iter())
@@ -184,6 +190,13 @@ impl<'s> World<'s> {
             }
             model.writes.push((write, first_write, false));
         }
+        // What the change sets of the batch state of the roots.
+        let writes = model.writes.len();
+        let stated = batch.merks.iter().filter_map(|merk| {
+            let root = merk.root.as_ref()?;
+            Some((writes, merk.subtree, root.is_some()))
+        });
+        model.roots.extend(stated);
     }
 
     /// Applies one change of one Merk.
@@ -223,8 +236,14 @@ impl<'s> World<'s> {
     /// Commits `tx` in the store and in the model, and tells the models of
     /// `others`, which stay open.
     pub(crate) fn commit(&mut self, tx: Tx<'s>, others: &[&Tx<'s>]) -> Outcome {
+        self.commit_of(&tx, others)
+    }
+
+    /// [`Self::commit`], for a transaction that its holder keeps: it has
+    /// ended, and the model of it holds no write.
+    pub(crate) fn commit_of(&mut self, tx: &Tx<'s>, others: &[&Tx<'s>]) -> Outcome {
         let outcome = self.db.commit(self.versions, &tx.txn).expect("a commit");
-        let model = tx.model.borrow();
+        let model = tx.model.take();
         let expected = match (model.writes.is_empty(), model.conflicts()) {
             (true, _) => Outcome::Empty,
             (false, true) => Outcome::Conflict,
@@ -232,7 +251,17 @@ impl<'s> World<'s> {
                 let writes: Vec<Write> = (model.writes.iter())
                     .map(|(write, ..)| write.clone())
                     .collect();
+                // The subtrees as the directory has them stored: those
+                // that this commit takes out stay in it until they are
+                // reclaimed.
+                let mut stored = self.model.hosts.clone();
                 let commit = self.model.commit(&writes);
+                stored.extend(
+                    self.model
+                        .hosts
+                        .iter()
+                        .map(|(below, above)| (*below, *above)),
+                );
                 for other in others {
                     // What the other saw of the subtrees at its last look,
                     // which was before this commit.
@@ -241,8 +270,9 @@ impl<'s> World<'s> {
                     let mut other = other.model.borrow_mut();
                     other.look(&saw.unwrap_or_default());
                     other.foreign(commit, &writes);
-                    // Its moves are made again over the commit.
-                    other.lay(&self.model.hosts);
+                    other.foreign_below(commit, &writes, &stored);
+                    // Its writes are made again over the commit.
+                    other.lay(&self.model.hosts, &self.model.records);
                 }
                 Outcome::Committed(version(commit))
             }
@@ -321,9 +351,18 @@ impl<'s> World<'s> {
     /// key (RD3, RD5), the committed read of each key (RD10), and a cursor
     /// over each unit of flat records, in both directions (RD6).
     pub(crate) fn check(&self, tx: &Tx<'s>) {
+        for unit in self.units(tx) {
+            self.check_unit(tx, unit);
+        }
+        let met = tx.model.borrow().met();
+        assert_eq!(tx.txn.stats().overlapped, met, "the overlap set");
+    }
+
+    /// [`Self::check`], of the records of `unit` alone.
+    pub(crate) fn check_unit(&self, tx: &Tx<'s>, unit: Unit) {
         let committed = &self.model.records;
         let model = tx.model.borrow();
-        for unit in self.units(tx) {
+        {
             let view = model.view(committed, unit);
             let mut flat = true;
             for key in self.keys(tx, unit) {
@@ -388,7 +427,6 @@ impl<'s> World<'s> {
                 assert_eq!(back, keys, "{unit}, backwards");
             }
         }
-        assert_eq!(tx.txn.stats().overlapped, model.met(), "the overlap set");
     }
 
     /// Checks the committed state against the model: every record as a

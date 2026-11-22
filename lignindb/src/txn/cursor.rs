@@ -516,6 +516,10 @@ pub struct Cursor<'t, 's, C = FlatSide<'s>> {
     /// under fails, as a read of the directory does: for a test.
     #[cfg(test)]
     refuse_place: bool,
+    /// The next read of a node of the cursor's own version fails, as a
+    /// read of a page does: for a test.
+    #[cfg(test)]
+    refuse_node: bool,
 }
 
 impl<'t, 's> Cursor<'t, 's> {
@@ -729,6 +733,10 @@ impl<'t, 's> MerkCursor<'t, 's> {
         };
         let found = &mut told.found;
         let shown = self.placed(&guard, side).and_then(|reads| match reads {
+            #[cfg(test)]
+            true if std::mem::take(&mut self.refuse_node) => {
+                Err(TxnError::Damaged("a read of a node that a test refuses"))
+            }
             true => self.side.node(&guard, &key, children, |view| {
                 *found = view.is_some();
                 read(view)
@@ -918,7 +926,16 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             way: Way::Forward,
             #[cfg(test)]
             refuse_place: false,
+            #[cfg(test)]
+            refuse_node: false,
         }
+    }
+
+    /// Has the next read of a node of the cursor's own version fail, as a
+    /// read of a page does.
+    #[cfg(test)]
+    pub(crate) fn refuse_node(&mut self) {
+        self.refuse_node = true;
     }
 
     /// Has the next change of the prefix that the committed side is read

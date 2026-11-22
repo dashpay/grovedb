@@ -176,9 +176,9 @@ pub enum Write {
 /// when it is stated, and again whenever the transaction's writes are
 /// applied over a commit (WT7): `pairs`, `gone` and `stopped` say that
 /// ([`Self::lay`]), for a layout that is made. Whether a layout is made
-/// is the engine's to say, but for the one case of `stopped`: the model
+/// is the engine's to say, but for the two cases of `stopped`: the model
 /// does not ask whether a moved subtree is there still, or whether a
-/// prefix that a subtree goes to is free.
+/// Merk with no host is entered under a prefix that a subtree goes to.
 #[derive(Debug, Clone, Default)]
 pub struct Moved {
     /// Every prefix the statements name, on either side.
@@ -200,9 +200,13 @@ pub struct Moved {
     /// The subtrees below the moved ones that no stated pair names, and
     /// that leave with the move.
     pub gone: Vec<Subtree>,
-    /// Whether a stated pair names a subtree below one that leaves: such
-    /// a move is not made (MV2), and the model says nothing of what the
-    /// transaction then reads. It is the one such case the model tells.
+    /// Whether a stated pair names a subtree below one that leaves, or a
+    /// hosted subtree is entered under the second prefix of a stated pair
+    /// and the move does not take it from there, to another prefix or
+    /// out: such a move is not made (MV2),
+    /// and the model says nothing of what the transaction then reads
+    /// where the move decides. They are the two such cases the model
+    /// tells.
     pub stopped: bool,
 }
 
@@ -254,7 +258,12 @@ impl Moved {
             .filter(|under| !named(under))
             .collect();
         let leaves = |old: &Subtree| hosts.get(old).is_some_and(|host| gone.contains(host));
-        self.stopped = pairs.iter().any(|(old, _)| leaves(old));
+        // A prefix is free for the move where it takes the subtree that
+        // is under it away, to another prefix or out.
+        let held = |new: &Subtree| hosts.contains_key(new) && !named(new) && !gone.contains(new);
+        let stated = &self.stated;
+        self.stopped =
+            pairs.iter().any(|(old, _)| leaves(old)) || stated.iter().any(|(_, new)| held(new));
         self.pairs = pairs;
         self.gone = gone;
     }
@@ -321,10 +330,9 @@ pub struct Left {
     /// Every subtree below it, which goes with it: the model works them
     /// out from the hosts of the subtrees that were entered, where the
     /// write is stated, and again where the transaction's writes are
-    /// applied over a commit ([`TxnModel::lay`]). For the model they go
-    /// with a clear whether or not the cleared Merk has a node. The
-    /// engine's clear of a Merk with no node leaves the subtrees below it
-    /// entered: the model does not tell that case.
+    /// applied over a commit ([`TxnModel::lay`]). A clear of a Merk with
+    /// no node takes none: it leaves the subtrees below it entered
+    /// ([`Self::lay`]).
     pub below: Vec<Subtree>,
     /// Those of them that the transaction had a write under when it
     /// stated this one ([`Write::indexed`]). They stay as they were
@@ -339,6 +347,27 @@ pub struct Left {
 }
 
 impl Left {
+    /// Works out what the write takes below its subtree, where the
+    /// subtrees hang as `hosts` has them and the records are `records`:
+    /// every subtree below it, and none for a clear of a Merk that has no
+    /// node. Whether the Merk has one is what the earlier writes of the
+    /// transaction said of its root (`said`), and where they said nothing
+    /// what `records` have: the two are one for a transaction whose
+    /// writes are laid out, and the first is what a transaction that a
+    /// commit has met answers by (WT7b).
+    pub fn lay(&mut self, hosts: &Hosts, records: &Records, said: Option<bool>) {
+        let data = Unit::data(self.subtree);
+        let of_merk = records.range((data, Vec::new())..);
+        let mut nodes = of_merk
+            .take_while(|((unit, _), _)| *unit == data)
+            .filter(|(_, value)| matches!(value, Val::Node(_)));
+        let rooted = said.unwrap_or_else(|| nodes.next().is_some());
+        self.below = match self.cleared && !rooted {
+            true => Vec::new(),
+            false => below(hosts, self.subtree),
+        };
+    }
+
     /// Whether `unit` is one the write takes of its own subtree: every
     /// column of a drop, and the data of a clear.
     fn own(&self, unit: Unit) -> bool {
@@ -348,9 +377,12 @@ impl Left {
         }
     }
 
-    /// Whether the write deletes every key of `unit`.
+    /// Whether the write deletes every key of `unit`: a unit of its own,
+    /// one of a subtree below, and one of a subtree that it cut when it
+    /// was stated, wherever that one hangs since.
     fn takes(&self, unit: Unit) -> bool {
-        self.own(unit) || self.below.contains(&unit.subtree)
+        let below = |subtrees: &[Subtree]| subtrees.contains(&unit.subtree);
+        self.own(unit) || below(&self.below) || below(&self.cut)
     }
 
     /// Whether the write meets every write of `unit` (CF5): it deletes
@@ -532,6 +564,11 @@ fn apply(records: &mut Records, write: &Write) {
 #[derive(Debug, Clone, Default)]
 pub struct TxnModel {
     pub writes: Vec<(Write, u64, bool)>,
+    /// What the change sets of the transaction stated of the roots of
+    /// their Merks: after how many writes, of which Merk, and whether it
+    /// then has a node. One that is stated after more writes than the
+    /// transaction has is of writes that were taken back.
+    pub roots: Vec<(usize, Subtree, bool)>,
     /// Of the subtrees whose place among the Merks the transaction keeps
     /// ([`Write::watched`]), those that the committed state had below a
     /// Merk where the transaction last looked at it ([`Self::look`]).
@@ -606,6 +643,53 @@ impl TxnModel {
             .collect()
     }
 
+    /// Every record the transaction reads: the committed ones with its
+    /// writes applied.
+    pub fn records(&self, committed: &Records) -> Records {
+        let mut records = committed.clone();
+        for (write, ..) in &self.writes {
+            apply(&mut records, write);
+        }
+        records
+    }
+
+    /// Whether a move of the transaction decides what the transaction
+    /// reads under `subtree`, where the committed subtrees hang as
+    /// `committed` has them (`transactions.md` MV7): a move names the
+    /// subtree or took it out when it was stated; the committed state has
+    /// it below a prefix that a move names; or the last enter of it that
+    /// the transaction made states a host in a subtree of which one of
+    /// the three holds.
+    pub fn decided(&self, committed: &Hosts, subtree: Subtree) -> bool {
+        let moves = self.writes.iter().filter_map(|(write, ..)| match write {
+            Write::Move(moved) => Some(moved),
+            _ => None,
+        });
+        let moves: Vec<&Moved> = moves.collect();
+        let (mut at, mut asked) = (subtree, vec![subtree]);
+        loop {
+            let under = |named: &Subtree| below(committed, *named).contains(&at);
+            if (moves.iter()).any(|moved| moved.covers(at) || moved.named.iter().any(under)) {
+                return true;
+            }
+            let entered = self
+                .writes
+                .iter()
+                .rev()
+                .find_map(|(write, ..)| match write {
+                    Write::Enter(entered, host) if *entered == at => Some(*host),
+                    _ => None,
+                });
+            match entered.flatten() {
+                Some(host) if !asked.contains(&host) => {
+                    asked.push(host);
+                    at = host;
+                }
+                _ => return false,
+            }
+        }
+    }
+
     /// Which subtree is below which in the transaction's view: what is
     /// committed, with what its writes that are left entered and took out.
     pub fn hosts(&self, committed: &Hosts) -> Hosts {
@@ -666,6 +750,38 @@ impl TxnModel {
         }
     }
 
+    /// What a commit below a subtree that the transaction dropped or
+    /// cleared meets (CF5), which the engine asks of the committed
+    /// directory: a commit that wrote under a subtree, or dropped, cleared
+    /// or moved one, which the committed state has below a subtree that
+    /// the transaction dropped or cleared, meets that drop or clear.
+    /// `stored` has the committed subtrees as they hang, those that the
+    /// commit took out among them. The rule does not ask what the drop or
+    /// the clear takes: a subtree that the transaction had taken out
+    /// before, and one below a Merk that it cleared while the Merk had no
+    /// node, are below it for the rule.
+    pub fn foreign_below(&mut self, version: u64, writes: &[Write], stored: &Hosts) {
+        let wrote = writes.iter().flat_map(|write| match write {
+            Write::Enter(..) => Vec::new(),
+            Write::Move(moved) => moved.covered().collect(),
+            Write::Leave(left) => {
+                let own = std::iter::once(left.subtree);
+                own.chain(left.cut.iter().copied()).collect()
+            }
+            other => vec![other.unit().subtree],
+        });
+        let wrote: Vec<Subtree> = wrote.collect();
+        for (own, first_write, met) in &mut self.writes {
+            let Write::Leave(left) = own else {
+                continue;
+            };
+            let under = below(stored, left.subtree);
+            if *first_write < version && wrote.iter().any(|subtree| under.contains(subtree)) {
+                *met = true;
+            }
+        }
+    }
+
     /// The transaction last looked at the committed state where its
     /// subtrees hung as `committed` has them: of the subtrees whose place
     /// it keeps, it saw those there that hang below a Merk. At which
@@ -681,30 +797,75 @@ impl TxnModel {
 
     /// Works out again what each drop, clear and move of the transaction
     /// takes, with its writes applied in their order over the committed
-    /// subtrees `committed`, as a layout of the transaction's writes over
-    /// a commit does (WT7) but for a clear of a Merk with no node
-    /// ([`Left::below`]). A drop or a clear takes what hangs below its
-    /// subtree there, and a move what [`Moved::lay`] says. What each
-    /// write covers in the write set stays as it was stated
-    /// ([`Left::cut`], [`Moved::covered`]).
-    pub fn lay(&mut self, committed: &Hosts) {
-        let mut hosts = committed.clone();
-        for (write, ..) in &mut self.writes {
+    /// state whose subtrees hang as `hosts` has them and whose records
+    /// are `records`, as a layout of the transaction's writes over a
+    /// commit does (WT7). A drop or a clear takes what [`Left::lay`]
+    /// says, and a move what [`Moved::lay`] says. What each write covers
+    /// in the write set stays as it was stated ([`Left::cut`],
+    /// [`Moved::covered`]).
+    pub fn lay(&mut self, hosts: &Hosts, records: &Records) {
+        let (mut hosts, mut records) = (hosts.clone(), records.clone());
+        let mut said = Said::default();
+        let roots = self.roots.clone();
+        for (at, (write, ..)) in self.writes.iter_mut().enumerate() {
             match write {
                 Write::Move(moved) => moved.lay(&hosts),
-                Write::Leave(left) => left.below = below(&hosts, left.subtree),
+                Write::Leave(left) => {
+                    let rooted = said.0.get(&left.subtree).copied();
+                    left.lay(&hosts, &records, rooted);
+                }
                 _ => {}
             }
+            said.take(&roots, at, write);
             hosted(&mut hosts, write);
+            apply(&mut records, write);
         }
     }
 
-    /// Whether a move of the transaction names a subtree below one that
-    /// leaves, over the committed subtrees it was last laid out over
-    /// ([`Moved::stopped`]): the one refusal of a layout that the model
-    /// tells.
+    /// What the writes of the transaction say of the root of each Merk.
+    pub fn said(&self) -> Said {
+        let mut said = Said::default();
+        for (at, (write, ..)) in self.writes.iter().enumerate() {
+            said.take(&self.roots, at, write);
+        }
+        said
+    }
+
+    /// Whether a move of the transaction is not made over the committed
+    /// state it was last laid out over ([`Moved::stopped`]): the refusals
+    /// of a layout that the model tells.
     pub fn stopped(&self) -> bool {
         (self.writes.iter()).any(|(write, ..)| matches!(write, Write::Move(moved) if moved.stopped))
+    }
+}
+
+/// Whether a Merk has a node, as the writes of a transaction said it of
+/// its root, for the Merks they said it of: a change set that set the
+/// root, and an enter, a drop or a clear of the subtree, alone or with one
+/// above it that covers it, after which it has none. An enter if it is
+/// absent is taken as an enter: the model does not tell one that found
+/// the subtree from one that entered it.
+#[derive(Debug, Clone, Default)]
+pub struct Said(pub BTreeMap<Subtree, bool>);
+
+impl Said {
+    /// Takes in the write `write`, which is the transaction's write
+    /// number `at`, and what its change sets stated of roots (`roots`).
+    fn take(&mut self, roots: &[(usize, Subtree, bool)], at: usize, write: &Write) {
+        match write {
+            Write::Enter(subtree, _) => drop(self.0.insert(*subtree, false)),
+            Write::Leave(left) => {
+                for subtree in std::iter::once(&left.subtree).chain(&left.cut) {
+                    self.0.insert(*subtree, false);
+                }
+            }
+            _ => {}
+        }
+        // The change sets of a batch come after what it does to subtrees
+        // as a whole.
+        let stated = roots.iter().filter(|(after, ..)| *after == at + 1);
+        self.0
+            .extend(stated.map(|(_, merk, rooted)| (*merk, *rooted)));
     }
 }
 
