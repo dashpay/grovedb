@@ -14,6 +14,8 @@
 //! on, and then the cfg `merk_test_engine` is set. Without it there is only
 //! the trait, and the tests that open a store are left out of the build.
 
+#[cfg(feature = "lignin_storage")]
+mod lignin;
 #[cfg(feature = "rocksdb_storage")]
 mod rocksdb;
 #[cfg(merk_test_engine)]
@@ -26,6 +28,8 @@ use grovedb_path::SubtreePath;
 use grovedb_storage::Error;
 use grovedb_version::version::GroveVersion;
 
+#[cfg(feature = "lignin_storage")]
+pub use self::lignin::{LigninTestEngine, LigninTestTransaction};
 #[cfg(feature = "rocksdb_storage")]
 pub use self::rocksdb::{NodeStoreOnlyEngine, RocksDbTestEngine};
 #[cfg(merk_test_engine)]
@@ -35,7 +39,7 @@ pub use self::suite::{
 use crate::{
     store::{NodeChange, NodeStore},
     tree::{kv::ValueDefinedCostType, TreeNode, TreeNodeInner},
-    Link,
+    Link, TreeType,
 };
 
 /// What the Merk suite asks of the engine it runs on.
@@ -159,6 +163,10 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for NodeStoreOnly<S> {
         self.store.write_node(node, change)
     }
 
+    fn state_tree_type(&self, tree_type: TreeType) -> Result<(), crate::Error> {
+        self.store.state_tree_type(tree_type)
+    }
+
     fn root_key(&self) -> CostResult<Option<Vec<u8>>, crate::Error> {
         self.store.root_key()
     }
@@ -200,6 +208,8 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for NodeStoreOnly<S> {
 mod tests {
     use std::any::type_name;
 
+    #[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
+    use grovedb_costs::OperationCost;
     use grovedb_path::SubtreePath;
     use grovedb_version::version::GroveVersion;
 
@@ -227,6 +237,7 @@ mod tests {
         match name {
             "rocksdb" => Some("RocksDbTestEngine"),
             "node-store-only" => Some("NodeStoreOnlyEngine"),
+            "lignin" => Some("LigninTestEngine"),
             _ => None,
         }
     }
@@ -367,14 +378,295 @@ mod tests {
 
     #[test]
     fn each_engine_stages_applies_and_commits_a_batch() {
+        #[cfg(feature = "rocksdb_storage")]
         a_batch_is_staged_then_applied_then_committed::<RocksDbTestEngine>();
+        #[cfg(feature = "rocksdb_storage")]
         a_batch_is_staged_then_applied_then_committed::<NodeStoreOnlyEngine>();
+        #[cfg(feature = "lignin_storage")]
+        a_batch_is_staged_then_applied_then_committed::<LigninTestEngine>();
     }
 
     #[test]
     fn each_engine_writes_at_once_through_an_immediate_handle() {
+        #[cfg(feature = "rocksdb_storage")]
         an_immediate_handle_writes_at_once::<RocksDbTestEngine>();
+        #[cfg(feature = "rocksdb_storage")]
         an_immediate_handle_writes_at_once::<NodeStoreOnlyEngine>();
+        #[cfg(feature = "lignin_storage")]
+        an_immediate_handle_writes_at_once::<LigninTestEngine>();
+    }
+
+    /// Two transactions that are the first to write into one subtree,
+    /// under keys of their own, both commit. Two that are the first to
+    /// write into another subtree, under one key, do not: the commit of
+    /// the second is refused, and the key holds what the first wrote.
+    fn first_writers_of_one_subtree_commit_unless_their_keys_meet<E: TestEngine>() {
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let engine = E::open(directory.path());
+        let (apart, met): (&[&[u8]], &[&[u8]]) = (&[b"keys apart"], &[b"keys that meet"]);
+        let write = |transaction: &E::Transaction<'_>, path: &[&[u8]], key: &[u8], value: &[u8]| {
+            let handle = engine.immediate_subtree(path.into(), transaction).unwrap();
+            let written = handle.put_meta_record(key, value);
+            written.unwrap().expect("a write");
+        };
+
+        let (first, second) = (engine.start_transaction(), engine.start_transaction());
+        write(&first, apart, b"of the first", b"1");
+        write(&second, apart, b"of the second", b"2");
+        let committed = engine.commit_transaction(first).unwrap();
+        committed.expect("the first commits");
+        let committed = engine.commit_transaction(second).unwrap();
+        committed.expect("the second commits");
+
+        let (first, second) = (engine.start_transaction(), engine.start_transaction());
+        write(&first, met, b"of both", b"1");
+        write(&second, met, b"of both", b"2");
+        let committed = engine.commit_transaction(first).unwrap();
+        committed.expect("the first commits");
+        let refused = engine.commit_transaction(second).unwrap();
+        assert!(refused.is_err(), "a commit over a commit of its key");
+
+        let transaction = engine.start_transaction();
+        let read = |path: &[&[u8]], key: &[u8]| {
+            let reader = engine.subtree(path.into(), None, &transaction).unwrap();
+            reader.get_meta_record(key).unwrap().expect("a read")
+        };
+        assert_eq!(read(apart, b"of the first"), Some(b"1".to_vec()));
+        assert_eq!(read(apart, b"of the second"), Some(b"2".to_vec()));
+        assert_eq!(read(met, b"of both"), Some(b"1".to_vec()));
+    }
+
+    #[test]
+    fn first_writers_of_one_subtree_commit_on_each_engine_unless_their_keys_meet() {
+        #[cfg(feature = "rocksdb_storage")]
+        first_writers_of_one_subtree_commit_unless_their_keys_meet::<RocksDbTestEngine>();
+        #[cfg(feature = "rocksdb_storage")]
+        first_writers_of_one_subtree_commit_unless_their_keys_meet::<NodeStoreOnlyEngine>();
+        #[cfg(feature = "lignin_storage")]
+        first_writers_of_one_subtree_commit_unless_their_keys_meet::<LigninTestEngine>();
+    }
+
+    /// What the calls of a test cost on an engine, and the root hashes
+    /// they leave: the open of a handle of each kind, the open of a Merk
+    /// on it, writes through a batch and at once, the application of a
+    /// batch and the commit of a transaction. The last batch clears a Merk
+    /// of which the transaction rewrote nodes at once, with values of
+    /// another length: a removal that comes with no cost is charged from
+    /// the committed record, whatever the transaction holds.
+    #[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
+    fn costs_and_roots<E: TestEngine>() -> (Vec<OperationCost>, Vec<crate::CryptoHash>) {
+        use crate::{Op, TreeFeatureType::BasicMerkNode};
+
+        /// The answer of a call, with what it cost kept.
+        fn take<T>(answer: CostContext<T>, costs: &mut Vec<OperationCost>) -> T {
+            let CostContext { value, cost } = answer;
+            costs.push(cost);
+            value
+        }
+        fn open<'db, S: NodeStore<'db>>(store: S, costs: &mut Vec<OperationCost>) -> Merk<S> {
+            let opened = Merk::open_base(
+                store,
+                TreeType::NormalTree,
+                None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                GroveVersion::latest(),
+            );
+            take(opened, costs).expect("the merk opens")
+        }
+
+        let grove_version = GroveVersion::latest();
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let engine = E::open(directory.path());
+        let (mut costs, mut roots) = (Vec::new(), Vec::new());
+        let path: &[&[u8]] = &[b"a tree", b"below it"];
+
+        // A batch through a deferred handle, applied and committed.
+        let transaction = engine.start_transaction();
+        let batch = E::Batch::default();
+        let handle = engine.subtree(path.into(), Some(&batch), &transaction);
+        let mut merk = open(take(handle, &mut costs), &mut costs);
+        let applied = merk.apply::<_, Vec<_>>(&make_batch_seq(0..40), &[], None, grove_version);
+        take(applied, &mut costs).expect("the batch applies");
+        roots.push(merk.root_hash().unwrap());
+        drop(merk);
+        let applied = engine.apply_batch(batch, &transaction);
+        take(applied, &mut costs).expect("the batch is applied");
+        let committed = engine.commit_transaction(transaction);
+        take(committed, &mut costs).expect("the transaction commits");
+
+        // Writes at once through an immediate handle: some nodes get a
+        // value of another length, and some are removed.
+        let transaction = engine.start_transaction();
+        let handle = engine.immediate_subtree(path.into(), &transaction);
+        let mut merk = open(take(handle, &mut costs), &mut costs);
+        let mut rewritten: Vec<_> = (10..20u64)
+            .map(|n| {
+                (
+                    n.to_be_bytes().to_vec(),
+                    Op::Put(vec![7; 200], BasicMerkNode),
+                )
+            })
+            .collect();
+        rewritten.extend((30..35u64).map(|n| (n.to_be_bytes().to_vec(), Op::Delete)));
+        let applied = merk.apply::<_, Vec<_>>(&rewritten, &[], None, grove_version);
+        take(applied, &mut costs).expect("the batch applies");
+        roots.push(merk.root_hash().unwrap());
+        drop(merk);
+
+        // A clear through a deferred handle of the same transaction.
+        let batch = E::Batch::default();
+        let handle = engine.subtree(path.into(), Some(&batch), &transaction);
+        let mut merk = open(take(handle, &mut costs), &mut costs);
+        take(merk.clear(), &mut costs).expect("the merk is cleared");
+        roots.push(merk.root_hash().unwrap());
+        drop(merk);
+        let applied = engine.apply_batch(batch, &transaction);
+        take(applied, &mut costs).expect("the batch is applied");
+        let committed = engine.commit_transaction(transaction);
+        take(committed, &mut costs).expect("the transaction commits");
+
+        // What the next transaction reads.
+        let transaction = engine.start_transaction();
+        let handle = engine.subtree(path.into(), None, &transaction);
+        let merk = open(take(handle, &mut costs), &mut costs);
+        roots.push(merk.root_hash().unwrap());
+        (costs, roots)
+    }
+
+    /// The LigninDB engine charges what the RocksDB engine charges, call
+    /// for call, and leaves the same root hashes.
+    #[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
+    #[test]
+    fn the_lignin_engine_costs_what_the_rocksdb_engine_costs() {
+        let (on_rocksdb, on_lignin) = (
+            costs_and_roots::<RocksDbTestEngine>(),
+            costs_and_roots::<LigninTestEngine>(),
+        );
+        for (call, (found, expected)) in on_lignin.0.iter().zip(&on_rocksdb.0).enumerate() {
+            assert_eq!(found, expected, "the cost of call {call}");
+        }
+        assert_eq!(on_lignin, on_rocksdb);
+        // The clear was charged for what it removed.
+        let cleared = &on_lignin.0[11];
+        assert!(cleared.storage_cost.removed_bytes.total_removed_bytes() > 0);
+    }
+
+    /// The LigninDB engine enters a subtree, as a Merk that stands alone,
+    /// when a handle of it that writes is opened, and not for a handle
+    /// that only reads. The enter is a write of the handle's transaction.
+    #[cfg(feature = "lignin_storage")]
+    #[test]
+    fn the_lignin_engine_enters_the_subtree_of_a_handle_that_writes() {
+        use crate::store::lignin::LigninEntry;
+
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let engine = LigninTestEngine::open(directory.path());
+        let entry = |transaction: &LigninTestTransaction<'_>, path: &[&[u8]]| {
+            let reader = engine.subtree(path.into(), None, transaction).unwrap();
+            reader.entry().expect("the directory answers")
+        };
+        let entered = Some(LigninEntry {
+            root_key: None,
+            tree_type: LigninTestEngine::TREE_TYPE.to_vec(),
+            host: None,
+        });
+        let (staged, at_once): (&[&[u8]], &[&[u8]]) = (&[b"staged"], &[b"at once"]);
+
+        // The bytes a subtree is entered with are those of no tree type.
+        assert!(entered
+            .as_ref()
+            .is_some_and(|entry| entry.tree_type().is_err()));
+
+        let transaction = engine.start_transaction();
+        assert_eq!(entry(&transaction, staged), None);
+        let batch = <LigninTestEngine as TestEngine>::Batch::default();
+        let handle = engine.subtree(staged.into(), Some(&batch), &transaction);
+        drop(handle);
+        assert_eq!(entry(&transaction, staged), entered);
+        assert!(batch.is_empty(), "the enter is no write of the batch");
+        assert_eq!(entry(&transaction, at_once), None);
+        drop(engine.immediate_subtree(at_once.into(), &transaction));
+        assert_eq!(entry(&transaction, at_once), entered);
+
+        // Another transaction reads neither until the commit, and both
+        // after it. Until then it refuses a batch that a handle of the
+        // first staged, and the refusal is the answer of the application.
+        let other = engine.start_transaction();
+        assert_eq!(entry(&other, staged), None);
+        let handle = engine.subtree(staged.into(), Some(&batch), &transaction);
+        let written = handle.unwrap().put_meta_record(b"a key", b"a value");
+        written.unwrap().expect("the write is staged");
+        let refused = engine.apply_batch(batch, &other).unwrap();
+        let refused = refused.expect_err("a batch of another transaction's handle");
+        assert!(refused.to_string().contains("is not entered"), "{refused}");
+        let committed = engine.commit_transaction(transaction).unwrap();
+        committed.expect("the transaction commits");
+        assert_eq!(entry(&other, staged), entered);
+        assert_eq!(entry(&other, at_once), entered);
+        // A handle of an entered subtree enters nothing: a transaction
+        // that only opens one has nothing to commit.
+        let version = engine.db().version();
+        drop(engine.immediate_subtree(staged.into(), &other));
+        let committed = engine.commit_transaction(other).unwrap();
+        committed.expect("the transaction commits");
+        assert_eq!(engine.db().version(), version);
+    }
+
+    /// A handle that passes the seam on passes on what a conversion
+    /// states: the directory of LigninDB names the wide tree type behind
+    /// a [`NodeStoreOnly`] as it does behind the handle itself.
+    #[cfg(feature = "lignin_storage")]
+    #[test]
+    fn a_handle_that_passes_the_seam_on_states_a_conversion() {
+        use crate::{tree::kv::KV, TreeFeatureType::SummedMerkNode};
+
+        let grove_version = GroveVersion::latest();
+        let directory = tempfile::TempDir::new().expect("a temporary directory");
+        let engine = LigninTestEngine::open(directory.path());
+        let transaction = engine.start_transaction();
+        let store = engine.immediate_subtree(SubtreePath::empty(), &transaction);
+        let no_cost = None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
+        let mut merk = Merk::open_base(
+            NodeStoreOnly {
+                store: store.unwrap(),
+            },
+            TreeType::SumTree,
+            no_cost,
+            grove_version,
+        )
+        .unwrap()
+        .expect("the merk opens");
+        let batch: Vec<_> = (0..9u8)
+            .map(|n| {
+                (
+                    vec![n],
+                    crate::Op::Put(vec![n; 9], SummedMerkNode(n.into())),
+                )
+            })
+            .collect();
+        merk.apply::<_, Vec<_>>(&batch, &[], None, grove_version)
+            .unwrap()
+            .expect("the batch applies");
+        let node_type = TreeType::SumTree.inner_node_type();
+        let converted = merk.convert_to_big_sum_tree(
+            &|_key, _value, _widened| Ok(()),
+            &|key, value| {
+                let (key_len, value_len) = (key.len() as u32, value.len() as u32);
+                Ok(KV::node_value_byte_cost_size(key_len, value_len, node_type))
+            },
+            no_cost.as_ref(),
+            grove_version,
+        );
+        let converted = converted.unwrap().expect("the merk is converted");
+        let entry = converted
+            .storage
+            .store
+            .entry()
+            .expect("the directory answers");
+        let entry = entry.expect("the subtree is entered");
+        assert_eq!(
+            entry.tree_type().expect("a tree type"),
+            TreeType::BigSumTree
+        );
     }
 
     #[test]
@@ -393,6 +685,7 @@ mod tests {
         assert!(open(immediate).is_empty_tree().unwrap());
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn the_storage_of_the_rocksdb_engine_is_the_one_its_handles_write() {
         use grovedb_storage::{Storage, StorageContext};

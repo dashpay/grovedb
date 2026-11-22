@@ -1,6 +1,6 @@
 # Test engines: the suites run once on every registered engine
 
-LigninDB task SEAM-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)).
+LigninDB task SEAM-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)). MERK-08 registered LigninDB for Merk's suite ([Merk on LigninDB](#merk-on-lignindb)).
 
 GroveDB's and Merk's test suites name no storage engine. Each is built for one engine at a time, and run once for every engine registered for it. This document says how an engine is selected, what a test may name, which tests are about one engine, and what registering an engine takes. It builds on [`engine.md`](engine.md) and [`node-store.md`](node-store.md).
 
@@ -12,11 +12,12 @@ GroveDB's and Merk's test suites name no storage engine. Each is built for one e
 | `GROVEDB_TEST_ENGINE=pinned-reads cargo test -p grovedb` | the same suite on the engine of that name |
 | `cargo test -p grovedb-merk` | Merk's suite on the first engine of `merk/test-engines.txt` |
 | `MERK_TEST_ENGINE=node-store-only cargo test -p grovedb-merk` | the same suite on the engine of that name |
-| `.github/scripts/engine-suites.sh run` | both suites on every registered engine, one run after the other: every target on the first engine of a suite, the unit tests (`--lib`) on the others. Arguments follow `cargo test -p PACKAGE`. |
+| `MERK_TEST_ENGINE=lignin cargo test -p grovedb-merk --features lignin_storage --lib` | Merk's suite on LigninDB, whose feature is not among the crate's defaults |
+| `.github/scripts/engine-suites.sh run` | both suites on every registered engine, one run after the other: every target on the first engine of a suite, the unit tests (`--lib`) on the others. Each run is given the Cargo feature its engine is registered with. Arguments follow `cargo test -p PACKAGE --features FEATURE`. |
 
 A name that is not registered fails the build, and the message lists the names that are. So does a name whose engine is not compiled in: `GROVEDB_TEST_ENGINE=rocksdb` with the feature `rocksdb_storage` off is an error, not a run with no engine.
 
-The engine is a property of the build, not of the run: one test binary holds the suite for one engine. A second engine is a second build of the crate's tests, and of nothing below the crate.
+The engine is a property of the build, not of the run: one test binary holds the suite for one engine. A second engine is a second build of the crate's tests, and of nothing below the crate but what the Cargo feature of that engine compiles: `lignin_storage` brings the LigninDB crates.
 
 `cargo nextest run` takes the same variables. CI uses it.
 
@@ -27,7 +28,7 @@ A suite has a registry: a text file with one engine a line, the default first. A
 | Suite | Registry | Variable | cfg | The type of a name |
 | --- | --- | --- | --- | --- |
 | GroveDB | `grovedb/test-engines.txt` | `GROVEDB_TEST_ENGINE` | `grovedb_test_engine` | `SuiteEngine` in `grovedb/src/tests/mod.rs` |
-| Merk | `merk/test-engines.txt` | `MERK_TEST_ENGINE` | `merk_test_engine` | `SuiteEngine` in `merk/src/test_utils/engine.rs` |
+| Merk | `merk/test-engines.txt` | `MERK_TEST_ENGINE` | `merk_test_engine` | `SuiteEngine` in `merk/src/test_utils/engine/suite.rs` |
 
 The crate's build script reads the registry and the variable. If the feature of the selected engine is on, it sets the cfg twice: with no value, which says that the suite has an engine, and with the selected name. It declares every registered name as a value of the cfg, so a `#[cfg(grovedb_test_engine = "..")]` with a name that is not registered is a warning, and an error under `-D warnings`.
 
@@ -49,9 +50,10 @@ The engines registered today:
 | GroveDB | `rocksdb` | `RocksDbEngine` |
 | GroveDB | `pinned-reads` | `PinnedReads` (`grovedb/src/tests/pinned_reads.rs`): the RocksDB engine, except that the transaction of a read that was given none is a read-only snapshot, as on LigninDB (RD2 of [`transactions.md`](transactions.md)). A read that wrote would be refused, and a read that started a second transaction could read another state. The engine is a type of its own and gives no way to the storage underneath. |
 | Merk | `rocksdb` | `RocksDbTestEngine`: a handle is the RocksDB storage context of its subtree |
-| Merk | `node-store-only` | `NodeStoreOnlyEngine`: RocksDB behind handles that are a `NodeStore` and nothing else, as a LigninDB handle will be |
+| Merk | `node-store-only` | `NodeStoreOnlyEngine`: RocksDB behind handles that are a `NodeStore` and nothing else |
+| Merk | `lignin` | `LigninTestEngine` (feature `lignin_storage`): a database of `lignindb`, whose handles are the store of `merk::store::lignin` on a write transaction ([Merk on LigninDB](#merk-on-lignindb)) |
 
-The second engine of each suite is there so that the suite is run on an engine that is not `RocksDbEngine` before LigninDB exists. A test that reaches for RocksDB without saying so does not compile on it.
+The second engine of each suite is there so that the suite is run on an engine that is not `RocksDbEngine` whether or not LigninDB is registered for it. A test that reaches for RocksDB without saying so does not compile on it.
 
 ## GroveDB
 
@@ -159,6 +161,31 @@ The tests that still name RocksDB are tests of RocksDB:
 - `merk/src/store/tests.rs`: Merk on the in-memory store against Merk on RocksDB.
 - A test that reads a handle as a storage context is compiled for the engine whose handle is one: `#[cfg(merk_test_engine = "rocksdb")]`.
 
+### Merk on LigninDB
+
+MERK-08. `LigninTestEngine` (`merk/src/test_utils/engine/lignin.rs`) is the third engine of Merk's registry. Its module documentation is the contract; in short:
+
+- **The engine is a database of `lignindb`** in the directory it was opened for (`lignindb::Db`, with the default options). A transaction is a write transaction of it. A handle is a `LigninNodeStore` on that transaction: a deferred one with the batch it was opened with, which with no batch refuses every write, or an immediate one. A batch is a `LigninBatch`, applied to the transaction as one operation (`LigninBatch::apply`).
+- **It enters the subtree of a handle that writes.** LigninDB reads nothing of a subtree that its directory does not hold and refuses every write to one ([node-store.md](node-store.md#opening-a-merk)). A test of Merk has no element above its Merk to enter the subtree with, so the engine does it: when a handle that writes is opened and the transaction shows no entry of its subtree, the subtree is entered in that transaction, if it is absent, as a Merk that stands alone. A handle that only reads enters nothing. The engine does not know what tree the Merk of a handle is, so the entry has the bytes `merk` in place of a tree type, until the conversion of a Merk that has a node states one and the statement is applied ([node-store.md](node-store.md#the-tree-type), `NodeStore::state_tree_type`). A batch is for the transaction its handles were opened in: another transaction may lack the entry of the subtree and can then refuse the batch.
+- **In a debug build a database is checked when it is dropped**, but on a thread that is panicking and in the other cases that `lignindb::db` lists ("The check at a close"). `lignindb` then runs its physical invariant checker and panics on a finding. The engine gives that check Merk's rules for the key-value hash and the hash of a node, so each stored one of a Merk in use is made again and compared. A value hash is taken as stored: the values of Merk's tests are mostly no elements, and some are put with a value hash that their test states.
+
+The tests of `merk/src/test_utils/engine.rs` hold the engine: with the two engines on RocksDB it stages, applies and commits a batch and writes at once through an immediate handle; two transactions that are the first to write into one subtree both commit where their keys differ, and of two that are the first to write one key of another subtree the second is refused; a history of handles, Merks, batches and commits, with a clear after writes that were made at once, costs on it what it costs on `RocksDbTestEngine`, call for call, and leaves the same root hashes; a subtree is entered for a handle that writes and for no other, and a transaction that has written nothing refuses a batch for a subtree that only another transaction has entered; and a handle that passes the seam on (`NodeStoreOnly`) passes on what a conversion states.
+
+Two tests came with the registration. `merk::test::large_values_are_stored_and_read_back_under_every_tree_type` runs on every engine: it puts values on both sides of 256 bytes and of 4, 8, 16 and 32 KiB, and up to a megabyte, under twelve tree types, rewrites them with other lengths and reads them back by key and under the cursor. LigninDB keeps a value of more than 256 bytes out of its node's cell. `the_directory_names_the_tree_type_a_conversion_leaves` is compiled for LigninDB alone (`#[cfg(merk_test_engine = "lignin")]`): it reads the subtree directory.
+
+The run of a suite on an engine is of the package's unit tests (`--lib`), as [above](#integration-tests-doc-tests-and-benches) for GroveDB. Among them, the tests that name a store run on the store they name whatever engine is selected: those of the RocksDB adapter and of `merk::store::lignin`, and the tests of `engine.rs` that name an engine. `grovedb-merk` has one integration test target, `merk/tests/restore_memory.rs`, which names the stores it measures and is ignored and run by hand ([node-store.md](node-store.md#chunks-and-restore)).
+
+### Where a Merk on LigninDB answers otherwise than on RocksDB
+
+These differences are known and not removed. Each is held by a test of `merk::store::lignin`, which asserts what the store does, and for the first, the third and the fourth also what RocksDB does after the same calls.
+
+| What differs | On RocksDB | On LigninDB | Held by | What would end it |
+| --- | --- | --- | --- | --- |
+| A restore from chunks into a Merk with no node that holds a record no node links ([node-store.md](node-store.md#unlinked-records)) | the chunks are written over what is there, and the record of the test, whose key the restored tree does not have, is read back as it was | the restore is refused in `finalize` (`Error::NotSupported`), since the store's cursor shows a key, nothing is written, and the record is read back as it was | `store::lignin::tests::chunk::a_restore_into_a_merk_that_holds_an_unlinked_record_is_refused_at_finalize`, beside `a_restore_into_a_merk_that_holds_nodes_is_refused_at_finalize` | undecided |
+| A node that is written with a change that keeps its value (`HashOnly`, `StructureChanged`) under a key that the handle knows to hold such a record | the whole record is written, as with every write of a node | the value of the node as it is handed over is written again, where a node in a cell keeps the value it has: no cell keeps a value for such a record. The record that is read back is the node as it was handed over | `store::lignin::tests::unlinked::a_kept_write_of_an_unlinked_record_states_the_node_it_is_handed`, `a_kept_put_of_an_unlinked_record_in_a_change_set_states_its_value` | nothing: such a record has no cell |
+| `FlatStore::clear` on a handle of a Merk with no root that still holds such records | each record is removed at the length of Merk's record of the node | the Merk is cleared by the walk of its flat records, and each record is removed at the length the store keeps it in, which is another (for the node of the test, which has no child and no aggregate, one byte more). The walk of the test is charged the same on both, and both hold no record afterwards | `store::lignin::tests::differences::a_flat_clear_of_a_merk_with_no_root_charges_an_unlinked_record_at_its_stored_length` | `GROVE-04-F1` |
+| The node cursor of a subtree that keeps flat records and no Merk, as an append-only tree does | shows each flat record with its bytes | shows the key of each flat record, and gives no value for one that is not in the form of an unlinked record, as the record of the test is not, with the reason in the cursor's status | `store::lignin::tests::differences::a_node_cursor_over_flat_records_shows_the_key_and_refuses_the_value`; on the engine, `engine::lignin::tests::deletes::a_walk_that_takes_the_records_of_an_append_only_tree_for_elements` | `MERK-05-F1` part 2 |
+
 ## The append-only trees
 
 The crates of the append-only trees (`grovedb-merkle-mountain-range`, `grovedb-bulk-append-tree`, `grovedb-dense-fixed-sized-merkle-tree`, `grovedb-commitment-tree`, `grovedb-private-document-store`) depend on `FlatStore` and on no engine ([`flat-store.md`](flat-store.md)). Their own tests run on in-memory stores of their own and reach no engine, so there is nothing in them to select.
@@ -201,8 +228,8 @@ Registering an engine with the fuzzer is two things: `impl StreamEngine` for it,
 
 ## Registering an engine
 
-1. Add its name to the registry of the suite. The first line stays the default.
-2. Give the name its type: a `#[cfg(grovedb_test_engine = "name")] pub type SuiteEngine = ..;` in `grovedb/src/tests/mod.rs`, or the same with `merk_test_engine` in `merk/src/test_utils/engine.rs`, where the type implements `TestEngine`.
+1. Add its name to the registry of the suite, with the Cargo feature of the crate that compiles it. The first line stays the default.
+2. Give the name its type: a `#[cfg(grovedb_test_engine = "name")] pub type SuiteEngine = ..;` in `grovedb/src/tests/mod.rs`, or the same with `merk_test_engine` in `merk/src/test_utils/engine/suite.rs`, where the type implements `TestEngine`.
 3. Run the suite on it. A test that does not compile, or fails, either found a difference the engine has to remove, or is about the records of another engine and gets that engine's `#[cfg]`.
 
 Nothing else names the engine: the build scripts, the script and the workflow read the registry.

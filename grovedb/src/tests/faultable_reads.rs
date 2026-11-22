@@ -526,6 +526,10 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
         self.0.write_node(node, change)
     }
 
+    fn state_tree_type(&self, tree_type: grovedb_merk::TreeType) -> Result<(), Error> {
+        self.0.state_tree_type(tree_type)
+    }
+
     fn root_key(&self) -> CostResult<Option<Vec<u8>>, Error> {
         self.0.root_key()
     }

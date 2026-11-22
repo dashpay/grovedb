@@ -34,6 +34,8 @@ mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
+#[cfg(feature = "lignin_storage")]
+pub use engine::{LigninTestEngine, LigninTestTransaction};
 pub use engine::{NodeStoreOnly, TestEngine};
 #[cfg(feature = "rocksdb_storage")]
 pub use engine::{NodeStoreOnlyEngine, RocksDbTestEngine};

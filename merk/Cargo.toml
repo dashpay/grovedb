@@ -60,7 +60,9 @@ rocksdb_storage = ["minimal", "grovedb-storage/rocksdb_storage"]
 # `store::lignin`: the node store of a Merk on a LigninDB write transaction.
 lignin_storage = ["minimal", "dep:lignindb", "dep:lignin-format", "dep:lignin-tree"]
 full = ["minimal", "rocksdb_storage", "test_utils", "colored_debug"]
-# The engines of `test_utils` (`merk/test-engines.txt`) are on RocksDB.
+# `test_utils` for other crates, with the engines of the suite that are on
+# RocksDB (`merk/test-engines.txt`). The one on LigninDB is compiled where
+# `lignin_storage` is on as well.
 test_utils = ["rand", "tempfile", "rocksdb_storage"]
 colored_debug = ["colored"]
 verify = ["ed", "blake3"]
@@ -90,3 +92,10 @@ harness = false
 [[bench]]
 name = "branch_queries"
 harness = false
+
+# Heap allocations of a Merk for one state transition, on LigninDB and on
+# RocksDB (LigninDB task MERK-08).
+[[bench]]
+name = "allocations"
+harness = false
+required-features = ["lignin_storage", "test_utils"]

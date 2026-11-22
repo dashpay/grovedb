@@ -495,9 +495,11 @@ fn write_element(
 }
 
 /// A conversion in place (GroveDB #1063) keeps a Merk and gives it another
-/// tree type. The batch that writes its nodes again states it anew, and
-/// from that batch on the directory gives the open by prefix the wide
-/// tree, with the root, the host and the place the Merk had.
+/// tree type. `Merk::convert_to_big_sum_tree` states it anew through the
+/// handle it writes with (`NodeStore::state_tree_type`), in the batch that
+/// writes its nodes again, and from that batch on the directory gives the
+/// open by prefix the wide tree, with the root, the host and the place
+/// the Merk had.
 #[test]
 fn a_converted_merk_opens_from_the_directory_as_the_wide_tree() {
     let narrow = TreeType::SumTree;
@@ -530,8 +532,8 @@ fn a_converted_merk_opens_from_the_directory_as_the_wide_tree() {
     commit(&lignin, &transaction);
 
     // The conversion: every node is written again as a node of the wide
-    // tree, by a batch that also writes the element and states the Merk
-    // anew.
+    // tree, by a batch that also writes the element and in which the
+    // conversion states the Merk anew.
     let transaction = path.begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
     let staged = LigninBatch::new();
@@ -552,7 +554,6 @@ fn a_converted_merk_opens_from_the_directory_as_the_wide_tree() {
     let merk = converted.value.expect("the Merk is converted");
     assert_eq!((merk.tree_type, merk.root_key()), (wide, root.clone()));
     let root_hash = merk.root_hash().unwrap();
-    (merk.storage.convert(wide)).expect("the conversion is stated");
     drop(merk);
     write_element(&writer, &staged, parent_root, b"a big sum tree");
     // A handle that only reads states nothing.
@@ -592,6 +593,158 @@ fn a_converted_merk_opens_from_the_directory_as_the_wide_tree() {
         ),
         (wide, root, root_hash)
     );
+}
+
+/// Converts the Merk with no node that is opened on `store`, and returns
+/// what the conversion cost.
+fn convert_an_empty_sum_tree<'db, S: NodeStore<'db>>(store: S) -> OperationCost {
+    let narrow = TreeType::SumTree;
+    let node_type = narrow.inner_node_type();
+    let (merk, _) = open_layered(store, None, narrow);
+    let converted = merk.convert_to_big_sum_tree(
+        &|_key, _value, _widened| Ok(()),
+        &|key, value| {
+            let (key_len, value_len) = (key.len() as u32, value.len() as u32);
+            Ok(KV::node_value_byte_cost_size(key_len, value_len, node_type))
+        },
+        NO_VALUE_DEFINED_COST.as_ref(),
+        version(),
+    );
+    let merk = converted.value.expect("the Merk is converted");
+    assert_eq!(
+        (merk.tree_type, merk.root_key()),
+        (TreeType::BigSumTree, None)
+    );
+    converted.cost
+}
+
+/// The conversion of a Merk with no node states nothing
+/// (`Merk::convert_to_big_sum_tree`). Each Merk converted here is one
+/// under an element, opened with no root key on a handle that has staged
+/// and written nothing. In a subtree that is not entered it is converted at
+/// the cost it has on RocksDB, with nothing staged and nothing written,
+/// and the subtree is entered later with the tree type that the one who
+/// enters it names. An entered subtree keeps the bytes of its entry
+/// through the conversion of such a Merk.
+#[test]
+fn the_conversion_of_a_merk_with_no_node_states_nothing() {
+    let wide = TreeType::BigSumTree;
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let fresh = LigninSubtree::alone(FRESH);
+    let rocks = TempStorage::new();
+    let rocks_transaction = rocks.start_transaction();
+    let storage_batch = StorageBatch::new();
+
+    let staged = LigninBatch::new();
+    let writes = transaction.stats().writes;
+    let store = LigninNodeStore::deferred(&writer, fresh.clone(), Some(&staged));
+    let context = rocks
+        .get_transactional_storage_context(
+            SubtreePath::empty(),
+            Some(&storage_batch),
+            &rocks_transaction,
+        )
+        .unwrap();
+    assert_eq!(
+        convert_an_empty_sum_tree(store),
+        convert_an_empty_sum_tree(context)
+    );
+    assert!(staged.is_empty(), "nothing is staged");
+    let store = LigninNodeStore::immediate(&writer, fresh.clone());
+    let context = rocks
+        .get_immediate_storage_context(SubtreePath::empty(), &rocks_transaction)
+        .unwrap();
+    assert_eq!(
+        convert_an_empty_sum_tree(store),
+        convert_an_empty_sum_tree(context)
+    );
+    assert_eq!(transaction.stats().writes, writes, "nothing is written");
+    assert_eq!(entry_of(&writer, FRESH), None);
+
+    // The first writer enters the subtree, as the wide tree it now is.
+    let store = LigninNodeStore::deferred(&writer, fresh, Some(&staged));
+    store.enter(wide).unwrap();
+    let (mut merk, _) = open_layered(store, None, wide);
+    let nodes: Vec<_> = (0..5u64)
+        .map(|n| {
+            let feature = TreeFeatureType::BigSummedMerkNode(n.into());
+            (be(n), Op::Put(vec![n as u8; 10], feature))
+        })
+        .collect();
+    apply(&mut merk, &nodes);
+    drop(merk);
+    (staged.apply(&writer).unwrap()).expect("the batch is applied");
+    let entry = entry_of(&writer, FRESH).expect("the subtree is entered");
+    assert_eq!(entry.tree_type().unwrap(), wide);
+
+    // A subtree that is entered as a sum tree, whose Merk has no node:
+    // the conversion states nothing, on either kind of handle, and the
+    // entry is as it was.
+    let other = LigninSubtree::alone(OTHER);
+    LigninNodeStore::immediate(&writer, other.clone())
+        .enter(TreeType::SumTree)
+        .unwrap();
+    let entered = entry_of(&writer, OTHER).expect("the subtree is entered");
+    assert_eq!(entered.tree_type().unwrap(), TreeType::SumTree);
+    let writes = transaction.stats().writes;
+    convert_an_empty_sum_tree(LigninNodeStore::deferred(
+        &writer,
+        other.clone(),
+        Some(&staged),
+    ));
+    assert!(staged.is_empty(), "nothing is staged");
+    convert_an_empty_sum_tree(LigninNodeStore::immediate(&writer, other));
+    assert_eq!(transaction.stats().writes, writes, "nothing is written");
+    assert_eq!(entry_of(&writer, OTHER), Some(entered));
+}
+
+/// A batch states a subtree anew that is entered before it. Where one
+/// batch enters a subtree, fills its Merk and converts it, the batch
+/// holds an enter and a statement anew of one subtree, and the
+/// transaction refuses it whole: the Merk is not left entered as the
+/// narrow tree with the nodes of the wide one.
+#[test]
+fn a_batch_that_enters_a_subtree_and_converts_its_merk_is_refused_whole() {
+    let narrow = TreeType::SumTree;
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, LigninSubtree::alone(FRESH), Some(&staged));
+    store.enter(narrow).unwrap();
+    let (mut merk, _) = open_layered(store, None, narrow);
+    apply(&mut merk, &puts(narrow, 0..9, 10));
+    let node_type = narrow.inner_node_type();
+    let converted = merk.convert_to_big_sum_tree(
+        &|_key, _value, _widened| Ok(()),
+        &|key, value| {
+            let (key_len, value_len) = (key.len() as u32, value.len() as u32);
+            Ok(KV::node_value_byte_cost_size(key_len, value_len, node_type))
+        },
+        NO_VALUE_DEFINED_COST.as_ref(),
+        version(),
+    );
+    let merk = converted.value.expect("the Merk is converted");
+    assert_eq!(merk.tree_type, TreeType::BigSumTree);
+    drop(merk);
+
+    let writes = transaction.stats().writes;
+    let refused = staged
+        .apply(&writer)
+        .value
+        .expect_err("an enter and a statement anew");
+    assert!(matches!(refused, Error::StorageError(_)), "{refused}");
+    let words = refused.to_string();
+    assert!(
+        words.contains("is stated anew") && words.contains("twice"),
+        "{refused}"
+    );
+    assert_eq!(transaction.stats().writes, writes, "nothing is written");
+    assert_eq!(entry_of(&writer, FRESH), None);
 }
 
 /// A Merk that is opened where no subtree is entered is empty, as on

@@ -912,6 +912,68 @@ fn a_restore_into_a_merk_that_holds_nodes_is_refused_at_finalize() {
     });
 }
 
+/// The same for a Merk with no node that holds a record no node links
+/// (MERK-09): RocksDB restores over it and keeps it, and on LigninDB the
+/// store's cursor shows its key, so the restore is refused in `finalize`
+/// and the record stays. It is one of the differences that
+/// `docs/lignindb/test-engines.md` lists.
+#[test]
+fn a_restore_into_a_merk_that_holds_an_unlinked_record_is_refused_at_finalize() {
+    let tree_type = TreeType::NormalTree;
+    let nodes = raw_nodes(tree_type, 100);
+    with_engines(tree_type, |both, transaction| {
+        let (root_hash, chunks) = source(both, &nodes);
+        const TARGET: u8 = 34;
+        // A node that is written outside a commit, where the Merk has no
+        // root: no node links it.
+        let unlinked = TreeNode::new(vec![0xee; 6], vec![0xf7; 9], None, feature(tree_type, 1));
+        let unlinked = unlinked.unwrap();
+        (rocks_at(both, TARGET).write_node(&unlinked, NodeChange::ValueWritten))
+            .unwrap()
+            .expect("a record on RocksDB");
+        (lignin_at(both, TARGET).write_node(&unlinked, NodeChange::ValueWritten))
+            .unwrap()
+            .expect("a record on LigninDB");
+        let driven = Driven {
+            elements: false,
+            parent: None,
+        };
+
+        let on_rocks = restore(
+            rocks_at(both, TARGET),
+            tree_type,
+            root_hash,
+            &chunks,
+            driven,
+        );
+        assert_eq!(on_rocks.finalized, Some((nodes.len(), 1)));
+        // RocksDB keeps the record as it was, under its key.
+        let kept =
+            rocks_at(both, TARGET).get_node(unlinked.key(), NO_VALUE_DEFINED_COST, version());
+        let kept = kept.unwrap().expect("a read").expect("the record");
+        assert_eq!(kept.encode(), unlinked.encode());
+
+        // The Merk has no node and no root, and holds the record.
+        let before = held_at(both, transaction, TARGET);
+        assert_eq!((before.0, &before.1), (1, &None));
+        let held = lignin_at(both, TARGET).has_node(unlinked.key());
+        assert!(held.unwrap().expect("a read"));
+        let merk = open(lignin_at(both, TARGET), tree_type);
+        assert_eq!(merk.root_key(), None);
+        let restorer = fed(merk, root_hash, &chunks);
+        let refused = restorer.finalize(version()).map(|_| ());
+        assert!(
+            matches!(&refused, Err(Error::NotSupported(what)) if what.contains("holds nodes")),
+            "{refused:?}"
+        );
+        assert_eq!(held_at(both, transaction, TARGET), before);
+        let kept =
+            lignin_at(both, TARGET).get_node(unlinked.key(), NO_VALUE_DEFINED_COST, version());
+        let kept = kept.unwrap().expect("a read").expect("the record");
+        assert_eq!(kept.encode(), unlinked.encode());
+    });
+}
+
 /// A change set that says it is the whole Merk and puts a node is taken
 /// with no read of the nodes it names, so the store takes it only where
 /// the Merk has no root, whoever states it.

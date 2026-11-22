@@ -947,8 +947,9 @@ impl Engine for LigninEngine {
             return Err(error).wrap_with_cost(OperationCost::default());
         }
         // A group in which a batch enters, drops or clears a subtree
-        // itself can be refused for an entry by its own doing, with
-        // nothing published beside it: it is not looked for again.
+        // itself, or states one anew, can be refused for an entry by its
+        // own doing, with nothing published beside it: it is not looked
+        // for again.
         let own = parts.iter().any(LigninSettled::writes_directory);
         loop {
             // A commit that is published from here on is one the look may
@@ -1040,9 +1041,9 @@ impl Engine for LigninEngine {
             // transaction found the entry of a subtree otherwise than
             // the look had, and not by a drop that the look stated for
             // a subtree which the group hands a write for; no batch of
-            // the group enters, drops or clears a subtree itself; and a
-            // commit was published since before the look. Every other
-            // refusal is the caller's answer.
+            // the group enters, drops or clears a subtree itself, or
+            // states one anew; and a commit was published since before
+            // the look. Every other refusal is the caller's answer.
             let stale = (refused.entry).is_some_and(|entry| {
                 let found_otherwise = owed.found_otherwise(entry)
                     || left.found_otherwise(entry)

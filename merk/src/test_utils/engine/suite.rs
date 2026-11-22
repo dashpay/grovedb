@@ -4,6 +4,8 @@ use std::ops::Deref;
 
 use tempfile::TempDir;
 
+#[cfg(merk_test_engine = "lignin")]
+use super::LigninTestEngine;
 #[cfg(merk_test_engine = "node-store-only")]
 use super::NodeStoreOnlyEngine;
 #[cfg(merk_test_engine = "rocksdb")]
@@ -18,6 +20,10 @@ pub type SuiteEngine = RocksDbTestEngine;
 /// names, or the first of `merk/test-engines.txt`.
 #[cfg(merk_test_engine = "node-store-only")]
 pub type SuiteEngine = NodeStoreOnlyEngine;
+/// The engine this build of the suite runs on: the one `MERK_TEST_ENGINE`
+/// names, or the first of `merk/test-engines.txt`.
+#[cfg(merk_test_engine = "lignin")]
+pub type SuiteEngine = LigninTestEngine;
 
 /// A transaction of the suite's engine.
 pub type SuiteTransaction<'db> = <SuiteEngine as TestEngine>::Transaction<'db>;

@@ -100,7 +100,9 @@ pub struct LigninEntry {
     /// The key of the root node of the subtree's Merk, or `None` for a
     /// Merk with no node and for a tree that keeps its data flat.
     pub root_key: Option<Vec<u8>>,
-    /// The tree type, as the bytes the subtree was entered with.
+    /// The tree type, as the bytes the directory holds: those the subtree
+    /// was entered with, or was last stated anew with
+    /// ([`LigninBatch::convert`]).
     pub tree_type: Vec<u8>,
     /// The element that hosts the subtree, or `None` for the root Merk of
     /// a grove and for a Merk that stands alone.
@@ -108,8 +110,8 @@ pub struct LigninEntry {
 }
 
 impl LigninEntry {
-    /// The tree type of the subtree, if it was entered with the bytes of
-    /// one ([`tree_type_bytes`]).
+    /// The tree type of the subtree, if the directory holds the bytes of
+    /// one for it ([`tree_type_bytes`]).
     pub fn tree_type(&self) -> Result<TreeType, Error> {
         tree_type_from_bytes(&self.tree_type)
     }

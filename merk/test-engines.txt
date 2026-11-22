@@ -13,3 +13,4 @@
 # engine takes.
 rocksdb          rocksdb_storage
 node-store-only  rocksdb_storage
+lignin           lignin_storage

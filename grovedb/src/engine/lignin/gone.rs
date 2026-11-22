@@ -51,9 +51,9 @@
 //!
 //! - A node that is removed in a subtree whose path no handle of the
 //!   group was told states no drop: none is inferred from it.
-//! - A group in which a batch enters, drops or clears a subtree itself
-//!   leaves nothing out, and is refused where a subtree would be dropped
-//!   with it.
+//! - A group in which a batch enters, drops or clears a subtree itself,
+//!   or states one anew, leaves nothing out, and is refused where a
+//!   subtree would be dropped with it.
 //! - Open, `TXN-03-F5`: what the look found is not judged again where
 //!   the group is laid out. A subtree that a commit beside the
 //!   transaction enters under a removed node after the look is not
@@ -180,8 +180,8 @@ impl Look<'_> {
 
 /// What `parts` do to the subtrees under the nodes they remove. `own`
 /// says that a batch of them enters, drops or clears a subtree itself,
-/// and `over` is what the group does to the subtrees of the trees it
-/// writes other elements over.
+/// or states one anew, and `over` is what the group does to the subtrees
+/// of the trees it writes other elements over.
 pub(super) fn gone(
     view: LigninView<'_>,
     parts: &[LigninSettled],
@@ -250,7 +250,7 @@ pub(super) fn gone(
             true => Ok(gone),
             false => Err(not_supported(
                 "a group that removes a node which a subtree is entered under, and in which a \
-                 batch enters, drops or clears a subtree itself",
+                 batch enters, drops or clears a subtree itself, or states one anew",
             )),
         };
     }
