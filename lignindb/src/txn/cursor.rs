@@ -20,7 +20,7 @@ use super::{
     path::{FlatReader, Idle, WritePath, IDLE},
     txn::{show_committed, Pinned, Sided, WriteTxn},
     unlinked,
-    view::{ChildKeys, NodeView},
+    view::{ChildKeys, FlatKinds, NodeView},
     write_set::{Own, WriteSet},
 };
 use crate::{
@@ -229,6 +229,12 @@ impl<'s> FlatSide<'s> {
 /// side is pointed at the prefix that its version has a subtree under
 /// which the transaction moved: the unlinked records of that Merk are
 /// read there with its nodes.
+///
+/// A side that was told which tree types keep their data as flat records
+/// ([`FlatKinds`]) shows the records of such a subtree as they are
+/// stored, and not as unlinked records: by the tree type that its version
+/// has the subtree entered with under the prefix it reads, which it looks
+/// at where it is opened and pointed.
 pub struct MerkSide<'s> {
     path: WritePath<'s>,
     at: CommitVersion,
@@ -238,6 +244,16 @@ pub struct MerkSide<'s> {
     under: Subtree,
     buffers: LoadBuffers,
     unlinked: Option<UnlinkedSide<'s>>,
+    flat: Option<FlatKinds>,
+    /// Whether the version has the subtree entered as a tree that keeps
+    /// its data as flat records.
+    raw: bool,
+}
+
+/// Whether `flat` says of the tree type `entered` that a tree of it keeps
+/// its data as flat records.
+fn keeps_flat(flat: Option<FlatKinds>, entered: Option<&[u8]>) -> bool {
+    flat.is_some_and(|flat| entered.is_some_and(flat))
 }
 
 /// The unlinked records of one subtree at one version, in key order: the
@@ -282,11 +298,13 @@ impl<'s> MerkSide<'s> {
         lease: Lease,
         opened: &mut Option<Opened>,
         subtree: Subtree,
+        flat: Option<FlatKinds>,
     ) -> Result<Self, TxnError> {
         let path = *txn.path();
         let directory = Opened::at(opened, &path, guard, at)?;
         let entered = directory.root(&path, guard, &subtree)?;
         let root = entered.flatten();
+        let raw = keeps_flat(flat, directory.tree_type(&path, guard, &subtree)?);
         // Whether the version holds unlinked records under the subtree
         // is asked once, and of the transaction, which may know. No record
         // is read under a subtree that is not entered.
@@ -301,6 +319,8 @@ impl<'s> MerkSide<'s> {
             under: subtree,
             buffers: LoadBuffers::new(),
             unlinked,
+            flat,
+            raw,
         })
     }
 
@@ -312,15 +332,18 @@ impl<'s> MerkSide<'s> {
 
     /// Points the side at the Merk that its version has under `subtree`,
     /// whose root is at `root`: the tree, and the unlinked records under
-    /// that prefix where `records` says that the Merk holds any. The
-    /// side then stands nowhere.
+    /// that prefix where `records` says that the Merk holds any. `raw`
+    /// says whether the version has the subtree entered as a tree that
+    /// keeps its data as flat records. The side then stands nowhere.
     fn open_at(
         &mut self,
         guard: &OperationGuard<'s>,
         subtree: Subtree,
         root: Option<CellAddress>,
         records: bool,
+        raw: bool,
     ) {
+        self.raw = raw;
         self.unlinked = records.then(|| UnlinkedSide::over(self.path, self.at, subtree));
         self.cursor = tree::Cursor::open(&self.reader(guard), root);
         self.under = subtree;
@@ -344,6 +367,9 @@ impl<'s> MerkSide<'s> {
         {
             let mut record = Vec::new();
             let held = unlinked.records.value(guard, key, &mut record)?;
+            if held && self.raw {
+                return Ok(read(Some(NodeView::flat(key, &record))));
+            }
             let node = held.then(|| unlinked::decode(key, &record)).transpose()?;
             return Ok(read(node.map(NodeView::unlinked)));
         }
@@ -375,6 +401,9 @@ impl<'s> MerkSide<'s> {
         if let (None, Some(unlinked)) = (found, &mut self.unlinked) {
             let mut record = Vec::new();
             if unlinked.records.value(guard, key, &mut record)? {
+                if self.raw {
+                    return Ok(read(Some(NodeView::flat(key, &record))));
+                }
                 return Ok(read(Some(NodeView::unlinked(unlinked::decode(
                     key, &record,
                 )?))));
@@ -500,7 +529,8 @@ impl<'s> CommittedSide<'s> for MerkSide<'s> {
         // looked up for it. No record is read under a subtree that is
         // not entered.
         let records = entered.is_some() && directory.has_unlinked(&self.path, guard, &under)?;
-        self.open_at(guard, under, entered.flatten(), records);
+        let raw = keeps_flat(self.flat, directory.tree_type(&self.path, guard, &under)?);
+        self.open_at(guard, under, entered.flatten(), records, raw);
         Ok(())
     }
 
@@ -516,7 +546,8 @@ impl<'s> CommittedSide<'s> for MerkSide<'s> {
         // keeps, and whether the Merk holds unlinked records is asked as
         // where the cursor is opened (`holds_unlinked`).
         let records = entered.is_some() && holds_unlinked(txn, kept, guard, self.at, &under)?;
-        self.open_at(guard, under, entered.flatten(), records);
+        let raw = keeps_flat(self.flat, kept.tree_type(&self.path, guard, &under)?);
+        self.open_at(guard, under, entered.flatten(), records, raw);
         Ok(())
     }
 }
@@ -658,6 +689,7 @@ impl<'t, 's> MerkCursor<'t, 's> {
         txn: &'t WriteTxn<'s>,
         who: Who,
         subtree: Subtree,
+        flat: Option<FlatKinds>,
     ) -> Result<Self, TxnError> {
         // The root is the one the pinned version has, read under a guard
         // (PN5). The lease is the cursor's own (PN1). The transaction pins
@@ -667,7 +699,7 @@ impl<'t, 's> MerkCursor<'t, 's> {
         let (guard, pin) = txn.pin_shown(lease);
         let at = pin.version();
         let mut opened = None;
-        let side = MerkSide::of(txn, &guard, at, lease, &mut opened, subtree)?;
+        let side = MerkSide::of(txn, &guard, at, lease, &mut opened, subtree, flat)?;
         let mut cursor = Self::over(txn, who, Unit::data(subtree), pin, side);
         cursor.opened = opened;
         Ok(cursor)
@@ -712,7 +744,11 @@ impl<'t, 's> MerkCursor<'t, 's> {
         let records =
             entered.is_some() && holds_unlinked(self.txn, directory, &guard, at, &subtree)?;
         let root = entered.flatten();
-        self.side.open_at(&guard, subtree, root, records);
+        let raw = keeps_flat(
+            self.side.flat,
+            directory.tree_type(&path, &guard, &subtree)?,
+        );
+        self.side.open_at(&guard, subtree, root, records, raw);
         self.unit = Unit::data(subtree);
         // Whether the committed side is read is asked again, of the new
         // subtree, by the next move.
@@ -775,7 +811,8 @@ impl<'t, 's> MerkCursor<'t, 's> {
             lease: Some(self.side.lease),
         };
         let own = children.as_deref_mut();
-        let shown = (self.txn).cursor_node(self.who, subtree, &key, own, pinned, read)?;
+        let flat = self.side.flat;
+        let shown = (self.txn).cursor_node(self.who, (subtree, &key), own, pinned, flat, read)?;
         let (read, side) = match shown {
             Ok(shown) => return Ok(shown),
             Err(rest) => rest,
@@ -1125,7 +1162,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
         }
         let guard = path.versions().guard();
         let lease = Lease::take();
-        let side = MerkSide::of(txn, &guard, at, lease, &mut self.opened, unit.subtree)?;
+        let side = MerkSide::of(txn, &guard, at, lease, &mut self.opened, unit.subtree, None)?;
         drop(guard);
         let mut nodes = Cursor::at(txn, who, unit, at, None, side);
         nodes.opened = self.opened.take();

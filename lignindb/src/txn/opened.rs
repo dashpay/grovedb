@@ -87,6 +87,18 @@ impl Opened {
         Ok(entry.map(|entry| entry.root().map(|root| root.address)))
     }
 
+    /// The tree type that this version has `subtree` entered with, if the
+    /// subtree is entered.
+    pub(crate) fn tree_type<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+    ) -> Result<Option<&[u8]>, TxnError> {
+        self.open(path, guard, subtree)?;
+        Ok(self.entries[subtree].as_ref().map(Entry::tree_type))
+    }
+
     /// The id of the Merk that this version has under `subtree`, if the
     /// subtree is entered (`lignin_tree::directory`, "Ids").
     pub(crate) fn id<'s>(
