@@ -2316,6 +2316,7 @@ fn an_emptied_indexed_tree_whose_axes_change_places_is_converted_and_takes_no_wr
     let entered = Cell::new(None);
     let root = Cell::new(None);
 
+    #[cfg_attr(not(feature = "rocksdb_storage"), allow(unused_variables))]
     let (cost, written) = emptied_tree_whose_axes_change_places(
         &db,
         v,
