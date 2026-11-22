@@ -835,15 +835,10 @@ fn walked_over_records<E: Engine>(dir: &std::path::Path, v: &GroveVersion) -> Ve
 /// nodes of a tree is the cursor of its keyspace, which shows the records
 /// of an append-only tree: the walk over one that has records fails
 /// there, and so does the delete of a tree that holds one. The node
-/// cursor of the LigninDB store shows the key of such a record and
-/// refuses its value, until it shows the record's bytes (`MERK-05-F1`
-/// part 2): the walk fails here too, with the store's refusal and not
-/// with what GroveDB makes of the bytes, and so does the delete. This
-/// test holds what each engine answers until then: the same up to the
-/// first walk over records, RocksDB's failure there, and that LigninDB
-/// either fails as RocksDB does, from which call on the two are compared
-/// to the end, or fails each call that RocksDB fails with that refusal
-/// and answers every other call as RocksDB does.
+/// cursor of the LigninDB store shows such a record with its bytes, as
+/// RocksDB's does, so GroveDB makes of it what it makes of it there: the
+/// two engines answer every call of the history the same, the walk and
+/// the delete that fail among them.
 #[cfg(feature = "rocksdb_storage")]
 #[test]
 fn a_walk_that_takes_the_records_of_an_append_only_tree_for_elements() {
@@ -866,20 +861,8 @@ fn a_walk_that_takes_the_records_of_an_append_only_tree_for_elements() {
         assert!(failed.starts_with("Err("), "v{number}: {failed}");
         let (_, _, deleted) = &on_rocksdb[walk + 5];
         assert!(deleted.starts_with("Err("), "v{number}: {deleted}");
-        if on_lignin[walk..] == on_rocksdb[walk..] {
-            continue;
-        }
         for (here, there) in on_lignin[walk..].iter().zip(&on_rocksdb[walk..]) {
-            match there.2.starts_with("Err(") {
-                true => {
-                    let reason = "a flat record among the nodes of a Merk is no unlinked record";
-                    let refused = here.2.starts_with("Err(StorageError(StorageError(")
-                        && here.2.contains(reason);
-                    assert!(refused, "v{number} {}: {}", here.0, here.2);
-                    assert_eq!(here.0, there.0, "v{number}");
-                }
-                false => assert_eq!(here, there, "v{number}"),
-            }
+            assert_eq!(here, there, "v{number}");
         }
     }
 }

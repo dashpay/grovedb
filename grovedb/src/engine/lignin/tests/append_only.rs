@@ -1142,6 +1142,92 @@ five_trees_deep! {
     the_root_hash_follows_an_append_to_a_private_document_store_five_trees_deep: Private, |number| number >= 4;
 }
 
+/// A tree that holds an append-only tree, walked for the trees in it:
+/// before the tree has a record and after. Then the records of the
+/// append-only tree under the cursor that walks the nodes of a Merk, each
+/// with what the looks at it are charged.
+///
+/// RocksDB's cursor over the nodes of a subtree is the cursor of its data
+/// keyspace, which shows the records of an append-only tree with their
+/// bytes. On the grove versions whose walk takes every record there for an
+/// element, GroveDB makes of such a record what it makes of it, and the
+/// walk over a tree with records ends as it ends on RocksDB (D-197).
+fn walked<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let outer: &[&[u8]] = &[b"outer"];
+    let tree = T::NAME.as_bytes();
+    h.write(
+        "made",
+        db.insert(ROOT, b"outer", Element::empty_tree(), None, None, v),
+    );
+    h.write(
+        "made",
+        db.insert(outer, tree, T::empty(None), None, None, v),
+    );
+    h.write(
+        "item",
+        db.insert(outer, b"item", Element::new_item(vec![5; 9]), None, None, v),
+    );
+    h.read("subtrees", db.find_subtrees(&outer.into(), None, v));
+    for n in 0..3 {
+        h.write("append", T::append(db, outer, tree, n, None, v));
+    }
+    h.read("subtrees", db.find_subtrees(&outer.into(), None, v));
+
+    raw_walk(&mut h, &[b"outer", tree]);
+    h.answers
+}
+
+/// Walks the node cursor of the subtree at `path` from its first record
+/// to its end, or to a record that it shows no value of, and takes in
+/// what the cursor shows at each place: whether
+/// it is valid, the key, the value and its status, with what the looks
+/// and the step to the place are charged.
+fn raw_walk<E: Engine>(h: &mut History<'_, E>, path: &[&[u8]]) {
+    use grovedb_merk::store::{NodeCursor, NodeStore};
+
+    let engine = h.db.engine();
+    let transaction = engine.start_read_transaction();
+    let handle = engine.subtree(path.into(), None, &transaction).unwrap();
+    let mut cursor = NodeStore::cursor(&handle);
+    let mut cost = OperationCost::default();
+    cursor.seek_to_first().unwrap_add_cost(&mut cost);
+    loop {
+        let valid = cursor.valid().unwrap_add_cost(&mut cost);
+        let key = cursor.key().unwrap_add_cost(&mut cost).map(<[u8]>::to_vec);
+        let value = (cursor.value().unwrap_add_cost(&mut cost)).map(<[u8]>::to_vec);
+        let status = cursor.status();
+        let shown = format!("{valid} {key:?} {value:?} {status:?}");
+        (h.answers).push(("record".to_owned(), std::mem::take(&mut cost), shown));
+        if !valid || value.is_none() {
+            break;
+        }
+        cursor.next().unwrap_add_cost(&mut cost);
+    }
+}
+
+/// What [`walked`] must have come to on LigninDB: on a grove version that
+/// has the kind, the cursor showed records, each with a value.
+fn walked_told(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usize) {
+    move |answers, number| {
+        let records = answers.iter().filter(|(name, ..)| name == "record");
+        let shown: Vec<_> =
+            (records.filter(|(.., shown)| shown.starts_with("true Some("))).collect();
+        let with_value = |(.., shown): &&Answer| shown.ends_with(") Ok(())");
+        assert!(shown.iter().all(with_value), "v{number}: {shown:?}");
+        assert_eq!(!shown.is_empty(), has_tree(number), "v{number}");
+    }
+}
+
+#[test]
+fn a_walk_for_the_trees_beside_an_append_only_tree_answers_as_on_rocksdb() {
+    on_both_engines!(walked::<Mmr, _>, walked_told(|_| true));
+    on_both_engines!(walked::<Bulk, _>, walked_told(|_| true));
+    on_both_engines!(walked::<Dense, _>, walked_told(|_| true));
+    on_both_engines!(walked::<Commitment, _>, walked_told(|_| true));
+    on_both_engines!(walked::<Private, _>, walked_told(|number| number >= 4));
+}
+
 #[test]
 fn an_mmr_tree_answers_on_lignindb_as_on_rocksdb() {
     on_both_engines!(history::<Mmr, _>, told::<Mmr>(|_| true));
@@ -1165,4 +1251,156 @@ fn a_commitment_tree_answers_on_lignindb_as_on_rocksdb() {
 #[test]
 fn a_private_document_store_answers_on_lignindb_as_on_rocksdb() {
     on_both_engines!(history::<Private, _>, told::<Private>(|number| number >= 4));
+}
+
+/// What the close of a LigninDB database finds wrong, in a debug build:
+/// the text of its panic, or nothing.
+#[cfg(all(feature = "rocksdb_storage", debug_assertions))]
+fn found_at_close(db: GroveDb<crate::LigninEngine>) -> Option<String> {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    let closed = catch_unwind(AssertUnwindSafe(move || drop(db)));
+    closed.err().map(|panic| {
+        let said = panic.downcast_ref::<String>().expect("a text");
+        assert!(said.contains("is left unsound at version"), "{said}");
+        said.clone()
+    })
+}
+
+/// The records that [`raw_walk`] took in.
+#[cfg(all(feature = "rocksdb_storage", debug_assertions))]
+fn records(answers: &[Answer]) -> Vec<&str> {
+    let records = answers.iter().filter(|(name, ..)| name == "record");
+    records.map(|(.., shown)| shown.as_str()).collect()
+}
+
+/// One batch makes a tree that keeps flat records and a keyed child under
+/// it, and the node cursor of the tree's subtree is walked. Grove versions
+/// 1 to 3 take the batch, and the level of the child runs as a Merk under
+/// the prefix of the tree (upstream refuses it from grove version 4).
+#[cfg(all(feature = "rocksdb_storage", debug_assertions))]
+fn keyed_child<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let tree = T::NAME.as_bytes();
+    let ops = vec![
+        QualifiedGroveDbOp::insert_or_replace_op(vec![], tree.to_vec(), T::empty(None)),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            owned(ROOT, tree),
+            b"child".to_vec(),
+            Element::new_item(b"a keyed child".to_vec()),
+        ),
+    ];
+    h.write("batch", db.apply_batch(ops, None, None, v));
+    raw_walk(&mut h, &[tree]);
+    h.answers
+}
+
+/// D-280, the first of the two states that grove versions 1 to 3 come to
+/// and that the tree type of an entry does not tell apart: a node of a
+/// Merk under an entry whose tree type keeps flat records. The node is a
+/// cell of the Merk's tree, and the node cursor shows it as RocksDB's
+/// does, with the same bytes and charges: every answer of the history is
+/// RocksDB's.
+///
+/// The close of a debug build finds one thing: the cell of the tree's
+/// element hosts the Merk of the keyed level, which the checker's hash
+/// rule for a tree that keeps flat records has no place for. The rule is
+/// stricter than the state (D-287), and `GROVE-04-F1` changes it. This
+/// test fails then, and is turned.
+#[cfg(all(feature = "rocksdb_storage", debug_assertions))]
+#[test]
+fn a_keyed_child_under_a_tree_of_flat_records_is_walked_as_on_rocksdb() {
+    fn on_both<T: Appended>() {
+        for (number, v) in GROVE_VERSIONS.iter().enumerate().take(3) {
+            let number = number + 1;
+            let dir = tempfile::tempdir().expect("a directory");
+            let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
+                .expect("a database on RocksDB");
+            let on_rocksdb = keyed_child::<T, _>(&db, v);
+            let shown = records(&on_rocksdb);
+            assert_eq!(shown.len(), 2, "{} on v{number}: {shown:?}", T::NAME);
+            assert!(shown[0].starts_with("true Some([99, 104, 105, 108, 100]) Some("));
+            assert!(shown[0].ends_with(") Ok(())"), "{}", shown[0]);
+            assert_eq!(shown[1], "false None None Ok(())");
+
+            let dir = tempfile::tempdir().expect("a directory");
+            let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
+            let on_lignin = keyed_child::<T, _>(&db, v);
+            assert_eq!(on_lignin, on_rocksdb, "{} on v{number}", T::NAME);
+            let found = found_at_close(db).expect("D-287: the checker's rule refuses the state");
+            let known = "the element has 0 Merks and its cell hosts 1";
+            assert!(found.contains(known), "{} on v{number}: {found}", T::NAME);
+        }
+    }
+    on_both::<Mmr>();
+    on_both::<Bulk>();
+    on_both::<Dense>();
+    on_both::<Commitment>();
+}
+
+/// A sum-indexed tree is written into and emptied, a batch writes an
+/// empty MMR tree over it, and a value is appended to that tree. Then the
+/// node cursor of the subtree is walked.
+#[cfg(all(feature = "rocksdb_storage", debug_assertions))]
+fn over_an_emptied_indexed_tree<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
+    use super::indexed::{Indexed, Sum};
+
+    let mut h = History::new(db, v);
+    let indexed: &[&[u8]] = &[b"i"];
+    h.write("made", db.insert(ROOT, b"i", Sum::empty(), None, None, v));
+    let child = Sum::insert(db, indexed, b"child", Sum::leaf(4), None, v);
+    h.write("child", child);
+    h.write("emptied", Sum::delete(db, indexed, b"child", None, v));
+    let over = QualifiedGroveDbOp::insert_or_replace_op(vec![], b"i".to_vec(), Mmr::empty(None));
+    h.write("over", db.apply_batch(vec![over], None, None, v));
+    h.write("append", Mmr::append(db, ROOT, b"i", 0, None, v));
+    raw_walk(&mut h, &[b"i"]);
+    h.answers
+}
+
+/// D-280, the second of the two states: a flat record under an entry
+/// whose tree type keeps a Merk. On grove version 3 a batch writes an MMR
+/// tree over an indexed tree that was emptied, whose primary stays
+/// entered with no root. The engine keeps that entry, with the tree type
+/// of the indexed tree, and the append puts the MMR's record under it.
+///
+/// RocksDB's node cursor shows the record with its bytes: that is the
+/// answer required. LigninDB's reads the record by the tree type of the
+/// stale entry, as an unlinked record, and refuses it: a known difference
+/// (D-280), which is the entry's and ends with `GROVE-04-F1`. Every
+/// answer before the walk is RocksDB's. The close finds the same stale
+/// entries: the cell of the MMR tree's element still hosts the two Merks
+/// of the indexed tree. This test fails when the entry is made the MMR
+/// tree's, and is turned then.
+#[cfg(all(feature = "rocksdb_storage", debug_assertions))]
+#[test]
+fn a_flat_tree_over_an_emptied_indexed_tree_is_walked_by_the_tree_type_of_its_stale_entry() {
+    let v = &GROVE_VERSIONS[2];
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
+        .expect("a database on RocksDB");
+    let on_rocksdb = over_an_emptied_indexed_tree(&db, v);
+    for (call, _, answer) in &on_rocksdb {
+        let written = ["made", "child", "emptied", "over", "append"].contains(&call.as_str());
+        assert!(!written || answer.starts_with("Ok("), "{call}: {answer}");
+    }
+    let required = records(&on_rocksdb);
+    assert_eq!(required.len(), 2, "{required:?}");
+    assert!(required[0].starts_with("true Some([128, 0, 0, 0, 0, 0, 0, 0]) Some("));
+    assert!(required[0].ends_with(") Ok(())"), "{}", required[0]);
+    assert_eq!(required[1], "false None None Ok(())");
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
+    let on_lignin = over_an_emptied_indexed_tree(&db, v);
+    let before_the_walk = on_rocksdb.len() - required.len();
+    assert_eq!(on_lignin[..before_the_walk], on_rocksdb[..before_the_walk]);
+    let shown = records(&on_lignin);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(shown[0].starts_with("true Some([128, 0, 0, 0, 0, 0, 0, 0]) None Err("));
+    let refusal = "a flat record among the nodes of a Merk is no unlinked record";
+    assert!(shown[0].contains(refusal), "{}", shown[0]);
+    let found = found_at_close(db).expect("GROVE-04-F1: the entries of the indexed tree stay");
+    let known = "the element has 0 Merks and its cell hosts 2";
+    assert!(found.contains(known), "{found}");
 }
