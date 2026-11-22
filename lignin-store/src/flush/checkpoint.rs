@@ -148,12 +148,15 @@ impl<'s> WriteBack<'s> {
     /// After a failed append this is what makes the cut of CM9: the log
     /// takes no item until it has returned `Ok`.
     ///
-    /// A roll whose turns all ended in a file that takes no item has
-    /// failed, with what the file layer answered the append that left
-    /// the log so ([`LogError::NoActiveFileSince`]): a device that
-    /// refuses each start record and keeps its bytes gives such turns.
-    /// Each of them used a file, so whoever rolls the log again and again
-    /// has to know that it did so in vain ([`Self::run`]).
+    /// A roll that has made all its rounds, and whose last turn left the
+    /// log with no file that takes items, has failed, with what the file
+    /// layer answered the append that left the log so
+    /// ([`LogError::NoActiveFileSince`]): a device that refuses each
+    /// start record and keeps its bytes gives such turns. Each of them
+    /// used a file, so whoever rolls the log again and again has to know
+    /// that it did so in vain ([`Self::run`]). A round whose sync of the
+    /// log, new file or manifest fails ends the roll there, with that
+    /// error.
     ///
     /// [`LogStore::roll`]: crate::wal::LogStore::roll
     pub fn roll_log(&self) -> Result<bool, FlushError> {

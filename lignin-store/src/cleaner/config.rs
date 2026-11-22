@@ -173,9 +173,10 @@ pub struct CleanerStats {
     pub value_bytes_copied: u64,
     /// Value-log files that were taken out of the store.
     pub value_files_dropped: u64,
-    /// Value-log files of the cleaner's own copies that it gave up after
-    /// a cleaning that wrote to them failed. Such a file is closed, where
-    /// it ends or where it was last durable.
+    /// Value-log files for the cleaner's own copies that it gave up
+    /// after a cleaning into the file failed, whether a copy had been
+    /// written to it by then or not. Such a file is closed, where it
+    /// ends or where it was last durable.
     pub value_files_given_up: u64,
     /// Passes that ended with an error.
     pub errors: u64,
