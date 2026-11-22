@@ -1302,11 +1302,10 @@ fn keyed_child_walked<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion)
 /// does, with the same bytes and charges: every answer of the history is
 /// RocksDB's.
 ///
-/// The close of a debug build finds one thing: the cell of the tree's
-/// element hosts the Merk of the keyed level, which the checker's hash
-/// rule for a tree that keeps flat records has no place for. The rule is
-/// stricter than the state (D-287), and `GROVE-04-F1` changes it. This
-/// test fails then, and is turned.
+/// The close of a debug build finds nothing: the cell of the tree's
+/// element hosts the Merk of the keyed level, and the checker's hash
+/// rule for a tree that keeps flat records has a place for that one
+/// Merk (D-287).
 #[cfg(all(feature = "rocksdb_storage", debug_assertions))]
 #[test]
 fn a_keyed_child_under_a_tree_of_flat_records_is_walked_as_on_rocksdb() {
@@ -1327,9 +1326,7 @@ fn a_keyed_child_under_a_tree_of_flat_records_is_walked_as_on_rocksdb() {
             let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
             let on_lignin = keyed_child_walked::<T, _>(&db, v);
             assert_eq!(on_lignin, on_rocksdb, "{} on v{number}", T::NAME);
-            let found = found_at_close(db).expect("D-287: the checker's rule refuses the state");
-            let known = "the element has 0 Merks and its cell hosts 1";
-            assert!(found.contains(known), "{} on v{number}: {found}", T::NAME);
+            assert_eq!(found_at_close(db), None, "{} on v{number}", T::NAME);
         }
     }
     on_both::<Mmr>();
@@ -1401,7 +1398,7 @@ fn a_flat_tree_over_an_emptied_indexed_tree_is_walked_by_the_tree_type_of_its_st
     let refusal = "a flat record among the nodes of a Merk is no unlinked record";
     assert!(shown[0].contains(refusal), "{}", shown[0]);
     let found = found_at_close(db).expect("GROVE-04-F1: the entries of the indexed tree stay");
-    let known = "the element has 0 Merks and its cell hosts 2";
+    let known = "the element has 1 Merks and its cell hosts 2";
     assert!(found.contains(known), "{found}");
 }
 
@@ -1533,21 +1530,17 @@ fn keyed_child_on_both<T: Appended>(
 ///   `TXN-03-F5`): every step before the first append is RocksDB's, and
 ///   the append is refused, because the transaction takes no flat data
 ///   record beside the nodes of a Merk.
-/// - In those two the store is sound when the history is over, because
-///   the delete of the tree took the child's Merk with it. Before that
-///   it is not, in any of the three
-///   ([`a_keyed_child_under_a_tree_of_flat_records_leaves_a_store_the_checker_refuses`]).
 /// - **A defect, with the child after the appends** (D-283,
 ///   `TXN-03-F5`): the batch is taken, and every step before the delete
 ///   of the tree is RocksDB's but the query of every key under the tree,
 ///   which fails on both engines with different errors. The delete is
-///   refused, and the store is not sound: the cell of the tree's element
-///   points at the root of the child's Merk, and the element of such a
-///   tree hosts none. The test catches the checker's finding at the
-///   close.
+///   refused: its walk of the nodes meets a flat record.
 ///
-/// Both turn with the change of the transaction: this test fails then,
-/// and is to hold LigninDB to RocksDB's answers in all three.
+/// The store is sound at the close of each
+/// ([`a_keyed_child_under_a_tree_of_flat_records_leaves_a_sound_store`]).
+/// The last two turn with the change of the transaction: this test
+/// fails then, and is to hold LigninDB to RocksDB's answers in all
+/// three.
 #[cfg(feature = "rocksdb_storage")]
 fn a_keyed_child_under<T: Appended>() {
     let step = |answers: &[Answer], call: &str| {
@@ -1607,7 +1600,7 @@ fn a_keyed_child_under<T: Appended>() {
                         refused.contains("a flat record among the nodes of a Merk"),
                         "{case}: {refused}"
                     );
-                    assert!(!sound, "{case}");
+                    assert!(sound, "{case}");
                 }
             }
         }
@@ -1638,17 +1631,18 @@ fn a_keyed_child_under_a_commitment_tree_is_held_to_what_rocksdb_answers() {
     a_keyed_child_under::<Commitment>();
 }
 
-/// A defect (D-283, `TXN-03-F5`): the batch that inserts a keyed child
-/// under a tree that keeps flat records puts the node of the tree's
-/// element as one that hosts the Merk of the child's level, and the hash
-/// rule of the store allows the cell of such an element no Merk
-/// (`merk/src/store/lignin/hash`). The batch is taken, with the root hash
-/// that RocksDB has, and the store that is closed right after it is one
-/// the physical checker refuses, on grove versions 1 to 3, for each of
-/// the four kinds they have. This test fails when the store is sound.
+/// The batch that inserts a keyed child under a tree that keeps flat
+/// records puts the node of the tree's element as one that hosts the
+/// Merk of the child's level, in the first place, and Merk states the
+/// value hash of that element with the root hash of the Merk in it. The
+/// hash rule of the store allows the cell of such an element that one
+/// Merk (`merk/src/store/lignin/hash`, D-287). The batch is taken at
+/// RocksDB's cost and root hash, and the store that is closed right
+/// after it is sound, on grove versions 1 to 3, for each of the four
+/// kinds they have.
 #[cfg(feature = "rocksdb_storage")]
 #[test]
-fn a_keyed_child_under_a_tree_of_flat_records_leaves_a_store_the_checker_refuses() {
+fn a_keyed_child_under_a_tree_of_flat_records_leaves_a_sound_store() {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn case<T: Appended>(v: &GroveVersion) -> (bool, bool) {
@@ -1698,10 +1692,7 @@ fn a_keyed_child_under_a_tree_of_flat_records_leaves_a_store_the_checker_refuses
         for (name, (equal, sound)) in cases {
             let case = format!("{name}, grove version {}", number + 1);
             assert!(equal, "{case}: the cost and the root hash are RocksDB's");
-            assert!(
-                !sound,
-                "{case}: the store is sound, and this test has to turn"
-            );
+            assert!(sound, "{case}: the store is closed sound");
         }
     }
 }

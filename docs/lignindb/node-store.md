@@ -603,7 +603,8 @@ A deferred handle that stages in a batch refuses a change set that says it is th
   | an item that takes backward references | `value_hash` of its serialization with the referrers emptied (#1059) |
   | a tree whose data is a Merk | `combine_hash(value_hash(value), root)`, with `NULL_HASH` for a Merk with no root |
   | an indexed tree | `combine_hash_three(value_hash(value), primary, secondary)`, or with `axes_digest` of the secondaries for a tree with a list of axes |
-  | a reference of any kind; a tree whose data is no Merk | refused: its writer states it. Its cell hosts no Merk |
+  | a reference of any kind | refused: its writer states it. Its cell hosts no Merk |
+  | a tree whose data is no Merk | refused: its writer states it. Its cell hosts no Merk, or one, in the first place: the Merk of keyed children that a batch on `GROVE_V1` to `GROVE_V3` writes under such a tree, whose root hash Merk takes into the value hash it states for the element. Two Merks, or one in another place, are refused |
   | no element | refused |
 
   The hash of a tree is the one a write below it gives it, which is when it goes stale. The insert of the element itself is its writer's: `GROVE_V1` and `GROVE_V2` insert a count sum tree, a provable count tree and a provable count sum tree outside a batch as plain values (the insert names a count big sum tree too, which those versions refuse to create before it is reached), so such an element has `value_hash(value)` until something is written below it, and the combined hash afterwards, with the same bytes once it is empty again. `MerkHashRules::value_hash_at_insert` gives that first hash. A load or a migration of existing nodes therefore hands over the value hashes it has.

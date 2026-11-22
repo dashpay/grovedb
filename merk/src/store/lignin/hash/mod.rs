@@ -47,7 +47,7 @@
 //! | an indexed tree with one secondary | `combine_hash_three(value_hash(value), primary, secondary)` | `PutLayeredCountIndexedReference` |
 //! | an indexed tree with a list of axes | `combine_hash_three(value_hash(value), primary, axes_digest(axes))` | the same |
 //! | a reference of any kind | **refused**: it is made from the value hash of the element the reference ends at, which no rule is given. Its cell hosts no Merk | `PutCombinedReference`, `PutWithProvidedValueHash` |
-//! | a tree whose data is no Merk (MMR, bulk append, dense, commitment, private documents) | **refused**: it is made from the state root of that structure. Its cell hosts no Merk | `PutLayeredReference` |
+//! | a tree whose data is no Merk (MMR, bulk append, dense, commitment, private documents) | **refused**: it is made from the state root of that structure. Its cell hosts no Merk, or one, in the first place (below) | `PutLayeredReference` |
 //! | no element | **refused** | |
 //!
 //! The root hash of a hosted Merk is what the tree layer hands the rule
@@ -61,6 +61,17 @@
 //! the element is, and also where a check takes the stored hash: whoever
 //! writes another element over a tree drops the tree's Merks or names what
 //! the new element hosts, so that a cell hosts what its element has.
+//!
+//! **A tree whose data is no Merk can have one Merk all the same.** A
+//! batch on `GROVE_V1` to `GROVE_V3` takes the insert of a keyed child
+//! under such a tree, and writes the child's level as a Merk under the
+//! prefix of the tree, beside the tree's own records. Merk then puts the
+//! tree's element with a value hash that takes in the root hash of that
+//! Merk, and the element keeps its own fields and names no root key. So
+//! the cell of such an element may point at one Merk, in the first
+//! place, and its value hash stays its writer's to state. A cell of it
+//! that hosts two Merks, or one in another place than the first, is
+//! refused as any cell that hosts more than its element has.
 //!
 //! **A tree's value hash is the one a write below it gives it.** The value
 //! hash of a tree element goes stale when a Merk it hosts gets another
@@ -407,10 +418,15 @@ impl<'v> MerkHashRules<'v> {
         };
         let mut cost = OperationCost::default();
         let made = match how {
-            // A reference hosts no Merk, and neither does a tree whose
-            // data is none.
+            // A reference hosts no Merk. A tree whose data is none
+            // hosts none, or one in the first place: the Merk of keyed
+            // children, which a batch on grove versions 1 to 3 writes
+            // under such a tree.
             ValueHash::Stated(why) => {
-                hosts(0)?;
+                hosts(match why {
+                    StatedByWriter::Reference => 0,
+                    StatedByWriter::NonMerkTree => 1,
+                })?;
                 return Err(HashRefusal::StatedByWriter(why));
             }
             ValueHash::Plain => {

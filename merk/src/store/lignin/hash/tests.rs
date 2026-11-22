@@ -681,11 +681,38 @@ fn a_value_hash_that_only_its_writer_can_make_is_refused() {
         let value = bytes(element);
         let stored = [0x5c; 32];
         assert_eq!(made(&value, &[]), Err(HashRefusal::StatedByWriter(why)));
-        // Such an element hosts no Merk: a cell that does is refused as
-        // that, for an evaluation and for a check.
-        for hosted in [&[None][..], &[Some([1; 32]), None][..]] {
+        // A reference hosts no Merk. A tree whose data is no Merk can
+        // host one, in the first place: the Merk of keyed children that
+        // a batch on grove versions 1 to 3 writes under it. Its value
+        // hash is its writer's to state then too, for an evaluation and
+        // for a check.
+        let merks = match why {
+            StatedByWriter::Reference => 0,
+            StatedByWriter::NonMerkTree => 1,
+        };
+        if merks == 1 {
+            for hosted in [&[None][..], &[Some([1; 32])][..]] {
+                assert_eq!(made(&value, hosted), Err(HashRefusal::StatedByWriter(why)));
+                let answered = with_leaf(b"key", &value, stored, |cell| {
+                    MerkHashRules::for_check(version()).value_hash(cell, &value, hosted)
+                });
+                assert_eq!(answered.unwrap(), stored);
+            }
+        }
+        // A cell that hosts more is refused as that, for an evaluation
+        // and for a check: a Merk under a reference; and under such a
+        // tree two Merks, or one in another place than the first.
+        let too_many: &[&[Option<[u8; 32]>]] = match why {
+            StatedByWriter::Reference => &[&[None], &[Some([1; 32])], &[Some([1; 32]), None]],
+            StatedByWriter::NonMerkTree => &[
+                &[Some([1; 32]), Some([2; 32])],
+                &[None, Some([2; 32])],
+                &[Some([1; 32]), None],
+            ],
+        };
+        for hosted in too_many.iter().copied() {
             let hosts = HashRefusal::Hosted {
-                element: 0,
+                element: merks,
                 cell: hosted.len(),
             };
             assert_eq!(made(&value, hosted), Err(hosts.clone()));
