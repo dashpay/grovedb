@@ -8,6 +8,10 @@
 //! rolled, and every turn fails. A loop that takes each call for a turn
 //! as a reason to turn at once does not wait in that state, because the
 //! page step of each turn, refused by the log, is such a call.
+//!
+//! A second device takes the log's files and refuses the record of each
+//! page step. There the log can be rolled, and it is the step that fails
+//! the turn.
 
 use std::{
     collections::BTreeSet,
@@ -54,6 +58,20 @@ fn log_files(db: &Db) -> Vec<String> {
     names
 }
 
+/// A pass in which the log refuses the record of the one page step:
+/// the step is put off, and the pass has failed with what the log
+/// answered.
+fn pass_with_a_refused_step(db: &Db) {
+    let error = db.wb().pass().expect_err("the log refused the record");
+    assert!(
+        matches!(
+            error,
+            FlushError::Log(LogError::NotAppended { .. } | LogError::TakenBack { .. })
+        ),
+        "{error}"
+    );
+}
+
 /// A store in the state of the module's documentation, on a device that
 /// is full.
 fn stuck(config: FlushConfig) -> (SimVfs, Db) {
@@ -71,7 +89,7 @@ fn stuck(config: FlushConfig) -> (SimVfs, Db) {
         .on(OpKind::Append)
         .at(FileNames::WAL.path(db_dir(), file));
     fs.add_rule(record.torn_append(false));
-    db.wb().pass().expect("the step is put off");
+    pass_with_a_refused_step(&db);
     assert_eq!(lock(&db.state.placing).len(), 1, "a value is ready");
     assert_eq!(db.pointers(page(1)).len(), 0, "and has no pointer");
     assert!(db.log.is_due(), "the log takes nothing until it is rolled");
@@ -202,7 +220,7 @@ fn a_failed_turn_on_a_device_with_no_free_byte_changes_one_name_twice() {
         .on(OpKind::Append)
         .at(FileNames::WAL.path(db_dir(), file));
     fs.add_rule(record.torn_append(false));
-    db.wb().pass().expect("the step is put off");
+    pass_with_a_refused_step(&db);
     assert!(db.log.is_due());
     fs.set_capacity(Some(fs.used_bytes()));
 
@@ -261,13 +279,14 @@ fn the_loop_waits_after_each_failed_turn_whoever_asks_for_a_turn() {
         ..FlushConfig::new(Db::SIZE)
     };
     let (_fs, db) = stuck(config);
-    waits_between_six_failed_turns(&db, config);
+    waits_between_six_failed_turns(&db, config, true);
 }
 
 /// Runs the loop of `db`, whose turns fail and move nothing on, until
-/// six have failed, with somebody who asks for a turn all the time, and
-/// checks that each was followed by its whole wait.
-fn waits_between_six_failed_turns(db: &Db, config: FlushConfig) {
+/// six have failed, and checks that each was followed by its whole wait.
+/// With `asked`, somebody asks for a turn all the time. Without it
+/// nobody does but the turns themselves.
+fn waits_between_six_failed_turns(db: &Db, config: FlushConfig, asked: bool) {
     let wb = db.wb();
     let ended = Mutex::new(Vec::new());
     let enough = AtomicBool::new(false);
@@ -282,15 +301,19 @@ fn waits_between_six_failed_turns(db: &Db, config: FlushConfig) {
             })
         });
         let _stop = StopOnDrop(wb);
-        // Six failed turns take a fraction of a second. The bound keeps a
-        // loop whose turns do not fail from hanging the test.
+        // Six failed turns take a fraction of a second. The two minutes
+        // are a watchdog, which keeps a loop whose turns do not fail from
+        // hanging the test, and nothing that is checked of the pace: that
+        // is the time between the loop's own calls of `failed`, below.
         let began = Instant::now();
         while !enough.load(Ordering::Acquire) {
             assert!(
                 began.elapsed() < Duration::from_secs(120),
                 "the loop's turns do not fail"
             );
-            wb.wake();
+            if asked {
+                wb.wake();
+            }
             std::thread::yield_now();
         }
     });
@@ -335,7 +358,7 @@ fn stuck_where_the_device_keeps_what_it_refuses(config: FlushConfig) -> (Arc<Lie
         .on(OpKind::Append)
         .at(FileNames::WAL.path(db_dir(), file));
     fs.add_rule(record.torn_append(false));
-    db.wb().pass().expect("the step is put off");
+    pass_with_a_refused_step(&db);
     assert_eq!(lock(&db.state.placing).len(), 1, "a value is ready");
     assert!(db.log.is_due(), "the log takes nothing until it is rolled");
     assert!(std::mem::take(&mut *lock(&db.state.wake)));
@@ -406,13 +429,112 @@ fn the_loop_waits_after_a_roll_that_ended_in_a_file_that_takes_no_item() {
     };
     let (_lies, db) = stuck_where_the_device_keeps_what_it_refuses(config);
     let before = last_log_id(&db);
-    waits_between_six_failed_turns(&db, config);
+    waits_between_six_failed_turns(&db, config, true);
     let failed = db.stats().errors as usize;
     let used = (last_log_id(&db) - before) as usize;
     assert!(
         used <= (failed + 1) * ROLL_ROUNDS,
         "{used} log files in {failed} failed turns"
     );
+}
+
+/// A store with a value whose page step is due, on a device that has no
+/// room for the record of a page step in a log file, writes nothing of
+/// it, and takes everything else: the log's files and their start
+/// records, the value, the manifests and every sync. Returns the device
+/// and what it is told by.
+fn stuck_where_the_device_refuses_the_records_of_page_steps(
+    config: FlushConfig,
+) -> (SimVfs, Arc<Lies>, Db) {
+    let fs = sim_fs(SimConfig::new(5));
+    let lies = Arc::new(Lies::default());
+    let vfs = Arc::new(Swapping {
+        inner: shared(&fs),
+        lies: lies.clone(),
+    });
+    let db = Db::create(vfs, db_dir(), config, LogOptions::default());
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    *lies.steps_refused.lock().expect("the lie") = true;
+    (fs, lies, db)
+}
+
+/// On a device that takes a new log file with its start record and
+/// refuses the record of each page step, every roll of the log succeeds
+/// and the step of every turn is refused. The step is put off, and the
+/// turn has failed by it, with what the log answered: the loop waits
+/// after it, longer each time, as after any turn that failed and moved
+/// nothing on. Before, such a turn had not failed, and the call for a
+/// turn that its own step made brought the next one at once. Each turn
+/// that rolls the log uses one log file, so the wait bounds the ids. With
+/// a device that takes the record, the next turn places the value.
+#[test]
+fn a_page_step_whose_record_the_log_refused_is_a_turn_that_failed() {
+    let config = FlushConfig {
+        idle: ms(10),
+        max_failed_wait: ms(80),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (fs, lies, db) = stuck_where_the_device_refuses_the_records_of_page_steps(config);
+    let wb = db.wb();
+    let before = last_log_id(&db);
+    let names = fs.crash_image().names().len();
+    let mut errors = Vec::new();
+    let mut in_vain = 0;
+    let mut waits = Vec::new();
+    let turns = 5;
+    for _ in 0..turns {
+        let wait = wb.paced_turn(&mut in_vain, &mut |error| errors.push(error));
+        waits.push(wait.map(|wait| wait.as_millis()));
+        // The step of the turn asked for the next turn, with nobody else
+        // who asks for one.
+        assert!(std::mem::take(&mut *lock(&db.state.wake)));
+        assert!(db.log.is_due(), "the log takes nothing until it is rolled");
+    }
+    assert_eq!(waits, [Some(10), Some(20), Some(40), Some(80), Some(80)]);
+    assert_eq!(errors.len(), turns);
+    for error in &errors {
+        let FlushError::Log(LogError::TakenBack { source, .. }) = error else {
+            panic!("{error}");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::StorageFull, "{error}");
+    }
+    assert_eq!(db.stats().errors, turns as u64);
+    assert_eq!(lock(&db.state.placing).len(), 1, "the value is ready");
+    assert_eq!(db.pointers(page(1)).len(), 0, "and has no pointer");
+    // The first turn found the log in a file that takes items. Every
+    // later one rolled the log first, to one file more.
+    let used = (last_log_id(&db) - before) as usize;
+    let unsynced = fs.crash_image().names().len() - names;
+    println!(
+        "{turns} failed turns on a device that refuses the records of page steps used {used} \
+         log files and left {unsynced} changes of names that no directory sync covers"
+    );
+    assert_eq!(used, turns - 1, "log files");
+
+    *lies.steps_refused.lock().expect("the lie") = false;
+    let mut none = |error: FlushError| panic!("a turn on a device with room failed: {error}");
+    assert_eq!(wb.paced_turn(&mut in_vain, &mut none), None);
+    assert_eq!(in_vain, 0);
+    assert_eq!(db.pointers(page(1)).len(), 1, "the value is placed");
+    db.check_cold();
+}
+
+/// The same device under the loop itself, with nobody who asks for a
+/// turn but the page step of each turn: each turn is followed by its
+/// whole wait, and no turn uses more than one log file.
+#[test]
+fn the_loop_waits_after_a_turn_whose_page_step_the_log_refused() {
+    let config = FlushConfig {
+        idle: ms(10),
+        max_failed_wait: ms(40),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (_fs, _lies, db) = stuck_where_the_device_refuses_the_records_of_page_steps(config);
+    let before = last_log_id(&db);
+    waits_between_six_failed_turns(&db, config, false);
+    let failed = db.stats().errors as usize;
+    let used = (last_log_id(&db) - before) as usize;
+    assert!(used <= failed, "{used} log files in {failed} failed turns");
 }
 
 /// Whether a sleep of `state` for `wait` ends by itself, within a minute,

@@ -142,8 +142,9 @@ fn a_pool_of_another_page_size_is_refused() {
 
 /// The log fails the record of the page step that places a value, with
 /// the append taken back or left torn in the file. Nothing is installed,
-/// the value keeps its hold, and the log takes nothing until write-back
-/// has rolled it (`transactions.md` CM9 item 5). Then the step is made.
+/// the value keeps its hold, the pass returns what the log answered, and
+/// the log takes nothing until write-back has rolled it
+/// (`transactions.md` CM9 item 5). Then the step is made.
 #[test]
 fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
     let mut put_off = 0;
@@ -159,12 +160,18 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
                 .torn_append(torn),
         );
 
-        let pass = db.wb().pass().expect("a pass");
+        let (pass, passed) = db.wb().pass_through();
         assert_eq!(fs.stats().faults, 1);
         // An append that is left torn may have left the whole record: the
         // log then has it, and the step was made. Otherwise:
         if pass.placed == 0 {
             put_off += 1;
+            let error = passed.expect_err("the record of the step was refused");
+            let refused = matches!(
+                error,
+                FlushError::Log(LogError::TakenBack { .. } | LogError::NotAppended { .. })
+            );
+            assert!(refused, "{torn}: {error}");
             assert_eq!((pass.written, pass.waiting), (0, 1), "{torn}");
             let stats = db.stats();
             assert_eq!((stats.values_appended, stats.values_placed), (1, 0));
@@ -172,6 +179,7 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
             assert_eq!(db.wb().place_ready().expect("put off again"), 0);
         } else {
             assert!(torn);
+            passed.expect("a pass");
         }
         // Either way the file takes no more items, of a page step or of
         // anyone, until the log is rolled.

@@ -126,7 +126,8 @@ pub struct Pass {
     /// of being written.
     pub held: usize,
     /// Pages that could not be written because a value of theirs could not
-    /// be placed: a write transaction holds a private copy of the page.
+    /// be placed: a write transaction holds a private copy of the page, or
+    /// the log refused the record of the value's page step.
     pub blocked: usize,
     /// Page versions that still wait: the pool lists them as owed.
     pub waiting: usize,
@@ -536,8 +537,10 @@ impl<'s> WriteBack<'s> {
     ///
     /// An error that is about one page does not end the pass: the other
     /// pages are written, and the pass returns the first such error when
-    /// it is done. Whatever it returns, what it wrote and linked stands,
-    /// and it can be called again.
+    /// it is done. Neither does a page step whose record the log refused:
+    /// the value stays ready, and the pass returns what the log answered
+    /// as such an error. Whatever it returns, what it wrote and linked
+    /// stands, and it can be called again.
     pub fn pass(&self) -> Result<Pass, FlushError> {
         let (pass, result) = self.pass_through();
         result.map(|()| pass)
@@ -574,9 +577,15 @@ impl<'s> WriteBack<'s> {
         if let Err(error) = self.append_pending(files, &owed, round) {
             round.fail(error);
         }
-        match self.place_ready() {
-            Ok(placed) => round.pass.placed = placed,
-            Err(error) => round.fail(error),
+        // A record that the log refused a page step is an error of the
+        // pass, though the step is only put off: the turn has failed.
+        let mut refused = None;
+        let placed = self.place_each(&mut round.pass.placed, &mut refused);
+        if let Some(refusal) = refused {
+            round.fail(refusal.into());
+        }
+        if let Err(error) = placed {
+            round.fail(error);
         }
         let mut ended = Ok(());
         for (&page, versions) in &owed {

@@ -1245,12 +1245,14 @@ fn faults_and_crashes_as_they_fall_leave_a_log_that_agrees_with_what_was_reporte
 /// the place of the ones it was given, and that says of every file that it
 /// has another length when it is told to. And one that, while it is told
 /// to, writes what it is given behind the header of a log file and answers
-/// that it has no room.
+/// that it has no room, or that has no room for the record of a page step
+/// in a log file, writes nothing of it, and takes everything else.
 #[derive(Debug, Default)]
 pub(crate) struct Lies {
     swap: Mutex<Option<Vec<u8>>>,
     len: Mutex<Option<u64>>,
     pub(crate) kept_and_refused: Mutex<bool>,
+    pub(crate) steps_refused: Mutex<bool>,
 }
 
 #[derive(Debug)]
@@ -1327,6 +1329,17 @@ impl VfsFile for SwappingFile {
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
                 "no room, says the device that wrote the bytes",
+            ));
+        }
+        let step = || {
+            use lignin_format::{wal::Record, FormatVersion};
+            let record = Record::decode(buf, FormatVersion::CURRENT);
+            matches!(record, Ok((Record::Change(_), _)))
+        };
+        if self.log && *self.lies.steps_refused.lock().unwrap() && step() {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "no room for the record of a page step",
             ));
         }
         let Some(other) = self.lies.swap.lock().unwrap().take() else {

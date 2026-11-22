@@ -23,9 +23,12 @@ use crate::{
 enum Step {
     /// The cell holds the pointer, and the value is counted.
     Placed,
-    /// A write transaction holds a private copy of the page, or the log
-    /// takes no record now. The value stays ready.
+    /// A write transaction holds a private copy of the page, or no
+    /// manifest covers the value. The value stays ready.
     PutOff,
+    /// The log refused the record of the step, with what it answered.
+    /// Nothing was installed, and the value stays ready.
+    Refused(LogError),
     /// The current version of the page has no cell with that pending
     /// value any more: a commit replaced or removed it, carried it to
     /// another page or freed the page. The value is dead space.
@@ -215,10 +218,30 @@ impl<'s> WriteBack<'s> {
     ///
     /// It touches no file but the log, to which it appends one record for
     /// each value it places, with no sync. One call runs at a time.
+    ///
+    /// A step whose record the log refused is put off like one that a
+    /// private copy holds back, and is no error of this call: the log
+    /// has woken the loop for the cut it needs, and the pass of that
+    /// turn is told of a record that it is refused
+    /// ([`Self::place_each`]).
     pub fn place_ready(&self) -> Result<usize, FlushError> {
+        let mut placed = 0;
+        self.place_each(&mut placed, &mut None)?;
+        Ok(placed)
+    }
+
+    /// [`Self::place_ready`] for a pass. `placed` counts the values that
+    /// were placed, also where the call ends with an error, and `refused`
+    /// is given what the log answered the first record that it refused.
+    /// Such a step is made again by a later call, so the pass has failed
+    /// by it, and the loop waits before its next turn.
+    pub(super) fn place_each(
+        &self,
+        placed: &mut usize,
+        refused: &mut Option<LogError>,
+    ) -> Result<(), FlushError> {
         let mut placing = lock(&self.state.placing);
         let counters = &self.state.counters;
-        let mut placed = 0;
         let mut at = 0;
         while at < placing.len() {
             match self.place(&placing[at])? {
@@ -226,16 +249,20 @@ impl<'s> WriteBack<'s> {
                     // The hold goes now that the value is counted.
                     drop(placing.swap_remove(at));
                     count(&counters.values_placed, 1);
-                    placed += 1;
+                    *placed += 1;
                 }
                 Step::GivenUp => {
                     drop(placing.swap_remove(at));
                     count(&counters.values_given_up, 1);
                 }
                 Step::PutOff => at += 1,
+                Step::Refused(error) => {
+                    refused.get_or_insert(error);
+                    at += 1;
+                }
             }
         }
-        Ok(placed)
+        Ok(())
     }
 
     /// The page step that places one value (`transactions.md` PV7, with
@@ -283,7 +310,7 @@ impl<'s> WriteBack<'s> {
             drop(blank);
             drop(step);
             drop(counts);
-            return self.record_not_written(error).map(|()| Step::PutOff);
+            return self.record_not_written(error).map(Step::Refused);
         }
         step.replace(&old, blank)
             .map_err(|source| FlushError::StepRefused { page, source })?;
@@ -303,15 +330,23 @@ impl<'s> WriteBack<'s> {
     ///   been rolled: the value stays ready, and the step is made later.
     ///   If the append was taken back, a crash could still bring the
     ///   record back, so the log is settled first (`wal`, "When the file
-    ///   layer fails").
+    ///   layer fails"). What the log answered is returned as the refusal
+    ///   of the step. Where the log had no file that takes items, that is
+    ///   what left it so, if the log has kept it
+    ///   ([`LogStore::refusal`](crate::wal::LogStore::refusal)).
     /// - The log cannot find out what became of the append: the record may
     ///   be in the log, so the value keeps its hold for as long as the
     ///   session lasts, and the log takes nothing more in it. That is the
-    ///   caller's to know, and is returned.
-    fn record_not_written(&self, error: LogError) -> Result<(), FlushError> {
+    ///   caller's to know, and is returned as the error of the call.
+    fn record_not_written(&self, error: LogError) -> Result<LogError, FlushError> {
+        let log = self.stores.log;
         match error {
-            LogError::TakenBack { .. } => Ok(self.stores.log.settle()?),
-            LogError::NotAppended { .. } | LogError::NoActiveFile => Ok(()),
+            LogError::TakenBack { .. } => {
+                log.settle()?;
+                Ok(error)
+            }
+            LogError::NotAppended { .. } => Ok(error),
+            LogError::NoActiveFile => Ok(log.refusal().unwrap_or(error)),
             error => Err(error.into()),
         }
     }
