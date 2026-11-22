@@ -493,7 +493,9 @@ fn a_page_step_whose_record_the_log_refused_is_a_turn_that_failed() {
     let (fs, lies, db) = stuck_where_the_device_refuses_the_records_of_page_steps(config);
     let wb = db.wb();
     let before = last_log_id(&db);
-    let names = fs.crash_image().names().len();
+    // The names that were changed and that no directory sync covers.
+    let unsynced = || fs.crash_image().names().len();
+    assert_eq!(unsynced(), 0, "the store begins with such a name");
     let mut errors = Vec::new();
     let mut in_vain = 0;
     let mut waits = Vec::new();
@@ -505,6 +507,7 @@ fn a_page_step_whose_record_the_log_refused_is_a_turn_that_failed() {
         // who asks for one.
         assert!(std::mem::take(&mut *lock(&db.state.wake)));
         assert!(db.log.is_due(), "the log takes nothing until it is rolled");
+        assert_eq!(unsynced(), 0, "the turn left such a name");
     }
     assert_eq!(waits, [Some(10), Some(20), Some(40), Some(80), Some(80)]);
     assert_eq!(errors.len(), turns);
@@ -520,10 +523,9 @@ fn a_page_step_whose_record_the_log_refused_is_a_turn_that_failed() {
     // The first turn found the log in a file that takes items. Every
     // later one rolled the log first, to one file more.
     let used = (last_log_id(&db) - before) as usize;
-    let unsynced = fs.crash_image().names().len() - names;
     println!(
         "{turns} failed turns on a device that refuses the records of page steps used {used} \
-         log files and left {unsynced} changes of names that no directory sync covers"
+         log files"
     );
     assert_eq!(used, turns - 1, "log files");
 

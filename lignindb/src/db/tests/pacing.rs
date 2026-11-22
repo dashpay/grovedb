@@ -243,6 +243,9 @@ fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no
         // asked for that one file, whoever asked.
         let others = other_log_files_opened(&session.fs, &next_file, opened);
         assert!(others.is_empty(), "other log files were opened: {others:?}");
+        let ops = session.fs.stats().ops;
+        let refused = refused_creations(&session.fs, &next_file, opened, ops);
+        assert!(refused >= 1, "the log's next file was never asked for");
         assert_eq!(db.reopen(), None, "the session has ended");
     }
     assert_eq!(
