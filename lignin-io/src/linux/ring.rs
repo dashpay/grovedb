@@ -732,11 +732,13 @@ impl Drop for Mapping {
 /// Whether the system the tests run on gives rings. It has to, unless
 /// whoever runs the tests says `LIGNIN_IO_URING=absent`, and then it must
 /// not: a run that is told of no ring does not pass on a system with one.
+/// `LIGNIN_IO_URING=present` says what the variable not being set says.
+/// `lignin-ci.sh rings` asks the system and sets one or the other.
 #[cfg(test)]
 pub(super) fn system_gives_rings() -> bool {
     let ring = Ring::new();
     match std::env::var("LIGNIN_IO_URING").as_deref() {
-        Err(_) => {
+        Err(_) | Ok("present") => {
             ring.expect(
                 "this test needs io_uring: Linux 5.6 or later, and a process that is allowed the \
                  calls. LIGNIN_IO_URING=absent says that the system has none",
@@ -747,7 +749,7 @@ pub(super) fn system_gives_rings() -> bool {
             assert!(ring.is_err(), "LIGNIN_IO_URING=absent, and there is a ring");
             false
         }
-        Ok(other) => panic!("LIGNIN_IO_URING is `absent` or is not set: {other}"),
+        Ok(other) => panic!("LIGNIN_IO_URING is `absent`, `present` or not set: {other}"),
     }
 }
 

@@ -13,6 +13,9 @@
 //! whoever runs the tests says so with `LIGNIN_IO_URING=absent`, as
 //! `TMPDIR` says where the files are. The tests then hold the system to
 //! that: they fail if it gives a ring, and each of them ends there.
+//! `LIGNIN_IO_URING=present` says what the variable not being set says.
+//! CI asks the system before the tests and sets one or the other
+//! (`lignin-ci.sh rings`).
 //!
 //! A ring reads with an alignment of 4,096 bytes at most. On a file system
 //! whose files ask for more, the files the tests write go to no ring, and

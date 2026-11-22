@@ -40,7 +40,21 @@ The LigninDB code outside those crates is Merk's node store on LigninDB (`merk/s
 
 The two aarch64 runners take the paths that x86_64 never does: `crc32c` uses the CRC instructions of aarch64 there, and on macOS `lignin-io` runs on its own system calls (the conformance suite of IO-01 had been run on macOS by hand only). The checksum's table-driven path, which neither platform takes, runs under Miri on a big-endian target.
 
-The direct I/O path of the file layer (`lignin_io::linux`, feature `direct_io`) is built and tested where a run builds every feature: in the three shards on Linux x86_64 and in LigninDB on Linux aarch64. Its tests open files in the temporary directory with `O_DIRECT` and make io_uring instances, so they need a file system under `TMPDIR` that takes the flag and a runner that is allowed the io_uring calls, which a container's seccomp profile can refuse. A runner that has no io_uring says so with `LIGNIN_IO_URING=absent` in the environment of the tests: the tests of a ring then check that the system does refuse one and end there, and the rest of the path runs on single reads. The unsafe code of the path runs on a model under Miri (below), which needs neither.
+The direct I/O path of the file layer (`lignin_io::linux`, feature `direct_io`) is built and tested where a run builds every feature: in the three shards on Linux x86_64 and in LigninDB on Linux aarch64. Its tests open files in the temporary directory with `O_DIRECT`, so they need a file system under `TMPDIR` that takes the flag. Some of them make io_uring instances ("rings"), which a runner can be refused: the organisation's self-hosted runners are containers whose seccomp profile answers `io_uring_setup` with `EPERM`. So each of those jobs asks its runner before the tests: `lignin-ci.sh rings`, a step of its own in the shards and the first thing `lignin-ci.sh test` does. A small program in C makes the system call, so the answer is not that of the code the tests are of. The command prints the answer in one line that begins `== io_uring:` and sets `LIGNIN_IO_URING` for the tests, which hold the runner to it:
+
+- `present`, where the runner gave an instance: a test of a ring fails where it gets none. The variable not being set says the same, which is how a run by hand without the command goes.
+- `absent`, where the runner refused: a test of a ring checks that the system does refuse one and ends there, and fails if it gives one. The rest of the path runs on single reads.
+
+A value the variable has before the command runs is kept, so a job's environment can hold a runner to either.
+
+| Job | Rings in it |
+| --- | --- |
+| Test Ubuntu on the self-hosted runners (a pull request from the repository) | none of the system: the runners refuse them, the tests of a ring check the refusal, and batches run on single reads |
+| Test Ubuntu on `ubuntu-latest` (a pull request from a fork), LigninDB on Linux aarch64 | rings of the system where the job's line says `given`; these runners are virtual machines, with no container around the job |
+| LigninDB on macOS aarch64 | none: the path is not built there, and the line says so |
+| LigninDB Miri and fuzz targets, and the nightly Miri | the queue code on a model of the system's side, which is where the path's unsafe code runs under Miri (below); no ring of the system |
+
+For a pull request from the repository, then, LigninDB on Linux aarch64 is the one job that can make a ring of the system, and no job makes one on x86_64 ("What CI does not run").
 
 ### The feature sets
 
@@ -117,6 +131,7 @@ Gate M2 asks for one million crash points: `lignin-crash run --seed 1 --points 1
 
 - The 24 hours of differential fuzzing of gate M5 and the crash campaign of the engine (VER-04): runs of their tasks, on the project's machines.
 - The benchmarks: their numbers depend on the machine (`benchmarks.md`).
+- A ring of the system on Linux x86_64, for a pull request from the repository: the self-hosted runners refuse io_uring ("The platforms of DEC-06"). `cargo test -p lignin-io --features direct_io` on a machine that gives rings runs those tests, and fails where it gets none.
 
 ## Adding to it
 
