@@ -2983,21 +2983,42 @@ TREE-09, VER-05)**
   owed by TXN-06. Its log ends at the end of a record, it opens, its state
   is *S(vc)*, and its counts of live values agree with its pages.
 
-**Loom models owed by VER-05**: pin against publication and reclamation
-(PN4); page-version install and publication against a reader (CM3, CM4);
-claims (SC3); scope merge against scope read (SC6); rebase against the
-transaction's other operations (WT7); a kept location against a rebase and
-against page id reuse (PN8); making a page private once (LT5); the page
-step: a value pointer rewrite against making the page private and against a
-commit that supersedes it (PV7); the same for the placing of a pending value
-(FL7) and for the removal of a dropped cell with the freeing of its page
-(CL6); the counts lock against a commit's append and install and against a
-page step (LT7 level 4a); the three questions against a commit that is
-installed and not yet published (PN6);
-latch order (LT3); commit lock against checkpoint sampling and manifest
-replacement (CK2, LT7); `flush()` against a commit in progress (DU1a);
-relocation against supersession (CL4); page id retirement against reuse
-(ID2, ID3).
+**Concurrency coverage (VER-05)**: the seventeen interleavings that this
+section asked a loom model of, and two that were found since, each with
+what covers it. A model is written where the code itself runs under loom:
+the buffer pool, the claim table and the write set that the scopes of a
+transaction share, the versions, the page ids and the page table. Six of
+the seventeen have none (5, 11, 13, 14, 15, 16) and four have one of a
+part only (6, 8, 9, 10): that code takes locks of `std` and does file
+operations (write-back, the cleaner, a checkpoint, the commit path), which
+loom does not schedule, so a model would be of a copy of the protocol and
+not of the code (D-198). The schedules are the tests of `lignindb`
+`db::tests::schedules`: a sweep is one background step against commits let
+in at one of its points, and a schedule inside a commit is background
+steps run between the commit's count and its publication. The stress test
+is `db::tests::stress`. Names with no crate are of `lignindb`.
+
+| Interleaving | A loom model | A schedule | The stress test |
+| --- | --- | --- | --- |
+| 1. Pin against publication and reclamation (PN4) | `snapshot::tests::loom`; `models::a_pinned_reader_is_given_its_page_version_through_a_commit_and_a_reclaim` | the sweeps of an operation that pins nothing and of a snapshot | readers of three ages |
+| 2. Page-version install and publication against a reader (CM3, CM4) | `lignin-store` `cache::tests::races` (`a_reader_gets_the_version_it_asked_at`, `a_load_never_passes_for_a_newer_version`); the models of `models` that commit beside a reader | the same sweeps | yes |
+| 3. Claims (SC3) | `scope::tests::model` | none | two scopes at once |
+| 4. Scope merge against scope read (SC6) | `scope::tests::model` | none | yes |
+| 5. Rebase against the transaction's other operations (WT7) | **none** | none | the block writer beside the other writer's commits |
+| 6. A kept location against a rebase and against page id reuse (PN8) | of page id reuse only: `models::a_page_id_is_not_given_out_again_under_an_operation` | the sweep of a reclaiming against blocks | yes |
+| 7. Making a page private once (LT5) | `lignin-store` `cache::tests::races` | none | yes |
+| 8. The page step, a value pointer rewrite, against a private copy and a commit that supersedes the page (PV7) | of the step only: `lignin-store` `cache::tests::races` (`a_page_step_and_a_private_copy_agree`, `a_page_step_follows_a_commit_at_once`) | the sweeps of a pass over the value log; inside a commit: `passes_over_the_value_log_inside_a_commit_find_the_owners_of_values_placed_in_its_pages` | the cleaner |
+| 9. The same for the placing of a pending value (FL7) | the same models of the step | the sweeps of a turn of write-back; inside a commit: `a_turn_of_write_back_inside_a_commit_places_values_of_its_pages` | yes |
+| 10. The same for the removal of a dropped cell with the freeing of its page (CL6) | of the free against write-back only: `models::a_page_that_is_freed_while_write_back_holds_it_stays_freed` | the sweeps of a reclaiming; `a_turn_of_write_back_against_a_commit_that_empties_pages_it_has_not_written` | yes |
+| 11. The counts lock against a commit's append and install and against a page step (LT7 level 4a) | **none** | every sweep asks for this lock at its point, and a commit lands only where it is free; the four schedules inside a commit run their steps where the commit has counted and given the lock back | yes |
+| 12. The three questions against a commit that is installed and not yet published (PN6) | `snapshot::tests::loom`; the models of `models` on page ids | the four schedules inside a commit; `a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back` | yes |
+| 13. Latch order (LT3) | **none** | none | two scopes on two threads |
+| 14. The commit lock against checkpoint sampling and manifest replacement (CK2, LT7) | **none** | the sweeps of a checkpoint and of an open of a checkpoint | a checkpoint every few commits |
+| 15. `flush()` against a commit in progress (DU1a) | **none** | none | the reader has the log made durable every few looks |
+| 16. Relocation against supersession (CL4) | **none** | the sweeps of a pass over the segments; inside a commit: `a_pass_over_the_segments_inside_a_commit_leaves_a_sound_store` | the cleaner |
+| 17. Page id retirement against reuse (ID2, ID3) | `models::a_page_id_is_not_given_out_again_under_a_pinned_reader`, `models::a_page_id_is_not_given_out_again_under_an_operation` | the sweep of a reclaiming against blocks | yes |
+| A checkpoint that is opened against commits of the database it was made of (D-172) | none | the sweeps of an open of a checkpoint; `db::tests::beside` | yes |
+| A check of a pinned version against the reclaimer (D-183) | none | `a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on`, `a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_a_drop_inside_a_page_that_stays`, `a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back` | the reader's check, with the reclaimer held back |
 
 **Combined scenarios for the stress test (VER-05)**: readers on snapshots of
 different ages, one block transaction with several scopes, writes with no
