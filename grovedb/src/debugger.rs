@@ -50,7 +50,7 @@ use crate::{
     operations::proof::{GroveDBProof, LayerProof, MerkOnlyLayerProof, ProofBytes, ProveOptions},
     query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     reference_path::ReferencePathType,
-    GroveDb,
+    Engine, GroveDb,
 };
 
 const GROVEDBG_ZIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grovedbg.zip"));
@@ -169,8 +169,9 @@ fn extract_grovedbg(destination: &std::path::Path) -> zip::result::ZipResult<()>
     zip::ZipArchive::new(Cursor::new(GROVEDBG_ZIP))?.extract(destination)
 }
 
-pub(super) fn start_visualizer<A>(grovedb: Weak<GroveDb>, addr: A)
+pub(super) fn start_visualizer<E, A>(grovedb: Weak<GroveDb<E>>, addr: A)
 where
+    E: Engine,
     A: ToSocketAddrs + Send + 'static,
 {
     std::thread::spawn(move || {
@@ -182,19 +183,19 @@ where
 
         let cancellation_token = CancellationToken::new();
 
-        let state: AppState = AppState {
+        let state: AppState<E> = AppState {
             cancellation_token: cancellation_token.clone(),
             grovedb,
             sessions: Default::default(),
         };
 
         let app = Router::new()
-            .route("/new_session", post(new_session))
-            .route("/drop_session", post(drop_session))
-            .route("/fetch_node", post(fetch_node))
-            .route("/fetch_root_node", post(fetch_root_node))
-            .route("/prove_path_query", post(prove_path_query))
-            .route("/fetch_with_path_query", post(fetch_with_path_query))
+            .route("/new_session", post(new_session::<E>))
+            .route("/drop_session", post(drop_session::<E>))
+            .route("/fetch_node", post(fetch_node::<E>))
+            .route("/fetch_root_node", post(fetch_root_node::<E>))
+            .route("/prove_path_query", post(prove_path_query::<E>))
+            .route("/fetch_with_path_query", post(fetch_with_path_query::<E>))
             .fallback_service(ServeDir::new(grovedbg_www))
             .with_state(state.clone());
 
@@ -233,14 +234,23 @@ where
     });
 }
 
-#[derive(Clone)]
-struct AppState {
+struct AppState<E: Engine> {
     cancellation_token: CancellationToken,
-    grovedb: Weak<GroveDb>,
-    sessions: Arc<RwLock<HashMap<SessionId, Session>>>,
+    grovedb: Weak<GroveDb<E>>,
+    sessions: Arc<RwLock<HashMap<SessionId, Session<E>>>>,
 }
 
-impl AppState {
+impl<E: Engine> Clone for AppState<E> {
+    fn clone(&self) -> Self {
+        Self {
+            cancellation_token: self.cancellation_token.clone(),
+            grovedb: self.grovedb.clone(),
+            sessions: self.sessions.clone(),
+        }
+    }
+}
+
+impl<E: Engine> AppState<E> {
     fn verify_running(&self) -> Result<(), AppError> {
         if self.grovedb.strong_count() == 0 {
             self.cancellation_token.cancel();
@@ -271,7 +281,7 @@ impl AppState {
     async fn get_checkpointed_grovedb(
         &self,
         id: SessionId,
-    ) -> Result<RwLockReadGuard<'_, GroveDb>, AppError> {
+    ) -> Result<RwLockReadGuard<'_, GroveDb<E>>, AppError> {
         self.verify_running()?;
         let mut lock = self.sessions.write().await;
         if let Some(session) = lock.get_mut(&id) {
@@ -288,24 +298,25 @@ impl AppState {
     }
 }
 
-struct Session {
+struct Session<E: Engine> {
     last_access: Instant,
+    checkpointed_grovedb: GroveDb<E>,
     _tempdir: tempfile::TempDir,
-    checkpointed_grovedb: GroveDb,
 }
 
-impl Session {
-    fn new(grovedb: &GroveDb) -> Result<Self, AppError> {
+impl<E: Engine> Session<E> {
+    fn new(grovedb: &GroveDb<E>) -> Result<Self, AppError> {
         let tempdir = tempdir().map_err(|e| AppError::Any(e.to_string()))?;
         let path = tempdir.path().join("grovedbg_session");
         grovedb
             .create_checkpoint(&path)
             .map_err(|e| AppError::Any(e.to_string()))?;
-        let checkpointed_grovedb = GroveDb::open(path).map_err(|e| AppError::Any(e.to_string()))?;
+        let checkpointed_grovedb =
+            GroveDb::open_with_engine(path).map_err(|e| AppError::Any(e.to_string()))?;
         Ok(Session {
             last_access: Instant::now(),
-            _tempdir: tempdir,
             checkpointed_grovedb,
+            _tempdir: tempdir,
         })
     }
 }
@@ -337,21 +348,23 @@ impl<E: std::error::Error> From<E> for AppError {
     }
 }
 
-async fn new_session(State(state): State<AppState>) -> Result<Json<NewSessionResponse>, AppError> {
+async fn new_session<E: Engine>(
+    State(state): State<AppState<E>>,
+) -> Result<Json<NewSessionResponse>, AppError> {
     Ok(Json(NewSessionResponse {
         session_id: state.new_session().await?,
     }))
 }
 
-async fn drop_session(
-    State(state): State<AppState>,
+async fn drop_session<E: Engine>(
+    State(state): State<AppState<E>>,
     Json(DropSessionRequest { session_id }): Json<DropSessionRequest>,
 ) {
     state.drop_session(session_id).await;
 }
 
-async fn fetch_node(
-    State(state): State<AppState>,
+async fn fetch_node<E: Engine>(
+    State(state): State<AppState<E>>,
     headers: HeaderMap,
     Json(WithSession {
         session_id,
@@ -381,8 +394,8 @@ async fn fetch_node(
     }
 }
 
-async fn fetch_root_node(
-    State(state): State<AppState>,
+async fn fetch_root_node<E: Engine>(
+    State(state): State<AppState<E>>,
     headers: HeaderMap,
     Json(WithSession {
         session_id,
@@ -413,8 +426,8 @@ async fn fetch_root_node(
     }
 }
 
-async fn prove_path_query(
-    State(state): State<AppState>,
+async fn prove_path_query<E: Engine>(
+    State(state): State<AppState<E>>,
     headers: HeaderMap,
     Json(WithSession {
         session_id,
@@ -433,8 +446,8 @@ async fn prove_path_query(
     ))
 }
 
-async fn fetch_with_path_query(
-    State(state): State<AppState>,
+async fn fetch_with_path_query<E: Engine>(
+    State(state): State<AppState<E>>,
     headers: HeaderMap,
     Json(WithSession {
         session_id,
@@ -466,8 +479,8 @@ async fn fetch_with_path_query(
     ))
 }
 
-fn query_result_to_grovedbg(
-    db: &GroveDb,
+fn query_result_to_grovedbg<E: Engine>(
+    db: &GroveDb<E>,
     query_result: QueryResultElements,
 ) -> Result<Vec<NodeUpdate>, crate::Error> {
     let mut result = Vec::new();
@@ -1913,11 +1926,23 @@ mod tests {
     /// and under a subtree, with a real registered bidirectional reference.
     #[tokio::test]
     async fn handlers_negotiate_format_and_proofs_do_not_claim_zero_referrers() {
+        handlers_on::<crate::engine::DefaultEngine>().await;
+    }
+
+    /// The session and the handlers on the LigninDB engine, whatever the
+    /// engine of the suite is.
+    #[cfg(feature = "lignin_storage")]
+    #[tokio::test]
+    async fn the_session_and_the_handlers_answer_on_the_lignindb_engine() {
+        handlers_on::<crate::LigninEngine>().await;
+    }
+
+    async fn handlers_on<E: Engine>() {
         use crate::{operations::insert::InsertOptions, Element};
         let version = GroveVersion::latest();
         for path in [vec![], vec![b"leaf".to_vec()]] {
             let temp = tempdir().unwrap();
-            let db = Arc::new(GroveDb::open(temp.path()).unwrap());
+            let db = Arc::new(GroveDb::<E>::open_with_engine(temp.path()).unwrap());
             if let Some(key) = path.first() {
                 db.insert(
                     SubtreePath::empty(),
@@ -2128,6 +2153,50 @@ mod tests {
                 assert_eq!(decoded, proof);
                 assert_eq!(consumed, bytes.len());
             }
+            // A session reads the checkpoint it was started on, and its
+            // checkpoint goes with it.
+            db.insert(
+                path.as_slice(),
+                b"later",
+                Element::new_item(b"after the session began".to_vec()),
+                None,
+                None,
+                version,
+            )
+            .unwrap()
+            .unwrap();
+            let later = NodeFetchRequest {
+                path: path.clone(),
+                key: b"later".to_vec(),
+            };
+            let fetch = |session_id| {
+                fetch_node(
+                    State(state.clone()),
+                    HeaderMap::new(),
+                    Json(WithSession {
+                        session_id,
+                        request: later.clone(),
+                    }),
+                )
+            };
+            assert!(fetch(session_id).await.unwrap().0.is_none());
+            let kept = {
+                let sessions = state.sessions.read().await;
+                sessions[&session_id]._tempdir.path().to_path_buf()
+            };
+            assert!(kept.join("grovedbg_session").is_dir());
+            drop_session(
+                State(state.clone()),
+                Json(DropSessionRequest { session_id }),
+            )
+            .await;
+            assert!(!kept.exists());
+            assert!(matches!(fetch(session_id).await, Err(AppError::NoSession)));
+            let next = state.new_session().await.unwrap();
+            assert!(fetch(next).await.unwrap().0.is_some());
+            // With the database gone the server answers that it is closed.
+            drop(db);
+            assert!(matches!(fetch(next).await, Err(AppError::Closed)));
         }
     }
 }
