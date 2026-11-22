@@ -672,6 +672,10 @@ impl<E: Engine> Engine for RefusedReads<E> {
         self.0.create_checkpoint(path)
     }
 
+    fn delete_checkpoint<P: AsRef<Path>>(path: P) -> Result<(), crate::Error> {
+        E::delete_checkpoint(path)
+    }
+
     fn flush(&self) -> Result<(), StorageError> {
         self.0.flush()
     }

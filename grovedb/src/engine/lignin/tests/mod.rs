@@ -20,8 +20,10 @@ mod append_only;
 mod axes;
 mod batches;
 mod cases;
+mod checkpoint;
 mod deletes;
 mod indexed;
+mod inspection;
 mod moves;
 mod nested;
 mod over;
@@ -1117,18 +1119,6 @@ fn a_cursor_is_pointed_at_another_subtree_in_the_state_it_was_opened_on() {
 #[test]
 fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     let (dir, engine) = engine();
-    let not_supported = |error: &dyn std::fmt::Display, storage: bool| {
-        assert!(storage, "{error}");
-        assert!(error.to_string().contains("lignindb"), "{error}");
-    };
-    let checkpoint = dir.path().join("checkpoint");
-    let error = engine
-        .create_checkpoint(&checkpoint)
-        .expect_err("a checkpoint");
-    not_supported(&error, matches!(error, StorageError::NotSupported(_)));
-    assert!(!checkpoint.exists());
-    // GroveDB hands it on as its own error of that name.
-    assert!(matches!(Error::from(error), Error::NotSupported(_)));
 
     // A subtree that is not entered has no record and no entry to move:
     // its walk ends at once, and the batch is told of nothing.
@@ -1143,13 +1133,7 @@ fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     assert!(batch.is_empty());
     drop((batch, tx));
 
-    // No checkpoint is opened either, so none is deleted: the directory
-    // of a database is not taken for one.
     drop(engine);
-    let error = LigninEngine::open_checkpoint(dir.path()).expect_err("a checkpoint");
-    not_supported(&error, matches!(error, StorageError::NotSupported(_)));
-    let deleted = Lignin::delete_checkpoint_with_engine(dir.path());
-    assert!(matches!(deleted, Err(Error::NotSupported(_))));
     let reopened = LigninEngine::open(dir.path()).expect("the database is where it was");
     reopened.flush().expect("a flush");
     assert!(format!("{reopened:?}").starts_with("LigninEngine"));

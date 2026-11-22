@@ -56,13 +56,13 @@
 //!
 //! # What it does not do yet
 //!
-//! Each is refused with `Error::NotSupported` and changes nothing: a
-//! checkpoint of an open database and the open of one (GROVE-08), the
+//! Each is refused with `Error::NotSupported` and changes nothing: the
 //! application of a batch that moves a subtree which is entered, which
 //! is walked and charged and then refused until the transaction can give
 //! a subtree another prefix (`TXN-03-F4`), and a first write into a
 //! subtree under a key that holds no element.
 
+mod checkpoint;
 mod enter;
 mod error;
 mod gone;
@@ -695,15 +695,16 @@ impl Engine for LigninEngine {
         Self::open_with(path, &Options::default())
     }
 
-    fn open_checkpoint<P: AsRef<Path>>(_path: P) -> Result<Self, Error> {
-        // The engine makes no checkpoint yet, and has no way to tell one
-        // from the directory of a database: `GroveDb::delete_checkpoint`
-        // removes whatever this opens (GROVE-08).
-        Err(not_supported("the open of a checkpoint"))
+    fn open_checkpoint<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
+        Self::open_checkpoint_at(path.as_ref())
     }
 
-    fn create_checkpoint<P: AsRef<Path>>(&self, _path: P) -> Result<(), Error> {
-        Err(not_supported("a checkpoint of an open database"))
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
+        self.checkpoint_at(path.as_ref())
+    }
+
+    fn delete_checkpoint<P: AsRef<Path>>(path: P) -> Result<(), crate::Error> {
+        Self::delete_checkpoint_at(path.as_ref()).map_err(Into::into)
     }
 
     fn flush(&self) -> Result<(), Error> {

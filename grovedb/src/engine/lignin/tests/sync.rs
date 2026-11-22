@@ -77,7 +77,7 @@ const EMPTIED_AT: &[u8] = b"emptied";
 const UNTOUCHED_AT: &[u8] = b"untouched";
 
 /// An engine of these tests.
-trait Side: Engine {
+pub(super) trait Side: Engine {
     const NAME: &'static str;
 
     /// What is checked of the database in `dir`, which nothing has open.
@@ -143,14 +143,14 @@ impl<E: Side> Side for crate::tests::faultable_reads::RefusedReads<E> {
 
 /// The subtrees of a grove, by what their data is.
 #[derive(Clone, Debug, Default, PartialEq)]
-struct Shape {
+pub(super) struct Shape {
     /// The path of every tree whose data is one Merk, the root's first,
     /// and whether the tree takes sum items.
-    merks: Vec<(Vec<Vec<u8>>, bool)>,
+    pub(super) merks: Vec<(Vec<Vec<u8>>, bool)>,
     /// The path of every tree that keeps its data as flat records.
-    flats: Vec<Vec<Vec<u8>>>,
+    pub(super) flats: Vec<Vec<Vec<u8>>>,
     /// The path of every indexed tree, with its axes.
-    indexed: Vec<(Vec<Vec<u8>>, Vec<IndexAxis>)>,
+    pub(super) indexed: Vec<(Vec<Vec<u8>>, Vec<IndexAxis>)>,
 }
 
 impl Shape {
@@ -338,7 +338,7 @@ fn grove<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Shape {
 /// What a grove of the grove version `number` holds: the Merks, the flat
 /// keyspaces and the indexed trees. A grove version that does not make a
 /// kind leaves its trees out, so the counts are asserted.
-fn assert_shape(shape: &Shape, number: usize) {
+pub(super) fn assert_shape(shape: &Shape, number: usize) {
     let kinds = if number >= 5 { 12 } else { 9 };
     let append_only = if number >= 4 { 5 } else { 4 };
     let with_axes = if number >= 5 { 6 } else { 4 };
@@ -349,27 +349,29 @@ fn assert_shape(shape: &Shape, number: usize) {
     assert_eq!(shape.indexed.len(), 2 * with_axes);
 }
 
-/// A grove on the engine `E`, with its directory.
-struct Made<E: Engine> {
-    dir: tempfile::TempDir,
-    db: GroveDb<E>,
-    shape: Shape,
-    root: [u8; 32],
+/// A grove on the engine `E`, with its directory. The database is
+/// declared before the directory, so that a `Made` that is dropped whole
+/// closes its database in a directory that is still there.
+pub(super) struct Made<E: Engine> {
+    pub(super) db: GroveDb<E>,
+    pub(super) dir: tempfile::TempDir,
+    pub(super) shape: Shape,
+    pub(super) root: [u8; 32],
 }
 
-fn open<E: Engine>(dir: &Path) -> GroveDb<E> {
+pub(super) fn open<E: Engine>(dir: &Path) -> GroveDb<E> {
     GroveDb::<E>::open_with_engine(dir).expect("a database")
 }
 
 impl<E: Engine> Made<E> {
-    fn new(v: &GroveVersion) -> Self {
+    pub(super) fn new(v: &GroveVersion) -> Self {
         let dir = tempfile::tempdir().expect("a directory");
         let db = open::<E>(dir.path());
         let shape = grove(&db, v);
         let root = db.root_hash(None, v).unwrap().expect("a root hash");
         Self {
-            dir,
             db,
+            dir,
             shape,
             root,
         }
@@ -391,7 +393,7 @@ fn walked<C: RawIterator>(mut cursor: C, named: &str, records: &mut Vec<String>)
 /// a read transaction shows it: of a Merk each key with its node record,
 /// which holds the node's value, its feature, its hashes and its links,
 /// and of a flat keyspace each key with its value.
-fn records<E: Engine>(db: &GroveDb<E>, shape: &Shape) -> Vec<String> {
+pub(super) fn records<E: Engine>(db: &GroveDb<E>, shape: &Shape) -> Vec<String> {
     let engine = db.engine();
     let transaction = engine.start_read_transaction();
     let mut records = Vec::new();
@@ -428,7 +430,7 @@ fn everything(at: &[Vec<u8>]) -> PathQuery {
 /// Reads of the whole grove, with what each costs: the elements of every
 /// tree, a proof of them, the element of every tree that keeps its data
 /// flat, and the verification of the grove.
-fn reads<E: Engine>(db: &GroveDb<E>, shape: &Shape, v: &GroveVersion) -> Vec<Answer> {
+pub(super) fn reads<E: Engine>(db: &GroveDb<E>, shape: &Shape, v: &GroveVersion) -> Vec<Answer> {
     let mut h = History::new(db, v);
     h.read("root hash", db.root_hash(None, v));
     let merks = shape.merks.iter().map(|(at, _)| at);
@@ -483,7 +485,7 @@ fn index_more<'db, I: Indexed, E: Engine>(h: &mut History<'db, E>, shape: &Shape
 /// nothing was written into, a row more in every other Merk, appends to
 /// every append-only tree, children of every indexed tree, and a row
 /// replaced and one deleted.
-fn writes<E: Engine>(db: &GroveDb<E>, shape: &Shape, v: &GroveVersion) -> Vec<Answer> {
+pub(super) fn writes<E: Engine>(db: &GroveDb<E>, shape: &Shape, v: &GroveVersion) -> Vec<Answer> {
     let mut h = History::new(db, v);
 
     // The tree that nothing was written into is deleted, an indexed tree
@@ -531,9 +533,9 @@ fn writes<E: Engine>(db: &GroveDb<E>, shape: &Shape, v: &GroveVersion) -> Vec<An
 }
 
 /// A request of a session, with the payload its source answered it with.
-type Served = (Vec<u8>, Vec<u8>);
+pub(super) type Served = (Vec<u8>, Vec<u8>);
 
-type Session<'db, T> = Pin<Box<MultiStateSyncSession<'db, T>>>;
+pub(super) type Session<'db, T> = Pin<Box<MultiStateSyncSession<'db, T>>>;
 
 /// The subtree prefix each chunk id of `request` names, read from the
 /// bytes of the id and not by the decoder a node reads it with: the first
@@ -569,7 +571,7 @@ fn changed(
 
 /// The requests of one session against one source: those the session has
 /// asked for and was not answered yet, and those that were served.
-struct Requests<'s, S: Engine> {
+pub(super) struct Requests<'s, S: Engine> {
     source: &'s GroveDb<S>,
     v: &'s GroveVersion,
     asked: VecDeque<Vec<u8>>,
@@ -577,7 +579,7 @@ struct Requests<'s, S: Engine> {
 }
 
 impl<'s, S: Engine> Requests<'s, S> {
-    fn new(source: &'s GroveDb<S>, root: [u8; 32], v: &'s GroveVersion) -> Self {
+    pub(super) fn new(source: &'s GroveDb<S>, root: [u8; 32], v: &'s GroveVersion) -> Self {
         Self {
             source,
             v,
@@ -588,7 +590,7 @@ impl<'s, S: Engine> Requests<'s, S> {
 
     /// The next request with the payload the source answers it with, or
     /// `None` once the session has asked for nothing more.
-    fn fetch(&mut self) -> Option<Served> {
+    pub(super) fn fetch(&mut self) -> Option<Served> {
         let request = self.asked.pop_front()?;
         let fetched = self.source.fetch_chunk(&request, None, VERSION, self.v);
         let payload = fetched.expect("the source serves the request");
@@ -598,7 +600,7 @@ impl<'s, S: Engine> Requests<'s, S> {
 
     /// Gives `session` the payload of a request, and takes in what it asks
     /// for next.
-    fn apply<T: Engine>(
+    pub(super) fn apply<T: Engine>(
         &mut self,
         session: &mut Session<'_, T>,
         request: &[u8],
@@ -610,7 +612,7 @@ impl<'s, S: Engine> Requests<'s, S> {
     }
 }
 
-fn begin<'db, T: Engine>(
+pub(super) fn begin<'db, T: Engine>(
     target: &'db GroveDb<T>,
     root: [u8; 32],
     mode: RestoreCommitMode,
@@ -665,7 +667,7 @@ struct Round {
 /// no other tree. Returns how many those are. A history is compared with
 /// the same history on another grove, and calls that every grove refuses
 /// alike would compare as equal.
-fn assert_answered(answers: &[Answer], shape: &Shape) -> usize {
+pub(super) fn assert_answered(answers: &[Answer], shape: &Shape) -> usize {
     let proof = |at: &Vec<Vec<u8>>| format!("proof of {at:?}");
     let in_indexed = |at: &&Vec<Vec<u8>>| at.len() > 1 && at[0] == INDEXED_AT;
     let merks = shape.merks.iter().map(|(at, _)| at);
@@ -1091,7 +1093,7 @@ fn a_refused_chunk_and_an_abandoned_session_leave_nothing_between_the_engines() 
 
 /// The mode of a session that may commit before its end, with a budget of
 /// one byte and one subtree in flight.
-const PARTS: RestoreCommitMode = RestoreCommitMode::Incremental {
+pub(super) const PARTS: RestoreCommitMode = RestoreCommitMode::Incremental {
     budget_bytes: 1,
     max_subtrees_in_flight: 1,
 };
