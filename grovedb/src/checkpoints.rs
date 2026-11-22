@@ -52,9 +52,9 @@ impl<E: Engine> GroveDb<E> {
     ///
     /// - **The RocksDB engine** opens `path` as a checkpoint first. Where
     ///   that fails, it removes nothing. Where it succeeds, it closes the
-    ///   database and removes `path` with `std::fs::remove_dir_all`. The
-    ///   open does not tell a checkpoint from another database of the
-    ///   engine.
+    ///   database and calls `std::fs::remove_dir_all(path)`, and returns
+    ///   an error if that removal fails. The open does not tell a
+    ///   checkpoint from another database of the engine.
     /// - **The LigninDB engine** opens nothing. Its removal is
     ///   `lignindb::checkpoint::delete`. **It can remove more than a
     ///   checkpoint.** What follows is a warning and not the rule: the
