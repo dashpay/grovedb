@@ -17,7 +17,7 @@ use lignin_format::{
     value_log::{Value, ValuePointer, FIRST_RECORD_OFFSET},
     CommitVersion, FileId, FileKind, FormatVersion, PageId,
 };
-use lignin_io::{DirEntry, EntryKind, OpenMode, Vfs};
+use lignin_io::{DirEntry, EntryKind, OpenMode, Vfs, VfsFile};
 
 use super::{
     counts::{Account, ChangeMark, FileCount, ValueChange},
@@ -685,7 +685,8 @@ impl ValueStore {
                 return Err(ValueStoreError::io("open", &path)(error));
             }
         };
-        let file = Arc::new(ValueFile::created(id, path, reader));
+        let appender: Arc<dyn VfsFile> = Arc::from(appender);
+        let file = Arc::new(ValueFile::created(id, path, reader, appender.clone()));
         let counted = Counted {
             file: file.clone(),
             account: Account::EMPTY,

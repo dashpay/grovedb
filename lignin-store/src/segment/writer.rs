@@ -29,7 +29,7 @@ use super::{
 #[derive(Debug)]
 pub struct SegmentWriter {
     segment: Arc<Segment>,
-    file: Box<dyn VfsFile>,
+    file: Arc<dyn VfsFile>,
     index: Vec<IndexEntry>,
     end: u64,
     buf: Vec<u8>,
@@ -37,7 +37,7 @@ pub struct SegmentWriter {
 }
 
 impl SegmentWriter {
-    pub(super) fn new(segment: Arc<Segment>, file: Box<dyn VfsFile>) -> Self {
+    pub(super) fn new(segment: Arc<Segment>, file: Arc<dyn VfsFile>) -> Self {
         Self {
             segment,
             file,

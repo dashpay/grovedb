@@ -70,7 +70,7 @@
 //! | Create | [`ValueStore::create`] creates `val/<id>.val` under an id above every id used before, appends the file header, syncs the file and syncs `val/`. | Open, 20 bytes valid. |
 //! | Name | The manifest is replaced. From here the file takes values. | |
 //! | Append | [`ValueWriter::append`] appends one value: its records, back to back, in one append. | |
-//! | Sync | [`ValueWriter::sync`] or [`ValueStore::sync`] syncs the file. | Open, valid up to the last value synced. |
+//! | Sync | [`ValueWriter::sync`] or [`ValueStore::sync`] syncs the file, through the handle that appended its values. | Open, valid up to the last value synced. |
 //! | Close | [`ValueWriter::finish`] syncs the file and ends the writer. A file whose writer was dropped is closed by the next sync that covers all of it. | Closed, valid to its end. |
 //! | Empty | The file's count of live values reaches zero. | |
 //! | Drop | [`ValueStore::drop_empty`] takes the file out of the store, once nothing can reach it. | Not named. |
@@ -100,6 +100,19 @@
 //! A value is durable once a sync of its file that began after its append
 //! has returned, and it belongs to the database across sessions once a
 //! durable manifest gives its file a valid length at or past its end.
+//!
+//! A file that this session is writing has two handles. The store reads
+//! its values through one, which syncs nothing. Its writer appends through
+//! the other, and every sync of the file is made through that one, whoever
+//! asks for it: the writer, or [`ValueStore::sync`], also where the writer
+//! was dropped first. So a value is made durable through the handle that
+//! wrote it, which is the sync that the file layer's contract names for
+//! learning of a write-back that failed ([`lignin_io::vfs`], "A write-back
+//! can fail unreported"). The file keeps that handle while it has its
+//! writer, and after that until it is closed. The end of the session
+//! syncs no file that is not closed by then. A handle that such a file
+//! still has is closed no later than the last owner of the file is
+//! dropped, which can be a [`ValueHold`] or a [`ValueWalk`].
 //!
 //! Bytes past a file's valid length are not part of the database for a later
 //! session, whatever they hold: after a crash they may be whole values, torn

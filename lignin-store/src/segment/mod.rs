@@ -86,8 +86,8 @@
 //! | Create | [`SegmentStore::create`] creates `seg/<id>.seg` under an id above every id used before, appends the file header, syncs the file and syncs `seg/`. Then the segment enters the store, and its id with it. | Open, 20 bytes valid. |
 //! | Name | The manifest is replaced. From here the segment takes blocks. | |
 //! | Append | [`SegmentWriter::append`] appends one block. | |
-//! | Sync | [`SegmentWriter::sync`] or [`SegmentStore::sync`] syncs the file. | Open, valid up to the last block synced. |
-//! | Seal | [`SegmentWriter::seal`] appends the footer and syncs the file. | Sealed, valid to its end. |
+//! | Sync | [`SegmentWriter::sync`] or [`SegmentStore::sync`] syncs the file, through the handle that appended its blocks. | Open, valid up to the last block synced. |
+//! | Seal | [`SegmentWriter::seal`] appends the footer and syncs the file, through that handle. | Sealed, valid to its end. |
 //! | Drop | [`SegmentStore::drop_segment`] takes the segment out of the store. | Not named. |
 //! | Delete | [`SegmentStore::manifest_replaced`] removes the file, once a manifest that does not name it is durable. | |
 //!
@@ -107,6 +107,22 @@
 //! file must have an id above the last one recorded for its kind
 //! ([`ManifestChange::FileIdReused`]).
 //!
+//! A segment that this session is writing has two handles. The store reads
+//! its blocks through one, which syncs nothing. Its writer appends through
+//! the other, and every sync of the segment is made through that one,
+//! whoever asks for it: the writer, or [`SegmentStore::sync`], also where
+//! the writer was dropped first. So a block is made durable through the
+//! handle that wrote it, which is the sync that the file layer's contract
+//! names for learning of a write-back that failed ([`lignin_io::vfs`], "A
+//! write-back can fail unreported"). The segment keeps that handle while
+//! it has its writer, and after that until a sync through it has covered
+//! every block that was appended, or a sync of the segment has failed.
+//! Neither [`SegmentStore::drop_segment`] nor the end of the session
+//! syncs a segment that leaves the store before that: no manifest has
+//! given the segment a length past what was synced. A handle that the
+//! segment still has then is closed no later than the last owner of the
+//! segment is dropped, which can be a [`BlockWalk`] or a [`SyncRecord`].
+//!
 //! A segment that the manifest names was written by an earlier session if
 //! this session did not create it. Such a segment is read and never written:
 //! its file is opened read-only, and if the earlier session left it open it
@@ -124,7 +140,8 @@
 //! - Every segment it names is in `seg/`, and the bytes below the segment's
 //!   valid length are the ones that were appended: the file header, whole
 //!   blocks and, if it is named sealed, its footer. A manifest never gives a
-//!   segment a valid length beyond what was synced.
+//!   segment a valid length beyond what a sync through the handle that
+//!   appended has covered.
 //! - A file in `seg/` that it does not name holds nothing the database
 //!   refers to. [`SegmentStore::open`] removes it.
 //! - A segment id that ever held a block is never given to another file,

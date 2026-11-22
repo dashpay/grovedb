@@ -76,7 +76,7 @@ impl Drop for ValueHold {
 #[derive(Debug)]
 pub struct ValueWriter {
     file: Arc<ValueFile>,
-    appender: Box<dyn VfsFile>,
+    appender: Arc<dyn VfsFile>,
     end: u64,
     buf: Vec<u8>,
     target_len: u64,
@@ -86,7 +86,7 @@ pub struct ValueWriter {
 impl ValueWriter {
     pub(super) fn new(
         file: Arc<ValueFile>,
-        appender: Box<dyn VfsFile>,
+        appender: Arc<dyn VfsFile>,
         target_len: u64,
         session: u64,
     ) -> Self {
@@ -213,7 +213,7 @@ impl ValueWriter {
     /// session, and no manifest covers them
     /// ([`ValueStore::covers`](super::ValueStore::covers)).
     pub fn give_up(self) -> Result<u64, ValueStoreError> {
-        self.file.sync_through(&*self.appender)
+        self.file.sync()
     }
 }
 

@@ -6,6 +6,7 @@ mod errors;
 mod pages;
 mod run;
 mod store;
+mod write_back;
 
 use std::{path::Path, sync::Arc};
 

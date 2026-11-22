@@ -27,7 +27,11 @@ pub(super) struct Store {
 
 impl Store {
     pub(super) fn new() -> Self {
-        let fs = sim_fs(traced(5, 512));
+        Self::on(sim_fs(traced(5, 512)))
+    }
+
+    /// A store in the empty database directory of `fs`.
+    pub(super) fn on(fs: SimVfs) -> Self {
         let manifest = ManifestStore::create(shared(&fs), db_dir(), empty_manifest()).unwrap();
         let values = ValueStore::open(&manifest, &[]).expect("the value log opens");
         Self {
@@ -1268,4 +1272,85 @@ fn a_file_is_not_dropped_between_a_writers_hold_and_its_last_value() {
     assert!(store.drop_empty(0).is_empty());
     drop(hold);
     assert_eq!(store.drop_empty(0), [1]);
+}
+
+/// A value-log file that is being written has two handles: the store reads
+/// through one, and values are appended and synced through the other. The
+/// second is open until the file is closed, and no longer.
+#[test]
+fn the_handle_that_appends_is_open_until_the_file_is_closed() {
+    const NAME: &str = "00000001.val";
+    let dir = tempfile::tempdir().unwrap();
+    let vfs = FaultyVfs::without_syncs(Arc::new(StdVfs));
+    let begin = |at: &str| {
+        let db = dir.path().join(at);
+        std::fs::create_dir(&db).unwrap();
+        let shared: Arc<dyn Vfs> = Arc::new(vfs.clone());
+        let mut manifest = ManifestStore::create(shared, &db, empty_manifest()).unwrap();
+        let values = ValueStore::open(&manifest, &[]).unwrap();
+        let mut writer = values.create().unwrap();
+        values.commit(&mut manifest).unwrap();
+        assert_eq!(vfs.open_handles(NAME), 2);
+        let mut hold = ValueHold::new();
+        writer.append(&mut hold, page(1), b"a value").unwrap();
+        vfs.take_calls();
+        (manifest, values, writer)
+    };
+    let synced = || vfs.take_calls() == [(Op::SyncData, NAME.to_owned())];
+
+    // A writer that is dropped with values no sync has covered leaves its
+    // handle to the store, whose sync is made through it and closes the
+    // file.
+    {
+        let (_manifest, values, writer) = begin("dropped");
+        drop(writer);
+        assert_eq!(vfs.open_handles(NAME), 2);
+        values.sync().expect("the values are synced");
+        assert!(synced());
+        assert_eq!(vfs.open_handles(NAME), 1);
+        values.sync().expect("a closed file is not synced");
+        assert!(vfs.take_calls().is_empty());
+    }
+    assert_eq!(vfs.open_handles(NAME), 0);
+
+    // A writer that finishes, or gives its file up, closes the file, and
+    // one that only syncs keeps the handle for what it appends next.
+    {
+        let (_manifest, _values, writer) = begin("finished");
+        writer.finish().expect("the file is synced and closed");
+        assert!(synced());
+        assert_eq!(vfs.open_handles(NAME), 1);
+    }
+    {
+        let (_manifest, _values, writer) = begin("given up");
+        writer.give_up().expect("the file is synced and closed");
+        assert!(synced());
+        assert_eq!(vfs.open_handles(NAME), 1);
+    }
+    {
+        let (_manifest, _values, mut writer) = begin("synced");
+        writer.sync().expect("the values are synced");
+        assert!(synced());
+        assert_eq!(vfs.open_handles(NAME), 2);
+        drop(writer);
+        assert_eq!(vfs.open_handles(NAME), 1);
+    }
+
+    // After a sync that failed nothing is synced through the handle
+    // again: it goes with the writer, or at once if the writer is gone.
+    {
+        let (_manifest, _values, mut writer) = begin("failed");
+        vfs.fail(Op::SyncData, NAME);
+        writer.sync().expect_err("the sync fails");
+        drop(writer);
+        assert_eq!(vfs.open_handles(NAME), 1);
+    }
+    {
+        let (_manifest, values, writer) = begin("failed later");
+        drop(writer);
+        vfs.fail(Op::SyncData, NAME);
+        values.sync().expect_err("the sync fails");
+        assert_eq!(vfs.open_handles(NAME), 1);
+    }
+    assert_eq!(vfs.open_handles(NAME), 0);
 }
