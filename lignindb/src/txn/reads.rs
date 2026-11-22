@@ -80,11 +80,43 @@ impl Reads {
 
     /// Forgets every lease and every key set: the transaction has ended,
     /// and with it the handle of every node it showed.
+    #[cfg(all(test, not(loom)))]
     pub(crate) fn clear(&mut self) {
-        self.leases.clear();
+        self.end(|_| false);
+    }
+
+    /// The transaction has ended: every lease is forgotten but those of
+    /// which `under_way` holds, and every key set where no lease is left.
+    /// A lease under which a read is under way stays as it is dated, with
+    /// the key sets: that read is of the same version after the end as
+    /// before it (`WriteTxn::cursor_node`).
+    pub(crate) fn end(&mut self, under_way: impl Fn(&Lease) -> bool) {
+        self.leases.retain(|lease, _| under_way(lease));
         self.last = None;
         self.framed = None;
-        self.sets.clear();
+        if self.leases.is_empty() {
+            self.sets.clear();
+        }
+    }
+
+    /// Dates `lease` at the version `at` if it is not remembered, and says
+    /// whether it was not: a read under it is about to be made outside the
+    /// transaction's lock, and the key sets that are taken in meanwhile
+    /// are kept for it ([`Self::took`]).
+    pub(crate) fn date(&mut self, lease: Lease, at: CommitVersion) -> bool {
+        let fresh = !self.leases.contains_key(&lease);
+        if fresh {
+            self.leases.insert(lease, at);
+        }
+        fresh
+    }
+
+    /// Forgets `lease`: no node was shown under it.
+    pub(crate) fn forget(&mut self, lease: Lease) {
+        self.leases.remove(&lease);
+        if self.last == Some(lease) {
+            self.last = None;
+        }
     }
 
     /// A node is shown under `lease`, as the committed version `at` has it

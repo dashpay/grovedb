@@ -418,6 +418,12 @@ pub(crate) struct WriteSet {
     subtrees: Vec<SubtreeEntry>,
     /// The drops and the clears among the entries, oldest first.
     leaving: Vec<EntryId>,
+    /// For each entry of `leaving`: whether its Merk had a node when it
+    /// was cleared, where the writes of the transaction from before the
+    /// clear say so ([`Self::rooted_before`]). `None` for a drop, for a
+    /// clear of a Merk of whose root those writes say nothing, and for a
+    /// clear of a Merk that the transaction entered if it was absent.
+    taking: Vec<Option<bool>>,
     /// How many times `leaving` changed. It never goes back.
     left: u64,
     /// The moves among the entries, oldest first.
@@ -633,6 +639,7 @@ impl WriteSet {
             }
             if self.leaving.last() == Some(&id) {
                 self.leaving.pop();
+                self.taking.pop();
                 self.left += 1;
             }
             if self.moved.last() == Some(&id) {
@@ -657,6 +664,7 @@ impl WriteSet {
         self.merks.clear();
         self.subtrees.clear();
         self.leaving.clear();
+        self.taking.clear();
         self.left += 1;
         self.moved.clear();
         self.arena.clear();
@@ -831,8 +839,18 @@ impl WriteSet {
                 | SubtreeWrite::Move { .. } => continue,
             };
             let below = std::mem::take(&mut cut);
-            let id = self.push(Unit::data(write.subtree()), &below, kind, first_write);
+            let subtree = write.subtree();
+            let id = self.push(Unit::data(subtree), &below, kind, first_write);
+            // What the operations before this one say of the Merk's root:
+            // a clear comes before the change sets of its own operation.
+            let rooted = match kind {
+                Kind::Cleared if !self.enters_if_absent(&subtree) => {
+                    self.rooted_before(&subtree, self.ops.len() - 1)
+                }
+                _ => None,
+            };
             self.leaving.push(id);
+            self.taking.push(rooted);
             self.left += 1;
         }
         // The moves of a batch are made together, and are one entry.
@@ -1392,6 +1410,31 @@ impl WriteSet {
         (self.leaving.iter()).map(|id| self.entry(*id).unit.subtree)
     }
 
+    /// [`Self::leaving`], each with whether its Merk had a node when the
+    /// transaction cleared it, where its own writes from before the clear
+    /// say so: a clear of a Merk with no node leaves the subtrees below
+    /// it entered, and a clear of one with a node takes them
+    /// (`lignin_tree::directory`). `None` is for a drop, for a clear of a
+    /// Merk of whose root those writes say nothing, and for a clear of a
+    /// Merk that the transaction entered if it was absent
+    /// ([`Self::enters_if_absent`]): the committed version that is read
+    /// says there (`Opened::below_taken`).
+    pub(crate) fn taking(&self) -> Vec<(Subtree, Option<bool>)> {
+        let taking = self.leaving.iter().zip(&self.taking);
+        taking
+            .map(|(id, rooted)| (self.entry(*id).unit.subtree, *rooted))
+            .collect()
+    }
+
+    /// [`Self::taking`], of the operations `ops` only.
+    pub(crate) fn taking_in(&self, ops: std::ops::Range<usize>) -> Vec<(Subtree, Option<bool>)> {
+        let taking = self.leaving.iter().zip(&self.taking);
+        let taking = taking.filter(|(id, _)| ops.contains(&self.op_of(**id)));
+        taking
+            .map(|(id, rooted)| (self.entry(*id).unit.subtree, *rooted))
+            .collect()
+    }
+
     /// A number that is another whenever the transaction drops or clears a
     /// subtree, or takes such a write out: whoever keeps what it found
     /// open asks again when it changed.
@@ -1529,7 +1572,12 @@ impl WriteSet {
     /// ([`Self::enters_if_absent`]): whether such a write left the subtree
     /// with the root it had is in [`Self::subtree`].
     pub(crate) fn rooted(&self, subtree: &Subtree) -> Option<bool> {
-        for op in (0..self.ops.len()).rev() {
+        self.rooted_before(subtree, self.ops.len())
+    }
+
+    /// [`Self::rooted`], after the operations before `end` only.
+    fn rooted_before(&self, subtree: &Subtree, end: usize) -> Option<bool> {
+        for op in (0..end).rev() {
             // The change sets of an operation come after what it does to
             // subtrees as a whole.
             let (entries_from, entries_to, merks_from, merks_to) = self.op_bounds(op);

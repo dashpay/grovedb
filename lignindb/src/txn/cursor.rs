@@ -557,6 +557,7 @@ impl<'t, 's> Cursor<'t, 's> {
             guard: &guard,
             at: self.pin.version(),
             seen: self.seen,
+            lease: None,
         };
         let side = match (self.txn).cursor_record(self.who, self.unit, key, pinned, out)? {
             Ok(found) => return Ok(found),
@@ -707,6 +708,7 @@ impl<'t, 's> MerkCursor<'t, 's> {
             guard: &guard,
             at: self.pin.version(),
             seen: self.seen,
+            lease: Some(self.side.lease),
         };
         let own = children.as_deref_mut();
         let shown = (self.txn).cursor_node(self.who, subtree, &key, own, pinned, read)?;
@@ -955,6 +957,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             guard,
             at: self.pin.version(),
             seen: self.seen,
+            lease: None,
         };
         let side = (self.txn).cursor_side(self.who, self.unit, pinned)?;
         self.placed(guard, side)

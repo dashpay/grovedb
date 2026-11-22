@@ -109,18 +109,34 @@ impl Opened {
         subtree: &Subtree,
         above: &[Subtree],
     ) -> Result<bool, TxnError> {
+        let above: Vec<_> = above.iter().map(|above| (*above, None)).collect();
+        self.below_taken(path, guard, subtree, &above)
+    }
+
+    /// [`Self::below`], for subtrees that the transaction dropped or
+    /// cleared, each with whether its Merk had a node then, where the
+    /// transaction's own writes say so (`WriteSet::taking`). Where they
+    /// do not, this version says: its Merk is taken for the one that was
+    /// dropped or cleared.
+    pub(crate) fn below_taken<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+        above: &[(Subtree, Option<bool>)],
+    ) -> Result<bool, TxnError> {
         self.open(path, guard, subtree)?;
-        for above in above {
+        for (above, _) in above {
             self.open(path, guard, above)?;
         }
         let Some(entry) = &self.entries[subtree] else {
             return Ok(false);
         };
-        Ok(above.iter().any(|above| {
+        Ok(above.iter().any(|(above, rooted)| {
             // A Merk with no node hosts none, and a clear of it leaves the
             // directory as it is.
             let above = self.entries[above].as_ref();
-            let above = above.filter(|above| above.root().is_some());
+            let above = above.filter(|above| rooted.unwrap_or(above.root().is_some()));
             above.is_some_and(|above| entry.lineage().any(|id| id == above.id()))
         }))
     }
@@ -295,8 +311,8 @@ impl Opened {
         set: &WriteSet,
         subtree: &Subtree,
     ) -> Result<Option<&Entry>, TxnError> {
-        let left: Vec<Subtree> = set.leaving().collect();
-        if !left.is_empty() && self.below(path, guard, subtree, &left)? {
+        let left = set.taking();
+        if !left.is_empty() && self.below_taken(path, guard, subtree, &left)? {
             return Ok(None);
         }
         self.open(path, guard, subtree)?;
