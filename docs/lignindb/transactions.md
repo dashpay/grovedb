@@ -1245,20 +1245,20 @@ they are again the loader's.
 A layout of *T*'s writes that a refusal stops is not made again to tell
 that refusal. *T* keeps it, and what is refused because the layout is
 stopped is told it from there: a read or a write that a move decides
-(MV7), and a commit (MV6). That holds for as long as the layout would
-stop there again: *T* reads the version that the layout was
-stopped at, the writes that it held then are the first that it holds,
-the same of those are laid out, and the layout would be made with the
-same pending marks. Writes are laid out in their order, so a layout that
-one of them stops is stopped whatever *T* writes after it. Where *T*
-holds a load, the layout is therefore not made again for a write that
-*T* takes afterwards, nor when such a later write is laid out: each try
-would lay the loads out again. The layout is made again, and a load with
-it: at another version, where no commit has met a write of *T* (WT7a);
-after a rollback, to a savepoint or of a scope, that takes a write out;
-when one of the writes that *T* held at the stop, which its scope kept in
-the write set, is laid out; and when the layout would be made with other
-pending marks.
+(MV7), and a commit (MV6). That holds for as long as *T* reads the
+version that the layout was stopped at, holds the writes that it held
+then and no other, has the same of them laid out, and would make the
+layout with the same pending marks. Where *T* holds a load, it holds as
+well once *T* has taken more writes: writes are laid out in their order,
+so the layout is stopped before any that comes later, and each try would
+lay the loads out again. For such a *T* the layout is not made again for
+a later write, nor when a later write is laid out. Where no commit has
+met a write of *T* (WT7a), the layout is made again, and a load with it:
+at another version; after a rollback, to a savepoint or of a scope, that
+takes a write out; when one of the writes that *T* held at the stop,
+which its scope kept in the write set, is laid out; when the layout
+would be made with other pending marks; and, for a *T* that holds no
+load, at its next operation after it took another write.
 
 **LD5. The commit of a load takes its values over.** This is the exception
 to CM7 and to the first case of PV6.
@@ -1334,7 +1334,10 @@ which is held to in three places:
   - the batch drops, clears and moves no subtree;
   - no write of *T* set the root of the Merk, entered the subtree as a
     new one, or dropped or cleared it. An enter of the subtree if it was
-    absent says nothing of the root;
+    absent is none of these where it finds the subtree: the version that
+    the operation reads has it, and no drop or clear that *T* made
+    before that enter takes it. Where such an enter finds no subtree, it
+    makes one, which is *T*'s own, and the refusal is told as it is;
   - no move of *T* decides what is under the subtree (MV7);
   - the committed version that the operation reads has the subtree with
     a root, where the load is refused for a root, or has no subtree
