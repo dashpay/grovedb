@@ -1,7 +1,8 @@
 //! Random histories of write transactions that enter, write, clear, drop
-//! and move subtrees beside one another, with rollbacks, cursors that are
-//! kept from call to call and reads that fail, on a store on disk, against
-//! the model (`transactions.md` T-MV7).
+//! and move subtrees beside one another, leave unlinked records in their
+//! Merks and state subtrees anew, with rollbacks, cursors that are kept
+//! from call to call and reads that fail, on a store on disk, against the
+//! model (`transactions.md` T-MV7).
 //!
 //! Two transactions stay open, and others are made, written and committed
 //! between their calls. A history is a number of steps: a step draws what
@@ -32,10 +33,22 @@
 //! nothing is shown it, for every prefix the history has named. The
 //! store is checked when the history ends.
 //!
+//! A Merk whose tree has a node is written nodes that its stated root
+//! does not reach, under keys of their own: the engine keeps each as an
+//! unlinked record, the model as a node of its key, and a move takes
+//! them with their Merk. A subtree is stated anew with the tree type and
+//! the place it has, which changes nothing that is read. A batch that
+//! moves a subtree and states one anew that its moves name is refused,
+//! and so is one that states anew by key a subtree that a move decides:
+//! a history makes each of the two before some of its moves and some of
+//! its writes by key, and holds the refusal against its kind.
+//!
 //! A history follows from its seed alone, and one that fails prints the
 //! calls it made.
 //!
-//! A history has none of these: an enter of a subtree if it is absent; a
+//! A history has none of these: an unlinked record in a Merk with no
+//! node; a subtree that is stated anew with another tree type or at
+//! another place; an enter of a subtree if it is absent; a
 //! commit of a Merk with no node that has a subtree below it, which is no
 //! state of a grove; a move to another Merk than the one that hosted the
 //! subtree; a write that keeps the value of a node by the handle that a
@@ -46,7 +59,10 @@
 use std::{ops::Bound, rc::Rc};
 
 use super::{
-    model::{self, handle_of, Committed, Hosts, OwnedBatch, OwnedMerk, OwnedSubtree, Records, Val},
+    model::{
+        self, handle_of, Committed, Hosts, NodeRec, OwnedBatch, OwnedMerk, OwnedSubtree, Records,
+        Val,
+    },
     store::{Db, Outcome, Rng, TREE_TYPE},
     subtrees::Items,
     *,
@@ -72,6 +88,15 @@ fn prefix(kind: u8, serial: u32, renamed: u32) -> Subtree {
 
 fn kind(subtree: &Subtree) -> u8 {
     subtree.as_bytes()[0]
+}
+
+/// The first byte of the keys that a history writes unlinked records
+/// under. No node of a tree has such a key.
+const UNLINKED: u8 = b'u';
+
+/// Whether `key` is one that a history writes unlinked records under.
+fn is_unlinked(key: &[u8]) -> bool {
+    key.first() == Some(&UNLINKED)
 }
 
 /// The key of the node that hosts `subtree` in the Merk above it.
@@ -208,6 +233,26 @@ pub(crate) struct Tally {
     pub checks_between_batches: u64,
     /// Reads of the directory, prefix by prefix, after a commit.
     pub directory_checks: u64,
+    /// Nodes that were written out of the tree of their Merk, and
+    /// unlinked records that were deleted by their keys.
+    pub unlinked_puts: u64,
+    pub unlinked_deletes: u64,
+    /// Batches that removed the last node of a tree and deleted the
+    /// unlinked records of its Merk with it.
+    pub emptied_with_unlinked: u64,
+    /// Moves and changes of place of a subtree that held an unlinked
+    /// record, itself or in a subtree that went with it.
+    pub moves_of_unlinked: u64,
+    /// Reads of an unlinked record through a cursor that was kept.
+    pub cursor_reads_of_unlinked: u64,
+    /// Subtrees that were stated anew, and those of them that a move of
+    /// the transaction had brought to the prefix that was named.
+    pub stated: u64,
+    pub stated_after_a_move: u64,
+    /// Batches that were refused: a move with a subtree that it names
+    /// stated anew, and a subtree that a move decides stated anew by key.
+    pub stated_beside_a_move: u64,
+    pub stated_by_key: u64,
     /// The histories that had, at least once: a clear and a move of one
     /// transaction that touch, in either order; a read through a cursor
     /// of a version that commits have left behind; a rollback to a mark
@@ -219,6 +264,8 @@ pub(crate) struct Tally {
     pub with_cursor_first_after_rewind: u64,
     pub with_twin_reads: u64,
     pub with_failed_read: u64,
+    /// And those that had a move of a subtree with an unlinked record.
+    pub with_unlinked_moved: u64,
 }
 
 impl Tally {
@@ -262,11 +309,21 @@ impl Tally {
             checks_by_key_with_a_move,
             checks_between_batches,
             directory_checks,
+            unlinked_puts,
+            unlinked_deletes,
+            emptied_with_unlinked,
+            moves_of_unlinked,
+            cursor_reads_of_unlinked,
+            stated,
+            stated_after_a_move,
+            stated_beside_a_move,
+            stated_by_key,
             with_clear_and_move,
             with_cursor_behind,
             with_cursor_first_after_rewind,
             with_twin_reads,
-            with_failed_read
+            with_failed_read,
+            with_unlinked_moved
         );
     }
 }
@@ -326,11 +383,19 @@ enum Step {
     Read,
 }
 
-/// The Merks one batch changes, each with the records it had and the
+/// The nodes that a batch writes out of the tree of a Merk, each under
+/// its key, and the keys of the unlinked records it deletes.
+type Unlinked = (Vec<(Vec<u8>, NodeRec)>, Vec<Vec<u8>>);
+
+/// The Merks one batch changes, each with the nodes its tree had and the
 /// items it is to have, and what else the batch states.
 #[derive(Default)]
 struct Draft {
     merks: BTreeMap<Subtree, (BTreeMap<Vec<u8>, Val>, Items)>,
+    /// The keys of the unlinked records that each of those Merks held.
+    held: BTreeMap<Subtree, Vec<Vec<u8>>>,
+    /// What the batch does to the unlinked records of a Merk.
+    unlinked: BTreeMap<Subtree, Unlinked>,
     hosted: BTreeMap<Subtree, BTreeMap<Vec<u8>, Vec<Subtree>>>,
     subtrees: Vec<OwnedSubtree>,
     records: Vec<Write>,
@@ -413,8 +478,22 @@ impl<'s> Run<'s> {
         model.view(&self.world.model.records, Unit::data(merk))
     }
 
+    /// The nodes of the tree of `merk`: its records but for the unlinked
+    /// ones.
+    fn tree(&self, tx: &Tx<'s>, merk: Subtree) -> BTreeMap<Vec<u8>, Val> {
+        let mut tree = self.view(tx, merk);
+        tree.retain(|key, _| !is_unlinked(key));
+        tree
+    }
+
+    /// The items of the tree of `merk`.
     fn items(&self, tx: &Tx<'s>, merk: Subtree) -> Items {
-        Committed::items(&self.view(tx, merk))
+        Committed::items(&self.tree(tx, merk))
+    }
+
+    /// Whether `merk` holds an unlinked record.
+    fn holds_unlinked(&self, tx: &Tx<'s>, merk: Subtree) -> bool {
+        self.view(tx, merk).keys().any(|key| is_unlinked(key))
     }
 
     /// Every subtree that is entered for a transaction whose subtrees hang
@@ -468,16 +547,26 @@ impl<'s> Run<'s> {
                 refused |= hosts.contains_key(subtree);
                 refused |= kind(above) != TOP && !hosts.contains_key(above);
             }
+            // A subtree that is stated anew is entered where the
+            // statement is laid out, and a statement writes no key
+            // either.
+            if let Write::Stated(subtree) = write {
+                refused |= kind(subtree) != TOP && !hosts.contains_key(subtree);
+            }
             model::hosted(&mut hosts, write);
         }
         refused || model.stopped()
     }
 
     fn open<'d>(&self, draft: &'d mut Draft, tx: &Tx<'s>, merk: Subtree) -> &'d mut Items {
+        let held = &mut draft.held;
         let entry = draft.merks.entry(merk).or_insert_with(|| {
-            let view = self.view(tx, merk);
-            let items = Committed::items(&view);
-            (view, items)
+            let mut tree = self.view(tx, merk);
+            let records = tree.keys().filter(|key| is_unlinked(key)).cloned();
+            held.insert(merk, records.collect());
+            tree.retain(|key, _| !is_unlinked(key));
+            let items = Committed::items(&tree);
+            (tree, items)
         });
         &mut entry.1
     }
@@ -502,6 +591,8 @@ impl<'s> Run<'s> {
     fn batch(&mut self, draft: Draft, hosts: &Hosts) -> OwnedBatch {
         let Draft {
             merks,
+            mut held,
+            mut unlinked,
             mut hosted,
             subtrees,
             mut records,
@@ -510,9 +601,24 @@ impl<'s> Run<'s> {
         } = draft;
         let mut hosts = hosts.clone();
         hosts.extend(entered);
-        let merks = merks.into_iter().map(|(subtree, (view, items))| {
-            let mut merk = OwnedMerk::change(subtree, &view, &items);
+        let mut emptied = 0;
+        let merks = merks.into_iter().map(|(subtree, (tree, items))| {
+            let mut merk = OwnedMerk::change(subtree, &tree, &items);
             merk.hosted = hosted.remove(&subtree).unwrap_or_default();
+            // The unlinked records are deleted by their keys, and a node
+            // that the batch writes beside the tree, under a root that is
+            // kept, becomes one. A Merk whose tree has no node afterwards
+            // holds none: the batch deletes those it held.
+            let held = held.remove(&subtree).unwrap_or_default();
+            let (put, deleted) = unlinked.remove(&subtree).unwrap_or_default();
+            if items.is_empty() {
+                emptied += u64::from(!held.is_empty());
+                merk.removed.extend(held);
+            } else {
+                merk.removed.extend(deleted);
+                let put = put.into_iter();
+                merk.nodes.extend(put.map(|(key, node)| (key, node, true)));
+            }
             merk
         });
         let mut merks: Vec<OwnedMerk> = merks
@@ -520,6 +626,7 @@ impl<'s> Run<'s> {
                 !merk.nodes.is_empty() || !merk.removed.is_empty() || merk.root.is_some()
             })
             .collect();
+        self.tally.emptied_with_unlinked += emptied;
         // A Merk comes before the Merk that hosts it.
         merks.sort_by_key(|merk| std::cmp::Reverse(depth(&hosts, merk.subtree)));
         // Every change of a Merk changes the hash of its root, which its
@@ -552,6 +659,74 @@ impl<'s> Run<'s> {
         }
         self.hosts_above(&mut draft, tx, hosts, merk);
         draft.what = format!("nodes of {}", tag(&merk));
+        Some(draft)
+    }
+
+    /// A node as a batch writes it out of the tree of its Merk: one with
+    /// no child, and a value of its own.
+    fn unlinked_node(&mut self) -> NodeRec {
+        let items = BTreeMap::from([(vec![UNLINKED], self.stamp())]);
+        let (_, mut records) = model::records(&items);
+        records
+            .remove(&[UNLINKED][..])
+            .expect("the node of the item")
+    }
+
+    /// Nodes are written that the tree of their Merk does not reach, under
+    /// a root that is kept, and unlinked records are deleted by their
+    /// keys: in a Merk whose tree has a node.
+    fn plan_unlinked(&mut self, tx: &Tx<'s>, hosts: &Hosts) -> Option<Draft> {
+        let rooted: Vec<Subtree> = (self.merks(hosts).into_iter())
+            .filter(|merk| !self.items(tx, *merk).is_empty())
+            .collect();
+        let merk = self.pick(&rooted)?;
+        let mut draft = Draft::default();
+        self.open(&mut draft, tx, merk);
+        let held = draft.held[&merk].clone();
+        let (mut put, mut deleted, mut told) = (Vec::new(), Vec::new(), Vec::new());
+        let first = self.rng.below(3) as u8;
+        let keys = [first, (first + 1) % 3].into_iter();
+        for at in keys.take(1 + self.rng.below(2)) {
+            let key = vec![UNLINKED, at];
+            if held.contains(&key) && self.rng.chance(35) {
+                told.push(format!("delete {key:?}"));
+                deleted.push(key);
+            } else {
+                told.push(format!("put {key:?}"));
+                put.push((key, self.unlinked_node()));
+            }
+        }
+        self.tally.unlinked_puts += put.len() as u64;
+        self.tally.unlinked_deletes += deleted.len() as u64;
+        draft.unlinked.insert(merk, (put, deleted));
+        self.hosts_above(&mut draft, tx, hosts, merk);
+        draft.what = format!("unlinked records of {}: {}", tag(&merk), told.join(", "));
+        Some(draft)
+    }
+
+    /// A subtree is stated anew, with the tree type and the place it has:
+    /// often one that a move of the transaction brought to its prefix.
+    fn plan_convert(&mut self, tx: &Tx<'s>, hosts: &Hosts) -> Option<Draft> {
+        let live = self.live(hosts);
+        let brought: Vec<Subtree> = {
+            let model = tx.model.borrow();
+            let moves = model.writes.iter().filter_map(|(write, ..)| match write {
+                Write::Move(moved) => Some(moved),
+                _ => None,
+            });
+            let brought = moves.flat_map(|moved| moved.pairs.iter().map(|(_, to)| *to));
+            brought.filter(|to| live.contains(to)).collect()
+        };
+        let subtree = match self.rng.chance(50) {
+            true if !brought.is_empty() => self.pick(&brought)?,
+            _ => self.pick(&live)?,
+        };
+        let mut draft = Draft::default();
+        let stated = OwnedSubtree::Convert(subtree, TREE_TYPE.to_vec(), None);
+        draft.subtrees.push(stated);
+        draft.what = format!("{} is stated anew", tag(&subtree));
+        self.tally.stated += 1;
+        self.tally.stated_after_a_move += u64::from(brought.contains(&subtree));
         Some(draft)
     }
 
@@ -808,6 +983,14 @@ impl<'s> Run<'s> {
         self.tally.clear_then_move += u64::from(cleared);
     }
 
+    /// Counts a move of `subtree`, with the subtrees below it that
+    /// `below` pairs, where one of them holds an unlinked record.
+    fn moved_with_unlinked(&mut self, tx: &Tx<'s>, subtree: Subtree, below: &[(Subtree, Subtree)]) {
+        let mut taken = std::iter::once(subtree).chain(below.iter().map(|(old, _)| *old));
+        let carried = taken.any(|merk| kind(&merk) != BARE && self.holds_unlinked(tx, merk));
+        self.tally.moves_of_unlinked += u64::from(carried);
+    }
+
     fn movable(&self, tx: &Tx<'s>, hosts: &Hosts) -> Vec<Subtree> {
         let hosted = hosts.keys().copied();
         hosted
@@ -863,6 +1046,7 @@ impl<'s> Run<'s> {
         }
         self.hosts_above(&mut draft, tx, hosts, above);
         let below = self.pairs(tx, hosts, subtree, to);
+        self.moved_with_unlinked(tx, subtree, &below);
         draft.what = format!(
             "move {} to {}{} with {:?}",
             tag(&subtree),
@@ -909,6 +1093,7 @@ impl<'s> Run<'s> {
                 named.insert(host_key(&to), vec![to]);
             }
             let below = self.pairs(tx, hosts, from, to);
+            self.moved_with_unlinked(tx, from, &below);
             draft.subtrees.push(OwnedSubtree::Move {
                 from,
                 to,
@@ -996,7 +1181,9 @@ impl<'s> Run<'s> {
     fn write(&mut self, tx: &Tx<'s>, others: &[&Tx<'s>], who: &str) -> bool {
         let hosts = self.hosts(tx);
         let few = self.live(&hosts).len() < 14;
-        let draft = match self.rng.below(100) {
+        let draft = match self.rng.below(112) {
+            100..=108 => self.plan_unlinked(tx, &hosts),
+            109..=111 => self.plan_convert(tx, &hosts),
             0..=13 => self.plan_nodes(tx, &hosts),
             14..=23 => self.plan_flat(&hosts),
             24..=39 if few => self.plan_enter(tx, &hosts),
@@ -1046,9 +1233,45 @@ impl<'s> Run<'s> {
         true
     }
 
+    /// Before some of the batches that move a subtree: the same batch
+    /// with one more statement, of a subtree that its moves name, anew.
+    /// It is refused for that, and changes nothing.
+    fn stated_beside_a_move(&mut self, tx: &Tx<'s>, batch: &OwnedBatch, who: &str) {
+        let mut named = Vec::new();
+        for write in &batch.subtrees {
+            if let OwnedSubtree::Move {
+                from, to, below, ..
+            } = write
+            {
+                named.extend([*from, *to]);
+                named.extend(below.iter().flat_map(|(old, new)| [*old, *new]));
+            }
+        }
+        if named.is_empty() || !self.rng.chance(25) {
+            return;
+        }
+        let subtree = self.pick(&named).expect("a prefix that a move names");
+        let mut refused = batch.clone();
+        let at = self.rng.below(refused.subtrees.len() + 1);
+        let stated = OwnedSubtree::Convert(subtree, TREE_TYPE.to_vec(), None);
+        refused.subtrees.insert(at, stated);
+        self.call(format!(
+            "{who}: the next batch, with {} stated anew",
+            tag(&subtree)
+        ));
+        match self.world.apply(tx, &refused) {
+            Err(TxnError::Batch(BatchError::ConvertMoved { subtree: named })) => {
+                assert_eq!(named, subtree, "the subtree that the refusal names");
+            }
+            other => panic!("a subtree that a move names is stated anew: {other:?}"),
+        }
+        self.tally.stated_beside_a_move += 1;
+    }
+
     fn apply(&mut self, tx: &Tx<'s>, draft: Draft, hosts: &Hosts, who: &str) {
         let what = draft.what.clone();
         let batch = self.batch(draft, hosts);
+        self.stated_beside_a_move(tx, &batch, who);
         self.call(format!("{who}: {what}"));
         if let Err(error) = self.world.apply(tx, &batch) {
             panic!("{who}: {what}: {error}\n{batch:?}");
@@ -1086,6 +1309,18 @@ impl<'s> Run<'s> {
             (false, Ok(_)) => self.tally.batches += 1,
             (true, Err(error)) => refused_as(&error, expected, subtree),
             (decided, applied) => panic!("a move decides: {decided}, and {applied:?}"),
+        }
+        if decided {
+            // Nor is a subtree that a move decides stated anew by key.
+            let stated = OwnedBatch {
+                subtrees: vec![OwnedSubtree::Convert(subtree, TREE_TYPE.to_vec(), None)],
+                ..OwnedBatch::default()
+            };
+            self.call(format!("{who}: {} is stated anew, by key", tag(&subtree)));
+            let refused = self.world.apply_as_read(tx, &stated);
+            let refused = refused.expect_err("a statement by key where a move decides");
+            refused_as(&refused, expected, subtree);
+            self.tally.stated_by_key += 1;
         }
         if moves {
             // No subtree is dropped or cleared by key beside a move.
@@ -1343,9 +1578,10 @@ impl<'s> Run<'s> {
 
     fn step(&mut self, at: bool) -> Step {
         match self.rng.below(100) {
-            0..=24 => Step::Seek(match self.rng.chance(50) {
-                true => vec![b'f', self.rng.below(6) as u8],
-                false => vec![b'n', self.rng.below(6) as u8],
+            0..=24 => Step::Seek(match self.rng.below(5) {
+                0 | 1 => vec![b'f', self.rng.below(6) as u8],
+                2 | 3 => vec![b'n', self.rng.below(6) as u8],
+                _ => vec![UNLINKED, self.rng.below(3) as u8],
             }),
             25..=34 => Step::First,
             35..=39 => Step::Last,
@@ -1430,11 +1666,24 @@ impl<'s> Run<'s> {
                 let read = cursor.node(|shown| {
                     let node = node.expect("no refusal");
                     match (node, shown) {
-                        (Some(node), Some(shown)) => node.check(&key, &shown),
+                        (Some(node), Some(shown)) => {
+                            // An unlinked record has no cell: it is shown
+                            // as that, or from the write set where the
+                            // transaction wrote it and serves it by key.
+                            let (record, cell) = (shown.is_unlinked(), shown.handle().is_some());
+                            assert!(
+                                is_unlinked(&key) || !record,
+                                "{key:?} is no unlinked record"
+                            );
+                            assert!(!is_unlinked(&key) || !cell, "{key:?} is no node of a tree");
+                            node.check(&key, &shown);
+                        }
                         (None, None) => {}
                         (node, shown) => panic!("{node:?} is expected, {shown:?} is shown"),
                     }
                 });
+                let record = is_unlinked(&key) && node.flatten().is_some() && read.is_ok();
+                self.tally.cursor_reads_of_unlinked += u64::from(record);
                 read.map(|()| Some(key))
             }
             (step, reader) => {
@@ -1528,8 +1777,8 @@ impl<'s> Run<'s> {
     /// Has the next look of a transaction at the commits fail, and makes
     /// the call that looks.
     fn fail_look(&mut self, tx: &Tx<'s>, index: usize) {
-        let writes =
-            (tx.model.borrow().writes.iter()).any(|(write, ..)| !matches!(write, Write::Enter(..)));
+        let writes = (tx.model.borrow().writes.iter())
+            .any(|(write, ..)| !matches!(write, Write::Enter(..) | Write::Stated(_)));
         if !writes || tx.txn.looked_at() == Some(self.world.latest()) {
             return;
         }
@@ -1584,7 +1833,13 @@ impl<'s> Run<'s> {
     /// Merks, and the directory.
     fn check_committed(&mut self) {
         self.call("the committed state is read whole".to_string());
-        self.world.check_committed();
+        self.world.check_committed_but(is_unlinked);
+        // No history leaves an unlinked record in a Merk with no node.
+        let records = &self.world.model.records;
+        for ((unit, key), _) in records.iter().filter(|((_, key), _)| is_unlinked(key)) {
+            let mut nodes = records.range((*unit, Vec::new())..(*unit, vec![UNLINKED]));
+            assert!(nodes.next().is_some(), "{key:?} of {unit} is alone");
+        }
         self.check_directory();
     }
 
@@ -1669,6 +1924,13 @@ pub(crate) fn run(seed: u64, steps: usize) -> Tally {
             let draft = draft.expect("a Merk to write");
             run.apply(&made, draft, &hosts, "the first commit");
             run.check_between(&made, "the first commit");
+        }
+        for _ in 0..2 {
+            let hosts = run.hosts(&made);
+            if let Some(draft) = run.plan_unlinked(&made, &hosts) {
+                run.apply(&made, draft, &hosts, "the first commit");
+                run.check_between(&made, "the first commit");
+            }
         }
         assert!(matches!(run.world.commit(made, &[]), Outcome::Committed(_)));
         run.check_committed();
@@ -1781,6 +2043,7 @@ pub(crate) fn run(seed: u64, steps: usize) -> Tally {
     tally.with_cursor_first_after_rewind = had(tally.cursor_first_after_rewind);
     tally.with_twin_reads = had(tally.twin_reads);
     tally.with_failed_read = had(tally.failed_looks + tally.failed_places + tally.failed_nodes);
+    tally.with_unlinked_moved = had(tally.moves_of_unlinked);
     tally
 }
 
@@ -1824,6 +2087,23 @@ fn histories_of_moves_clears_drops_rollbacks_and_cursors_agree_with_the_model() 
     assert!(tally.refused_before_a_failed_read > 20, "{tally:?}");
     assert!(
         tally.checks_between_batches > 500 && tally.directory_checks > 500,
+        "{tally:?}"
+    );
+    assert!(
+        tally.unlinked_puts > 100 && tally.unlinked_deletes > 5,
+        "{tally:?}"
+    );
+    assert!(
+        tally.moves_of_unlinked > 20 && tally.cursor_reads_of_unlinked > 5,
+        "{tally:?}"
+    );
+    assert!(tally.emptied_with_unlinked > 0, "{tally:?}");
+    assert!(
+        tally.stated > 20 && tally.stated_after_a_move > 2,
+        "{tally:?}"
+    );
+    assert!(
+        tally.stated_beside_a_move > 20 && tally.stated_by_key > 0,
         "{tally:?}"
     );
 }

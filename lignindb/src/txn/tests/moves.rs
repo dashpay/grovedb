@@ -1708,6 +1708,48 @@ fn a_clear_after_an_enter_if_absent_that_found_the_merk_takes_what_is_below_it()
     gone(&reader);
 }
 
+/// A transaction reads what it wrote (RD3), also below a Merk that it
+/// cleared while the Merk had no node, and that a commit has given a node
+/// since. Such a clear cut nothing: its entry covers no key below its
+/// Merk. The commit meets the clear, and the transaction, which serves
+/// its records by key from then on, goes on reading the record it wrote
+/// under the subtree it had entered there, by key and under a cursor.
+#[test]
+fn a_clear_of_a_merk_with_no_node_covers_no_record_its_transaction_wrote_below_it() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    alone(&mut world);
+    let tx = world.begin();
+    let entered = subtrees(vec![OwnedSubtree::Enter(sub(FREE), host(ROOT, b"x"))]);
+    world.apply(&tx, &entered).expect("a subtree with no node");
+    world.write(&tx, vec![put(aux(FREE), b"k", b"mine")]);
+    // A commit clears the Merk, which meets neither write.
+    let cleared = subtrees(vec![OwnedSubtree::Clear(sub(ROOT))]);
+    assert!(committed(world.write_outside(&cleared, &[&tx])));
+    world.check(&tx);
+    assert_eq!(tx.txn.stats().overlapped, 0);
+    // The transaction clears it too, while it has no node.
+    world
+        .apply(&tx, &cleared)
+        .expect("a clear of a Merk with no node");
+    world.check(&tx);
+    let read = |tx: &Tx<'_>| get(tx, aux(FREE), b"k").expect("a read");
+    assert_eq!(read(&tx), Some(b"mine".to_vec()));
+    // A commit gives the Merk a node, and meets the clear.
+    world.edit_outside(
+        ROOT,
+        |items| drop(items.insert(b"y".to_vec(), b"an item".to_vec())),
+        &[&tx],
+    );
+    assert_eq!(read(&tx), Some(b"mine".to_vec()), "by key");
+    assert!(tx.txn.stats().overlapped > 0);
+    world.check(&tx);
+    let mut cursor = tx.txn.cursor(aux(FREE));
+    assert_eq!(records(&mut cursor), [(b"k".to_vec(), b"mine".to_vec())]);
+    drop(cursor);
+    assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+}
+
 /// What a clear took is asked of the transaction's writes and of the
 /// version that is read, and not of the transaction's frames. So a
 /// record of a subtree that no move names, below a Merk that was cleared

@@ -169,11 +169,16 @@ impl<'s> World<'s> {
         let writes = model.writes.len();
         model.roots.retain(|(after, ..)| *after <= writes);
         let mut said = model.said();
+        model.bare.retain(|at| *at < writes);
+        let mut bare = Vec::new();
         for mut write in batch.writes() {
             if let Write::Leave(left) = &mut write {
                 // A drop names one subtree: what is below it goes too, and
                 // what the transaction had written there is covered.
-                left.lay(&hosts, &records, said.0.get(&left.subtree).copied());
+                let rooted = left.lay(&hosts, &records, said.0.get(&left.subtree).copied());
+                if left.cleared && !rooted {
+                    bare.push(model.writes.len());
+                }
                 let written = |subtree: &Subtree| {
                     let units = Column::ALL.map(|column| Unit::new(column, *subtree));
                     (model.writes.iter())
@@ -193,6 +198,7 @@ impl<'s> World<'s> {
             model::apply(&mut records, &write);
             model.writes.push((write, first_write, false));
         }
+        model.bare.extend(bare);
         // What the change sets of the batch state of the roots.
         let writes = model.writes.len();
         let stated = batch.merks.iter().filter_map(|merk| {
@@ -451,12 +457,19 @@ impl<'s> World<'s> {
     /// Checks the committed state against the model: every record as a
     /// transaction that has written nothing reads it, and the tree pages.
     pub(crate) fn check_committed(&self) {
+        self.check_committed_but(|_| false);
+    }
+
+    /// [`Self::check_committed`], where the nodes of the model under the
+    /// keys that `unlinked` names are unlinked records, which no tree
+    /// page holds.
+    pub(crate) fn check_committed_but(&self, unlinked: impl Fn(&[u8]) -> bool) {
         let reader = self.begin();
         self.check(&reader);
         let keys = self.db.check_trees(self.versions, self.latest());
         let mut expected: BTreeMap<Subtree, Vec<Vec<u8>>> = BTreeMap::new();
         for ((unit, key), value) in &self.model.records {
-            if matches!(value, Val::Node(_)) {
+            if matches!(value, Val::Node(_)) && !unlinked(key) {
                 expected.entry(unit.subtree).or_default().push(key.clone());
             }
         }

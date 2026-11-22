@@ -356,8 +356,8 @@ impl Left {
     /// writes are laid out, but for a Merk that an enter if it is absent
     /// found, which the model takes for an enter ([`Said`]), and the
     /// first is what a transaction that a commit has met answers by
-    /// (WT7b).
-    pub fn lay(&mut self, hosts: &Hosts, records: &Records, said: Option<bool>) {
+    /// (WT7b). It says whether the Merk has a node.
+    pub fn lay(&mut self, hosts: &Hosts, records: &Records, said: Option<bool>) -> bool {
         let data = Unit::data(self.subtree);
         let of_merk = records.range((data, Vec::new())..);
         let mut nodes = of_merk
@@ -368,6 +368,23 @@ impl Left {
             true => Vec::new(),
             false => below(hosts, self.subtree),
         };
+        rooted
+    }
+
+    /// Whether the write, a clear of a Merk that had no node when it was
+    /// stated ([`TxnModel::bare`]), takes the committed records of `unit`
+    /// and leaves those that its transaction had written there before
+    /// it: a unit of a subtree below the Merk, which has a node where
+    /// the writes are worked out again.
+    ///
+    /// A commit gave the Merk that node, and it meets the clear (CF2),
+    /// whose entry covers the data of the Merk. So the transaction serves
+    /// its records by key (WT7b), and reads its own writes as the write
+    /// set has them (RD3): in it, the entry of a clear that cut nothing
+    /// covers no key below its Merk.
+    fn spares(&self, unit: Unit) -> bool {
+        let below = self.below.contains(&unit.subtree);
+        below && !self.own(unit) && !self.cut.contains(&unit.subtree)
     }
 
     /// Whether `unit` is one the write takes of its own subtree: every
@@ -575,6 +592,12 @@ pub struct TxnModel {
     /// ([`Write::watched`]), those that the committed state had below a
     /// Merk where the transaction last looked at it ([`Self::look`]).
     pub seen: BTreeSet<Subtree>,
+    /// Which of the writes, by their place among them, are clears of a
+    /// Merk that had no node when the clear was stated: such a clear cut
+    /// nothing, and what its transaction had written below the Merk by
+    /// then stays written ([`Left::spares`]). A place past the last write
+    /// is of a write that was taken back.
+    pub bare: BTreeSet<usize>,
 }
 
 impl TxnModel {
@@ -588,7 +611,10 @@ impl TxnModel {
     /// the unit the committed state has the key in if no write covers it:
     /// another one where the transaction moved the subtree.
     fn traced(&self, mut unit: Unit, key: &[u8]) -> (Option<Option<&Val>>, Unit) {
-        for (write, ..) in self.writes.iter().rev() {
+        // Whether a clear took the committed record and left what the
+        // transaction had written before it ([`Left::spares`]).
+        let mut spared = false;
+        for (at, (write, ..)) in self.writes.iter().enumerate().rev() {
             if let Write::Move(moved) = write {
                 // What is under a prefix after a move is what was under
                 // the prefix its subtree was taken from, and nothing
@@ -600,6 +626,10 @@ impl TxnModel {
                 }
                 continue;
             }
+            if matches!(write, Write::Leave(left) if self.bare.contains(&at) && left.spares(unit)) {
+                spared = true;
+                continue;
+            }
             if write.covers(unit, key) {
                 let own = match write {
                     Write::Put(_, _, value) => Some(value),
@@ -608,7 +638,7 @@ impl TxnModel {
                 return (Some(own), unit);
             }
         }
-        (None, unit)
+        (spared.then_some(None), unit)
     }
 
     /// The record the transaction reads under the key (RD3).
@@ -633,10 +663,41 @@ impl TxnModel {
             .filter(|((own, _), _)| all || *own == unit)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        for (write, ..) in &self.writes {
-            if all || write.touches(unit) {
-                apply(&mut records, write);
+        // The record keys that hold a write of the transaction: what a
+        // clear that cut nothing leaves ([`Left::spares`]).
+        let mut own: BTreeSet<(Unit, Vec<u8>)> = BTreeSet::new();
+        for (at, (write, ..)) in self.writes.iter().enumerate() {
+            if !all && !write.touches(unit) {
+                continue;
             }
+            match write {
+                Write::Put(unit, key, _) => drop(own.insert((*unit, key.clone()))),
+                Write::Delete(unit, key) => drop(own.remove(&(*unit, key.clone()))),
+                Write::Range(..) => own.retain(|(unit, key)| !write.covers(*unit, key)),
+                Write::Leave(left) => {
+                    let spares = |unit: Unit| self.bare.contains(&at) && left.spares(unit);
+                    let kept: Vec<_> = (own.iter())
+                        .filter(|(unit, _)| spares(*unit))
+                        .filter_map(|key| Some((key.clone(), records.get(key)?.clone())))
+                        .collect();
+                    own.retain(|(unit, _)| !left.takes(*unit) || spares(*unit));
+                    apply(&mut records, write);
+                    records.extend(kept);
+                    continue;
+                }
+                Write::Move(moved) => {
+                    let mut brought = Vec::new();
+                    own.retain(|(unit, key)| {
+                        if let Some(to) = moved.target(unit.subtree) {
+                            brought.push((Unit::new(unit.column, to), key.clone()));
+                        }
+                        !moved.takes(unit.subtree)
+                    });
+                    own.extend(brought);
+                }
+                Write::Enter(..) | Write::Stated(_) => {}
+            }
+            apply(&mut records, write);
         }
         records
             .into_iter()
@@ -771,7 +832,7 @@ impl TxnModel {
     /// engine finds it no more, and the model does not tell that.
     pub fn foreign_below(&mut self, version: u64, writes: &[Write], stored: &Hosts) {
         let wrote = writes.iter().flat_map(|write| match write {
-            Write::Enter(..) => Vec::new(),
+            Write::Enter(..) | Write::Stated(_) => Vec::new(),
             Write::Move(moved) => moved.covered().collect(),
             Write::Leave(left) => {
                 let own = std::iter::once(left.subtree);
