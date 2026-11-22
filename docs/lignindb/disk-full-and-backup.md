@@ -325,13 +325,17 @@ no open of the database in between.
   after the one failure that says nothing against the file: a value of
   the file that is being cleaned whose owner was not found, of which no
   copy is made.
-- A segment that write-back or the cleaner gives up, after a refused
-  append or a refused sealing, is synced at once, through the handle the
-  segment store syncs by (`sync-handles.md`, S2). Where that sync
-  succeeds the writer is dropped, and a segment with no writer is one
-  the cleaner chooses from. Where it is refused the writer is
-  kept, so that the blocks behind what is durable stay readable, and the
-  session ends (DF8).
+- Of a segment that write-back or the cleaner gives up, after a refused
+  append or a refused sealing, a sync is asked at once. Where the
+  segment holds blocks that no sync has covered, and no sync of it has
+  failed, that sync is made through the handle that appended its blocks
+  (`sync-handles.md`, S2). Where the request is answered `Ok`, after
+  that sync or with nothing left to sync, the writer is dropped, and a
+  segment with no writer is one the cleaner chooses from. Where it is
+  answered an error, as it is with no call
+  of the file layer for a segment whose sealing failed in its sync, the
+  writer is kept, so that the blocks behind what is durable stay
+  readable, and the session ends (DF8).
 
 **DF12. A background loop waits after a turn that failed, and a refused
 creation uses up no log file id** (D-204). Three threads work behind a
