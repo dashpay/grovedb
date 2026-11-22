@@ -1393,7 +1393,7 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> ThroughTheEngine 
         ..lignindb::Options::default()
     };
     // A run that loads nothing leaves the store of an earlier run alone.
-    let db = (!only_read).then(|| {
+    let opened = (!only_read).then(|| {
         if store.exists() {
             std::fs::remove_dir_all(&store).expect("the store of an earlier run is removed");
         }
@@ -1401,7 +1401,7 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> ThroughTheEngine 
     });
     let mut walk = EngineWalk {
         source: source(),
-        db: db.as_ref(),
+        db: opened.as_ref(),
         enters: Vec::new(),
         merks: Vec::new(),
         held: 0,
@@ -1425,7 +1425,7 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> ThroughTheEngine 
         least_filled,
         seconds,
     };
-    let Some(db) = &db else {
+    let Some(db) = &opened else {
         return outcome(0.0, None, 0.0);
     };
     let started = Instant::now();
@@ -1479,18 +1479,24 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> ThroughTheEngine 
         "read back {read} nodes through the engine in {:.1} s",
         started.elapsed().as_secs_f64()
     );
+    // The database is closed and then checked as a store that is still.
+    let (nodes, merks, hosted_roots) = (walk.nodes, walk.merks_read, walk.hosted_roots);
+    let values = handed.counters.values;
+    drop(walk);
     let started = Instant::now();
-    let report = db.verify(Some(&mut CheckRules(version)));
+    let db = opened.expect("the database that was loaded");
+    let report = db.close_and_verify(Some(&mut CheckRules(version)));
+    let report = report.expect("the database closes");
     println!(
         "the physical invariant checker, in {:.1} s: {report}",
         started.elapsed().as_secs_f64()
     );
     assert!(report.is_sound(), "the loaded database is not sound");
-    assert_eq!(report.census.live_cells, walk.nodes);
-    assert_eq!(report.census.hashed_cells, walk.nodes);
-    assert_eq!(report.census.merks, walk.merks_read);
-    assert_eq!(report.census.hosted_roots, walk.hosted_roots);
-    assert_eq!(report.census.placed_values, handed.counters.values);
+    assert_eq!(report.census.live_cells, nodes);
+    assert_eq!(report.census.hashed_cells, nodes);
+    assert_eq!(report.census.merks, merks);
+    assert_eq!(report.census.hosted_roots, hosted_roots);
+    assert_eq!(report.census.placed_values, values);
     assert_eq!(report.census.pending_values, 0);
     done
 }
