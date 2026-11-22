@@ -364,7 +364,7 @@ impl Writer {
     }
 
     /// The drop of the oldest generation that is entered, with the subtree
-    /// below it.
+    /// below it where that is entered still.
     pub(in crate::db::tests) fn drop_oldest(&mut self) -> Option<Piece> {
         let oldest = self.generations.front()?;
         let (outer, inner) = self.generation_subtrees(oldest.number);

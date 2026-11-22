@@ -69,9 +69,10 @@
 //!
 //! # A schedule inside a commit
 //!
-//! In a schedule of the kind above no step stands inside a commit: at its
-//! point it waits for the publication of the commit it let in. A second
-//! kind has steps there on purpose ([`inside_a_commit`]). A commit is
+//! A schedule of the kind above puts no step inside a commit on purpose:
+//! where its step goes on while a commit of the burst is between its count
+//! and its publication, that is by chance. A second kind has steps there
+//! on purpose ([`inside_a_commit`]). A commit is
 //! held between its count and its publication, where it has installed
 //! its pages and given the lock on the counts of values back and the
 //! published version is still the one before it
@@ -80,8 +81,8 @@
 //! which they meet what the commit did: the values that write-back places
 //! are those of the commit's pages, and the file that the passes over the
 //! value log empty is one that the commit has released values of. A
-//! snapshot reads the version before the commit afterwards, and the
-//! oracle below decides.
+//! snapshot of the version before the commit is compared with the model
+//! afterwards, and the oracle above decides.
 //!
 //! A round of the engine's reclaimer is no step of this kind: one that
 //! ends a reclaiming asks for the commit lock, which the commit holds.
@@ -1675,7 +1676,7 @@ fn eager_cleaner() -> CleanerConfig {
 
 /// How long a step that is run inside a commit is waited for. One that
 /// has not ended by then fails the schedule, and the commit is let go, so
-/// that a step that waited for the commit lock ends.
+/// that a step that waited for the commit lock can go on.
 const INSIDE: Duration = Duration::from_secs(300);
 
 /// The passes over the value log that one step of a schedule inside a
@@ -1889,7 +1890,9 @@ fn inside_a_commit(steps: &[Step]) -> Within {
         let (db, history, cleaner_state) = (&db, &history, &cleaner_state);
         let writer = &mut writers[0];
         // The sender is dropped when this closure is left, which lets a
-        // commit that waits at its publication go on.
+        // commit that waits at its publication go on. A commit that ends
+        // before its publication is seen in the loop below; one that
+        // neither ends nor comes to it is waited for with no bound.
         let go_on = go_on;
         let held = threads.spawn(move || {
             let written = writer.rewritten(0);
@@ -1910,8 +1913,10 @@ fn inside_a_commit(steps: &[Step]) -> Within {
 
         for &step in steps {
             let (placed_before, there_before) = (placed(), live_in(db, filled));
-            // On a thread of its own, so that a step that does not end
-            // fails the schedule and does not hold the test.
+            // On a thread of its own: a step that waits for the commit
+            // lock fails the schedule when its time is over, and can go
+            // on once the commit is let go. A step that does not end then
+            // either is waited for with no bound.
             let made = threads.spawn(move || step_at_once(db, step, cleaner_state));
             let began = Instant::now();
             while !made.is_finished() && began.elapsed() < INSIDE {
