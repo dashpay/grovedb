@@ -1,6 +1,7 @@
 //! Every part of one open database, and the views that are made of them.
 
 use std::{
+    error::Error,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -37,6 +38,7 @@ use super::{
     error::Reopen,
     open::LOCK_FILE,
     reclaim::{ReclaimStats, Reclaiming},
+    reserve::{Marks, SessionReserve},
 };
 use crate::{
     commit::{CommitLock, CommitState, Committer},
@@ -75,6 +77,9 @@ impl Catalog {
 pub(super) struct Signal {
     thread: OnceLock<Thread>,
     stop: AtomicBool,
+    /// Whether the session has made room on the device since the thread
+    /// last began a wait ([`Self::room_made`]).
+    room: AtomicBool,
     /// How often the thread was woken, how many rounds it has begun, and
     /// after how many of them it took its idle wait: what a test of its
     /// pace counts.
@@ -107,17 +112,36 @@ impl Signal {
         self.wake();
     }
 
+    /// Tells the thread that the session has made room on the device,
+    /// and wakes it: the wait that it is in, or the first one that it
+    /// comes to, ends at once, also where it is the wait after a round
+    /// that failed ([`Self::sleep`]). No later one is ended by it.
+    pub(super) fn room_made(&self) {
+        self.room.store(true, Ordering::Release);
+        self.wake();
+    }
+
     /// Has the calling thread, which is the one that is woken, sleep for
     /// `wait`, whoever wakes it meanwhile. Only [`Self::stop`] ends the
-    /// sleep before that.
+    /// sleep before that, and [`Self::room_made`].
     pub(super) fn sleep(&self, wait: Duration) {
         let began = Instant::now();
-        while !self.stopping() {
+        while !self.stopping() && !self.room.load(Ordering::Acquire) {
             let Some(left) = wait.checked_sub(began.elapsed()) else {
                 break;
             };
             thread::park_timeout(left);
         }
+        self.room.store(false, Ordering::Release);
+    }
+
+    /// Has the calling thread, which is the one that is woken, wait until
+    /// it is woken, and `idle` at most: its wait after a round in which
+    /// nothing failed. A call that room was made ends it as any wake
+    /// does, and is used up by it.
+    pub(super) fn idle(&self, idle: Duration) {
+        thread::park_timeout(idle);
+        self.room.store(false, Ordering::Release);
     }
 
     pub(super) fn stopping(&self) -> bool {
@@ -127,6 +151,11 @@ impl Signal {
 
 /// What the background work of a session could not do. Nothing of it
 /// changes what is committed.
+///
+/// Each of them is told here, by the thread that met it, with no lock
+/// held that the release of a reserve could wait behind: a failure that a
+/// full device caused releases the reserve of the session
+/// ([`SessionReserve::refused`]).
 #[derive(Debug, Default)]
 pub(super) struct Troubles {
     /// Turns of write-back that failed, in its loop or in a committer's
@@ -143,22 +172,41 @@ pub(super) struct Troubles {
     /// commit path's or the store's own. It is set once, and every answer
     /// of the session is read from it.
     ended: OnceLock<Reopen>,
+    /// The reserve of the session, if it keeps one.
+    pub(super) reserve: SessionReserve,
 }
 
 impl Troubles {
+    /// The troubles of a session that keeps `reserve`.
+    pub(super) fn keeping(reserve: SessionReserve) -> Self {
+        Self {
+            reserve,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn write_back_failed(&self, error: &FlushError) {
         self.write_back.fetch_add(1, Ordering::Relaxed);
         *lock(&self.last) = Some(format!("write-back: {error}"));
+        self.reserve.refused(error);
     }
 
     pub(super) fn cleaner_failed(&self, error: &CleanerError) {
         self.cleaner.fetch_add(1, Ordering::Relaxed);
         *lock(&self.last) = Some(format!("the cleaner: {error}"));
+        self.reserve.refused(error);
     }
 
-    pub(super) fn reclaim_failed(&self, error: &dyn std::fmt::Display) {
+    pub(super) fn reclaim_failed(&self, error: &(dyn Error + 'static)) {
+        self.reclaim_held_back(error);
+        self.reserve.refused(error);
+    }
+
+    /// A round of the reclaimer that could not go on, for what is no
+    /// error of a file.
+    pub(super) fn reclaim_held_back(&self, what: &dyn std::fmt::Display) {
         self.reclaim.fetch_add(1, Ordering::Relaxed);
-        *lock(&self.last) = Some(format!("reclaiming: {error}"));
+        *lock(&self.last) = Some(format!("reclaiming: {what}"));
     }
 }
 
@@ -261,6 +309,15 @@ impl Store {
         let ours = lock(&self.manifest);
         let ours = ours.manifest()?;
         Ok(read_manifest(&*self.vfs, &self.dir).is_ok_and(|stored| stored == *ours))
+    }
+
+    /// How far the session has come, for the reserve that waits to be
+    /// filled again.
+    pub(super) fn marks(&self) -> Marks {
+        Marks {
+            checkpoints: self.flush.stats().checkpoints,
+            published: self.committing.stats().published,
+        }
     }
 
     /// Why the session takes no write any more, if it does not.
@@ -508,6 +565,19 @@ impl Shared {
     /// counts.
     pub(super) fn cleaner_on<'a>(&'a self, write_back: WriteBack<'a>) -> Cleaner<'a> {
         Cleaner::new(write_back, &self.store.cleaner).with_stats(&self.store.stats)
+    }
+
+    /// Tells the three loops of the background work that the session has
+    /// released its reserve, if it has and they were not told yet: each
+    /// takes its next turn at once, also where it is in the wait after a
+    /// turn that failed (DF12). Whoever may have been given an error that
+    /// released the reserve calls this, with no lock held.
+    pub(super) fn room_made(&self) {
+        if self.store.troubles.reserve.take_release() {
+            self.write_back().room_made();
+            self.cleaner().room_made();
+            self.store.signal.room_made();
+        }
     }
 
     /// Tells the three background threads to end after the turn each is

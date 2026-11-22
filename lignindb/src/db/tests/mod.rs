@@ -23,6 +23,7 @@ mod power;
 mod reads;
 mod reclaim;
 mod reopen;
+mod reserve;
 mod room;
 mod schedules;
 mod stress;

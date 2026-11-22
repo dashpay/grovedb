@@ -103,6 +103,9 @@
 //!   seg/       segments
 //!   val/       the value log
 //!   table/     page-table checkpoints
+//!   RESERVE    room that is given back when the device is full, in a
+//!              session that keeps a reserve; RESERVE.new while it is
+//!              written
 //! ```
 //!
 //! **The engine touches these and nothing else** (P-03). Whatever else a
@@ -335,8 +338,9 @@
 //!
 //! An error of any of them changes nothing that is committed. It is counted
 //! and kept as text ([`DbStats::background`]). After a turn that failed,
-//! each of the three waits before its next turn, whoever wakes it
-//! (`disk-full-and-backup.md`, DF12).
+//! each of the three waits before its next turn, whoever wakes it, unless
+//! the session releases its reserve meanwhile (`disk-full-and-backup.md`,
+//! DF12).
 //!
 //! **Closing waits for a reclaiming that holds cells.** From the moment
 //! the record of a dropped Merk is out of the directory, the cells that
@@ -380,6 +384,35 @@
 //! another directory at the path closes the handle first. A checkpoint
 //! that is deleted while its handle is open is TXN-06's to test in full
 //! (`platform-requirements.md`, item 3).
+//!
+//! # The reserve
+//!
+//! A session that is opened with [`Options::reserve`] above 0 keeps a
+//! reserve of that many bytes in its directory ([`crate::space`]), and
+//! does with it what `disk-full-and-backup.md` says in DF13:
+//!
+//! - **The open fills it**, as its last step before the background work
+//!   is started, where the directory has none of that length. An open
+//!   that cannot fill it is made all the same.
+//! - **The session releases it when a full device refuses it something**:
+//!   a commit, a write, a wipe, a flush, the creation of a checkpoint or
+//!   a close that returns an error which a full device caused
+//!   ([`crate::space::out_of_space`]), and a turn of write-back, a pass of
+//!   the cleaner or a call of the reclaimer that failed with such an
+//!   error, in their threads or on the thread of a caller. A session that
+//!   holds no reserve then makes no operation on a file for it. A release
+//!   has each of the three loops take its next turn at once.
+//! - **The session fills it again from the cleaner's thread**, at the end
+//!   of a turn of its loop in which the cleaner was at rest, once a
+//!   commit was published and a table checkpoint was installed since the
+//!   first turn of that loop that ended after the device last refused the
+//!   session something for room. A fill that fails is tried again by the
+//!   same rule, counted from the fill.
+//!
+//! [`DbStats::reserve`] says what the session holds and what it did. An
+//! open that is refused for room does not release a reserve: whoever
+//! opens the database removes the file `RESERVE` then
+//! (`disk-full-and-backup.md`, section 7.1).
 //!
 //! # Wipe
 //!
@@ -491,6 +524,7 @@
 mod error;
 mod open;
 mod reclaim;
+mod reserve;
 mod store;
 
 #[cfg(all(test, not(loom)))]
@@ -512,7 +546,7 @@ use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
     alloc::Census,
-    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats},
+    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats, ValuePass},
     flush::{FlushError, Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
@@ -525,10 +559,14 @@ use lignin_tree::{
     value::{RegroupPolicy, Regrouping, TreeOwners},
 };
 
-use self::store::{lock, Shared};
 pub use self::{
     error::{DbError, OpenError, Reopen, WriteError},
     reclaim::{ReclaimStats, Round},
+    reserve::ReserveStats,
+};
+use self::{
+    reserve::CleanerTurns,
+    store::{lock, Shared, Store},
 };
 use crate::{
     checkpoint::{CheckpointError, CheckpointOptions, Checkpointer, Created},
@@ -582,6 +620,10 @@ pub struct Opening {
     /// directory, or the first commit of a new database, and reading what
     /// earlier drops left.
     pub keyspaces: Duration,
+    /// Filling the reserve, in a session that keeps one: the writing of
+    /// its bytes where the directory had none of its length, and the sync
+    /// of its name.
+    pub reserve: Duration,
     /// Starting the threads of the background work.
     pub threads: Duration,
 }
@@ -589,7 +631,7 @@ pub struct Opening {
 impl Opening {
     /// The whole open.
     pub fn total(&self) -> Duration {
-        self.directory + self.recovery + self.keyspaces + self.threads
+        self.directory + self.recovery + self.keyspaces + self.reserve + self.threads
     }
 }
 
@@ -599,11 +641,12 @@ impl fmt::Display for Opening {
         write!(
             f,
             "opened in {:.2} ms: the directory {:.2}, the recovery {:.2}, the keyspaces {:.2}, \
-             the threads {:.2}",
+             the reserve {:.2}, the threads {:.2}",
             ms(self.total()),
             ms(self.directory),
             ms(self.recovery),
             ms(self.keyspaces),
+            ms(self.reserve),
             ms(self.threads)
         )
     }
@@ -683,6 +726,8 @@ pub struct DbStats {
     pub directories: usize,
     /// What the background work could not do.
     pub background: Background,
+    /// What the session holds of its reserve, and what it did with it.
+    pub reserve: ReserveStats,
     /// Why the session takes no write any more, if it does not.
     pub reopen: Option<Reopen>,
 }
@@ -734,6 +779,26 @@ impl fmt::Display for DbStats {
         )?;
         if let Some(error) = &self.background.last_error {
             writeln!(f, "background: {error}")?;
+        }
+        if self.reserve.len != 0 {
+            let reserve = &self.reserve;
+            writeln!(
+                f,
+                "reserve: {} bytes, {}; released {} times ({} bytes), filled {} times, {} fills \
+                 failed",
+                reserve.len,
+                match reserve.held {
+                    true => "held",
+                    false => "not held",
+                },
+                reserve.releases,
+                reserve.bytes_released,
+                reserve.fills,
+                reserve.fills_failed
+            )?;
+            if let Some(error) = &reserve.last_error {
+                writeln!(f, "reserve: {error}")?;
+            }
         }
         if let Some(reopen) = &self.reopen {
             writeln!(f, "{reopen}")?;
@@ -852,6 +917,11 @@ impl Db {
             .map_err(OpenError::catalog("what earlier drops left"))?;
         opening.recovery = recovery;
         opening.keyspaces = began.elapsed() - opening.directory - recovery;
+        // The reserve last: what the open itself needs of the device
+        // comes first (DF9).
+        let filling = Instant::now();
+        shared.store.troubles.reserve.fill_at_open();
+        opening.reserve = filling.elapsed();
         Ok(Self {
             shared: Arc::new(shared),
             threads: Mutex::new(None),
@@ -1203,7 +1273,7 @@ impl Db {
         let reclaimed = threads.reclaim.join();
         let cleaned = threads.cleaner.join();
         let written = threads.write_back.join();
-        let finished = self.finish();
+        let finished = self.answered(self.finish());
         reclaimed.map_err(|_| DbError::Panicked("reclaim"))?;
         cleaned.map_err(|_| DbError::Panicked("cleaner"))?;
         written.map_err(|_| DbError::Panicked("write-back"))?;
@@ -1399,7 +1469,7 @@ impl Db {
         // of the log goes under the guard.
         let guard = shared.versions.guard();
         let version = guard.latest();
-        match shared.write_back().sync_log() {
+        let flushed = match shared.write_back().sync_log() {
             Ok(durable) => Ok(Flushed { version, durable }),
             Err(error) => {
                 drop(guard);
@@ -1410,7 +1480,8 @@ impl Db {
                 committing.sync_failed(shared.versions.latest(), &error);
                 Err(DbError::Flush(error))
             }
-        }
+        };
+        self.answered(flushed)
     }
 
     /// Makes a checkpoint of the database in the new directory `target`,
@@ -1455,9 +1526,10 @@ impl Db {
         options: CheckpointOptions,
     ) -> Result<Created, CheckpointError> {
         let committer = self.shared.committer();
-        Checkpointer::new(&committer)
+        let created = Checkpointer::new(&committer)
             .with_options(options)
-            .create(target)
+            .create(target);
+        self.answered(created)
     }
 
     /// Removes every record of every keyspace: the nodes of every Merk,
@@ -1498,6 +1570,10 @@ impl Db {
     /// [`CommitError::Unsettled`]), are of the wipe with its enters, and
     /// never of the wipe alone.
     pub fn wipe_entering(&self, enters: &[(Subtree, &[u8])]) -> Result<Committed, WriteError> {
+        self.answered(self.wipe_and_enter(enters))
+    }
+
+    fn wipe_and_enter(&self, enters: &[(Subtree, &[u8])]) -> Result<Committed, WriteError> {
         self.refused()?;
         let mut everything = KeySet::new();
         everything.everything();
@@ -1593,6 +1669,7 @@ impl Db {
                 cleaner_errors: troubles.cleaner.load(Ordering::Relaxed),
                 last_error: lock(&troubles.last).clone(),
             },
+            reserve: troubles.reserve.stats(),
             reopen: store.refusal(),
         }
     }
@@ -1633,11 +1710,26 @@ impl Db {
         rules: &mut R,
         commit: impl FnOnce(&Committer<'_>, &mut Counted<'_, R>) -> Result<Committed, CommitError>,
     ) -> Result<Committed, WriteError> {
-        self.refused()?;
-        let mut rules = Counted { rules, calls: 0 };
-        let committed = commit(&self.shared.committer(), &mut rules);
-        self.shared.store.stats.count_hashes(rules.calls);
-        self.settle(committed)
+        let written = self.refused().and_then(|()| {
+            let mut rules = Counted { rules, calls: 0 };
+            let committed = commit(&self.shared.committer(), &mut rules);
+            self.shared.store.stats.count_hashes(rules.calls);
+            self.settle(committed)
+        });
+        self.answered(written)
+    }
+
+    /// Passes on what a call of the facade answers. Where that is an
+    /// error which a full device caused, the session releases its reserve
+    /// first, if it holds one (DF13). The caller holds no lock.
+    fn answered<T, E: std::error::Error + 'static>(&self, answer: Result<T, E>) -> Result<T, E> {
+        if let Err(error) = &answer {
+            self.shared.store.troubles.reserve.refused(error);
+        }
+        // Also where the call was answered no error: a turn of write-back
+        // that its thread made for the call can have released the reserve.
+        self.shared.room_made();
+        answer
     }
 
     /// What a commit looks at before it begins, with no lock held: a
@@ -1731,7 +1823,10 @@ fn with_page_values<R>(shared: &Shared, work: impl FnOnce(WriteBack<'_>) -> R) -
 fn write_back(shared: &Shared) {
     let troubles = &shared.store.troubles;
     with_page_values(shared, |write_back| {
-        write_back.run(|error| troubles.write_back_failed(&error));
+        write_back.run(|error| {
+            troubles.write_back_failed(&error);
+            shared.room_made();
+        });
     });
 }
 
@@ -1758,13 +1853,31 @@ fn with_cleaner<R>(shared: &Shared, work: impl FnOnce(&Cleaner<'_>, &Owners<'_>)
 
 /// The background loop of the cleaner, for as long as the session lives
 /// (`lignin_store::cleaner`): a pass over the segments and one over the
-/// value log, again and again.
+/// value log, again and again. At the end of each turn a reserve that the
+/// session released is filled again, if it is time for that (DF13).
 fn clean(shared: &Shared) {
-    let troubles = &shared.store.troubles;
+    let store = &*shared.store;
     with_cleaner(shared, |cleaner, owners| {
+        let mut turns = CleanerTurns::begun(store);
         cleaner.run(
-            |cleaner| cleaner.pass_values(owners),
-            |error| troubles.cleaner_failed(&error),
+            |cleaner| end_turn(store, cleaner, owners, &mut turns),
+            |error| {
+                store.troubles.cleaner_failed(&error);
+                shared.room_made();
+            },
         );
     });
+}
+
+/// What ends a turn of the cleaner's loop: the pass over the value log,
+/// and the look at the turn for the reserve of the session.
+fn end_turn(
+    store: &Store,
+    cleaner: &Cleaner<'_>,
+    owners: &Owners<'_>,
+    turns: &mut CleanerTurns,
+) -> Result<ValuePass, CleanerError> {
+    let passed = cleaner.pass_values(owners);
+    turns.ended(store);
+    passed
 }

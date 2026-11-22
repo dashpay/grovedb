@@ -63,10 +63,12 @@
 //! less than the writer needs, and the reserve cannot be filled again:
 //! the engine then runs on what the operator frees.
 //!
-//! **The engine does not do steps 2 and 6 yet.** Whoever opens a database
-//! can: the reserve is a file beside the store's, which the engine leaves
-//! alone as it leaves every entry that is not its own (P-03). The wiring
-//! into [`Db`](crate::Db) comes with the cleaner's.
+//! **A session that keeps a reserve does steps 2 and 6 by itself**
+//! ([`Options::reserve`](crate::Options::reserve)): it releases the
+//! reserve when the device refuses it something for room, and fills it
+//! again from the cleaner's thread. `disk-full-and-backup.md` says when,
+//! in DF13. A session that keeps none makes no call of a reserve, and
+//! whoever opens the database can keep one by the calls of [`Reserve`].
 
 use std::{
     collections::hash_map::RandomState,
@@ -131,6 +133,9 @@ const CHUNK_LEN: usize = 1 << 20;
 /// fills at once, or a fill beside a release, one can take away the file
 /// the other is writing or give its name to another, and a fill can then
 /// return with no reserve left, or with one that is short or not durable.
+/// A session that keeps a reserve
+/// ([`Options::reserve`](crate::Options::reserve)) is that caller from
+/// its open to its close, and makes its calls one at a time.
 #[derive(Debug, Clone)]
 pub struct Reserve {
     vfs: Arc<dyn Vfs>,
