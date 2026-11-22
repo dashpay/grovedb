@@ -830,7 +830,17 @@ impl Db {
     /// entries that are not the engine's are never read, removed or
     /// renamed.
     pub fn open(dir: impl AsRef<Path>, options: &Options) -> Result<Self, OpenError> {
-        let dir = dir.as_ref();
+        let mut db = Self::open_at_rest(dir.as_ref(), options)?;
+        db.start(options)?;
+        Ok(db)
+    }
+
+    /// The open up to the start of the background work: the directory's
+    /// lock, the recovery, the keyspaces, and what earlier sessions
+    /// dropped and did not reclaim. The handle it returns has none of the
+    /// three threads. Dropped as it is, it does nothing of what a close
+    /// does: the session ends as a process that is killed ends.
+    fn open_at_rest(dir: &Path, options: &Options) -> Result<Self, OpenError> {
         let mut opening = Opening::default();
         let began = Instant::now();
         let opened = open::open_dir(dir, options)?;
@@ -842,8 +852,24 @@ impl Db {
             .map_err(OpenError::catalog("what earlier drops left"))?;
         opening.recovery = recovery;
         opening.keyspaces = began.elapsed() - opening.directory - recovery;
+        Ok(Self {
+            shared: Arc::new(shared),
+            threads: Mutex::new(None),
+            created: opened.created,
+            opening,
+            unchecked: AtomicBool::new(false),
+            hash_rules: Mutex::new(None),
+            guard: opened.lock,
+        })
+    }
+
+    /// Starts the three threads of the background work, for a handle that
+    /// has none ([`Self::open_at_rest`]). Where one of them cannot be
+    /// started, those that were are ended again and the handle is left
+    /// with none.
+    fn start(&mut self, options: &Options) -> Result<(), OpenError> {
         let started = Instant::now();
-        let shared = Arc::new(shared);
+        let shared = &self.shared;
         let writer = shared.clone();
         let write_back = spawn("lignindb-write-back", move || write_back(&writer))?;
         // A thread that is never to sleep would spin.
@@ -869,20 +895,13 @@ impl Db {
                 return Err(error);
             }
         };
-        opening.threads = started.elapsed();
-        Ok(Self {
-            shared,
-            threads: Mutex::new(Some(Threads {
-                write_back,
-                reclaim,
-                cleaner,
-            })),
-            created: opened.created,
-            opening,
-            unchecked: AtomicBool::new(false),
-            hash_rules: Mutex::new(None),
-            guard: opened.lock,
-        })
+        self.opening.threads = started.elapsed();
+        *lock(&self.threads) = Some(Threads {
+            write_back,
+            reclaim,
+            cleaner,
+        });
+        Ok(())
     }
 
     /// Ends the session and releases the directory's lock: the background
