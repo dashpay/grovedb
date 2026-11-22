@@ -315,7 +315,8 @@ pub enum BatchError {
     /// that set such a mark or took one off is among the writes that the
     /// transaction's frames show (MV8). Or a cursor reads a subtree that
     /// a move of the transaction decides after a commit was published
-    /// that the cursor's version does not hold (MV7).
+    /// that the cursor's version does not hold, and the transaction's
+    /// writes are laid out over the latest version (MV7).
     MoveBeside {
         /// The subtree the refused move takes from its prefix, the first
         /// subtree the refused batch drops or clears, or the subtree
