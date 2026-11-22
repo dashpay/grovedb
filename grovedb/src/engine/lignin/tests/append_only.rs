@@ -1528,12 +1528,15 @@ fn keyed_child_on_both<T: Appended>(
 ///
 /// On LigninDB:
 ///
-/// - **With no append** every answer, cost and root hash is RocksDB's,
-///   and the store is sound.
+/// - **With no append** every answer, cost and root hash is RocksDB's.
 /// - **A known difference, with the child before the appends** (D-282,
 ///   `TXN-03-F5`): every step before the first append is RocksDB's, and
 ///   the append is refused, because the transaction takes no flat data
-///   record beside the nodes of a Merk. The store is sound.
+///   record beside the nodes of a Merk.
+/// - In those two the store is sound when the history is over, because
+///   the delete of the tree took the child's Merk with it. Before that
+///   it is not, in any of the three
+///   ([`a_keyed_child_under_a_tree_of_flat_records_leaves_a_store_the_checker_refuses`]).
 /// - **A defect, with the child after the appends** (D-283,
 ///   `TXN-03-F5`): the batch is taken, and every step before the delete
 ///   of the tree is RocksDB's but the query of every key under the tree,
@@ -1633,4 +1636,72 @@ fn a_keyed_child_under_a_dense_tree_is_held_to_what_rocksdb_answers() {
 #[test]
 fn a_keyed_child_under_a_commitment_tree_is_held_to_what_rocksdb_answers() {
     a_keyed_child_under::<Commitment>();
+}
+
+/// A defect (D-283, `TXN-03-F5`): the batch that inserts a keyed child
+/// under a tree that keeps flat records puts the node of the tree's
+/// element as one that hosts the Merk of the child's level, and the hash
+/// rule of the store allows the cell of such an element no Merk
+/// (`merk/src/store/lignin/hash`). The batch is taken, with the root hash
+/// that RocksDB has, and the store that is closed right after it is one
+/// the physical checker refuses, on grove versions 1 to 3, for each of
+/// the four kinds they have. This test fails when the store is sound.
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_keyed_child_under_a_tree_of_flat_records_leaves_a_store_the_checker_refuses() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    fn case<T: Appended>(v: &GroveVersion) -> (bool, bool) {
+        let tree = T::NAME.as_bytes();
+        let batch = || {
+            let item = Element::new_item(b"a keyed child".to_vec());
+            vec![
+                QualifiedGroveDbOp::insert_or_replace_op(vec![], tree.to_vec(), T::empty(None)),
+                QualifiedGroveDbOp::insert_or_replace_op(
+                    owned(ROOT, tree),
+                    b"child".to_vec(),
+                    item,
+                ),
+            ]
+        };
+        let on_rocksdb = {
+            let dir = tempfile::tempdir().expect("a directory");
+            let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+            let db = db.expect("a database on RocksDB");
+            let applied = db.apply_batch(batch(), None, None, v);
+            applied.value.expect("RocksDB takes the batch");
+            (
+                applied.cost,
+                db.root_hash(None, v).unwrap().expect("a root"),
+            )
+        };
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        let applied = db.apply_batch(batch(), None, None, v);
+        applied.value.expect("LigninDB takes the batch");
+        let on_lignin = (
+            applied.cost,
+            db.root_hash(None, v).unwrap().expect("a root"),
+        );
+        db.flush().expect("a flush");
+        let closed = catch_unwind(AssertUnwindSafe(move || drop(db))).is_ok();
+        let sound = closed && catch_unwind(|| check(dir.path(), v)).is_ok();
+        (on_lignin == on_rocksdb, sound)
+    }
+    for (number, v) in GROVE_VERSIONS.iter().enumerate().take(3) {
+        let cases = [
+            (Mmr::NAME, case::<Mmr>(v)),
+            (Bulk::NAME, case::<Bulk>(v)),
+            (Dense::NAME, case::<Dense>(v)),
+            (Commitment::NAME, case::<Commitment>(v)),
+        ];
+        for (name, (equal, sound)) in cases {
+            let case = format!("{name}, grove version {}", number + 1);
+            assert!(equal, "{case}: the cost and the root hash are RocksDB's");
+            assert!(
+                !sound,
+                "{case}: the store is sound, and this test has to turn"
+            );
+        }
+    }
 }
