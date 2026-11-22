@@ -1432,7 +1432,8 @@ fn a_root_that_the_transaction_wrote_is_no_conflict_of_a_load() {
 /// subtree that is not entered. A commit outside then clears the Merk
 /// above as well. The load is refused as before, and not as a conflict
 /// that the look would date: the transaction's own clear took the
-/// subtree first. So it is laid out and by key.
+/// subtree first. The clear and the load are laid out in one run, and
+/// taken by key in the other.
 #[test]
 fn a_clear_of_the_transactions_own_forgets_its_looks() {
     for by_key in [false, true] {
@@ -1468,7 +1469,17 @@ fn a_clear_of_the_transactions_own_forgets_its_looks() {
             subtrees: vec![OwnedSubtree::Clear(model::subtree(above))],
             ..OwnedBatch::default()
         };
-        world.apply(&tx, &cleared).expect("its own clear");
+        if by_key {
+            // The clear is taken by a scope that keeps its writes in the
+            // write set, and is laid out when that scope merges.
+            let first = tx.txn.scope().expect("a scope");
+            let beside = tx.txn.scope().expect("a scope beside it");
+            (world.apply_in(&tx, &beside, &cleared)).expect("its own clear, by key");
+            first.merge();
+            beside.merge();
+        } else {
+            world.apply(&tx, &cleared).expect("its own clear");
+        }
         let mut load = whole(below, &merk);
         load.anchored = true;
         let alone = OwnedBatch {
