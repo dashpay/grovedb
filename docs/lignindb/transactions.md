@@ -1243,19 +1243,22 @@ for no page (LD3). The records are what they were. The pages need not be:
 they are again the loader's.
 
 A layout of *T*'s writes that a refusal stops is not made again to tell
-that refusal. *T* keeps it, and tells it again to each read and each
-write that a move decides (MV7) and to each commit, for as long as the
-layout would be the same: *T* reads the version that the layout was
-stopped at, its writes are the ones it held then, the same of them are
-laid out, and it would be made with the same pending marks. Where *T*
-holds a load, the layout is not made again for a write that *T* takes
-afterwards either: writes are laid out in their order, so the layout is
-stopped with more of them too, and each try would lay the loads out
-again. The layout is made again, and a load with it: at another version,
-where no commit has met a write of *T* (WT7a); after a rollback, to a
-savepoint or of a scope, that takes a write out; when the writes of a
-scope that were kept in the write set are laid out; and when it would be
-made with other pending marks.
+that refusal. *T* keeps it, and what is refused because the layout is
+stopped is told it from there: a read or a write that a move decides
+(MV7), and a commit (MV6). That holds for as long as the layout would
+stop there again: *T* reads the version that the layout was
+stopped at, the writes that it held then are the first that it holds,
+the same of those are laid out, and the layout would be made with the
+same pending marks. Writes are laid out in their order, so a layout that
+one of them stops is stopped whatever *T* writes after it. Where *T*
+holds a load, the layout is therefore not made again for a write that
+*T* takes afterwards, nor when such a later write is laid out: each try
+would lay the loads out again. The layout is made again, and a load with
+it: at another version, where no commit has met a write of *T* (WT7a);
+after a rollback, to a savepoint or of a scope, that takes a write out;
+when one of the writes that *T* held at the stop, which its scope kept in
+the write set, is laid out; and when the layout would be made with other
+pending marks.
 
 **LD5. The commit of a load takes its values over.** This is the exception
 to CM7 and to the first case of PV6.
@@ -1329,9 +1332,8 @@ which is held to in three places:
   - *T* remembers such a look at the load's subtree, of an earlier
     version than the operation reads;
   - the batch drops, clears and moves no subtree;
-  - no write of *T* says anything of the root of the Merk: none set its
-    root, entered the subtree as a new one, dropped or cleared it, or
-    took it with a subtree above it. An enter of the subtree if it was
+  - no write of *T* set the root of the Merk, entered the subtree as a
+    new one, or dropped or cleared it. An enter of the subtree if it was
     absent says nothing of the root;
   - no move of *T* decides what is under the subtree (MV7);
   - the committed version that the operation reads has the subtree with
@@ -1356,10 +1358,13 @@ one of the first item as it is, which is no conflict: the operation
 cannot tell a root that a commit gave the Merk since *T*'s caller looked
 from one the Merk had before. *T* remembers such looks of 1,024 subtrees.
 When a read shows it one more subtree entered with no root, it forgets
-the others. It forgets all of them at a rollback to a savepoint, at the
-rollback of a scope that takes writes out, and when it ends, by a commit
-or by a rollback. A caller of a load adds no clear and no range for any
-item.
+the others. It forgets all of them when it takes a write that drops,
+clears or moves a subtree: what leaves with such a write is the subtree
+directory's to say, so a load that is refused after it may be refused
+for what *T* did itself. It forgets all of them too at a rollback to a
+savepoint, at the rollback of a scope that takes writes out, and when it
+ends, by a commit or by a rollback. A caller of a load adds no clear and
+no range for any item.
 
 By key, the first item is asked of the write set over the committed
 version that the operation reads, as every answer by key is (WT7b). A
@@ -1370,7 +1375,8 @@ refusal is `LoadBeside`, which is no conflict. Such a batch adds nothing
 to the write set. An enter of the load's
 subtree as a new one is held to by key as well: the load is refused
 where the subtree is entered before the batch (`Entered`), and where the
-host the enter states is in a subtree that is not entered then
+host the enter states is in a subtree that neither is entered before the
+batch nor is entered by an enter that stands earlier in the batch
 (`NotEntered`). The layout judges the load again, and everything else
 the batch states of subtrees, as for any batch that is taken by key.
 
