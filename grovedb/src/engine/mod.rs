@@ -281,9 +281,9 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
     /// Provided as what `GroveDb::delete_checkpoint` did before the call
     /// was in the seam: the checkpoint is opened, which says that it is
     /// one of this engine, closed, and its directory is removed with
-    /// everything in it. A directory that does not open as a checkpoint
-    /// is left as it is. An engine whose checkpoints are removed in a way
-    /// of their own overrides it.
+    /// everything in it. Where the open fails, this call removes nothing;
+    /// what a failed open leaves is [`Self::open_checkpoint`]'s. An engine
+    /// whose checkpoints are removed in a way of their own overrides it.
     ///
     /// It returns the error of `GroveDb`, as [`SubtreeMove::move_next`]
     /// does, so that the provided removal fails with the errors it had.
