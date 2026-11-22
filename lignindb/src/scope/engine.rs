@@ -966,6 +966,8 @@ impl<'s> WriteTxn<'s> {
         if removed {
             state.stuck = None;
             state.forget_above();
+            // A look may have seen what the scope wrote.
+            state.looks.clear();
         }
         if closed.laid && (removed || !closed.marks.is_empty()) {
             // The frames show the scope's writes: they are made again from

@@ -2175,7 +2175,10 @@ fn a_commit_between_the_comparing_read_and_the_write_is_a_commit_since_the_read(
 /// (`transactions.md` LD6), so no Merk is written over another's:
 ///
 /// - where the other commit gives the Merk a root before the write is
-///   taken, the write is refused there, and nothing of it is taken;
+///   taken, the write is refused there as a conflict
+///   (`BatchError::MerkTaken`, which the seam gives as the conflict of a
+///   commit): the store's look found the Merk with no root, and the
+///   transaction dates it. Nothing of the write is taken;
 /// - where it does so after the write, the transaction's commit is a
 ///   conflict, although the two wrote no key in common.
 ///
@@ -2213,11 +2216,12 @@ fn a_whole_merk_is_not_written_over_the_merk_of_a_commit_between() {
         match other_commit.take() {
             None => {
                 let refused = handed.expect_err("the Merk has a root");
-                assert!(
-                    matches!(&refused, Error::StorageError(what)
-                        if what.to_string().contains("the Merk has a root")),
-                    "{refused}"
-                );
+                let Error::StorageError(refused) = refused else {
+                    panic!("{refused}");
+                };
+                assert!(refused.is_commit_conflict(), "{refused}");
+                let conflict = grovedb_storage::error::CommitError::Conflict;
+                assert_eq!(refused.commit_error(), Some(conflict));
             }
             Some(commit) => {
                 handed.expect("a Merk with no root takes a whole Merk");

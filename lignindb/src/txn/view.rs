@@ -40,6 +40,14 @@ pub struct SubtreeView<'a> {
 }
 
 impl<'a> SubtreeView<'a> {
+    /// The view of a subtree that is entered with no root, of which
+    /// nothing else is said.
+    pub(crate) const ROOTLESS: SubtreeView<'static> = SubtreeView {
+        root_key: None,
+        tree_type: &[],
+        host: None,
+    };
+
     /// The view of an entry of the directory.
     pub(crate) fn of(entry: &'a Entry) -> Self {
         Self {

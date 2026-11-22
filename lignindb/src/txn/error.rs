@@ -173,6 +173,24 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
+    /// A change set that says it is the whole Merk is refused because a
+    /// commit outside the transaction gave the Merk a root, or took its
+    /// subtree out, after the transaction looked at the subtree and found
+    /// it entered with no root (`crate::txn`, "A load"; `transactions.md`
+    /// LD6): the look is a read of the subtree
+    /// ([`Scope::subtree`](super::Scope::subtree), or the same call on the
+    /// transaction) that the transaction still remembers, and nothing the
+    /// transaction or the batch wrote is why.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]), as
+    /// [`Self::ValueTaken`] is. The batch has changed nothing and the
+    /// transaction is as it was (WT10), so a caller that takes it as a
+    /// conflict rolls the transaction back and makes its reads and its
+    /// writes again.
+    MerkTaken {
+        /// The Merk's subtree.
+        subtree: Subtree,
+    },
     /// The transaction made the first node of a Merk that was empty, and a
     /// commit outside it has made one since, with no key in common. The
     /// two roots cannot both stand, and the conflict rule did not see it:
@@ -470,6 +488,13 @@ impl fmt::Display for BatchError {
                      transaction took away after the node was read"
                 )
             }
+            Self::MerkTaken { subtree } => {
+                write!(
+                    f,
+                    "a commit outside the transaction gave the Merk {subtree} a root, or took \
+                     its subtree out, after the transaction found it entered with no root"
+                )
+            }
             Self::RootTaken { subtree } => {
                 write!(
                     f,
@@ -572,11 +597,14 @@ impl fmt::Display for BatchError {
 impl Error for BatchError {}
 
 impl BatchError {
-    /// Whether the refusal is [`Self::ValueTaken`] or
-    /// [`Self::MovedByKey`]: those that a caller answers as it answers a
+    /// Whether the refusal is [`Self::ValueTaken`], [`Self::MovedByKey`]
+    /// or [`Self::MerkTaken`]: those that a caller answers as it answers a
     /// commit that fails with a conflict.
     pub const fn is_conflict(&self) -> bool {
-        matches!(self, Self::ValueTaken { .. } | Self::MovedByKey { .. })
+        matches!(
+            self,
+            Self::ValueTaken { .. } | Self::MovedByKey { .. } | Self::MerkTaken { .. }
+        )
     }
 }
 

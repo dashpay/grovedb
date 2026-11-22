@@ -12,7 +12,7 @@ use lignin_tree::hash::Stale;
 use super::{
     arena::{Arena, ArenaMark, Span},
     error::BatchError,
-    key::{in_range, ranges_meet, Column, KeySet, Subtree, Unit},
+    key::{in_range, ranges_meet, Column, KeyRange, KeySet, Subtree, Unit, UnitKeys},
     load::StoredValue,
     view::SubtreeView,
     write::{
@@ -1162,7 +1162,14 @@ impl WriteSet {
             let start = kept.entries.len();
             self.with_batch(op, |batch, again| {
                 let (cut, left) = (self.op_cut(op), self.op_left(op));
-                kept.add(batch, was.first_write, again.made, &cut, &left, again.stored);
+                kept.add(
+                    batch,
+                    was.first_write,
+                    again.made,
+                    &cut,
+                    &left,
+                    again.stored,
+                );
             });
             let added = kept.ops.last_mut().expect("it was added");
             (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
@@ -2140,8 +2147,12 @@ impl WriteSet {
         // over the nodes of its subtree (`transactions.md` LD6): a commit
         // that wrote or deleted any of them meets it.
         for (subtree, first) in self.loads() {
-            let theirs = keys.units.get(&Unit::data(subtree));
-            if theirs.is_some_and(|theirs| !theirs.keys.is_empty() || !theirs.ranges.is_empty()) {
+            // A range that ends where it starts holds no key.
+            let holds_keys = |theirs: &UnitKeys| {
+                let holds = |(from, to): &KeyRange| ranges_meet((from, to.as_deref()), (&[], None));
+                !theirs.keys.is_empty() || theirs.ranges.iter().any(holds)
+            };
+            if keys.units.get(&Unit::data(subtree)).is_some_and(holds_keys) {
                 met.push(first);
             }
         }
