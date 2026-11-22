@@ -306,11 +306,11 @@ pub fn hosted(hosts: &mut Hosts, write: &Write) {
     }
 }
 
-/// Takes `write` into `entries`, which has the subtrees that the
-/// directory stores an entry of, each below the one its entry names. It
-/// is [`hosted`], but for a drop and a clear: the subtree that a drop
-/// names has no entry afterwards, and every subtree that goes with one
-/// above it keeps the entry it has.
+/// Takes `write` into `entries`, which has, for each entry that the
+/// directory stores of a hosted subtree, the subtree of its host. It is
+/// [`hosted`], but for a drop and a clear: the subtree that a drop names
+/// has no entry afterwards, and every subtree that goes with the drop or
+/// the clear of one above it keeps the entry it has.
 pub fn stored(entries: &mut Hosts, write: &Write) {
     match write {
         Write::Leave(left) if left.cleared => {}
@@ -618,10 +618,15 @@ pub struct TxnModel {
     ///
     /// The model takes every clear for one that is stated with the
     /// writes of its transaction laid out. A clear that is stated while
-    /// the transaction serves its records by key takes what the
-    /// transaction itself entered below the Merk, whether the Merk has a
-    /// node or not (`ByKey::below`): the model is not told of such a
-    /// clear.
+    /// the transaction serves its records by key is judged otherwise
+    /// (`ByKey::below`). It takes a subtree of the transaction's own
+    /// where the hosts that the transaction's enters state lead from it
+    /// to the cleared Merk, whether the Merk has a node or not. From the
+    /// first subtree on that line that the transaction did not enter, it
+    /// is asked whether the committed directory has that subtree below
+    /// the cleared Merk, and that check takes no subtree to be below a
+    /// Merk that has no node (`Opened::below`). The model does not tell
+    /// such a clear.
     pub bare: BTreeSet<usize>,
 }
 
@@ -843,12 +848,17 @@ impl TxnModel {
     /// committed directory has stored: a commit that wrote under a
     /// subtree, or dropped, cleared or moved one, from which those
     /// entries lead up to a subtree that the transaction dropped or
-    /// cleared, meets that drop or clear. `stored` has the subtrees with
-    /// an entry after the commit, each below the one its entry names
-    /// (`World::commit_of`). The rule does not ask what the drop or the
-    /// clear takes: a subtree that the transaction had taken out before,
-    /// and one below a Merk that it cleared while the Merk had no node,
-    /// are below it for the rule.
+    /// cleared, meets that drop or clear. `stored` is
+    /// [`Committed::stored`] after the commit. The rule does not ask what
+    /// the drop or the clear takes: a subtree that the transaction had
+    /// taken out before, and one below a Merk that it cleared while the
+    /// Merk had no node, are below it for the rule.
+    ///
+    /// The model takes a subtree to be below a dropped or cleared one
+    /// however many stored entries lead from it there. The engine
+    /// follows at most 65,536 of them up from a subtree (`MAX_DEPTH`),
+    /// and the model does not tell what a commit meets where more than
+    /// that lead from a subtree to the dropped or cleared one.
     ///
     /// The model holds a commit against the entries as that commit
     /// leaves them. The engine asks at the transaction's next look at
@@ -990,6 +1000,14 @@ pub struct Committed {
     pub version: u64,
     /// Which committed subtree is below which.
     pub hosts: Hosts,
+    /// For each entry that the directory stores of a hosted subtree, the
+    /// subtree of its host, as the commits made here left them
+    /// ([`stored`]). Beside the entries of the committed subtrees
+    /// (`hosts`), those are the entries of the subtrees that went with
+    /// the drop or the clear of one above them, which kept the entry
+    /// they had. The model has no reclaimer: such an entry is in it until
+    /// a later write puts another entry under its prefix.
+    pub stored: Hosts,
     /// `hosts` as each version that was committed here left it.
     pub past: BTreeMap<u64, Hosts>,
 }
@@ -1000,6 +1018,7 @@ impl Committed {
         for write in writes {
             apply(&mut self.records, write);
             hosted(&mut self.hosts, write);
+            stored(&mut self.stored, write);
         }
         self.version += 1;
         self.past.insert(self.version, self.hosts.clone());

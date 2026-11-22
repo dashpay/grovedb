@@ -260,19 +260,9 @@ impl<'s> World<'s> {
                 let writes: Vec<Write> = (model.writes.iter())
                     .map(|(write, ..)| write.clone())
                     .collect();
-                // The subtrees that the directory has an entry of after
-                // the commit, each below the one its entry names
-                // (`model::stored`), from those that were entered before
-                // it: its writes are taken one after another. One that
-                // went with a subtree above it keeps its entry, also one
-                // that the commit itself had entered. One that the
-                // commit dropped by name, or that a move of it took from
-                // its prefix or let leave, has none, unless a later write
-                // of the commit left a subtree under its prefix.
-                let mut stored = self.model.hosts.clone();
-                for write in &writes {
-                    model::stored(&mut stored, write);
-                }
+                // What a commit below a dropped or cleared subtree meets
+                // is asked of the entries that the directory has stored
+                // once the commit is made (`Committed::stored`).
                 let commit = self.model.commit(&writes);
                 for other in others {
                     // What the other saw of the subtrees at its last look,
@@ -282,7 +272,7 @@ impl<'s> World<'s> {
                     let mut other = other.model.borrow_mut();
                     other.look(&saw.unwrap_or_default());
                     other.foreign(commit, &writes);
-                    other.foreign_below(commit, &writes, &stored);
+                    other.foreign_below(commit, &writes, &self.model.stored);
                     // Its writes are made again over the commit.
                     other.lay(&self.model.hosts, &self.model.records);
                 }
