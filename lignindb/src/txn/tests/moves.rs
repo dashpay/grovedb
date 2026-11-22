@@ -2163,6 +2163,39 @@ fn a_cursor_from_before_a_commit_is_refused_after_a_clear_above_its_subtree_and_
     world.check_committed();
 }
 
+/// Whose commit it is makes no difference. A cursor is kept across the
+/// commit of its own transaction, and the transaction, used again, moves
+/// a subtree to the cursor's prefix: the cursor is refused, and one that
+/// is opened then reads the subtree there.
+#[test]
+fn a_cursor_kept_across_the_commit_of_its_own_transaction_is_refused_where_a_move_decides() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let mut cursor = tx.txn.cursor(aux(B));
+    world.write(&tx, vec![put(aux(TOP), b"u", b"own")]);
+    let outcome = world.db.commit(world.versions, &tx.txn).expect("a commit");
+    assert!(committed(outcome));
+    let writes: Vec<Write> = (tx.model.borrow().writes.iter())
+        .map(|(write, ..)| write.clone())
+        .collect();
+    world.model.commit(&writes);
+    tx.forget();
+    assert!(records(&mut cursor).is_empty());
+
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    let refused = cursor.seek_to_first().expect_err("a refusal");
+    assert!(another_version(&refused, B), "{refused}");
+    let mut now = tx.txn.cursor(aux(B));
+    assert_eq!(records(&mut now), vec![(b"a".to_vec(), vec![1; 3])]);
+    drop((cursor, now));
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+}
+
 /// Another: two cursors of one version over a prefix that a pair of the
 /// move names, where the pair's subtree is not there when the move is
 /// stated. A later commit enters it below the moved subtree, and the
