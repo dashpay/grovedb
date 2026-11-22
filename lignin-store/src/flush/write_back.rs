@@ -845,6 +845,19 @@ impl<'s> WriteBack<'s> {
         }
     }
 
+    /// Makes the value-log file of `writer`, which write-back was
+    /// filling, durable to its end and closes it. If the sync is refused
+    /// the file is given up as [`Self::give_up_value_file`] gives one up
+    /// whose sync failed, and is counted so: it is closed at the length
+    /// that was durable, and is not synced again.
+    pub(super) fn finish_value_file(&self, writer: ValueWriter) -> Result<(), FlushError> {
+        let finished = writer.finish();
+        if finished.is_err() {
+            count(&self.state.counters.value_files_given_up, 1);
+        }
+        Ok(finished.map(drop)?)
+    }
+
     /// The value-log file that write-back fills. A new one is made if
     /// there is none, or the one there is is full.
     pub(super) fn value_writer<'f>(
@@ -854,7 +867,7 @@ impl<'s> WriteBack<'s> {
         let values = self.stores.values;
         if writer.as_ref().is_none_or(ValueWriter::is_full) {
             if let Some(full) = writer.take() {
-                full.finish()?;
+                self.finish_value_file(full)?;
             }
             let made = values.create()?;
             values.commit(&mut *self.manifest()?)?;
@@ -1299,7 +1312,7 @@ impl<'s> WriteBack<'s> {
         let Some(writer) = files.values.take_if(|writer| writer.file_id() == file) else {
             return Ok(false);
         };
-        writer.finish()?;
+        self.finish_value_file(writer)?;
         Ok(true)
     }
 

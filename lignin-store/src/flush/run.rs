@@ -334,7 +334,7 @@ impl WriteBack<'_> {
             None => Ok(()),
         };
         let finished = match files.values.take() {
-            Some(writer) => writer.finish().map(drop).map_err(FlushError::from),
+            Some(writer) => self.finish_value_file(writer),
             None => Ok(()),
         };
         drop(files);

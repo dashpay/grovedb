@@ -141,14 +141,18 @@ pub struct FlushStats {
     pub value_bytes: u64,
     /// Pending values that were given their pointer in a page step.
     pub values_placed: u64,
-    /// Values that were appended and then given up, because their cell was
-    /// gone before it could be given the pointer. They are dead space.
+    /// Values that were appended and then given up. Their cell was gone
+    /// before it could be given the pointer, or no manifest came to
+    /// cover them: a sync of their file was refused, or the manifest was
+    /// not replaced. A value of the second kind that a cell still needs
+    /// is appended again by a later pass. What a file keeps of a value
+    /// that was given up is dead space.
     pub values_given_up: u64,
     /// Value-log files that write-back gave up while it was filling
-    /// them: an append to the file was refused, a sync of it failed, or
-    /// a regrouping that wrote to it did. Such a file is closed, where it
-    /// ends or where it was last durable, and the next value goes to
-    /// another file.
+    /// them: an append to the file was refused, a sync of it failed,
+    /// also the one that was to close it, or a regrouping that wrote to
+    /// it did. Such a file is closed, where it ends or where it was last
+    /// durable, and the next value goes to another file.
     pub value_files_given_up: u64,
     /// Values that were appended again and repointed when the values of
     /// their page were regrouped.

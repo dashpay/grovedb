@@ -117,21 +117,32 @@ impl<'s> WriteBack<'s> {
         ended.and(covered)
     }
 
-    /// Makes the values in `fresh`, which were appended to the value-log
-    /// file that write-back fills, durable under a manifest that covers
-    /// them, and has them wait for their page steps.
+    /// Makes the values in `fresh`, which a pass appended to the value
+    /// log, durable under a manifest that covers them, and has them wait
+    /// for their page steps.
+    ///
+    /// Whatever becomes of the sync and of the manifest, a value that the
+    /// manifest in force covers waits for its page step, and every other
+    /// one is given up with its hold, for a later pass to append again
+    /// ([`FlushStats::values_given_up`](super::FlushStats::values_given_up)).
+    /// A pass can fill one file and go on in the next: the values of the
+    /// first are covered by the manifest that named the second, whatever
+    /// becomes of the sync of the second.
     fn cover(&self, files: &mut Files, fresh: Vec<Ready>) -> Result<(), FlushError> {
         let values = self.stores.values;
         let synced = files.values.as_mut().map(|writer| writer.sync());
-        if let Some(Err(error)) = synced {
-            // The values cannot be made durable in that file any more.
-            // They are given up with their holds, and appended to
-            // another file by the next pass. The file is closed where it
-            // was durable, and is not synced again.
-            self.give_up_value_file(files);
-            return Err(error.into());
-        }
-        values.commit(&mut *self.manifest()?)?;
+        let covered = match synced {
+            Some(Err(error)) => {
+                // What that sync was for cannot be made durable in the
+                // file any more. The file is closed where it was durable,
+                // and is not synced again.
+                self.give_up_value_file(files);
+                Err(error.into())
+            }
+            _ => self
+                .manifest()
+                .and_then(|mut manifest| Ok(values.commit(&mut manifest)?)),
+        };
         let mut placing = lock(&self.state.placing);
         for appended in fresh {
             if values.covers(appended.pointer) {
@@ -140,7 +151,7 @@ impl<'s> WriteBack<'s> {
                 count(&self.state.counters.values_given_up, 1);
             }
         }
-        Ok(())
+        covered
     }
 
     /// Appends the bytes of one pending value to the value log, for the
