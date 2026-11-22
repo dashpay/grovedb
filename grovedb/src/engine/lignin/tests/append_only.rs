@@ -1355,23 +1355,16 @@ fn over_an_emptied_indexed_tree<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) ->
     h.answers
 }
 
-/// D-280, the second of the two states: a flat record under an entry
-/// whose tree type keeps a Merk. On grove version 3 a batch writes an MMR
-/// tree over an indexed tree that was emptied, whose primary stays
-/// entered with no root. The engine keeps that entry, with the tree type
-/// of the indexed tree, and the append puts the MMR's record under it.
-///
-/// RocksDB's node cursor shows the record with its bytes: that is the
-/// answer required. LigninDB's reads the record by the tree type of the
-/// stale entry, as an unlinked record, and refuses it: a known difference
-/// (D-280), which is the entry's and ends with `GROVE-04-F1`. Every
-/// answer before the walk is RocksDB's. The close finds the same stale
-/// entries: the cell of the MMR tree's element still hosts the two Merks
-/// of the indexed tree. This test fails when the entry is made the MMR
-/// tree's, and is turned then.
+/// D-280, the second of the two histories: on grove version 3 a batch
+/// writes an MMR tree over an indexed tree that was emptied, and a value
+/// is appended to the MMR tree. The engine takes the Merks of the
+/// indexed tree out of the directory with the batch, and the append
+/// enters the subtree as the MMR tree's. The node cursor shows the
+/// record as RocksDB's does, every answer of the history is RocksDB's,
+/// and the close of a debug build finds nothing.
 #[cfg(all(feature = "rocksdb_storage", debug_assertions))]
 #[test]
-fn a_flat_tree_over_an_emptied_indexed_tree_is_walked_by_the_tree_type_of_its_stale_entry() {
+fn a_flat_tree_over_an_emptied_indexed_tree_is_walked_as_on_rocksdb() {
     let v = &GROVE_VERSIONS[2];
     let dir = tempfile::tempdir().expect("a directory");
     let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
@@ -1390,16 +1383,8 @@ fn a_flat_tree_over_an_emptied_indexed_tree_is_walked_by_the_tree_type_of_its_st
     let dir = tempfile::tempdir().expect("a directory");
     let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
     let on_lignin = over_an_emptied_indexed_tree(&db, v);
-    let before_the_walk = on_rocksdb.len() - required.len();
-    assert_eq!(on_lignin[..before_the_walk], on_rocksdb[..before_the_walk]);
-    let shown = records(&on_lignin);
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    assert!(shown[0].starts_with("true Some([128, 0, 0, 0, 0, 0, 0, 0]) None Err("));
-    let refusal = "a flat record among the nodes of a Merk is no unlinked record";
-    assert!(shown[0].contains(refusal), "{}", shown[0]);
-    let found = found_at_close(db).expect("GROVE-04-F1: the entries of the indexed tree stay");
-    let known = "the element has 1 Merks and its cell hosts 2";
-    assert!(found.contains(known), "{found}");
+    assert_eq!(on_lignin, on_rocksdb);
+    assert_eq!(found_at_close(db), None);
 }
 
 /// What a history does with a keyed child under a tree that keeps flat

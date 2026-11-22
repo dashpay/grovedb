@@ -58,6 +58,14 @@
 //! with the records of its other columns, as it does where one batch
 //! holds the element and the removals.
 //!
+//! **Another element written over an indexed tree.** The primary of the
+//! old tree is the subtree of the element's own path, and is looked at as
+//! the subtree of any tree is: it is dropped, and entered again where the
+//! group writes into it, by the rules above, so that its entry names the
+//! tree type of the new element. The secondaries of the old tree hang
+//! under the same key and are hosted by no other element than an indexed
+//! tree: each that is entered there is dropped with the group.
+//!
 //! Where the subtree of a tree with one Merk stays, the node of its
 //! element is written as one that hosts that Merk, with the root the
 //! directory has for it: an earlier group of the transaction can have
@@ -110,9 +118,9 @@
 //! - A tree that keeps its data flat and is written over with a tree of
 //!   its own type keeps its records: the element of such a tree changes
 //!   with every write into it, and nothing tells a new one from it.
-//! - The Merks of an indexed tree stay, where the tree is written again
-//!   or another element is written over it, but in the one case above;
-//!   and so does the subtree of an element that the group
+//! - The Merks of an indexed tree stay where the tree is written again
+//!   as an indexed tree, but in the one case above; and so does the
+//!   subtree of an element that the group
 //!   removes ([`super::gone`]), a subtree that a batch of the group enters
 //!   itself, moves, or moves another subtree to, and a node of a subtree
 //!   that no handle by path wrote into with the group.
@@ -324,9 +332,25 @@ pub(super) fn left(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Left
             .host
             .as_ref()
             .is_some_and(|at| (at.subtree, at.key.as_slice(), at.position) == (*subtree, key, 0));
-        let indexed = |tree_type: TreeType| tree_type.is_indexed_primary();
-        if !hangs || entry.tree_type().is_ok_and(indexed) {
+        if !hangs {
             continue;
+        }
+        // The secondaries of an indexed tree hang under its element
+        // beside the primary, and the element that is written over it
+        // hosts none of them: each that is entered there is dropped. A
+        // secondary is stored under the tag of its axis, and the big sum
+        // axis under that of the sum axis: these are all.
+        if (entry.tree_type()).is_ok_and(|tree_type: TreeType| tree_type.is_indexed_primary()) {
+            for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+                let secondary = secondary_prefix_for(&own, axis.tag()).value;
+                let under = |entry: LigninEntry| {
+                    let host = entry.host;
+                    host.is_some_and(|at| (at.subtree, at.key.as_slice()) == (*subtree, key))
+                };
+                if !own_business(&secondary) && entered(view, secondary)?.is_some_and(under) {
+                    dropped.push((secondary, *subtree));
+                }
+            }
         }
         let again = match tree {
             None => None,

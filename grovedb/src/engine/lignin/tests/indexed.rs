@@ -2718,3 +2718,138 @@ fn an_empty_indexed_tree_is_written_over_a_filled_one_in_one_batch_and_in_parts(
         case::<Count, Sum>(in_parts);
     }
 }
+
+/// What is written over an emptied indexed tree in
+/// [`written_over_an_emptied_indexed_tree`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Over {
+    /// An MMR tree, which keeps its data as flat records.
+    Flat,
+    /// A sum tree, whose data is one Merk.
+    OneMerk,
+    /// An item.
+    NoTree,
+}
+
+/// A sum-indexed tree under the key `idx` whose one child was deleted,
+/// another element written over it by a batch, and what follows: two
+/// appends and the reads of an MMR tree, two children and a read of a
+/// sum tree, a read of an item; the element, and the grove's own check.
+fn written_over_an_emptied_indexed_tree<E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+    over: Over,
+) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let at: &[&[u8]] = &[b"idx"];
+    h.write("made", db.insert(ROOT, b"idx", Sum::empty(), None, None, v));
+    h.write(
+        "child",
+        Sum::insert(db, at, b"child", Sum::leaf(4), None, v),
+    );
+    h.write("emptied", Sum::delete(db, at, b"child", None, v));
+    let element = match over {
+        Over::Flat => Element::empty_mmr_tree_with_flags(None),
+        Over::OneMerk => Element::empty_sum_tree(),
+        Over::NoTree => Element::new_item(b"an item".to_vec()),
+    };
+    let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![],
+        b"idx".to_vec(),
+        element,
+    )];
+    h.write("over", db.apply_batch(batch, None, None, v));
+    match over {
+        Over::Flat => {
+            for n in 0..2u8 {
+                let value = vec![n; 3 + usize::from(n)];
+                let appended = db.mmr_tree_append(ROOT, b"idx", value, None, v);
+                h.write(
+                    "filled",
+                    appended.map_ok(|appended| format!("{appended:?}")),
+                );
+            }
+            h.read("count", db.mmr_tree_leaf_count(ROOT, b"idx", None, v));
+            for leaf in 0..3 {
+                h.read("value", db.mmr_tree_get_value(ROOT, b"idx", leaf, None, v));
+            }
+        }
+        Over::OneMerk => {
+            for n in 0..2u8 {
+                let item = Element::new_sum_item(i64::from(n) + 5);
+                h.write("filled", db.insert(at, &[n], item, None, None, v));
+            }
+            h.element("value", db.get(at, &[1], None, v));
+        }
+        Over::NoTree => {}
+    }
+    h.element("element", db.get(ROOT, b"idx", None, v));
+    verified(&mut h);
+    h.answers
+}
+
+/// An element that is no indexed tree, written over an indexed tree
+/// whose last child was deleted: the Merks of the old tree are entered
+/// with no node, and the new element hosts none of the secondaries and
+/// the primary as a tree of its own type, or not at all. The engine
+/// drops them with the batch that writes the element, and the first
+/// write into the new tree enters its subtree with the tree type of the
+/// new element: an MMR tree, which keeps flat records, a sum tree, and
+/// an item, which hosts nothing. The answers, the costs and the root
+/// hashes are RocksDB's on every grove version, and the store is sound.
+#[test]
+fn an_element_written_over_an_emptied_indexed_tree_takes_its_merks_out_of_the_directory() {
+    for over in [Over::Flat, Over::OneMerk, Over::NoTree] {
+        for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+            let case = format!("{over:?} on grove version {}", number + 1);
+            let dir = tempfile::tempdir().expect("a directory");
+            {
+                let db = Lignin::open_with_engine(dir.path()).expect("a database");
+                let on_lignin = written_over_an_emptied_indexed_tree(&db, v, over);
+                #[cfg(feature = "rocksdb_storage")]
+                {
+                    let dir = tempfile::tempdir().expect("a directory");
+                    let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+                    let rocksdb = rocksdb.expect("RocksDB");
+                    let on_rocksdb = written_over_an_emptied_indexed_tree(&rocksdb, v, over);
+                    assert_eq!(on_lignin.len(), on_rocksdb.len(), "{case}");
+                    for (step, (lignin, rocksdb)) in on_lignin.iter().zip(&on_rocksdb).enumerate() {
+                        assert_eq!(lignin, rocksdb, "{case}: step {step}");
+                    }
+                }
+                // The history did what it names, where the grove version
+                // has a sum-indexed tree.
+                let filled = if over == Over::NoTree { 0 } else { 2 };
+                let did = ["made", "child", "emptied", "over", "filled"];
+                let did = did.map(|call| taken(&on_lignin, call));
+                // Grove version 3 and the latest make a sum-indexed
+                // tree: there the history is not one of refusals.
+                if number + 1 == 3 || number + 1 == GROVE_VERSIONS.len() {
+                    assert_eq!(taken(&on_lignin, "made"), 1, "{case}");
+                }
+                if taken(&on_lignin, "made") == 1 {
+                    assert_eq!(did, [1, 1, 1, 1, filled], "{case}");
+                    assert!(sound(&on_lignin), "{case}");
+                    let top: &[&[u8]] = &[b"idx"];
+                    let primary = build_prefix(top.into()).value;
+                    let secondary = secondary_prefix_for(&primary, IndexAxis::Sum.tag()).value;
+                    assert_eq!(entry(&db, secondary), None, "{case}");
+                    let entered = entry(&db, primary);
+                    let tree_type = entered.map(|entered| {
+                        let host = entered.host.as_ref().expect("a host");
+                        assert_eq!((host.key.as_slice(), host.position), (&b"idx"[..], 0));
+                        entered.tree_type().expect("a tree type")
+                    });
+                    let named = match over {
+                        Over::Flat => Some(TreeType::MmrTree),
+                        Over::OneMerk => Some(TreeType::SumTree),
+                        Over::NoTree => None,
+                    };
+                    assert_eq!(tree_type, named, "{case}");
+                }
+                db.flush().expect("a flush");
+            }
+            check(dir.path(), v);
+        }
+    }
+}
