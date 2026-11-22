@@ -97,8 +97,8 @@
 //! - An indexed tree, written over or written, is left as it is
 //!   (GROVE-04-F1), and so is the subtree of an element that the group
 //!   removes ([`super::gone`]), a subtree that a batch of the group enters
-//!   itself or moves, and a node of a subtree that no handle by path
-//!   wrote into with the group.
+//!   itself, moves, or moves another subtree to, and a node of a subtree
+//!   that no handle by path wrote into with the group.
 
 use std::collections::BTreeSet;
 
@@ -184,9 +184,11 @@ pub(super) fn left(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Left
         written.any(|subtree| subtree.prefix == *prefix)
     };
     let own_business = |prefix: &[u8; 32]| {
-        parts
-            .iter()
-            .any(|part| part.enters(prefix) || part.moves().iter().any(|(from, _)| from == prefix))
+        let moved = |part: &LigninSettled| {
+            let mut pairs = part.moves().iter();
+            pairs.any(|(from, to)| from == prefix || to == prefix)
+        };
+        parts.iter().any(|part| part.enters(prefix) || moved(part))
     };
     let mut left = Left::default();
     let mut seen = BTreeSet::new();

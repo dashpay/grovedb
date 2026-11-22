@@ -1146,10 +1146,10 @@ fn apply_parts(
 }
 
 /// The subtree writes of a batch with `enters` among them: what leaves
-/// first, as the batch has it, then what is stated anew, and then the
-/// enters by how many subtrees above each are entered here too, so that
-/// a subtree comes after the one its host is in, and in the order they
-/// came where that number is the same.
+/// and what is moved first, as the batch has it, then what is stated
+/// anew, and then the enters by how many subtrees above each are entered
+/// here too, so that a subtree comes after the one its host is in, and in
+/// the order they came where that number is the same.
 fn with_enters<'a>(own: &[SubtreeWrite<'a>], enters: &[SubtreeWrite<'a>]) -> Vec<SubtreeWrite<'a>> {
     let (mut ordered, entered): (Vec<_>, Vec<_>) =
         (own.iter().chain(enters).copied()).partition(|write| !write.enters());

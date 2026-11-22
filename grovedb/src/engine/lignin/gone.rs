@@ -18,7 +18,12 @@
 //!   handles by path tell their batch ([`LigninSettled::path`]). The
 //!   directory is asked for that prefix, and for the three prefixes
 //!   beside it where it is entered as the primary of an indexed tree.
-//!   Each that is entered under the removed node is dropped.
+//!   Each that is entered under the removed node is dropped, unless a
+//!   batch of the group was told to move it
+//!   ([`LigninSettled::moves`]): a move that leaves no element under
+//!   the old key removes the node there, and a subtree that goes to
+//!   another prefix with the element is stated by the look for what is
+//!   moved ([`moved`](super::moved)).
 //! - **A drop takes every subtree below it**, by the hosts the directory
 //!   names, and none of them is dropped by name: the nodes that the group
 //!   removes in a subtree which is below a drop are not looked at.
@@ -206,6 +211,11 @@ pub(super) fn gone(
         .filter_map(|(subtree, keys)| Some((path_of(&subtree)?, subtree, keys)))
         .collect();
     removed.sort_by_key(|(path, ..)| path.len());
+    // The subtrees that a batch of the group was told to move: each goes
+    // to another prefix, and does not leave with the node it hung under.
+    let moved: BTreeSet<[u8; 32]> = (parts.iter())
+        .flat_map(|part| part.moves().iter().map(|(from, _)| *from))
+        .collect();
     for (path, subtree, keys) in removed {
         // Nothing is entered under a node of a subtree that is not
         // entered, and what is under a node of one that leaves goes with
@@ -226,8 +236,10 @@ pub(super) fn gone(
                 continue;
             };
             let mut drop = |prefix: [u8; 32]| {
-                gone.drops.push((part, prefix));
-                look.dropped.insert(prefix);
+                if !moved.contains(&prefix) {
+                    gone.drops.push((part, prefix));
+                    look.dropped.insert(prefix);
+                }
             };
             drop(own_prefix);
             if (entry.tree_type()).is_ok_and(|tree| tree.is_indexed_primary()) {

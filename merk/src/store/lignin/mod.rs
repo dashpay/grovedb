@@ -184,8 +184,8 @@ use self::access::{Access, Child, Location, StoredLink, StoredNode};
 pub use self::{
     access::{LigninEntryRefused, LigninWriter},
     change_set::{
-        LigninApplied, LigninBatch, LigninChangeSet, LigninOutcome, LigninRefused, LigninSettled,
-        PreparedNode,
+        LigninApplied, LigninBatch, LigninChangeSet, LigninMove, LigninOutcome, LigninRefused,
+        LigninSettled, PreparedNode,
     },
     cursor::LigninCursor,
     directory::{tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted},
@@ -615,7 +615,7 @@ impl<'db> LigninNodeStore<'db> {
         is_commit: bool,
     ) -> CostResult<(), Error> {
         change_set.hint(&self.hints.borrow(), &self.reads.borrow());
-        change_set.note_trees(&self.trees.borrow());
+        change_set.note_trees(&self.trees.borrow(), &self.reads.borrow());
         match self.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused(&format!("{what} through a handle that only reads")))
