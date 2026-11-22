@@ -212,7 +212,12 @@
 //! reader holds, and reads neither the log nor the value log (FL7).
 //!
 //! [`TreeValues::read`] is the same for a page that a scope has copied or
-//! made, with the scope's own values found by their names.
+//! made, with the scope's own values found by their names. It is for no
+//! other page: for a value that was pending when the scope copied its
+//! page it loads the committed page, whose frame keeps the bytes for as
+//! long as the copy keeps page steps off it (PV7). The frame of a page
+//! that nobody has copied is replaced when write-back places a value of
+//! it, by one that has the pointer and not the bytes.
 //! [`TreeValues::read_at`] is that read by the place of a value and the
 //! page of its cell, for a caller that holds no node: an evaluation of
 //! stale hashes, which is given [`TreeValues::reader`] as its
@@ -288,9 +293,12 @@
 //!   commit**, as it keeps every copy: a cell that left such a page can
 //!   name a value that is still with the page, and a page step on the page
 //!   would count a value in a cell that the commit then drops unseen.
-//! - **It reads** a node of a page it has copied with
-//!   [`TreeValues::read`], and every other node with [`read_value`], at
-//!   the version its [`ValueSource`] is made for.
+//! - **It reads** a node of a page it has copied or made with
+//!   [`TreeValues::read`], and a node of a committed page from the frame
+//!   it holds of that page, at the version its [`ValueSource`] is made
+//!   for: a node it has pinned with [`read_value`], and a node it is
+//!   shown in a frame through [`TreeValues::read_shown`], which is
+//!   [`TreeValues::read`] where it is given no frame.
 //! - **A commit** takes the steps above in that order, makes
 //!   [`TreeValues::log_values`] again if it writes its group for another
 //!   place, and applies one change to the counts.

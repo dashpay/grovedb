@@ -13,7 +13,7 @@ use lignin_format::{
 };
 use lignin_store::{
     alloc::PageAllocator,
-    cache::{BufferPool, CacheError, OwnerId, PrivateRef},
+    cache::{BufferPool, CacheError, OwnerId, PageRef, PrivateRef},
     load::{LoadBuffers, PageLoader},
     stats::Stats,
     values::ValueStore,
@@ -429,23 +429,42 @@ pub(crate) struct TreeParts<'s> {
     pub(crate) unused: Vec<PageId>,
 }
 
+impl TreePages<'_> {
+    /// Reads the tree page `page`, and tells `read` which page it is
+    /// shown: the transaction's copy, or the committed page, and then
+    /// with the frame of it, which is held until `read` returns.
+    ///
+    /// A pending value of a committed page is read from the bytes that
+    /// are with that frame (`TreeValues::read_shown`). The page is not
+    /// loaded again for it: a page step of write-back can put another
+    /// frame in the place of this one meanwhile, since the transaction
+    /// has no copy of the page that would hold the step back (PV7).
+    pub(crate) fn shown<R>(
+        &mut self,
+        page: PageId,
+        read: impl for<'p> FnOnce(NodePage<'p>, Option<&'p PageRef<'p>>) -> R,
+    ) -> Result<R, TxnError> {
+        self.check_live(page)?;
+        match self.copies.get(&page) {
+            Some(copy) => {
+                let latch = copy.frame.read();
+                Ok(read(NodePage::open(&latch, self.lease)?, None))
+            }
+            None => {
+                let frame = self.loader.get(page, self.at, &mut self.buffers)?;
+                Ok(read(NodePage::open(&frame, self.lease)?, Some(&frame)))
+            }
+        }
+    }
+}
+
 impl NodePages for TreePages<'_> {
     fn page<R>(
         &mut self,
         page: PageId,
         read: impl FnOnce(NodePage<'_>) -> R,
     ) -> Result<R, TxnError> {
-        self.check_live(page)?;
-        match self.copies.get(&page) {
-            Some(copy) => {
-                let latch = copy.frame.read();
-                Ok(read(NodePage::open(&latch, self.lease)?))
-            }
-            None => {
-                let frame = self.loader.get(page, self.at, &mut self.buffers)?;
-                Ok(read(NodePage::open(&frame, self.lease)?))
-            }
-        }
+        self.shown(page, |page, _| read(page))
     }
 
     fn stats(&self) -> Option<&Stats> {

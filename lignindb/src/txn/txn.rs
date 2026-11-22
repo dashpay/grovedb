@@ -2641,9 +2641,10 @@ fn show_framed<R>(
         ..
     } = frames;
     let stale = hashes.stale(address);
-    let shown = tree.page(address.page(), |page| {
+    let shown = tree.shown(address.page(), |page, committed| {
         let node = page.node(address.slot())?;
-        Some(read(Some(NodeView::framed(node, values, source, stale))))
+        let view = NodeView::framed(node, values, source, committed, stale);
+        Some(read(Some(view)))
     })?;
     Ok(shown.ok_or(NodeError::NoNode { address })?)
 }

@@ -1067,10 +1067,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             source,
             ..
         } = self;
-        let read = tree.page(address.page(), |page| {
+        let read = tree.shown(address.page(), |page, committed| {
             let node = page.node(address.slot())?;
             let mut buf = ValueBuf::new();
-            Some(values.read(source, node, &mut buf).map(<[u8]>::to_vec))
+            let value = values.read_shown(source, node, committed, &mut buf);
+            Some(value.map(<[u8]>::to_vec))
         })?;
         Ok(read.ok_or(NodeError::NoNode { address })??)
     }
