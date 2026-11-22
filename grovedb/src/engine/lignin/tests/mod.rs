@@ -20,6 +20,7 @@ mod append_only;
 mod axes;
 mod batches;
 mod cases;
+mod deletes;
 mod indexed;
 mod moves;
 mod nested;
@@ -1081,8 +1082,6 @@ fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     assert!(!checkpoint.exists());
     // GroveDB hands it on as its own error of that name.
     assert!(matches!(Error::from(error), Error::NotSupported(_)));
-    let error = (engine.delete_prefix_ranges(&[[1; 32]])).expect_err("a range delete");
-    not_supported(&error, matches!(error, StorageError::NotSupported(_)));
 
     // A subtree that is not entered has no record and no entry to move:
     // its walk ends at once, and the batch is told of nothing.
@@ -1269,47 +1268,6 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
     std::fs::write(dir.path().join("CURRENT"), b"MANIFEST-000001\n").expect("a file");
     let refused = LigninEngine::open(dir.path()).expect_err("a directory of RocksDB");
     assert!(named(refused).contains("lignindb"));
-}
-
-#[test]
-fn a_tree_that_holds_elements_is_not_deleted_yet_and_stays_whole() {
-    let v = version();
-    let grove = Grove::<LigninEngine>::new();
-    grove.insert(A, b"a1", None);
-    let root_before = grove.db.root_hash(None, v).unwrap().expect("a root");
-    let options = crate::operations::delete::DeleteOptions {
-        allow_deleting_non_empty_trees: true,
-        deleting_non_empty_trees_returns_error: false,
-        ..Default::default()
-    };
-    // Its nodes are no flat records, and the removal of the records of
-    // its keyspace says so.
-    let deleted = (grove.db).delete(ROOT, A, Some(options), None, v).unwrap();
-    let refused = deleted.expect_err("a tree with elements");
-    assert!(refused.to_string().contains("lignindb"), "{refused}");
-    let root = grove.db.root_hash(None, v).unwrap().expect("a root");
-    assert_eq!(root, root_before);
-    assert!(grove.finds(A, b"a1", None));
-    // A tree that nothing was written into is deleted, as on RocksDB.
-    (grove.db.delete(ROOT, B, None, None, v))
-        .unwrap()
-        .expect("an empty tree");
-    let gone = grove.db.get(ROOT, B, None, v).unwrap();
-    assert!(matches!(gone, Err(Error::PathKeyNotFound(_))));
-    let root = grove.db.root_hash(None, v).unwrap().expect("a root");
-    assert_ne!(root, root_before);
-    #[cfg(feature = "rocksdb_storage")]
-    {
-        let rocks = Grove::<crate::RocksDbEngine>::new();
-        rocks.insert(A, b"a1", None);
-        (rocks.db.delete(ROOT, B, None, None, v))
-            .unwrap()
-            .expect("an empty tree");
-        assert_eq!(rocks.db.root_hash(None, v).unwrap().expect("a root"), root);
-    }
-    let Grove { dir, db } = grove;
-    drop(db);
-    check(dir.path());
 }
 
 #[test]

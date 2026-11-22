@@ -297,12 +297,12 @@ fn a_flat_tree_written_over_a_merk_with_a_record_of_its_own_hosts_no_root() {
 
 /// GroveDB does not ask the engine to walk a moved tree whose element has
 /// no root key and whose data is a Merk: there is no record to copy. A
-/// tree that was written into and emptied is entered all the same, so
-/// its move, which is applied, leaves its entry under an element that is
-/// gone, as the delete of such a tree does until the subtree of a removed
-/// element is dropped with it (GROVE-05).
+/// tree that was written into and emptied is entered all the same. Its
+/// move, which is applied, removes its element under the old key, and
+/// the entry leaves with that node, as the entry of a deleted tree does
+/// ([`super::super::gone`]).
 #[test]
-fn the_entry_of_an_emptied_tree_stays_behind_when_the_tree_is_moved() {
+fn the_entry_of_an_emptied_tree_leaves_with_its_element_when_the_tree_is_moved() {
     use crate::batch::QualifiedGroveDbOp;
 
     let v = version();
@@ -318,10 +318,9 @@ fn the_entry_of_an_emptied_tree_stays_behind_when_the_tree_is_moved() {
     let read = (db.get(ROOT, b"u", None, v).unwrap()).expect("the moved tree");
     assert_eq!(read, Element::empty_tree());
     assert!(db.get(ROOT, b"t", None, v).unwrap().is_err());
-    assert_eq!(entry_of_t(&db), Some((TreeType::NormalTree, false)));
-    db.engine().database().unchecked_at_close();
+    assert_eq!(entry_of_t(&db), None);
     drop(Arc::into_inner(db).expect("the only handle on the grove"));
-    assert_eq!(broken(dir.path()), ["EntryHost"]);
+    check(dir.path());
 }
 
 /// A group of two batches, of which one writes the element of a tree and

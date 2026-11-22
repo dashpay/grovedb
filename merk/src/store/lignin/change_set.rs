@@ -1028,6 +1028,9 @@ pub struct LigninSettled {
     /// The subtrees that whoever applies the batch dropped with it
     /// ([`Self::drop_subtree`]).
     drops: Vec<Subtree>,
+    /// The subtrees whose writes the batch does not hand the transaction
+    /// ([`Self::leave_out`]).
+    left_out: BTreeSet<Subtree>,
 }
 
 /// A settled batch is handed to the transaction as it was resolved, with
@@ -1038,16 +1041,15 @@ impl BatchPart for LigninSettled {
         &self,
         run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
     ) -> Result<Written, Error> {
-        if self.hosts.is_empty() && self.drops.is_empty() {
+        if self.hosts.is_empty() && self.drops.is_empty() && self.left_out.is_empty() {
             return self.resolved.with_batch(run);
         }
         self.resolved.with_batch(|batch| {
-            // What is dropped with the batch leaves before anything is
-            // entered or written, wherever it stands among the subtrees.
-            let drops = self.drops.iter();
-            let subtrees: Vec<SubtreeWrite<'_>> = drops
-                .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
-                .chain(batch.subtrees.iter().copied())
+            // The Merks whose writes stay with the batch: a written node
+            // is reported by the place of its Merk among those that are
+            // handed over.
+            let stays: Vec<bool> = (batch.merks.iter())
+                .map(|merk| !self.left_out.contains(&merk.subtree))
                 .collect();
             let hosted = |subtree: Subtree, key: &[u8]| {
                 (self.hosts.iter())
@@ -1071,8 +1073,9 @@ impl BatchPart for LigninSettled {
                     puts.collect()
                 })
                 .collect();
-            let merks: Vec<MerkWrite<'_>> = (batch.merks.iter().zip(&nodes))
-                .map(|(merk, nodes)| MerkWrite {
+            let merks: Vec<MerkWrite<'_>> = (batch.merks.iter().zip(&nodes).zip(&stays))
+                .filter(|(_, stays)| **stays)
+                .map(|((merk, nodes), _)| MerkWrite {
                     nodes,
                     // A Merk is anchored where the batch does not put the
                     // node of the element that hosts it.
@@ -1085,11 +1088,33 @@ impl BatchPart for LigninSettled {
                     ..*merk
                 })
                 .collect();
-            run(&Batch {
+            let records: Vec<_> = (batch.records.iter().copied())
+                .filter(|record| !self.left_out.contains(&record.unit().subtree))
+                .collect();
+            // What is dropped with the batch leaves before anything is
+            // entered or written, wherever it stands among the subtrees.
+            let drops = self.drops.iter();
+            let subtrees: Vec<SubtreeWrite<'_>> = drops
+                .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
+                .chain(batch.subtrees.iter().copied())
+                .collect();
+            let mut written = run(&Batch {
+                records: &records,
                 merks: &merks,
                 subtrees: &subtrees,
-                ..*batch
-            })
+            })?;
+            // A Merk that was left out wrote no node, and has its place
+            // among the Merks of the batch all the same.
+            if written.locations.len() == merks.len() && merks.len() < stays.len() {
+                let mut handed = std::mem::take(&mut written.locations).into_iter();
+                written.locations = (stays.iter())
+                    .map(|stays| match stays {
+                        true => handed.next().unwrap_or_default(),
+                        false => Vec::new(),
+                    })
+                    .collect();
+            }
+            Ok(written)
         })
     }
 }
@@ -1127,6 +1152,7 @@ impl LigninSettled {
             merks,
             paths,
             drops: Vec::new(),
+            left_out: BTreeSet::new(),
         }
     }
 
@@ -1182,6 +1208,25 @@ impl LigninSettled {
         self.merks.contains_key(prefix)
     }
 
+    /// The nodes that the batch removes, each by its subtree and its key.
+    /// What the element of a tree hosted leaves with its node, and the
+    /// store does not know which nodes hold such an element: whoever
+    /// applies the batch looks at what the directory has under each and
+    /// drops it ([`Self::drop_subtree`]).
+    pub fn removed_nodes(&self) -> impl Iterator<Item = ([u8; 32], &[u8])> {
+        self.resolved.outcomes().filter_map(|outcome| {
+            let node = matches!(outcome.write, Staged::NodeRemoved);
+            node.then(|| (*outcome.unit.subtree.as_bytes(), outcome.key))
+        })
+    }
+
+    /// The subtree of each node and each record that the batch puts, in
+    /// any column: a subtree once for each put.
+    pub fn put_into(&self) -> impl Iterator<Item = [u8; 32]> + '_ {
+        let puts = self.resolved.outcomes().filter(|outcome| outcome.is_put());
+        puts.map(|outcome| *outcome.unit.subtree.as_bytes())
+    }
+
     /// The path that the handle which wrote into the subtree `prefix` was
     /// opened by, if it was told one
     /// ([`LigninNodeStore::at_path`](super::LigninNodeStore::at_path)).
@@ -1192,11 +1237,13 @@ impl LigninSettled {
     /// Drops the subtree `prefix` with every subtree below it, with this
     /// batch and before its other writes, as
     /// [`LigninBatch::drop_subtree`] does for a batch that is not settled
-    /// yet. The batch writes the element that hosted the subtree without
-    /// it, which is said of that element ([`Self::host`]), or removes it;
-    /// a subtree that the batch also writes is entered again with it
-    /// ([`Self::apply`]). The nodes of a dropped subtree are charged
-    /// nothing.
+    /// yet. The batch removes the element that hosted the subtree, or
+    /// writes it without the subtree, which is said of that element
+    /// ([`Self::host`]); a subtree that the batch also writes is entered
+    /// again with it ([`Self::apply`]). The nodes of a dropped subtree are charged
+    /// nothing by the drop: what their removal is charged is what the
+    /// batch was settled with, the removals that a clear of the subtree
+    /// staged among it ([`Self::leave_out`]).
     pub fn drop_subtree(&mut self, prefix: &[u8; 32]) {
         let subtree = Subtree::new(*prefix);
         if !self.drops.contains(&subtree) {
@@ -1204,9 +1251,22 @@ impl LigninSettled {
         }
     }
 
-    /// Takes back every drop of [`Self::drop_subtree`].
+    /// Says that the batch hands the transaction none of the writes it
+    /// holds for the subtree `prefix`, in any column: whoever applies
+    /// the batch found nothing for them to be applied to. They are
+    /// charged all the same, as the batch was settled with them, which is
+    /// what the removal of a tree's records one by one is charged
+    /// (`cost-model.md`, section 15.4).
+    pub fn leave_out(&mut self, prefix: &[u8; 32]) {
+        self.left_out.insert(Subtree::new(*prefix));
+    }
+
+    /// Takes back every statement of [`Self::drop_subtree`] and of
+    /// [`Self::leave_out`]: the batch drops what its handles staged a
+    /// drop of, and hands over every write it holds.
     pub fn forget_drops(&mut self) {
         self.drops.clear();
+        self.left_out.clear();
     }
 
     /// Whether handles that staged into the batch named two different

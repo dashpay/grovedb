@@ -2036,6 +2036,130 @@ fn the_nodes_of_a_merk_removed_with_no_cost_are_charged_as_committed() {
     );
 }
 
+/// `FlatStore::clear` on a handle whose Merk has nodes removes them as
+/// the records they are on RocksDB: the walk and the batch that it stages
+/// into cost what they cost there, and the Merk is left with no node.
+#[test]
+fn a_merk_cleared_as_the_records_of_its_keyspace_costs_what_it_costs_on_rocksdb() {
+    use grovedb_storage::FlatStore;
+
+    let tree_type = TreeType::CountSumTree;
+    let prefix = at(9);
+    let subtree = LigninSubtree::alone(prefix);
+    let rocks = TempStorage::new();
+    let lignin = Lignin::with_stated_value_hashes();
+    let path = lignin.path();
+    let mut random = Random(41);
+    let mut model = BTreeMap::new();
+    let mut root = None;
+    let mut transaction = path.begin();
+    let mut writer = LigninWriter::new(transaction.scope().unwrap());
+    let mut rocks_tx = rocks.start_transaction();
+
+    for round in 0..6 {
+        let batch = random_batch(&mut random, tree_type, &mut model, true);
+        let storage_batch = StorageBatch::new();
+        let context = rocks
+            .get_transactional_storage_context_by_subtree_prefix(
+                prefix,
+                Some(&storage_batch),
+                &rocks_tx,
+            )
+            .unwrap();
+        let staged = LigninBatch::new();
+        let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+        let (_, mut on_rocks) = open_as(context, Opened::Layered, &root, tree_type, version());
+        let (_, mut on_lignin) = open_as(store, Opened::Layered, &root, tree_type, version());
+        assert_eq!(apply(&mut on_lignin, &batch), apply(&mut on_rocks, &batch));
+        root = on_rocks.root_key();
+        drop((on_rocks, on_lignin));
+        rocks
+            .commit_multi_context_batch(storage_batch, Some(&rocks_tx))
+            .unwrap()
+            .unwrap();
+        staged.apply(&writer).unwrap().unwrap();
+        // The first three batches are committed, and the others stay in
+        // the transaction: the walk shows the transaction's nodes, and a
+        // removal is charged from the committed record.
+        if round == 2 {
+            rocks.commit_transaction(rocks_tx).unwrap().unwrap();
+            rocks_tx = rocks.start_transaction();
+            writer.into_scope().merge();
+            assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+            transaction = path.begin();
+            writer = LigninWriter::new(transaction.scope().unwrap());
+        }
+    }
+    let held = records(
+        &LigninNodeStore::deferred(&writer, subtree.clone(), None),
+        root,
+    );
+    assert!(held.len() > 8, "{} nodes", held.len());
+
+    // Twice: a Merk with nodes, and then the keyspace it leaves, which
+    // has no record of either kind.
+    for nodes in [held.len(), 0] {
+        let storage_batch = StorageBatch::new();
+        let context = rocks
+            .get_transactional_storage_context_by_subtree_prefix(
+                prefix,
+                Some(&storage_batch),
+                &rocks_tx,
+            )
+            .unwrap();
+        let staged = LigninBatch::new();
+        let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+        let on_rocks = FlatStore::clear(&context);
+        let on_lignin = FlatStore::clear(&store);
+        assert_eq!(on_lignin.cost, on_rocks.cost, "the walk of {nodes} nodes");
+        // A seek to the first record, and a step from each.
+        assert_eq!(on_lignin.cost.seek_count as usize, 1 + nodes);
+        on_rocks.unwrap().expect("a clear on RocksDB");
+        on_lignin.unwrap().expect("a clear on LigninDB");
+        assert_eq!(staged.is_empty(), nodes == 0);
+        drop((context, store));
+        let on_rocks = rocks.commit_multi_context_batch(storage_batch, Some(&rocks_tx));
+        let on_lignin = staged.apply(&writer);
+        assert_eq!(
+            on_lignin.cost, on_rocks.cost,
+            "the batch of {nodes} removals"
+        );
+        on_rocks.unwrap().expect("the batch on RocksDB");
+        on_lignin.unwrap().expect("the batch on LigninDB");
+
+        let reader = LigninNodeStore::deferred(&writer, subtree.clone(), None);
+        let entry = reader.entry().expect("the directory").expect("an entry");
+        assert_eq!(entry.root_key, None);
+        assert!(records(&reader, None).is_empty());
+    }
+
+    // A handle that does not stage removes no node so: it says that it
+    // does not, and the Merk stays as it is.
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let mut merk = open_as(store, Opened::Layered, &None, tree_type, version()).1;
+    let batch = random_batch(&mut random, tree_type, &mut BTreeMap::new(), true);
+    apply(&mut merk, &batch);
+    let root = merk.root_key();
+    drop(merk);
+    staged.apply(&writer).unwrap().unwrap();
+    assert!(root.is_some());
+    for store in [
+        LigninNodeStore::immediate(&writer, subtree.clone()),
+        LigninNodeStore::deferred(&writer, subtree.clone(), None),
+    ] {
+        let refused = FlatStore::clear(&store);
+        assert_eq!(refused.cost, OperationCost::default());
+        let refused = refused.unwrap().expect_err("a handle that does not stage");
+        assert!(
+            matches!(refused, StorageError::NotSupported(_)),
+            "{refused}"
+        );
+        let entry = store.entry().expect("the directory").expect("an entry");
+        assert_eq!(entry.root_key, root);
+    }
+}
+
 #[test]
 fn a_removal_of_a_key_that_is_no_node_is_charged_and_changes_nothing() {
     // The repair of an indexed tree's ranking removes a row that no node of

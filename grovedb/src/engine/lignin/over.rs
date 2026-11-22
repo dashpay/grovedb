@@ -42,6 +42,12 @@
 //! as a tree that keeps its data flat. Where it is entered again with a
 //! Merk, the node names that Merk.
 //!
+//! Where the subtree of a tree with one Merk stays, the node of its
+//! element is written as one that hosts that Merk, with the root the
+//! directory has for it: an earlier group of the transaction can have
+//! written the Merk and not the element, as the group does that removes
+//! the records of a tree before another is written over it.
+//!
 //! **The look can be stale when the group is applied**, as the look for
 //! what a group enters can ([`super::enter`]): a commit of another
 //! transaction can be published between the reads here and the
@@ -90,7 +96,7 @@
 //!   with every write into it, and nothing tells a new one from it.
 //! - An indexed tree, written over or written, is left as it is
 //!   (GROVE-04-F1), and so is the subtree of an element that the group
-//!   removes (GROVE-05), a subtree that a batch of the group enters
+//!   removes ([`super::gone`]), a subtree that a batch of the group enters
 //!   itself or moves, and a node of a subtree that no handle by path
 //!   wrote into with the group.
 
@@ -114,8 +120,10 @@ pub(super) struct Left {
     /// The subtrees that are dropped with the group. None of them is below
     /// another.
     pub(super) drops: Vec<[u8; 32]>,
-    /// The elements whose subtree is dropped and not entered again: each
-    /// hosts nothing once the group is applied.
+    /// What is said of the elements that are written over a tree: one
+    /// whose subtree is dropped and not entered again hosts nothing once
+    /// the group is applied, and one that is a tree with one Merk, whose
+    /// subtree stays, hosts that Merk.
     pub(super) hosts: Vec<LigninHost>,
     /// The subtrees that are entered again with the group, each with the
     /// bytes of its tree type: a dropped one before those below it.
@@ -240,6 +248,16 @@ pub(super) fn left(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Left
                     (false, false) => stale && root_key.is_none(),
                 };
                 if !fresh {
+                    // The subtree stays. Its Merk can have another root
+                    // than the cell of the element's node points at,
+                    // where an earlier group of the transaction wrote
+                    // the Merk and not the element, as the group that
+                    // removes the records of a tree before another is
+                    // written over it does: the node names the Merk as
+                    // the directory has it.
+                    if !flat {
+                        left.hosts.push(host);
+                    }
                     continue;
                 }
                 written(&own).then_some((bytes, flat))

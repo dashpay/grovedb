@@ -157,7 +157,7 @@ Because every step is idempotent and they are ordered, a drain interrupted anywh
 
 If a step fails, the drain returns the error and the record stays for the next run. Records reclaimed earlier in the same run stay reclaimed.
 
-On RocksDB the range delete is one range tombstone per prefix and column family, written directly to the database, because an optimistic transaction cannot carry a range delete. On LigninDB it maps to the engine's subtree drop (TREE-09, GROVE-05): unlink in O(1), reclaim pages later. The contract above is what GROVE-05 has to keep, including the report counts and the record left in place after an injected failure.
+On RocksDB the range delete is one range tombstone per prefix and column family, written directly to the database, because an optimistic transaction cannot carry a range delete. On LigninDB it is the engine's subtree drop (TREE-09, GROVE-05): unlink in O(1), reclaim pages later. A flat drop through the LigninDB engine drops the subtree with its element, in the drop's own commit, so the range delete of its record finds nothing entered and writes nothing, and the removal of the record is the drain's one commit; the reads that differ until then are row D3 of `transactions.md` 14.5. The contract above holds on both engines, with the report counts and the record left in place after a step that failed (`engine.md`, "Flat drops and their drain").
 
 ## Other paths that bypass the transaction
 

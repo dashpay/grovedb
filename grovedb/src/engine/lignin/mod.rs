@@ -44,21 +44,28 @@
 //! of the group enters itself if none of them is entered, and says to the
 //! store which Merks the element's node names ([`enter`]).
 //!
+//! # A subtree leaves with its element
+//!
+//! GroveDB names no subtree where it removes an element. Where a group of
+//! batches is applied that removes a node, the engine drops what the
+//! directory has entered under that node, with every subtree below it
+//! ([`gone`]). The removals that GroveDB staged for the records of such
+//! a subtree are settled and charged, as on RocksDB, and the drop takes
+//! the place of applying them. What a drop leaves in the pages is
+//! reclaimed by the engine's background work.
+//!
 //! # What it does not do yet
 //!
 //! Each is refused with `Error::NotSupported` and changes nothing: a
 //! checkpoint of an open database and the open of one (GROVE-08), the
 //! application of a batch that moves a subtree which is entered, which
 //! is walked and charged and then refused until the transaction can give
-//! a subtree another prefix (`TXN-03-F4`), a first write into a subtree
-//! under a key that holds no element, and the removal of the records
-//! that a flat drop left (GROVE-05). The delete of a tree whose
-//! Merk holds elements is refused by its handle (`FlatStore::clear` of
-//! the node store), and a subtree is not dropped when its element goes
-//! (GROVE-05).
+//! a subtree another prefix (`TXN-03-F4`), and a first write into a
+//! subtree under a key that holds no element.
 
 mod enter;
 mod error;
+mod gone;
 mod moved;
 mod over;
 mod restore;
@@ -552,10 +559,37 @@ impl PendingPrefixDrops for LigninEngine {
         Ok(records)
     }
 
-    fn delete_prefix_ranges(&self, _prefixes: &[SubtreePrefix]) -> Result<(), Error> {
-        Err(not_supported(
-            "the removal of the records that a flat drop left",
-        ))
+    /// Drops each of `prefixes` that the latest version has entered,
+    /// with every subtree below it: one commit for each, outside any
+    /// transaction. A prefix that is not entered has no record in any
+    /// keyspace, and nothing is written for it.
+    ///
+    /// A flat drop on this engine drops the subtree with its element, in
+    /// the drop's own commit (`transactions.md` 14.5 D3), so the drain of
+    /// its pending-drop record finds nothing entered under the record's
+    /// prefixes. What it would find is a subtree that was entered under
+    /// such a prefix by a write that no element leads to.
+    fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), Error> {
+        for prefix in prefixes {
+            if *prefix == [0xFF; 32] {
+                // The words of the RocksDB engine, which refuses the same.
+                return Err(Error::StorageError(
+                    "delete_prefix_ranges: refusing to range-delete the all-0xFF prefix"
+                        .to_string(),
+                ));
+            }
+            let subtree = Subtree::new(*prefix);
+            if !self.entered(subtree)? {
+                continue;
+            }
+            let drop = [SubtreeWrite::Drop { subtree }];
+            let batch = Batch {
+                subtrees: &drop,
+                ..Batch::default()
+            };
+            (self.db.write(&batch, &mut NoStaleHashes)).map_err(write_error)?;
+        }
+        Ok(())
     }
 
     fn remove_pending_prefix_drop_record(
@@ -795,7 +829,7 @@ impl Engine for LigninEngine {
         B: AsRef<[u8]> + 'b,
     {
         // A handle that writes is told its path: what a batch drops is
-        // found by it ([`over`]).
+        // found by it ([`over`], [`gone`]).
         let segments = batch.map(|_| path.to_vec());
         named(path, batch.is_some()).map(|subtree| {
             let handle = LigninNodeStore::deferred(transaction.view(), subtree, batch);
@@ -909,9 +943,22 @@ impl Engine for LigninEngine {
             // A commit that is published from here on is one the look may
             // not have read.
             let before = self.db.version();
-            let looked =
-                enter::owed(view, &parts).and_then(|owed| Ok((owed, over::left(view, &parts)?)));
-            let (owed, left) = match looked {
+            // What leaves by a removed node is looked for first: nothing
+            // is entered on account of a write that is left out. Where
+            // an element is written over a tree and its look states a
+            // drop, the first look is made again with that drop.
+            let looked = gone::gone(view, &parts, own, &over::Left::default()).and_then(|gone| {
+                let owed = enter::owed(view, &parts, &gone.left_out)?;
+                let left = over::left(view, &parts)?;
+                // What the enters were worked out with.
+                let before = gone.left_out.clone();
+                let gone = match left.drops.is_empty() {
+                    true => gone,
+                    false => gone::gone(view, &parts, own, &left)?,
+                };
+                Ok((owed, left, gone, before))
+            });
+            let (owed, left, gone, left_before) = match looked {
                 Ok(looked) => looked,
                 Err(error) => return Err(error).wrap_with_cost(OperationCost::default()),
             };
@@ -921,18 +968,29 @@ impl Engine for LigninEngine {
             // every batch of the group, as this look read the element.
             // So is the Merk of a tree that one batch of several writes
             // while another writes its element, and that an element
-            // hosts nothing whose subtree is dropped.
+            // hosts nothing whose subtree is dropped. No batch hands over
+            // a write that this look leaves out.
             for part in &mut parts {
                 part.forget_hosts();
                 part.forget_drops();
                 for host in (owed.hosts.iter().chain(&owed.apart)).chain(&left.hosts) {
                     part.host(host);
                 }
+                for left_out in &gone.left_out {
+                    part.leave_out(left_out);
+                }
             }
-            // What is dropped leaves with the first batch, which is the
-            // one that enters again what the group still writes.
+            // What is entered under a removed node leaves with the batch
+            // that removes the node.
+            for (part, dropped) in &gone.drops {
+                parts[*part].drop_subtree(dropped);
+            }
+            // What an element was written over leaves with the first
+            // batch, which is the one that enters again what the group
+            // still writes; what is below a drop above goes with that.
             if let Some(first) = parts.first_mut() {
-                for dropped in &left.drops {
+                let stated = (left.drops.iter()).filter(|dropped| !gone.covered.contains(*dropped));
+                for dropped in stated {
                     first.drop_subtree(dropped);
                 }
             }
@@ -941,8 +999,23 @@ impl Engine for LigninEngine {
             // look for what is entered had found it absent before.
             let again =
                 |prefix: &[u8; 32]| left.enters.iter().any(|(known, _)| known.prefix == *prefix);
-            let owed_enters = (owed.enters.iter()).filter(|(subtree, _)| !again(&subtree.prefix));
-            let enters: Vec<_> = (left.enters.iter().chain(owed_enters)).cloned().collect();
+            // Two enters are not handed over: one of the look for what
+            // is written over, for a subtree that a drop of a removed
+            // node takes, and one of the look for what is entered, for a
+            // subtree whose element hosts one Merk and that the second
+            // look for what leaves left out after the enters were
+            // worked out. The enters of the Merks of an indexed tree are
+            // handed over as they were stated.
+            let since = |subtree: &LigninSubtree| {
+                let alone = (subtree.host.as_ref()).is_none_or(|host| host.hosted.len() <= 1);
+                let prefix = &subtree.prefix;
+                alone && gone.left_out.contains(prefix) && !left_before.contains(prefix)
+            };
+            let entered_again = (left.enters.iter())
+                .filter(|(subtree, _)| !gone.left_out.contains(&subtree.prefix));
+            let owed_enters = (owed.enters.iter())
+                .filter(|(subtree, _)| !again(&subtree.prefix) && !since(subtree));
+            let enters: Vec<_> = entered_again.chain(owed_enters).cloned().collect();
             let applied = LigninSettled::apply_kept(&mut parts, view, &enters);
             let Err(refused) = &applied.value else {
                 return applied.map_err(|refused| merk_error(refused.error));
@@ -954,13 +1027,17 @@ impl Engine for LigninEngine {
             }
             // The group is looked for and applied again where the
             // transaction found the entry of a subtree otherwise than
-            // the look had, and not by a drop that the look stated; no
-            // batch of the group enters, drops or clears a subtree
-            // itself; and a commit was published since before the look.
-            // Every other refusal is the caller's answer.
+            // the look had, and not by a drop that the look stated for
+            // a subtree which the group hands a write for; no batch of
+            // the group enters, drops or clears a subtree itself; and a
+            // commit was published since before the look. Every other
+            // refusal is the caller's answer.
             let stale = (refused.entry).is_some_and(|entry| {
-                let found_otherwise = owed.found_otherwise(entry) || left.found_otherwise(entry);
-                found_otherwise && !left.own_doing(entry)
+                let found_otherwise = owed.found_otherwise(entry)
+                    || left.found_otherwise(entry)
+                    || gone.found_otherwise(entry);
+                let own_doing = left.own_doing(entry) && !gone.leaves_out(entry);
+                found_otherwise && !own_doing
             });
             if !stale || own || self.db.version() == before {
                 return applied.map_err(|refused| merk_error(refused.error));

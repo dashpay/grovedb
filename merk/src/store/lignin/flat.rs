@@ -25,17 +25,22 @@
 use std::cell::{OnceCell, RefCell};
 
 use grovedb_costs::{
-    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext,
-    CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add,
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    OperationCost,
 };
 use grovedb_storage::{Error as StorageError, FlatStore, RawIterator};
 use lignindb::txn::{Cursor, Subtree, Unit, WriteTxn};
 
 use super::{
     access::{column, fault, Failure, Prefix, Seek},
-    LigninChangeSet, LigninNodeStore, LigninWriter, MODEL,
+    LigninChangeSet, LigninNodeStore, LigninWriter, Mode, MODEL,
 };
-use crate::{cost_model::Keyspace, Error};
+use crate::{
+    cost_model::Keyspace,
+    store::{NodeChangeSet, NodeStore},
+    Error,
+};
 
 /// A cursor over the flat records of one column of one subtree, in key
 /// order, as the store uses it.
@@ -441,35 +446,83 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
         LigninFlatCursor::open(self.access.records(Keyspace::Data, &self.subtree.prefix))
     }
 
-    /// Removes every flat record of the subtree's data, by the walk of
-    /// its keyspace ([`LigninKeyspace`]) and at its cost.
+    /// Removes every record of the subtree's data: the nodes of its Merk,
+    /// where it keeps one that has a node, and its flat records otherwise.
+    /// A data keyspace holds the one or the other
+    /// (`transactions.md` ST1).
     ///
-    /// The nodes of a Merk are no flat records, and the walk sees none of
-    /// them. Where the subtree keeps a Merk that has a node, the removal
-    /// is therefore refused with [`StorageError::NotSupported`]: it would
-    /// remove nothing and say that it did. The Merk is looked at before
-    /// the walk, where a refusal removes nothing, and after it, where a
-    /// node means that the subtree got a Merk while the walk ran, by a
-    /// commit outside the transaction or by a write scope that merged
-    /// into it: the deletes of the flat records the walk saw are staged
-    /// or made by then, and the caller gives up the batch or the
-    /// transaction. A Merk is emptied by `Merk::clear`, and
-    /// a subtree leaves with its element by a drop
-    /// ([`LigninBatch::drop_subtree`](super::LigninBatch::drop_subtree)).
+    /// - **Flat records** go by the walk of their keyspace
+    ///   ([`LigninKeyspace`]), at its cost.
+    /// - **The nodes of a Merk** go as the records they are on RocksDB:
+    ///   the walk of the node cursor, which shows each node as the record
+    ///   Merk encodes of it, at a cursor's cost, and for each key a
+    ///   removal that states no cost, staged in the handle's batch as one
+    ///   change set that leaves the Merk with no root. The batch charges
+    ///   each removal from the committed record when it is settled
+    ///   (`cost-model.md` D2). Applied, the change set empties the Merk.
+    ///   Where the element that hosts the subtree leaves in the same group
+    ///   of batches, the subtree is dropped with it and the change set is
+    ///   not applied ([`LigninSettled::leave_out`](super::LigninSettled::leave_out)).
+    ///   A handle that does not stage refuses it with
+    ///   [`StorageError::NotSupported`].
+    ///
+    /// Which of the two the subtree keeps is read from its entry before
+    /// the walk. A walk that the view refuses or that fails on its way has
+    /// not come to every record: the clear fails with its error then and
+    /// stages nothing of a Merk. After the walk of flat records the entry
+    /// is read again, and a Merk that has a node by then, from a commit
+    /// outside the transaction or a write scope that merged into it, is
+    /// the same refusal: the caller gives up the batch.
     fn clear(&self) -> CostResult<(), StorageError> {
         let has_nodes = || match self.entry() {
-            Ok(Some(entry)) if entry.root_key.is_some() => Err(StorageError::NotSupported(
-                "lignindb: the removal of the nodes of a Merk as the records of a flat keyspace"
-                    .to_owned(),
-            )),
-            Ok(_) => Ok(()),
+            Ok(entry) => Ok(entry.is_some_and(|entry| entry.root_key.is_some())),
             Err(error) => Err(storage_error(error)),
         };
-        if let Err(error) = has_nodes() {
-            return Err(error).wrap_with_cost(Default::default());
-        }
         let mut cost = OperationCost::default();
+        match has_nodes() {
+            Ok(false) => {}
+            Ok(true) => return self.clear_nodes(),
+            Err(error) => return Err(error).wrap_with_cost(cost),
+        }
         cost_return_on_error!(&mut cost, self.data().clear());
-        has_nodes().wrap_with_cost(cost)
+        match has_nodes() {
+            Ok(false) => Ok(()),
+            Ok(true) => Err(StorageError::NotSupported(
+                "lignindb: the removal of the flat records of a subtree that got a Merk meanwhile"
+                    .to_owned(),
+            )),
+            Err(error) => Err(error),
+        }
+        .wrap_with_cost(cost)
+    }
+}
+
+impl LigninNodeStore<'_> {
+    /// Removes the nodes of the subtree's Merk as the records of its data
+    /// keyspace ([`FlatStore::clear`]).
+    fn clear_nodes(&self) -> CostResult<(), StorageError> {
+        let mut cost = OperationCost::default();
+        if !matches!(self.mode, Mode::Deferred(Some(_))) {
+            return Err(StorageError::NotSupported(
+                "lignindb: the removal of the nodes of a Merk as the records of a flat keyspace, \
+                 through a handle that does not stage its writes"
+                    .to_owned(),
+            ))
+            .wrap_with_cost(cost);
+        }
+        let mut cursor = NodeStore::cursor(self);
+        let mut removed = NodeStore::change_set(self);
+        cursor.seek_to_first().unwrap_add_cost(&mut cost);
+        while cursor.valid().unwrap_add_cost(&mut cost) {
+            if let Some(key) = cursor.key().unwrap_add_cost(&mut cost) {
+                removed.delete_node(key, None);
+            }
+            cursor.next().unwrap_add_cost(&mut cost);
+        }
+        cost_return_on_error_no_add!(cost, cursor.status());
+        removed.state_root(None);
+        NodeStore::commit(self, removed)
+            .map_err(storage_error)
+            .add_cost(cost)
     }
 }

@@ -14,7 +14,8 @@
 //! or its pointing at another subtree, where [`with_one_refused_move`],
 //! [`with_one_unread_record`] and [`with_one_refused_retarget`] arm them,
 //! which are the reads inside a scan and inside a page that is read by
-//! count.
+//! count. It also fails one step of the drain of the pending-drop
+//! records, where [`with_one_failed_drain_step`] arms it.
 
 use std::{
     cell::{Cell, RefCell},
@@ -248,6 +249,69 @@ fn due(what: CursorFault) -> bool {
             None => armed.fired = true,
         }
         armed.fired
+    })
+}
+
+/// A step of the drain of the pending-drop records
+/// (`PendingPrefixDrops`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum DrainStep {
+    /// The range delete of a record's prefixes.
+    Ranges,
+    /// The removal of a record.
+    Record,
+}
+
+/// The message of the injected failure of a step of the drain.
+pub(crate) const INJECTED_DRAIN_FAILURE: &str = "injected drain failure";
+
+thread_local! {
+    /// The step that fails, how many of its kind go through before it,
+    /// and whether it has failed.
+    static ARMED_DRAIN: Cell<Option<(DrainStep, usize, bool)>> = const { Cell::new(None) };
+}
+
+/// Runs `body` with one step of the drain failing in a [`RefusedReads`]
+/// engine, with a storage error: the step of the kind `step` after
+/// `passes` of that kind went through. The step is not made. Also returns
+/// whether `body` got as far as that step.
+pub(crate) fn with_one_failed_drain_step<T>(
+    step: DrainStep,
+    passes: usize,
+    body: impl FnOnce() -> T,
+) -> (T, bool) {
+    struct Disarm(Option<(DrainStep, usize, bool)>);
+
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            ARMED_DRAIN.with(|armed| armed.set(self.0.take()));
+        }
+    }
+
+    let outer = Disarm(ARMED_DRAIN.with(|armed| armed.replace(Some((step, passes, false)))));
+    let result = body();
+    let fired = ARMED_DRAIN.with(|armed| armed.get().is_some_and(|(.., fired)| fired));
+    drop(outer);
+    (result, fired)
+}
+
+/// The failure of the step of the drain that is about to be made, if it
+/// is the armed one. It is counted either way.
+fn failed_drain_step(step: DrainStep) -> Result<(), StorageError> {
+    ARMED_DRAIN.with(|armed| match armed.get() {
+        Some((armed_step, passes, false)) if armed_step == step => {
+            match passes.checked_sub(1) {
+                Some(left) => armed.set(Some((step, left, false))),
+                None => armed.set(Some((step, 0, true))),
+            }
+            match passes {
+                0 => Err(StorageError::StorageError(
+                    INJECTED_DRAIN_FAILURE.to_owned(),
+                )),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
     })
 }
 
@@ -559,7 +623,8 @@ impl<'db, S: SubtreeHandle<'db>> SubtreeHandle<'db> for FaultableReads<S> {
 /// through one of them fails, in whichever operation of `GroveDb` makes
 /// it, and an armed move of a cursor over the nodes of one of them fails.
 /// The flat records of every handle with their cursors are `E`'s, and so
-/// is what `E` reads for itself.
+/// is what `E` reads for itself. A step of the drain of its pending-drop
+/// records fails where [`with_one_failed_drain_step`] arms it.
 pub(crate) struct RefusedReads<E>(pub(crate) E);
 
 impl<E: Engine> PendingPrefixDrops for RefusedReads<E> {
@@ -568,6 +633,7 @@ impl<E: Engine> PendingPrefixDrops for RefusedReads<E> {
     }
 
     fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), StorageError> {
+        failed_drain_step(DrainStep::Ranges)?;
         self.0.delete_prefix_ranges(prefixes)
     }
 
@@ -575,6 +641,7 @@ impl<E: Engine> PendingPrefixDrops for RefusedReads<E> {
         &self,
         primary_prefix: &SubtreePrefix,
     ) -> Result<(), StorageError> {
+        failed_drain_step(DrainStep::Record)?;
         self.0.remove_pending_prefix_drop_record(primary_prefix)
     }
 }

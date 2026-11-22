@@ -741,7 +741,7 @@ fn a_writers_flat_cursor_starts_each_move_from_the_key_it_stands_on() {
 }
 
 #[test]
-fn a_clear_removes_flat_records_and_refuses_the_nodes_of_a_merk() {
+fn a_clear_removes_flat_records_and_refuses_the_nodes_of_a_merk_where_it_does_not_stage() {
     let facade = Facade::new();
     let storage = TempStorage::new();
     let transaction = facade.db.begin();
@@ -752,8 +752,10 @@ fn a_clear_removes_flat_records_and_refuses_the_nodes_of_a_merk() {
             .unwrap()
     };
 
-    // A Merk with nodes: its nodes are no flat records, and a clear that
-    // would walk past them says so and removes nothing.
+    // A Merk with nodes: its nodes are no flat records. A handle that
+    // stages removes them as the records they are on RocksDB (`cost`,
+    // `a_merk_cleared_as_the_records_of_its_keyspace_..`); one that writes
+    // at once says that it does not, and removes nothing.
     let merk_at = LigninSubtree::alone([1; 32]);
     let handle = LigninNodeStore::immediate(&transaction, merk_at.clone());
     handle
