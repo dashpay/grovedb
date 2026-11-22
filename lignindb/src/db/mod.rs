@@ -1320,6 +1320,17 @@ impl Db {
                 Err(cause @ CleanerError::SegmentNotDurable { .. }),
                 Err(FlushError::SegmentsNotDurable),
             ) => Err(DbError::Clean(cause)),
+            // The same where a pass of the cleaner's loop met the
+            // refusal, in a turn that nobody was answered for: the
+            // cleaner has no segment left to close then, and the error
+            // of that pass is the one that names the segment.
+            (_, Err(FlushError::SegmentsNotDurable)) => {
+                let lost = shared.store.troubles.segment_lost();
+                Err(lost.map_or(
+                    DbError::Flush(FlushError::SegmentsNotDurable),
+                    DbError::Clean,
+                ))
+            }
             (cleaned, written) => {
                 written?;
                 cleaned.map_err(DbError::Clean)
@@ -1862,7 +1873,7 @@ fn clean(shared: &Shared) {
         cleaner.run(
             |cleaner| end_turn(store, cleaner, owners, &mut turns),
             |error| {
-                store.troubles.cleaner_failed(&error);
+                store.troubles.cleaner_loop_failed(error);
                 shared.room_made();
             },
         );

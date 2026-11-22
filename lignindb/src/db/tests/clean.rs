@@ -405,6 +405,48 @@ fn a_sync_of_a_segment_that_the_cleaner_was_refused_ends_the_session() {
     whole_of(&db, stays, goes);
 }
 
+/// The cleaner's thread is refused the sync of its segment, for room, in
+/// a turn of its loop that nobody is answered for and after which nobody
+/// asks the session: the last turn that a close waits for is such a turn.
+/// The cleaner has given the segment up by then, so the close finds
+/// nothing of the cleaner's to seal, and write-back says only that no
+/// table checkpoint is installed. The close answers with the error of
+/// that pass, which names the segment and has the device's refusal as its
+/// cause, as the close does that meets the refusal itself (D-225).
+#[test]
+fn a_close_after_the_cleaners_loop_lost_its_segment_answers_with_what_the_device_said() {
+    use lignin_io::sim::OpSet;
+    use lignin_store::cleaner::CleanerError;
+
+    use crate::{db::DbError, space::out_of_space};
+
+    let moving = Moving::new(49);
+    moving.refuse_the_segment(OpSet::WRITES | OpSet::SYNCS);
+    let shared = &*moving.db.shared;
+    let failed = || shared.store.troubles.cleaner.load(Ordering::Relaxed);
+    thread::scope(|scope| {
+        scope.spawn(|| crate::db::clean(shared));
+        // The loop has failed a pass: a state it reaches alone.
+        while failed() == 0 {
+            thread::yield_now();
+        }
+        shared.cleaner().stop();
+    });
+    let (closed, options, stays, goes) = moving.close();
+    let closed = closed.expect_err("the cleaner's segment is not durable");
+    assert!(
+        matches!(
+            closed,
+            DbError::Clean(CleanerError::SegmentNotDurable { .. })
+        ),
+        "{closed}"
+    );
+    assert!(out_of_space(&closed), "{closed}");
+    let db = open_at_rest("/db", &options).expect("the database is opened again");
+    assert_eq!(db.reopen(), None);
+    whole_of(&db, stays, goes);
+}
+
 /// The device fills while nothing of a session is being written, and
 /// the close is the first to meet it: the cleaner seals the segment it
 /// was moving blocks into, and the device refuses that. On one device

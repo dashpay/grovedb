@@ -174,6 +174,9 @@ pub(super) struct Troubles {
     ended: OnceLock<Reopen>,
     /// The reserve of the session, if it keeps one.
     pub(super) reserve: SessionReserve,
+    /// The first error of a pass of the cleaner's loop that left the
+    /// cleaner's segment not durable, until a close answers with it.
+    segment_lost: Mutex<Option<CleanerError>>,
 }
 
 impl Troubles {
@@ -195,6 +198,22 @@ impl Troubles {
         self.cleaner.fetch_add(1, Ordering::Relaxed);
         *lock(&self.last) = Some(format!("the cleaner: {error}"));
         self.reserve.refused(error);
+    }
+
+    /// A pass of the cleaner's loop failed. Nobody is answered its
+    /// error, so the first one that left the cleaner's segment not
+    /// durable is kept for the close ([`Self::segment_lost`]).
+    pub(super) fn cleaner_loop_failed(&self, error: CleanerError) {
+        self.cleaner_failed(&error);
+        if matches!(error, CleanerError::SegmentNotDurable { .. }) {
+            lock(&self.segment_lost).get_or_insert(error);
+        }
+    }
+
+    /// Gives up the error of the pass of the cleaner's loop that left
+    /// the cleaner's segment not durable, if there was one.
+    pub(super) fn segment_lost(&self) -> Option<CleanerError> {
+        lock(&self.segment_lost).take()
     }
 
     pub(super) fn reclaim_failed(&self, error: &(dyn Error + 'static)) {
