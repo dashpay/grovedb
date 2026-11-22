@@ -1693,11 +1693,12 @@ impl WriteSet {
         self.rooted_before(subtree, self.ops.len(), false)
     }
 
-    /// Whether a clear of `subtree` by the next operation takes the
-    /// subtrees below it, as [`Self::add`] will keep it for that clear
-    /// ([`Self::taking`]): what the operations so far say of the root of
-    /// its Merk, and `None` where they say nothing of it.
-    pub(crate) fn clear_takes(&self, subtree: &Subtree) -> Option<bool> {
+    /// What the transaction's writes say of the root of the Merk
+    /// `subtree`, an enter of the subtree if it was absent aside, which
+    /// says nothing of it: [`Self::rooted`] otherwise, and `None` where no
+    /// write set the root, entered the subtree as a new one, dropped or
+    /// cleared it, or took it with a subtree above it.
+    pub(crate) fn states_root(&self, subtree: &Subtree) -> Option<bool> {
         self.rooted_before(subtree, self.ops.len(), true)
     }
 

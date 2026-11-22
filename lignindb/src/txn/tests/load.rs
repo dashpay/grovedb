@@ -753,10 +753,11 @@ fn take<'t, 's>(
 ///
 /// - after the transaction looked at the subtree and before it hands the
 ///   load over: the load is refused where it is taken, as a conflict
-///   (`BatchError::MerkTaken`), and the transaction is as it was. So it
-///   is where the other commit drops the subtree. A transaction that did
-///   not look, or looked again since, is refused too, and not as a
-///   conflict: the Merk has a root, as far as it knows from before;
+///   (`BatchError::MerkTaken`), and the batch adds nothing to the write
+///   set. So it is where the other commit drops the subtree. A
+///   transaction that did not look, or looked again since, is refused
+///   too, and not as a conflict: the Merk has a root, as far as it knows
+///   from before;
 /// - after the load was taken: the load is a range over the nodes of its
 ///   subtree, the commit meets it, and the commit of the load ends with
 ///   the conflict;
@@ -772,7 +773,10 @@ fn take<'t, 's>(
 /// that deletes a range with no key in it from the Merk does not meet the
 /// load. So it is where the load is laid out and where it is taken by
 /// key, by a scope that is still open beside another while the other
-/// transaction commits.
+/// transaction commits, with one difference: by key a batch that drops
+/// or clears a subtree is not taken with a load (`LoadBeside`), and no
+/// refusal of a batch that drops or clears is told as a conflict by a
+/// look.
 #[test]
 fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
     for by_key in [false, true] {
@@ -808,6 +812,9 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
             .map(drop)
             .expect_err("a root");
         let taken = |name: u8| BatchError::MerkTaken {
+            subtree: model::subtree(name),
+        };
+        let beside_a_leave = |name: u8| BatchError::LoadBeside {
             subtree: model::subtree(name),
         };
         assert!(
@@ -864,17 +871,26 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
         assert!(refused.is_conflict());
         world.check(&fresh);
         assert_eq!(fresh.txn.stats().overlapped, 0);
-        // So it is told where the batch of the load clears another
-        // subtree: that clear is not why the subtree is gone.
+        // A batch that drops or clears a subtree is told no conflict by
+        // a look, whatever it clears: it may be why itself (LD6). Laid
+        // out, the refusal is the one of a subtree that is not entered.
+        // By key a load is taken beside no drop and no clear at all.
         let mut clearing = alone(7);
         clearing.subtrees = vec![OwnedSubtree::Clear(model::subtree(6))];
         let refused = take(&world, &fresh, (&clearing, 7), by_key)
             .map(drop)
             .expect_err("no entry");
+        let plain = match by_key {
+            true => beside_a_leave(7),
+            false => BatchError::NotEntered {
+                subtree: model::subtree(7),
+            },
+        };
         assert!(
-            matches!(&refused, TxnError::Batch(error) if *error == taken(7)),
+            matches!(&refused, TxnError::Batch(error) if *error == plain),
             "by key: {by_key}: {refused}"
         );
+        assert!(!refused.is_conflict());
         world.check(&fresh);
         // A subtree that the transaction took out itself is none that a
         // commit took, whatever was committed since its look.
@@ -974,25 +990,41 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
         let refused = take(&world, &tx, (&dropping, below), by_key)
             .map(drop)
             .expect_err("it went with the subtree above");
-        let gone = BatchError::NotEntered {
-            subtree: model::subtree(below),
+        let gone = match by_key {
+            true => beside_a_leave(below),
+            false => BatchError::NotEntered {
+                subtree: model::subtree(below),
+            },
         };
         assert!(
             matches!(&refused, TxnError::Batch(error) if *error == gone),
             "by key: {by_key}: {refused}"
         );
+        assert!(!refused.is_conflict());
         world.check(&tx);
 
         // A subtree that the batch drops and enters again takes the load,
         // wherever the two statements stand: a batch drops before it
-        // enters.
+        // enters. By key the batch is not taken, with its drop, and
+        // nothing of it is in the write set.
         let mut again = alone(4);
         again.subtrees = vec![
             OwnedSubtree::Enter(model::subtree(4), None),
             OwnedSubtree::Drop(model::subtree(4)),
         ];
-        let open = take(&world, &tx, (&again, 4), by_key).expect("a load");
-        open.into_iter().for_each(|scope| scope.merge());
+        if by_key {
+            let refused = take(&world, &tx, (&again, 4), true)
+                .map(drop)
+                .expect_err("beside a drop");
+            assert!(
+                matches!(&refused, TxnError::Batch(error) if *error == beside_a_leave(4)),
+                "{refused}"
+            );
+            assert!(!refused.is_conflict());
+            world.check(&tx);
+            assert_eq!(tx.txn.stats().writes, 0);
+        }
+        take(&world, &tx, (&again, 4), false).expect("a load");
         world.check(&tx);
         let published = commit(&mut world, tx);
         assert_eq!(published.acquired, long_values(&merk));
@@ -1119,15 +1151,16 @@ fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
 /// Merk hosts none (`tree-layout.md` D6). A transaction enters a Merk and
 /// another under an element it has not written yet, and then clears the
 /// first, which has no node, in the batch that loads the second. Where
-/// the load is laid out, it is taken. By key the write set takes a
-/// subtree that the transaction entered below a Merk it clears as gone
-/// (LD6): the load is refused as one into a subtree that is not entered,
-/// and nothing of the batch is taken.
+/// the load is laid out, it is taken: the frames have the directory,
+/// which says what a clear takes with it. By key a batch that clears a
+/// subtree is not taken with a load (LD6, `LoadBeside`): nothing of it is
+/// in the write set, and it is no conflict.
 ///
-/// A subtree that the committed state has below a Merk is another case.
-/// The transaction takes the only node of that Merk out and then clears
-/// it in the batch that loads the subtree below: the clear takes nothing
-/// with it by key either, as the write set has the Merk with no node.
+/// A subtree that the committed state has below a Merk is another case
+/// of the same. The transaction takes the only node of that Merk out and
+/// then clears it in the batch that loads the subtree below: laid out,
+/// the clear takes nothing with it and the load is taken, and by key the
+/// batch is not taken.
 #[test]
 fn a_load_below_a_merk_with_no_node_that_its_batch_clears() {
     for by_key in [false, true] {
@@ -1156,18 +1189,20 @@ fn a_load_below_a_merk_with_no_node_that_its_batch_clears() {
             ..OwnedBatch::default()
         };
         if by_key {
+            let writes = tx.txn.stats().writes;
             let first = tx.txn.scope().expect("a scope");
             let beside = tx.txn.scope().expect("a scope beside it");
             let refused = batch.loading(&[held], |batch| beside.apply(batch));
-            let refused = refused.expect_err("gone with the clear, by key");
-            let gone = BatchError::NotEntered { subtree: held };
+            let refused = refused.expect_err("beside a clear, by key");
+            let beside_a_clear = BatchError::LoadBeside { subtree: held };
             assert!(
-                matches!(&refused, TxnError::Batch(error) if *error == gone),
+                matches!(&refused, TxnError::Batch(error) if *error == beside_a_clear),
                 "{refused}"
             );
             assert!(!refused.is_conflict());
             first.merge();
             beside.merge();
+            assert_eq!(tx.txn.stats().writes, writes, "nothing of the batch");
         }
         let scope = tx.txn.scope().expect("a scope");
         let applied = batch.loading(&[held], |batch| scope.apply(batch));
@@ -1207,15 +1242,25 @@ fn a_load_below_a_merk_with_no_node_that_its_batch_clears() {
             subtrees: vec![OwnedSubtree::Clear(above)],
             ..OwnedBatch::default()
         };
-        let mut scopes = vec![tx.txn.scope().expect("a scope")];
         if by_key {
-            scopes.push(tx.txn.scope().expect("a scope beside it"));
+            let first = tx.txn.scope().expect("a scope");
+            let beside = tx.txn.scope().expect("a scope beside it");
+            let refused = batch.loading(&[below], |batch| beside.apply(batch));
+            let refused = refused.expect_err("beside a clear, by key");
+            let beside_a_clear = BatchError::LoadBeside { subtree: below };
+            assert!(
+                matches!(&refused, TxnError::Batch(error) if *error == beside_a_clear),
+                "{refused}"
+            );
+            assert!(!refused.is_conflict());
+            first.merge();
+            beside.merge();
         }
-        let last = scopes.last().expect("a scope");
-        let applied = batch.loading(&[below], |batch| last.apply(batch));
+        let scope = tx.txn.scope().expect("a scope");
+        let applied = batch.loading(&[below], |batch| scope.apply(batch));
         let applied = applied.unwrap_or_else(|refused| panic!("by key: {by_key}: {refused}"));
-        assert_eq!(applied.load.is_some(), !by_key);
-        scopes.into_iter().for_each(|scope| scope.merge());
+        assert!(applied.load.is_some());
+        scope.merge();
         let rooted = tx.txn.subtree(below, |view| {
             view.expect("the subtree is entered").root_key.is_some()
         });
@@ -1307,6 +1352,75 @@ fn a_load_into_a_subtree_that_its_batch_enters_if_it_is_absent() {
         assert!(refused.is_conflict());
         world.check_committed();
         assert_eq!(counted(&db), 2 * long_values(&merk) as u64);
+    }
+}
+
+/// A refusal of a load is told as a conflict by a look only where no
+/// write of the transaction says anything of the root of the Merk (LD6).
+/// A transaction clears a Merk that has a node, looks at it, gives it a
+/// node of its own, and enters the subtree if it is absent, which finds
+/// it. A commit outside writes elsewhere. The load is refused for the
+/// root that the transaction wrote itself, which is no conflict: laid out
+/// and by key.
+#[test]
+fn a_root_that_the_transaction_wrote_is_no_conflict_of_a_load() {
+    for by_key in [false, true] {
+        let (db, versions) = Db::new(256);
+        let mut world = World::new(&db, &versions);
+        let merk = items(&mut Rng::new(37), b'r', 40, 2);
+        fn node<'s>(world: &World<'s>, tx: &Tx<'s>, key: &[u8]) {
+            let mut batch = OwnedBatch::default();
+            batch.merks.push(world.merk(tx, 1, |items| {
+                items.insert(key.to_vec(), vec![5; 12]);
+            }));
+            world.apply(tx, &batch).expect("a first node");
+        }
+        let maker = world.begin();
+        node(&world, &maker, b"theirs");
+        assert!(matches!(world.commit(maker, &[]), Outcome::Committed(_)));
+
+        let tx = world.begin();
+        let cleared = OwnedBatch {
+            subtrees: vec![OwnedSubtree::Clear(model::subtree(1))],
+            ..OwnedBatch::default()
+        };
+        world.apply(&tx, &cleared).expect("its own clear");
+        let rootless = tx.txn.subtree(model::subtree(1), |view| {
+            view.expect("the subtree is entered").root_key.is_none()
+        });
+        assert!(rootless.expect("a look"), "by key: {by_key}");
+        node(&world, &tx, b"mine");
+        let found = OwnedBatch {
+            subtrees: vec![OwnedSubtree::EnterIfAbsent(model::subtree(1), None)],
+            ..OwnedBatch::default()
+        };
+        world.apply(&tx, &found).expect("the subtree is found");
+        let elsewhere = world.edit_outside(
+            9,
+            |items| drop(items.insert(b"k".to_vec(), b"v".to_vec())),
+            &[&tx],
+        );
+        assert!(matches!(elsewhere, Outcome::Committed(_)));
+
+        let alone = OwnedBatch {
+            merks: vec![whole(1, &merk)],
+            ..OwnedBatch::default()
+        };
+        let refused = take(&world, &tx, (&alone, 1), by_key)
+            .map(drop)
+            .expect_err("its own root");
+        let rooted = BatchError::NotWhole {
+            subtree: model::subtree(1),
+            fault: WholeFault::HasRoot,
+        };
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == rooted),
+            "by key: {by_key}: {refused}"
+        );
+        assert!(!refused.is_conflict());
+        world.check(&tx);
+        assert_eq!(tx.txn.stats().overlapped, 0);
+        assert_eq!(counted(&db), 0);
     }
 }
 

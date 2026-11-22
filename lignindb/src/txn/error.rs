@@ -176,11 +176,11 @@ pub enum BatchError {
     /// A change set that says it is the whole Merk is refused because a
     /// commit outside the transaction gave the Merk a root, or took its
     /// subtree out, after the transaction looked at the subtree and found
-    /// it entered with no root (`crate::txn`, "A load"; `transactions.md`
-    /// LD6): the look is a read of the subtree
+    /// it entered with no root: the look is a read of the subtree
     /// ([`Scope::subtree`](super::Scope::subtree), or the same call on the
-    /// transaction) that the transaction still remembers, and nothing the
-    /// transaction or the batch wrote is why.
+    /// transaction) that the transaction still remembers. When a refusal
+    /// of a load is told so, and when it is told as it is, is in
+    /// `transactions.md` LD6.
     ///
     /// **It is a conflict** ([`Self::is_conflict`]), as
     /// [`Self::ValueTaken`] is. The batch adds nothing to the write set
@@ -189,6 +189,21 @@ pub enum BatchError {
     /// and makes its reads and its writes again.
     MerkTaken {
         /// The Merk's subtree.
+        subtree: Subtree,
+    },
+    /// A batch that hands a Merk over whole ([`MerkWrite::whole`]) also
+    /// drops or clears a subtree, and is given where it is not laid out:
+    /// to a scope that keeps its writes in the write set, or to a
+    /// transaction that serves its records by key (`transactions.md`
+    /// LD6). What leaves with a drop or a clear is the subtree
+    /// directory's to say, which the frames have, so whether the Merk is
+    /// entered and has no root then is not asked by key: the batch is
+    /// not taken, and adds nothing to the write set (WT10). It is no
+    /// conflict.
+    ///
+    /// [`MerkWrite::whole`]: super::MerkWrite::whole
+    LoadBeside {
+        /// The subtree of the first Merk that the batch hands over whole.
         subtree: Subtree,
     },
     /// The transaction made the first node of a Merk that was empty, and a
@@ -486,6 +501,13 @@ impl fmt::Display for BatchError {
                     f,
                     "a node of the Merk {subtree} keeps a value that a commit outside the \
                      transaction took away after the node was read"
+                )
+            }
+            Self::LoadBeside { subtree } => {
+                write!(
+                    f,
+                    "the whole Merk {subtree} is handed over beside a drop or a clear, in a \
+                     batch that is not laid out"
                 )
             }
             Self::MerkTaken { subtree } => {

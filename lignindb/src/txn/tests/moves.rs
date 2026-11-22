@@ -5326,3 +5326,64 @@ fn a_load_in_the_batch_of_a_move_is_laid_out_again() {
     world.check_committed();
     assert_eq!(db.private_ids(), 0);
 }
+
+/// A layout that is stopped is told again from what was kept only while
+/// it would be made of the same writes (LD4). A scope that is open beside
+/// another enters a subtree: the enter is kept in the write set and is
+/// not laid out. The other scope moves a subtree. A commit outside enters
+/// both that subtree and the one the move brings its Merk to. The layout
+/// of the transaction's writes stops at the move, which is the one of the
+/// two that it is made of. When the scopes are merged, the enter is laid
+/// out too: the layout is made again and stops at the enter, which comes
+/// first, and that is what the commit is refused with.
+#[test]
+fn a_stopped_layout_is_made_again_when_a_scope_is_laid_out() {
+    use super::{
+        load::{items, whole},
+        store::Rng,
+    };
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let merk = items(&mut Rng::new(53), b'l', 60, 2);
+
+    let tx = world.begin();
+    let alone = OwnedBatch {
+        merks: vec![whole(1, &merk)],
+        ..OwnedBatch::default()
+    };
+    hand_over(&world, &tx, &alone).expect("a load");
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    let laid = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope beside it");
+    assert!(laid.is_laid_out() && !beside.is_laid_out());
+    let entered = subtrees(vec![enter(FREE)]);
+    (world.apply_in(&tx, &beside, &entered)).expect("an enter that is kept in the write set");
+    let moved = batch.through(&laid);
+    (world.apply_in(&tx, &laid, &moved)).expect("the subtree is moved");
+
+    let other = world.begin();
+    let both = subtrees(vec![enter(FREE), enter(B)]);
+    world
+        .apply(&other, &both)
+        .expect("two subtrees are entered");
+    assert!(committed(world.commit(other, &[&tx])));
+
+    let stops_at = |error: &TxnError, name: u8| {
+        matches!(
+            error,
+            TxnError::Batch(BatchError::Entered { subtree }) if *subtree == sub(name)
+        )
+    };
+    let refused = laid.subtree(sub(B), |_| ()).expect_err("a refusal");
+    assert!(stops_at(&refused, B), "{refused}");
+    beside.merge();
+    laid.merge();
+    let refused = db.commit(&versions, &tx.txn).expect_err("no layout");
+    assert!(stops_at(&refused, FREE), "{refused}");
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    world.check(&tx);
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
