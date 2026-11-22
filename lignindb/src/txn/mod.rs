@@ -206,8 +206,10 @@
 //! ([`BatchError::NotEntered`], [`WholeFault::HasRoot`]). Where that
 //! refuses a load after the transaction was shown the subtree entered
 //! with no root at an earlier version, and nothing the transaction or
-//! the batch wrote is why, the refusal is a conflict
-//! ([`BatchError::MerkTaken`]). From then on a
+//! the batch wrote is why, the refusal is a conflict:
+//! [`BatchError::MerkTaken`], or the one that is told before it for any
+//! write ([`BatchError::ValueTaken`], [`BatchError::MovedByKey`]). From
+//! then on a
 //! commit outside that puts or deletes a node of the Merk meets the load,
 //! whatever its key, and the commit of the load ends with the conflict.
 //! The commit of a load has the range in its key set, so a transaction
