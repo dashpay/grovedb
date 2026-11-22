@@ -957,6 +957,44 @@ fn a_checkpoint_opens_with_the_state_it_captured() {
     assert_eq!(committed(&engine, A, b"k"), Some(b"later".to_vec()));
 }
 
+/// The removal of a checkpoint that the trait provides, which is this
+/// engine's: the checkpoint is opened first, so what does not open as one
+/// stays, and a checkpoint goes with its directory.
+#[test]
+fn the_provided_removal_of_a_checkpoint_opens_it_first() {
+    let (_dir, engine) = open_engine();
+    commit_records(&engine, A, &[(b"k", b"captured")]);
+    let checkpoints = TempDir::new().expect("temporary directory");
+    let path = checkpoints.path().join("checkpoint");
+    engine.create_checkpoint(&path).expect("checkpoint");
+
+    let other = checkpoints.path().join("other");
+    std::fs::create_dir(&other).expect("a directory");
+    std::fs::write(other.join("notes"), b"kept").expect("a file");
+    let refused = RocksDbEngine::delete_checkpoint(&other).expect_err("no checkpoint");
+    assert!(
+        matches!(refused, crate::Error::StorageError(_)),
+        "{refused:?}"
+    );
+    assert_eq!(
+        std::fs::read(other.join("notes")).expect("the file"),
+        b"kept"
+    );
+    let nothing = checkpoints.path().join("none");
+    assert!(RocksDbEngine::delete_checkpoint(&nothing).is_err());
+
+    RocksDbEngine::delete_checkpoint(&path).expect("the checkpoint goes");
+    assert!(!path.exists());
+    assert_eq!(committed(&engine, A, b"k"), Some(b"captured".to_vec()));
+
+    // `GroveDb` asks the engine, after its own look at the path.
+    engine.create_checkpoint(&path).expect("checkpoint");
+    GroveDb::<RocksDbEngine>::delete_checkpoint_with_engine(&path).expect("it goes");
+    assert!(!path.exists());
+    let short = GroveDb::<RocksDbEngine>::delete_checkpoint_with_engine("/");
+    assert!(matches!(short, Err(crate::Error::CorruptedData(_))));
+}
+
 #[test]
 fn wipe_empties_every_keyspace() {
     let (_dir, engine) = open_engine();

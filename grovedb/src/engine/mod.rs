@@ -276,6 +276,24 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
     /// existing `path` is refused and left as it is.
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
 
+    /// Removes the checkpoint at `path`, which no handle has open.
+    ///
+    /// Provided as what `GroveDb::delete_checkpoint` did before the call
+    /// was in the seam: the checkpoint is opened, which says that it is
+    /// one of this engine, closed, and its directory is removed with
+    /// everything in it. A directory that does not open as a checkpoint
+    /// is left as it is. An engine whose checkpoints are removed in a way
+    /// of their own overrides it.
+    ///
+    /// It returns the error of `GroveDb`, as [`SubtreeMove::move_next`]
+    /// does, so that the provided removal fails with the errors it had.
+    fn delete_checkpoint<P: AsRef<Path>>(path: P) -> Result<(), crate::Error> {
+        let path = path.as_ref();
+        drop(Self::open_checkpoint(path)?);
+        std::fs::remove_dir_all(path)
+            .map_err(|e| crate::Error::CorruptedData(format!("failed to delete checkpoint: {}", e)))
+    }
+
     /// Makes every commit made so far durable.
     fn flush(&self) -> Result<(), Error>;
 
