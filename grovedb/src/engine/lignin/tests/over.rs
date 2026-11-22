@@ -1,7 +1,7 @@
 //! What a group does to the subtree of a tree it writes over where a
-//! commit of another writer is published beside its look, and what the
-//! engine refuses of a group of several batches and tells a batch of a
-//! move, at the seam.
+//! commit of another writer is published beside its look or the tree
+//! above is removed with it, and what the engine refuses of a group of
+//! several batches and tells a batch of a move, at the seam.
 //!
 //! Where a test has another writer, the order is forced: that writer
 //! runs on the test's thread, inside the call of the engine, at a place
@@ -451,6 +451,189 @@ fn a_group_that_writes_a_merk_after_its_last_write_of_the_element_is_refused() {
     let (applied, entered) = group_of(false);
     applied.expect("the order of a partial batch");
     assert!(entered);
+}
+
+/// The look for what is written over meets the look for what leaves by
+/// a removed node ([`super::super::gone`]), in a group of one batch that
+/// is made at the seam. The tree `t` holds the element `x` and the tree
+/// `k`, which holds an element. The batch removes the node of `t` in the
+/// root Merk and, through a handle by the path of `t`, writes another
+/// element over `k`.
+///
+/// - **An item over `k`**: the look for what is written over states the
+///   drop of the subtree of `k`. It is below the drop of the subtree of
+///   `t`, which the removed node states, and goes with that drop.
+/// - **A tree of another type over `k`, with a node put into its Merk
+///   by a writer that began with no node**: the look for what is written
+///   over states the drop of the subtree of `k` and enters it again, and
+///   the drop of the subtree of `t` takes both.
+///
+/// Each group is applied. The transaction has neither subtree entered
+/// afterwards, and after its commit the grove has no element `t` and the
+/// checker finds the store sound.
+#[test]
+fn what_is_written_over_below_a_removed_node_goes_with_the_drop_above() {
+    let v = version();
+    let k: &[&[u8]] = &[b"t", b"k"];
+    let put = |element: Element, feature: TreeFeatureType| {
+        let bytes = element.serialize(v).expect("the bytes of an element");
+        Op::Put(bytes, feature)
+    };
+    for entered_again in [false, true] {
+        let (dir, db) = grove(true);
+        (db.insert(T, b"k", Element::empty_tree(), None, None, v))
+            .unwrap()
+            .expect("a tree in the tree");
+        (db.insert(k, b"y", item(2), None, None, v))
+            .unwrap()
+            .expect("an element in it");
+        let root_of_t = match db.get_raw(ROOT, b"t", None, v).unwrap() {
+            Ok(Element::Tree(root, _)) => root,
+            other => panic!("{other:?}"),
+        };
+        {
+            let engine = db.engine();
+            let tx = engine.start_transaction();
+            let entered = |at: &[&[u8]]| {
+                let handle = engine.subtree(at.into(), None, &tx).unwrap();
+                handle.entry().expect("the directory answers").is_some()
+            };
+            assert!(entered(T) && entered(k));
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let over = match entered_again {
+                false => item(3),
+                true => {
+                    let below = engine.subtree(k.into(), Some(&batch), &tx).unwrap();
+                    let mut merk = Merk::open_layered_with_root_key(
+                        below,
+                        None,
+                        TreeType::SumTree,
+                        NO_COST,
+                        v,
+                    )
+                    .unwrap()
+                    .expect("the Merk of the new tree");
+                    let node = put(Element::new_sum_item(5), TreeFeatureType::SummedMerkNode(5));
+                    (merk.apply::<_, Vec<u8>>(&[(b"z".to_vec(), node)], &[], None, v))
+                        .unwrap()
+                        .expect("a write of the new tree's Merk");
+                    Element::new_sum_tree(Some(b"z".to_vec()))
+                }
+            };
+            {
+                let within = engine.subtree(T.into(), Some(&batch), &tx).unwrap();
+                let mut merk = Merk::open_layered_with_root_key(
+                    within,
+                    root_of_t,
+                    TreeType::NormalTree,
+                    NO_COST,
+                    v,
+                )
+                .unwrap()
+                .expect("the Merk of the tree");
+                let over = put(over, TreeFeatureType::BasicMerkNode);
+                (merk.apply::<_, Vec<u8>>(&[(b"k".to_vec(), over)], &[], None, v))
+                    .unwrap()
+                    .expect("an element over the tree in it");
+            }
+            {
+                let root = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+                let mut merk = Merk::open_base(root, TreeType::NormalTree, NO_COST, v)
+                    .unwrap()
+                    .expect("the root Merk");
+                (merk.apply::<_, Vec<u8>>(&[(b"t".to_vec(), Op::Delete)], &[], None, v))
+                    .unwrap()
+                    .expect("the node of the tree is removed");
+            }
+            let mut group = <LigninEngine as Engine>::WriteGroup::default();
+            (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+            let applied = engine.apply_write_group(group, &tx).unwrap();
+            applied.map(|_| ()).expect("the group is applied");
+            assert!(!entered(T) && !entered(k), "entered again: {entered_again}");
+            (engine.commit_transaction(tx).unwrap()).expect("a commit");
+        }
+        let gone = db.get_raw(ROOT, b"t", None, v).unwrap();
+        assert!(
+            matches!(gone, Err(crate::Error::PathKeyNotFound(_))),
+            "{gone:?}"
+        );
+        drop(Arc::into_inner(db).expect("the only handle on the grove"));
+        check(dir.path());
+    }
+}
+
+/// A tree of leaves that nothing was appended to is deleted, and after
+/// the look of its delete a commit beside the delete puts a record that
+/// is no leaf under the tree's prefix: the entry outlives its element
+/// (`engine.md`, "A subtree leaves with its element", the open point),
+/// as the subtree of a tree that keeps its data flat, with no record in
+/// its data keyspace. A tree with an element is then moved to that key.
+/// The subtree that is entered there makes room: it is dropped with the
+/// move, the record that was put under it goes with the drop, and the
+/// moved tree is read under the new key.
+#[test]
+fn leaves_that_outlived_their_tree_with_no_leaf_make_room_where_a_moved_tree_goes() {
+    let v = version();
+    let (dir, db) = grove(true);
+    (db.insert(ROOT, b"u", Element::empty_mmr_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree of leaves");
+    let u: &[&[u8]] = &[b"u"];
+    let (other, done) = beside(&db, move |db| {
+        let engine = db.engine();
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree(u.into(), Some(&batch), &tx).unwrap();
+        (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        (engine.apply_batch(batch, &tx).unwrap()).expect("a batch");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    });
+    let tx = db.start_transaction();
+    AFTER_A_LOOK.set([apart(other)].into_iter().collect());
+    let deleted = db.delete(ROOT, b"u", None, Some(&tx), v).unwrap();
+    assert!(AFTER_A_LOOK.take().is_empty(), "the group looked");
+    assert!(done.get(), "the other writer came after the look");
+    deleted.expect("the delete of a tree of leaves that holds none");
+    (db.commit_transaction(tx).unwrap()).expect("no key was written by both");
+    let gone = db.get_raw(ROOT, b"u", None, v).unwrap();
+    assert!(
+        matches!(gone, Err(crate::Error::PathKeyNotFound(_))),
+        "{gone:?}"
+    );
+    // The entry of the subtree under the key `u`, as its tree type and
+    // whether it has a root, and the record that was put under it.
+    let under_u = || {
+        let engine = db.engine();
+        let tx = engine.start_read_transaction();
+        let handle = engine.subtree(u.into(), None, &tx).unwrap();
+        let entry = handle.entry().expect("the directory answers");
+        let entry = entry.map(|entry| {
+            (
+                entry.tree_type().expect("a tree type"),
+                entry.root_key.is_some(),
+            )
+        });
+        let record = handle.aux().get(b"k").unwrap().expect("a read");
+        (entry, record.is_some())
+    };
+    assert_eq!(
+        under_u(),
+        (Some((TreeType::MmrTree, false)), true),
+        "the entry outlives its element"
+    );
+    (db.apply_batch(rename_t_to_u(), None, None, v).unwrap())
+        .expect("the tree is moved to the key that the leaves had");
+    assert_eq!(under_u(), (Some((TreeType::NormalTree, true)), false));
+    let moved = (db.get(u, b"x", None, v).unwrap()).expect("the element under the new key");
+    assert_eq!(moved, item(1));
+    let gone = db.get_raw(ROOT, b"t", None, v).unwrap();
+    assert!(
+        matches!(gone, Err(crate::Error::PathKeyNotFound(_))),
+        "{gone:?}"
+    );
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
 }
 
 /// Walks the move of the subtree at `at` to the key `u` with `other`
