@@ -161,14 +161,14 @@ impl<'s> World<'s> {
     /// with the first-write version `first_write`.
     fn note(&self, tx: &Tx<'s>, batch: &OwnedBatch, first_write: u64) {
         let mut model = tx.model.borrow_mut();
-        // Which subtree is below which before the batch, and which Merk
-        // has a node: its drops and clears come before its enters and its
-        // change sets.
-        let hosts = model.hosts(&self.model.hosts);
-        let records = model.records(&self.model.records);
+        // Which subtree is below which before each write of the batch,
+        // and which Merk has a node: its drops and clears come before its
+        // moves, and those before its enters and its change sets.
+        let mut hosts = model.hosts(&self.model.hosts);
+        let mut records = model.records(&self.model.records);
         let writes = model.writes.len();
         model.roots.retain(|(after, ..)| *after <= writes);
-        let said = model.said();
+        let mut said = model.said();
         for mut write in batch.writes() {
             if let Write::Leave(left) = &mut write {
                 // A drop names one subtree: what is below it goes too, and
@@ -188,6 +188,9 @@ impl<'s> World<'s> {
                 moved.lay(&hosts);
                 moved.left = moved.gone.clone();
             }
+            said.take(&model.roots, model.writes.len(), &write);
+            model::hosted(&mut hosts, &write);
+            model::apply(&mut records, &write);
             model.writes.push((write, first_write, false));
         }
         // What the change sets of the batch state of the roots.
@@ -251,10 +254,26 @@ impl<'s> World<'s> {
                 let writes: Vec<Write> = (model.writes.iter())
                     .map(|(write, ..)| write.clone())
                     .collect();
-                // The subtrees as the directory has them stored: those
-                // that this commit takes out stay in it until they are
-                // reclaimed.
+                // The subtrees that the directory has an entry of after
+                // the commit, each below the one its entry names. One
+                // that went with a subtree above it keeps its entry until
+                // it is reclaimed. One that the commit dropped by name,
+                // or that a move of it took from its prefix or let
+                // leave, has none, unless the commit left a subtree
+                // under its prefix.
                 let mut stored = self.model.hosts.clone();
+                for write in &writes {
+                    match write {
+                        Write::Leave(left) if !left.cleared => drop(stored.remove(&left.subtree)),
+                        Write::Move(moved) => {
+                            let taken = moved.pairs.iter().map(|(from, _)| from);
+                            for unlinked in taken.chain(&moved.gone) {
+                                stored.remove(unlinked);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 let commit = self.model.commit(&writes);
                 stored.extend(
                     self.model

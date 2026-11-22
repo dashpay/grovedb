@@ -4,17 +4,33 @@
 //! the model (`transactions.md` T-MV7).
 //!
 //! Two transactions stay open, and others are made, written and committed
-//! between their calls. A transaction is read whole and held against the
-//! model after each step that writes through it, after a rollback, after
-//! a look at the commits that failed, and after some of the commits
-//! beside it: each record and each node by its key and by a cursor, each
-//! refusal by its kind, and, where no commit has met the transaction and
-//! its writes are laid out, each subtree as the directory shows it. A
-//! cursor that is kept is read at later calls, and each of its answers is
-//! held against the records of the version it was opened on with the
-//! writes of its transaction over them. Every commit is held against the
-//! model by its outcome and by what it leaves committed, and the store is
-//! checked when the history ends.
+//! between their calls. A history is a number of steps: a step draws what
+//! is done next, which is one call, several, or none where what it drew
+//! cannot be made. A step that writes applies one batch, or up to three
+//! that belong together.
+//!
+//! A transaction is read whole and held against the model after each
+//! batch that is applied through it, after a rollback, after a look at
+//! the commits that failed, and after some of the commits beside it.
+//! Where its writes are laid out, or no move of it decides what is under
+//! a subtree, that is each record and each node the model has, by its key
+//! and by a cursor, and, where no commit has met the transaction and its
+//! writes are laid out, each subtree as the directory shows it. Where it
+//! serves its records by key and a move decides what is under a subtree,
+//! every read there is refused: each key that the model has there, and
+//! one more, by key, and the first seek of a cursor over the records and
+//! of one over the nodes of a Merk, each held against the kind of the
+//! refusal and the subtree it names.
+//!
+//! A cursor that is kept is read at later calls, and each of its answers
+//! is held against the records of the version it was opened on with the
+//! writes of its transaction over them. A read that the history has fail
+//! is taken for that only where the model has the call served: a refusal
+//! for a move comes first, and the read fails at a later call. Every
+//! commit is held against the model by its outcome, by the records and
+//! the Merks it leaves, and by the directory as a transaction that wrote
+//! nothing is shown it, for every prefix the history has named. The
+//! store is checked when the history ends.
 //!
 //! A history follows from its seed alone, and one that fails prints the
 //! calls it made.
@@ -115,6 +131,24 @@ fn refusal(error: &TxnError) -> Refusal {
     }
 }
 
+/// Holds `error`, the refusal of a call where a move decides what is
+/// under `subtree`, against the kind that the model expects. A conflict
+/// there is the refusal of a move by key, and that one, as the refusal of
+/// a cursor of another version, names the subtree.
+fn refused_as(error: &TxnError, expected: Refusal, subtree: Subtree) {
+    assert_eq!(refusal(error), expected, "{error}");
+    match error {
+        TxnError::Batch(
+            BatchError::MovedByKey { subtree: named } | BatchError::MoveBeside { subtree: named },
+        ) => assert_eq!(*named, subtree, "{error}"),
+        _ => assert_ne!(expected, Refusal::Conflict, "{error}"),
+    }
+}
+
+/// The two reads that a history has fail, by what each says.
+const FAILED_PLACE: &str = "a change of prefix that a test refuses";
+const FAILED_NODE: &str = "a read of a node that a test refuses";
+
 /// What the histories drew, and what they compared.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Tally {
@@ -123,6 +157,9 @@ pub(crate) struct Tally {
     pub batches: u64,
     pub commits: u64,
     pub conflicts: u64,
+    /// Commits of a transaction whose writes cannot be laid out, and that
+    /// no commit has met: each is refused.
+    pub refused_commits: u64,
     pub enters: u64,
     pub drops: u64,
     pub clears: u64,
@@ -131,6 +168,8 @@ pub(crate) struct Tally {
     pub clears_of_no_node: u64,
     pub clears_that_kept: u64,
     pub moves: u64,
+    /// Moves to the prefix of a subtree that the batch of the move drops.
+    pub moves_onto_a_drop: u64,
     pub swaps: u64,
     /// Moves of a subtree that the transaction had cleared, or had
     /// cleared a Merk above or below, and clears where it had moved one.
@@ -151,6 +190,9 @@ pub(crate) struct Tally {
     pub refused_beside: u64,
     pub refused_conflict: u64,
     pub refused_layout: u64,
+    /// Those of the refused reads that were made while the history had
+    /// the next read of the cursor fail.
+    pub refused_before_a_failed_read: u64,
     /// Reads that two cursors of one version made one after the other.
     pub twin_reads: u64,
     /// Reads that failed where the history had them fail.
@@ -161,6 +203,11 @@ pub(crate) struct Tally {
     /// a commit had met, or whose layout was stopped, with a move.
     pub checks: u64,
     pub checks_by_key_with_a_move: u64,
+    /// Those of the whole reads that were made between two batches of
+    /// one step, or of a transaction that commits one batch at a time.
+    pub checks_between_batches: u64,
+    /// Reads of the directory, prefix by prefix, after a commit.
+    pub directory_checks: u64,
     /// The histories that had, at least once: a clear and a move of one
     /// transaction that touch, in either order; a read through a cursor
     /// of a version that commits have left behind; a rollback to a mark
@@ -185,12 +232,14 @@ impl Tally {
             batches,
             commits,
             conflicts,
+            refused_commits,
             enters,
             drops,
             clears,
             clears_of_no_node,
             clears_that_kept,
             moves,
+            moves_onto_a_drop,
             swaps,
             clear_then_move,
             move_then_clear,
@@ -204,12 +253,15 @@ impl Tally {
             refused_beside,
             refused_conflict,
             refused_layout,
+            refused_before_a_failed_read,
             twin_reads,
             failed_looks,
             failed_places,
             failed_nodes,
             checks,
             checks_by_key_with_a_move,
+            checks_between_batches,
+            directory_checks,
             with_clear_and_move,
             with_cursor_behind,
             with_cursor_first_after_rewind,
@@ -432,7 +484,8 @@ impl<'s> Run<'s> {
 
     /// Has the batch put the node that hosts `subtree` with another
     /// value, and the node that hosts the Merk that one is in, up to the
-    /// Merk with no host: each names the Merk it hosts.
+    /// Merk with no host. The node of a Merk names it; the node of a
+    /// subtree with no node names none.
     fn hosts_above(&mut self, draft: &mut Draft, tx: &Tx<'s>, hosts: &Hosts, subtree: Subtree) {
         let mut at = subtree;
         while let Some(above) = hosts.get(&at).copied() {
@@ -569,16 +622,21 @@ impl<'s> Run<'s> {
         Some(draft)
     }
 
-    fn plan_drop(&mut self, tx: &Tx<'s>, hosts: &Hosts) -> Option<Draft> {
-        // A Merk with no node hosts no Merk: one that the transaction
-        // emptied, with subtrees still entered below it, is not dropped,
-        // and no subtree is dropped with one such below it.
+    /// The subtrees that a batch can drop. A Merk with no node hosts no
+    /// Merk: one that the transaction emptied, with subtrees still
+    /// entered below it, is not dropped, and no subtree is dropped with
+    /// one such below it.
+    fn droppable(&self, tx: &Tx<'s>, hosts: &Hosts) -> Vec<Subtree> {
         let hosts_none = |subtree: &Subtree| !hosts.values().any(|above| above == subtree);
         let dropped = hosts.keys().copied();
-        let dropped: Vec<Subtree> = dropped
+        dropped
             .filter(|subtree| hosts_none(subtree) || !self.items(tx, *subtree).is_empty())
             .filter(|subtree| !self.unhosted_below(tx, hosts, *subtree))
-            .collect();
+            .collect()
+    }
+
+    fn plan_drop(&mut self, tx: &Tx<'s>, hosts: &Hosts) -> Option<Draft> {
+        let dropped = self.droppable(tx, hosts);
         let subtree = self.pick(&dropped)?;
         let above = hosts[&subtree];
         let mut draft = Draft::default();
@@ -603,8 +661,8 @@ impl<'s> Run<'s> {
         let below: Vec<Subtree> = (merks.iter().copied())
             .filter(|merk| kind(merk) == POINTED)
             .collect();
-        // Mostly a Merk under another: a clear of one with no host takes
-        // all that is below it.
+        // Mostly a Merk under another: a clear of one with no host, where
+        // it has a node, takes all that is below it.
         let merk = match of {
             Some(merk) => merk,
             None if self.rng.chance(85) && !below.is_empty() => self.pick(&below)?,
@@ -765,9 +823,22 @@ impl<'s> Run<'s> {
             None => self.pick(&movable)?,
         };
         let above = hosts[&subtree];
-        // Under the same key, or under another.
+        // A subtree of the same kind beside it, under the key its prefix
+        // says, which the batch of the move can drop.
+        let beside: Vec<Subtree> = (self.droppable(tx, hosts).into_iter())
+            .filter(|other| *other != subtree && hosts[other] == above)
+            .filter(|other| kind(other) == kind(&subtree))
+            .filter(|other| self.key_of(hosts, other) == host_key(other))
+            .collect();
+        // Under the same key, under another, or to the prefix of a
+        // subtree beside it, which the batch drops.
+        let mut dropped = None;
         let to = match self.rng.chance(50) {
             true => self.renamed(&subtree),
+            false if !beside.is_empty() && self.rng.chance(30) => {
+                dropped = self.pick(&beside);
+                dropped.expect("a subtree beside it")
+            }
             false => {
                 self.serials += 1;
                 self.renames += 1;
@@ -778,6 +849,10 @@ impl<'s> Run<'s> {
         };
         let read = (tx.txn.node(above, &host_key(&subtree), handle_of)).expect("the host is read");
         let mut draft = Draft::default();
+        if let Some(dropped) = dropped {
+            draft.subtrees.push(OwnedSubtree::Drop(dropped));
+            self.tally.moves_onto_a_drop += 1;
+        }
         let stamp = self.stamp();
         let items = self.open(&mut draft, tx, above);
         items.remove(&host_key(&subtree));
@@ -789,9 +864,10 @@ impl<'s> Run<'s> {
         self.hosts_above(&mut draft, tx, hosts, above);
         let below = self.pairs(tx, hosts, subtree, to);
         draft.what = format!(
-            "move {} to {} with {:?}",
+            "move {} to {}{} with {:?}",
             tag(&subtree),
             tag(&to),
+            dropped.map_or("", |_| ", which the batch drops"),
             below
                 .iter()
                 .map(|(old, new)| (tag(old), tag(new)))
@@ -951,6 +1027,7 @@ impl<'s> Run<'s> {
             _ => None,
         };
         if let Some(next) = next {
+            self.check_between(tx, who);
             let moved = next.cleared.filter(|_| emptied.is_some());
             self.apply(tx, next, &hosts, who);
             // And the Merk that was cleared with no node is often moved
@@ -962,6 +1039,7 @@ impl<'s> Run<'s> {
                 _ => None,
             };
             if let Some(after) = after {
+                self.check_between(tx, who);
                 self.apply(tx, after, &hosts, who);
             }
         }
@@ -1006,7 +1084,7 @@ impl<'s> Run<'s> {
         ));
         match (decided, self.world.apply_as_read(tx, &batch)) {
             (false, Ok(_)) => self.tally.batches += 1,
-            (true, Err(error)) => assert_eq!(refusal(&error), expected, "{error}"),
+            (true, Err(error)) => refused_as(&error, expected, subtree),
             (decided, applied) => panic!("a move decides: {decided}, and {applied:?}"),
         }
         if moves {
@@ -1018,12 +1096,21 @@ impl<'s> Run<'s> {
             self.call(format!("{who}: a clear, by key"));
             let refused = self.world.apply_as_read(tx, &cleared);
             let refused = refused.expect_err("a clear by key beside a move");
-            assert_eq!(refusal(&refused), expected, "{refused}");
+            refused_as(&refused, expected, self.tops[0]);
         }
     }
 
+    /// Reads `tx` whole between two batches of one step, or before the
+    /// commit of a transaction that is made for it.
+    fn check_between(&mut self, tx: &Tx<'s>, who: &str) {
+        self.call(format!("{who}: is read whole"));
+        self.tally.checks_between_batches += 1;
+        self.check(tx, None);
+    }
+
     /// Reads `tx` whole, by key and by cursors that are opened for it,
-    /// and holds every answer against the model.
+    /// and holds every answer against the model. With `index`, it is the
+    /// read that ends a step of the transaction of that number.
     fn check(&mut self, tx: &Tx<'s>, index: Option<usize>) {
         if let Some(index) = index {
             self.rewound[index] = false;
@@ -1053,7 +1140,7 @@ impl<'s> Run<'s> {
                 self.world.check_unit(tx, unit);
             }
             if !met && !stopped {
-                self.check_subtrees(tx);
+                self.check_subtrees(tx, index.is_some());
             }
             return;
         }
@@ -1069,46 +1156,94 @@ impl<'s> Run<'s> {
                 self.world.check_unit(tx, unit);
                 continue;
             }
+            self.refused(tx, unit, expected);
+        }
+    }
+
+    /// Makes every read of `unit` through `tx`, which serves its records
+    /// by key and has a move that decides what is under the unit's
+    /// subtree, and holds each refusal against `expected`: each key that
+    /// the model has there, and one more, by key, and the first seek of a
+    /// cursor over the records, and of one over the nodes of a Merk.
+    fn refused(&self, tx: &Tx<'s>, unit: Unit, expected: Refusal) {
+        let view = tx.model.borrow().view(&self.world.model.records, unit);
+        let mut keys: Vec<Vec<u8>> = view.keys().cloned().collect();
+        let other = match unit.column {
+            Column::Data => vec![b'n', 0],
+            _ => vec![b'f', 0],
+        };
+        if !keys.contains(&other) {
+            keys.push(other);
+        }
+        for key in &keys {
             let mut out = Vec::new();
             let by_key = match unit.column {
-                Column::Data => tx.txn.node(unit.subtree, b"n0", |view| view.is_some()),
-                _ => tx.txn.get(unit, b"f0", &mut out),
+                Column::Data => tx.txn.node(unit.subtree, key, |view| view.is_some()),
+                _ => tx.txn.get(unit, key, &mut out),
             };
             let refused = by_key.expect_err("a read where a move decides, by key");
-            assert_eq!(refusal(&refused), expected, "{refused}");
-            let refused = tx.txn.cursor(unit).seek_to_first();
-            let refused = refused.expect_err("a seek where a move decides");
-            assert_eq!(refusal(&refused), expected, "{refused}");
+            refused_as(&refused, expected, unit.subtree);
+        }
+        let refused = tx.txn.cursor(unit).seek_to_first();
+        let refused = refused.expect_err("a seek where a move decides");
+        refused_as(&refused, expected, unit.subtree);
+        if unit.column == Column::Data && kind(&unit.subtree) != BARE {
+            let opened = tx.txn.merk_cursor(unit.subtree);
+            let refused = opened.and_then(|mut cursor| cursor.seek_to_first());
+            let refused = refused.expect_err("a seek over nodes where a move decides");
+            refused_as(&refused, expected, unit.subtree);
         }
     }
 
     /// Holds what the directory shows `tx` of each subtree against the
-    /// model, and of some prefixes that it has none under.
-    fn check_subtrees(&mut self, tx: &Tx<'s>) {
-        type Shown = Option<(Option<Vec<u8>>, Vec<u8>, Option<(Subtree, Vec<u8>)>)>;
+    /// model, and, with `sampled`, of some prefixes that it has none
+    /// under.
+    fn check_subtrees(&mut self, tx: &Tx<'s>, sampled: bool) {
         let hosts = self.hosts(tx);
-        let live = self.live(&hosts);
-        let mut asked = live.clone();
-        for _ in 0..6 {
-            asked.extend(self.pick(&self.named.clone()));
+        let mut asked = self.live(&hosts);
+        if sampled {
+            for _ in 0..6 {
+                asked.extend(self.pick(&self.named.clone()));
+            }
         }
+        self.shown(tx, &hosts, &asked);
+    }
+
+    /// Holds what the directory shows a transaction that has written
+    /// nothing against the committed model, for every prefix the history
+    /// has named: the subtrees that are entered, each with its root, its
+    /// tree type and its host, and no subtree under every other prefix.
+    fn check_directory(&mut self) {
+        let reader = self.world.begin();
+        let hosts = self.hosts(&reader);
+        self.shown(&reader, &hosts, &self.named);
+        self.tally.directory_checks += 1;
+    }
+
+    /// Holds what the directory shows `tx` under each prefix of `asked`
+    /// against the model, where the subtrees hang as `hosts` has them.
+    fn shown(&self, tx: &Tx<'s>, hosts: &Hosts, asked: &[Subtree]) {
+        type Shown = Option<(Option<Vec<u8>>, Vec<u8>, Option<(Subtree, Vec<u8>, u8)>)>;
+        let live = self.live(hosts);
         for subtree in asked {
             let shown: Shown = (tx.txn)
-                .subtree(subtree, |view| {
+                .subtree(*subtree, |view| {
                     view.map(|view| {
-                        let host = view.host.map(|host| (host.subtree, host.key.to_vec()));
+                        let host = view.host;
+                        let host =
+                            host.map(|host| (host.subtree, host.key.to_vec(), host.position));
                         let root = view.root_key.map(<[u8]>::to_vec);
                         (root, view.tree_type.to_vec(), host)
                     })
                 })
                 .expect("the directory is read");
-            let expected: Shown = live.contains(&subtree).then(|| {
-                let root = model::records(&self.items(tx, subtree)).0;
-                let above = hosts.get(&subtree);
-                let host = above.map(|above| (*above, self.key_of(&hosts, &subtree)));
+            let expected: Shown = live.contains(subtree).then(|| {
+                let root = model::records(&self.items(tx, *subtree)).0;
+                let above = hosts.get(subtree);
+                let host = above.map(|above| (*above, self.key_of(hosts, subtree), 0));
                 (root, TREE_TYPE.to_vec(), host)
             });
-            assert_eq!(shown, expected, "the subtree {}", tag(&subtree));
+            assert_eq!(shown, expected, "the subtree {}", tag(subtree));
         }
     }
 
@@ -1331,22 +1466,33 @@ impl<'s> Run<'s> {
                 let TxnError::Damaged(what) = &error else {
                     unreachable!("a read that failed");
                 };
-                let (place, node) = (what.contains("prefix"), what.contains("node"));
+                let (place, node) = (*what == FAILED_PLACE, *what == FAILED_NODE);
                 assert!(place && kept.place || node && kept.node, "{error}");
+                // A refusal for a move comes before the read that fails,
+                // and only the read of a node of the cursor's own version
+                // fails as such a read.
+                if let Err(expected) = expected {
+                    panic!("{expected:?} is expected, and the read fails: {error}");
+                }
+                let nodes = matches!((step, &kept.reader), (Step::Read, Reader::Merk(_)));
+                assert!(place || nodes, "{error}");
                 kept.place &= !place;
                 kept.node &= !node;
                 self.tally.failed_places += u64::from(place);
                 self.tally.failed_nodes += u64::from(node);
                 kept.at = None;
-                drop(expected);
             }
             (Err(error), Err(expected)) => {
-                assert_eq!(refusal(&error), expected, "{error}");
+                refused_as(&error, expected, kept.unit.subtree);
                 match expected {
                     Refusal::Beside => self.tally.refused_beside += 1,
                     Refusal::Conflict => self.tally.refused_conflict += 1,
                     _ => self.tally.refused_layout += 1,
                 }
+                // A read that the history has fail is made at a later
+                // call, which the model has served.
+                let fails = u64::from(kept.place || kept.node);
+                self.tally.refused_before_a_failed_read += fails;
                 kept.at = None;
             }
             (Ok(at), Err(expected)) => {
@@ -1357,7 +1503,9 @@ impl<'s> Run<'s> {
     }
 
     /// A few calls of cursors that are kept. Cursors that were opened
-    /// together make the same call one after the other.
+    /// together are asked for the same call one after the other; one of
+    /// them that stands on no key makes a first seek in the place of a
+    /// step or a read.
     fn read_cursors(&mut self, txs: &[Tx<'s>], kept: &mut [Kept<'_, 's>], of: Option<usize>) {
         for _ in 0..1 + self.rng.below(3) {
             let asked: Vec<usize> = (0..kept.len())
@@ -1399,13 +1547,23 @@ impl<'s> Run<'s> {
         let tx = &txs[index];
         let (met, stopped) = (tx.model.borrow().conflicts(), self.stopped(tx));
         if stopped && !met {
+            // The commit is refused with what stops the layout, and the
+            // transaction is as it was: the read that ends the step says.
+            self.call(format!("tx {index}: a commit that is refused"));
+            let refused = self.world.db.commit(self.world.versions, &tx.txn);
+            let refused = refused.expect_err("the writes cannot be laid out");
+            assert_eq!(refusal(&refused), Refusal::Layout, "{refused}");
+            self.tally.refused_commits += 1;
+            self.check(tx, Some(index));
             return;
         }
         if !met {
             // An element is there for every subtree that is committed.
             let hosts = self.hosts(tx);
             if let Some(draft) = self.plan_hosts(tx, &hosts) {
-                self.apply(tx, draft, &hosts, &format!("tx {index}"));
+                let who = format!("tx {index}");
+                self.apply(tx, draft, &hosts, &who);
+                self.check_between(tx, &who);
             }
         }
         self.call(format!("tx {index}: commit"));
@@ -1419,17 +1577,28 @@ impl<'s> Run<'s> {
             Outcome::Empty => {}
         }
         self.marks[index].clear();
-        self.call("the committed state is read whole".to_string());
-        self.world.check_committed();
+        self.check_committed();
     }
 
-    /// One batch, or two, of a transaction of their own, and its commit.
+    /// Holds the committed state against the model: the records and the
+    /// Merks, and the directory.
+    fn check_committed(&mut self) {
+        self.call("the committed state is read whole".to_string());
+        self.world.check_committed();
+        self.check_directory();
+    }
+
+    /// One write step, or two, of a transaction of their own, each of up
+    /// to three batches, and its commit.
     fn commit_outside(&mut self, txs: &[Tx<'s>]) {
         let tx = self.world.begin();
         let others: Vec<&Tx<'s>> = txs.iter().collect();
         let mut wrote = false;
         for _ in 0..1 + self.rng.below(2) {
-            wrote |= self.write(&tx, &others, "outside");
+            if self.write(&tx, &others, "outside") {
+                wrote = true;
+                self.check_between(&tx, "outside");
+            }
         }
         if !wrote {
             return;
@@ -1437,6 +1606,7 @@ impl<'s> Run<'s> {
         let hosts = self.hosts(&tx);
         if let Some(draft) = self.plan_hosts(&tx, &hosts) {
             self.apply(&tx, draft, &hosts, "outside");
+            self.check_between(&tx, "outside");
         }
         self.call("outside: commit".to_string());
         match self.world.commit(tx, &others) {
@@ -1444,12 +1614,11 @@ impl<'s> Run<'s> {
             Outcome::Conflict => self.tally.conflicts += 1,
             Outcome::Empty => {}
         }
-        self.call("the committed state is read whole".to_string());
-        self.world.check_committed();
+        self.check_committed();
     }
 }
 
-/// One history of `steps` calls, and what it drew.
+/// One history of `steps` steps, and what it drew.
 pub(crate) fn run(seed: u64, steps: usize) -> Tally {
     let (db, versions) = Db::new(256);
     let world = World::new(&db, &versions);
@@ -1488,6 +1657,7 @@ pub(crate) fn run(seed: u64, steps: usize) -> Tally {
                 .apply(&made, &entered)
                 .expect("a Merk with no host");
             run.tops.push(top);
+            run.check_between(&made, "the first commit");
         }
         for at in 0..9 {
             let hosts = run.hosts(&made);
@@ -1498,9 +1668,10 @@ pub(crate) fn run(seed: u64, steps: usize) -> Tally {
             };
             let draft = draft.expect("a Merk to write");
             run.apply(&made, draft, &hosts, "the first commit");
+            run.check_between(&made, "the first commit");
         }
         assert!(matches!(run.world.commit(made, &[]), Outcome::Committed(_)));
-        run.world.check_committed();
+        run.check_committed();
         run.tally = Tally::default();
 
         let txs = [run.world.begin(), run.world.begin()];
@@ -1567,7 +1738,7 @@ pub(crate) fn run(seed: u64, steps: usize) -> Tally {
                     let (mark, writes) = run.marks[index][to];
                     run.marks[index].truncate(to);
                     run.call(format!("{who}: back to the mark after {writes} writes"));
-                    tx.txn.rewind(mark);
+                    assert!(tx.txn.rewind(mark), "a mark of the transaction");
                     tx.model.borrow_mut().writes.truncate(writes);
                     run.tally.rewinds += 1;
                     run.rewound[index] = true;
@@ -1597,7 +1768,7 @@ pub(crate) fn run(seed: u64, steps: usize) -> Tally {
             tx.txn.rollback().expect("no scope is open");
         }
     }
-    run.world.check_committed();
+    run.check_committed();
     assert_eq!(db.private_ids(), 0, "no id is left with a transaction");
     let report = db.verify_still();
     let unsound = db.unsound(&report);
@@ -1614,7 +1785,8 @@ pub(crate) fn run(seed: u64, steps: usize) -> Tally {
 }
 
 /// The short form: every history of a few seeds agrees with the model,
-/// and the histories draw what they are for.
+/// and the histories draw what they are for. Under Miri it is two short
+/// histories, and what they draw is not asked.
 #[test]
 fn histories_of_moves_clears_drops_rollbacks_and_cursors_agree_with_the_model() {
     let (seeds, steps) = match cfg!(miri) {
@@ -1630,7 +1802,9 @@ fn histories_of_moves_clears_drops_rollbacks_and_cursors_agree_with_the_model() 
         return;
     }
     assert!(tally.commits > 400 && tally.conflicts > 20, "{tally:?}");
+    assert!(tally.refused_commits > 0, "{tally:?}");
     assert!(tally.moves > 150 && tally.swaps > 20, "{tally:?}");
+    assert!(tally.moves_onto_a_drop > 5, "{tally:?}");
     assert!(
         tally.clear_then_move > 10 && tally.move_then_clear > 10,
         "{tally:?}"
@@ -1647,10 +1821,15 @@ fn histories_of_moves_clears_drops_rollbacks_and_cursors_agree_with_the_model() 
         tally.failed_looks > 5 && tally.failed_places > 0,
         "{tally:?}"
     );
+    assert!(tally.refused_before_a_failed_read > 20, "{tally:?}");
+    assert!(
+        tally.checks_between_batches > 500 && tally.directory_checks > 500,
+        "{tally:?}"
+    );
 }
 
 /// The long form: the histories of the seeds `LIGNIN_HISTORIES` names
-/// (`first..last`), each of `LIGNIN_HISTORY_STEPS` calls.
+/// (`first..last`), each of `LIGNIN_HISTORY_STEPS` steps.
 #[test]
 #[ignore = "the long form of the histories: LIGNIN_HISTORIES=first..last"]
 fn the_histories_of_the_seeds_that_are_named_agree_with_the_model() {

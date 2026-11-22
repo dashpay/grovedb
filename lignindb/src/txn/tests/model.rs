@@ -352,9 +352,11 @@ impl Left {
     /// every subtree below it, and none for a clear of a Merk that has no
     /// node. Whether the Merk has one is what the earlier writes of the
     /// transaction said of its root (`said`), and where they said nothing
-    /// what `records` have: the two are one for a transaction whose
-    /// writes are laid out, and the first is what a transaction that a
-    /// commit has met answers by (WT7b).
+    /// what `records` have. The two are one for a transaction whose
+    /// writes are laid out, but for a Merk that an enter if it is absent
+    /// found, which the model takes for an enter ([`Said`]), and the
+    /// first is what a transaction that a commit has met answers by
+    /// (WT7b).
     pub fn lay(&mut self, hosts: &Hosts, records: &Records, said: Option<bool>) {
         let data = Unit::data(self.subtree);
         let of_merk = records.range((data, Vec::new())..);
@@ -530,7 +532,7 @@ impl Write {
 /// The records of a database by record key.
 pub type Records = BTreeMap<(Unit, Vec<u8>), Val>;
 
-fn apply(records: &mut Records, write: &Write) {
+pub fn apply(records: &mut Records, write: &Write) {
     match write {
         Write::Put(unit, key, value) => {
             records.insert((*unit, key.clone()), value.clone());
@@ -751,15 +753,22 @@ impl TxnModel {
     }
 
     /// What a commit below a subtree that the transaction dropped or
-    /// cleared meets (CF5), which the engine asks of the committed
-    /// directory: a commit that wrote under a subtree, or dropped, cleared
-    /// or moved one, which the committed state has below a subtree that
-    /// the transaction dropped or cleared, meets that drop or clear.
-    /// `stored` has the committed subtrees as they hang, those that the
-    /// commit took out among them. The rule does not ask what the drop or
-    /// the clear takes: a subtree that the transaction had taken out
-    /// before, and one below a Merk that it cleared while the Merk had no
-    /// node, are below it for the rule.
+    /// cleared meets (CF5), which the engine asks of the entries that the
+    /// committed directory has stored: a commit that wrote under a
+    /// subtree, or dropped, cleared or moved one, from which those
+    /// entries lead up to a subtree that the transaction dropped or
+    /// cleared, meets that drop or clear. `stored` has the subtrees with
+    /// an entry after the commit, each below the one its entry names
+    /// (`World::commit_of`). The rule does not ask what the drop or the
+    /// clear takes: a subtree that the transaction had taken out before,
+    /// and one below a Merk that it cleared while the Merk had no node,
+    /// are below it for the rule.
+    ///
+    /// The model holds a commit against the entries as that commit
+    /// leaves them. The engine asks at the transaction's next look at
+    /// the commits, which can come after later ones: where a later
+    /// commit has taken the entry of such a subtree away by then, the
+    /// engine finds it no more, and the model does not tell that.
     pub fn foreign_below(&mut self, version: u64, writes: &[Write], stored: &Hosts) {
         let wrote = writes.iter().flat_map(|write| match write {
             Write::Enter(..) => Vec::new(),
@@ -853,7 +862,7 @@ pub struct Said(pub BTreeMap<Subtree, bool>);
 impl Said {
     /// Takes in the write `write`, which is the transaction's write
     /// number `at`, and what its change sets stated of roots (`roots`).
-    fn take(&mut self, roots: &[(usize, Subtree, bool)], at: usize, write: &Write) {
+    pub fn take(&mut self, roots: &[(usize, Subtree, bool)], at: usize, write: &Write) {
         match write {
             Write::Enter(subtree, _) => drop(self.0.insert(*subtree, false)),
             Write::Leave(left) => {
