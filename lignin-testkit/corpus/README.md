@@ -142,6 +142,12 @@ values did not change comes out byte for byte as it was, so `git status`
 shows what the new workloads added. Then replay on the branch itself: what
 was recorded from the pinned engine has to come out the same there.
 
+The worktree's workspace lists `lignin-testkit` as its only LigninDB
+member: the recording builds the test kit alone, and the other LigninDB
+crates are in the workspace as its path dependencies or not at all. So a
+crate the test kit does not depend on, such as `lignin-tools` (which asks
+`grovedb-merk` for `lignin_storage`), is neither resolved nor built there.
+
 The script takes one line out of the worktree's copy of
 `lignin-testkit/Cargo.toml`: the dev-dependency that asks `grovedb-merk` for
 the feature `lignin_storage`, which the replay through the LigninDB node
