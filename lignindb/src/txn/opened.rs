@@ -138,6 +138,18 @@ impl Opened {
         Ok(has)
     }
 
+    /// What [`Self::has_unlinked`] answers for `subtree`, if this handle
+    /// keeps the answer already.
+    pub(crate) fn unlinked_known(&self, subtree: &Subtree) -> Option<bool> {
+        self.unlinked.get(subtree).copied()
+    }
+
+    /// Keeps `has` as the answer of [`Self::has_unlinked`] for `subtree`:
+    /// what was found for this version by whoever looked it up.
+    pub(crate) fn know_unlinked(&mut self, subtree: &Subtree, has: bool) {
+        self.unlinked.insert(*subtree, has);
+    }
+
     /// The ids of the Merks that `subtree` is below at this version, from
     /// the outermost, if it is entered: what tells the subtree from one
     /// that is entered under its prefix after a Merk above it was dropped

@@ -3,7 +3,7 @@
 
 use std::{cmp::Ordering, fmt, ops::Bound};
 
-use lignin_format::{tree_page::Side, CommitVersion};
+use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
 use lignin_store::load::LoadBuffers;
 use lignin_tree::{
     cursor as tree,
@@ -164,8 +164,9 @@ impl<'s> FlatSide<'s> {
 /// (`lignindb::txn`, "Unlinked records"), they are shown among the nodes,
 /// in key order: the side is then two cursors, one over the tree and one
 /// over the records, and stands on the nearer of their keys. A subtree
-/// that holds none has the cursor over the tree alone, and whether it
-/// holds any is looked up once, when the cursor is opened.
+/// that holds none has the cursor over the tree alone. Whether it holds
+/// any is asked when the cursor is opened, and again of each Merk that
+/// the cursor is pointed at ([`MerkCursor::retarget`]).
 pub struct MerkSide<'s> {
     path: WritePath<'s>,
     at: CommitVersion,
@@ -185,6 +186,27 @@ struct UnlinkedSide<'s> {
     back: bool,
 }
 
+impl<'s> UnlinkedSide<'s> {
+    /// The unlinked records that the version `at` has under `subtree`,
+    /// which stands nowhere yet.
+    fn over(path: WritePath<'s>, at: CommitVersion, subtree: Subtree) -> Self {
+        let unit = Unit::data(subtree);
+        let tree = path.keyspaces().of(unit.column);
+        Self {
+            records: FlatSide {
+                path,
+                at,
+                pages: None,
+                cursor: tree.cursor_within(subtree.as_bytes()),
+                tree,
+                unit,
+                key: Vec::new(),
+            },
+            back: false,
+        }
+    }
+}
+
 impl fmt::Debug for MerkSide<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MerkSide")
@@ -199,6 +221,21 @@ impl<'s> MerkSide<'s> {
     /// `guard`.
     fn reader<'g>(&self, guard: &'g OperationGuard<'s>) -> NodeReader<'g, OperationGuard<'s>> {
         NodeReader::new(self.path.loader, guard, self.lease, self.at)
+    }
+
+    /// Points the side at the Merk that its version has under `subtree`,
+    /// whose root is at `root`: the tree, and the unlinked records under
+    /// that prefix where `records` says that the Merk holds any. The
+    /// side then stands nowhere.
+    fn open_at(
+        &mut self,
+        guard: &OperationGuard<'s>,
+        subtree: Subtree,
+        root: Option<CellAddress>,
+        records: bool,
+    ) {
+        self.unlinked = records.then(|| UnlinkedSide::over(self.path, self.at, subtree));
+        self.cursor = tree::Cursor::open(&self.reader(guard), root);
     }
 
     /// Shows `read` the committed node under `key`, or `None` if the
@@ -366,6 +403,28 @@ impl<'s> CommittedSide<'s> for MerkSide<'s> {
 /// A cursor through a write transaction over the nodes of one Merk.
 pub type MerkCursor<'t, 's> = Cursor<'t, 's, MerkSide<'s>>;
 
+/// Whether the version `at` holds unlinked records under `subtree`, which
+/// it has entered, for a cursor that keeps `directory` of that version.
+/// An answer is kept there: once the cursor has one for a subtree, it is
+/// not looked up again for that cursor. Where the cursor has none yet,
+/// the transaction is asked, which looks it up unless it keeps the answer
+/// for that version itself (`WriteTxn::committed_has_unlinked`). A lookup
+/// that fails leaves no answer.
+fn holds_unlinked<'s>(
+    txn: &WriteTxn<'s>,
+    directory: &mut Opened,
+    guard: &OperationGuard<'s>,
+    at: CommitVersion,
+    subtree: &Subtree,
+) -> Result<bool, TxnError> {
+    if let Some(known) = directory.unlinked_known(subtree) {
+        return Ok(known);
+    }
+    let has = txn.committed_has_unlinked(guard, at, subtree)?;
+    directory.know_unlinked(subtree, has);
+    Ok(has)
+}
+
 /// Which way a cursor last moved, which says where its committed side
 /// stands: at the first committed key at or after the cursor's key, or at
 /// the last one at or before it.
@@ -491,22 +550,8 @@ impl<'t, 's> MerkCursor<'t, 's> {
         // is asked once, and of the transaction, which may know. No record
         // is read under a subtree that is not entered.
         let unit = Unit::data(subtree);
-        let records = entered.is_some() && txn.committed_has_unlinked(&guard, at, &subtree)?;
-        let unlinked = records.then(|| {
-            let tree = path.keyspaces().of(unit.column);
-            UnlinkedSide {
-                records: FlatSide {
-                    path,
-                    at,
-                    pages: None,
-                    cursor: tree.cursor_within(subtree.as_bytes()),
-                    tree,
-                    unit,
-                    key: Vec::new(),
-                },
-                back: false,
-            }
-        });
+        let records = entered.is_some() && holds_unlinked(txn, directory, &guard, at, &subtree)?;
+        let unlinked = records.then(|| UnlinkedSide::over(path, at, subtree));
         let reader = NodeReader::new(path.loader, &guard, lease, at);
         let side = MerkSide {
             path,
@@ -524,7 +569,9 @@ impl<'t, 's> MerkCursor<'t, 's> {
     /// Points the cursor at the Merk `subtree`. Its committed side stays
     /// the version the cursor was opened on, which it goes on keeping
     /// pinned, under the lease it took then: it now shows the nodes that
-    /// version has of `subtree`, found through that version's subtree
+    /// version has of `subtree`, and among them the unlinked records that
+    /// version has of it and none of the Merk the cursor was pointed at
+    /// before, found through that version's subtree
     /// directory, merged with what the transaction has written to
     /// `subtree` by each call (`transactions.md` RD6). So one cursor reads
     /// several Merks as one committed state has them, whatever is
@@ -539,15 +586,26 @@ impl<'t, 's> MerkCursor<'t, 's> {
     /// another open scope holds that Merk for writing (SC3). A read or a
     /// step of a cursor that stands on no key reads nothing, and is not
     /// refused. This call makes at most one lookup in the directory, and
-    /// none for a subtree the cursor has opened before; it reads no node.
+    /// none for a subtree the cursor has opened before. Where that
+    /// version has `subtree` entered, it asks whether the Merk holds
+    /// unlinked records, as the opening of a cursor does. The cursor
+    /// keeps each answer: once it has one for a subtree, it has it
+    /// looked up no more, whichever version the transaction has read
+    /// since, and it has none looked up where the transaction keeps the
+    /// answer for the cursor's version. A lookup that fails leaves no
+    /// answer. It reads no node.
     pub fn retarget(&mut self, subtree: Subtree) -> Result<(), TxnError> {
         self.key = None;
         self.way = Way::Lost;
         let path = *self.txn.path();
         let guard = path.versions().guard();
-        let directory = Opened::at(&mut self.opened, &path, &guard, self.side.at)?;
-        let root = directory.root(&path, &guard, &subtree)?.flatten();
-        self.side.cursor = tree::Cursor::open(&self.side.reader(&guard), root);
+        let at = self.side.at;
+        let directory = Opened::at(&mut self.opened, &path, &guard, at)?;
+        let entered = directory.root(&path, &guard, &subtree)?;
+        let records =
+            entered.is_some() && holds_unlinked(self.txn, directory, &guard, at, &subtree)?;
+        let root = entered.flatten();
+        self.side.open_at(&guard, subtree, root, records);
         self.unit = Unit::data(subtree);
         // Whether the committed side is read is asked again, of the new
         // subtree, by the next move.

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     model::{self, records, Committed, LinkRec, NodeRec, OwnedBatch, OwnedMerk, OwnedSubtree, Val},
-    store::Db,
+    store::{Db, ENTERED},
     *,
 };
 use crate::txn::unlinked::probe::{lookups, reads};
@@ -606,6 +606,106 @@ fn a_batch_that_states_no_root_leaves_every_node_it_writes_a_record() {
     let beside: Vec<Vec<u8>> = all.iter().cloned().collect();
     assert_eq!(records_beside_the_tree(&world), beside);
     assert_eq!(db.private_ids(), 0);
+}
+
+/// A cursor over the nodes of a Merk that is pointed at another Merk
+/// (`MerkCursor::retarget`) shows the unlinked records of the Merk it is
+/// pointed at, among its nodes, and none of the Merk it was opened on.
+/// Whether a Merk holds any is looked up once for the two cursors of a
+/// transaction that reads one version, however often they are pointed at
+/// it, and once for a cursor whose version the transaction has read
+/// past.
+#[test]
+fn a_cursor_that_is_pointed_at_another_merk_shows_the_unlinked_records_of_that_merk() {
+    fn shown(cursor: &mut MerkCursor<'_, '_>) -> Vec<(Vec<u8>, bool)> {
+        let mut keys = Vec::new();
+        cursor.seek_to_first().expect("a seek");
+        while let Some(key) = cursor.key().map(<[u8]>::to_vec) {
+            let loose = cursor.node(|view| view.expect("a node").is_unlinked());
+            keys.push((key, loose.expect("the node is read")));
+            cursor.next().expect("a step");
+        }
+        keys
+    }
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    for name in [MERK, 2] {
+        world.edit_outside(
+            name,
+            |items| {
+                for n in 0..6 {
+                    items.insert(key(n), vec![n; 30]);
+                }
+            },
+            &[],
+        );
+    }
+    let tx = world.begin();
+    let loose = NodeRec {
+        value: b"loose".to_vec(),
+        left: None,
+        right: None,
+        ..node_of(&view(&world, &tx), &key(0))
+    };
+    let mut merk = change(&world, &tx, &BTreeSet::new(), |_| ());
+    merk.nodes.push((b"kzz".to_vec(), loose, true));
+    world
+        .apply(&tx, &batch_of(merk))
+        .expect("the batch is applied");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let reader = world.begin();
+    let tree: Vec<(Vec<u8>, bool)> = (0..6).map(|n| (key(n), false)).collect();
+    let mut with_record = tree.clone();
+    with_record.push((b"kzz".to_vec(), true));
+    let asked = lookups();
+    let mut cursor = (reader.txn.merk_cursor(model::subtree(2))).expect("a cursor");
+    assert_eq!(shown(&mut cursor), tree);
+    assert_eq!(lookups(), asked + 1);
+    cursor.retarget(subtree()).expect("a retarget");
+    assert_eq!(shown(&mut cursor), with_record);
+    assert_eq!(lookups(), asked + 2, "the Merk it is pointed at is asked");
+    cursor.retarget(model::subtree(2)).expect("a retarget");
+    assert_eq!(shown(&mut cursor), tree);
+    let mut cursor = reader.txn.merk_cursor(subtree()).expect("a cursor");
+    assert_eq!(shown(&mut cursor), with_record);
+    cursor.retarget(model::subtree(2)).expect("a retarget");
+    assert_eq!(shown(&mut cursor), tree);
+    cursor.retarget(subtree()).expect("a retarget");
+    assert_eq!(shown(&mut cursor), with_record);
+    // A Merk with no node is asked as any other, and a prefix that the
+    // version has no subtree under is not asked.
+    cursor.retarget(model::subtree(9)).expect("a retarget");
+    assert!(shown(&mut cursor).is_empty());
+    assert_eq!(lookups(), asked + 3);
+    cursor
+        .retarget(model::subtree(ENTERED))
+        .expect("a retarget");
+    assert!(shown(&mut cursor).is_empty());
+    cursor.retarget(model::subtree(9)).expect("a retarget");
+    assert_eq!(lookups(), asked + 3, "each Merk was asked once");
+
+    // A commit is published, and the transaction reads the version after
+    // it. The cursor keeps its version, and what it found of each Merk: a
+    // Merk that it is pointed at for the first time is looked up once,
+    // however often it is pointed there afterwards.
+    world.edit_outside(
+        3,
+        |items| drop(items.insert(b"later".to_vec(), b"v".to_vec())),
+        &[&reader],
+    );
+    let later = (reader.txn).node(model::subtree(3), b"later", |view| view.is_some());
+    assert!(later.expect("a read of the version after"));
+    let asked = lookups();
+    for _ in 0..3 {
+        cursor.retarget(model::subtree(4)).expect("a retarget");
+        assert!(shown(&mut cursor).is_empty());
+        cursor.retarget(subtree()).expect("a retarget");
+        assert_eq!(shown(&mut cursor), with_record);
+        cursor.retarget(model::subtree(3)).expect("a retarget");
+        assert!(shown(&mut cursor).is_empty(), "the version it pinned");
+    }
+    assert_eq!(lookups(), asked + 2, "the cursor keeps what it found");
 }
 
 /// A Merk that holds no unlinked record is asked once whether it holds
