@@ -1245,16 +1245,16 @@ they are again the loader's.
 A layout of *T*'s writes that a refusal stops is not made again to tell
 that refusal. *T* keeps it, and what is refused because the layout is
 stopped is told it from there: a read or a write that a move decides
-(MV7), and a commit (MV6). That holds for as long as *T* reads the
-version that the layout was stopped at, holds the writes that it held
-then and no other, has the same of them laid out, and would make the
-layout with the same pending marks. Once one of these is no longer so,
-*T* may make the layout again (WT7a), and each load that the new layout
-comes to is laid out with it. In one case it does not: where *T*
-holds a load, and all that is no longer so is that *T* has taken more
-writes, the refusal is told from what was kept as before. Writes are
-laid out in their order, so the layout is stopped before any that comes
-later, and a load is not laid out again for each of them.
+(MV7), and a commit (MV6). That holds from the stop until the first of
+these: *T* reads another version; *T* takes a write; a rollback, to a
+savepoint or of a scope, takes a write out; a scope's writes are laid
+out, or a scope is merged or rolled back; a pending mark is set or taken
+off. From then on *T* may make the layout again (WT7a), and each load
+that the new layout comes to is laid out with it. One of these does not
+end it where *T* holds a load: *T* may take writes, and the refusal is
+told from what was kept as before. Writes are laid out in their order,
+so the layout is stopped before any that comes later, and a load is not
+laid out again for each of them.
 
 **LD5. The commit of a load takes its values over.** This is the exception
 to CM7 and to the first case of PV6.
