@@ -312,7 +312,7 @@ impl<E: Engine> Session<E> {
             .create_checkpoint(&path)
             .map_err(|e| AppError::Any(e.to_string()))?;
         let checkpointed_grovedb =
-            GroveDb::open_with_engine(path).map_err(|e| AppError::Any(e.to_string()))?;
+            GroveDb::open_checkpoint_with_engine(path).map_err(|e| AppError::Any(e.to_string()))?;
         Ok(Session {
             last_access: Instant::now(),
             checkpointed_grovedb,
