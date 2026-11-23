@@ -3,10 +3,10 @@
 //!
 //! RocksDB leaves records behind where GroveDB changes one element and
 //! does not clear what hung under it, and reads them again later. LigninDB
-//! drops a subtree with its element. Three such histories are ruled as
+//! drops a subtree with its element. Four such histories are ruled as
 //! open differences that are put to the maintainer of GroveDB, and are no
-//! defect of an engine until that is answered. Each is a [`Family`], with a
-//! rule that is a path:
+//! defect of an engine until that is answered. Each is a [`Family`]. Three
+//! have a rule that is a path:
 //!
 //! - [`Family::WrittenOver`]: an element was put over a tree that held
 //!   elements. The family is the subtree of that tree, and every subtree
@@ -23,6 +23,16 @@
 //!   pending records are read from the reference, as its block sees them,
 //!   after each operation both engines answered
 //!   ([`pending_drop_paths`](super::state::pending_drop_paths)).
+//!
+//! The fourth has no place, and is of an answer alone:
+//!
+//! - [`Family::IndexedOverIndexed`]: on grove versions 1 to 3, which leave
+//!   the records of the old tree where they are, an operation puts an
+//!   indexed tree at a key where the reference read an indexed tree
+//!   before the operation, and the candidate answers `NotSupported`
+//!   ([`Known::indexed_under`], [`Known::family_of_refusal`]). Both are
+//!   required. The case ends there, counted. Nothing was written, so no
+//!   stored record is passed over for it.
 //!
 //! A case keeps the paths it made so ([`Known`]), from the operations both
 //! engines took, and nothing else is of a family:
@@ -45,16 +55,18 @@
 //!   through a snapshot, or the committed state with no transaction.
 //!
 //! The counts are in the [`Tally`](super::pair::Tally) of a run
-//! ([`Counts`]): the cases that made a place of a family, those with a
-//! stored difference passed over and those ended at an answer, and for
-//! the last two the seed of one such case.
+//! ([`Counts`]): the cases that made a place of a family, or for the
+//! fourth came to such a put whatever was answered, those with a stored
+//! difference passed over and those ended at an answer, and for the last
+//! two the seed of one such case.
 
 use grovedb_version::version::GroveVersion;
 
-use grovedb::SubqueryBranch;
+use grovedb::{Element, SubqueryBranch};
 
 use super::state::Keyspace;
 use super::state::Record;
+use crate::golden::step::Outcome;
 use crate::workload::{BatchOp, Db, Op, Path, Prove, Read, StreamEngine, TransactionOp, Tx, Write};
 
 /// A named open difference.
@@ -67,14 +79,25 @@ pub enum Family {
     /// The subtree of a tree that was dropped flat, while the record of
     /// its drop is pending.
     DroppedTree,
+    /// An indexed tree put over an indexed tree on grove versions 1 to 3,
+    /// which the candidate refuses.
+    IndexedOverIndexed,
 }
+
+/// How many families there are.
+const FAMILIES: usize = Family::ALL.len();
+
+/// The last grove version on which GroveDB leaves the records of an
+/// indexed tree where they are when an element is put over it.
+const LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS: u32 = 3;
 
 impl Family {
     /// Every family.
-    pub const ALL: [Family; 3] = [
+    pub const ALL: [Family; 4] = [
         Family::WrittenOver,
         Family::BelowFlatDrop,
         Family::DroppedTree,
+        Family::IndexedOverIndexed,
     ];
 
     /// What a report calls the family.
@@ -83,6 +106,9 @@ impl Family {
             Family::WrittenOver => "an element written over a tree that held elements",
             Family::BelowFlatDrop => "below a tree that was dropped flat",
             Family::DroppedTree => "a tree that was dropped flat, until the drain of its drop",
+            Family::IndexedOverIndexed => {
+                "an indexed tree written over an indexed tree, grove versions 1 to 3"
+            }
         }
     }
 
@@ -91,6 +117,7 @@ impl Family {
             Family::WrittenOver => 0,
             Family::BelowFlatDrop => 1,
             Family::DroppedTree => 2,
+            Family::IndexedOverIndexed => 3,
         }
     }
 }
@@ -99,20 +126,21 @@ impl Family {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     /// The cases that made a place of the family: an element put over a
-    /// tree that held elements, or, for both other families, a flat drop
-    /// of a tree, whatever it held.
-    pub histories: [u64; 3],
+    /// tree that held elements, or a flat drop of a tree, whatever it
+    /// held; and for the family of an indexed tree over an indexed tree
+    /// the cases that came to such a put, whatever the engines answered.
+    pub histories: [u64; FAMILIES],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
-    pub stored: [u64; 3],
+    pub stored: [u64; FAMILIES],
     /// The cases that ended at an answer the engines gave differently at
     /// an operation that names a place of the family.
-    pub answers: [u64; 3],
+    pub answers: [u64; FAMILIES],
     /// The seed of a case counted in `stored`: of the first whose counts
     /// were added.
-    pub stored_seed: [Option<u64>; 3],
+    pub stored_seed: [Option<u64>; FAMILIES],
     /// The seed of a case counted in `answers`, likewise.
-    pub answer_seed: [Option<u64>; 3],
+    pub answer_seed: [Option<u64>; FAMILIES],
 }
 
 impl Counts {
@@ -178,7 +206,7 @@ pub struct Known {
     /// The trees among `flat_drops` whose drop has a pending record, as
     /// [`Known::pending`] was last told.
     pending: Vec<Path>,
-    stored: [bool; 3],
+    stored: [bool; FAMILIES],
     counts: Counts,
 }
 
@@ -194,18 +222,37 @@ fn joined(path: &Path, key: &[u8]) -> Path {
 /// such an insert does write over a tree, the place is of no family, and a
 /// difference there ends the run.
 fn puts(op: &Op) -> Vec<Path> {
+    let places = put_elements(op).into_iter().map(|(place, _)| place);
+    places.collect()
+}
+
+/// The places of [`puts`], each with the element that is put there.
+fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     let mut puts = Vec::new();
-    if let Op::Write(Write::Insert { path, key, .. } | Write::IndexedInsert { path, key, .. }) = op
+    if let Op::Write(
+        Write::Insert { path, key, element }
+        | Write::IndexedInsert {
+            path, key, element, ..
+        },
+    ) = op
     {
-        puts.push(joined(path, key));
+        puts.push((joined(path, key), element));
     }
     for batch_op in op.batch_ops() {
-        if let BatchOp::InsertOrReplace { path, key, .. }
-        | BatchOp::InsertOnly { path, key, .. }
-        | BatchOp::Replace { path, key, .. }
-        | BatchOp::Patch { path, key, .. } = batch_op
+        if let BatchOp::InsertOrReplace {
+            path, key, element, ..
+        }
+        | BatchOp::InsertOnly {
+            path, key, element, ..
+        }
+        | BatchOp::Replace {
+            path, key, element, ..
+        }
+        | BatchOp::Patch {
+            path, key, element, ..
+        } = batch_op
         {
-            puts.push(joined(path, key));
+            puts.push((joined(path, key), element));
         }
     }
     puts
@@ -427,6 +474,61 @@ impl Known {
         trees
     }
 
+    /// The places at which `op` puts an indexed tree where `transaction`
+    /// reads an indexed tree in `db`, filled or not: asked before the
+    /// operation is applied. On a grove version after the third, which
+    /// removes the records of the old tree, there is none.
+    pub fn indexed_under<'db, E: StreamEngine>(
+        db: &'db Db<E>,
+        transaction: &Tx<'db, E>,
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> Vec<Path> {
+        if grove_version.protocol_version > LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS {
+            return Vec::new();
+        }
+        let holds_an_indexed_tree = |place: &Path| {
+            let Some((key, above)) = place.split_last() else {
+                return false;
+            };
+            let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+            let element = db
+                .get_raw(
+                    above.as_slice().into(),
+                    key,
+                    Some(transaction),
+                    grove_version,
+                )
+                .value;
+            element.is_ok_and(|element| element.is_indexed_tree())
+        };
+        let indexed = put_elements(op)
+            .into_iter()
+            .filter(|(_, element)| element.is_indexed_tree());
+        let mut places: Vec<Path> = indexed.map(|(place, _)| place).collect();
+        places.retain(holds_an_indexed_tree);
+        places
+    }
+
+    /// The case came to an operation that puts an indexed tree over the
+    /// indexed trees at `over` ([`Known::indexed_under`]).
+    pub fn came_to_indexed_over_indexed(&mut self, over: &[Path]) {
+        if !over.is_empty() {
+            self.counts.histories[Family::IndexedOverIndexed.index()] = 1;
+        }
+    }
+
+    /// The family of a differing answer to an operation that puts an
+    /// indexed tree over the indexed trees at `over`
+    /// ([`Known::indexed_under`]), which the candidate answered with
+    /// `candidate`: [`Family::IndexedOverIndexed`] where there is such a
+    /// tree and the candidate's answer is the error `NotSupported`, and
+    /// none otherwise.
+    pub fn family_of_refusal(over: &[Path], candidate: &Outcome) -> Option<Family> {
+        let refused = matches!(candidate, Outcome::Failed(error) if error == "NotSupported");
+        (refused && !over.is_empty()).then_some(Family::IndexedOverIndexed)
+    }
+
     /// Both engines took `op` and answered it alike: its flat drops and
     /// the trees it put an element over ([`Known::trees_under`]) are
     /// places of their families from here on.
@@ -511,9 +613,9 @@ impl Known {
 
     /// The records of `listed` that are of no family, and for each family
     /// those that are of it.
-    fn split(&self, listed: &[Record]) -> (Vec<Record>, [Vec<Record>; 3]) {
+    fn split(&self, listed: &[Record]) -> (Vec<Record>, [Vec<Record>; FAMILIES]) {
         let mut plain = Vec::new();
-        let mut of_family = [Vec::new(), Vec::new(), Vec::new()];
+        let mut of_family: [Vec<Record>; FAMILIES] = Default::default();
         for record in listed {
             // The data of a subtree, its aux and its meta records are the
             // subtree's. The record of a pending drop carries the path of
@@ -568,9 +670,127 @@ impl Known {
 
 #[cfg(test)]
 mod tests {
-    use grovedb::Element;
+    use grovedb::{GroveDb, RocksDbEngine};
+    use grovedb_version::version::GROVE_VERSIONS;
 
     use super::*;
+    use crate::{diff::pair::testing::scratch, golden::step::Value, workload::Transactions};
+
+    /// An answer is of the family of an indexed tree over an indexed tree
+    /// where the operation puts an indexed tree, unconditionally, at a
+    /// key at which the reference reads an indexed tree, on a grove
+    /// version up to the third, and the candidate's answer is
+    /// `NotSupported`. Without any one of these it is of no family: at a
+    /// key that holds a tree of another kind, an item or nothing, with
+    /// another element put, with a conditional insert, on grove version
+    /// 4 or 5, and with another answer of the candidate.
+    #[test]
+    fn a_refusal_is_of_the_family_of_an_indexed_tree_over_an_indexed_tree_and_no_other() {
+        let indexed = Element::empty_provable_count_indexed_tree;
+        let put = |key: &[u8], element: Element| {
+            Op::Batch(vec![BatchOp::InsertOrReplace {
+                path: path(&[b"t"]),
+                key: key.to_vec(),
+                element,
+            }])
+        };
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let refused = Outcome::Failed("NotSupported".to_string());
+        let family = Some(Family::IndexedOverIndexed);
+        for grove_version in GROVE_VERSIONS.iter() {
+            let dir = scratch();
+            let db: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(dir.path()).expect("a database");
+            let mut transactions = Transactions::new(&db);
+            for op in [
+                insert(&[], b"t", Element::empty_tree()),
+                insert(&[b"t"], b"indexed", indexed()),
+                insert(&[b"t"], b"tree", Element::empty_tree()),
+                insert(&[b"t"], b"item", Element::new_item(vec![1])),
+                Op::Commit,
+            ] {
+                transactions
+                    .apply(&op, grove_version)
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            }
+            let under =
+                |op: &Op| Known::indexed_under(&db, transactions.block(), op, grove_version);
+            let over_indexed = under(&put(b"indexed", indexed()));
+            let expected = match grove_version.protocol_version {
+                1..=3 => vec![path(&[b"t", b"indexed"])],
+                _ => Vec::new(),
+            };
+            assert_eq!(over_indexed, expected, "{}", grove_version.protocol_version);
+            assert_eq!(under(&insert(&[b"t"], b"indexed", indexed())), expected);
+            let on_a_kept_version = !expected.is_empty();
+            assert_eq!(
+                Known::family_of_refusal(&over_indexed, &refused),
+                family.filter(|_| on_a_kept_version)
+            );
+
+            // A key that holds another tree, an item or nothing; another
+            // element put over the indexed tree; an insert that is made
+            // only where the key holds nothing.
+            let conditional = Op::Batch(vec![BatchOp::InsertIfNotExists {
+                path: path(&[b"t"]),
+                key: b"indexed".to_vec(),
+                element: indexed(),
+            }]);
+            for elsewhere in [
+                put(b"tree", indexed()),
+                put(b"item", indexed()),
+                put(b"absent", indexed()),
+                put(b"indexed", Element::empty_tree()),
+                put(b"indexed", Element::new_item(vec![2])),
+                conditional,
+            ] {
+                let over = under(&elsewhere);
+                assert_eq!(over, Vec::<Path>::new(), "{elsewhere:?}");
+                assert_eq!(Known::family_of_refusal(&over, &refused), None);
+                let mut known = Known::default();
+                known.came_to_indexed_over_indexed(&over);
+                assert!(known.counts().is_empty());
+            }
+        }
+
+        // Another answer of the candidate at such a put is of no family.
+        let over = vec![path(&[b"t", b"indexed"])];
+        assert_eq!(Known::family_of_refusal(&over, &refused), family);
+        for other in [
+            Outcome::Failed("StorageError::StorageError".to_string()),
+            Outcome::Failed("InvalidBatchOperation".to_string()),
+            Outcome::Failed("NotSupported::".to_string()),
+            Outcome::Returned(Value::Nothing),
+        ] {
+            assert_eq!(Known::family_of_refusal(&over, &other), None, "{other:?}");
+        }
+        // The family has no place: no path is of it, and no stored record.
+        let mut known = Known::default();
+        known.came_to_indexed_over_indexed(&over);
+        assert_eq!(known.counts().histories, [0, 0, 0, 1]);
+        assert_eq!(known.family(&over[0]), None);
+        let differs = [record(&[b"t", b"indexed"], 1)];
+        let (was, is) = known.passed_over(7, &differs, &[]);
+        assert_eq!((was.len(), is.len()), (1, 0));
+        assert_eq!(known.counts().stored, [0; 4]);
+        known.ended_at(Family::IndexedOverIndexed, 11);
+        let counts = known.counts();
+        assert_eq!(counts.answers, [0, 0, 0, 1]);
+        assert_eq!(counts.answer_seed[3], Some(11));
+        assert_eq!(
+            counts.lines(),
+            ["open difference, an indexed tree written over an indexed tree, grove versions 1 to \
+              3: 1 cases made it, 0 with stored records that differ passed over, 1 ended at an \
+              answer that differs (seed 0xb)"]
+        );
+    }
 
     /// The subtree of a tree that was dropped flat is of its family while
     /// the record of its drop is pending, and of none before the case
@@ -621,15 +841,15 @@ mod tests {
             let (was, is) = known.passed_over(7, &differs, &differs[..1]);
             assert_eq!((was.len(), is.len()), (2, 1), "{elsewhere:?}");
         }
-        assert_eq!(known.counts().stored, [0; 3]);
+        assert_eq!(known.counts().stored, [0; 4]);
 
         // A stored difference in the dropped tree's own subtree is passed
         // over and counted, but not in the record of its drop.
         let kept = [record(&[b"c"], 1), record(&[b"a", b"dropped"], 1)];
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (1, 1));
-        assert_eq!(known.counts().stored, [0, 0, 1]);
-        assert_eq!(known.counts().stored_seed, [None, None, Some(7)]);
+        assert_eq!(known.counts().stored, [0, 0, 1, 0]);
+        assert_eq!(known.counts().stored_seed, [None, None, Some(7), None]);
         let mut drop_record = record(&[b"a", b"dropped"], 1);
         drop_record.keyspace = Keyspace::DropRecord;
         let (was, is) = known.passed_over(7, &[drop_record], &[]);
@@ -754,9 +974,9 @@ mod tests {
         let (was, is) = known.passed_over(7, &reference, &candidate);
         assert_eq!(was, is);
         let counts = known.counts();
-        assert_eq!(counts.stored, [1, 1, 0]);
-        assert_eq!(counts.stored_seed, [Some(7), Some(7), None]);
-        assert_eq!((counts.histories, counts.answers), ([1, 1, 1], [0; 3]));
+        assert_eq!(counts.stored, [1, 1, 0, 0]);
+        assert_eq!(counts.stored_seed, [Some(7), Some(7), None, None]);
+        assert_eq!((counts.histories, counts.answers), ([1, 1, 1, 0], [0; 4]));
         assert_eq!(counts.stored_differences(), 2);
         assert_eq!(counts.answer_differences(), 0);
 
@@ -777,7 +997,7 @@ mod tests {
             let (was, is) = known.passed_over(7, &reference, &candidate);
             assert_eq!(was, vec![same.clone(), elsewhere]);
             assert_eq!(is, vec![same.clone()]);
-            assert_eq!(known.counts().stored, [0; 3]);
+            assert_eq!(known.counts().stored, [0; 4]);
         }
     }
 
@@ -943,10 +1163,10 @@ mod tests {
         one.ended_at(Family::WrittenOver, 9);
         counts.add(&one.counts());
         counts.add(&one.counts());
-        assert_eq!(counts.answers, [2, 0, 0]);
-        assert_eq!(counts.answer_seed, [Some(9), None, None]);
+        assert_eq!(counts.answers, [2, 0, 0, 0]);
+        assert_eq!(counts.answer_seed, [Some(9), None, None, None]);
         assert_eq!(counts.answer_differences(), 2);
-        assert_eq!(counts.histories, [2, 2, 2]);
+        assert_eq!(counts.histories, [2, 2, 2, 0]);
         let lines = counts.lines();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with(

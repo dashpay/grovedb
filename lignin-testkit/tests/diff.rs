@@ -319,8 +319,63 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     };
     assert!(query.subquery_path.is_none() && !query.subquery_all);
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 1]);
-    assert_eq!(families.answer_seed, [None, None, Some(case.seed)]);
+    assert_eq!(families.answers, [0, 0, 1, 0]);
+    assert_eq!(families.answer_seed, [None, None, Some(case.seed), None]);
+}
+
+/// Two cases the fuzzer reported on grove versions 2 and 3: a batch puts
+/// an empty indexed tree at a key that holds an indexed tree with a row,
+/// which RocksDB takes and LigninDB refuses as not supported, since those
+/// grove versions leave the rows of the old tree where they are. It is
+/// the open difference of an indexed tree over an indexed tree: each case
+/// ends at that answer, counted for the family, and is no divergence.
+#[test]
+fn an_indexed_tree_over_an_indexed_tree_ends_the_case_for_its_family() {
+    use lignin_testkit::{
+        diff::{run, Case, Family, Stored},
+        golden::run::STACK_BYTES,
+    };
+
+    let scratch = scratch();
+    for (version, seed, at) in [
+        (2, 0x837d_de9f_e613_4f53_u64, 234),
+        (3, 0xfe7c_8837_0e0d_d536, 319),
+    ] {
+        let shape = Shape::default()
+            .for_grove_version(version)
+            .expect("a grove version");
+        let case = Case::generate(seed, &shape);
+        let ran = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    run(
+                        &case,
+                        &Side::<Reference>::of("RocksDB"),
+                        &Side::<Candidate>::of("LigninDB"),
+                        scratch.path(),
+                        Stored::Every(32),
+                        &|| false,
+                    )
+                })
+                .expect("a thread")
+                .join()
+                .expect("the case runs")
+        })
+        .expect("the run");
+        if let Some(divergence) = &ran.divergence {
+            panic!(
+                "the case of {seed:#x}:\n{}",
+                divergence.report(&case, "RocksDB", "LigninDB").join("\n")
+            );
+        }
+        assert_eq!(ran.ended_at, Some(Family::IndexedOverIndexed), "{seed:#x}");
+        assert_eq!(ran.tally.steps, at + 1, "{seed:#x}");
+        let families = ran.tally.families;
+        assert_eq!(families.answers[3], 1, "{seed:#x}");
+        assert_eq!(families.answer_seed[3], Some(seed));
+        assert_eq!(families.histories[3], 1, "{seed:#x}");
+    }
 }
 
 #[test]

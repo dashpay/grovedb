@@ -554,11 +554,15 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         // Asked of the reference before the operation: a read of its
         // block's state, which changes nothing.
-        let over = catching(|| {
+        let (over, over_indexed) = catching(|| {
             let block = reference_runner.transactions().block();
-            Known::trees_under(&reference_db, block, op, case.grove_version)
+            (
+                Known::trees_under(&reference_db, block, op, case.grove_version),
+                Known::indexed_under(&reference_db, block, op, case.grove_version),
+            )
         })
         .unwrap_or_default();
+        known.came_to_indexed_over_indexed(&over_indexed);
         let was = observe(&mut reference_runner, op);
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
@@ -580,9 +584,11 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
             // An answer that differs at an operation which names a place
-            // of a named open difference ends the case, and is none of
-            // the run's.
-            if let Some(family) = known.family_of_answer(op) {
+            // of a named open difference, or in which the candidate
+            // refuses an indexed tree over an indexed tree, ends the
+            // case, and is none of the run's.
+            let refusal = Known::family_of_refusal(&over_indexed, &is.step.outcome);
+            if let Some(family) = refusal.or_else(|| known.family_of_answer(op)) {
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
                 return Ok(Run {
