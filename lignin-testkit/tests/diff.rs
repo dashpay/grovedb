@@ -15,6 +15,8 @@
 
 use std::time::{Duration, Instant};
 
+use grovedb_version::version::GROVE_VERSIONS;
+
 use lignin_testkit::diff::{
     cli::SEEDED_FAULT, fuzz, Budget, Candidate, Fault, Part, Reference, Settings, Shape, Side,
     StandIn,
@@ -22,15 +24,7 @@ use lignin_testkit::diff::{
 
 const A_MINUTE: Duration = Duration::from_secs(60);
 
-/// The grove versions on which the candidate has to answer as the
-/// reference does today: the first four. On the fifth the conversion of an
-/// indexed tree to a big sum tree is refused by LigninDB where RocksDB
-/// makes it, which `GROVE-04-F1` removes, and the fuzzer reports it within
-/// a few dozen cases. The test runs every grove version once that unit is
-/// merged: this constant is then `GROVE_VERSIONS.len()`.
-const VERSIONS_THAT_ANSWER_ALIKE: usize = 4;
-
-/// How many cases the candidate is given on each of those grove versions.
+/// How many cases the candidate is given on each grove version.
 const CASES_OF_A_VERSION: u64 = 8;
 
 /// A directory for the databases, in the temporary directory: whoever runs
@@ -148,7 +142,7 @@ fn the_candidate_answers_as_the_reference_does() {
     let (mut cases, mut steps, mut proofs, mut walks) = (0, 0, 0, 0);
     // A run of each grove version by itself, so that a case it reports is
     // the case `lignin-diff case --seed SEED --grove-version N` runs again.
-    for number in 1..=VERSIONS_THAT_ANSWER_ALIKE {
+    for number in 1..=GROVE_VERSIONS.len() {
         let shape = Shape::default()
             .for_grove_version(number as u32)
             .expect("a grove version");

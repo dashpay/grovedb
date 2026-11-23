@@ -14,7 +14,8 @@
 //! finding. So a trace that leaves an unsound store fails here although
 //! every answer was RocksDB's.
 //!
-//! The comparison is strict. The pair runner counts the open differences
+//! The comparison is strict: every trace has to be the same on both
+//! engines to its last step. The pair runner counts the open differences
 //! that the fuzzer passes over (`diff::families`); a trace of the corpus
 //! that came to one would be a trace that differs, and fails here.
 
@@ -35,21 +36,8 @@ use lignin_testkit::{
         pair::{self, Side, Stored},
     },
     golden::{plan, run::STACK_BYTES},
-    workload::{Op, Write},
+    workload::Op,
 };
-
-/// The traces that may differ on this head, by grove version and name, each
-/// with the unit that removes the difference: at a conversion of a tree to
-/// a big sum tree, which is the difference that unit removes, and at no
-/// other operation. A trace that is not listed has to be the same on both
-/// engines to its last step, and a listed one that panics, is cut short or
-/// cannot be run fails as any other does.
-const OPEN: &[(u32, &str, &str)] = &[
-    (5, "conversions", "GROVE-04-F1"),
-    (5, "suite", "GROVE-04-F1"),
-    (5, "legacy-convert-twice", "GROVE-04-F1"),
-    (5, "legacy-convert-rows-of-both-signs", "GROVE-04-F1"),
-];
 
 /// How a trace ended.
 enum Ended {
@@ -59,12 +47,10 @@ enum Ended {
         proofs: u64,
         records: u64,
     },
-    /// The engines answered a step differently: whether the operation of
-    /// the step is a conversion to a big sum tree, and the difference.
-    Differs { at_a_conversion: bool, what: String },
-    /// What happened instead, as text: a panic, a run that could not be
-    /// made or was cut short, or an open difference of the fuzzer's that
-    /// the trace came to.
+    /// What happened instead, as text: a step the engines answered
+    /// differently, a panic, a run that could not be made or was cut
+    /// short, or an open difference of the fuzzer's that the trace came
+    /// to.
     Other(String),
 }
 
@@ -100,21 +86,15 @@ fn replayed(case: &Case, scratch: &std::path::Path) -> Ended {
             let families = run.tally.families;
             let passed_over = families.stored_differences() + families.answer_differences() > 0;
             match (run.divergence, run.cut_short) {
-                (Some(divergence), _) => Ended::Differs {
-                    at_a_conversion: matches!(
-                        case.ops[divergence.step],
-                        Op::Write(Write::ConvertToBigSumTree { .. })
-                    ),
-                    what: format!(
-                        "differs at step {} of {} in {:?}: {:?}\n  RocksDB:  {}\n  LigninDB: {}",
-                        divergence.step,
-                        case.ops.len(),
-                        divergence.parts,
-                        case.ops[divergence.step],
-                        divergence.reference.join("\n            "),
-                        divergence.candidate.join("\n            "),
-                    ),
-                },
+                (Some(divergence), _) => Ended::Other(format!(
+                    "differs at step {} of {} in {:?}: {:?}\n  RocksDB:  {}\n  LigninDB: {}",
+                    divergence.step,
+                    case.ops.len(),
+                    divergence.parts,
+                    case.ops[divergence.step],
+                    divergence.reference.join("\n            "),
+                    divergence.candidate.join("\n            "),
+                )),
                 (None, Some(why)) => Ended::Other(format!("cut short {why}")),
                 (None, None) if run.ended_at.is_some() || passed_over => Ended::Other(format!(
                     "came to an open difference that the fuzzer passes over: {}",
@@ -153,12 +133,6 @@ fn the_corpus_streams_answer_alike_on_rocksdb_and_on_lignindb() {
         })
         .collect();
     assert!(!cases.is_empty());
-    for (version, name, unit) in OPEN {
-        assert!(
-            cases.iter().any(|(v, n, _)| v == version && n == name),
-            "v{version} {name}, open with {unit}, is no trace of the corpus"
-        );
-    }
 
     let next = AtomicUsize::new(0);
     let ended: Mutex<Vec<(usize, Ended)>> = Mutex::new(Vec::new());
@@ -180,7 +154,6 @@ fn the_corpus_streams_answer_alike_on_rocksdb_and_on_lignindb() {
     assert_eq!(ended.len(), cases.len());
 
     let (mut same, mut steps, mut proofs, mut records) = (0usize, 0u64, 0u64, 0u64);
-    let mut open = Vec::new();
     let mut failed = Vec::new();
     for (at, outcome) in ended {
         let (version, name, case) = &cases[at];
@@ -196,29 +169,14 @@ fn the_corpus_streams_answer_alike_on_rocksdb_and_on_lignindb() {
                 proofs += p;
                 records += r;
             }
-            Ended::Differs {
-                at_a_conversion,
-                what,
-            } => {
-                let line = format!("v{version} {name}: {what}");
-                let listed = OPEN.iter().find(|(v, n, _)| v == version && n == name);
-                match listed.filter(|_| at_a_conversion) {
-                    Some((_, _, unit)) => open.push(format!("{line}\n  open with {unit}")),
-                    None => failed.push(line),
-                }
-            }
             Ended::Other(what) => failed.push(format!("v{version} {name}: {what}")),
         }
     }
     println!(
         "{} traces: {same} the same to the end ({steps} steps, {proofs} proofs, {records} stored \
-         records compared), {} differ with an open unit, {} differ otherwise",
+         records compared), {} are not",
         cases.len(),
-        open.len(),
         failed.len()
     );
-    for line in &open {
-        println!("{line}");
-    }
     assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
