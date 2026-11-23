@@ -23,9 +23,9 @@
 use super::{
     access::Write,
     change_set::{converting, entering},
-    node_inner, refused, LigninBatch, LigninChangeSet, LigninNodeStore, LigninSubtree, Mode,
+    refused, LigninBatch, LigninHost, LigninNodeStore, LigninSubtree, Mode,
 };
-use crate::{tree::TreeNode, Error, TreeType};
+use crate::{Error, TreeType};
 
 /// The parameter a tree type carries beside its kind, if it has one.
 const fn parameter(tree_type: TreeType) -> Option<u8> {
@@ -229,21 +229,37 @@ impl LigninNodeStore<'_> {
     /// node changes and no hash is made. Like an enter it is no write of a
     /// record for the cost rules, and is charged nothing.
     ///
+    /// The cell of the node grows by each Merk it comes to name, and the
+    /// tree pages carry a cell only for a write that holds the cell which
+    /// points at it. So the node above the node is put again with it, in
+    /// the same way (`node-store.md`, "A batch that stops below an
+    /// element"). A node that is the root of its Merk has none above it:
+    /// `above` are the elements of the handle's Merk and of the Merks
+    /// above it, innermost first, each with every Merk it hosts, and each
+    /// is named so where the node below it is the root of its Merk.
+    ///
     /// The handle is an immediate one, of the subtree the node is in. A
-    /// key that holds no node is refused.
-    pub fn name_hosted(&self, key: &[u8], hosted: &[[u8; 32]]) -> Result<(), Error> {
+    /// key that holds no node of the Merk is refused, and so is an
+    /// element whose first Merk is not entered under it.
+    pub fn name_hosted(
+        &self,
+        key: &[u8],
+        hosted: &[[u8; 32]],
+        above: &[LigninHost],
+    ) -> Result<(), Error> {
         if !matches!(self.mode, Mode::Immediate) {
             return Err(refused(
                 "the Merks of a host are named through a handle that does not write at once",
             ));
         }
-        let stored = self.load(key, true)?;
-        let stored = stored.ok_or_else(|| refused("a host that is no node of its Merk"))?;
-        let node = TreeNode::new_with_tree_inner(node_inner(key.to_vec(), stored)?);
-        let mut change_set = LigninChangeSet::of_host(self.subtree.clone(), &node, hosted)?;
-        change_set.hint(&self.hints.borrow(), &self.reads.borrow());
-        change_set.check_stale()?;
-        let (_, write) = change_set.into_write();
-        self.apply(&write)
+        let element = LigninHost {
+            subtree: self.subtree.prefix,
+            key: key.to_vec(),
+            hosted: hosted.to_vec(),
+        };
+        let hosts: Vec<LigninHost> = std::iter::once(element)
+            .chain(above.iter().cloned())
+            .collect();
+        self.access.name_hosted(&hosts)
     }
 }
