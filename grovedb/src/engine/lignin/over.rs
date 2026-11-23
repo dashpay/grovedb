@@ -42,21 +42,36 @@
 //! as a tree that keeps its data flat. Where it is entered again with a
 //! Merk, the node names that Merk.
 //!
-//! **An indexed tree that is written as an empty one before the group
-//! empties its Merks.** Where the element as the group leaves it is an
-//! indexed tree that names no root, a batch after the last one that puts
-//! its node writes nodes of a Merk that is entered under its key, and
-//! the group puts nothing into that Merk, the Merk is cleared with the
-//! last batch that writes nodes of it (`SubtreeWrite::Clear`,
-//! `tree-layout.md` D4): the node of the element names the root of each
-//! Merk it hosts where it is put, and a later batch that removes the
-//! root node puts no node that could name the Merk otherwise. A batch
-//! that is applied in parts and writes an empty indexed tree over a
-//! filled one makes such a group: the element in one part, and the
-//! removal of the old tree's records, by the walk of each of its
-//! subtrees, in the part after it. The Merk stays entered as it was,
-//! with the records of its other columns, as it does where one batch
-//! holds the element and the removals.
+//! **A tree that is written as an empty one before the group empties
+//! the Merks under its key.** Where the element as the group leaves it
+//! is an indexed tree or a tree of one Merk that names no root, a batch
+//! after the last one that puts its node writes nodes of a Merk that is
+//! entered under its key, and the group puts nothing into that Merk,
+//! the Merk is cleared with the last batch that writes nodes of it
+//! (`SubtreeWrite::Clear`, `tree-layout.md` D4): the node of the element
+//! names the root of each Merk it hosts where it is put, and a later
+//! batch that removes the root node puts no node that could name the
+//! Merk otherwise. On the grove versions that remove the records of an
+//! indexed tree which a batch writes over, a batch that is applied in
+//! parts and writes such an element over a filled indexed tree makes
+//! such a group: the element in one part, and the removal of the old
+//! tree's records, by the walk of each of its subtrees, in the part
+//! after it. The Merk stays entered as it was, with the records of its
+//! other columns, as it does where one batch holds the element and the
+//! removals.
+//!
+//! **An empty indexed tree written over a tree whose records the group
+//! does not remove.** Where the element as the group leaves it is an
+//! indexed tree that names no root, the group writes no node of what is
+//! entered under its key, and the subtree of its own path has a node or
+//! is that of a tree which keeps its data flat, each subtree under the
+//! key that the new element hosts is dropped, and the node of the
+//! element hosts nothing: the first write into the new tree enters its
+//! Merks. That is an indexed tree over a filled tree of one Merk or of
+//! flat records, and over a filled indexed tree on the grove versions
+//! that do not remove its records. One such group is refused, as not
+//! supported: where a secondary that the new element hosts has a row
+//! ([`rows_left`], D-292).
 //!
 //! **Another element written over an indexed tree.** The primary of the
 //! old tree is the subtree of the element's own path, and is looked at as
@@ -119,7 +134,7 @@
 //!   its own type keeps its records: the element of such a tree changes
 //!   with every write into it, and nothing tells a new one from it.
 //! - The Merks of an indexed tree stay where the tree is written again
-//!   as an indexed tree, but in the one case above; and so does the
+//!   as an indexed tree, but in the cases above; and so does the
 //!   subtree of an element that the group
 //!   removes ([`super::gone`]), a subtree that a batch of the group enters
 //!   itself, moves, or moves another subtree to, and a node of a subtree
@@ -143,10 +158,10 @@ use grovedb_storage::{
 };
 
 use super::{
-    enter::{element_of, entered, host_of, Host},
-    error::failed,
+    enter::{element_of, entered, host_of, key_of, Host},
+    error::{failed, not_supported},
 };
-use crate::{operations::indexed_tree::indexed_element_axes, Element};
+use crate::operations::indexed_tree::{axis_storage_tag, indexed_element_axes};
 
 /// What a group that writes over trees does to their subtrees.
 #[derive(Debug, Default)]
@@ -214,37 +229,74 @@ fn below(view: LigninView<'_>, drops: &[[u8; 32]], prefix: [u8; 32]) -> Result<b
     Ok(false)
 }
 
-/// The Merks under the key of the indexed tree `element` that are cleared
-/// with the group, each with the batch that clears it: where the group
-/// writes the element as a tree that names no root, those that are
-/// entered under the key, that the group puts nothing into, and that a
-/// batch after the last one which puts the element's node writes nodes
-/// of. Each is cleared with the last batch that writes nodes of it.
+/// An indexed tree that is written as an empty one over an indexed tree,
+/// with the rows of a secondary that the new tree keeps too left where
+/// they are (D-292). GroveDB removes them from grove version 4 on. Before
+/// it, RocksDB opens the secondary of the new tree by the root-key record
+/// of the old one, and the new tree's rankings hold the rows of the old
+/// tree: a grove that fails GroveDB's own check, and whose root hashes
+/// LigninDB would have to make from rows that no element commits to.
+fn rows_left(host: &LigninHost) -> Error {
+    let key = key_of(host);
+    not_supported(&format!(
+        "an empty indexed tree written under the key {key} over an indexed tree, a secondary of \
+         which holds rows that the batch does not remove"
+    ))
+}
+
+/// What [`emptied_after`] finds of the Merks of an indexed tree whose
+/// element the group leaves as an empty one.
+#[derive(Default)]
+struct Emptied {
+    /// The Merks to clear, each with the batch that clears it.
+    clears: Vec<(usize, [u8; 32])>,
+    /// The Merks to drop.
+    drops: Vec<[u8; 32]>,
+}
+
+/// What becomes of the Merks under the key of an element that the group
+/// writes as a tree which names no root: an indexed tree with the axes
+/// `axes`, or, with none, a tree of one Merk. Of the Merks that are
+/// entered under the key, which are the subtree of the element's own
+/// path and the secondaries of an indexed tree that was there:
+///
+/// - one that the group puts nothing into, and that a batch after the
+///   last one which puts the element's node writes nodes of, is cleared
+///   with the last batch that writes nodes of it.
+///
+/// And for an indexed tree:
+///
+/// - a secondary that the element hosts, that has a row, and that no
+///   batch of the group writes a node of, refuses the group
+///   ([`rows_left`]);
+/// - where the subtree of the element's own path has a node, or is that
+///   of a tree which keeps its data flat, the group
+///   writes a node of none of the Merks that the element hosts and
+///   clears none, each of them is dropped: no element names a root from
+///   then on, and the node of the element hosts nothing until the next
+///   write into the tree enters its Merks. That subtree is the primary
+///   of an indexed tree, or the Merk of a tree of one Merk that the
+///   indexed tree is written over.
+///
 /// `host` names the element, with the subtree `own` of its own path.
 fn emptied_after(
     view: LigninView<'_>,
     parts: &[LigninSettled],
     host: &LigninHost,
     own: [u8; 32],
-    element: &Element,
-) -> Result<Vec<(usize, [u8; 32])>, Error> {
-    let axes = indexed_element_axes(element)
-        .map_err(|error| failed(format!("an indexed tree: {error}")))?;
-    let has_root = (element.root_key_and_tree_type()).is_some_and(|(root, _)| root.is_some());
-    if has_root || axes.iter().any(|(_, root_key)| root_key.is_some()) {
-        return Ok(Vec::new());
-    }
+    axes: Option<&[IndexAxis]>,
+) -> Result<Emptied, Error> {
+    let mut emptied = Emptied::default();
     let puts = |part: &LigninSettled| {
         let node = part.node(&host.subtree, &host.key);
         matches!(node, Some(LigninOutcome::Put(_)))
     };
     let Some(put_at) = parts.iter().rposition(puts) else {
-        return Ok(Vec::new());
+        return Ok(emptied);
     };
-    let under = |entry: LigninEntry| {
-        entry
-            .host
-            .is_some_and(|at| (at.subtree, &at.key) == (host.subtree, &host.key))
+    let under = |entry: &LigninEntry| {
+        let at = entry.host.as_ref();
+        at.is_some_and(|at| (at.subtree, &at.key) == (host.subtree, &host.key))
     };
     let put_into = |prefix: &[u8; 32]| {
         let mut put = parts.iter().flat_map(LigninSettled::put_into);
@@ -254,17 +306,40 @@ fn emptied_after(
     // axis under that of the sum axis: these are all.
     let secondaries = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg]
         .map(|axis| secondary_prefix_for(&own, axis.tag()).value);
-    let mut cleared = Vec::new();
+    // The secondaries that the element hosts.
+    let hosted: Vec<[u8; 32]> = (axes.into_iter().flatten())
+        .map(|axis| secondary_prefix_for(&own, axis_storage_tag(*axis)).value)
+        .collect();
+    let mut rooted = false;
     for prefix in std::iter::once(own).chain(secondaries) {
-        let last = parts.iter().rposition(|part| part.writes_merk(&prefix));
-        let Some(last) = last.filter(|last| *last > put_at) else {
+        let Some(entry) = entered(view, prefix)?.filter(under) else {
             continue;
         };
-        if !put_into(&prefix) && entered(view, prefix)?.is_some_and(under) {
-            cleared.push((last, prefix));
+        match parts.iter().rposition(|part| part.writes_merk(&prefix)) {
+            Some(last) if last > put_at && !put_into(&prefix) => {
+                emptied.clears.push((last, prefix));
+            }
+            // Of an element that is no indexed tree, what leaves is
+            // said by the rules of any tree.
+            None if axes.is_none() => {}
+            // A secondary of an axis that the element has no more leaves
+            // by the look for what is entered ([`super::enter`]).
+            None if prefix != own && !hosted.contains(&prefix) => {}
+            None if prefix != own && entry.root_key.is_some() => return Err(rows_left(host)),
+            None => {
+                // A tree that keeps flat records has them whatever its
+                // entry says of a root.
+                let flat = |tree_type: TreeType| tree_type.uses_non_merk_data_storage();
+                rooted |= entry.root_key.is_some() || entry.tree_type().is_ok_and(flat);
+                emptied.drops.push(prefix);
+            }
+            _ => {}
         }
     }
-    Ok(cleared)
+    if !(rooted && emptied.clears.is_empty()) {
+        emptied.drops.clear();
+    }
+    Ok(emptied)
 }
 
 /// What `parts` do to the subtrees of the trees they write over.
@@ -309,13 +384,41 @@ pub(super) fn left(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Left
         // element names otherwise than the directory has them
         // ([`super::enter`]). Where the group empties one after it wrote
         // the element as an empty tree, the Merk is cleared with the
-        // batch that empties it.
+        // batch that empties it. Where one has a node and the group
+        // writes none of them, they are dropped, and the node of the
+        // element hosts nothing.
         if let Some(element) = (element.as_ref()).filter(|element| element.is_indexed_tree()) {
-            left.clears
-                .extend(emptied_after(view, parts, &host, own, element)?);
+            let axes = indexed_element_axes(element)
+                .map_err(|error| failed(format!("an indexed tree: {error}")))?;
+            let root = element.root_key_and_tree_type();
+            let has_root = root.is_some_and(|(root, _)| root.is_some());
+            if has_root || axes.iter().any(|(_, root_key)| root_key.is_some()) {
+                continue;
+            }
+            let axes: Vec<IndexAxis> = axes.into_iter().map(|(axis, _)| axis).collect();
+            let emptied = emptied_after(view, parts, &host, own, Some(&axes))?;
+            left.clears.extend(emptied.clears);
+            if !emptied.drops.is_empty() {
+                let leave = (emptied.drops.into_iter()).filter(|prefix| !own_business(prefix));
+                dropped.extend(leave.map(|prefix| (prefix, *subtree)));
+                left.hosts.push(LigninHost {
+                    hosted: Vec::new(),
+                    ..host
+                });
+            }
             continue;
         }
         let tree = element.and_then(|element| element.root_key_and_tree_type_owned());
+        // A tree of one Merk that is written as an empty one, where the
+        // group empties what is entered under its key in a later batch,
+        // as a batch in parts does that writes it over a filled indexed
+        // tree: each such Merk is cleared with the batch that empties it.
+        if let Some((None, tree_type)) = &tree
+            && !tree_type.uses_non_merk_data_storage()
+        {
+            let emptied = emptied_after(view, parts, &host, own, None)?;
+            left.clears.extend(emptied.clears);
+        }
         // The tree written again, through a handle that loaded its nodes:
         // nothing of the directory is read for it.
         let begins_empty = || parts.iter().any(|part| part.began_empty(&own));

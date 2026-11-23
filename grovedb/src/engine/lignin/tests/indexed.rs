@@ -2367,6 +2367,7 @@ fn the_merks_of_a_converted_indexed_tree_are_stated_anew_where_its_axes_change_p
 /// places at the places the element names them at. The costs and the
 /// root hashes are RocksDB's.
 #[test]
+#[cfg_attr(not(feature = "rocksdb_storage"), allow(unused_variables))]
 fn an_emptied_indexed_tree_whose_axes_change_places_is_stated_anew_by_its_next_write() {
     let v = GroveVersion::latest();
     let dir = tempfile::tempdir().expect("a directory");
@@ -2641,12 +2642,18 @@ fn written_over<Old: Indexed, New: Indexed, E: Engine>(
 /// is read under the new one, and the costs and the root hashes, also of
 /// the next write into the tree, are RocksDB's. The new tree is of the
 /// kind of the old one, of a kind with fewer axes, whose secondaries
-/// change places, and of another kind with another axis.
+/// change places, and of another kind with another axis. This is on the
+/// grove versions that remove the records of the old tree, 4 and 5.
 #[test]
 fn an_empty_indexed_tree_is_written_over_a_filled_one_in_one_batch_and_in_parts() {
-    fn case<Old: Indexed, New: Indexed>(in_parts: bool) {
-        let v = GroveVersion::latest();
-        let case = format!("{} over {}, in parts: {in_parts}", New::NAME, Old::NAME);
+    #[cfg_attr(not(feature = "rocksdb_storage"), allow(unused_variables))]
+    fn case<Old: Indexed, New: Indexed>(number: usize, in_parts: bool) {
+        let v = &GROVE_VERSIONS[number - 1];
+        let case = format!(
+            "{} over {} on grove version {number}, in parts: {in_parts}",
+            New::NAME,
+            Old::NAME
+        );
         let dir = tempfile::tempdir().expect("a directory");
         {
             let db = Lignin::open_with_engine(dir.path()).expect("a database");
@@ -2712,10 +2719,19 @@ fn an_empty_indexed_tree_is_written_over_a_filled_one_in_one_batch_and_in_parts(
         }
         check(dir.path(), v);
     }
-    for in_parts in [false, true] {
-        case::<Count, Count>(in_parts);
-        case::<CountSum, SumAndAverage>(in_parts);
-        case::<Count, Sum>(in_parts);
+    // The grove versions that remove the records of the old tree.
+    let swept = |number: &usize| {
+        let batch = &GROVE_VERSIONS[number - 1].grovedb_versions.apply_batch;
+        batch.overwrite_indexed_cleanup_inspection > 0
+    };
+    let versions: Vec<usize> = (1..=GROVE_VERSIONS.len()).filter(swept).collect();
+    assert_eq!(versions, [4, 5]);
+    for number in versions {
+        for in_parts in [false, true] {
+            case::<Count, Count>(number, in_parts);
+            case::<CountSum, SumAndAverage>(number, in_parts);
+            case::<Count, Sum>(number, in_parts);
+        }
     }
 }
 
@@ -2852,4 +2868,332 @@ fn an_element_written_over_an_emptied_indexed_tree_takes_its_merks_out_of_the_di
             check(dir.path(), v);
         }
     }
+}
+
+/// What the key `idx` holds in [`written_over_by_kind`], before the
+/// batch and after it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Held {
+    /// An item.
+    Item,
+    /// A sum tree, whose data is one Merk.
+    Sums,
+    /// An MMR tree, which keeps its data as flat records.
+    Mmr,
+    /// An indexed tree of the kind with this name.
+    Index(&'static str),
+}
+
+/// The axes of the kind of indexed tree named `kind`.
+fn axes_of(kind: &str) -> Vec<IndexAxis> {
+    let kinds = [
+        (Count::NAME, Count::axes()),
+        (Sum::NAME, Sum::axes()),
+        (CountSum::NAME, CountSum::axes()),
+        (SumAndAverage::NAME, SumAndAverage::axes()),
+    ];
+    let mut kinds = kinds.into_iter();
+    kinds.find(|(name, _)| *name == kind).expect("a kind").1
+}
+
+/// An indexed tree of the kind `I` under the key `idx`, where `kind`
+/// names that kind: with three children and a child tree that holds an
+/// element, or, where `emptied` says so, with one child that is deleted
+/// again.
+fn old_index<I: Indexed, E: Engine>(h: &mut History<'_, E>, kind: &str, emptied: bool) {
+    if kind != I::NAME {
+        return;
+    }
+    let (db, v) = (h.db, h.v);
+    let at: &[&[u8]] = &[b"idx"];
+    h.write("made", db.insert(ROOT, b"idx", I::empty(), None, None, v));
+    if emptied {
+        h.write("child", I::insert(db, at, &[0], I::leaf(0), None, v));
+        h.write("emptied", I::delete(db, at, &[0], None, v));
+        return;
+    }
+    for n in 0..3usize {
+        let child = I::insert(db, at, &[n as u8 * 53], I::leaf(n), None, v);
+        h.write("child", child);
+    }
+    h.write("branch", I::insert(db, at, b"branch", I::branch(), None, v));
+    let branch: &[&[u8]] = &[b"idx", b"branch"];
+    let inner = db.insert(branch, b"in it", I::in_branch(2), None, None, v);
+    h.write("in it", inner);
+}
+
+/// Children of the indexed tree of the kind `I` under the key `idx`,
+/// where `kind` names that kind: one under a key that the old tree did
+/// not have, one under a key that a filled old tree had, a delete, and
+/// one more.
+fn new_index<I: Indexed, E: Engine>(h: &mut History<'_, E>, kind: &str) {
+    if kind != I::NAME {
+        return;
+    }
+    let (db, v) = (h.db, h.v);
+    let at: &[&[u8]] = &[b"idx"];
+    h.write("filled", I::insert(db, at, b"new", I::leaf(1), None, v));
+    let child = I::insert(db, at, &[53], I::leaf(4), None, v);
+    h.write("under a key of the old tree", child);
+    h.write("filled", I::delete(db, at, b"new", None, v));
+    h.write("filled", I::insert(db, at, b"more", I::leaf(2), None, v));
+}
+
+/// A tree under the key `idx`, filled or emptied, the batch that writes
+/// `new` over it, whole or in parts, and writes into what the key holds
+/// from then on.
+fn written_over_by_kind<E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+    (old, emptied): (Held, bool),
+    new: Held,
+    in_parts: bool,
+) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let at: &[&[u8]] = &[b"idx"];
+    match old {
+        Held::Index(kind) => {
+            old_index::<Count, E>(&mut h, kind, emptied);
+            old_index::<Sum, E>(&mut h, kind, emptied);
+            old_index::<CountSum, E>(&mut h, kind, emptied);
+            old_index::<SumAndAverage, E>(&mut h, kind, emptied);
+        }
+        Held::Mmr => {
+            let tree = Element::empty_mmr_tree_with_flags(None);
+            h.write("made", db.insert(ROOT, b"idx", tree, None, None, v));
+            for n in (0..3u8).filter(|_| !emptied) {
+                let appended = db.mmr_tree_append(ROOT, b"idx", vec![n; 4], None, v);
+                h.write("child", appended.map_ok(|appended| format!("{appended:?}")));
+            }
+        }
+        Held::Sums | Held::Item => {
+            let tree = Element::empty_sum_tree();
+            h.write("made", db.insert(ROOT, b"idx", tree, None, None, v));
+            let item = |n: u8| Element::new_sum_item(i64::from(n) + 3);
+            if emptied {
+                h.write("child", db.insert(at, &[0], item(0), None, None, v));
+                h.write("emptied", db.delete(at, &[0], None, None, v));
+            } else {
+                for n in 0..3u8 {
+                    h.write("child", db.insert(at, &[n * 53], item(n), None, None, v));
+                }
+                let branch = Element::empty_sum_tree();
+                h.write("branch", db.insert(at, b"branch", branch, None, None, v));
+                let branch: &[&[u8]] = &[b"idx", b"branch"];
+                h.write("in it", db.insert(branch, b"in it", item(9), None, None, v));
+            }
+        }
+    }
+    let element = match new {
+        Held::Item => Element::new_item(b"an item".to_vec()),
+        Held::Sums => Element::empty_sum_tree(),
+        Held::Mmr => Element::empty_mmr_tree_with_flags(None),
+        Held::Index(kind) => {
+            let kinds = [
+                (Count::NAME, Count::empty()),
+                (Sum::NAME, Sum::empty()),
+                (CountSum::NAME, CountSum::empty()),
+                (SumAndAverage::NAME, SumAndAverage::empty()),
+            ];
+            let mut kinds = kinds.into_iter();
+            kinds.find(|(name, _)| *name == kind).expect("a kind").1
+        }
+    };
+    let batch = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![],
+        b"idx".to_vec(),
+        element,
+    )];
+    let written = match in_parts {
+        true => db.apply_partial_batch(batch, None, |_cost, _left_over| Ok(vec![]), None, v),
+        false => db.apply_batch(batch, None, None, v),
+    };
+    h.write("over", written);
+    match new {
+        Held::Item => {}
+        Held::Sums => {
+            let item = |n: i64| Element::new_sum_item(n);
+            h.write("filled", db.insert(at, b"new", item(5), None, None, v));
+            let child = db.insert(at, &[53], item(6), None, None, v);
+            h.write("under a key of the old tree", child);
+            h.write("filled", db.delete(at, b"new", None, None, v));
+            h.write("filled", db.insert(at, b"more", item(7), None, None, v));
+        }
+        Held::Mmr => {
+            for n in 0..2u8 {
+                let value = vec![n; 3 + usize::from(n)];
+                let appended = db.mmr_tree_append(ROOT, b"idx", value, None, v);
+                h.write(
+                    "filled",
+                    appended.map_ok(|appended| format!("{appended:?}")),
+                );
+            }
+        }
+        Held::Index(kind) => {
+            new_index::<Count, E>(&mut h, kind);
+            new_index::<Sum, E>(&mut h, kind);
+            new_index::<CountSum, E>(&mut h, kind);
+            new_index::<SumAndAverage, E>(&mut h, kind);
+        }
+    }
+    h.element("element", db.get(ROOT, b"idx", None, v));
+    h.answers
+}
+
+/// An element written over a tree by a batch, on every grove version: a
+/// filled or an emptied indexed tree of one axis and of three, sum tree
+/// and MMR tree, and over each an item, a sum tree, an MMR tree and an
+/// empty indexed tree of three kinds; the batch whole and in parts. The
+/// key is written into afterwards, also under a key that a filled old
+/// tree had. The store is sound at every close and GroveDB's check of
+/// the grove on LigninDB finds no issue.
+///
+/// The answers, the costs and the root hashes are RocksDB's, with two
+/// exceptions, each asserted as it is:
+///
+/// - **Refused (D-292, open).** An indexed tree over a filled indexed
+///   tree with which it shares an axis, on the grove versions that do
+///   not remove the records of the old tree (1 to 3): RocksDB takes the
+///   batch and opens the secondary of the new tree with the rows of the
+///   old one. LigninDB refuses the batch as not supported, and nothing
+///   of it is applied.
+/// - **A read of a record that was left behind (D-227, open).** An
+///   indexed tree over a filled tree whose records GroveDB does not
+///   remove: over a filled sum tree, on every grove version, and over a
+///   filled indexed tree with which it shares no axis, on versions 1 to
+///   3. RocksDB keeps the records under the prefix and LigninDB drops
+///   the subtree. The write of a child under a key that the old tree
+///   had reads the old record on RocksDB: it loads more bytes there, and
+///   is the same in everything else.
+#[test]
+#[cfg_attr(
+    not(feature = "rocksdb_storage"),
+    allow(unused_variables, unused_mut, unused_assignments)
+)]
+fn an_element_is_written_over_a_tree_of_every_kind_on_every_grove_version() {
+    let olds = [
+        Held::Index(Count::NAME),
+        Held::Index(CountSum::NAME),
+        Held::Sums,
+        Held::Mmr,
+    ];
+    let news = [
+        Held::Item,
+        Held::Sums,
+        Held::Mmr,
+        Held::Index(Count::NAME),
+        Held::Index(Sum::NAME),
+        Held::Index(SumAndAverage::NAME),
+    ];
+    let mut cases = 0;
+    let mut refused = Vec::new();
+    let mut left_behind: Vec<(usize, Held, Held)> = Vec::new();
+    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let swept = v
+            .grovedb_versions
+            .apply_batch
+            .overwrite_indexed_cleanup_inspection
+            > 0;
+        assert_eq!(swept, number >= 4);
+        let all = olds.iter().flat_map(|old| {
+            let old = [(*old, false), (*old, true)];
+            old.into_iter().flat_map(|old| news.map(|new| (old, new)))
+        });
+        for ((old, new), in_parts) in all.flat_map(|case| [(case, false), (case, true)]) {
+            let case =
+                format!("{new:?} over {old:?} on grove version {number}, in parts: {in_parts}");
+            let (held, emptied) = old;
+            // What the case is expected to be.
+            let shares_an_axis = |old: &str, new: &str| {
+                let old = axes_of(old);
+                axes_of(new).iter().any(|axis| old.contains(axis))
+            };
+            let refuses = match (held, new) {
+                (Held::Index(old), Held::Index(new)) => {
+                    !emptied && !swept && shares_an_axis(old, new)
+                }
+                _ => false,
+            };
+            let reads_what_was_left = match (held, new) {
+                (Held::Sums, Held::Index(_)) => !emptied,
+                (Held::Index(_), Held::Index(_)) => !emptied && !swept && !refuses,
+                _ => false,
+            };
+
+            let dir = tempfile::tempdir().expect("a directory");
+            let on_lignin = {
+                let db = Lignin::open_with_engine(dir.path()).expect("a database");
+                let answers = written_over_by_kind(&db, v, old, new, in_parts);
+                let issues = db.verify_grovedb(None, true, false, v);
+                let issues = issues.unwrap_or_else(|error| panic!("{case}: {error}"));
+                assert_eq!(issues.len(), 0, "{case}");
+                db.flush().expect("a flush");
+                answers
+            };
+            check(dir.path(), v);
+            let over = (on_lignin.iter())
+                .position(|(call, ..)| call == "over")
+                .expect("the batch");
+            let answer = &on_lignin[over].2;
+            let not_supported = answer.starts_with("Err(NotSupported(")
+                && answer.contains("holds rows that the batch does not remove");
+            assert_eq!(not_supported, refuses, "{case}: {answer}");
+            assert!(refuses || answer.starts_with("Ok("), "{case}: {answer}");
+            if refuses {
+                // Nothing of the batch is applied: the root hash is the
+                // one before it, and the key takes writes as the old
+                // tree.
+                assert_eq!(on_lignin[over + 1].2, on_lignin[over - 1].2, "{case}");
+                refused.push((number, held, new));
+            }
+            cases += 1;
+
+            #[cfg(feature = "rocksdb_storage")]
+            {
+                let dir = tempfile::tempdir().expect("a directory");
+                let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+                let rocksdb = rocksdb.expect("RocksDB");
+                let on_rocksdb = written_over_by_kind(&rocksdb, v, old, new, in_parts);
+                assert!(on_rocksdb[over].2.starts_with("Ok("), "{case}");
+                // The grove that RocksDB holds where LigninDB refused
+                // fails GroveDB's own check.
+                let checked = rocksdb.verify_grovedb(None, true, false, v);
+                assert!(!refuses || checked.is_err(), "{case}");
+                assert_eq!(on_lignin.len(), on_rocksdb.len(), "{case}");
+                let upto = if refuses { over } else { on_lignin.len() };
+                let mut apart = 0;
+                for (step, (lignin, rocks)) in on_lignin.iter().zip(&on_rocksdb).enumerate() {
+                    if step >= upto || lignin == rocks {
+                        continue;
+                    }
+                    // The read of the record that was left behind.
+                    assert!(reads_what_was_left, "{case}: step {step}");
+                    assert_eq!(lignin.0, "under a key of the old tree", "{case}");
+                    let mut but_loaded = rocks.1.clone();
+                    assert!(lignin.1.storage_loaded_bytes < but_loaded.storage_loaded_bytes);
+                    but_loaded.storage_loaded_bytes = lignin.1.storage_loaded_bytes;
+                    assert_eq!((&lignin.1, &lignin.2), (&but_loaded, &rocks.2), "{case}");
+                    apart += 1;
+                }
+                assert_eq!(apart, usize::from(reads_what_was_left), "{case}");
+                if reads_what_was_left {
+                    left_behind.push((number, held, new));
+                }
+            }
+        }
+    }
+    // Five grove versions, four old trees filled and emptied, six
+    // elements, a batch whole and in parts.
+    assert_eq!(cases, 5 * 4 * 2 * 6 * 2);
+    // Refused: the tree of the count axis under one of its own kind, and
+    // the tree of three axes under each of the three, on three grove
+    // versions, whole and in parts.
+    assert_eq!(refused.len(), 3 * (1 + 3) * 2);
+    assert!(refused.iter().all(|(number, ..)| *number <= 3));
+    // Left behind: three kinds of indexed tree over a filled sum tree on
+    // five grove versions, and the two that share no axis with the tree
+    // of the count axis over that tree on three, whole and in parts.
+    #[cfg(feature = "rocksdb_storage")]
+    assert_eq!(left_behind.len(), (5 * 3 + 3 * 2) * 2);
 }

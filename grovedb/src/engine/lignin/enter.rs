@@ -99,7 +99,10 @@
 //!   none. A group in which a batch writes nodes of the Merk after the
 //!   last batch that puts the element's node is refused with
 //!   `Error::NotSupported`: where that batch moves the root, no node
-//!   would name it.
+//!   would name it. It is taken where the element as the group leaves
+//!   it names no root and the group puts nothing into the Merk: that
+//!   batch empties the Merk, which is cleared with it
+//!   ([`super::over`]).
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
 //!   node or removes it, which gives the element or none. Otherwise, in
@@ -256,7 +259,7 @@ pub(super) fn element_read(
     Ok(node.as_ref().map(|node| element_of(node.value_as_slice())))
 }
 
-fn key_of(host: &LigninHost) -> String {
+pub(super) fn key_of(host: &LigninHost) -> String {
     host.key.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -642,7 +645,23 @@ pub(super) fn owed(
                     };
                     let named = parts.iter().rposition(puts);
                     let written = parts.iter().rposition(|part| part.writes_merk(&own));
-                    if written.is_some_and(|at| named.is_none_or(|named| named < at)) {
+                    // A tree that the group writes as an empty one,
+                    // and puts nothing into, is emptied by that batch:
+                    // the look for what is written over clears its Merk
+                    // with it ([`super::over`]), and no root is left to
+                    // name.
+                    let emptied = || {
+                        let stated = match host_of(parts, host) {
+                            Host::Stated(value) => element_of(value),
+                            Host::Removed | Host::Stored => None,
+                        };
+                        let root =
+                            stated.and_then(|element| element.root_key_and_tree_type_owned());
+                        let mut put = parts.iter().flat_map(LigninSettled::put_into);
+                        matches!(root, Some((None, _))) && !put.any(|into| into == own)
+                    };
+                    if written.is_some_and(|at| named.is_none_or(|named| named < at)) && !emptied()
+                    {
                         return Err(unnamed_root(host));
                     }
                     owed.apart.push(host.clone());
