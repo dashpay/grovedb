@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io::{self, ErrorKind},
     path::Path,
     sync::{
@@ -102,6 +103,7 @@ struct Script {
     faults: Vec<Call>,
     stops: Vec<Stop>,
     skip_syncs: bool,
+    open: BTreeMap<String, usize>,
 }
 
 impl Script {
@@ -206,6 +208,13 @@ impl FaultyVfs {
         self.script.lock().unwrap().faults.len()
     }
 
+    /// How many handles are open that were opened by a path whose last
+    /// part is `name`, whatever the file is called now.
+    pub(crate) fn open_handles(&self, name: &str) -> usize {
+        let script = self.script.lock().unwrap();
+        script.open.get(name).copied().unwrap_or(0)
+    }
+
     fn enter(&self, op: Op, path: &Path) -> io::Result<bool> {
         enter(&self.script, op, &name_of(path))
     }
@@ -214,11 +223,15 @@ impl FaultyVfs {
 impl Vfs for FaultyVfs {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
         self.enter(Op::Open, path)?;
-        Ok(Box::new(FaultyFile {
+        let file = FaultyFile {
             inner: self.inner.open(path, mode)?,
             name: name_of(path),
             script: self.script.clone(),
-        }))
+        };
+        *(self.script.lock().unwrap().open)
+            .entry(file.name.clone())
+            .or_default() += 1;
+        Ok(Box::new(file))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -279,6 +292,16 @@ struct FaultyFile {
 impl FaultyFile {
     fn enter(&self, op: Op) -> io::Result<bool> {
         enter(&self.script, op, &self.name)
+    }
+}
+
+impl Drop for FaultyFile {
+    fn drop(&mut self) {
+        if let Ok(mut script) = self.script.lock()
+            && let Some(open) = script.open.get_mut(&self.name)
+        {
+            *open -= 1;
+        }
     }
 }
 

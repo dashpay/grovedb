@@ -3,7 +3,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::ErrorKind,
+    io::{self, ErrorKind},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -83,11 +83,27 @@ struct State {
     durable_len: u64,
     failed: bool,
     has_writer: bool,
+    /// The handle the segment's blocks are appended through, and the only
+    /// one the segment is synced through. The segment keeps it while it
+    /// has its writer, and after that until a sync through it has covered
+    /// every block, or the segment is cut where a sync failed. A segment
+    /// that the store lets go before that takes the handle with it.
+    appender: Option<Arc<dyn VfsFile>>,
 }
 
 impl State {
     fn is_written(&self) -> bool {
         matches!(self.phase, Phase::Created | Phase::Open)
+    }
+
+    /// Syncs the file through the handle that appended to it.
+    fn sync_appended(&self) -> io::Result<()> {
+        match &self.appender {
+            Some(appender) => appender.sync_data(),
+            None => Err(io::Error::other(
+                "the handle that appended to the segment is closed",
+            )),
+        }
     }
 }
 
@@ -140,10 +156,15 @@ impl Segment {
             FileState::Sealed => Phase::Sealed,
             FileState::Open | FileState::Closed => Phase::Closed,
         };
-        Ok(Self::new(id, path, version, file, phase, valid_len, false))
+        Ok(Self::new(id, path, version, file, phase, valid_len, None))
     }
 
-    fn created(id: FileId, path: PathBuf, file: Box<dyn VfsFile>) -> Self {
+    fn created(
+        id: FileId,
+        path: PathBuf,
+        file: Box<dyn VfsFile>,
+        appender: Arc<dyn VfsFile>,
+    ) -> Self {
         Self::new(
             id,
             path,
@@ -151,7 +172,7 @@ impl Segment {
             file,
             Phase::Created,
             DATA_START,
-            true,
+            Some(appender),
         )
     }
 
@@ -162,7 +183,7 @@ impl Segment {
         file: Box<dyn VfsFile>,
         phase: Phase,
         len: u64,
-        has_writer: bool,
+        appender: Option<Arc<dyn VfsFile>>,
     ) -> Self {
         Self {
             id,
@@ -175,7 +196,8 @@ impl Segment {
                 phase,
                 durable_len: len,
                 failed: false,
-                has_writer,
+                has_writer: appender.is_some(),
+                appender,
             }),
         }
     }
@@ -325,6 +347,7 @@ impl Segment {
 
     fn cut(&self, state: &mut State) {
         state.phase = Phase::Closed;
+        state.appender = None;
         self.end.store(state.durable_len, Ordering::Release);
     }
 
@@ -338,11 +361,14 @@ impl Segment {
         }
         let end = self.end.load(Ordering::Acquire);
         if end > state.durable_len {
-            if let Err(error) = self.file.sync_data() {
+            if let Err(error) = state.sync_appended() {
                 self.fail(&mut state);
                 return Err(SegmentStoreError::io("sync", &self.path)(error));
             }
             state.durable_len = end;
+            if !state.has_writer {
+                state.appender = None;
+            }
         }
         Ok(state.durable_len)
     }
@@ -354,7 +380,7 @@ impl Segment {
         let mut state = self.state();
         self.check_appendable_in(&state)?;
         let len = append_footer()?;
-        if let Err(error) = self.file.sync_data() {
+        if let Err(error) = state.sync_appended() {
             self.fail(&mut state);
             return Err(SegmentStoreError::io("sync", &self.path)(error));
         }
@@ -370,6 +396,9 @@ impl Segment {
         state.has_writer = false;
         if state.failed && state.is_written() {
             self.cut(&mut state);
+        }
+        if self.end.load(Ordering::Acquire) == state.durable_len {
+            state.appender = None;
         }
     }
 }
@@ -594,7 +623,8 @@ impl SegmentStore {
                 return Err(SegmentStoreError::io("open", &path)(error));
             }
         };
-        let segment = Arc::new(Segment::created(id, path, reader));
+        let appender: Arc<dyn VfsFile> = Arc::from(appender);
+        let segment = Arc::new(Segment::created(id, path, reader, appender.clone()));
         let mut segments = self.segments_mut();
         segments.live.insert(id, segment.clone());
         segments.last_id = Some(id);

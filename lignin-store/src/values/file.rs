@@ -1,10 +1,11 @@
 //! One value-log file: its bytes, and where it is in its life.
 
 use std::{
+    io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard, PoisonError,
     },
 };
 
@@ -31,6 +32,9 @@ struct Life {
     durable_len: u64,
     failed: bool,
     has_writer: bool,
+    /// The handle the file's values are appended through, and the only one
+    /// the file is synced through. The file keeps it until it is closed.
+    appender: Option<Arc<dyn VfsFile>>,
 }
 
 /// The atomics are what a reader, an appender and the store's own lock
@@ -94,12 +98,17 @@ impl ValueFile {
                 manifest: manifest_version,
             });
         }
-        let adopted = Self::new(id, path, version, file, Phase::Closed, valid_len, false);
+        let adopted = Self::new(id, path, version, file, Phase::Closed, valid_len, None);
         adopted.cover(valid_len);
         Ok(adopted)
     }
 
-    pub(super) fn created(id: FileId, path: PathBuf, file: Box<dyn VfsFile>) -> Self {
+    pub(super) fn created(
+        id: FileId,
+        path: PathBuf,
+        file: Box<dyn VfsFile>,
+        appender: Arc<dyn VfsFile>,
+    ) -> Self {
         Self::new(
             id,
             path,
@@ -107,7 +116,7 @@ impl ValueFile {
             file,
             Phase::Created,
             FIRST_RECORD_OFFSET,
-            true,
+            Some(appender),
         )
     }
 
@@ -118,7 +127,7 @@ impl ValueFile {
         file: Box<dyn VfsFile>,
         phase: Phase,
         len: u64,
-        has_writer: bool,
+        appender: Option<Arc<dyn VfsFile>>,
     ) -> Self {
         Self {
             id,
@@ -135,7 +144,8 @@ impl ValueFile {
                 phase,
                 durable_len: len,
                 failed: false,
-                has_writer,
+                has_writer: appender.is_some(),
+                appender,
             }),
         }
     }
@@ -287,6 +297,7 @@ impl ValueFile {
         }
         if life.durable_len == self.end() {
             life.phase = Phase::Closed;
+            life.appender = None;
             self.appendable.store(false, Ordering::Release);
             self.closed.store(true, Ordering::Release);
         }
@@ -311,24 +322,17 @@ impl ValueFile {
         self.syncing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Syncs the file through the handle the store reads it by. One sync
+    /// Syncs the file through the handle that appended to it, which is
+    /// open until the sync has returned, whoever asks for it. One sync
     /// runs at a time, and `life` is not held while it does, so that
     /// ending a writer waits for no sync.
-    pub(super) fn sync(&self) -> Result<u64, ValueStoreError> {
-        self.sync_through(&*self.file)
-    }
-
-    /// Syncs the file through `handle`, which is a handle on this file:
-    /// what [`Self::sync`] does, for a writer that syncs through the
-    /// handle it appended by.
     ///
     /// A file that is closed, or of which a sync has failed, is not
-    /// synced again, through whichever handle: after a sync that failed,
-    /// a later one that succeeded would say nothing of the bytes the
-    /// failed one was for.
-    pub(super) fn sync_through(&self, handle: &dyn VfsFile) -> Result<u64, ValueStoreError> {
+    /// synced again: after a sync that failed, a later one that
+    /// succeeded would say nothing of the bytes the failed one was for.
+    pub(super) fn sync(&self) -> Result<u64, ValueStoreError> {
         let _one_at_a_time = self.in_order();
-        let end = {
+        let (end, appender) = {
             let mut life = self.life();
             if life.phase == Phase::Closed {
                 return Ok(life.durable_len);
@@ -341,9 +345,14 @@ impl ValueFile {
                 self.settle(&mut life);
                 return Ok(life.durable_len);
             }
-            end
+            (end, life.appender.clone())
         };
-        let synced = handle.sync_data();
+        let synced = match appender {
+            Some(appender) => appender.sync_data(),
+            None => Err(io::Error::other(
+                "the handle that appended to the file is closed",
+            )),
+        };
         let mut life = self.life();
         let result = match synced {
             Ok(()) => {

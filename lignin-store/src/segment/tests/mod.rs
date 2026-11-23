@@ -7,6 +7,7 @@ mod manifest;
 mod model;
 pub(crate) mod sim;
 mod store;
+mod write_back;
 mod writer;
 
 use std::{

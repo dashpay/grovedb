@@ -447,3 +447,79 @@ fn a_sync_that_fails_after_the_writer_is_gone_closes_the_segment_at_once() {
     db.commit();
     assert_eq!(names(&db.seg_dir()), [""; 0]);
 }
+
+/// A segment that is being written has two handles: the store reads through
+/// one, and blocks are appended and synced through the other. The second
+/// is open while the segment has its writer, and after that until a sync
+/// through it has covered every block or a sync of the segment has failed,
+/// and no longer.
+#[test]
+fn the_handle_that_appends_is_open_until_a_sync_has_covered_the_last_block() {
+    const NAME: &str = "00000001.seg";
+    let open = |db: &Db| db.vfs.open_handles(NAME);
+
+    // A writer that is dropped with blocks no sync has covered leaves its
+    // handle to the store, whose sync is made through it.
+    let mut db = Db::new();
+    let mut writer = db.writer();
+    assert_eq!(open(&db), 2);
+    let blocks = append_blocks(&mut writer, 2, 1);
+    drop(writer);
+    assert_eq!(open(&db), 2);
+    db.vfs.take_calls();
+    db.segments.sync().expect("the blocks are synced");
+    assert_eq!(db.vfs.take_calls(), [(Op::SyncData, NAME.to_owned())]);
+    assert_eq!(open(&db), 1);
+    db.segments.sync().expect("nothing is left to sync");
+    assert!(db.vfs.take_calls().is_empty());
+    db.commit();
+    db.reopen().assert_walk_gives(1, &blocks);
+
+    // One that is dropped with every block synced, or with none, takes
+    // the handle with it.
+    let mut db = Db::new();
+    let mut writer = db.writer();
+    append_blocks(&mut writer, 2, 1);
+    writer.sync().expect("the blocks are synced");
+    assert_eq!(open(&db), 2);
+    drop(writer);
+    assert_eq!(open(&db), 1);
+    let mut db = Db::new();
+    drop(db.writer());
+    assert_eq!(open(&db), 1);
+
+    // A sealed segment is read through the one handle.
+    let mut db = Db::new();
+    let mut writer = db.writer();
+    append_blocks(&mut writer, 2, 1);
+    writer.seal().expect("the segment is sealed");
+    drop(writer);
+    assert_eq!(open(&db), 1);
+
+    // After a sync that failed nothing is synced through the handle
+    // again: it goes with the writer, or at once if the writer is gone.
+    let mut db = Db::new();
+    let mut writer = db.writer();
+    append_blocks(&mut writer, 2, 1);
+    db.vfs.fail(Op::SyncData, NAME);
+    writer.sync().expect_err("the sync fails");
+    drop(writer);
+    assert_eq!(open(&db), 1);
+    let mut db = Db::new();
+    let mut writer = db.writer();
+    append_blocks(&mut writer, 2, 1);
+    drop(writer);
+    db.vfs.fail(Op::SyncData, NAME);
+    db.segments.sync().expect_err("the sync fails");
+    assert_eq!(open(&db), 1);
+
+    // The record of a segment's syncs keeps the segment, and with it the
+    // handle the store reads through. Once the writer of a segment with
+    // nothing left to sync is dropped, that is the only one.
+    let mut db = Db::new();
+    let writer = db.writer();
+    let record = writer.sync_record();
+    drop(writer);
+    assert_eq!(open(&db), 1);
+    assert!(!record.failed());
+}

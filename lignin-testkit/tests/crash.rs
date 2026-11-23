@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use lignin_io::sim::UnknownFate;
 use lignin_testkit::crash::{
-    campaign::{campaign, run, unknown_of_seed, Faults, RunShape, Settings, ACTED},
+    campaign::{
+        campaign, run, unknown_of_seed, write_backs_of_seed, Faults, RunShape, Settings, ACTED,
+    },
     check::Kind,
     cli::DEFECTS,
 };
@@ -35,8 +37,9 @@ fn settings(seed: u64, runs: u64, shape: RunShape) -> Settings {
 }
 
 /// **The short form of the campaign.** Twelve runs, which between them
-/// have every kind of faults with every setting of what a failed sync
-/// leaves: every state that the campaign's crash plans leave at each of
+/// have every kind of faults, and the write-backs that fail in the runs
+/// of odd seeds, with every setting of what a failed sync leaves: every
+/// state that the campaign's crash plans leave at each of
 /// their write boundaries recovers to a committed version.
 #[test]
 fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
@@ -48,9 +51,15 @@ fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
     };
     let kinds: BTreeSet<_> = seeds
         .clone()
-        .map(|seed| (Faults::of_seed(seed), unknown(seed)))
+        .map(|seed| {
+            (
+                Faults::of_seed(seed),
+                write_backs_of_seed(seed),
+                unknown(seed),
+            )
+        })
         .collect();
-    assert_eq!(kinds.len(), 9, "{kinds:?}");
+    assert_eq!(kinds.len(), 12, "{kinds:?}");
 
     let report = campaign(&settings(1, 12, short()), &mut |_, _| {});
     println!("{report}");
@@ -94,6 +103,14 @@ fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
         ("recoveries with faults that returned a store", 300),
         ("recoveries with faults that failed", 100),
         ("floors raised by a durable state", 1),
+        ("write-backs that failed of a log file", 1),
+        ("write-backs that failed of a segment", 1),
+        ("syncs told of a write-back that failed", 3),
+        ("images checked after a write-back that failed", 200),
+        (
+            "images checked in which storage lacks what the session saw",
+            50,
+        ),
     ] {
         assert!(tally.get(name) >= least, "{name}: {}", tally.get(name));
     }
@@ -101,10 +118,10 @@ fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
 
 /// **The same seed, the same run**: the states in the order they were
 /// recovered, where each landed, and the schedule of every file system,
-/// for a run of each kind of faults.
+/// for a run of each of the four kinds that the seeds give.
 #[test]
 fn the_same_seed_gives_the_same_run() {
-    for seed in [1, 2, 3] {
+    for seed in [1, 2, 3, 4] {
         let (first, second) = (run(seed, short()), run(seed, short()));
         assert_eq!(first.digest, second.digest, "seed {seed}");
         assert_eq!(first.fingerprints, second.fingerprints, "seed {seed}");
@@ -164,7 +181,7 @@ fn a_campaign_is_the_same_whatever_runs_at_once() {
 #[test]
 fn every_planted_defect_is_found() {
     // Whether the run of a seed is clean with no defect planted.
-    let mut controls: BTreeMap<u64, bool> = BTreeMap::new();
+    let mut controls: BTreeMap<(u64, bool), bool> = BTreeMap::new();
     let mut found = |name: &str| {
         let defect = DEFECTS
             .into_iter()
@@ -173,6 +190,7 @@ fn every_planted_defect_is_found() {
         let shape = RunShape {
             ops: 30,
             faults: Some(Faults::None),
+            write_backs: Some(defect.write_backs),
             planted: Some(defect.planted),
             ..short()
         };
@@ -207,12 +225,12 @@ fn every_planted_defect_is_found() {
             ..shape
         };
         let control = controls
-            .entry(found.seed)
+            .entry((found.seed, defect.write_backs))
             .or_insert_with(|| run(found.seed, clean).violations.is_empty());
         assert!(*control, "{name}: seed {} is not clean", found.seed);
         (found.violation.kind, found.violation.detail.clone())
     };
-    assert_eq!(DEFECTS.len(), 8);
+    assert_eq!(DEFECTS.len(), 10);
 
     // Commits that were reported durable and are not: the recovery lands
     // below them.
@@ -246,4 +264,20 @@ fn every_planted_defect_is_found() {
     let (kind, detail) = found("forgotten-hash");
     assert_eq!(kind, Kind::Session, "{detail}");
     assert!(detail.contains("says"), "{detail}");
+    // What is appended to a file is synced through another handle than
+    // the one that appended: a sync that was told of no write-back that
+    // failed vouches for blocks and values that storage does not have.
+    // The header of the file is synced through the handle that wrote it,
+    // so no file is found without one.
+    for name in ["segment-handle", "value-handle"] {
+        let (kind, detail) = found(name);
+        assert!(
+            matches!(
+                kind,
+                Kind::NotRecovered | Kind::NotCommitted | Kind::Inconsistent
+            ),
+            "{name}: {kind}: {detail}"
+        );
+        assert!(!detail.contains("is 0 bytes long"), "{name}: {detail}");
+    }
 }
