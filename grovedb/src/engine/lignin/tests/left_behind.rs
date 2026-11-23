@@ -755,3 +755,84 @@ fn a_mark_is_stated_for_each_keyspace_in_which_a_record_stays_under_a_prefix_tha
     drop(group);
     engine.rollback_transaction(&tx).expect("a rollback");
 }
+
+/// A grove that is closed between a flat drop and its drain, and a
+/// checkpoint that is made there: the tree `s` is read in the grove
+/// opened again and in the checkpoint, before and after the drain of
+/// each. `closed` is called with the directory of the grove while
+/// nothing has it open.
+fn over_a_close<E: Engine>(dir: &Path, v: &GroveVersion, closed: &dyn Fn(&Path)) -> Vec<Answer> {
+    let [below, s, name] = names(false);
+    let (grove, checkpoint) = (dir.join("grove"), dir.join("checkpoint"));
+    let mut answers = Vec::new();
+    {
+        let db = GroveDb::<E>::open_with_engine(&grove).expect("a database");
+        let mut h = History::new(&db, v);
+        for tree in [&below, &s, &name] {
+            make(&mut h, tree, false);
+        }
+        dropped(&mut h, "dropped", &name, &s, true);
+        h.plain("checkpoint", db.create_checkpoint(&checkpoint));
+        answers.append(&mut h.answers);
+        db.flush().expect("a flush");
+    }
+    closed(&grove);
+    let mut read_and_drained = |db: &GroveDb<E>, phase: &str| {
+        let mut h = History::new(db, v);
+        reads(&mut h, phase, &s, None);
+        drain(&mut h);
+        reads(&mut h, &format!("{phase}, drained"), &s, None);
+        answers.append(&mut h.answers);
+    };
+    {
+        let db = GroveDb::<E>::open_with_engine(&grove).expect("the database opens again");
+        read_and_drained(&db, "opened again");
+        db.flush().expect("a flush");
+    }
+    closed(&grove);
+    let db = GroveDb::<E>::open_checkpoint_with_engine(&checkpoint).expect("the checkpoint opens");
+    read_and_drained(&db, "the checkpoint");
+    answers
+}
+
+/// What a flat drop left is there after a close and in a checkpoint, on
+/// both engines, until the grove's own drain and the checkpoint's own:
+/// the marks are records of the store. The physical checker reads the
+/// grove while it holds the marks, and after its drain.
+#[test]
+fn what_a_flat_drop_left_is_kept_over_a_close_and_in_a_checkpoint_as_on_rocksdb() {
+    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let dir = tempfile::tempdir().expect("a directory");
+        let on_lignin = over_a_close::<LigninEngine>(dir.path(), v, &|grove| check(grove, v));
+        if number >= 4 {
+            let said = |call: &str| {
+                let mut said = on_lignin.iter().filter(|(named, ..)| named == call);
+                let (.., first) = said.next().unwrap_or_else(|| panic!("no call {call}"));
+                first.as_str()
+            };
+            assert_eq!(said("checkpoint"), "Ok(())", "v{number}");
+            for (phase, rows) in [
+                ("opened again", "Ok(2)"),
+                ("opened again, drained", "Ok(0)"),
+                ("the checkpoint", "Ok(2)"),
+                ("the checkpoint, drained", "Ok(0)"),
+            ] {
+                assert_eq!(
+                    said(&format!("rows {phase}: back")),
+                    rows,
+                    "{phase}, v{number}"
+                );
+            }
+        }
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let on_rocksdb = over_a_close::<crate::RocksDbEngine>(dir.path(), v, &|_| ());
+            assert_eq!(on_lignin.len(), on_rocksdb.len(), "v{number}");
+            for (step, (lignin, rocksdb)) in on_lignin.iter().zip(&on_rocksdb).enumerate() {
+                assert_eq!(lignin, rocksdb, "call {step} on grove version {number}");
+            }
+        }
+    }
+}

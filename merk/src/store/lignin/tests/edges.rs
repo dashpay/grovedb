@@ -1734,8 +1734,8 @@ impl Held {
 
 /// Two subtrees are dropped where RocksDB keeps their records until a
 /// drain: the first and the last of the grove in the order of the
-/// prefixes, so that nothing else lies before the subtrees between them,
-/// or after them. Each is dropped with a mark for each keyspace it held
+/// prefixes, so that nothing else lies before the three subtrees between
+/// them, two Merks and a tree of flat records, or after them. Each is dropped with a mark for each keyspace it held
 /// a record in ([`LigninSettled::leave_behind`]). The cursors of the
 /// other subtrees then stand where the cursors of RocksDB stand after
 /// every move, with the two subtrees there and one record in each of
@@ -1755,6 +1755,10 @@ fn what_a_flat_drop_left_is_counted_as_one_record_of_its_keyspace() {
         };
         let mut steps = dropped(LOW);
         steps.extend(merk_with_side_records(P1, &[1, 2, 3]));
+        // A tree that keeps its data flat, for the cursor of flat data:
+        // what the drops left is the fourth record before it and the
+        // third after it.
+        steps.extend(flat_with_side_records(P2, &[9]));
         steps.extend(merk_with_side_records(P3, &[4, 5]));
         steps.extend(dropped(P4));
         steps.push(Step::Enter(HOME));
