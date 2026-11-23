@@ -49,7 +49,7 @@ mod tests {
             )
             .cost;
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2);
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![],
@@ -108,7 +108,7 @@ mod tests {
             )
             .cost;
         let non_batch_cost = non_batch_cost_1.add(non_batch_cost_2).add(non_batch_cost_3);
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![],
@@ -188,7 +188,7 @@ mod tests {
             .add(non_batch_cost_2)
             .add(non_batch_cost_3)
             .add(non_batch_cost_4);
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![
             QualifiedGroveDbOp::insert_or_replace_op(
                 vec![],

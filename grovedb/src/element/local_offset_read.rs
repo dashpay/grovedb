@@ -385,7 +385,10 @@ mod tests {
     }
 
     /// The keys of `[b"host"]`'s ascending page at offset 1, limit 1.
-    fn second_row(db: &crate::tests::TempGroveDb, transaction: TransactionArg) -> Vec<Vec<u8>> {
+    fn second_row<'db>(
+        db: &'db crate::tests::TempGroveDb,
+        transaction: TransactionArg<'db, '_>,
+    ) -> Vec<Vec<u8>> {
         let mut query = Query::new_range_full();
         query.offset = Some(1);
         query.limit = Some(1);

@@ -41,7 +41,7 @@ mod tests {
                 grove_version,
             )
             .cost;
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::insert_or_replace_op(
             vec![b"sum_tree".to_vec()],
             b"key1".to_vec(),

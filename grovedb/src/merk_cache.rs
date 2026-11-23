@@ -728,6 +728,7 @@ pub(crate) mod failed_writes {
 
 #[cfg(all(test, grovedb_test_engine))]
 mod tests {
+    use crate::tests::SuiteBatch;
     use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, CostsExt};
     use grovedb_merk::{
         element::{
@@ -737,11 +738,11 @@ mod tests {
         TreeType,
     };
     use grovedb_path::{SubtreePath, SubtreePathBuilder};
-    use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use super::MerkCache;
     use crate::{
+        engine::Engine,
         tests::{make_deep_tree, make_test_grovedb, TEST_LEAF},
         Element, Error,
     };
@@ -897,9 +898,13 @@ mod tests {
 
         let path = SubtreePath::from(&[TEST_LEAF, b"innertree"]);
         let item = Element::new_item(b"hello".to_vec());
+        let root_before = db.root_hash(Some(&tx), version).unwrap().unwrap();
 
+        // An engine whose batch counts its operations shows the propagation
+        // as more of them. LigninDB's batch gives no count.
+        #[cfg(not(grovedb_test_engine = "lignin"))]
         let no_propagation_ops_count = {
-            let batch = StorageBatch::new();
+            let batch = SuiteBatch::default();
 
             let mut merk = db
                 .open_transactional_merk_at_path(path.clone(), &tx, Some(&batch), version)
@@ -926,7 +931,20 @@ mod tests {
 
         drop(merk);
 
-        assert!(cache.into_batch().unwrap().unwrap().len() > no_propagation_ops_count);
+        let batch = cache.into_batch().unwrap().unwrap();
+        #[cfg(not(grovedb_test_engine = "lignin"))]
+        assert!(batch.len() > no_propagation_ops_count);
+
+        // On every engine the batch holds the writes up to the root: applied,
+        // it moves the root hash.
+        db.db
+            .apply_batch(*batch, &tx)
+            .unwrap()
+            .expect("the batch of the cache applies");
+        assert_ne!(
+            db.root_hash(Some(&tx), version).unwrap().unwrap(),
+            root_before
+        );
     }
 
     #[test]
