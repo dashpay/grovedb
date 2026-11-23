@@ -27,8 +27,8 @@ pub struct ReserveStats {
     /// none, and every other count here is 0.
     pub len: u64,
     /// Whether the session holds its reserve: a fill of it returned with
-    /// the reserve whole, and the session has not taken the reserve's
-    /// file off the device since.
+    /// the reserve whole, and at no refusal for room since has the
+    /// session removed the reserve's file or found none of its name.
     pub held: bool,
     /// How often the session was given an error that a full device
     /// caused. A fill waits for what follows the last of them.
@@ -45,8 +45,8 @@ pub struct ReserveStats {
     /// Fills that failed. The session does not hold its reserve after
     /// one, whatever the fill left on the device. That can be the whole
     /// reserve under its name, where the device refused no more than to
-    /// make the name durable. The next refusal for room takes what was
-    /// left off the device.
+    /// make the name durable. At the next refusal for room the session
+    /// removes what was left, as far as the file layer lets it.
     pub fills_failed: u64,
     /// What the last fill, or the last removal of a file of the reserve,
     /// that failed said.
@@ -244,8 +244,8 @@ impl SessionReserve {
 impl Kept {
     /// Fills the reserve, under the lock on what the session knows of it.
     /// After a fill that failed the reserve is to be filled from the
-    /// marks on that are read then, and what the fill left on the device
-    /// is taken off it at the next refusal for room.
+    /// marks on that are read then, and the next refusal for room looks
+    /// for what the fill left on the device.
     fn fill(&self, hold: &mut MutexGuard<'_, Hold>, marks: impl FnOnce() -> Marks) {
         hold.on_device = true;
         match self.reserve.fill(self.len) {

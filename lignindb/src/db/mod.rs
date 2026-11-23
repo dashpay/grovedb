@@ -406,12 +406,13 @@
 //!   fill begins, a refusal makes no operation on a file for the
 //!   reserve.
 //! - **The session fills it again from the cleaner's thread**, at the end
-//!   of a turn of its loop in which the cleaner was at rest, once the
-//!   session has published a version and counted a table checkpoint that
-//!   it installed since it was last told of a refusal for room. A fill
-//!   that fails is tried again by the same rule, counted from the fill,
-//!   and what it left on the device is taken off it at the next refusal
-//!   for room.
+//!   of a turn of its loop in which the cleaner was at rest, once both
+//!   of its marks have moved on since it was last told of a refusal for
+//!   room: the latest version that it published, and its count of the
+//!   table checkpoints that it installed (DF13 says when that count
+//!   moves). A fill that fails is tried again by the same rule, with the
+//!   marks read after the fill, and the next refusal for room looks for
+//!   what the fill left on the device.
 //!
 //! [`DbStats::reserve`] says what the session holds and what it did. An
 //! open that is refused for room does not release a reserve: whoever

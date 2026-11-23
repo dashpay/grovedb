@@ -521,9 +521,10 @@ made there stays as it is.
   before the commit (`transactions.md`, LD2). The reserve is released
   where the commit of that transaction, or another call or turn, is
   refused for room.
-  A file that the file layer does not let the release remove stays, and
-  the other one goes all the same. `DbStats::reserve` keeps what the
-  last such removal said, and the next refusal for room tries again.
+  Each of the two files is removed by itself: one that the file layer
+  does not let the release remove stays, whatever became of the other.
+  `DbStats::reserve` keeps what the last such removal said, and the next
+  refusal for room tries again.
 - **After a release in which no removal failed, and until its next fill
   begins, the session asks the device for nothing on the reserve's names
   when it is refused.** So on a device that stays full, where no
@@ -546,11 +547,12 @@ made there stays as it is.
   the lock of the reserve, and again after a fill that failed. A session
   whose open could not fill the reserve counts from that fill.
 
-  A table checkpoint is installed when write-back finds one due
-  (`WriteBack::checkpoint_due`; by default once 64 MiB were logged
-  since the last one) or the cleaner asks for one. So a session that
-  takes few writes can be without its reserve for as long as it lasts.
-  The next open tries the fill at its end, as every open does.
+  Nothing of the reserve asks for a table checkpoint. Write-back's loop
+  tries one only where one is due (`WriteBack::checkpoint_due`; by
+  default once 64 MiB were logged since the last one). So a session
+  that takes few writes can be without its reserve for as long as it
+  lasts. The next open of a session that keeps a reserve tries the fill
+  at its end.
 
   The cleaner was at rest in a turn if no pass of the turn failed, and
   none of the cleaner's counts moved in it but those of its passes, of
@@ -558,15 +560,19 @@ made there stays as it is.
   (`CleanerStats`). It copied no block and no value, sealed and closed
   no file, retired and dropped none, and asked for no table checkpoint.
   A reserve that is taken back while the cleaner still works takes the
-  room that the cleaner's copies need.
+  room that the cleaner's copies need. A turn in which the cleaner only
+  waits is a turn at rest, also where a file that it has emptied is
+  still there because a reader holds it: a fill that is tried then can
+  fail for the room that the file takes.
 - **A fill that fails is counted, and takes away what it wrote**, as far
   as the file layer lets it (`Reserve::fill`). The session does not hold
   its reserve then. What the fill could not take away stays on the
   device, and so does a reserve that the fill found at its length and
-  could only not make durable by its name: the next refusal for room
-  takes that off the device as it takes a reserve that is held, and
-  counts a release where it found a file. The next fill is tried by the
-  same rule, with the two marks read after the fill that failed.
+  could only not make durable by its name: at the next refusal for room
+  the session removes it as it removes a reserve that is held, file by
+  file as above, and counts a release where a file left the device. The
+  next fill is tried by the same rule, with the two marks read after the
+  fill that failed.
 - **One call of the reserve is made at a time.** A release waits for a
   fill that is being written, and so does the call or the turn that was
   refused. A close waits for it as well: it waits for the turn of the
@@ -609,7 +615,7 @@ So a database in which much is dead needs little, and one that is nearly
 all live needs about as much as its largest file to empty one.
 
 **Measured** (`db::tests::room`, on the simulated device with a capacity
-in bytes, at head `e4e8bbf6` with the reserve of DF13): a database with
+in bytes, at head `0232a406` with the reserve of DF13): a database with
 pages of 4 KiB, log files of 96 KiB and segments of 256 KiB, in a session
 that keeps a reserve and has none of its threads. It is written, with
 write-back's turns after every commit and a cleaner that makes no turn,
@@ -644,49 +650,61 @@ do.** Nothing holds a commit back while the reserve is out. With room,
 the thread of the next commit makes the cut of the log itself and commits
 (DF7), and the three loops take their next turn at once (DF12): the
 writer and the loops come to the room at the same moment.
-`db::tests::reserve` has two runs with a writer, each at every size
-from 1 KiB to 1 MiB of the table above. In both the writer commits when
-the session needs a commit, since a fill waits for a commit and for a
-table checkpoint that follow the last refusal for room (DF13): once
-after the release; again where its commit was refused; where the
-session was given an error that a full device caused, or a fill of its
-failed, after the writer's last commit began; and, in the second run,
-where that commit made no table checkpoint due and write-back has
-nothing to write. Whenever 40 commits in a row were refused, somebody
-makes room. In both runs the session holds its reserve when its threads
-have ended.
 
-**In the first**, the session of the measurement is full as above: it
-is at rest, and it has been told of every refusal. From that moment its
-three loops run as its threads run them, beside that writer, whose
-commit is a group of 72 KiB.
+**The order in which the writer comes first** is measured as the order
+of DF11 is, in the session at rest of the table above
+(`db::tests::room`): the session is asked for a commit of 72 KiB as soon
+as it has released its reserve, before write-back and the cleaner have
+had a turn, and the order of DF11 follows.
 
-- With a reserve of 384 KiB or more the session gets by with its
-  reserve and with the writer's one commit. Nothing is refused after
-  the release, so what is written before the room is back is that
-  commit, what write-back writes for it, and what write-back and the
-  cleaner had to write when the device filled, in whatever order the
-  threads take their turns. The run fails otherwise, and it failed in
-  no run that was made.
-- With a smaller reserve the schedule decides. Where the writer's
-  commit is taken before write-back's turn, it takes 72 KiB of the
-  reserve, and with 128 KiB write-back then has 56 KiB for 72 KiB of
-  values and the cleaner has nothing: the device stays full, with the
-  reserve gone, until somebody makes room.
+| Reserve that the session keeps | The writer's commit | What happens |
+| --- | --- | --- |
+| 1, 4, 16, 32 KiB | refused | nothing comes back, as where the writer waits |
+| 64 KiB | refused: it needs 72 KiB | as where the writer waits: room comes back, the next commit is taken, and the session fills its reserve again |
+| 128 KiB | taken | nothing comes back: write-back has about 56 KiB for the 72 KiB of values of that commit, and the cleaner has nothing. The next commit is refused, and the reserve is not filled again. |
+| 256, 384, 512 KiB and 1 MiB | taken | room comes back, the next commit is taken, and the session fills its reserve again |
 
-**In the second**, a database is opened with its three threads and fills
-its device, while they run, with values that are live: its writer waits
-for write-back between two commits. At the first refusal the session
-releases its reserve. The writer's next commit takes those values out
-again, and its commits after that rewrite others. With the values out
-the cleaner gives their room back, and the session fills its reserve
-again, with the room that it had or once somebody had made room. Which
-of the two is the schedule's to say at every size: the threads were in
-their turns when the reserve was released, so what the session is told
-after it decides how often the writer commits.
+So a reserve that is enough where the writer waits can be too small
+where it does not, and a smaller one can be enough again because it
+leaves the writer's commit no room. Of the sizes that were tried, each
+from 256 KiB up was enough in both orders. The test asserts that for
+the estimate below, 384 KiB, and for the sizes above it.
 
-So a reserve covers what the table of this section names, and what the
-writer commits before write-back and the cleaner have made their turns.
+**With the threads running** the order is the schedule's.
+`db::tests::reserve` has two runs with a writer, each at every size from
+1 KiB to 1 MiB of the table above. In both the writer commits when the
+session needs a commit, since a fill waits for both marks of DF13 to
+move on after the last refusal for room: once after the release; again
+where its commit was refused; where the session was given an error that
+a full device caused, or a fill of its failed, since the writer last
+looked before a commit; and where no table checkpoint was counted since
+then, write-back has nothing to write and no table checkpoint is due.
+Whenever 40 commits in a row were refused, somebody makes room. Both
+runs assert what holds in every schedule: the session releases its
+reserve at the first refusal, it fills its reserve again and the cleaner
+drops a file of the value log, within a minute, and the session holds
+its reserve when its threads have ended. Whether somebody had to make
+room is counted over the runs that were made, and is no assertion.
+
+- **In the first**, the session of the measurement is full as above, and
+  from that moment its three loops run as its threads run them, beside
+  a writer whose commit is a group of 72 KiB.
+- **In the second**, a database is opened with its three threads and
+  fills its device, while they run, with values that are live: its
+  writer waits for write-back between two commits. At the first refusal
+  the session releases its reserve. The writer's next commit takes those
+  values out again, and its commits after that rewrite others. The room
+  that the session has is the reserve and what the refusal left free,
+  which is less than one commit of the filling.
+
+In 200 runs of each that were made on one machine with 8 CPUs, nobody
+had to make room with a reserve of 256 KiB or more, in either run. With
+a smaller reserve some runs came through with the session's own room and
+others did not; in the first run none did with less than 64 KiB.
+
+So a reserve covers what the first table of this section names, and
+what the writer commits before write-back and the cleaner have made
+their turns.
 
 For a node nothing was measured. What a reserve has to cover there: the
 pages that can wait for write-back, one table checkpoint, the live part
@@ -1122,7 +1140,7 @@ Nine sweeps are made. No background thread and no clock decides anything
 in them, and the counts were the same in every run that was made of them,
 on Linux x86-64 and on macOS aarch64. They are the counts at head
 `48c69be1` plus this task, and the same were counted again at head
-`b37f322d` with `STORE-06-F3` (DF12) and at head `e4e8bbf6` with the
+`b37f322d` with `STORE-06-F3` (DF12) and at head `0232a406` with the
 reserve of DF13, in sessions that keep none: a change of what the store
 does to its files at an open, a close or a turn of write-back changes
 them.
@@ -1181,8 +1199,8 @@ At each of the 3,269 operations:
 | `db::tests::full` (6 tests, 9 sweeps) | the above, at every operation |
 | `db::tests::ended` | each of the two states of DF8, met by a step that is no commit and no flush, ends the session; a `flush()` still makes durable what was published; the look waits for no commit, makes no operation on a file and settles nothing; a session gives the first reason it had, also where the commit path stops it while the store's reason is being kept; a manifest in doubt is settled by a commit, by a close and by the creation of a checkpoint, and ends no session; a table checkpoint is installed though the replacement for its turn of the log was refused; a close whose table checkpoint is refused the start record of the log's next file once does all a close does, whether the device kept the record or not; a commit or a creation that cannot have it settled is refused and can be made again; a commit beside a holder of the manifest is made (DF8a) |
 | `db::tests::clean` (four of its tests) | a sync of the cleaner's segment that was refused in a pass ends the session, which says so before a close or write-back has met the segment (DF8); a close that is the first to be refused the sync of the cleaner's segment answers with the cleaner's error, which has the device's refusal, and so does a close after a pass of the cleaner's loop that was refused it; a close whose cleaner was refused for room and whose write-back failed for something else answers with write-back's error and has released the reserve (DF13) |
-| `db::tests::room` | DF10, DF11 and DF13 on a device with a capacity in bytes, in a session at rest: a session that keeps a reserve has released it at the first refusal for room; in one that keeps none nothing comes back; with the room of the reserve write-back and the cleaner give back what is dead, the session takes the next commit and fills its reserve again; the least reserve that is enough in that order of turns (section 5.3) |
-| `db::tests::reserve` | DF13. An open fills the reserve where the directory has none of its length, writes none again that is there, and is made where the fill is refused. Each call of the facade that a full device refuses releases the reserve (a commit, a write, a wipe, a flush, the creation of a checkpoint, a close, a drop), and so do a turn of write-back, a pass of the cleaner and a call of the reclaimer, told as their loops tell them, and each of the three loops running alone. An error that is not for room releases nothing, and after a release in which no removal failed the session asks the device for nothing on the reserve's names. A removal that the file layer refuses is tried again at the next refusal for room; a reserve that a fill left under its name without making the name durable goes there as well, and so does what a fill that was cut short left under the other name; after a fill that left nothing no release is counted. The fill waits for a commit and a table checkpoint that followed the last refusal that the session was told of, in either order, and for a turn in which the cleaner was at rest, which can be the first turn after them, also where a pass of the cleaner over the value log met the refusal; a fill that fails is tried after a further commit and a further checkpoint. A release ends the wait after a failed turn of each loop, which is an hour in these tests: write-back's loop and the cleaner's come to a second turn where either released the reserve, the reclaimer's thread comes to a second round, and the cleaner's loop takes its next turn where a commit that was refused released it, where a turn of write-back that was refused is told to the session, and where the turn that a commit's thread makes for write-back is refused (DF12). A call that room was made before the reclaimer's thread can be woken ends its first idle wait. On a device that stays full, under a database with its three threads and at every size of the ladder of section 5.3, the reserve is released once, no fill is tried, and write-back's failed turns are those its waits allow (DF12). Each loop that released the reserve takes its own next turn at once. A turn at rest is one that moved no count of the cleaner but its passes, its reads of the page table and its trims. The acceptance, at every size of that ladder: a database that is opened with its three threads fills its device, the session releases its reserve at the first refusal, the cleaner gives room back, commits are taken, the session fills its reserve again, and it holds its reserve when its threads have ended, with the room that it had or once somebody had made room. The same from a device that a session at rest had filled with a cleaner that was behind, with the three loops running from then on beside a writer: there, from 384 KiB up, with the room of the reserve alone, one commit of the writer and no refusal after the release. |
+| `db::tests::room` | DF10, DF11 and DF13 on a device with a capacity in bytes, in a session at rest: a session that keeps a reserve has released it at the first refusal for room; in one that keeps none nothing comes back; with the room of the reserve write-back and the cleaner give back what is dead, the session takes the next commit and fills its reserve again; the least reserve that is enough in that order of turns, and what each size of the ladder comes to in the order in which the writer's commit comes before write-back's turns, where the reserve of a log file and a segment is enough (section 5.3) |
+| `db::tests::reserve` | DF13. An open fills the reserve where the directory has none of its length, writes none again that is there, and is made where the fill is refused. Each call of the facade that a full device refuses releases the reserve (a commit, a write, a wipe, a flush, the creation of a checkpoint, a close, a drop), and so do a turn of write-back, a pass of the cleaner and a call of the reclaimer, told as their loops tell them, and each of the three loops running alone. An error that is not for room releases nothing, and after a release in which no removal failed the session asks the device for nothing on the reserve's names until its next fill begins. The two files of a reserve go each by itself: where the removal of one is refused, the other is a release with its bytes, and the refused one is tried again at the next refusal for room. A reserve that a fill left under its name without making the name durable is removed there as well, and so is what a fill that was cut short left under the other name; after a fill that left nothing no release is counted. The fill waits for both marks of DF13 to have moved on since the last refusal that the session was told of, in either order, and for a turn in which the cleaner was at rest, which can be the first turn after them, also where a pass of the cleaner over the value log met the refusal; a fill that fails is tried once both marks have moved on again. A release ends the wait after a failed turn of each loop, which is an hour in these tests: write-back's loop and the cleaner's come to a second turn where either released the reserve, the reclaimer's thread comes to a second round, and the cleaner's loop takes its next turn where a commit that was refused released it, where a turn of write-back that was refused is told to the session, and where the turn that a commit's thread makes for write-back is refused (DF12). A call that room was made before the reclaimer's thread can be woken ends its first idle wait. On a device that stays full, under a database with its three threads and at every size of the ladder of section 5.3, the reserve is released once, no fill is tried, and write-back's failed turns are those its waits allow (DF12). Each loop that released the reserve takes its own next turn at once. A turn at rest is one that moved no count of the cleaner but its passes, its reads of the page table and its trims. The acceptance, at every size of that ladder: a database that is opened with its three threads fills its device, the session releases its reserve at the first refusal, the cleaner gives room back, commits are taken, the session fills its reserve again, and it holds its reserve when its threads have ended, with the room that it had or once somebody had made room. The same from a device that a session at rest had filled with a cleaner that was behind, with the three loops running from then on beside a writer. |
 | `db::tests::filling` | random fills under a database whose background threads run, with the same model: 12 seeds of 40 rounds, in which the device fills in each of the four ways and has room again |
 | `db::tests::backup` | a backup from a checkpoint of a database that is written meanwhile is the database at the checkpoint's version (BK2): the copy waits, with every file measured and none copied, until 5 commits were made beside it; a restore of it takes writes |
 | `backup::tests::copy` | BK1 to BK11: closed and killed sources, refusals (a target inside the source among them), the valid lengths, carried files, a target that cannot be listed, a database that was being made, cut at each operation of its creation, a full device and a power cut under the target at every operation |

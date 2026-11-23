@@ -216,7 +216,9 @@ impl Troubles {
     /// reclaiming. This takes the lock of the reserve, and after it the
     /// lock on each loop's wake in turn. Under the lock of the reserve
     /// the file layer is asked for the two files of the reserve and for
-    /// their removal, and nothing else is waited for under any of them.
+    /// their removal, and a removal that failed is recorded under the
+    /// lock on the text of the reserve's last failure, which a reader of
+    /// the session's counts takes as well.
     pub(super) fn refused(&self, error: &(dyn Error + 'static)) {
         if !self.reserve.kept() {
             return;
