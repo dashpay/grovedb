@@ -66,9 +66,9 @@ pub trait HashRules {
     fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal>;
 
     /// Another hash that a writer may have taken for the hash of `node`,
-    /// the root of a hosted Merk, when it made the value hash of the
-    /// host: `None` where the rules name none. The provided method names
-    /// none.
+    /// the root of a tree that a node hosts, when it made the value hash
+    /// of the host: `None` where the rules name none. The provided method
+    /// names none.
     ///
     /// It is asked by [`made_with_other`](super::made_with_other) and by
     /// nothing else: no evaluation makes a hash with it, and

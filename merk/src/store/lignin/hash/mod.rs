@@ -147,10 +147,16 @@
 //! element whose value hash is made from one Merk, with that hash for the
 //! root. So [`lignin_tree::hash::made_with_other`] says of a stored value
 //! hash that differs whether it is this one, from what is stored, and a
-//! cell does not say under which GroveVersion it was written. A hash that
-//! a write left behind the root of its Merk was made from a root the Merk
-//! had before, with its aggregate or without, and is neither the hash of
-//! the rules nor this one. An indexed tree,
+//! cell does not say under which GroveVersion it was written. The hash
+//! with no aggregate is made from the root's key-value hash and the
+//! hashes of its children. So a hash that a write left behind the root of
+//! its Merk, made from a root the Merk had before, with its aggregate or
+//! without, is neither the hash of the rules nor this one where that root
+//! had another key-value hash or another hash of a child than the root
+//! has now. A root that differs from it in its own aggregate alone has
+//! the same hash with no aggregate, and a host that was left behind such
+//! a root with that hash is named: nothing that is stored tells the two
+//! apart. An indexed tree,
 //! a tree whose data is no Merk, a tree with no root and a tree whose
 //! nodes have no aggregate in their hashes have no such hash.
 //!

@@ -593,9 +593,9 @@ pub const WIPE_EMPTY: &str = "crash plans of a crash during a wipe that leave th
 
 /// The count of the value hashes that the engine's checker named as left
 /// by a delete, in the checks of a run on a grove version that leaves
-/// them (`grove::leaves_hashes`): one for each check of a database that
-/// holds one, so a hash that stays is counted in every state it is
-/// recovered in. They are no violations.
+/// them (`grove::leaves_hashes`): one for each check that finds a
+/// database sound and names one in it, so a hash that stays is counted
+/// in every state it is recovered in. They are no violations.
 pub const LEFT_HASHES: &str = "value hashes a delete left, as the checks named them";
 
 /// The most violations a run reports: one defect shows in many states.

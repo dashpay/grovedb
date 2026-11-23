@@ -60,9 +60,10 @@ pub struct Rules<'a> {
     /// The size of the pages of the run's databases.
     pub page_size: PageSize,
     /// Where the checks add the value hashes that the engine's checker
-    /// named as left by a delete (`grove::verify`), one for each check of
-    /// a database that holds one. Only a run on a grove version that
-    /// leaves such a hash adds any.
+    /// named as left by a delete (`grove::verify`): each check that
+    /// finds the store sound adds what it named, as soon as it has, and
+    /// a check that finds the store unsound adds nothing. Only a run on
+    /// a grove version that leaves such a hash adds any.
     pub left_hashes: &'a AtomicU64,
 }
 
@@ -70,6 +71,8 @@ impl Rules<'_> {
     /// The two checks of the engine's checker on the database in `dir`:
     /// `db` beside its threads, which is then closed, and the store that
     /// the close left. Returns the version the database opens at again.
+    /// What the first check named is counted before the close, so it
+    /// stays counted where the close or the second check fails.
     fn verified(
         &self,
         db: grove::Grove,
@@ -78,11 +81,11 @@ impl Rules<'_> {
         tuning: &Tuning,
     ) -> Result<u64, String> {
         let beside = grove::verify(&db, self.grove_version)?;
+        self.left_hashes.fetch_add(beside, Ordering::Relaxed);
         drop(db);
         let (version, closed) =
             grove::verify_closed(vfs_of(state), dir, tuning, self.grove_version)?;
-        self.left_hashes
-            .fetch_add(beside + closed, Ordering::Relaxed);
+        self.left_hashes.fetch_add(closed, Ordering::Relaxed);
         Ok(version)
     }
 }

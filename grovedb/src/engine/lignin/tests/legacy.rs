@@ -35,7 +35,7 @@ use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignindb::{verify::Report, Db, Options};
 
 use super::{
-    append_only::{verified, Answer, History},
+    append_only::{verified, Answer, Appended, Commitment, History},
     nested::{made_by, KINDS},
     sync, Lignin, LigninEngine,
 };
@@ -387,6 +387,7 @@ enum Child {
     Mmr,
     Bulk,
     Dense,
+    Commitment,
 }
 
 impl Child {
@@ -396,6 +397,7 @@ impl Child {
             Self::Mmr => "mmr tree",
             Self::Bulk => "bulk append tree",
             Self::Dense => "dense tree",
+            Self::Commitment => "commitment tree",
         }
     }
 }
@@ -438,6 +440,11 @@ fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Child)
             let inserted = db.dense_tree_insert(AT_PARENT, CHILD, value, None, v);
             inserted.unwrap().expect(ok);
         }
+        Child::Commitment => {
+            insert(AT_PARENT, CHILD, Commitment::empty(None));
+            let inserted = Commitment::append(db, AT_PARENT, CHILD, 0, None, v);
+            inserted.unwrap().expect(ok);
+        }
     }
     let deleted = catch_unwind(AssertUnwindSafe(|| {
         db.delete(AT_PARENT, CHILD, allowed(), None, v)
@@ -464,9 +471,11 @@ fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Child)
     }
 }
 
-/// The family of the delete: every kind of tree the grove version makes
-/// as `parent`, with every kind, an MMR tree, a bulk append tree and a
-/// dense tree as the tree that is deleted from it.
+/// The family of the delete: every kind of tree whose data is one Merk
+/// that the grove version makes (`nested::KINDS`) as `parent`, with each
+/// of those kinds, an MMR tree, a bulk append tree, a dense tree and a
+/// commitment tree as the tree that is deleted from it. An indexed tree
+/// is no `parent` and no deleted tree of the family.
 ///
 /// On every case the two engines answer the delete alike, with the same
 /// cost and the same root hash after it, and the
@@ -486,7 +495,7 @@ fn the_hashes_the_checker_names_are_the_paths_the_groves_check_reports() {
         let made = made_by(v);
         let mut classes: BTreeMap<&str, usize> = BTreeMap::new();
         for (p, parent) in KINDS.iter().enumerate().take(made) {
-            let flat = [Child::Mmr, Child::Bulk, Child::Dense];
+            let flat = [Child::Mmr, Child::Bulk, Child::Dense, Child::Commitment];
             for c in (0..made).map(Child::Kind).chain(flat) {
                 let told = format!("grove version {number}, {} in {}", c.name(), parent.name);
                 let dir = tempfile::tempdir().expect("a directory");
@@ -530,9 +539,9 @@ fn the_hashes_the_checker_names_are_the_paths_the_groves_check_reports() {
             }
         }
         let expected: &[(&str, usize)] = match number {
-            1..=3 => &[("left", 32), ("of the rules", 44), ("panic", 32)],
-            4 => &[("of the rules", 108)],
-            _ => &[("of the rules", 180)],
+            1..=3 => &[("left", 36), ("of the rules", 49), ("panic", 32)],
+            4 => &[("of the rules", 117)],
+            _ => &[("of the rules", 192)],
         };
         let expected: BTreeMap<&str, usize> = expected.iter().copied().collect();
         assert_eq!(classes, expected, "grove version {number}");
@@ -870,8 +879,9 @@ const NOT_THE_EXPECTED_ROOT: &str = "chunk 2 refused: internal error: Unable to 
 
 /// State sync of a grove that holds the hash a delete left is refused by
 /// the session at its third chunk, with the same error on RocksDB as on
-/// LigninDB and in every direction between them. Nothing is committed,
-/// and the database that was to be synced closes sound. After an insert
+/// LigninDB and in every direction between them. The session commits
+/// once, at its end (`RestoreCommitMode::Atomic`), so nothing is
+/// committed, and the database that was to be synced closes sound. After an insert
 /// below `parent` the grove syncs in every direction, as it does on grove
 /// versions 4 and 5.
 #[test]
