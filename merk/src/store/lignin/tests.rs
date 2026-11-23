@@ -47,6 +47,7 @@ mod chunk;
 mod cursor;
 mod differences;
 mod edges;
+mod held;
 mod large;
 mod proof;
 mod unlinked;
