@@ -138,15 +138,19 @@ mv "$worktree/Cargo.toml.pinned" "$worktree/Cargo.toml"
     echo "record-at-pin: not listed as members of the worktree's workspace, which has them" \
         "only as path dependencies of lignin-testkit, if at all: ${left_out[*]}" >&2
 
-# Merk at the pin has no feature `lignin_storage`. The replay through the
-# LigninDB node store (tests/merk_store.rs) asks for it, and Cargo resolves a
-# member's dev-dependencies whatever is built.
+# GroveDB and Merk at the pin have no feature `lignin_storage`. The replay
+# through the LigninDB node store (tests/merk_store.rs) asks Merk for it, and
+# the engine crash campaign (src/crash/engine) asks both: in a table of its
+# own, [target.'cfg(all())'.dependencies], so that each asking is a line that
+# can go. Cargo resolves every dependency of a member whatever is built.
 asks='/^\[/ { section = $0 }
-    { asked = section == "[dev-dependencies]" && /^grovedb-merk[ =]/ && /"lignin_storage"/ }'
+    { asked = (section == "[dev-dependencies]" || section == "[target.'"'"'cfg(all())'"'"'.dependencies]") &&
+        /^grovedb(-merk)?[ =]/ && /"lignin_storage"/ }'
 found=$(awk "$asks asked { found++ } END { print found + 0 }" "$worktree/$testkit")
-[ "$found" = 1 ] || fail \
-    "expected one line under [dev-dependencies] of $testkit that asks grovedb-merk for the feature" \
-    "\`lignin_storage\`, which the pinned engine does not have, and found $found." \
+[ "$found" = 3 ] || fail \
+    "expected three lines of $testkit that ask for the feature \`lignin_storage\`, which the pinned" \
+    "engine does not have: grovedb-merk under [dev-dependencies], and grovedb and grovedb-merk under" \
+    "[target.'cfg(all())'.dependencies]. Found $found." \
     "The manifest has changed: see what it asks of the pinned engine now, and bring this script" \
     "and the section of the README that names it up to date."
 awk "$asks !asked" "$worktree/$testkit" > "$worktree/$testkit.pinned"
@@ -166,7 +170,7 @@ if ! unresolved=$(cargo metadata --format-version 1 2>&1 >/dev/null); then
     fail "the workspace does not resolve against the pinned engine $pin." \
         "The dependency Cargo could not resolve: ${dependency:-see below}." \
         "This script lists only lignin-testkit among the LigninDB members and takes out of the pinned" \
-        "copy of $testkit only the line that asks grovedb-merk for \`lignin_storage\`; what else" \
+        "copy of $testkit only the lines that ask grovedb and grovedb-merk for \`lignin_storage\`; what else" \
         "the pinned engine cannot give has to be added to it." \
         "Cargo said:" "$unresolved"
 fi

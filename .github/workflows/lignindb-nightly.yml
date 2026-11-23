@@ -100,6 +100,53 @@ jobs:
           .github/scripts/lignin-ci.sh crash --jobs 4 --quiet
           ${{ github.event_name == 'pull_request' && '--runs 4' || format('--points 5000000 --seed {0}', github.run_id) }}
 
+  # GroveDB on the LigninDB engine crashed at every write boundary of random
+  # workloads, with the three threads of each database at work (VER-04):
+  # first the planted defects the campaign has to find, then lineages that
+  # wipe their database again and again, then a million distinct crash
+  # states, each opened and held to the blocks that were committed. It needs
+  # no disk but for the files of a state in which it finds a violation.
+  crash-engine:
+    name: Engine crash campaign
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      # Each night its own seeds, from the run's id on. A seed gives the
+      # streams of a run, and not its crash states, so what the commands
+      # save of the crash states in which the campaign, the wipes or a run
+      # with no defect planted finds a violation is kept with the run.
+      - name: Crash
+        run: >
+          .github/scripts/lignin-ci.sh crash-engine --jobs 4 --quiet
+          --save "$RUNNER_TEMP/engine-crash-states"
+          ${{ github.event_name == 'pull_request' && '--runs 2' || format('--points 1000000 --seed {0}', github.run_id) }}
+      - name: Keep the states of the violations
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-crash-states
+          path: ${{ runner.temp }}/engine-crash-states
+          # A failure with no crash state, as of a planted defect that was
+          # not found, has no files: the log says which it was.
+          if-no-files-found: warn
+
   # The golden corpus of the reference scale: a million documents on each
   # grove version, replayed on RocksDB.
   corpus-reference:
