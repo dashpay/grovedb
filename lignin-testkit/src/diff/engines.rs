@@ -50,9 +50,12 @@ use crate::workload::StreamEngine;
 /// The engine the candidate is compared with.
 pub type Reference = RocksDbEngine;
 
-/// The engine under test: LigninDB's. In a debug build a database of it is
-/// checked when it is closed, and a store the checker calls unsound is a
-/// panic of the case that closed it.
+/// The engine under test: LigninDB's. Its store is read by LigninDB's
+/// physical checker when a case has ended, in any build, and what the
+/// checker finds is a divergence of the case ([`super::close`]). In a
+/// debug build a database of it is checked again when it is closed, and a
+/// store that only that check calls unsound is a panic of the case that
+/// closed it.
 pub type Candidate = LigninEngine;
 
 /// A defect planted in a [`StandIn`].

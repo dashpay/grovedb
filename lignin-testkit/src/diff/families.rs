@@ -61,6 +61,18 @@
 //!   [`Known::family_of_refusal`]). All three are required. The case
 //!   ends there, counted, before what is stored is compared again: no
 //!   stored record is passed over for it.
+//! - [`Family::InsertOnlyOverIndexed`]: on grove versions 4 and 5 GroveDB
+//!   removes the records of an indexed tree that an operation which can
+//!   replace is put over, and not those under an insert that its caller
+//!   knows not to replace (`InsertOnly`): it reads no old element for
+//!   that. Where a batch lists such an insert of an indexed tree at a key
+//!   where the reference read an indexed tree before, the reference
+//!   takes the batch, and the candidate answers `NotSupported` in the
+//!   words of that refusal for that key
+//!   ([`Known::indexed_under_an_insert_only`],
+//!   [`Known::family_of_insert_only_refusal`]), the case ends there,
+//!   counted apart (the owner's ruling D-354). Any other operation that
+//!   the candidate so refuses on those versions is a divergence.
 //!
 //! A case keeps the paths it made so ([`Known`]), from the operations both
 //! engines took. Of a batch it counts the operations by a rule about its
@@ -101,8 +113,8 @@ use grovedb_version::version::GroveVersion;
 
 use grovedb::{Element, GroveDb, SubqueryBranch};
 
-use super::state::Keyspace;
 use super::state::Record;
+use super::state::{a_secondary_holds_a_row, Keyspace};
 use crate::golden::step::{Outcome, Proof, Proved, Step, Value, Verification};
 use crate::workload::{BatchOp, Db, Op, Path, Prove, Read, StreamEngine, TransactionOp, Tx, Write};
 
@@ -123,6 +135,10 @@ pub enum Family {
     /// proof of a query that returns it: the engines differ in the proof
     /// alone.
     DroppedTreeProof,
+    /// An indexed tree put over an indexed tree on grove versions 4 and
+    /// 5 by an insert that its caller knows not to replace, which the
+    /// candidate refuses.
+    InsertOnlyOverIndexed,
 }
 
 /// How many families there are.
@@ -134,12 +150,13 @@ const LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS: u32 = 3;
 
 impl Family {
     /// Every family.
-    pub const ALL: [Family; 5] = [
+    pub const ALL: [Family; 6] = [
         Family::WrittenOver,
         Family::BelowFlatDrop,
         Family::DroppedTree,
         Family::IndexedOverIndexed,
         Family::DroppedTreeProof,
+        Family::InsertOnlyOverIndexed,
     ];
 
     /// What a report calls the family.
@@ -154,6 +171,10 @@ impl Family {
             Family::DroppedTreeProof => {
                 "a tree that was dropped flat and made again before the drain, through a proof"
             }
+            Family::InsertOnlyOverIndexed => {
+                "an indexed tree written over an indexed tree by an insert known not to replace, \
+                 grove versions 4 and 5"
+            }
         }
     }
 
@@ -164,6 +185,7 @@ impl Family {
             Family::DroppedTree => 2,
             Family::IndexedOverIndexed => 3,
             Family::DroppedTreeProof => 4,
+            Family::InsertOnlyOverIndexed => 5,
         }
     }
 }
@@ -173,8 +195,8 @@ impl Family {
 pub struct Counts {
     /// The cases that made a place of the family: an element put over a
     /// tree that held elements, or a flat drop of a tree, whatever it
-    /// held; for the family of an indexed tree over an indexed tree the
-    /// cases in which the reference took such a put, whatever the
+    /// held; for the two families of an indexed tree over an indexed tree
+    /// the cases in which the reference took such a put, whatever the
     /// candidate answered; and for a dropped tree through a proof, which
     /// is counted apart, the cases that ended there.
     pub histories: [u64; FAMILIES],
@@ -244,6 +266,18 @@ impl Counts {
             })
             .collect()
     }
+}
+
+/// The message the corpus runner records where LigninDB refuses an empty
+/// indexed tree put under `key` over an indexed tree a secondary of which
+/// holds rows that the batch does not remove (D-292; `rows_left` of
+/// `grovedb/src/engine/lignin/over.rs`).
+fn refusal_of_rows_left(key: &[u8]) -> String {
+    let key: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "failed: not supported: lignindb: an empty indexed tree written under the key {key} over \
+         an indexed tree, a secondary of which holds rows that the batch does not remove"
+    )
 }
 
 /// The places of the families that one case has made.
@@ -640,6 +674,104 @@ impl Known {
         places
     }
 
+    /// The places at which a batch `op` lists an insert that its caller
+    /// knows not to replace (`InsertOnly`) of an indexed tree where
+    /// `transaction` reads in `db` an indexed tree a secondary of which
+    /// holds a row, and the batch names no key in that tree or below it,
+    /// so that it removes no row of it (D-358): asked before the
+    /// operation is applied. The candidate's refusal names a key by its
+    /// bytes and no path, so a place counts only where no other operation
+    /// of the batch names a key of those bytes, in whatever tree. On a
+    /// grove version up to the third, where [`Known::indexed_under`] has
+    /// every such put, there is none.
+    pub fn indexed_under_an_insert_only<'db, E: StreamEngine>(
+        db: &'db Db<E>,
+        transaction: &Tx<'db, E>,
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> Vec<Path> {
+        if grove_version.protocol_version <= LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS {
+            return Vec::new();
+        }
+        let holds_an_indexed_tree = |place: &Path| {
+            let Some((key, above)) = place.split_last() else {
+                return false;
+            };
+            let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+            let element = db
+                .get_raw(
+                    above.as_slice().into(),
+                    key,
+                    Some(transaction),
+                    grove_version,
+                )
+                .value;
+            element.is_ok_and(|element| element.is_indexed_tree())
+        };
+        let mut places = Vec::new();
+        for batch_op in counted(op, true) {
+            if let BatchOp::InsertOnly { path, key, element } = batch_op
+                && element.is_indexed_tree()
+            {
+                places.push(joined(path, key));
+            }
+        }
+        let named_by_its_key_once = |place: &Path| {
+            let named = op.batch_ops().flat_map(keyed);
+            named.filter(|named| named.last() == place.last()).count() == 1
+        };
+        let untouched_below = |place: &Path| {
+            let mut named = op.batch_ops().flat_map(keyed);
+            !named.any(|named| named.len() > place.len() && named.starts_with(place))
+        };
+        let holds_a_row = |place: &Path| {
+            let read = a_secondary_holds_a_row(db, transaction, place);
+            read.is_ok_and(|holds| holds)
+        };
+        places.retain(|place| {
+            named_by_its_key_once(place)
+                && untouched_below(place)
+                && holds_an_indexed_tree(place)
+                && holds_a_row(place)
+        });
+        places
+    }
+
+    /// The reference took a batch that lists an insert known not to
+    /// replace of an indexed tree over the indexed trees at `over`
+    /// ([`Known::indexed_under_an_insert_only`]).
+    pub fn came_to_insert_only_over_indexed(&mut self, over: &[Path]) {
+        if !over.is_empty() {
+            self.counts.histories[Family::InsertOnlyOverIndexed.index()] = 1;
+        }
+    }
+
+    /// The family of a differing answer to a batch that lists an insert
+    /// known not to replace of an indexed tree over the indexed trees at
+    /// `over` ([`Known::indexed_under_an_insert_only`]), which the
+    /// reference answered with `reference` and the candidate with
+    /// `candidate` and the messages `said`:
+    /// [`Family::InsertOnlyOverIndexed`] where the reference took the
+    /// batch, the candidate's answer is the error `NotSupported`, and one
+    /// of its messages is, word for word, the candidate's refusal of an
+    /// empty indexed tree over an indexed tree whose rows the batch does
+    /// not remove ([`refusal_of_rows_left`]) for the key of one of the
+    /// trees. None otherwise.
+    pub fn family_of_insert_only_refusal(
+        over: &[Path],
+        reference: &Outcome,
+        candidate: &Outcome,
+        said: &[String],
+    ) -> Option<Family> {
+        let taken = matches!(reference, Outcome::Returned(_));
+        let refused = matches!(candidate, Outcome::Failed(error) if error == "NotSupported");
+        let for_a_tree = |tree: &Path| {
+            let words = tree.last().map(|key| refusal_of_rows_left(key));
+            words.is_some_and(|words| said.contains(&words))
+        };
+        (taken && refused && over.iter().any(for_a_tree)).then_some(Family::InsertOnlyOverIndexed)
+    }
+
     /// The reference took an operation that puts an indexed tree over the
     /// indexed trees at `over` ([`Known::indexed_under`]).
     pub fn came_to_indexed_over_indexed(&mut self, over: &[Path]) {
@@ -941,7 +1073,7 @@ mod tests {
     use crate::{
         diff::pair::testing::scratch,
         golden::{run::Runner, step::Row},
-        workload::{PartialBatch, Transactions},
+        workload::{IndexedTree, PartialBatch, Transactions},
     };
 
     impl Known {
@@ -1072,15 +1204,15 @@ mod tests {
         // The family has no place: no path is of it, and no stored record.
         let mut known = Known::default();
         known.came_to_indexed_over_indexed(&over);
-        assert_eq!(known.counts().histories, [0, 0, 0, 1, 0]);
+        assert_eq!(known.counts().histories, [0, 0, 0, 1, 0, 0]);
         assert_eq!(known.family(&over[0]), None);
         let differs = [record(&[b"t", b"indexed"], 1)];
         let (was, is) = known.passed_over(7, &differs, &[]);
         assert_eq!((was.len(), is.len()), (1, 0));
-        assert_eq!(known.counts().stored, [0; 5]);
+        assert_eq!(known.counts().stored, [0; 6]);
         known.ended_at(Family::IndexedOverIndexed, 11);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 1, 0]);
+        assert_eq!(counts.answers, [0, 0, 0, 1, 0, 0]);
         assert_eq!(counts.answer_seed[3], Some(11));
         assert_eq!(
             counts.lines(),
@@ -1088,6 +1220,198 @@ mod tests {
               3: 1 cases made it, 0 with stored records that differ passed over, 1 ended at an \
               answer that differs (seed 0xb)"]
         );
+    }
+
+    /// An answer is of the family of an insert known not to replace over
+    /// an indexed tree where a batch lists such an insert of an indexed
+    /// tree at a key at which the reference reads an indexed tree with a
+    /// row in a secondary, on grove version 4 or 5, the reference took
+    /// the batch, and the candidate's answer is `NotSupported` in the
+    /// words of that refusal for that key. Without any one of these it is
+    /// of no such family.
+    #[test]
+    fn a_refusal_of_an_insert_known_not_to_replace_is_of_its_family_on_versions_4_and_5_alone() {
+        let indexed = Element::empty_provable_count_indexed_tree;
+        let insert_only = |key: &[u8], element: Element| {
+            Op::Batch(vec![BatchOp::InsertOnly {
+                path: path(&[b"t"]),
+                key: key.to_vec(),
+                element,
+            }])
+        };
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let took = Outcome::Returned(Value::Nothing);
+        let refused = Outcome::Failed("NotSupported".to_string());
+        let said = vec![refusal_of_rows_left(b"indexed")];
+        assert_eq!(
+            said[0],
+            "failed: not supported: lignindb: an empty indexed tree written under the key \
+             696e6465786564 over an indexed tree, a secondary of which holds rows that the batch \
+             does not remove"
+        );
+        let family = Some(Family::InsertOnlyOverIndexed);
+        for grove_version in GROVE_VERSIONS.iter() {
+            let dir = scratch();
+            let db: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(dir.path()).expect("a database");
+            let mut transactions = Transactions::new(&db);
+            for op in [
+                insert(&[], b"t", Element::empty_tree()),
+                insert(&[b"t"], b"indexed", indexed()),
+                Op::Write(Write::IndexedInsert {
+                    path: path(&[b"t", b"indexed"]),
+                    key: b"entry".to_vec(),
+                    element: Element::empty_count_tree(),
+                    tree: IndexedTree::Count,
+                }),
+                insert(&[b"t"], b"bare", indexed()),
+                insert(&[b"t"], b"tree", Element::empty_tree()),
+                Op::Commit,
+            ] {
+                transactions
+                    .apply(&op, grove_version)
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            }
+            let block = transactions.block();
+            let rows = |at: &[&[u8]]| a_secondary_holds_a_row(&db, block, &path(at));
+            assert_eq!(rows(&[b"t", b"indexed"]), Ok(true));
+            assert_eq!(rows(&[b"t", b"bare"]), Ok(false));
+            let under = |op: &Op| {
+                Known::indexed_under_an_insert_only(&db, transactions.block(), op, grove_version)
+            };
+            let over = under(&insert_only(b"indexed", indexed()));
+            let expected = match grove_version.protocol_version {
+                1..=3 => Vec::new(),
+                _ => vec![path(&[b"t", b"indexed"])],
+            };
+            assert_eq!(over, expected, "{}", grove_version.protocol_version);
+            let on_a_later_version = !expected.is_empty();
+            assert_eq!(
+                Known::family_of_insert_only_refusal(&over, &took, &refused, &said),
+                family.filter(|_| on_a_later_version)
+            );
+            // The two families of an indexed tree over an indexed tree
+            // share no grove version.
+            let by_any_put = Known::indexed_under(
+                &db,
+                transactions.block(),
+                &insert_only(b"indexed", indexed()),
+                grove_version,
+            );
+            assert_eq!(by_any_put.is_empty(), on_a_later_version);
+
+            // Another operation at the key: one that can replace, a
+            // conditional insert, a direct insert; another element; a
+            // key that holds another tree, an indexed tree with no row,
+            // or nothing; the key named twice; a key of the same bytes
+            // named in another tree; a key named in the tree itself.
+            let replacing = |op: BatchOp| Op::Batch(vec![op]);
+            let at = || (path(&[b"t"]), b"indexed".to_vec());
+            let twice = Op::Batch(vec![
+                BatchOp::InsertOnly {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                },
+                BatchOp::Delete {
+                    path: at().0,
+                    key: at().1,
+                },
+            ]);
+            let in_another_tree = Op::Batch(vec![
+                BatchOp::InsertOnly {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                },
+                BatchOp::InsertOrReplace {
+                    path: path(&[b"t", b"tree"]),
+                    key: at().1,
+                    element: indexed(),
+                },
+            ]);
+            let with_a_delete_in_it = Op::Batch(vec![
+                BatchOp::InsertOnly {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                },
+                BatchOp::Delete {
+                    path: path(&[b"t", b"indexed"]),
+                    key: b"entry".to_vec(),
+                },
+            ]);
+            for elsewhere in [
+                replacing(BatchOp::InsertOrReplace {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                }),
+                replacing(BatchOp::Replace {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                }),
+                replacing(BatchOp::InsertIfNotExists {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                }),
+                insert(&[b"t"], b"indexed", indexed()),
+                insert_only(b"indexed", Element::empty_tree()),
+                insert_only(b"indexed", Element::new_item(vec![1])),
+                insert_only(b"tree", indexed()),
+                insert_only(b"bare", indexed()),
+                insert_only(b"absent", indexed()),
+                twice,
+                in_another_tree,
+                with_a_delete_in_it,
+            ] {
+                let over = under(&elsewhere);
+                assert_eq!(over, Vec::<Path>::new(), "{elsewhere:?}");
+                let none = Known::family_of_insert_only_refusal(&over, &took, &refused, &said);
+                assert_eq!(none, None);
+                let mut known = Known::default();
+                known.came_to_insert_only_over_indexed(&over);
+                assert!(known.counts().is_empty());
+            }
+        }
+
+        // Another answer: a reference that did not take the batch,
+        // another error of the candidate, a candidate that took it,
+        // other words, the words for another key, and the words inside
+        // a longer message.
+        let over = vec![path(&[b"t", b"indexed"])];
+        let of = Known::family_of_insert_only_refusal;
+        assert_eq!(of(&over, &took, &refused, &said), family);
+        assert_eq!(of(&over, &refused, &refused, &said), None);
+        let invalid = Outcome::Failed("InvalidBatchOperation".to_string());
+        assert_eq!(of(&over, &invalid, &refused, &said), None);
+        assert_eq!(of(&over, &took, &invalid, &said), None);
+        assert_eq!(of(&over, &took, &took, &said), None);
+        assert_eq!(of(&over, &took, &refused, &[]), None);
+        let other_words = vec!["failed: not supported: lignindb: a write".to_string()];
+        assert_eq!(of(&over, &took, &refused, &other_words), None);
+        let other_key = vec![refusal_of_rows_left(b"other")];
+        assert_eq!(of(&over, &took, &refused, &other_key), None);
+        let longer = vec![format!("{}, and more", said[0])];
+        assert_eq!(of(&over, &took, &refused, &longer), None);
+        assert_eq!(of(&[], &took, &refused, &said), None);
+        // The family has no place, and no stored record is of it.
+        let mut known = Known::default();
+        known.came_to_insert_only_over_indexed(&over);
+        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 1]);
+        assert_eq!(known.family(&over[0]), None);
+        known.ended_at(Family::InsertOnlyOverIndexed, 13);
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 1]);
+        assert_eq!(known.counts().answer_seed[5], Some(13));
     }
 
     /// The subtree of a tree that was dropped flat is of its family while
@@ -1139,14 +1463,14 @@ mod tests {
             let (was, is) = known.passed_over(7, &differs, &differs[..1]);
             assert_eq!((was.len(), is.len()), (2, 1), "{elsewhere:?}");
         }
-        assert_eq!(known.counts().stored, [0; 5]);
+        assert_eq!(known.counts().stored, [0; 6]);
 
         // A stored difference in the dropped tree's own subtree is passed
         // over and counted, but not in the record of its drop.
         let kept = [record(&[b"c"], 1), record(&[b"a", b"dropped"], 1)];
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (1, 1));
-        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0]);
+        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0, 0]);
         assert_eq!(known.counts().stored_seed[..4], [None, None, Some(7), None]);
         let mut drop_record = record(&[b"a", b"dropped"], 1);
         drop_record.keyspace = Keyspace::DropRecord;
@@ -1389,8 +1713,8 @@ mod tests {
         // The case that ends there is counted for the kind alone.
         known.ended_at(Family::DroppedTreeProof, 5);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 0, 1]);
-        assert_eq!(counts.histories, [0, 1, 1, 0, 1]);
+        assert_eq!(counts.answers, [0, 0, 0, 0, 1, 0]);
+        assert_eq!(counts.histories, [0, 1, 1, 0, 1, 0]);
         assert_eq!(counts.answer_seed[4], Some(5));
     }
 
@@ -1523,11 +1847,11 @@ mod tests {
         let (was, is) = known.passed_over(7, &reference, &candidate);
         assert_eq!(was, is);
         let counts = known.counts();
-        assert_eq!(counts.stored, [1, 1, 0, 0, 0]);
+        assert_eq!(counts.stored, [1, 1, 0, 0, 0, 0]);
         assert_eq!(counts.stored_seed[..4], [Some(7), Some(7), None, None]);
         assert_eq!(
             (counts.histories, counts.answers),
-            ([1, 1, 1, 0, 0], [0; 5])
+            ([1, 1, 1, 0, 0, 0], [0; 6])
         );
         assert_eq!(counts.stored_differences(), 2);
         assert_eq!(counts.answer_differences(), 0);
@@ -1549,7 +1873,7 @@ mod tests {
             let (was, is) = known.passed_over(7, &reference, &candidate);
             assert_eq!(was, vec![same.clone(), elsewhere]);
             assert_eq!(is, vec![same.clone()]);
-            assert_eq!(known.counts().stored, [0; 5]);
+            assert_eq!(known.counts().stored, [0; 6]);
         }
     }
 
@@ -1856,10 +2180,10 @@ mod tests {
         one.ended_at(Family::WrittenOver, 9);
         counts.add(&one.counts());
         counts.add(&one.counts());
-        assert_eq!(counts.answers, [2, 0, 0, 0, 0]);
+        assert_eq!(counts.answers, [2, 0, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[..4], [Some(9), None, None, None]);
         assert_eq!(counts.answer_differences(), 2);
-        assert_eq!(counts.histories, [2, 2, 2, 0, 0]);
+        assert_eq!(counts.histories, [2, 2, 2, 0, 0, 0]);
         let lines = counts.lines();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with(

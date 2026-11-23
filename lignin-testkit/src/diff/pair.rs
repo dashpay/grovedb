@@ -28,6 +28,7 @@ use grovedb::GroveDb;
 
 use super::{
     case::Case,
+    close::{self, Closes},
     families::{Counts, Family, Known},
     state::{first_difference, pending_drop_paths, stored, Listing, Place, Record},
 };
@@ -125,6 +126,9 @@ pub enum Part {
     /// One engine could not be observed after the operation and the other
     /// could.
     Observation,
+    /// What the candidate's own check of its store found once the case
+    /// had ended ([`super::close`]).
+    Check,
 }
 
 impl Part {
@@ -140,6 +144,7 @@ impl Part {
             Part::Stored => "stored records",
             Part::Panic => "panic",
             Part::Observation => "observation",
+            Part::Check => "close check",
         }
     }
 }
@@ -271,6 +276,9 @@ pub struct Tally {
     /// What was met of the open differences that are named
     /// ([`super::families`]).
     pub families: Counts,
+    /// What the checks of the candidate's store at the ends of the cases
+    /// came to ([`super::close`]).
+    pub closes: Closes,
 }
 
 impl Tally {
@@ -283,6 +291,7 @@ impl Tally {
         self.records += other.records;
         self.cut_short += other.cut_short;
         self.families.add(&other.families);
+        self.closes.add(&other.closes);
     }
 }
 
@@ -504,6 +513,13 @@ fn reads(op: &Op) -> bool {
 /// compares them after every step. `interrupted` is asked before each
 /// operation and ends the run when it says so.
 ///
+/// Where the candidate is LigninDB's engine, a run that found no
+/// divergence ends with the candidate's own check of its store
+/// ([`super::close`]), wherever it ended: at the last operation of the
+/// case, at a named open difference, cut short, interrupted, or with no
+/// operation at all. What the check finds is a divergence at the last
+/// step that was compared, or at step 0 where none was.
+///
 /// Call it on a thread with a stack of
 /// [`STACK_BYTES`](crate::golden::run::STACK_BYTES).
 pub fn run<A: StreamEngine, B: StreamEngine>(
@@ -520,8 +536,60 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         .map_err(|error| Error::io(scratch, &error))?;
     let reference_db = reference.open(&dir.path().join("reference"))?;
     let candidate_db = candidate.open(&dir.path().join("candidate"))?;
-    let mut reference_runner = Runner::new(&reference_db, case.grove_version)?;
-    let mut candidate_runner = Runner::new(&candidate_db, case.grove_version)?;
+    let grove_version = case.grove_version;
+    close::opened(&candidate_db, grove_version);
+    let mut run = compared(
+        case,
+        &reference_db,
+        &candidate_db,
+        stored_check,
+        interrupted,
+    )?;
+    if run.divergence.is_none() {
+        let step = match &run.ended_with {
+            Some(ended) => ended.step,
+            None => (run.tally.steps as usize).saturating_sub(1),
+        };
+        let checked = catching(|| close::check(&reference_db, &candidate_db, grove_version));
+        let wanting = match checked {
+            Ok(Ok(closes)) => {
+                run.tally.closes = closes;
+                None
+            }
+            Ok(Err(wanting)) => Some((wanting.reference, wanting.candidate)),
+            Err(panic) => {
+                let expected = "no finding is expected of the candidate's store".to_string();
+                Some((vec![expected], vec![format!("{PANICKED}{panic}")]))
+            }
+        };
+        if let Some((reference, candidate)) = wanting {
+            run.divergence = Some(Divergence {
+                step,
+                parts: vec![Part::Check],
+                reference,
+                candidate,
+            });
+        }
+    }
+    // The close of a debug build checks the candidate's store again, and
+    // panics on what the check above has found: the divergence stands.
+    let found_at_the_close = |divergence: &Divergence| divergence.parts == [Part::Check];
+    if run.divergence.as_ref().is_some_and(found_at_the_close) {
+        let _ = catching(move || drop(candidate_db));
+    }
+    Ok(run)
+}
+
+/// The steps of [`run`], on the two databases it opened.
+fn compared<A: StreamEngine, B: StreamEngine>(
+    case: &Case,
+    reference_db: &GroveDb<A>,
+    candidate_db: &GroveDb<B>,
+    stored_check: Stored,
+    interrupted: &dyn Fn() -> bool,
+) -> Result<Run, Error> {
+    let mut reference_runner = Runner::new(reference_db, case.grove_version)?;
+    let mut candidate_runner = Runner::new(candidate_db, case.grove_version)?;
 
     let mut tally = Tally::default();
     let mut writes = 0u64;
@@ -562,11 +630,13 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         // Asked of the reference before the operation: a read of its
         // block's state, which changes nothing.
-        let (over, over_indexed) = catching(|| {
+        let (over, over_indexed, under_an_insert_only) = catching(|| {
+            let (db, version) = (reference_db, case.grove_version);
             let block = reference_runner.transactions().block();
             (
-                Known::trees_under(&reference_db, block, op, case.grove_version),
-                Known::indexed_under(&reference_db, block, op, case.grove_version),
+                Known::trees_under(db, block, op, version),
+                Known::indexed_under(db, block, op, version),
+                Known::indexed_under_an_insert_only(db, block, op, version),
             )
         })
         .unwrap_or_default();
@@ -575,6 +645,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         // took is counted, whatever the candidate did.
         if matches!(&was, Seen::Answered(observed) if !observed.step.failed()) {
             known.came_to_indexed_over_indexed(&over_indexed);
+            known.came_to_insert_only_over_indexed(&under_an_insert_only);
             tally.families = known.counts();
         }
         let is = observe(&mut candidate_runner, op);
@@ -592,6 +663,10 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             // case, and is none of the run's.
             let (reference, candidate) = (&was.step.outcome, &is.step.outcome);
             let refusal = Known::family_of_refusal(&over_indexed, reference, candidate);
+            let refusal = refusal.or_else(|| {
+                let over = &under_an_insert_only;
+                Known::family_of_insert_only_refusal(over, reference, candidate, &is.remarks)
+            });
             let taken = !was.step.failed();
             // The engines differ in the proof of a query and in nothing
             // else, and the candidate's proof holds: the open difference
@@ -637,14 +712,14 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         if known.dropped_flat() {
             let pending = catching(|| {
                 let block = reference_runner.transactions().block();
-                pending_drop_paths(&reference_db, block)
+                pending_drop_paths(reference_db, block)
             });
             known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
             // Those of them at which the reference reads a tree again.
             let standing = catching(|| {
                 let block = reference_runner.transactions().block();
                 let pending = known.pending_paths();
-                Known::trees_at(&reference_db, block, pending, case.grove_version)
+                Known::trees_at(reference_db, block, pending, case.grove_version)
             });
             known.made_again(standing.unwrap_or_default());
         }
@@ -667,8 +742,8 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             continue;
         }
         let before = std::mem::take(&mut places);
-        let was = walk(&reference_db, &reference_runner, case, &before);
-        let is = walk(&candidate_db, &candidate_runner, case, &before);
+        let was = walk(reference_db, &reference_runner, case, &before);
+        let is = walk(candidate_db, &candidate_runner, case, &before);
         let listed = |listing: Listing| vec![format!("{} records", listing.records.len())];
         let (was, is) = match both(was, is, listed) {
             Both::Answered(was, is) => (was, is),
@@ -878,6 +953,7 @@ mod tests {
                 records: 3 + 3 + 3,
                 cut_short: 0,
                 families: Counts::default(),
+                closes: Closes::default(),
             }
         );
         let once = with(Stored::AtTheEnd);
@@ -1355,6 +1431,7 @@ mod tests {
             records: 5,
             cut_short: 6,
             families: Counts::default(),
+            closes: Closes::default(),
         };
         tally.add(&tally.clone());
         assert_eq!(
@@ -1367,6 +1444,7 @@ mod tests {
                 records: 10,
                 cut_short: 12,
                 families: Counts::default(),
+                closes: Closes::default(),
             }
         );
     }

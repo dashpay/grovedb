@@ -100,11 +100,14 @@ fn replayed(case: &Case, scratch: &std::path::Path) -> Ended {
                     "came to an open difference that the fuzzer passes over: {}",
                     families.lines().join("; ")
                 )),
-                (None, None) => Ended::Same {
-                    steps: run.tally.steps,
-                    proofs: run.tally.proofs,
-                    records: run.tally.records,
-                },
+                (None, None) => {
+                    assert_eq!(run.tally.closes.checked, 1, "the store is checked");
+                    Ended::Same {
+                        steps: run.tally.steps,
+                        proofs: run.tally.proofs,
+                        records: run.tally.records,
+                    }
+                }
             }
         }
     }

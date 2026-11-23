@@ -31,6 +31,7 @@ mod inspection;
 mod kinds;
 mod left_behind;
 mod legacy;
+mod many_trees;
 mod moves;
 mod nested;
 mod over;

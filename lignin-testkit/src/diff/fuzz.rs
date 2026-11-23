@@ -131,9 +131,10 @@ pub struct Summary {
     /// Why the first case that ended early without a divergence did: both
     /// engines panicked, or neither could be observed.
     pub first_cut_short: Option<String>,
-    /// The cases that ended at a step of a dropped tree that is counted
-    /// apart ([`Family::DroppedTreeProof`]): the family, the seed of the
-    /// case and the step, in the order of the seeds.
+    /// The cases that ended at a step that is counted apart
+    /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`]):
+    /// the family, the seed of the case and the step, in the order of the
+    /// seeds.
     pub apart: Vec<(Family, u64, usize)>,
 }
 
@@ -210,13 +211,17 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 &abandoned,
             )?;
             tally.lock().expect("no worker panics").add(&run.tally);
-            if let (Some(family @ Family::DroppedTreeProof), Some(ended)) =
-                (run.ended_at, &run.ended_with)
+            if let (
+                Some(family @ (Family::DroppedTreeProof | Family::InsertOnlyOverIndexed)),
+                Some(ended),
+            ) = (run.ended_at, &run.ended_with)
             {
                 let mut apart = apart.lock().expect("no worker panics");
                 apart.push((family, case.seed, ended.step));
             }
-            if run.interrupted {
+            // An interrupted run is no case of the run's, but for what
+            // the check of the candidate's store found at its end.
+            if run.interrupted && run.divergence.is_none() {
                 return Ok(());
             }
             if let Some(divergence) = run.divergence {
