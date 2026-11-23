@@ -48,6 +48,13 @@
 #                                         defects it must find, then the
 #                                         campaign; ARGS follow
 #                                         `lignin-crash run`
+#   lignin-ci.sh crash-engine [ARGS]      the engine crash campaign: the
+#                                         defects it must find, lineages that
+#                                         wipe again and again, then the
+#                                         campaign; ARGS follow
+#                                         `lignin-crash engine run`, and a
+#                                         `--save DIR` among them is given to
+#                                         all three
 #   lignin-ci.sh schedules [POINTS]       one step of the engine's background
 #                                         work, a reader or an open of a
 #                                         checkpoint against commits let in at
@@ -518,6 +525,40 @@ crash)
     cargo run --release -p lignin-testkit --bin lignin-crash -- planted
     say "lignin-crash run $*"
     cargo run --release -p lignin-testkit --bin lignin-crash -- run "$@"
+    ;;
+
+crash-engine)
+    shift
+    # A seed gives the streams of a run of this campaign, and not its crash
+    # states, so each of the three commands is told where to keep the files
+    # of a crash state in which it finds a violation: a directory of its own
+    # under the one the caller names. `planted` keeps only those of a run
+    # that has a violation with no defect planted.
+    # (An empty array is unset to the bash of macOS under `set -u`, hence
+    # the `+` forms below.)
+    kept=
+    for ((at = 1; at <= $#; at++)); do
+        if [ "${!at}" = --save ]; then
+            next=$((at + 1))
+            kept=${!next:?"lignin-ci.sh crash-engine: --save needs a directory"}
+        fi
+    done
+    planted=()
+    wiped=()
+    if [ -n "$kept" ]; then
+        planted=(--save "$kept/planted")
+        wiped=(--save "$kept/wipe")
+    fi
+    # As for the store's campaign: what is planted has to be found first.
+    # Then the second sentence of the campaign's acceptance test by itself:
+    # a crash at any point during a wipe leaves the database as it was or
+    # empty.
+    say "lignin-crash engine planted"
+    cargo run --release -p lignin-testkit --bin lignin-crash -- engine planted --jobs 4 ${planted[@]+"${planted[@]}"}
+    say "lignin-crash engine wipe"
+    cargo run --release -p lignin-testkit --bin lignin-crash -- engine wipe --runs 4 --jobs 4 --quiet ${wiped[@]+"${wiped[@]}"}
+    say "lignin-crash engine run $*"
+    cargo run --release -p lignin-testkit --bin lignin-crash -- engine run "$@"
     ;;
 
 miri-schedules)
