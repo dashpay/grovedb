@@ -21,6 +21,9 @@ commands:
   seed      make the run of one seed again
   planted   plant a defect and require the campaign to find it: the
             acceptance test of the campaign itself
+  engine    the campaign through the full engine, GroveDB on LigninDB with
+            its three threads at work: `lignin-crash engine` prints its
+            commands and options
 
 options:
   --seed N            the seed of the first run (default: 1)
@@ -350,6 +353,9 @@ pub const PLANTED_RUNS: u64 = 12;
 /// Runs the command `arguments` name, writes what it did to `out`, and
 /// returns the exit code.
 pub fn run_command(arguments: &[String], out: &mut dyn Write) -> u8 {
+    if arguments.first().is_some_and(|first| first == "engine") {
+        return engine(&arguments[1..], out);
+    }
     let invocation = match parse(arguments) {
         Ok(invocation) => invocation,
         Err(error) => {
@@ -418,6 +424,21 @@ pub fn run_command(arguments: &[String], out: &mut dyn Write) -> u8 {
             u8::from(missed > 0)
         }
     }
+}
+
+/// The commands of the campaign through the full engine
+/// (`crash::engine::cli`).
+#[cfg(grovedb_engine_seam)]
+fn engine(arguments: &[String], out: &mut dyn Write) -> u8 {
+    super::engine::cli::run_command(arguments, out)
+}
+
+/// The engine the golden corpus is pinned to has no LigninDB under GroveDB
+/// (`build.rs`): there the command has no campaign through the engine.
+#[cfg(not(grovedb_engine_seam))]
+fn engine(_: &[String], out: &mut dyn Write) -> u8 {
+    let _ = writeln!(out, "lignin-crash: this build has no engine to crash");
+    2
 }
 
 #[cfg(test)]
@@ -497,6 +518,20 @@ mod tests {
             assert_eq!(code, 2, "{line}");
             assert!(text.contains("usage: lignin-crash"), "{line}: {text}");
         }
+    }
+
+    #[test]
+    fn the_commands_of_the_engine_are_a_command_line_of_their_own() {
+        let (code, text) = said("engine");
+        assert_eq!(code, 2);
+        #[cfg(grovedb_engine_seam)]
+        assert!(
+            text.contains("usage: lignin-crash engine <command>"),
+            "{text}"
+        );
+        #[cfg(not(grovedb_engine_seam))]
+        assert!(text.contains("this build has no engine to crash"), "{text}");
+        assert!(USAGE.contains("\n  engine    "));
     }
 
     #[test]

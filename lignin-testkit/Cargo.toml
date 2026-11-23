@@ -28,6 +28,16 @@ serde = { workspace = true }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 tempfile = { workspace = true }
 
+# The LigninDB engine behind GroveDB (`grovedb::engine::lignin`), which the
+# engine crash campaign drives (`crash::engine`), and Merk's hash rules for
+# the physical checker. The engine the golden corpus is pinned to has
+# neither feature: `corpus/record-at-pin.sh` takes these two lines out of
+# its copy of this manifest, and the code that needs them is compiled only
+# where GroveDB has the `Engine` seam (`build.rs`).
+[target.'cfg(all())'.dependencies]
+grovedb = { version = "6.1.1", path = "../grovedb", features = ["lignin_storage"] }
+grovedb-merk = { version = "6.1.1", path = "../merk", features = ["lignin_storage"] }
+
 [dev-dependencies]
 grovedb-merk = { version = "6.1.1", path = "../merk", features = ["lignin_storage"] }
 lignindb = { version = "6.1.1", path = "../lignindb", features = ["testing"] }

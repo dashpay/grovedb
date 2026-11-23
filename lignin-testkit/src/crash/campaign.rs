@@ -291,16 +291,26 @@ struct Kept {
 
 /// The states one crash can leave, as the campaign picks them. The first
 /// is the one with no unsynced change.
-fn plans_of(image: &CrashImage, shape: &RunShape) -> Vec<CrashPlan> {
+///
+/// Every plan of the image is taken if there are at most
+/// `every_plan_limit`. An image with more gets the two ends, the plans of
+/// a file system that writes in order with every tear of the first lost
+/// write, each change lost alone, each change applied late, and `samples`
+/// plans drawn from the seed.
+pub(crate) fn plans_of(
+    image: &CrashImage,
+    every_plan_limit: usize,
+    samples: u64,
+) -> Vec<CrashPlan> {
     let durable = image.lose_all();
-    if let Some(plans) = image.every_plan(shape.every_plan_limit) {
+    if let Some(plans) = image.every_plan(every_plan_limit) {
         return first_of(plans, durable);
     }
     let mut plans = vec![durable, image.keep_all()];
     plans.extend(image.prefixes());
     plans.extend(image.holes());
     plans.extend(image.reorders());
-    plans.extend((0..shape.samples).map(|draw| image.sample(draw)));
+    plans.extend((0..samples).map(|draw| image.sample(draw)));
     plans
 }
 
@@ -938,7 +948,7 @@ impl Run {
         // after the session learned it: the states that a crash now can
         // leave are held to what is expected now.
         let now = lineage.observer.now();
-        let plans = plans_of(&now.image, &self.shape);
+        let plans = plans_of(&now.image, self.shape.every_plan_limit, self.shape.samples);
         self.check_image(lineage, now, plans);
     }
 
@@ -1211,7 +1221,11 @@ impl Run {
         }
         for taken in lineage.observer.drain() {
             self.tally.count("write boundaries", 1);
-            let plans = plans_of(&taken.image, &self.shape);
+            let plans = plans_of(
+                &taken.image,
+                self.shape.every_plan_limit,
+                self.shape.samples,
+            );
             self.check_image(lineage, taken, plans);
         }
     }
@@ -1835,9 +1849,13 @@ mod tests {
                 every_plan_limit: 0,
                 ..quiet()
             };
-            let mut all = vec![plans_of(&taken.image, &listed)];
+            let mut all = vec![plans_of(
+                &taken.image,
+                listed.every_plan_limit,
+                listed.samples,
+            )];
             if let Some(every) = taken.image.every_plan(quiet().every_plan_limit) {
-                let plans = plans_of(&taken.image, &quiet());
+                let plans = plans_of(&taken.image, quiet().every_plan_limit, quiet().samples);
                 assert_eq!(plans.len(), every.len());
                 assert!(every.iter().all(|plan| plans.contains(plan)));
                 every_plan += usize::from(every.len() > 1);

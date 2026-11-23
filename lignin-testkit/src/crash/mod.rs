@@ -360,6 +360,8 @@
 pub mod campaign;
 pub mod check;
 pub mod cli;
+#[cfg(grovedb_engine_seam)]
+pub mod engine;
 pub mod model;
 pub mod observe;
 pub mod store;
