@@ -424,7 +424,10 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.needs-tests == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Miri's time on a hosted runner varies by a factor of two (51 to more
+    # than 90 minutes on the same sets of tests), so the limit is well above
+    # the slowest run seen.
+    timeout-minutes: 150
     env:
       LIGNIN_NIGHTLY: nightly-2026-02-24
     steps:
