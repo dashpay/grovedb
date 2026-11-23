@@ -72,7 +72,8 @@
 //!    subcommands needs no parser crate.
 //! 2. **`verify` recomputes every hash by Merk's rules**
 //!    (`grovedb_merk::store::lignin::hash::MerkHashRules::for_check`, at the
-//!    latest GroveVersion). The engine knows no hash rule; the tool is for
+//!    latest GroveVersion, naming the value hash that a delete on grove
+//!    versions 1 to 3 left: [`verify`]). The engine knows no hash rule; the tool is for
 //!    GroveDB's databases, and a check of every other rule is
 //!    `--no-hashes`.
 //! 3. **A dump is a file of this crate's own format** ([`dump`]), which

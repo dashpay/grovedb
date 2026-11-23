@@ -10,8 +10,8 @@
 //!   have none. RocksDB holds that hash and LigninDB holds the same. The
 //!   check of a close does not fail on it, the rules that name it count it
 //!   apart, at the paths the grove's own check reports, and the rules
-//!   that name none find it. The next write below the tree puts the hash
-//!   of the rules.
+//!   that name none find it. An insert below the tree puts the hash of
+//!   the rules.
 //! - What the other frozen paths leave that is a hash: a tree that
 //!   `GROVE_V1` and `GROVE_V2` insert as a plain value, the commitment of
 //!   an append-only tree that a clear on `GROVE_V1` to `GROVE_V3` keeps,
@@ -331,13 +331,13 @@ fn deleted_and_written_below_later<E: Engine>(db: &GroveDb<E>, v: &GroveVersion)
     answers
 }
 
-/// The hash that the delete left stays until something is written below
-/// `parent`: a write beside it leaves it, also by a later grove version,
-/// whose rules for a check name it all the same. The next write below
-/// `parent` puts the hash of the rules, on either engine, and then the
-/// checker names nothing and finds nothing.
+/// An insert beside `parent` leaves the hash that the delete left, also
+/// by a later grove version, whose rules for a check name it all the
+/// same. An insert below `parent` puts the hash of the rules, on either
+/// engine and by either version, and then the checker names nothing and
+/// finds nothing.
 #[test]
-fn the_next_write_below_the_tree_puts_the_hash_of_the_rules() {
+fn an_insert_below_the_tree_puts_the_hash_of_the_rules() {
     let newest = GroveVersion::latest();
     for (number, v) in GROVE_VERSIONS.iter().enumerate().take(3) {
         let told = format!("grove version {}", number + 1);
@@ -544,10 +544,10 @@ fn indexed_tree_deleted_beside<E: Engine>(
 /// The panic of the same frozen path (GroveDB #686): on grove versions 1
 /// to 3 the Merk a tree is deleted from is opened as a tree of the
 /// deleted tree's type, and the hash of its root is then asked of nodes
-/// that are not of that type. It needs no second indexed tree: an indexed
-/// tree with rows that is deleted from a tree which keeps any element
-/// panics, on both engines alike, and one that is alone in its tree is
-/// deleted. The store that the panic leaves is sound.
+/// that are not of that type. It needs no second indexed tree: a count
+/// indexed tree with rows that is deleted from a plain tree which keeps
+/// one item panics, on both engines alike, and one that is alone in its
+/// tree is deleted. The store that the panic leaves is sound.
 #[test]
 fn an_indexed_tree_deleted_from_a_tree_that_keeps_an_element_panics_on_both_engines() {
     for (number, v) in GROVE_VERSIONS.iter().enumerate() {
@@ -820,19 +820,18 @@ fn synced_from<S: sync::Side>(v: &GroveVersion, written_below: bool) -> Vec<Stri
     said
 }
 
-/// What a session answers to the chunk of the Merk of `parent` while the
-/// value hash of `parent` is the one the delete left.
+/// What a session answers to its third chunk while the value hash of
+/// `parent` is the one the delete left.
 const NOT_THE_EXPECTED_ROOT: &str = "chunk 2 refused: internal error: Unable to process incoming \
                                      chunk: chunk restoring error invalid chunk proof: chunk \
                                      doesn't match expected root hash";
 
 /// State sync of a grove that holds the hash a delete left is refused by
-/// the session's own check, on RocksDB as on LigninDB and in every
-/// direction between them: the chunk of the Merk of `parent` has the root
-/// hash of the rules, and the session expects the one `top` commits to.
-/// Nothing is committed, and the database that was to be synced closes
-/// sound. Once something is written below `parent` the grove syncs in
-/// every direction, as it does on grove versions 4 and 5.
+/// the session at its third chunk, with the same error on RocksDB as on
+/// LigninDB and in every direction between them. Nothing is committed,
+/// and the database that was to be synced closes sound. After an insert
+/// below `parent` the grove syncs in every direction, as it does on grove
+/// versions 4 and 5.
 #[test]
 fn state_sync_refuses_a_grove_with_the_hash_a_delete_left_alike_on_both_engines() {
     for (number, v) in GROVE_VERSIONS.iter().enumerate() {

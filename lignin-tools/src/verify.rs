@@ -13,13 +13,12 @@
 //! those versions the delete of a tree that holds elements can leave the
 //! tree it was in with a value hash that is not the one the rules make
 //! (GroveDB #686; `grovedb_merk::store::lignin::hash` says which hash it
-//! is). A chain that made such a delete has that hash in its roots, a
-//! database migrated from it holds it, and `GroveDb::verify_grovedb`
-//! reports its path on any engine. It is no damage of the store: `verify`
-//! checks with the rules that name it
-//! (`MerkHashRules::naming_left_hashes`), says after the report how many
-//! there are and in which cells, and the status is the one the rest of
-//! the check gives.
+//! is). RocksDB holds that hash after such a delete, and
+//! `GroveDb::verify_grovedb` reports its path on either engine. `verify`
+//! does not call a store unsound for it: it checks with the rules that
+//! name it (`MerkHashRules::naming_left_hashes`), says after the report
+//! how many there are and in which cells, and the status is the one the
+//! rest of the check gives.
 //!
 //! **Where it runs.** By default the database is opened and closed, and
 //! the store is checked after the close

@@ -129,13 +129,14 @@
 //! (`delete_internal_on_transaction` v0, GroveDB #686, frozen for the
 //! chains built with it), and `Merk::root_hash` goes by the type a Merk
 //! was opened with. Where the nodes of that Merk have a feature whose node
-//! hash takes the aggregate, and the deleted tree's type is one whose node
-//! hash takes none, the root hash that goes up is `node_hash` of the root
-//! with no aggregate in it, and the element of the Merk is put with
-//! `combine_hash(value_hash(value), that hash)`. No other hash is touched:
-//! `TreeNode::commit` hashes every link by the feature of its child. The
-//! stored hash is RocksDB's, `GroveDb::verify_grovedb` reports its path,
-//! and the next write below the element puts the hash the rules make.
+//! hash takes the aggregate, the deleted tree's type is one whose node
+//! hash takes none, and the Merk keeps a node, the root hash that goes up
+//! is `node_hash` of the root with no aggregate in it, and the element of
+//! the Merk is put with `combine_hash(value_hash(value), that hash)`. No
+//! other hash is touched: `TreeNode::commit` hashes every link by the
+//! feature of its child. The stored hash is RocksDB's,
+//! `GroveDb::verify_grovedb` reports its path, and an insert below the
+//! element puts the hash the rules make.
 //!
 //! [`MerkHashRules::for_check`] reports that value hash as any that
 //! differs. [`MerkHashRules::naming_left_hashes`] makes rules that name
@@ -147,8 +148,9 @@
 //! root. So [`lignin_tree::hash::made_with_other`] says of a stored value
 //! hash that differs whether it is this one, from what is stored, and a
 //! cell does not say under which GroveVersion it was written. A hash that
-//! the store or a commit left behind the root of its Merk is the rules'
-//! hash of a root the Merk had before, which is neither. An indexed tree,
+//! a write left behind the root of its Merk was made from a root the Merk
+//! had before, with its aggregate or without, and is neither the hash of
+//! the rules nor this one. An indexed tree,
 //! a tree whose data is no Merk, a tree with no root and a tree whose
 //! nodes have no aggregate in their hashes have no such hash.
 //!

@@ -217,11 +217,12 @@ fn make<R: HashRules>(
     Ok(made)
 }
 
-/// Puts the hashes of what the cell `node` shows points at where they are
-/// made into its own: the hash of each child of `frame` into what is
-/// returned, and the roots of the Merks it hosts, by position, into
-/// [`Lists::hosted`] if `frame` makes a value hash. A cell that points
-/// elsewhere than when `frame` was read is refused.
+/// Puts the hashes of the nodes that the cell `node` shows points at
+/// where the cell's own hashes are made from them: the hash of each child
+/// of `frame` into what is returned, and the hashes of the roots of the
+/// Merks it hosts, by position, into [`Lists::hosted`] if `frame` makes a
+/// value hash. A cell that points elsewhere than when `frame` was read is
+/// refused.
 fn place(node: NodeRef<'_>, frame: &Frame, lists: &mut Lists) -> Result<Made, HashError> {
     let changed = HashError::Changed { node: frame.at };
     let (deps, hashes) = (&lists.deps[frame.deps..], &lists.hashes[frame.hashes..]);

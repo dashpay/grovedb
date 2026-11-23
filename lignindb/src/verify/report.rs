@@ -65,8 +65,9 @@ pub struct OtherHash {
 /// and that the rules name as made by a writer with another hash of a
 /// hosted root (`lignin_tree::hash::made_with_other`).
 ///
-/// Such a hash is its writer's and no damage of the store. It is counted
-/// here and is no [`Finding`]. Rules that name no other hash, as the
+/// The rules say of such a hash that a writer made it so. The checker
+/// takes their word: it is counted here and is no [`Finding`]. Rules that
+/// name no other hash, as the
 /// provided methods of [`HashRules`](lignin_tree::hash::HashRules) do,
 /// leave this empty, and every value hash that differs is a finding.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -223,7 +224,8 @@ impl Report {
 }
 
 /// The report as an operator reads it: the findings, then the space that
-/// nothing reaches, then the counts.
+/// nothing reaches, then the value hashes that the rules name as another
+/// writer's, then the counts.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let census = &self.census;
