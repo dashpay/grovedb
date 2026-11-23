@@ -703,6 +703,20 @@ fn a_load_is_of_its_transaction<E: Hatched>() {
         .replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, Some(&tx), v)
         .unwrap()
         .expect("the element");
+    // A dump through the transaction is of what the transaction reads,
+    // and a dump with no transaction of what is committed.
+    let through = (target.db)
+        .dump_subtree(ROOT, COUNTED, Vec::new(), Some(&tx), v)
+        .expect("a dump through the transaction");
+    let outside = (target.db)
+        .dump_subtree(ROOT, COUNTED, Vec::new(), None, v)
+        .expect("a dump with no transaction");
+    assert_eq!(
+        (through.data_records, outside.data_records),
+        (3, 0),
+        "{}",
+        E::NAME
+    );
     target.db.commit_transaction(tx).unwrap().expect("a commit");
     assert_eq!(records_of(&target.db, None), 3, "{}", E::NAME);
     let issues = target.db.verify_grovedb(None, true, false, v);
@@ -926,10 +940,10 @@ fn two_loads_into_one_subtree<E: Hatched>() -> (Result<(), crate::Error>, u64) {
 }
 
 /// A LigninDB store that is closed after the load of a Merk with nodes
-/// and before the replacement of its element: the physical checker
-/// reports the value hash of the element and nothing else, the element
-/// names the Merk it hosts, and the replacement leaves a store that the
-/// checker passes.
+/// and before the replacement of its element: the physical checker has
+/// one finding, of the rule for a value hash, and follows one hosted
+/// root. With the element replaced, the grove verifies and the checker
+/// passes the store.
 #[test]
 fn a_store_between_a_load_and_its_replacement_is_reported_for_one_value_hash() {
     let v = version();
