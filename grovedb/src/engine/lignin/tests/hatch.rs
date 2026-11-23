@@ -557,6 +557,10 @@ fn a_count_tree_is_loaded_whole_and_its_pages_are_the_loaders() {
     // The same cells: the items, the count tree and the root of the grove.
     assert_eq!(loaded.live_cells, u64::from(ITEMS) + 2, "{loaded:?}");
     assert_eq!(grown.live_cells, loaded.live_cells, "{grown:?}");
+    // The element names the Merk it hosts in both, as its own cell does
+    // for the Merk that grew under it.
+    assert_eq!(grown.hosted_roots, 1, "{grown:?}");
+    assert_eq!(loaded.hosted_roots, 1, "{loaded:?}");
     // In at least a tenth fewer pages than the Merk that grew node by
     // node, which splits its pages as it grows (`tree-layout.md`).
     assert!(
