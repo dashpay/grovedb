@@ -37,6 +37,7 @@ mod over;
 mod queries;
 mod restore;
 mod root_keys;
+mod scopes;
 mod side_by_side;
 mod sync;
 
