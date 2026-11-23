@@ -441,15 +441,79 @@ impl<'s> World<'s> {
         self.units(tx).into_iter().map(size).collect()
     }
 
+    /// The units of flat records that `tx` reads, each with a part of its
+    /// keys to stand for records of other subtrees
+    /// ([`Cursor::beside_with`]): all of them, or those from the second
+    /// on and below the last. `at` picks one of the units.
+    fn stand_ins(&self, tx: &Tx<'s>, at: usize) -> Vec<(Unit, Vec<u8>, Vec<u8>, usize)> {
+        let flat: Vec<Unit> = (self.units(tx).into_iter())
+            .filter(|unit| unit.column != Column::Data)
+            .collect();
+        let picked = (0..flat.len().min(1)).map(|_| flat[at % flat.len()]);
+        picked
+            .map(|unit| {
+                let keys: Vec<Vec<u8>> = {
+                    let model = tx.model.borrow();
+                    let view = model.view(&self.model.records, unit);
+                    view.keys().cloned().collect()
+                };
+                match (at.is_multiple_of(2), keys.as_slice()) {
+                    (true, [_, second, .., last]) => {
+                        (unit, second.clone(), last.clone(), keys.len() - 2)
+                    }
+                    _ => (unit, Vec::new(), vec![0xff; 300], keys.len()),
+                }
+            })
+            .collect()
+    }
+
     /// Checks what a cursor of `tx` says lies beside its subtree in its
     /// column ([`Cursor::beside`]) against the model: the records of the
     /// units after it, or before it, in the order of their subtrees. Up to
     /// one and two records from every unit, and all of them from each
-    /// end of a column.
+    /// end of a column. And the same with keys of another unit standing
+    /// for records ([`Cursor::beside_with`]): the records of that unit
+    /// are then records of no subtree, and the keys that are named count.
     fn check_beside(&self, tx: &Tx<'s>) {
         let sizes = self.sizes(tx);
         for (at, unit) in sizes.keys().enumerate() {
             for back in [false, true] {
+                // With stand-ins, from every other unit.
+                let with_stand_ins = match at.is_multiple_of(2) {
+                    true => self.stand_ins(tx, at / 2),
+                    false => Vec::new(),
+                };
+                for (kept, low, high, standing) in with_stand_ins {
+                    let apart = match lies_beside(unit, &kept, back) {
+                        true => sizes[&kept],
+                        false => 0,
+                    };
+                    let total = records_beside(&sizes, unit, back) - apart + standing;
+                    let stand_ins = Some(StandIns {
+                        unit: kept,
+                        low: &low,
+                        high: &high,
+                    });
+                    // Every record is counted from some of the units.
+                    let limits: &[usize] = match at % 3 {
+                        0 => &[1, 2, usize::MAX],
+                        _ => &[1, 2],
+                    };
+                    for limit in limits.iter().copied() {
+                        let expected = total.min(limit);
+                        let found = (tx.txn.cursor(*unit)).beside_with(back, limit, stand_ins);
+                        let found = found.expect("the records beside a subtree are counted");
+                        assert_eq!(
+                            found, expected,
+                            "beside {unit}, back: {back}, up to {limit}, with the keys of {kept}"
+                        );
+                        if unit.column == Column::Data {
+                            let mut cursor = tx.txn.merk_cursor(unit.subtree).expect("a cursor");
+                            let found = cursor.beside_with(back, limit, stand_ins);
+                            assert_eq!(found.expect("they are counted"), expected, "{unit}");
+                        }
+                    }
+                }
                 let total = records_beside(&sizes, unit, back);
                 // An end of its column: every other unit of the column
                 // lies that way.
@@ -493,13 +557,41 @@ impl<'s> World<'s> {
                 [[0; 32], [0x77; 32], [0xff; 32]].map(|at| Unit::new(column, Subtree::new(at))),
             );
         }
-        for unit in from {
+        let reader = self.begin();
+        for (at, unit) in from.into_iter().enumerate() {
             for back in [false, true] {
                 let total = records_beside(&sizes, &unit, back);
                 for limit in [1, 2, usize::MAX] {
                     let found = operation.beside(unit.column, unit.subtree, back, limit);
                     let found = found.expect("the records beside a subtree are counted");
                     assert_eq!(found, total.min(limit), "beside {unit}, back: {back}");
+                }
+                for (kept, low, high, standing) in self.stand_ins(&reader, at) {
+                    let apart = match lies_beside(&unit, &kept, back) {
+                        true => sizes[&kept],
+                        false => 0,
+                    };
+                    let total = total - apart + standing;
+                    let stand_ins = Some(StandIns {
+                        unit: kept,
+                        low: &low,
+                        high: &high,
+                    });
+                    for limit in [1, 2, usize::MAX] {
+                        let found = operation.beside_with(
+                            unit.column,
+                            unit.subtree,
+                            back,
+                            limit,
+                            stand_ins,
+                        );
+                        let found = found.expect("the records beside a subtree are counted");
+                        assert_eq!(
+                            found,
+                            total.min(limit),
+                            "beside {unit}, back: {back}, with the keys of {kept}"
+                        );
+                    }
                 }
             }
         }

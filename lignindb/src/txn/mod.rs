@@ -758,7 +758,9 @@ pub mod testing;
 pub(crate) mod tests;
 
 pub use commits::Commits;
-pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide, ParkedCursor, Resumed};
+pub use cursor::{
+    CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide, ParkedCursor, Resumed, StandIns,
+};
 pub use error::{BatchError, Differs, HostName, TxnError, WholeFault};
 pub use key::{Column, KeySet, Subtree, Unit};
 pub use load::LoadFiles;

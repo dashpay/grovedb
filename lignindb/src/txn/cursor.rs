@@ -986,6 +986,16 @@ impl<'s, C: CommittedSide<'s>> Resumed<'_, '_, 's, C> {
     pub fn beside(&mut self, back: bool, limit: usize) -> Result<usize, TxnError> {
         self.cursor.beside(back, limit)
     }
+
+    /// [`Cursor::beside_with`].
+    pub fn beside_with(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, TxnError> {
+        self.cursor.beside_with(back, limit, stand_ins)
+    }
 }
 
 #[cfg(test)]
@@ -1021,6 +1031,19 @@ impl<C: fmt::Debug> fmt::Debug for ParkedCursor<'_, '_, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("ParkedCursor").field(&self.cursor).finish()
     }
+}
+
+/// Keys of one unit that each stand for a record beside a cursor's
+/// subtree ([`Cursor::beside_with`]). An engine that keeps, under one
+/// subtree, what stands for records of other subtrees names them so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandIns<'a> {
+    /// The unit that holds the keys.
+    pub unit: Unit,
+    /// The first key that is counted, if the unit holds it.
+    pub low: &'a [u8],
+    /// The key that every counted key is below.
+    pub high: &'a [u8],
 }
 
 impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
@@ -1108,14 +1131,45 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// [`TxnError::ScopeOverlap`] where another open scope holds that
     /// subtree's unit for writing (SC3).
     pub fn beside(&mut self, back: bool, limit: usize) -> Result<usize, TxnError> {
+        self.beside_with(back, limit, None)
+    }
+
+    /// As [`Self::beside`], for an engine that keeps, as keys of one unit,
+    /// what stands for records of other subtrees (`stand_ins`).
+    ///
+    /// The records of that unit are counted as records of no subtree:
+    /// where the unit is of the cursor's column, its subtree is passed
+    /// as one that holds no record. Each key of the unit from
+    /// [`StandIns::low`] on and below [`StandIns::high`] is counted as
+    /// one record beside the cursor's subtree, whichever way is asked:
+    /// the caller names the keys that stand for records that way. They
+    /// are counted after the records of the subtrees, up to `limit` with
+    /// them, and are the keys that a cursor of the unit shows which is
+    /// opened at this cursor's version, as the subtrees are read: one
+    /// seek in the unit's column, and a step for each key counted.
+    pub fn beside_with(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, TxnError> {
         let column = self.unit.column;
+        let apart = stand_ins
+            .filter(|stand_ins| stand_ins.unit.column == column)
+            .map(|stand_ins| stand_ins.unit.subtree);
         let (mut from, mut found) = (self.unit.subtree, 0);
         while found < limit {
             let Some(next) = self.neighbour(&from, back)? else {
                 break;
             };
-            found += self.count(Unit::new(column, next), limit - found)?;
+            if Some(next) != apart {
+                found += self.count(Unit::new(column, next), None, limit - found)?;
+            }
             from = next;
+        }
+        if let Some(stand_ins) = stand_ins.filter(|_| found < limit) {
+            let range = Some((stand_ins.low, stand_ins.high));
+            found += self.count(stand_ins.unit, range, limit - found)?;
         }
         Ok(found)
     }
@@ -1148,15 +1202,22 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
 
     /// How many records of `unit` a cursor of this cursor's version shows,
     /// up to `limit`: for the data column a cursor over the nodes of a
-    /// Merk, which shows the flat records of that column among them.
-    fn count(&mut self, unit: Unit, limit: usize) -> Result<usize, TxnError> {
+    /// Merk, which shows the flat records of that column among them. With
+    /// `range`, those whose key is at or after its first key and below
+    /// its second.
+    fn count(
+        &mut self,
+        unit: Unit,
+        range: Option<(&[u8], &[u8])>,
+        limit: usize,
+    ) -> Result<usize, TxnError> {
         let (txn, who, at) = (self.txn, self.who, self.at);
         let path = *txn.path();
         if unit.column != Column::Data {
             let side = FlatSide::of(path, at, unit);
             let mut records = Cursor::at(txn, who, unit, at, None, side);
             records.opened = self.opened.take();
-            let counted = records.count_keys(limit);
+            let counted = records.count_keys(range, limit);
             self.opened = records.opened.take();
             return counted;
         }
@@ -1166,17 +1227,30 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
         drop(guard);
         let mut nodes = Cursor::at(txn, who, unit, at, None, side);
         nodes.opened = self.opened.take();
-        let counted = nodes.count_keys(limit);
+        let counted = nodes.count_keys(range, limit);
         self.opened = nodes.opened.take();
         counted
     }
 
     /// Walks the cursor from its first key and counts the keys, up to
-    /// `limit`.
-    fn count_keys(&mut self, limit: usize) -> Result<usize, TxnError> {
+    /// `limit`. With `range`, from the first key at or after its first
+    /// key, and the keys below its second.
+    fn count_keys(
+        &mut self,
+        range: Option<(&[u8], &[u8])>,
+        limit: usize,
+    ) -> Result<usize, TxnError> {
         let mut found = 0;
-        self.seek_to_first()?;
-        while self.key.is_some() && found < limit {
+        match range {
+            Some((low, _)) => self.seek(low)?,
+            None => self.seek_to_first()?,
+        }
+        let within = |key: &Option<Vec<u8>>| match (key, range) {
+            (Some(key), Some((_, high))) => key.as_slice() < high,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        while within(&self.key) && found < limit {
             found += 1;
             if found < limit {
                 self.next()?;
