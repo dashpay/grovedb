@@ -7,6 +7,10 @@
 //! A tree page stores these bytes and does not interpret them. This module
 //! is their one writer and their one reader. A variant Merk gains is one
 //! arm in each of the four functions, and the compiler names them.
+//!
+//! A writer that hands a write transaction the nodes of a Merk itself, as
+//! the migrator from RocksDB does (`lignin-tools`), states the same bytes:
+//! [`feature_bytes`] and [`aggregate_bytes`] are the two encoders for it.
 
 use crate::{
     tree::AggregateData,
@@ -127,6 +131,20 @@ pub(super) fn encode_feature(feature: &TreeFeatureType) -> Tp12 {
         CountedBigSummedMerkNode(count, sum) => Tp12::tagged(10).count(count).big_sum(sum),
         ProvableBigSummedMerkNode(sum) => Tp12::tagged(11).big_sum(sum),
     }
+}
+
+/// The bytes a cell holds for `feature`, for a writer outside this store
+/// that states a node to a write transaction (`NodePut::feature` of
+/// `lignindb::txn`).
+pub fn feature_bytes(feature: &TreeFeatureType) -> Vec<u8> {
+    encode_feature(feature).as_slice().to_vec()
+}
+
+/// The bytes a link holds for `aggregate`, for a writer outside this store
+/// that states a link to a write transaction (`LinkPut::aggregate` of
+/// `lignindb::txn`).
+pub fn aggregate_bytes(aggregate: &AggregateData) -> Vec<u8> {
+    encode_aggregate(aggregate).as_slice().to_vec()
 }
 
 /// The feature a cell holds as `bytes`.
