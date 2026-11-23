@@ -3096,8 +3096,13 @@ impl<'s> WriteTxn<'s> {
                 let node = page.resolve(parent)?;
                 Some(node.link(side).map(|link| link.child))
             });
-            let Ok(Some(child)) = child else {
-                return Ok(None);
+            let child = match child {
+                Ok(Some(child)) => child,
+                // The cell left its page, or a write of the transaction
+                // freed the page: the handle has ended. Any other failure
+                // is of the read.
+                Ok(None) | Err(TxnError::PageFreed { .. }) => return Ok(None),
+                Err(error) => return Err(error),
             };
             state.followed += 1;
             if child.is_some() {
@@ -3121,10 +3126,20 @@ impl<'s> WriteTxn<'s> {
             key.extend_from_slice(node.key());
             Some(node.link(side).map(|link| link.child))
         });
+        // The handle is of this lease, which is of the version that is
+        // read: the page of the parent's cell is a page of it, and a
+        // failure is of the read.
+        let child = match child {
+            Ok(child) => child,
+            Err(error) => {
+                state.key = key;
+                return Err(error);
+            }
+        };
         // A node the transaction has written since is its record now, and
         // that is read by its key (RD5).
         let stale = !matches!(state.set.own(unit, &key), Own::Unwritten);
-        let (Ok(Some(child)), false) = (child, stale) else {
+        let (Some(child), false) = (child, stale) else {
             state.key = key;
             return Ok(None);
         };
@@ -3558,6 +3573,10 @@ macro_rules! reads {
         /// the child by its key ([`Self::node`]). Where the transaction
         /// serves its records by key (WT7b), the child is its own node
         /// under the child's key if it wrote one (RD5).
+        ///
+        /// A read of the page of the parent's cell that fails is the error
+        /// of this read, and no ended handle. A page that a write of the
+        /// transaction freed is none: the handles into it have ended.
         pub fn child<R>(
             &self,
             subtree: Subtree,
