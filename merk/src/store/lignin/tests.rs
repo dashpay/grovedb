@@ -2765,3 +2765,367 @@ fn a_settled_batch_says_which_puts_are_over_a_tree_and_takes_a_drop() {
     assert!(!reader.has_node(&be(1)).unwrap().unwrap());
     assert_eq!(reader.entry().unwrap(), None);
 }
+
+/// A handle that keeps its root-key record outside its subtree
+/// ([`LigninNodeStore::root_key_kept_in`]) reads and writes it in the
+/// roots keyspace of the subtree it was told, under its own prefix and
+/// then the record's key, through an immediate handle and through a
+/// deferred one, and is charged what a handle that keeps the record in
+/// its subtree is charged: for the write, for the read, for the batch,
+/// and for a removal that came with no cost, which is charged from the
+/// committed record. Two subtrees keep two records there. The record is
+/// none of its subtree's for the transaction, and for a batch a write
+/// into no subtree. The subtree it is kept under here is none that
+/// leaves with the handle's: a handle of the subtree that was told
+/// nothing reads none; a drop of the subtree leaves the record where it
+/// is, where it takes the record of a subtree that keeps its own; a
+/// batch that is told to hand over none of the writes of the subtree,
+/// nor of the one the record is kept under, hands the record over; and
+/// a batch that itself drops the subtree after it staged a put of the
+/// record, or a removal of the committed one, makes that write all the
+/// same, at the charge it has with no drop. A handle that is told its
+/// own subtree keeps the record there as one that was told nothing.
+#[test]
+fn a_root_key_record_that_is_kept_outside_its_subtree_is_none_of_the_subtrees_records() {
+    use lignindb::txn::{Column, Unit};
+
+    use super::kept_root_key;
+    use crate::merk::defaults::ROOT_KEY_KEY;
+
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let (home, one, other, plain) = ([8; 32], [9; 32], [10; 32], [11; 32]);
+    let (third, fourth, fifth) = ([12; 32], [13; 32], [14; 32]);
+    let held = |transaction: &WriteTxn<'_>, subtree: Prefix, key: &[u8]| {
+        let mut value = Vec::new();
+        let unit = Unit::new(Column::Roots, Subtree::new(subtree));
+        (transaction.get(unit, key, &mut value).unwrap()).then_some(value)
+    };
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    {
+        let kept = |prefix: Prefix| {
+            LigninNodeStore::immediate(&writer, LigninSubtree::alone(prefix)).root_key_kept_in(home)
+        };
+        let own =
+            |prefix: Prefix| LigninNodeStore::immediate(&writer, LigninSubtree::alone(prefix));
+
+        // Written and read where it is kept, at the charge of a record of
+        // the subtree.
+        let written = kept(one).set_root_key(Some(b"root of one"));
+        let in_its_subtree = own(plain).set_root_key(Some(b"root of one"));
+        assert_eq!(written.cost, in_its_subtree.cost);
+        written.unwrap().unwrap();
+        in_its_subtree.unwrap().unwrap();
+        let (read, in_its_subtree) = (kept(one).root_key(), own(plain).root_key());
+        assert_eq!(read.cost, in_its_subtree.cost);
+        assert_eq!(read.unwrap().unwrap(), Some(b"root of one".to_vec()));
+        assert_eq!(
+            in_its_subtree.unwrap().unwrap(),
+            Some(b"root of one".to_vec())
+        );
+        // Each subtree has its own, and the subtree itself holds none.
+        (kept(other).set_root_key(Some(b"of the other")).unwrap()).unwrap();
+        let read = |prefix: Prefix| kept(prefix).root_key().unwrap().unwrap();
+        assert_eq!(read(other), Some(b"of the other".to_vec()));
+        assert_eq!(read(one), Some(b"root of one".to_vec()));
+        assert_eq!(own(one).root_key().unwrap().unwrap(), None);
+
+        // Two records for the next transaction to remove.
+        for prefix in [fourth, fifth] {
+            (kept(prefix).set_root_key(Some(b"to be removed")).unwrap()).unwrap();
+        }
+
+        // A deferred handle stages the record in its batch where it is
+        // kept, and the batch hands it to the transaction there.
+        let (staged, staged_plain) = (LigninBatch::new(), LigninBatch::new());
+        let deferred = |prefix: Prefix, batch| {
+            LigninNodeStore::deferred(&writer, LigninSubtree::alone(prefix), Some(batch))
+        };
+        let outside = deferred(one, &staged).root_key_kept_in(home);
+        (outside.set_root_key(Some(b"a later root")).unwrap()).unwrap();
+        (deferred(plain, &staged_plain).set_root_key(Some(b"a later root")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(read(one), Some(b"root of one".to_vec()));
+        let (applied, plain_applied) = (staged.apply(&writer), staged_plain.apply(&writer));
+        assert_eq!(applied.cost, plain_applied.cost);
+        applied.unwrap().unwrap();
+        plain_applied.unwrap().unwrap();
+        assert_eq!(read(one), Some(b"a later root".to_vec()));
+        assert_eq!(
+            own(plain).root_key().unwrap().unwrap(),
+            Some(b"a later root".to_vec())
+        );
+    }
+    writer.into_scope().merge();
+    assert_eq!(
+        held(&transaction, home, &kept_root_key(&one)),
+        Some(b"a later root".to_vec())
+    );
+    assert_eq!(
+        held(&transaction, home, &kept_root_key(&other)),
+        Some(b"of the other".to_vec())
+    );
+    assert_eq!(held(&transaction, one, ROOT_KEY_KEY), None);
+    assert_eq!(held(&transaction, home, ROOT_KEY_KEY), None);
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    {
+        // A removal with no cost of its writer's is charged from the
+        // committed record, which is read where it is kept.
+        let (staged, staged_plain) = (LigninBatch::new(), LigninBatch::new());
+        let deferred = |prefix: Prefix, batch| {
+            LigninNodeStore::deferred(&writer, LigninSubtree::alone(prefix), Some(batch))
+        };
+        let outside = deferred(other, &staged).root_key_kept_in(home);
+        outside.set_root_key(None).unwrap().unwrap();
+        deferred(plain, &staged_plain)
+            .set_root_key(None)
+            .unwrap()
+            .unwrap();
+        let (applied, plain_applied) = (staged.apply(&writer), staged_plain.apply(&writer));
+        assert_eq!(applied.cost, plain_applied.cost);
+        applied.unwrap().unwrap();
+        plain_applied.unwrap().unwrap();
+        assert_eq!(outside.root_key().unwrap().unwrap(), None);
+
+        // A drop takes the records of a subtree, and this one is none of
+        // them.
+        (deferred(plain, &staged_plain).set_root_key(Some(b"its own")))
+            .unwrap()
+            .unwrap();
+        staged_plain.apply(&writer).unwrap().unwrap();
+        let dropping = LigninBatch::new();
+        for prefix in [one, plain] {
+            dropping.drop_subtree(&LigninSubtree::alone(prefix));
+        }
+        dropping.apply(&writer).unwrap().unwrap();
+        let kept = LigninNodeStore::immediate(&writer, LigninSubtree::alone(one));
+        let kept = kept.root_key_kept_in(home);
+        assert_eq!(
+            kept.root_key().unwrap().unwrap(),
+            Some(b"a later root".to_vec())
+        );
+
+        // A batch that is told to hand the transaction none of the
+        // writes it holds for the subtree, nor for the one the record is
+        // kept under, hands it this record, which is written where it is
+        // kept, for a subtree that is not entered.
+        let staged = LigninBatch::new();
+        let outside = deferred(one, &staged).root_key_kept_in(home);
+        (outside.set_root_key(Some(b"all the same")).unwrap()).unwrap();
+        let mut settled = staged.settle(&writer).unwrap().expect("a settled batch");
+        assert_eq!(settled.written().count(), 0, "no write of the subtree");
+        settled.leave_out(&one);
+        settled.leave_out(&home);
+        (LigninSettled::apply(vec![settled], &writer, &[]).unwrap()).expect("the batch is applied");
+        assert_eq!(
+            kept.root_key().unwrap().unwrap(),
+            Some(b"all the same".to_vec())
+        );
+
+        // A handle that is told its own subtree keeps the record there
+        // as one that was told nothing: the batch writes into the
+        // subtree.
+        let staged = LigninBatch::new();
+        let within = deferred(third, &staged).root_key_kept_in(third);
+        assert_eq!(within.root_key_place(), (third, ROOT_KEY_KEY.to_vec()));
+        (within.set_root_key(Some(b"in its own")).unwrap()).unwrap();
+        let settled = staged.settle(&writer).unwrap().expect("a settled batch");
+        assert_eq!(settled.written().count(), 1, "a write into the subtree");
+        (LigninSettled::apply(vec![settled], &writer, &[]).unwrap()).expect("the batch is applied");
+        assert_eq!(
+            within.root_key().unwrap().unwrap(),
+            Some(b"in its own".to_vec())
+        );
+
+        // A batch that stages a put of the record and then drops the
+        // subtree itself, which cuts what it staged in the subtree before,
+        // puts the record, and is charged what the put alone is.
+        let kept_of = |prefix: Prefix| {
+            let handle = LigninNodeStore::immediate(&writer, LigninSubtree::alone(prefix));
+            handle.root_key_kept_in(home).root_key().unwrap().unwrap()
+        };
+        let (staged, alone) = (LigninBatch::new(), LigninBatch::new());
+        let outside = deferred(other, &staged).root_key_kept_in(home);
+        (outside.set_root_key(Some(b"before its drop")).unwrap()).unwrap();
+        staged.next_operation();
+        staged.drop_subtree(&LigninSubtree::alone(other));
+        let outside = deferred(third, &alone).root_key_kept_in(home);
+        (outside.set_root_key(Some(b"before its drop")).unwrap()).unwrap();
+        let (applied, put_alone) = (staged.apply(&writer), alone.apply(&writer));
+        assert_eq!(applied.cost, put_alone.cost);
+        applied.unwrap().unwrap();
+        put_alone.unwrap().unwrap();
+        assert_eq!(kept_of(other), Some(b"before its drop".to_vec()));
+        assert_eq!(kept_of(third), Some(b"before its drop".to_vec()));
+        let entry = LigninNodeStore::deferred(&writer, LigninSubtree::alone(other), None).entry();
+        assert_eq!(entry.unwrap(), None);
+
+        // And so with a removal of a record that is committed: it is
+        // charged from the committed record, as the removal alone is, and
+        // the record goes.
+        let (staged, alone) = (LigninBatch::new(), LigninBatch::new());
+        let outside = deferred(fourth, &staged).root_key_kept_in(home);
+        outside.set_root_key(None).unwrap().unwrap();
+        staged.next_operation();
+        staged.drop_subtree(&LigninSubtree::alone(fourth));
+        let outside = deferred(fifth, &alone).root_key_kept_in(home);
+        outside.set_root_key(None).unwrap().unwrap();
+        let (applied, removed_alone) = (staged.apply(&writer), alone.apply(&writer));
+        assert_eq!(applied.cost, removed_alone.cost);
+        assert!(applied.cost.storage_loaded_bytes > 0, "a committed record");
+        applied.unwrap().unwrap();
+        removed_alone.unwrap().unwrap();
+        assert_eq!(kept_of(fourth), None);
+        assert_eq!(kept_of(fifth), None);
+    }
+    writer.into_scope().merge();
+    assert_eq!(
+        held(&transaction, home, &kept_root_key(&one)),
+        Some(b"all the same".to_vec())
+    );
+    assert_eq!(
+        held(&transaction, home, &kept_root_key(&other)),
+        Some(b"before its drop".to_vec())
+    );
+    assert_eq!(
+        held(&transaction, home, &kept_root_key(&third)),
+        Some(b"before its drop".to_vec())
+    );
+    assert_eq!(
+        held(&transaction, third, ROOT_KEY_KEY),
+        Some(b"in its own".to_vec())
+    );
+    for prefix in [fourth, fifth] {
+        assert_eq!(held(&transaction, home, &kept_root_key(&prefix)), None);
+    }
+    assert_eq!(held(&transaction, plain, ROOT_KEY_KEY), None);
+}
+
+/// A batch names the subtrees it writes into by the writes that are left
+/// of it, and a record that its handle keeps outside its subtree is a
+/// write into none: neither into the handle's subtree nor into the one
+/// it is kept under, also where an earlier operation of the batch wrote
+/// into that one and a later operation took the write back. A subtree
+/// that is not entered is entered by the batch, written into and dropped
+/// again, and then a handle of another subtree puts its root-key record
+/// there: the batch names no subtree and no put into one, and the
+/// transaction refuses the record, whose home is not entered.
+#[test]
+fn a_kept_record_is_a_write_into_no_subtree_where_the_batch_took_its_other_writes_back() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let (absent, other) = ([230; 32], [20; 32]);
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let staged = LigninBatch::new();
+    let handle = |prefix: Prefix| {
+        LigninNodeStore::deferred(&writer, LigninSubtree::alone(prefix), Some(&staged))
+    };
+    let of_the_home = handle(absent);
+    of_the_home.enter(TreeType::NormalTree).unwrap();
+    (of_the_home.set_root_key(Some(b"its own")).unwrap()).unwrap();
+    staged.next_operation();
+    staged.drop_subtree(&LigninSubtree::alone(absent));
+    staged.next_operation();
+    let kept = handle(other).root_key_kept_in(absent);
+    (kept.set_root_key(Some(b"of another")).unwrap()).unwrap();
+    let settled = staged.settle(&writer).unwrap().expect("a settled batch");
+    assert_eq!(settled.written().count(), 0, "no write into a subtree");
+    assert_eq!(settled.put_into().count(), 0, "no put into a subtree");
+    let refused = (LigninSettled::apply(vec![settled], &writer, &[]).unwrap())
+        .expect_err("the home of the record is not entered");
+    assert!(refused.to_string().contains("is not entered"), "{refused}");
+}
+
+/// A change set that holds nothing but a record which its handle keeps
+/// outside its subtree leaves no mark of the handle's subtree in the
+/// batch. A handle that names no host puts an aux record into a subtree,
+/// and a handle of the same subtree that names a host and was told a
+/// path then puts its root-key record outside: the batch names the
+/// subtree as the first handle did, with no host, says of no subtree
+/// that two hosts were named for it, and holds no path of the subtree.
+#[test]
+fn a_kept_record_alone_leaves_no_mark_of_its_handles_subtree() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let (subtree, home, above) = ([231; 32], [22; 32], [1; 32]);
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let staged = LigninBatch::new();
+    let alone = LigninNodeStore::deferred(&writer, LigninSubtree::alone(subtree), Some(&staged));
+    let mut change_set = alone.change_set();
+    change_set.put_aux_record(b"k", b"aux", None).unwrap();
+    alone.commit(change_set).unwrap().unwrap();
+    let hosted = LigninSubtree {
+        prefix: subtree,
+        host: Some(LigninHost {
+            subtree: above,
+            key: b"missing".to_vec(),
+            hosted: vec![subtree],
+        }),
+    };
+    let named = LigninNodeStore::deferred(&writer, hosted, Some(&staged))
+        .at_path(vec![b"missing".to_vec()])
+        .root_key_kept_in(home);
+    (named.set_root_key(Some(b"kept")).unwrap()).unwrap();
+    let settled = staged.settle(&writer).unwrap().expect("a settled batch");
+    let written: Vec<_> = settled.written().collect();
+    assert_eq!(written.len(), 1, "the subtree of the aux record");
+    assert_eq!(written[0].prefix, subtree);
+    assert!(written[0].host.is_none(), "as the first handle named it");
+    assert!(!settled.names_two_hosts());
+    assert_eq!(settled.path(&subtree), None);
+}
+
+/// A batch charges its records in the order of their own stored keys, as
+/// a storage batch does (`cost-model.md` B1), wherever each is kept: a
+/// record that is kept outside its subtree has the place of its subtree's
+/// prefix, and not the place of the subtree it is kept under. Of the
+/// root-key records of two subtrees, the first of which is kept under a
+/// subtree after both, the put of the second is refused for its cost:
+/// the batch is charged the put of the first before the refusal, as a
+/// batch is whose two records are kept in their subtrees.
+#[test]
+fn a_record_that_is_kept_outside_its_subtree_is_charged_in_the_place_of_its_own_key() {
+    use grovedb_costs::storage_cost::{key_value_cost::KeyValueStorageCost, StorageCost};
+
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let (first, second, home) = ([20; 32], [21; 32], [22; 32]);
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let wrong = || KeyValueStorageCost {
+        value_storage_cost: StorageCost {
+            added_bytes: 1,
+            ..Default::default()
+        },
+        needs_value_verification: true,
+        ..Default::default()
+    };
+    let refused = |kept: bool| {
+        let staged = LigninBatch::new();
+        let handle = |prefix: Prefix| {
+            LigninNodeStore::deferred(&writer, LigninSubtree::alone(prefix), Some(&staged))
+        };
+        let of_the_first = match kept {
+            true => handle(first).root_key_kept_in(home),
+            false => handle(first),
+        };
+        (of_the_first.set_root_key(Some(b"taken")).unwrap()).unwrap();
+        let of_the_second = handle(second);
+        let mut change_set = of_the_second.change_set();
+        (change_set.put_root_key(b"refused", Some(wrong()))).unwrap();
+        of_the_second.commit(change_set).unwrap().unwrap();
+        let settled = staged.settle(&writer);
+        assert!(settled.value.is_err(), "the put of the second is refused");
+        settled.cost
+    };
+    let (kept_outside, in_its_subtree) = (refused(true), refused(false));
+    assert_eq!(kept_outside, in_its_subtree);
+    assert_eq!(kept_outside.seek_count, 2, "the first was charged before");
+}

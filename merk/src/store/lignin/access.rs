@@ -191,6 +191,22 @@ pub(super) struct RecordChange {
     pub(super) key: Vec<u8>,
     /// The record's value, or `None` to remove the record.
     pub(super) value: Option<Vec<u8>>,
+    /// The subtree that the record is kept under, by the prefix of its
+    /// own subtree and its key ([`kept_key`]), where it is a root-key
+    /// record whose handle keeps it outside its subtree
+    /// ([`LigninNodeStore::root_key_kept_in`](super::LigninNodeStore::root_key_kept_in)).
+    pub(super) home: Option<Prefix>,
+}
+
+/// The key of a record of `subtree` that is kept under another subtree:
+/// the prefix of `subtree`, and then the record's own key.
+pub(super) fn kept_key(subtree: &Prefix, key: &[u8]) -> Vec<u8> {
+    [subtree.as_slice(), key].concat()
+}
+
+/// The record's own key in a key that [`kept_key`] made.
+pub(super) fn own_key(kept: &[u8]) -> &[u8] {
+    kept.get(size_of::<Prefix>()..).unwrap_or(kept)
 }
 
 /// What a write does to a subtree as a whole, beside what its batch says of
@@ -1131,14 +1147,23 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
             whole: merk.whole,
         })
         .collect();
-    let records: Vec<RecordWrite<'_>> = (write.records.iter())
+    // A record that is kept outside its subtree is written where it is
+    // kept.
+    let kept: Vec<Option<(Subtree, Vec<u8>)>> = (write.records.iter())
         .map(|record| {
-            let subtree = Subtree::new(record.subtree);
+            let home = record.home?;
+            Some((Subtree::new(home), kept_key(&record.subtree, &record.key)))
+        })
+        .collect();
+    let records: Vec<RecordWrite<'_>> = (write.records.iter().zip(&kept))
+        .map(|(record, kept)| {
+            let (subtree, key) = match kept {
+                Some((home, key)) => (*home, key.as_slice()),
+                None => (Subtree::new(record.subtree), record.key.as_slice()),
+            };
             match &record.value {
-                Some(value) => {
-                    RecordWrite::put(column(record.keyspace), subtree, &record.key, value)
-                }
-                None => RecordWrite::delete(column(record.keyspace), subtree, &record.key),
+                Some(value) => RecordWrite::put(column(record.keyspace), subtree, key, value),
+                None => RecordWrite::delete(column(record.keyspace), subtree, key),
             }
         })
         .collect();
