@@ -26,7 +26,9 @@
 //!   operation that names a place of a family, the case ends there, is
 //!   counted for the family, and is no divergence of the run. They differ
 //!   there because the read takes the records under a prefix as they are.
-//!   A difference at any other operation ends the run, as it always did.
+//!   A query names the subtree it is of and, since it can go down by its
+//!   subqueries, every place of a family below that subtree. A difference
+//!   at any other operation ends the run, as it always did.
 //!
 //! The counts are in the [`Tally`](super::pair::Tally) of a run
 //! ([`Counts`]), with the seed of the first case of each kind.
@@ -203,6 +205,29 @@ fn read_places(read: &Read, places: &mut Vec<Path>) {
     }
 }
 
+/// The subtrees the queries of `read` are of.
+fn query_places(read: &Read) -> Vec<Path> {
+    match read {
+        Read::Query(query) => vec![query.path.clone()],
+        Read::PathQuery { query, .. }
+        | Read::Rows { query, .. }
+        | Read::KeysOptional { query, .. }
+        | Read::ItemValues { query, .. }
+        | Read::SumValues { query }
+        | Read::BigSum { query, .. } => vec![query.path.clone()],
+        Read::SumBudget { query, .. } => vec![query.path.clone()],
+        Read::Many { queries } => queries.iter().map(|query| query.path.clone()).collect(),
+        Read::Get { .. }
+        | Read::HasRaw { .. }
+        | Read::Fetch { .. }
+        | Read::IsEmptyTree { .. }
+        | Read::Tree { .. }
+        | Read::Prove(_)
+        | Read::GetAux { .. }
+        | Read::AuxByPrefix { .. } => Vec::new(),
+    }
+}
+
 /// The places `op` names: the subtree it reads or writes in, and with a
 /// key the place under that key.
 fn places(op: &Op) -> Vec<Path> {
@@ -329,10 +354,33 @@ impl Known {
             .then_some(Family::BelowFlatDrop)
     }
 
+    /// The family that has a place at `path` or below it.
+    fn family_below(&self, path: &[Vec<u8>]) -> Option<Family> {
+        if self.over.iter().any(|over| over.starts_with(path)) {
+            return Some(Family::WrittenOver);
+        }
+        self.flat_drops
+            .iter()
+            .any(|drop| drop.starts_with(path))
+            .then_some(Family::BelowFlatDrop)
+    }
+
     /// The family an answer to `op` is of: that of the first place the
-    /// operation names that is of one.
+    /// operation names that is of one, and for a query, which goes down
+    /// by its subqueries, also that of a place below its subtree.
     pub fn family_of_answer(&self, op: &Op) -> Option<Family> {
-        places(op).iter().find_map(|place| self.family(place))
+        let named = places(op).iter().find_map(|place| self.family(place));
+        let read = match op {
+            Op::Read(read)
+            | Op::Transaction(TransactionOp::SnapshotRead(read) | TransactionOp::BlockRead(read)) => {
+                Some(read)
+            }
+            _ => None,
+        };
+        named.or_else(|| {
+            let queried = read.map(query_places).unwrap_or_default();
+            queried.iter().find_map(|place| self.family_below(place))
+        })
     }
 
     /// The records of `listed` that are of no family, and for each family
@@ -528,6 +576,26 @@ mod tests {
             Some(Family::BelowFlatDrop)
         );
         assert_eq!(known.family_of_answer(&empty(&[b"b"])), None);
+        // A query of a subtree above goes down to the place by a subquery.
+        let query = |at: &[&[u8]]| {
+            Op::Read(Read::Query(crate::workload::Query {
+                path: path(at),
+                items: vec![crate::workload::QueryItem::RangeFull],
+                subquery_path: None,
+                subquery_all: true,
+                limit: None,
+                left_to_right: true,
+                raw: false,
+            }))
+        };
+        assert_eq!(known.family_of_answer(&query(&[b"b"])), over);
+        assert_eq!(known.family_of_answer(&query(&[])), over);
+        assert_eq!(
+            known.family_of_answer(&query(&[b"a"])),
+            Some(Family::BelowFlatDrop)
+        );
+        assert_eq!(known.family_of_answer(&query(&[b"c"])), None);
+        assert_eq!(known.family_of_answer(&query(&[b"b", b"other"])), None);
         assert_eq!(known.family_of_answer(&get(&[b"b"], b"other")), None);
         assert_eq!(known.family_of_answer(&delete(&[b"a"], b"dropped")), None);
         assert_eq!(known.family_of_answer(&Op::Commit), None);

@@ -33,6 +33,21 @@
 //! longer reaches, as records that were left behind. Two engines have to
 //! leave the same, which is nothing wherever GroveDB cleared the subtree.
 //!
+//! # One column shown twice
+//!
+//! The data of a subtree is the nodes of a Merk or the records of an
+//! append-only tree, and the walk reads each through its own cursor. An
+//! engine may keep the two in one column of the subtree, as RocksDB does,
+//! or apart, as LigninDB does. Where a tree of the one kind was moved away
+//! and a tree of the other kind was moved to its path, the place of the
+//! old kind is gone and the walk looks at what was left under it: on an
+//! engine with one column that cursor shows the records of the tree that
+//! lives there now, which the walk has listed already under its own kind.
+//! So a record that would be listed as left behind is left out where the
+//! same walk listed the same record, key and bytes, at the same path
+//! under the other kind of data. Any other record there is still listed:
+//! it was left behind.
+//!
 //! # What the walk does not reach
 //!
 //! A subtree that was dropped flat is left out of that for as long as the
@@ -353,10 +368,70 @@ pub fn stored<'db, E: StreamEngine>(
         }
     }
     Ok(Listing {
-        records,
+        records: without_a_column_shown_twice(records),
         places,
         dropped,
     })
+}
+
+/// `records` without the records left behind that the walk listed as
+/// well, with the same key and bytes at the same path, as data of the
+/// other kind of a subtree it reached: the one column of an engine that
+/// keeps nodes and flat records together, shown twice (the module
+/// documentation, "One column shown twice").
+fn without_a_column_shown_twice(records: Vec<Record>) -> Vec<Record> {
+    let other_kind = |keyspace| match keyspace {
+        Keyspace::Flat => Some(Keyspace::Nodes),
+        Keyspace::Nodes => Some(Keyspace::Flat),
+        _ => None,
+    };
+    if !(records.iter()).any(|record| record.left_behind && other_kind(record.keyspace).is_some()) {
+        return records;
+    }
+    /// Where a record is, and what it is: its path, its secondary, its
+    /// keyspace, its key and its bytes.
+    type Shown<'a> = (&'a [Vec<u8>], Option<u8>, Keyspace, &'a [u8], &'a [u8]);
+    let reached: BTreeSet<Shown<'_>> = records
+        .iter()
+        .filter(|record| !record.left_behind)
+        .map(|record| {
+            let Record {
+                path,
+                secondary,
+                keyspace,
+                key,
+                value,
+                ..
+            } = record;
+            (
+                path.as_slice(),
+                *secondary,
+                *keyspace,
+                key.as_slice(),
+                value.as_slice(),
+            )
+        })
+        .collect();
+    let shown_twice: Vec<bool> = records
+        .iter()
+        .map(|record| {
+            let Some(other) = other_kind(record.keyspace) else {
+                return false;
+            };
+            record.left_behind
+                && reached.contains(&(
+                    record.path.as_slice(),
+                    record.secondary,
+                    other,
+                    record.key.as_slice(),
+                    record.value.as_slice(),
+                ))
+        })
+        .collect();
+    let mut shown_twice = shown_twice.into_iter();
+    let mut records = records;
+    records.retain(|_| !shown_twice.next().unwrap_or(false));
+    records
 }
 
 /// The prefix the storage of `place` is under.
@@ -847,6 +922,61 @@ mod tests {
             stored(&db, &transaction, GroveVersion::latest(), &BTreeSet::new()).expect("a listing");
         assert!(unaware.records.iter().all(|record| !record.left_behind));
         assert_eq!(unaware.records.len() + 2, listed.records.len());
+    }
+
+    /// A record left behind under one kind of data is left out where the
+    /// walk listed the same record at the same path under the other kind,
+    /// and only there: another key, other bytes, another path or another
+    /// secondary is a record that was left behind.
+    #[test]
+    fn a_column_shown_twice_is_listed_once_and_what_was_left_behind_stays() {
+        let record = |path: &[u8], keyspace, key: &[u8], value: u8, left_behind| Record {
+            path: vec![path.to_vec()],
+            secondary: None,
+            keyspace,
+            key: key.to_vec(),
+            value: vec![value],
+            left_behind,
+        };
+        let (nodes, flat) = (Keyspace::Nodes, Keyspace::Flat);
+        // A Merk lives at `p` where a flat tree was, with the nodes `a`
+        // and `b`; a flat tree lives at `q` where a Merk was.
+        let reached = vec![
+            record(b"p", nodes, b"a", 1, false),
+            record(b"p", nodes, b"b", 2, false),
+            record(b"p", Keyspace::Aux, b"x", 9, false),
+            record(b"q", flat, b"r", 3, false),
+        ];
+        let twice = vec![
+            record(b"p", flat, b"a", 1, true),
+            record(b"p", flat, b"b", 2, true),
+            record(b"q", nodes, b"r", 3, true),
+        ];
+        let mut secondary = record(b"p", flat, b"a", 1, true);
+        secondary.secondary = Some(1);
+        let left = vec![
+            // Planted beside the Merk's nodes: a key no node has, the bytes
+            // of no node, the aux record's key, another path, a secondary.
+            record(b"p", flat, b"planted", 1, true),
+            record(b"p", flat, b"a", 7, true),
+            record(b"p", flat, b"x", 9, true),
+            record(b"other", flat, b"a", 1, true),
+            secondary,
+            record(b"q", nodes, b"r", 4, true),
+            record(b"p", Keyspace::Aux, b"x", 9, true),
+        ];
+        let mut listed = reached.clone();
+        listed.extend(twice);
+        listed.extend(left.clone());
+        let mut expected = reached.clone();
+        expected.extend(left);
+        assert_eq!(without_a_column_shown_twice(listed), expected);
+        // Nothing left behind: nothing is looked for.
+        assert_eq!(without_a_column_shown_twice(reached.clone()), reached);
+        // A record that was reached twice is no record left behind.
+        let mut both = reached.clone();
+        both.push(record(b"p", flat, b"a", 1, false));
+        assert_eq!(without_a_column_shown_twice(both.clone()), both);
     }
 
     /// A subtree dropped flat is listed as a pending drop until the drop is

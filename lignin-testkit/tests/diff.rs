@@ -217,6 +217,63 @@ fn the_candidate_answers_as_the_reference_does() {
     assert!(walks > cases, "{walks} walks");
 }
 
+/// Two cases the fuzzer reported on grove version 4, in which a batch
+/// moves a tree to the path a private-document store was moved away from,
+/// or the other way round. RocksDB keeps the nodes of a Merk and the
+/// records of such a store in one column of a subtree, so the walk of what
+/// is stored saw the tree that lives at the path a second time, as
+/// records left behind under the other kind of data, and LigninDB, which
+/// keeps the two apart, showed none. The walk lists such a record once
+/// (`diff::state`, "One column shown twice"), and the engines answer and
+/// store these cases alike to their last operation.
+#[test]
+fn a_tree_moved_to_the_path_of_a_tree_of_the_other_kind_is_listed_once() {
+    use lignin_testkit::{
+        diff::{run, Case, Stored},
+        golden::run::STACK_BYTES,
+    };
+
+    let scratch = scratch();
+    let shape = Shape::default()
+        .for_grove_version(4)
+        .expect("a grove version");
+    for seed in [0x6eb9_0601_2079_bb8a_u64, 0x1aeb_7a21_f504_221b] {
+        let case = Case::generate(seed, &shape);
+        let moves = |op: &lignin_testkit::workload::Op| {
+            op.batch_ops()
+                .any(|op| matches!(op, lignin_testkit::workload::BatchOp::Move { .. }))
+        };
+        assert!(case.ops.iter().any(moves), "the case of {seed:#x} moves");
+        let ran = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    run(
+                        &case,
+                        &Side::<Reference>::of("RocksDB"),
+                        &Side::<Candidate>::of("LigninDB"),
+                        scratch.path(),
+                        Stored::Every(1),
+                        &|| false,
+                    )
+                })
+                .expect("a thread")
+                .join()
+                .expect("the case runs")
+        })
+        .expect("the run");
+        if let Some(divergence) = &ran.divergence {
+            panic!(
+                "the case of {seed:#x}:\n{}",
+                divergence.report(&case, "RocksDB", "LigninDB").join("\n")
+            );
+        }
+        assert_eq!((ran.cut_short, ran.ended_at), (None, None), "{seed:#x}");
+        assert_eq!(ran.tally.steps, case.ops.len() as u64, "{seed:#x}");
+        assert!(ran.tally.walks > 1, "{seed:#x}");
+    }
+}
+
 #[test]
 fn the_fields_of_two_cost_lines_are_compared() {
     let cost = "cost seeks=3 loaded=120 added=185 replaced=40 removed=- hashes=7 sinsemilla=0";
