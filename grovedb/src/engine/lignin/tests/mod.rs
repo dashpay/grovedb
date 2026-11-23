@@ -27,6 +27,7 @@ mod deletes;
 mod hatch;
 mod indexed;
 mod inspection;
+mod kinds;
 mod left_behind;
 mod legacy;
 mod moves;
