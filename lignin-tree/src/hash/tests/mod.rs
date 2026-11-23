@@ -3,6 +3,7 @@ mod errors;
 mod evaluation;
 mod grove;
 mod marks;
+mod other;
 mod property;
 mod store;
 

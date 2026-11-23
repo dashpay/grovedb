@@ -502,7 +502,10 @@
 //! has ended and what could be written back was. A finding is a panic
 //! with the report's text, so a test that closes a database, or drops its
 //! handle, ends with the check. A release build makes no check at a
-//! close.
+//! close. What the checker counts and does not call a finding is no
+//! panic: cells that nothing reaches, and a value hash that the caller's
+//! rules name as another writer's
+//! ([`OtherHashes`](verify::OtherHashes)).
 //!
 //! The check is left out where there is nothing to say or nobody to say
 //! it to: on a thread that is panicking already; for a session that ended
