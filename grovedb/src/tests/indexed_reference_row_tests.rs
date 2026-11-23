@@ -1169,7 +1169,7 @@ mod tests {
         // moves the row.
         let (child_root, child_root_key) = {
             let tx = db.start_transaction();
-            let batch = StorageBatch::new();
+            let batch = SuiteBatch::default();
             let path_segments: [&[u8]; 3] = [TEST_LEAF, b"cidx".as_ref(), b"sub".as_ref()];
             let merk = db
                 .open_transactional_merk_at_path(
