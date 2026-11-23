@@ -11,9 +11,10 @@
 //! - [`Family::WrittenOver`]: an element was put over a tree that held
 //!   elements. The family is the subtree of that tree, and every subtree
 //!   below it.
-//! - [`Family::BelowFlatDrop`]: a tree was dropped flat while it held a
-//!   tree, against its caller's word. The family is every subtree below
-//!   the dropped tree, and not the tree's own.
+//! - [`Family::BelowFlatDrop`]: a tree was dropped flat. Where it held a
+//!   tree, against its caller's word, the engines differ below it. The
+//!   family is every subtree below a tree that was dropped flat, and not
+//!   the tree's own.
 //!
 //! A case keeps the paths it made so ([`Known`]), from the operations both
 //! engines took, and nothing else is of a family:
@@ -31,7 +32,9 @@
 //!   at any other operation ends the run, as it always did.
 //!
 //! The counts are in the [`Tally`](super::pair::Tally) of a run
-//! ([`Counts`]), with the seed of the first case of each kind.
+//! ([`Counts`]): the cases that made a place of a family, those with a
+//! stored difference passed over and those ended at an answer, and for
+//! the last two the seed of one such case.
 
 use grovedb_version::version::GroveVersion;
 
@@ -71,8 +74,9 @@ impl Family {
 /// What a run met of the families, by [`Family::ALL`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// The cases that made the history of the family: an element put over
-    /// a tree that held elements, or a flat drop.
+    /// The cases that made a place of the family: an element put over a
+    /// tree that held elements, or a flat drop of a tree, whatever it
+    /// held.
     pub histories: [u64; 2],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
@@ -80,9 +84,10 @@ pub struct Counts {
     /// The cases that ended at an answer the engines gave differently at
     /// an operation that names a place of the family.
     pub answers: [u64; 2],
-    /// The seed of the first case counted in `stored`.
+    /// The seed of a case counted in `stored`: of the first whose counts
+    /// were added.
     pub stored_seed: [Option<u64>; 2],
-    /// The seed of the first case counted in `answers`.
+    /// The seed of a case counted in `answers`, likewise.
     pub answer_seed: [Option<u64>; 2],
 }
 

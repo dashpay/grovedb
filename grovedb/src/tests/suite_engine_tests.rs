@@ -143,9 +143,9 @@ fn a_database_of_the_fixtures_pins_its_reads() {
 /// build: the physical checker reads every page of it and makes the stored
 /// hashes of the nodes of every Merk in use again by Merk's rules
 /// (`lignindb::Db::check_hashes_by`, which `LigninEngine` calls for every
-/// database it opens). So every database a test of the suite leaves is
-/// checked, and a store the checker calls unsound fails the test that
-/// closed it.
+/// database it opens). So a database that a test of the suite closes on
+/// a thread that is not panicking is checked, and a store the checker
+/// calls unsound fails the test that closed it.
 ///
 /// Shown on a database of the fixtures: a node of the root Merk is written
 /// with a key-value hash that is not its own, through the engine's handle,
