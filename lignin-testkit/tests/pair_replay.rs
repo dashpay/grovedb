@@ -98,7 +98,7 @@ fn replayed(case: &Case, scratch: &std::path::Path) -> Ended {
         Ok(Err(error)) => Ended::Other(format!("could not run: {error:?}")),
         Ok(Ok(run)) => {
             let families = run.tally.families;
-            let passed_over = families.stored != [0, 0] || families.answers != [0, 0];
+            let passed_over = families.stored_differences() + families.answer_differences() > 0;
             match (run.divergence, run.cut_short) {
                 (Some(divergence), _) => Ended::Differs {
                     at_a_conversion: matches!(

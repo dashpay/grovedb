@@ -434,6 +434,25 @@ fn without_a_column_shown_twice(records: Vec<Record>) -> Vec<Record> {
     records
 }
 
+/// The paths of the trees whose flat drops have a pending record as
+/// `transaction` sees `db`, the records it staged itself among them. A
+/// record that does not decode names no path.
+pub fn pending_drop_paths<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+) -> Result<Vec<Vec<Vec<u8>>>, String> {
+    let namespace = db
+        .engine()
+        .subtree_by_prefix(*pending_prefix_drops_namespace(), None, transaction)
+        .unwrap();
+    let mut paths = Vec::new();
+    walk(FlatStore::cursor(&namespace.meta()), |key, value| {
+        let drop = PendingPrefixDropRecord::decode(key, value).ok();
+        paths.extend(drop.map(|drop| drop.path));
+    })?;
+    Ok(paths)
+}
+
 /// The prefix the storage of `place` is under.
 fn prefix(place: &Place) -> SubtreePrefix {
     let primary = build_prefix(SubtreePath::from(place.path.as_slice())).unwrap();

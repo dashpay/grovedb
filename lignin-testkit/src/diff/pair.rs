@@ -29,7 +29,7 @@ use grovedb::GroveDb;
 use super::{
     case::Case,
     families::{Counts, Family, Known},
-    state::{first_difference, stored, Listing, Place, Record},
+    state::{first_difference, pending_drop_paths, stored, Listing, Place, Record},
 };
 use crate::{
     golden::{
@@ -567,6 +567,16 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             Both::Alike(why) => return cut_short(tally, step, why),
             Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
         };
+        // The trees whose flat drop has a pending record now, as the
+        // reference's block sees it: the places of the family of a
+        // dropped tree. Where the reference cannot be read, none is.
+        if known.dropped_flat() {
+            let pending = catching(|| {
+                let block = reference_runner.transactions().block();
+                pending_drop_paths(&reference_db, block)
+            });
+            known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
+        }
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
             // An answer that differs at an operation which names a place

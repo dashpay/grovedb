@@ -312,7 +312,7 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
             write_finding(out, finding, reference.name(), candidate.name());
             Ok(Some(finding.after))
         }
-        None if summary.progress.tally.families.answers == [0, 0] => {
+        None if summary.progress.tally.families.answer_differences() == 0 => {
             let _ = writeln!(out, "the engines answered the same");
             Ok(None)
         }

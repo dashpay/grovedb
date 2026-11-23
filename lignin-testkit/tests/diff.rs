@@ -274,6 +274,61 @@ fn a_tree_moved_to_the_path_of_a_tree_of_the_other_kind_is_listed_once() {
     }
 }
 
+/// A case the fuzzer reported on grove version 4: a tree is made again at
+/// the path of a tree that was dropped flat while the record of the drop
+/// is pending, and a query of the new tree with no subquery reads the old
+/// tree's elements on RocksDB, which keeps them until the drain, and the
+/// new tree's alone on LigninDB. It is the open difference of a dropped
+/// tree until its drain: the case ends at that answer, counted for the
+/// family, and is no divergence.
+#[test]
+fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_family() {
+    use lignin_testkit::{
+        diff::{run, Case, Family, Stored},
+        golden::run::STACK_BYTES,
+        workload::{Op, Read},
+    };
+
+    let scratch = scratch();
+    let shape = Shape::default()
+        .for_grove_version(4)
+        .expect("a grove version");
+    let case = Case::generate(0x9c66_50fd_c2d8_568e, &shape);
+    let ran = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn_scoped(scope, || {
+                run(
+                    &case,
+                    &Side::<Reference>::of("RocksDB"),
+                    &Side::<Candidate>::of("LigninDB"),
+                    scratch.path(),
+                    Stored::Every(32),
+                    &|| false,
+                )
+            })
+            .expect("a thread")
+            .join()
+            .expect("the case runs")
+    })
+    .expect("the run");
+    if let Some(divergence) = &ran.divergence {
+        panic!(
+            "{}",
+            divergence.report(&case, "RocksDB", "LigninDB").join("\n")
+        );
+    }
+    assert_eq!(ran.ended_at, Some(Family::DroppedTree));
+    let last = &case.ops[ran.tally.steps as usize - 1];
+    let Op::Read(Read::Query(query)) = last else {
+        panic!("the case ended at {last:?}");
+    };
+    assert!(query.subquery_path.is_none() && !query.subquery_all);
+    let families = ran.tally.families;
+    assert_eq!(families.answers, [0, 0, 1]);
+    assert_eq!(families.answer_seed, [None, None, Some(case.seed)]);
+}
+
 #[test]
 fn the_fields_of_two_cost_lines_are_compared() {
     let cost = "cost seeks=3 loaded=120 added=185 replaced=40 removed=- hashes=7 sinsemilla=0";
