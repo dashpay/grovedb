@@ -16,7 +16,7 @@ use grovedb_merk::store::NodeStore;
 use grovedb_storage::{FlatStore, RawIterator};
 use lignindb::{verify::Census, Db, Options};
 
-use super::{version, ROOT};
+use super::{version, Lignin, ROOT};
 use crate::{
     batch::QualifiedGroveDbOp,
     engine::{Engine, SubtreeHandle},
@@ -607,22 +607,23 @@ fn small_dump<E: Hatched>(items: &[&[u8]]) -> Vec<u8> {
     dump
 }
 
-/// How many records the data keyspace of the tree under `COUNTED` holds,
-/// as `through` reads it: nodes, or with `flat` flat records.
-fn data_of<'db, E: Engine>(
+/// The keys of the records that the data keyspace of the tree under
+/// `COUNTED` holds, as `through` reads it: of its nodes, or with `flat` of
+/// its flat records.
+fn keys_of<'db, E: Engine>(
     db: &'db GroveDb<E>,
     through: TransactionArg<'db, '_, E>,
     flat: bool,
-) -> u64 {
-    fn count<C: RawIterator>(mut cursor: C) -> u64 {
-        let mut records = 0;
+) -> Vec<Vec<u8>> {
+    fn keys<C: RawIterator>(mut cursor: C) -> Vec<Vec<u8>> {
+        let mut keys = Vec::new();
         cursor.seek_to_first().unwrap();
         while cursor.valid().unwrap() {
-            records += 1;
+            keys.push(cursor.key().unwrap().expect("a key").to_vec());
             cursor.next().unwrap();
         }
         cursor.status().expect("a cursor that did not fail");
-        records
+        keys
     }
     let own;
     let tx = match through {
@@ -636,10 +637,19 @@ fn data_of<'db, E: Engine>(
         .subtree([COUNTED].as_ref().into(), None, tx)
         .unwrap();
     if flat {
-        count(FlatStore::cursor(&handle))
+        keys(FlatStore::cursor(&handle))
     } else {
-        count(NodeStore::cursor(&handle))
+        keys(NodeStore::cursor(&handle))
     }
+}
+
+/// How many records that keyspace holds.
+fn data_of<'db, E: Engine>(
+    db: &'db GroveDb<E>,
+    through: TransactionArg<'db, '_, E>,
+    flat: bool,
+) -> u64 {
+    keys_of(db, through, flat).len() as u64
 }
 
 fn records_of<'db, E: Engine>(db: &'db GroveDb<E>, through: TransactionArg<'db, '_, E>) -> u64 {
@@ -915,6 +925,48 @@ fn two_loads_into_one_subtree<E: Hatched>() -> (Result<(), crate::Error>, u64) {
     (committed, nodes)
 }
 
+/// A LigninDB store that is closed after the load of a Merk with nodes
+/// and before the replacement of its element: the physical checker
+/// reports the value hash of the element and nothing else, the element
+/// names the Merk it hosts, and the replacement leaves a store that the
+/// checker passes.
+#[test]
+fn a_store_between_a_load_and_its_replacement_is_reported_for_one_value_hash() {
+    let v = version();
+    let dump = small_dump::<super::LigninEngine>(&[b"a", b"b", b"c"]);
+    let target = Grove::<super::LigninEngine>::new();
+    (target.db)
+        .insert(ROOT, COUNTED, Element::empty_count_tree(), None, None, v)
+        .unwrap()
+        .expect("a count tree");
+    let loaded = (target.db)
+        .load_subtree(ROOT, COUNTED, &dump[..], None, v)
+        .expect("a load");
+    let Grove { dir, db } = target;
+    // The check that a debug build makes at a close would stop the test
+    // on the same finding.
+    db.engine().database().unchecked_at_close();
+    drop(db);
+
+    let store = Db::open(dir.path(), &Options::default()).expect("the store opens again");
+    let mut rules = grovedb_merk::store::lignin::hash::MerkHashRules::for_check(v);
+    let report = store.close_and_verify(Some(&mut rules)).expect("a close");
+    let found: Vec<String> = (report.findings.iter())
+        .map(|finding| format!("{:?}", finding.rule))
+        .collect();
+    assert_eq!(found, ["Hash(Value)"], "{:#?}", report.findings);
+    assert_eq!(report.census.hosted_roots, 1, "{:?}", report.census);
+
+    let db = Lignin::open_with_engine(dir.path()).expect("the grove opens again");
+    root_is_as_stated(&db, &loaded, None);
+    replace(&db, &loaded, None);
+    let issues = db.verify_grovedb(None, true, false, v);
+    assert!(issues.expect("a verification").is_empty());
+    drop(db);
+    let census = <super::LigninEngine as Hatched>::closed(dir.path()).expect("a census");
+    assert_eq!(census.hosted_roots, 1, "{census:?}");
+}
+
 /// Replaces the element of the tree under `COUNTED` after a load that was
 /// committed without it, and has the grove verified. The two tests that
 /// commit a load alone call it where the other writer lost, which is on
@@ -967,7 +1019,7 @@ fn the_second_of_two_applies_conflicts<E: Hatched>() {
 /// tree holds after it, and whether its element is then the one of the
 /// first dump, and of the second.
 fn an_apply_whose_replacement_follows_the_commit_of_another<E: Hatched>(
-) -> (Result<(), crate::Error>, u64, [bool; 2]) {
+) -> (Result<(), crate::Error>, Vec<Vec<u8>>, [bool; 2]) {
     let v = version();
     let one = small_dump::<E>(&[b"a", b"b", b"c"]);
     let other = small_dump::<E>(&[b"x", b"y"]);
@@ -991,7 +1043,7 @@ fn an_apply_whose_replacement_follows_the_commit_of_another<E: Hatched>(
     (target.db.commit_transaction(first).unwrap()).expect("the first commit");
     replace(&target.db, &beside, Some(&second));
     let committed = target.db.commit_transaction(second).unwrap();
-    let nodes = records_of(&target.db, None);
+    let nodes = keys_of(&target.db, None, false);
     let held = (target.db.get_raw(ROOT, COUNTED, None, v).unwrap()).expect("the count tree");
     target.close();
     (
@@ -1034,7 +1086,7 @@ fn an_apply_whose_replacement_follows_another_commit_conflicts_on_lignindb() {
         an_apply_whose_replacement_follows_the_commit_of_another::<super::LigninEngine>();
     let error = committed.expect_err("a conflict");
     assert!(error.is_commit_conflict(), "{error:?}");
-    assert_eq!(nodes, 3, "the nodes of the first apply");
+    assert_eq!(nodes, [b"a", b"b", b"c"], "the nodes of the first apply");
     assert_eq!(element_of, [true, false], "the element of the first apply");
 }
 
@@ -1047,7 +1099,11 @@ fn an_apply_whose_replacement_follows_another_commit_commits_on_rocksdb() {
     let (committed, nodes, element_of) =
         an_apply_whose_replacement_follows_the_commit_of_another::<crate::RocksDbEngine>();
     committed.expect("a commit");
-    assert_eq!(nodes, 5, "the nodes of both applies");
+    assert_eq!(
+        nodes,
+        [b"a", b"b", b"c", b"x", b"y"],
+        "the nodes of both applies"
+    );
     assert_eq!(element_of, [false, true], "the element of the second apply");
 }
 
