@@ -375,6 +375,9 @@ impl Writer {
         let below = oldest.hosts.then_some(inner).into_iter().collect();
         let mut piece = Piece::new(batch, Then::Dropped(oldest.number));
         piece.writes = vec![Write::Leave(Left {
+            under: None,
+            idle: false,
+            since: false,
             subtree: outer,
             cleared: false,
             below,
@@ -420,6 +423,9 @@ impl Writer {
         piece.writes = (leaving.into_iter())
             .map(|subtree| {
                 Write::Leave(Left {
+                    under: None,
+                    idle: false,
+                    since: false,
                     subtree,
                     cleared: false,
                     below: Vec::new(),

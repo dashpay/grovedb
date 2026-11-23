@@ -313,8 +313,53 @@ pub enum BatchError {
         /// The subtree.
         subtree: Subtree,
     },
+    /// A subtree is dropped under the node its writer names
+    /// ([`SubtreeWrite::DropUnder`](super::SubtreeWrite::DropUnder)), and
+    /// it is entered under another node, or under none.
+    HungOtherwise {
+        /// The subtree.
+        subtree: Subtree,
+    },
+    /// A subtree is entered under a node, and an operation of the
+    /// transaction stated the drop of the subtree if it is entered under
+    /// that node
+    /// ([`SubtreeWrite::DropIfEntered`](super::SubtreeWrite::DropIfEntered)),
+    /// took nothing by it, and would take the subtree now: a commit
+    /// outside the transaction changed the directory since. It is the
+    /// refusal of a layout of the transaction's writes
+    /// over that commit, and of the transaction's commit. It is also
+    /// the refusal of a batch that says the subtree is not entered under
+    /// the node
+    /// ([`SubtreeWrite::NotUnder`](super::SubtreeWrite::NotUnder)) where
+    /// it is, of a later layout that finds it so, and of the commit
+    /// then: the directory is not what the writer of the batch says it
+    /// found.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]): the caller rolls the
+    /// transaction back and makes its reads and its writes again.
+    EnteredSince {
+        /// The subtree.
+        subtree: Subtree,
+    },
+    /// A batch states more of a subtree than what it states of the
+    /// subtree if it is entered allows. It drops the subtree if it is
+    /// entered
+    /// ([`SubtreeWrite::DropIfEntered`](super::SubtreeWrite::DropIfEntered))
+    /// and enters it, or holds a change set or a record
+    /// of it. Or it removes under the subtree if it is entered
+    /// ([`SubtreeWrite::RemoveIfEntered`](super::SubtreeWrite::RemoveIfEntered))
+    /// and puts a node or a record under it or states a root key for its
+    /// Merk; or it holds a load, a change set of any subtree that says it
+    /// is the whole Merk and has a node, and the refusal names one of the
+    /// subtrees it removes under.
+    IfEntered {
+        /// The subtree.
+        subtree: Subtree,
+    },
     /// A batch enters one subtree twice, drops or clears it twice, or
     /// states it anew twice, or beside its enter, its drop or its clear,
+    /// states twice that it removes under it if it is entered, says twice
+    /// that it is not entered under a node,
     /// or its moves take a subtree from one prefix twice or bring two to
     /// one.
     SubtreeTwice {
@@ -605,6 +650,26 @@ impl fmt::Display for BatchError {
             Self::EnteredOtherwise { subtree, differs } => {
                 write!(f, "the subtree {subtree} is entered {differs}")
             }
+            Self::HungOtherwise { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is dropped under a node that it is not entered under"
+                )
+            }
+            Self::EnteredSince { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is entered under a node, and a batch of the \
+                     transaction cannot be taken with it there"
+                )
+            }
+            Self::IfEntered { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} is written otherwise in a batch that drops it, or \
+                     removes under it, if it is entered"
+                )
+            }
             Self::LeavesIfEntered { subtree } => {
                 write!(
                     f,
@@ -614,7 +679,9 @@ impl fmt::Display for BatchError {
             Self::SubtreeTwice { subtree } => {
                 write!(
                     f,
-                    "the subtree {subtree} is entered, leaves, is stated anew, or is on one side of a move, twice"
+                    "the subtree {subtree} is entered, leaves, is stated anew, is removed under \
+                     if it is entered, is said not to be under a node, or is on one side of a \
+                     move, twice"
                 )
             }
             Self::MoveHost { subtree } => {
@@ -681,7 +748,8 @@ impl Error for BatchError {}
 
 impl BatchError {
     /// Whether the refusal is [`Self::ValueTaken`], [`Self::MovedByKey`],
-    /// [`Self::BothByKey`] or [`Self::MerkTaken`]: those that a caller
+    /// [`Self::BothByKey`], [`Self::MerkTaken`] or [`Self::EnteredSince`]:
+    /// those that a caller
     /// answers as it answers a commit that fails with a conflict.
     pub const fn is_conflict(&self) -> bool {
         matches!(
@@ -690,6 +758,7 @@ impl BatchError {
                 | Self::MovedByKey { .. }
                 | Self::BothByKey { .. }
                 | Self::MerkTaken { .. }
+                | Self::EnteredSince { .. }
         )
     }
 }

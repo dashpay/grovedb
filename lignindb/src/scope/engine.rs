@@ -255,7 +255,7 @@ impl fmt::Debug for Scope<'_, '_> {
 fn entering(batch: &Batch<'_>) -> Vec<(Subtree, Option<Subtree>, bool)> {
     let dropped = |subtree: Subtree| {
         let mut writes = batch.subtrees.iter();
-        writes.any(|write| matches!(write, SubtreeWrite::Drop { .. }) && write.subtree() == subtree)
+        writes.any(|write| write.drops() && write.subtree() == subtree)
     };
     let enters = batch.subtrees.iter().filter_map(SubtreeWrite::entering);
     enters
@@ -609,7 +609,10 @@ impl<'s> WriteTxn<'s> {
     /// root, which is read from the Merk's entry in the subtree directory
     /// where the batch has no change set for the Merk: the batch reads the
     /// Merk's unit (SC2). What is below what is asked with the subtrees the
-    /// batch enters under their hosts.
+    /// batch enters under their hosts. A drop that names the read of the
+    /// node its subtree hangs under ([`SubtreeWrite::DropUnder`]) is dated
+    /// at that read by what was written to the node since, and reads the
+    /// unit of the node's Merk: no other open scope has written it.
     ///
     /// An enter claims the unit of its subtree as a write, of either kind:
     /// one that is stated if the subtree is absent is judged again each
@@ -640,9 +643,13 @@ impl<'s> WriteTxn<'s> {
                     units.push(Unit::data(subtree));
                 }
                 SubtreeWrite::Clear { .. } => units.push(Unit::data(subtree)),
-                SubtreeWrite::Drop { .. } => units.extend(every(subtree)),
+                SubtreeWrite::Drop { .. }
+                | SubtreeWrite::DropUnder { .. }
+                | SubtreeWrite::DropIfEntered { .. } => units.extend(every(subtree)),
                 SubtreeWrite::Convert { .. } => units.push(Unit::data(subtree)),
-                SubtreeWrite::Move { .. } => {}
+                SubtreeWrite::Move { .. }
+                | SubtreeWrite::RemoveIfEntered { .. }
+                | SubtreeWrite::NotUnder { .. } => {}
             }
             // A move claims every prefix it names, on either side, whole
             // and in every column, with what is below each.
@@ -661,6 +668,19 @@ impl<'s> WriteTxn<'s> {
             .map(|hosted| Unit::data(*hosted))
             .filter(|unit| !units.contains(unit))
             .collect();
+        let dated = batch.subtrees.iter().filter_map(|write| match write {
+            SubtreeWrite::DropUnder {
+                host,
+                read: Some(_),
+                ..
+            } => Some(Unit::data(host.subtree)),
+            _ => None,
+        });
+        reads.extend(dated.filter(|unit| !units.contains(unit)));
+        // What a batch says a subtree is not under is a read of the
+        // subtree's entry, which is of its Merk's unit (SC2).
+        let stated = batch.not_under().map(|(subtree, _)| Unit::data(subtree));
+        reads.extend(stated.filter(|unit| !units.contains(unit)));
         reads.sort_unstable();
         reads.dedup();
         let mut hosts = Hosts {
@@ -785,7 +805,7 @@ impl<'s> WriteTxn<'s> {
                     applied
                 }
                 false => {
-                    self.admit_by_key(state, batch)?;
+                    self.admit_by_key(state, &op, batch)?;
                     self.write_by_key(state, &op, batch)?
                 }
             };

@@ -300,10 +300,8 @@ fn the_history_answers_for_every_version_it_was_told() {
     );
     assert_eq!(history.version(), 3);
     let left = Left {
-        subtree: subtree(1),
-        cleared: false,
         below: vec![subtree(2)],
-        cut: Vec::new(),
+        ..Left::of(subtree(1), false)
     };
     history.commit(4, vec![Write::Leave(left)]);
     {

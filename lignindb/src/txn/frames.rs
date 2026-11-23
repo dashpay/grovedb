@@ -40,8 +40,8 @@ use super::{
     unlinked,
     view::FlatKinds,
     write::{
-        Applied, Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, Moving, RecordWrite,
-        RootPut, SubtreeWrite, ValuePut,
+        Applied, Batch, Entering, HostNode, HostPut, Hosted, LinkPut, MerkWrite, Moving,
+        RecordWrite, RootPut, SubtreeWrite, ValuePut,
     },
     write_set::Again,
 };
@@ -223,7 +223,9 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// frames wrote a node or removed one (`noded`), and those into whose
     /// data column one put a flat record or deleted one (`recorded`),
     /// each since a batch last named the subtree in an enter that made
-    /// its entry, a clear or a drop. A flat record of one of the first,
+    /// its entry, a clear or a drop. What a batch removes under a subtree
+    /// if it is entered (`SubtreeWrite::RemoveIfEntered`) is in neither:
+    /// it is removed from whatever the subtree holds. A flat record of one of the first,
     /// and a change set of one of the second, is judged by the tree type
     /// of the subtree ([`Self::apply`]). What is known of a Merk that a
     /// move takes goes with it to its new prefix.
@@ -283,6 +285,34 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// of the batch's change sets, in ascending order: for the write set,
     /// which takes them. A batch that is applied again leaves none here.
     stored: Vec<(u32, StoredValue)>,
+    /// The subtrees that the batch which was applied last dropped because
+    /// it found them entered ([`SubtreeWrite::DropIfEntered`]).
+    took: Vec<Subtree>,
+}
+
+/// A batch as these frames lay it out ([`Frames::lay`]): with a plain drop
+/// for each drop that names a node and holds, and for each drop of a
+/// subtree if it is entered that takes one, and without what it removes
+/// under a subtree that is not entered.
+struct Laid<'a> {
+    subtrees: Vec<SubtreeWrite<'a>>,
+    merks: Vec<MerkWrite<'a>>,
+    records: Vec<RecordWrite<'a>>,
+    /// The subtrees that a drop of a subtree if it is entered takes.
+    took: Vec<Subtree>,
+    /// For each Merk of the batch as it was stated, whether its change
+    /// set is laid out.
+    kept: Vec<bool>,
+}
+
+impl Laid<'_> {
+    fn batch(&self) -> Batch<'_> {
+        Batch {
+            records: &self.records,
+            merks: &self.merks,
+            subtrees: &self.subtrees,
+        }
+    }
 }
 
 /// The most cells a search by key passes before the pages are taken for
@@ -762,6 +792,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             left: self.left,
             renewed: self.renewed,
             stored: self.stored,
+            took: self.took,
         }
     }
 }
@@ -804,6 +835,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             left: Vec::new(),
             renewed: HashMap::new(),
             stored: Vec::new(),
+            took: Vec::new(),
             base: at,
         })
     }
@@ -823,6 +855,13 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// batch that was applied last: those the moves named no prefix for.
     pub(crate) fn left_with_moves(&self) -> &[Subtree] {
         &self.left
+    }
+
+    /// The subtrees that the batch which was applied last dropped because
+    /// it found them entered under the node it names
+    /// ([`SubtreeWrite::DropIfEntered`]).
+    pub(crate) fn took(&self) -> &[Subtree] {
+        &self.took
     }
 
     /// The id that the Merk which has `id` in these frames had before the
@@ -861,8 +900,149 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(self.directory.open(&*self.flat, subtree.as_bytes())?)
     }
 
+    /// What `batch` comes to where it is laid out on these frames, with
+    /// nothing changed, or `None` for a batch that states nothing which
+    /// is judged here ([`Batch::is_judged`]).
+    ///
+    /// - A drop that names a node ([`SubtreeWrite::DropUnder`]) is
+    ///   refused where its subtree is not entered, and where it is
+    ///   entered under another node or under none. Otherwise it is a
+    ///   drop.
+    /// - A drop of a subtree if it is entered
+    ///   ([`SubtreeWrite::DropIfEntered`]) is a drop where the subtree is
+    ///   entered under the node it names and is below no Merk that the
+    ///   batch takes what is below of: one that it drops, one that it
+    ///   clears and that has a node, and one that another such drop
+    ///   finds entered. Otherwise it is nothing.
+    /// - What the batch removes under a subtree that is not entered once
+    ///   its subtrees have left, are moved and are entered
+    ///   ([`SubtreeWrite::RemoveIfEntered`]) is left out.
+    ///
+    /// `took` is given for a batch that is applied again: the subtrees
+    /// that its drops of a subtree if it is entered took in the operation
+    /// that took the batch. Such a drop that took nothing then and finds
+    /// its subtree entered under the node now refuses the batch
+    /// ([`BatchError::EnteredSince`]): a commit beside the transaction
+    /// entered the subtree since.
+    fn lay<'a>(
+        &self,
+        batch: &Batch<'a>,
+        took: Option<&[Subtree]>,
+    ) -> Result<Option<Laid<'a>>, TxnError> {
+        if !batch.is_judged() {
+            return Ok(None);
+        }
+        self.not_under(batch)?;
+        let hangs = |entry: &Entry, host: &HostNode<'_>| {
+            let under = |at: Host<'_>| at.parent == host.subtree.as_bytes() && at.key == host.key;
+            entry.host().is_some_and(under)
+        };
+        // The Merks that the batch takes what is below of, whatever is
+        // found here, and those that a drop of a subtree if it is
+        // entered finds: each by its place among the writes.
+        let mut above: Vec<MerkId> = Vec::new();
+        let mut found: Vec<(usize, Entry)> = Vec::new();
+        let mut subtrees: Vec<Option<SubtreeWrite<'a>>> = Vec::with_capacity(batch.subtrees.len());
+        for (place, write) in batch.subtrees.iter().enumerate() {
+            let laid = match *write {
+                SubtreeWrite::Drop { subtree } | SubtreeWrite::Clear { subtree } => {
+                    let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+                    let cleared = matches!(write, SubtreeWrite::Clear { .. });
+                    let takes = |entry: &Entry| !cleared || entry.root().is_some();
+                    above.extend(entry.filter(takes).map(|entry| entry.id()));
+                    Some(*write)
+                }
+                SubtreeWrite::DropUnder { subtree, host, .. } => {
+                    let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+                    let entry = entry.ok_or(BatchError::NotEntered { subtree })?;
+                    if !hangs(&entry, &host) {
+                        return Err(BatchError::HungOtherwise { subtree }.into());
+                    }
+                    above.push(entry.id());
+                    Some(SubtreeWrite::Drop { subtree })
+                }
+                SubtreeWrite::DropIfEntered { subtree, host } => {
+                    let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+                    found.extend(
+                        entry
+                            .filter(|entry| hangs(entry, &host))
+                            .map(|entry| (place, entry)),
+                    );
+                    None
+                }
+                SubtreeWrite::RemoveIfEntered { .. } => None,
+                SubtreeWrite::NotUnder { .. } => None,
+                SubtreeWrite::Enter { .. }
+                | SubtreeWrite::EnterIfAbsent { .. }
+                | SubtreeWrite::Convert { .. }
+                | SubtreeWrite::Move { .. } => Some(*write),
+            };
+            subtrees.push(laid);
+        }
+        let ids: Vec<MerkId> = found.iter().map(|(_, entry)| entry.id()).collect();
+        let before = took;
+        let mut took = Vec::new();
+        for (place, entry) in &found {
+            if entry
+                .lineage()
+                .any(|id| above.contains(&id) || ids.contains(&id))
+            {
+                continue;
+            }
+            let subtree = batch.subtrees[*place].subtree();
+            if before.is_some_and(|before| !before.contains(&subtree)) {
+                return Err(BatchError::EnteredSince { subtree }.into());
+            }
+            subtrees[*place] = Some(SubtreeWrite::Drop { subtree });
+            took.push(subtree);
+        }
+        let subtrees: Vec<SubtreeWrite<'a>> = subtrees.into_iter().flatten().collect();
+        let (mut merks, mut records) = (batch.merks.to_vec(), batch.records.to_vec());
+        let mut kept = vec![true; merks.len()];
+        if batch.removing_if_entered().next().is_some() {
+            let view = self.subtrees(&Batch {
+                subtrees: &subtrees,
+                ..Batch::default()
+            })?;
+            let mut absent = Vec::new();
+            for subtree in batch.removing_if_entered() {
+                if self.entered(&view, &subtree)?.is_none() {
+                    absent.push(subtree);
+                }
+            }
+            kept = (merks.iter())
+                .map(|merk| !absent.contains(&merk.subtree))
+                .collect();
+            merks.retain(|merk| !absent.contains(&merk.subtree));
+            records.retain(|record| !absent.contains(&record.unit().subtree));
+        }
+        Ok(Some(Laid {
+            subtrees,
+            merks,
+            records,
+            took,
+            kept,
+        }))
+    }
+
+    /// Refuses `batch` where a subtree that it states as not entered
+    /// under a node ([`SubtreeWrite::NotUnder`]) is entered under that
+    /// node ([`BatchError::EnteredSince`]), as the directory has it before
+    /// the batch.
+    pub(crate) fn not_under(&self, batch: &Batch<'_>) -> Result<(), TxnError> {
+        for (subtree, host) in batch.not_under() {
+            let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+            let under = |at: Host<'_>| at.parent == host.subtree.as_bytes() && at.key == host.key;
+            if entry.is_some_and(|entry| entry.host().is_some_and(under)) {
+                return Err(BatchError::EnteredSince { subtree }.into());
+            }
+        }
+        Ok(())
+    }
+
     /// What `batch` does to subtrees as a whole, checked against the
-    /// directory with nothing changed.
+    /// directory with nothing changed. The batch is one as it is laid out
+    /// ([`Self::lay`]).
     fn subtrees(&self, batch: &Batch<'_>) -> Result<Subtrees, TxnError> {
         let mut view = Subtrees::default();
         for write in batch.subtrees {
@@ -873,6 +1053,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 | SubtreeWrite::EnterIfAbsent { .. }
                 | SubtreeWrite::Convert { .. }
                 | SubtreeWrite::Move { .. } => continue,
+                SubtreeWrite::DropUnder { .. }
+                | SubtreeWrite::DropIfEntered { .. }
+                | SubtreeWrite::RemoveIfEntered { .. }
+                | SubtreeWrite::NotUnder { .. } => {
+                    return Err(TxnError::Damaged(
+                        "a batch is applied that was not laid out",
+                    ));
+                }
             };
             let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
             let entry = entry.ok_or(BatchError::NotEntered { subtree })?;
@@ -1057,7 +1245,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         batch: &Batch<'_>,
         written: impl Iterator<Item = Subtree>,
     ) -> Result<Vec<Subtree>, TxnError> {
-        let view = self.subtrees(batch)?;
+        let laid = self.lay(batch, None)?;
+        let laid = laid.as_ref().map(Laid::batch);
+        let view = self.subtrees(laid.as_ref().unwrap_or(batch))?;
         let mut below = Vec::new();
         for subtree in written {
             let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
@@ -1258,10 +1448,56 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// loader, in pages of their own ([`Self::load`]), and `loaded` is
     /// told the values they put into the value log. A refusal after that
     /// leaves a part of the batch in the frames.
+    ///
+    /// What the batch states of a subtree as its writer found it is
+    /// judged first, against the directory of these frames
+    /// ([`Self::lay`]), and the batch is applied as that leaves it.
     pub(crate) fn apply(
         &mut self,
         path: &WritePath<'s>,
         batch: &Batch<'_>,
+        again: Option<Again<'_>>,
+        loaded: &mut Loaded,
+    ) -> Result<Applied, Refused> {
+        self.took.clear();
+        let took = again.map(|again| again.took);
+        let Some(laid) = self.lay(batch, took).map_err(Refused::clean)? else {
+            return self.apply_laid(path, batch, &[], again, loaded);
+        };
+        // What is said of each Merk of the batch is said of those that
+        // are laid out.
+        let made: Vec<bool> = again.map_or_else(Vec::new, |again| {
+            let made = again.made.iter().zip(&laid.kept);
+            made.filter_map(|(made, kept)| kept.then_some(*made))
+                .collect()
+        });
+        let again = again.map(|again| Again {
+            made: &made,
+            ..again
+        });
+        let removing: Vec<Subtree> = batch.removing_if_entered().collect();
+        let applied = self.apply_laid(path, &laid.batch(), &removing, again, loaded)?;
+        // A Merk whose change set was left out is one with no root to
+        // the write set: it says nothing of the root.
+        let mut empty = std::mem::take(&mut self.empty).into_iter();
+        let empty = laid.kept.iter().map(|kept| match kept {
+            true => empty.next().unwrap_or(true),
+            false => true,
+        });
+        self.empty = empty.collect();
+        self.took = laid.took;
+        Ok(applied)
+    }
+
+    /// [`Self::apply`], for a batch as it is laid out ([`Self::lay`]).
+    /// `removing` are the subtrees under which the batch removes if they
+    /// are entered: what it removes there says nothing of what the
+    /// subtree holds ([`Self::noded`]).
+    fn apply_laid(
+        &mut self,
+        path: &WritePath<'s>,
+        batch: &Batch<'_>,
+        removing: &[Subtree],
         again: Option<Again<'_>>,
         loaded: &mut Loaded,
     ) -> Result<Applied, Refused> {
@@ -1381,7 +1617,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 SubtreeWrite::Drop { subtree } => {
                     self.unlinked.remove(subtree);
                 }
-                SubtreeWrite::Convert { .. } | SubtreeWrite::Move { .. } => continue,
+                SubtreeWrite::Convert { .. }
+                | SubtreeWrite::Move { .. }
+                | SubtreeWrite::DropUnder { .. }
+                | SubtreeWrite::DropIfEntered { .. }
+                | SubtreeWrite::RemoveIfEntered { .. }
+                | SubtreeWrite::NotUnder { .. } => continue,
             }
             // What the transaction left under a subtree goes with it, and
             // so does what is known of what it wrote there.
@@ -1458,11 +1699,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // of what the subtree holds.
         let written = |merk: &&MerkWrite<'_>| !merk.nodes.is_empty() || !merk.removed.is_empty();
         let written = batch.merks.iter().filter(written);
-        self.noded.extend(written.map(|merk| merk.subtree));
+        let said = |subtree: &Subtree| !removing.contains(subtree);
+        (self.noded).extend(written.map(|merk| merk.subtree).filter(said));
         for record in batch.records {
             let tree = path.keyspaces.of(record.unit().column);
             let subtree = record.unit().subtree;
-            if record.unit().column == Column::Data {
+            if record.unit().column == Column::Data && said(&subtree) {
                 self.recorded.insert(subtree);
             }
             // A delete in the data column can take the last record out:

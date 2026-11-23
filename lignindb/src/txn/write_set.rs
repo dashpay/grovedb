@@ -16,8 +16,8 @@ use super::{
     load::StoredValue,
     view::{FlatKinds, SubtreeView},
     write::{
-        Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, Moving, NodePut, RecordWrite,
-        RootPut, SubtreeWrite, ValuePut,
+        Batch, Entering, HostNode, HostPut, Hosted, LinkPut, MerkWrite, Moving, NodePut,
+        RecordWrite, RootPut, SubtreeWrite, ValuePut,
     },
 };
 use crate::scope::table::ScopeId;
@@ -81,6 +81,10 @@ pub(crate) struct Again<'a> {
     /// the place of its node among the entries of the batch's change sets,
     /// in ascending order. The batch states no bytes for them.
     pub(crate) stored: &'a [(u32, StoredValue)],
+    /// The subtrees that the batch drops if they are entered
+    /// ([`SubtreeWrite::DropIfEntered`]) and that it took in the
+    /// operation that took it ([`WriteSet::add`]).
+    pub(crate) took: &'a [Subtree],
 }
 
 /// The Merks a written node hosts.
@@ -290,6 +294,36 @@ enum SubtreeEntry {
         if_absent: bool,
     },
     Drop(Subtree),
+    /// A drop that names the node its subtree is entered under
+    /// ([`SubtreeWrite::DropUnder`]): the node's subtree and key. The set
+    /// keeps what was stated, and each layout of it holds the subtree to
+    /// that node.
+    DropUnder {
+        subtree: Subtree,
+        host: (Subtree, Span),
+    },
+    /// A drop of the subtree if it is entered under a node
+    /// ([`SubtreeWrite::DropIfEntered`]): the node's subtree and key.
+    /// `took` says whether it took the subtree in the operation that took
+    /// its batch: it is a drop to the set then, with the entry of one,
+    /// and nothing otherwise. The set keeps what was stated beside it: a
+    /// layout of the set holds a drop that took nothing to that.
+    DropIfEntered {
+        subtree: Subtree,
+        host: (Subtree, Span),
+        took: bool,
+    },
+    /// What the operation removes under the subtree is removed if the
+    /// subtree is entered ([`SubtreeWrite::RemoveIfEntered`]).
+    RemoveIfEntered(Subtree),
+    /// The subtree is not entered under a node
+    /// ([`SubtreeWrite::NotUnder`]): the node's subtree and key. The set
+    /// keeps what was stated, and each layout of it holds the subtree to
+    /// that.
+    NotUnder {
+        subtree: Subtree,
+        host: (Subtree, Span),
+    },
     Clear(Subtree),
     /// The subtree is stated anew: its tree type, and its position among
     /// the subtrees of its host where it takes another.
@@ -307,6 +341,32 @@ enum SubtreeEntry {
         /// prefix afterwards, 32 bytes each.
         below: Span,
     },
+}
+
+impl SubtreeEntry {
+    /// The subtree that the operation dropped by this, if it did: a drop
+    /// of a subtree if it is entered that took none is none.
+    fn dropped(&self) -> Option<Subtree> {
+        match *self {
+            Self::Drop(subtree) | Self::DropUnder { subtree, .. } => Some(subtree),
+            Self::DropIfEntered { subtree, took, .. } => took.then_some(subtree),
+            Self::Enter { .. }
+            | Self::RemoveIfEntered(_)
+            | Self::NotUnder { .. }
+            | Self::Clear(_)
+            | Self::Convert { .. }
+            | Self::Move { .. } => None,
+        }
+    }
+
+    /// The subtree that the operation dropped or cleared by this, if it
+    /// did.
+    fn left(&self) -> Option<Subtree> {
+        match *self {
+            Self::Clear(subtree) => Some(subtree),
+            _ => self.dropped(),
+        }
+    }
 }
 
 /// The subtrees that `bytes` hold, 32 bytes each.
@@ -549,6 +609,40 @@ impl<'a> OpBatch<'a> {
                 }
                 .write(),
                 SubtreeEntry::Drop(subtree) => SubtreeWrite::Drop { subtree },
+                // A drop names no read, as a move names none.
+                SubtreeEntry::DropUnder {
+                    subtree,
+                    host: (above, key),
+                } => SubtreeWrite::DropUnder {
+                    subtree,
+                    host: HostNode {
+                        subtree: above,
+                        key: self.arena.get(key),
+                    },
+                    read: None,
+                },
+                SubtreeEntry::DropIfEntered {
+                    subtree,
+                    host: (above, key),
+                    ..
+                } => SubtreeWrite::DropIfEntered {
+                    subtree,
+                    host: HostNode {
+                        subtree: above,
+                        key: self.arena.get(key),
+                    },
+                },
+                SubtreeEntry::RemoveIfEntered(subtree) => SubtreeWrite::RemoveIfEntered { subtree },
+                SubtreeEntry::NotUnder {
+                    subtree,
+                    host: (above, key),
+                } => SubtreeWrite::NotUnder {
+                    subtree,
+                    host: HostNode {
+                        subtree: above,
+                        key: self.arena.get(key),
+                    },
+                },
                 SubtreeEntry::Clear(subtree) => SubtreeWrite::Clear { subtree },
                 SubtreeEntry::Convert {
                     subtree,
@@ -593,6 +687,24 @@ impl WriteSet {
     /// Whether the transaction has made no write.
     pub(crate) fn is_empty(&self) -> bool {
         self.ops.is_empty()
+    }
+
+    /// Whether no operation of the set writes anything: it has no entry,
+    /// and all that its operations state of subtrees is drops if entered
+    /// that took nothing, removals if entered, which have no entry
+    /// here, and subtrees that are not under a node. Such a set holds
+    /// what its operations found, which a layout
+    /// judges again, and nothing for a commit to publish.
+    pub(crate) fn writes_nothing(&self) -> bool {
+        let nothing = |entry: &SubtreeEntry| {
+            matches!(
+                entry,
+                SubtreeEntry::DropIfEntered { took: false, .. }
+                    | SubtreeEntry::RemoveIfEntered(_)
+                    | SubtreeEntry::NotUnder { .. }
+            )
+        };
+        self.entries.is_empty() && self.subtrees.iter().all(nothing)
     }
 
     /// How many writes the set holds.
@@ -811,7 +923,11 @@ impl WriteSet {
     /// subtrees that left with the moves of the batch, which their entry
     /// keeps. `stored` has the values that a load of the batch put into
     /// the value log, as [`Again::stored`] has them: the entry of such a
-    /// node keeps where the value is, and not its bytes.
+    /// node keeps where the value is, and not its bytes. `took` has the
+    /// subtrees that the batch drops if they are entered
+    /// ([`SubtreeWrite::DropIfEntered`]) and that it took where it was
+    /// taken: each is a drop to the set, and the others are no entry.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn add(
         &mut self,
         batch: &Batch<'_>,
@@ -820,6 +936,7 @@ impl WriteSet {
         cut: &[Subtree],
         left: &[Subtree],
         stored: &[(u32, StoredValue)],
+        took: &[Subtree],
     ) -> EntryId {
         self.serial += 1;
         self.ops.push(Op {
@@ -852,6 +969,20 @@ impl WriteSet {
                     if_absent: matches!(write, SubtreeWrite::EnterIfAbsent { .. }),
                 },
                 SubtreeWrite::Drop { subtree } => SubtreeEntry::Drop(subtree),
+                SubtreeWrite::DropUnder { subtree, host, .. } => SubtreeEntry::DropUnder {
+                    subtree,
+                    host: (host.subtree, self.arena.put(host.key)),
+                },
+                SubtreeWrite::DropIfEntered { subtree, host } => SubtreeEntry::DropIfEntered {
+                    subtree,
+                    host: (host.subtree, self.arena.put(host.key)),
+                    took: took.contains(&subtree),
+                },
+                SubtreeWrite::RemoveIfEntered { subtree } => SubtreeEntry::RemoveIfEntered(subtree),
+                SubtreeWrite::NotUnder { subtree, host } => SubtreeEntry::NotUnder {
+                    subtree,
+                    host: (host.subtree, self.arena.put(host.key)),
+                },
                 SubtreeWrite::Clear { subtree } => SubtreeEntry::Clear(subtree),
                 SubtreeWrite::Convert {
                     subtree,
@@ -884,10 +1015,16 @@ impl WriteSet {
         let mut cut = cut.concat_bytes();
         for write in batch.subtrees {
             let kind = match write {
-                SubtreeWrite::Drop { .. } => Kind::Dropped,
+                SubtreeWrite::Drop { .. } | SubtreeWrite::DropUnder { .. } => Kind::Dropped,
+                SubtreeWrite::DropIfEntered { subtree, .. } if took.contains(subtree) => {
+                    Kind::Dropped
+                }
                 SubtreeWrite::Clear { .. } => Kind::Cleared,
                 SubtreeWrite::Enter { .. }
                 | SubtreeWrite::EnterIfAbsent { .. }
+                | SubtreeWrite::DropIfEntered { .. }
+                | SubtreeWrite::RemoveIfEntered { .. }
+                | SubtreeWrite::NotUnder { .. }
                 | SubtreeWrite::Convert { .. }
                 | SubtreeWrite::Move { .. } => continue,
             };
@@ -1075,12 +1212,13 @@ impl WriteSet {
             merks: &merks,
             subtrees: &subtrees,
         };
-        let (made, stored) = (self.made(op), self.stored(op));
+        let (made, stored, took) = (self.made(op), self.stored(op), self.op_took(op));
         apply(
             &batch,
             Again {
                 made: &made,
                 stored: &stored,
+                took: &took,
             },
         )
     }
@@ -1180,6 +1318,7 @@ impl WriteSet {
                     &cut,
                     &left,
                     again.stored,
+                    &self.op_took(op),
                 );
             });
             let added = kept.ops.last_mut().expect("it was added");
@@ -1220,6 +1359,26 @@ impl WriteSet {
             this.merks as usize,
             merks_end,
         )
+    }
+
+    /// The subtrees that the operation `op` dropped because it found
+    /// them entered ([`SubtreeWrite::DropIfEntered`]): what [`Self::add`]
+    /// was given as `took`.
+    fn op_took(&self, op: usize) -> Vec<Subtree> {
+        let took = self.op_subtrees(op).iter().filter_map(|entry| match entry {
+            SubtreeEntry::DropIfEntered { took: true, .. } => entry.dropped(),
+            _ => None,
+        });
+        took.collect()
+    }
+
+    /// Whether the operation of the entry `id` removes under the subtree
+    /// of the entry if the subtree is entered
+    /// ([`SubtreeWrite::RemoveIfEntered`]).
+    fn removed_if_entered(&self, id: EntryId) -> bool {
+        let subtree = self.entry(id).unit.subtree;
+        let removes = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::RemoveIfEntered(named) if *named == subtree);
+        self.op_subtrees(self.op_of(id)).iter().any(removes)
     }
 
     /// What the operation `op` did to subtrees as a whole.
@@ -1366,6 +1525,9 @@ impl WriteSet {
     /// the move, is the subtree's still ([`Self::stretches`]).
     fn held(&self, unit: Unit, all: bool) -> (bool, bool) {
         let kind = |id: EntryId| match self.entry(id).kind {
+            // What is removed under a subtree if it is entered is removed
+            // from whatever the subtree holds then.
+            Kind::Remove | Kind::Delete | Kind::Range { .. } if self.removed_if_entered(id) => None,
             Kind::Node(_) | Kind::Remove => Some(Held::Nodes),
             Kind::Put(_) | Kind::Delete | Kind::Range { .. } => Some(Held::Flat),
             Kind::Dropped | Kind::Cleared | Kind::Moved => None,
@@ -1390,7 +1552,16 @@ impl WriteSet {
             let since = index.ranges.iter().rev().find(leaves).copied();
             let later = |id: &EntryId| since.is_none_or(|since| *id > since);
             let ranges = (index.ranges.iter().copied()).filter(|id| stretch.holds(*id));
-            let points = (index.keys.keys()).filter_map(|key| self.point_in(index, key, stretch));
+            // What is removed under a key if the subtree is entered says
+            // nothing of what the subtree holds: the write under the key
+            // before it does.
+            let points = (index.keys.keys()).filter_map(|key| {
+                let mut point = self.point_in(index, key, stretch);
+                while let Some(id) = point.filter(|id| self.removed_if_entered(*id)) {
+                    point = self.entry(id).prev.filter(|prev| stretch.holds(*prev));
+                }
+                point
+            });
             for newest in ranges.chain(points).filter(later) {
                 let mut entry = Some(newest);
                 while let Some(id) = entry {
@@ -1801,8 +1972,11 @@ impl WriteSet {
                     if_absent,
                     ..
                 } => named == subtree && !(found && *if_absent),
-                SubtreeEntry::Drop(named) | SubtreeEntry::Clear(named) => named == subtree,
-                SubtreeEntry::Convert { .. } | SubtreeEntry::Move { .. } => false,
+                SubtreeEntry::Convert { .. }
+                | SubtreeEntry::Move { .. }
+                | SubtreeEntry::RemoveIfEntered(_)
+                | SubtreeEntry::NotUnder { .. } => false,
+                left => left.left() == Some(*subtree),
             };
             // A Merk below one that the operation dropped or cleared went
             // with it.
@@ -1883,7 +2057,7 @@ impl WriteSet {
             let before = |bound: usize| self.leaving.partition_point(|id| (*id as usize) < bound);
             let mut cut = (self.leaving[before(entries_from)..before(entries_to)].iter())
                 .flat_map(|id| Self::cut(&self.arena, &self.entries[*id as usize]));
-            let dropped = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Drop(named) if named == subtree);
+            let dropped = |entry: &SubtreeEntry| entry.dropped() == Some(*subtree);
             if named.iter().any(dropped) || cut.any(|cut| cut == *subtree) {
                 // A drop comes before the enters of its operation.
                 let base = OwnSubtree::Gone;
@@ -1914,13 +2088,7 @@ impl WriteSet {
     /// first.
     pub(crate) fn left_in(&self, ops: std::ops::Range<usize>) -> Vec<Subtree> {
         let named = ops.flat_map(|op| self.op_subtrees(op));
-        let left = named.filter_map(|entry| match entry {
-            SubtreeEntry::Drop(subtree) | SubtreeEntry::Clear(subtree) => Some(*subtree),
-            SubtreeEntry::Enter { .. }
-            | SubtreeEntry::Convert { .. }
-            | SubtreeEntry::Move { .. } => None,
-        });
-        left.collect()
+        named.filter_map(SubtreeEntry::left).collect()
     }
 
     /// The first key of the range delete `id`, and the key it ends before.
@@ -2467,7 +2635,7 @@ mod tests {
                             merks: &[],
                             ..Batch::default()
                         };
-                        set.add(&batch, version(latest), &[], &[], &[], &[]);
+                        set.add(&batch, version(latest), &[], &[], &[], &[], &[]);
                         model.push((write, latest, false));
                     }
                     6 => marks.push((set.mark(), model.len())),
@@ -2621,7 +2789,7 @@ mod tests {
                 merks: &[],
                 ..Batch::default()
             };
-            set.add(&batch, version(1), &[], &[], &[], &[]);
+            set.add(&batch, version(1), &[], &[], &[], &[], &[]);
         };
         let empty = set.mark();
         add(&mut set, &[b"a"]);
@@ -2678,7 +2846,7 @@ mod tests {
                 merks: &[],
                 ..Batch::default()
             };
-            set.add(&batch, version(3), &[], &[], &[], &[]);
+            set.add(&batch, version(3), &[], &[], &[], &[], &[]);
         }
         let mut dropped = KeySet::new();
         dropped.subtree(unit(1).subtree);

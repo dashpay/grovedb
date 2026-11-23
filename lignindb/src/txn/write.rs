@@ -350,6 +350,17 @@ pub struct MerkWrite<'a> {
     pub whole: bool,
 }
 
+/// The node a subtree is entered under, as a drop names it
+/// ([`SubtreeWrite::DropUnder`], [`SubtreeWrite::DropIfEntered`]): the
+/// position of the subtree among those the node hosts is not said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostNode<'a> {
+    /// The subtree of the Merk the node is in.
+    pub subtree: Subtree,
+    /// The node's key in that Merk.
+    pub key: &'a [u8],
+}
+
 /// The element that hosts an entered subtree: the node it is, and which of
 /// that node's subtrees this one is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,6 +459,95 @@ pub struct HostPut<'a> {
 /// each other. Where it had none, it has a subtree with what the write
 /// states.
 ///
+/// # What a look found, judged where the batch is laid out
+///
+/// A writer that works out what its batch does to subtrees from a look
+/// at the directory, and applies the batch in a later operation, can
+/// find another directory there: a commit beside the transaction can be
+/// published in between. Three writes say what the look found, and are
+/// judged against the directory where the batch is laid out.
+///
+/// - [`Self::DropUnder`] is a drop that names the node its writer found
+///   the subtree entered under. Where the subtree is entered under
+///   another node, or under none, the batch is refused
+///   ([`BatchError::HungOtherwise`](super::BatchError::HungOtherwise)),
+///   and where it is not entered it is refused as a drop is
+///   ([`BatchError::NotEntered`](super::BatchError::NotEntered)). It can
+///   name the read of that node, and is then dated at it in the
+///   operation that takes the batch, as a move is dated at the read of
+///   its host (CF10): the batch is refused as a conflict
+///   ([`BatchError::ValueTaken`](super::BatchError::ValueTaken), for the
+///   Merk the node is in) where a commit beside the transaction wrote
+///   the node's key since that read, and where the read cannot be dated,
+///   unless the transaction gave the node its value itself: its newest
+///   write under the node's key is the node with a value that it stated,
+///   in that write or in one before it whose value the later writes
+///   keep, or a removal, or a flat record.
+/// - [`Self::DropIfEntered`] drops the subtree where it is entered under
+///   the node it names, at any position, and no drop and no clear of the
+///   same batch takes it with a subtree above it. Everywhere else it
+///   does nothing and refuses nothing: where the subtree is not entered,
+///   and where it is entered under another node or under none. The batch
+///   holds no change set and no record of the subtree and does not
+///   enter it ([`BatchError::IfEntered`](super::BatchError::IfEntered)),
+///   and names it in no other drop, clear or statement anew
+///   ([`BatchError::SubtreeTwice`](super::BatchError::SubtreeTwice)).
+/// - [`Self::RemoveIfEntered`] says of the subtree that what the batch
+///   removes under it is removed if the subtree is entered. Where it is
+///   not entered once the subtrees of the batch have left, are moved and
+///   are entered, the change set of its Merk and the deletes of its
+///   records are not applied, and refuse nothing. Where it is entered
+///   they are applied as any other. The batch puts nothing under the
+///   subtree: its change set of the Merk has no node and states no root
+///   key, and its records under the subtree are deletes and range
+///   deletes; and no change set of the batch, of any subtree, is a load:
+///   one that says it is the whole Merk and has a node
+///   ([`BatchError::IfEntered`](super::BatchError::IfEntered), which
+///   names one of the subtrees that the batch removes under).
+/// - [`Self::NotUnder`] says that the subtree is not entered under the
+///   node it names. It writes nothing and drops nothing, and is no entry
+///   of the write set and no key of a commit: it is what a writer says
+///   that writes into a subtree which it found under another node, under
+///   none, or not entered. Where the subtree is entered under that node,
+///   at any position, the batch is refused
+///   ([`BatchError::EnteredSince`](super::BatchError::EnteredSince)),
+///   and nothing of it is taken: once the batch has the shape of one
+///   and its scope has its claims, this is asked before anything else
+///   of the batch, whatever it writes. That is
+///   a conflict to the caller: the directory is not what the writer of
+///   the batch says it found. A batch states it of a subtree once
+///   ([`BatchError::SubtreeTwice`](super::BatchError::SubtreeTwice)), and
+///   a scope that states it claims a read of the subtree's Merk, as of
+///   an entry it read. It
+///   is held against the directory again at every later layout of the
+///   transaction's writes: a layout that finds the subtree under the
+///   node is refused the same way, and so is the transaction's commit.
+///
+/// A drop of a subtree if it is entered is judged in the operation that
+/// takes its batch. Where it takes its subtree there, it is a drop from
+/// then on: to the conflict rule (CF2, CF5), and where the writes of the
+/// transaction are laid out again, which drops the subtree again if it
+/// is entered under the node still. Where it takes none there, it is no
+/// write of the transaction; and where the writes are laid out again
+/// and it would take the subtree then, over a commit that entered the
+/// subtree under the node since, that layout is refused
+/// ([`BatchError::EnteredSince`](super::BatchError::EnteredSince)), and
+/// so is the transaction's commit: a conflict to the caller. A drop
+/// under a node is a drop to the conflict rule, and is held to its node
+/// at every layout. What a batch removes under a subtree if it is
+/// entered is found entered or not at every layout, and its removals
+/// are keys of the conflict rule whether or not they are applied: a
+/// commit beside the transaction that writes such a key afterwards
+/// meets the removal.
+///
+/// While the transaction serves its records by key none of the three is
+/// judged against frames, which are not there: a drop
+/// under a node is taken as a drop, and dated where it names a read; a
+/// drop if entered takes the subtree where the transaction has it
+/// entered under the named node, by its own earlier writes and the
+/// committed state, and is nothing otherwise; and the removals are
+/// taken as they are stated.
+///
 /// # The move
 ///
 /// [`Self::Move`] gives a subtree another prefix, under another key of
@@ -530,6 +630,47 @@ pub enum SubtreeWrite<'a> {
     Drop {
         /// The subtree.
         subtree: Subtree,
+    },
+    /// Drops the subtree as [`Self::Drop`] does, where it is entered
+    /// under the node its writer found it under: see [What a look found,
+    /// judged where the batch is laid
+    /// out](#what-a-look-found-judged-where-the-batch-is-laid-out).
+    DropUnder {
+        /// The subtree.
+        subtree: Subtree,
+        /// The node the subtree is entered under.
+        host: HostNode<'a>,
+        /// The handle its writer read that node with, where the drop is
+        /// dated at that read, or `None` for a drop that is not dated.
+        read: Option<NodeHandle>,
+    },
+    /// Drops the subtree if it is entered under the node its writer
+    /// names, and does nothing where it is not: see [What a look found,
+    /// judged where the batch is laid
+    /// out](#what-a-look-found-judged-where-the-batch-is-laid-out).
+    DropIfEntered {
+        /// The subtree.
+        subtree: Subtree,
+        /// The node under which the subtree is dropped.
+        host: HostNode<'a>,
+    },
+    /// Says that what the batch removes under the subtree is removed if
+    /// the subtree is entered: see [What a look found, judged where the
+    /// batch is laid
+    /// out](#what-a-look-found-judged-where-the-batch-is-laid-out).
+    RemoveIfEntered {
+        /// The subtree.
+        subtree: Subtree,
+    },
+    /// Says that the subtree is not entered under the node its writer
+    /// names, and writes nothing: see [What a look found, judged where
+    /// the batch is laid
+    /// out](#what-a-look-found-judged-where-the-batch-is-laid-out).
+    NotUnder {
+        /// The subtree.
+        subtree: Subtree,
+        /// The node under which the subtree is not entered.
+        host: HostNode<'a>,
     },
     /// Clears the subtree: a drop that keeps the host (D4). The subtree
     /// stays entered, with no node, and the same batch may write it.
@@ -698,9 +839,23 @@ impl<'a> SubtreeWrite<'a> {
     }
 
     /// Whether the write is a drop or a clear of its subtree: it takes
-    /// the subtree out, or what its Merk holds.
+    /// the subtree out, or what its Merk holds. A drop of a subtree if it
+    /// is entered is one: whether it takes the subtree is found where it
+    /// is laid out.
     pub const fn leaves(&self) -> bool {
-        matches!(self, Self::Drop { .. } | Self::Clear { .. })
+        matches!(
+            self,
+            Self::Drop { .. }
+                | Self::DropUnder { .. }
+                | Self::DropIfEntered { .. }
+                | Self::Clear { .. }
+        )
+    }
+
+    /// Whether the write is a drop of its subtree that is not judged
+    /// where it is laid out to take the subtree or not.
+    pub(crate) const fn drops(&self) -> bool {
+        matches!(self, Self::Drop { .. } | Self::DropUnder { .. })
     }
 
     /// The move the write is, or `None` for any other.
@@ -741,9 +896,14 @@ impl<'a> SubtreeWrite<'a> {
                 host,
                 if_absent: matches!(self, Self::EnterIfAbsent { .. }),
             }),
-            Self::Drop { .. } | Self::Clear { .. } | Self::Convert { .. } | Self::Move { .. } => {
-                None
-            }
+            Self::Drop { .. }
+            | Self::DropUnder { .. }
+            | Self::DropIfEntered { .. }
+            | Self::RemoveIfEntered { .. }
+            | Self::NotUnder { .. }
+            | Self::Clear { .. }
+            | Self::Convert { .. }
+            | Self::Move { .. } => None,
         }
     }
 
@@ -754,6 +914,10 @@ impl<'a> SubtreeWrite<'a> {
             Self::Enter { subtree, .. }
             | Self::EnterIfAbsent { subtree, .. }
             | Self::Drop { subtree }
+            | Self::DropUnder { subtree, .. }
+            | Self::DropIfEntered { subtree, .. }
+            | Self::RemoveIfEntered { subtree }
+            | Self::NotUnder { subtree, .. }
             | Self::Clear { subtree }
             | Self::Convert { subtree, .. }
             | Self::Move { from: subtree, .. } => subtree,
@@ -816,6 +980,40 @@ impl Batch<'_> {
     /// The moves of the batch, in its order.
     pub(crate) fn moves(&self) -> impl Iterator<Item = Moving<'_>> + '_ {
         self.subtrees.iter().filter_map(SubtreeWrite::moving)
+    }
+
+    /// Whether the batch states a write that is judged where it is laid
+    /// out against what its writer found of a subtree
+    /// ([`SubtreeWrite::DropUnder`], [`SubtreeWrite::DropIfEntered`],
+    /// [`SubtreeWrite::RemoveIfEntered`], [`SubtreeWrite::NotUnder`]).
+    pub(crate) fn is_judged(&self) -> bool {
+        self.subtrees.iter().any(|write| {
+            matches!(
+                write,
+                SubtreeWrite::DropUnder { .. }
+                    | SubtreeWrite::DropIfEntered { .. }
+                    | SubtreeWrite::RemoveIfEntered { .. }
+                    | SubtreeWrite::NotUnder { .. }
+            )
+        })
+    }
+
+    /// The subtrees that the batch states as not entered under a node
+    /// ([`SubtreeWrite::NotUnder`]), each with that node.
+    pub(crate) fn not_under(&self) -> impl Iterator<Item = (Subtree, HostNode<'_>)> + '_ {
+        self.subtrees.iter().filter_map(|write| match *write {
+            SubtreeWrite::NotUnder { subtree, host } => Some((subtree, host)),
+            _ => None,
+        })
+    }
+
+    /// The subtrees under which the batch removes if they are entered
+    /// ([`SubtreeWrite::RemoveIfEntered`]).
+    pub(crate) fn removing_if_entered(&self) -> impl Iterator<Item = Subtree> + '_ {
+        self.subtrees.iter().filter_map(|write| match write {
+            SubtreeWrite::RemoveIfEntered { subtree } => Some(*subtree),
+            _ => None,
+        })
     }
 }
 
