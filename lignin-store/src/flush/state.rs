@@ -522,8 +522,11 @@ impl FlushState {
             }
             Some(wait) => {
                 let began = Instant::now();
+                // Whether the wait lasted as long as it was to.
+                let mut lasted = false;
                 while !stopping() && !room_made() {
                     let Some(left) = wait.checked_sub(began.elapsed()) else {
+                        lasted = true;
                         break;
                     };
                     let (next, _) = self
@@ -532,7 +535,7 @@ impl FlushState {
                         .unwrap_or_else(PoisonError::into_inner);
                     asked = next;
                 }
-                if *asked && !stopping() && !room_made() {
+                if *asked && lasted {
                     count(&self.counters.turns_put_off, 1);
                 }
             }
