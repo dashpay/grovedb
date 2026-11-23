@@ -28,6 +28,7 @@ fn engine_type(name: &str) -> Option<&'static str> {
     match name {
         "rocksdb" => Some("RocksDbEngine"),
         "pinned-reads" => Some("PinnedReads"),
+        "lignin" => Some("LigninEngine"),
         _ => None,
     }
 }
