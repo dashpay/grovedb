@@ -219,7 +219,9 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 let mut apart = apart.lock().expect("no worker panics");
                 apart.push((family, case.seed, ended.step));
             }
-            if run.interrupted {
+            // An interrupted run is no case of the run's, but for what
+            // the check of the candidate's store found at its end.
+            if run.interrupted && run.divergence.is_none() {
                 return Ok(());
             }
             if let Some(divergence) = run.divergence {

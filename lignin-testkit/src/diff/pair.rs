@@ -513,10 +513,11 @@ fn reads(op: &Op) -> bool {
 /// compares them after every step. `interrupted` is asked before each
 /// operation and ends the run when it says so.
 ///
-/// A case that ended with no divergence, at its last operation or at a
-/// named open difference, ends with the candidate's own check of its
-/// store ([`super::close`]): what it finds is a divergence at the last
-/// step that was compared.
+/// A run that found no divergence ends with the candidate's own check of
+/// its store ([`super::close`]), wherever it ended: at the last operation
+/// of the case, at a named open difference, cut short, interrupted, or
+/// with no operation at all. What the check finds is a divergence at the
+/// last step that was compared, or at step 0 where none was.
 ///
 /// Call it on a thread with a stack of
 /// [`STACK_BYTES`](crate::golden::run::STACK_BYTES).
@@ -543,16 +544,12 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         stored_check,
         interrupted,
     )?;
-    let ended_alike = run.divergence.is_none() && run.cut_short.is_none() && !run.interrupted;
-    let last = match &run.ended_with {
-        Some(ended) => Some(ended.step),
-        None => (run.tally.steps as usize).checked_sub(1),
-    };
-    if let (true, Some(step)) = (ended_alike, last) {
-        // The engines hold the same grove: the case ended at no named
-        // open difference and passed over no stored difference of one.
-        let alike = run.ended_at.is_none() && run.tally.families.stored_differences() == 0;
-        let checked = catching(|| close::check(&reference_db, &candidate_db, grove_version, alike));
+    if run.divergence.is_none() {
+        let step = match &run.ended_with {
+            Some(ended) => ended.step,
+            None => (run.tally.steps as usize).saturating_sub(1),
+        };
+        let checked = catching(|| close::check(&reference_db, &candidate_db, grove_version));
         let wanting = match checked {
             Ok(Ok(closes)) => {
                 run.tally.closes = closes;

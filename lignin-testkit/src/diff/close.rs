@@ -1,14 +1,15 @@
-//! The candidate's store, read by its own checker when a case has ended
+//! The candidate's store, read by its own checker when a run has ended
 //! (VER-07-F1, D-343).
 //!
 //! Where the candidate is LigninDB's engine, the physical checker of
-//! LigninDB reads its store once the last operation of a case was
-//! compared, beside the engine's threads (`lignindb::Db::verify`): every
-//! page, with the stored hashes of the nodes of every Merk made again by
-//! Merk's rules for a check on the grove version of the case. The engine
-//! gave the database the tree types when it opened it, so the checker
-//! knows which subtree is a Merk. A finding is a divergence of the case
-//! ([`Part::Check`](super::pair::Part::Check)), in any build.
+//! LigninDB reads its store at the end of every run that found no
+//! divergence, beside the engine's threads (`lignindb::Db::verify`), with
+//! Merk's rules for a check on the grove version of the case
+//! (`MerkHashRules::for_check`) for the stored hashes of the nodes of
+//! every Merk. The engine gave the database the tree types when it
+//! opened it, so the checker knows which subtree is a Merk. A finding is
+//! a divergence of the case ([`Part::Check`](super::pair::Part::Check)),
+//! in any build.
 //!
 //! On grove versions 1 to 3 the delete of a tree that holds elements
 //! leaves a value hash that is not the one the rules make (GroveDB #686),
@@ -19,20 +20,17 @@
 //!   finding as any other hash that differs. The close of a debug build
 //!   is told the same ([`opened`]).
 //! - On versions 1 to 3 the rules name it and the checker counts it
-//!   apart. Each one it lists must be at a place the reference's own
-//!   check (`verify_grovedb`) reports, and there must be no more of them
-//!   than the reference reports places. That check also reports hashes
-//!   the checker rightly does not name, so the places the checker names
-//!   are a subset of the reference's. The checker lists the first
-//!   [`OtherHashes::SAMPLE`] of them: those beyond are compared by their
-//!   number alone, and counted as such ([`Closes::beyond_the_sample`]).
+//!   apart. Each one must then be at a place the reference's own check
+//!   (`verify_grovedb`) reports. That check also reports hashes the
+//!   checker rightly does not name, so the places the checker names are a
+//!   subset of the reference's. The checker lists the first
+//!   [`OtherHashes::SAMPLE`] of them: where it counts more than it lists,
+//!   the rest cannot be held against the reference here, and the run
+//!   ends as a divergence for them to be counted by hand.
 //!
-//! The places are compared where the case ran to its last operation with
-//! both engines answering alike and no stored difference of a named open
-//! difference passed over. A case that ended at a named open difference,
-//! or passed over records that one engine keeps, left the engines in
-//! different states: there the store is checked for findings, and the
-//! hashes the rules name are not compared.
+//! The comparison is made whatever the run came to before: also where it
+//! ended at a named open difference or passed over records that one
+//! engine keeps. A reference whose own check fails is a divergence too.
 //!
 //! Both checks read committed state: what a case left in a transaction
 //! that it did not commit is not read.
@@ -57,18 +55,15 @@ const LAST_THAT_LEAVES_HASHES: u32 = 3;
 /// How many findings, or places of the reference, a divergence lists.
 const LISTED: usize = 8;
 
-/// What the checks at the ends of cases came to.
+/// What the checks at the ends of runs came to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Closes {
-    /// The cases at whose end the candidate's store was checked and found
+    /// The runs at whose end the candidate's store was checked and found
     /// sound.
     pub checked: u64,
-    /// The value hashes a delete left that the checker listed, each at a
+    /// The value hashes a delete left that the checker named, each at a
     /// place the reference's own check reports. Grove versions 1 to 3.
     pub left_hashes: u64,
-    /// Those the checker counted beyond the ones it lists, which were
-    /// compared by their number alone.
-    pub beyond_the_sample: u64,
 }
 
 impl Closes {
@@ -76,17 +71,15 @@ impl Closes {
     pub fn add(&mut self, other: &Closes) {
         self.checked += other.checked;
         self.left_hashes += other.left_hashes;
-        self.beyond_the_sample += other.beyond_the_sample;
     }
 
     /// For a reader, where a store was checked.
     pub fn line(&self) -> Option<String> {
         (self.checked > 0).then(|| {
             format!(
-                "{} stores of the candidate checked sound at the end of their case; {} value \
-                 hashes left by a delete, each at a place the reference reports, and {} more by \
-                 their number alone",
-                self.checked, self.left_hashes, self.beyond_the_sample
+                "{} stores of the candidate checked sound at the end of their run; {} value \
+                 hashes left by a delete, each at a place the reference reports",
+                self.checked, self.left_hashes
             )
         })
     }
@@ -149,14 +142,16 @@ fn compared(
         })
         .collect();
     let listed = named.len() as u64;
-    if count > reported.len() as u64 || count < listed {
-        candidate.push(format!("counts {count} such value hashes, {listed} listed"));
+    if count != listed {
+        candidate.push(format!(
+            "counts {count} such value hashes and lists {listed}: the others are to be counted \
+             by hand"
+        ));
     }
     if candidate.is_empty() {
         return Ok(Closes {
             checked: 1,
             left_hashes: listed,
-            beyond_the_sample: count - listed,
         });
     }
     let mut reference = vec![format!("reports {} places", reported.len())];
@@ -168,15 +163,13 @@ fn compared(
     })
 }
 
-/// Checks the candidate's store at the end of a case on `grove_version`.
-/// `alike` says that the engines hold the same grove: the hashes the
-/// rules name are then held against the reference. A candidate that is
-/// not LigninDB's engine is not checked.
+/// Checks the candidate's store at the end of a run on `grove_version`,
+/// and holds the hashes the rules name against the reference. A candidate
+/// that is not LigninDB's engine is not checked.
 pub(super) fn check<A: Engine, B: Engine>(
     reference: &GroveDb<A>,
     candidate: &GroveDb<B>,
     grove_version: &'static GroveVersion,
-    alike: bool,
 ) -> Result<Closes, Wanting> {
     let Some(candidate) = on_lignindb(candidate) else {
         return Ok(Closes::default());
@@ -197,13 +190,12 @@ pub(super) fn check<A: Engine, B: Engine>(
             candidate: lines,
         });
     }
-    let sound = Closes {
-        checked: 1,
-        ..Closes::default()
-    };
     let hashes = &report.other_hashes;
-    if !alike || hashes.is_empty() {
-        return Ok(sound);
+    if hashes.is_empty() {
+        return Ok(Closes {
+            checked: 1,
+            left_hashes: 0,
+        });
     }
     let reported: BTreeSet<Place> = match reference.verify_grovedb(None, true, false, grove_version)
     {
@@ -329,7 +321,6 @@ mod tests {
             let expected = Closes {
                 checked: 1,
                 left_hashes: u64::from(number <= 3),
-                beyond_the_sample: 0,
             };
             assert_eq!(ran.tally.closes, expected, "grove version {number}");
 
@@ -341,9 +332,8 @@ mod tests {
 
     /// The check itself, on two databases that hold the history: the hash
     /// is at the key of `parent` in the Merk of `top`; held against a
-    /// reference that reports no place it is wanting; it is not compared
-    /// where the case did not end alike; and by the rules of a version
-    /// that leaves no such hash it is a finding.
+    /// reference that reports no place it is wanting; and by the rules of
+    /// a version that leaves no such hash it is a finding.
     #[test]
     fn a_left_hash_is_held_against_the_places_the_reference_reports() {
         for grove_version in GROVE_VERSIONS.iter() {
@@ -359,37 +349,30 @@ mod tests {
             made(&reference, grove_version);
             made(&candidate, grove_version);
             let left = u64::from(number <= 3);
-            let sound = Closes {
-                checked: 1,
-                ..Closes::default()
-            };
             let with_the_hash = Closes {
+                checked: 1,
                 left_hashes: left,
-                ..sound
             };
-            let checked = check(&reference, &candidate, grove_version, true);
+            let checked = check(&reference, &candidate, grove_version);
             assert_eq!(checked, Ok(with_the_hash), "grove version {number}");
-            let checked = check(&reference, &candidate, grove_version, false);
-            assert_eq!(checked, Ok(sound), "grove version {number}");
-            let unchecked = check(&candidate, &reference, grove_version, true);
+            let unchecked = check(&candidate, &reference, grove_version);
             assert_eq!(unchecked, Ok(Closes::default()), "grove version {number}");
             if left == 0 {
                 continue;
             }
 
             let empty = open_reference("empty");
-            let wanting = check(&empty, &candidate, grove_version, true);
+            let wanting = check(&empty, &candidate, grove_version);
             let wanting = wanting.expect_err("a hash where the reference reports none");
             let above: &[&[u8]] = &[TOP];
             let merk = hex::encode(build_prefix(above.into()).unwrap());
             let at = format!("the key {} of the Merk {merk}", hex::encode(PARENT));
             let names = format!("names a value hash a delete left at {at}");
-            let counts = "counts 1 such value hashes, 1 listed".to_string();
-            assert_eq!(wanting.candidate, [names, counts], "grove version {number}");
+            assert_eq!(wanting.candidate, [names], "grove version {number}");
             assert_eq!(wanting.reference, ["reports 0 places"]);
 
             let later = GROVE_VERSIONS.last().expect("a grove version");
-            let wanting = check(&reference, &candidate, later, true);
+            let wanting = check(&reference, &candidate, later);
             let wanting = wanting.expect_err("a finding by the rules of the last version");
             let lines = wanting.candidate;
             assert_eq!(lines[0], "1 findings of the physical checker", "{lines:?}");
@@ -435,6 +418,26 @@ mod tests {
         assert!(lines[1].contains("Hash(Value)"), "{lines:?}");
         assert_eq!(ran.tally.closes, Closes::default());
         assert_eq!(ran.tally.steps, 1);
+
+        // A case of no operation, and a run that is interrupted before
+        // its first: the store is checked all the same, at step 0.
+        let found = |ran: Run| {
+            let divergence = ran.divergence.expect("a divergence");
+            assert_eq!(divergence.parts, [Part::Check]);
+            assert!(divergence.candidate[1].contains("Hash(Value)"));
+            assert_eq!(ran.tally.steps, 0);
+            divergence.step
+        };
+        let empty = Case::of(0, later, Vec::new());
+        assert_eq!(found(compared_on(&empty, &reference, &candidate)), 0);
+        let scratch = scratch();
+        let interrupted = on_a_deep_stack(|| {
+            let (scratch, stored) = (scratch.path(), Stored::AtTheEnd);
+            run(&case, &reference, &candidate, scratch, stored, &|| true)
+        });
+        let interrupted = interrupted.expect("the case runs");
+        assert!(interrupted.interrupted);
+        assert_eq!(found(interrupted), 0);
     }
 
     fn at(n: u8) -> ([u8; 32], Vec<u8>) {
@@ -447,25 +450,26 @@ mod tests {
     }
 
     /// The hashes the checker lists are each at a place the reference
-    /// reports, and it counts no more of them than the reference reports
-    /// places and no fewer than it lists.
+    /// reports, and it counts as many of them as it lists.
     #[test]
     fn the_named_hashes_are_a_subset_of_the_reported_places() {
         let reported: BTreeSet<Place> = (1..=5).map(at).collect();
-        let closes = |left_hashes, beyond_the_sample| Closes {
+        let closes = |left_hashes| Closes {
             checked: 1,
             left_hashes,
-            beyond_the_sample,
         };
-        assert_eq!(compared(&named(&[2, 4]), 2, &reported), Ok(closes(2, 0)));
-        assert_eq!(compared(&named(&[]), 0, &reported), Ok(closes(0, 0)));
-        // More than the checker lists: by their number.
-        assert_eq!(compared(&named(&[1, 2]), 5, &reported), Ok(closes(2, 3)));
-        let wanting = compared(&named(&[1, 2]), 6, &reported).expect_err("more than reported");
-        assert_eq!(wanting.candidate, ["counts 6 such value hashes, 2 listed"]);
+        assert_eq!(compared(&named(&[2, 4]), 2, &reported), Ok(closes(2)));
+        assert_eq!(compared(&named(&[]), 0, &reported), Ok(closes(0)));
+        // More than the checker lists, although the reference reports as
+        // many places: those beyond are not held against it.
+        let wanting = compared(&named(&[1, 2]), 3, &reported).expect_err("more than listed");
+        let by_hand = "the others are to be counted by hand";
+        let counts = format!("counts 3 such value hashes and lists 2: {by_hand}");
+        assert_eq!(wanting.candidate, [counts]);
         assert_eq!(wanting.reference.len(), 6);
         let wanting = compared(&named(&[1, 2]), 1, &reported).expect_err("fewer than listed");
-        assert_eq!(wanting.candidate, ["counts 1 such value hashes, 2 listed"]);
+        let counts = format!("counts 1 such value hashes and lists 2: {by_hand}");
+        assert_eq!(wanting.candidate, [counts]);
 
         // A place the reference does not report, by its Merk or by its key.
         let wanting = compared(&named(&[2, 6]), 2, &reported).expect_err("a place not reported");
@@ -491,14 +495,12 @@ mod tests {
         let mut closes = Closes {
             checked: 2,
             left_hashes: 3,
-            beyond_the_sample: 4,
         };
         closes.add(&closes.clone());
         assert_eq!(
             closes.line().expect("a line"),
-            "4 stores of the candidate checked sound at the end of their case; 6 value hashes \
-             left by a delete, each at a place the reference reports, and 8 more by their number \
-             alone"
+            "4 stores of the candidate checked sound at the end of their run; 6 value hashes \
+             left by a delete, each at a place the reference reports"
         );
         assert_eq!(Closes::default().line(), None);
     }
