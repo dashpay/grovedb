@@ -291,6 +291,9 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
         let _ = writeln!(out, "  {}", progress_line(progress));
         let _ = out.flush();
     })?;
+    for line in summary.progress.tally.families.lines() {
+        let _ = writeln!(out, "  {line}");
+    }
     let _ = writeln!(out, "  {}", progress_line(&summary.progress));
     if let Some(why) = &summary.first_cut_short {
         let _ = writeln!(out, "  the first case cut short: {why}");
@@ -360,6 +363,16 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
     );
     if let Some(why) = ran.cut_short {
         let _ = writeln!(out, "  cut short {why}");
+    }
+    for line in tally.families.lines() {
+        let _ = writeln!(out, "  {line}");
+    }
+    if let Some(family) = ran.ended_at {
+        let _ = writeln!(
+            out,
+            "  the case ended at an answer of the open difference: {}",
+            family.name()
+        );
     }
     let Some(divergence) = ran.divergence else {
         let _ = writeln!(out, "the engines answered the same");
@@ -754,6 +767,7 @@ mod tests {
                 walks: 7,
                 records: 8,
                 cut_short: 9,
+                families: crate::diff::Counts::default(),
             },
             scratch_bytes: 0,
         });

@@ -28,6 +28,7 @@ use grovedb::GroveDb;
 
 use super::{
     case::Case,
+    families::{Counts, Family, Known},
     state::{first_difference, stored, Listing, Place, Record},
 };
 use crate::{
@@ -267,6 +268,9 @@ pub struct Tally {
     /// The cases that ended early because both engines panicked or neither
     /// could be observed.
     pub cut_short: u64,
+    /// What was met of the open differences that are named
+    /// ([`super::families`]).
+    pub families: Counts,
 }
 
 impl Tally {
@@ -278,6 +282,7 @@ impl Tally {
         self.walks += other.walks;
         self.records += other.records;
         self.cut_short += other.cut_short;
+        self.families.add(&other.families);
     }
 }
 
@@ -293,6 +298,9 @@ pub struct Run {
     pub cut_short: Option<String>,
     /// Whether the caller interrupted the run before the last operation.
     pub interrupted: bool,
+    /// The named open difference at an answer of which the case ended
+    /// before its last operation. It is no divergence.
+    pub ended_at: Option<Family>,
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -515,12 +523,15 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
     // The subtrees the last walk handed on: the ones it reached, and the
     // ones a pending drop kept it from looking at (`super::state`).
     let mut places: BTreeSet<Place> = BTreeSet::new();
+    // The places of the named open differences that the case has made.
+    let mut known = Known::default();
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
             tally,
             divergence,
             cut_short,
             interrupted,
+            ended_at: None,
         })
     };
     let diverged = |tally, step, parts, reference, candidate| {
@@ -537,9 +548,17 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         ended(tally, None, Some(format!("at step {step}, {why}")), false)
     };
     for (step, op) in case.ops.iter().enumerate() {
+        tally.families = known.counts();
         if interrupted() {
             return ended(tally, None, None, true);
         }
+        // Asked of the reference before the operation: a read of its
+        // block's state, which changes nothing.
+        let over = catching(|| {
+            let block = reference_runner.transactions().block();
+            Known::trees_under(&reference_db, block, op, case.grove_version)
+        })
+        .unwrap_or_default();
         let was = observe(&mut reference_runner, op);
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
@@ -550,7 +569,24 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         };
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
+            // An answer that differs at an operation which names a place
+            // of a named open difference ends the case, and is none of
+            // the run's.
+            if let Some(family) = known.family_of_answer(op) {
+                known.ended_at(family, case.seed);
+                tally.families = known.counts();
+                return Ok(Run {
+                    tally,
+                    divergence: None,
+                    cut_short: None,
+                    interrupted: false,
+                    ended_at: Some(family),
+                });
+            }
             return diverged(tally, step, parts, lines(&was), lines(&is));
+        }
+        if !was.step.failed() {
+            known.took(op, over);
         }
         tally.failed += u64::from(was.step.failed());
         tally.proofs += u64::from(was.step.proof.is_some());
@@ -577,7 +613,11 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         };
         tally.walks += 1;
         tally.records += was.records.len() as u64;
-        if let Some((was, is)) = first_difference(&was.records, &is.records) {
+        // The records of a subtree of a named open difference are counted
+        // where they differ, and not compared.
+        let (compared_was, compared_is) = known.passed_over(case.seed, &was.records, &is.records);
+        tally.families = known.counts();
+        if let Some((was, is)) = first_difference(&compared_was, &compared_is) {
             let text = |record: Option<&Record>| {
                 vec![record.map_or("no further record".to_string(), Record::text)]
             };
@@ -585,6 +625,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         places = was.handed_on();
     }
+    tally.families = known.counts();
     ended(tally, None, None, false)
 }
 
@@ -772,6 +813,7 @@ mod tests {
                 walks: 3,
                 records: 3 + 3 + 3,
                 cut_short: 0,
+                families: Counts::default(),
             }
         );
         let once = with(Stored::AtTheEnd);
@@ -1248,6 +1290,7 @@ mod tests {
             walks: 4,
             records: 5,
             cut_short: 6,
+            families: Counts::default(),
         };
         tally.add(&tally.clone());
         assert_eq!(
@@ -1259,6 +1302,7 @@ mod tests {
                 walks: 8,
                 records: 10,
                 cut_short: 12,
+                families: Counts::default(),
             }
         );
     }

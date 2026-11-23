@@ -98,6 +98,7 @@
 pub mod case;
 pub mod cli;
 pub mod engines;
+pub mod families;
 pub mod fuzz;
 pub mod pair;
 pub mod shrink;
@@ -106,6 +107,7 @@ pub mod state;
 pub use self::{
     case::{Case, Shape},
     engines::{Candidate, Fault, Reference, StandIn},
+    families::{Counts, Family},
     fuzz::{fuzz, Finding, Settings, Summary},
     pair::{run, Divergence, Part, Run, Side, Stored, Tally},
     shrink::{shrink, Budget, Shrunk},
