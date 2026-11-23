@@ -13,23 +13,25 @@
 //!    a reader, a write transaction or a later commit stays, and the
 //!    report counts it (reclaim jobs waiting, range deletes among them):
 //!    no commit of `compact` lets it go on;
-//! 2. it lets the cleaner work towards no dead byte in the segments and in
-//!    the value log, with a table checkpoint for every file it empties,
-//!    until a whole pass over the segments and a whole pass over the value
-//!    log have begun and ended since the cleaner last moved, trimmed or
-//!    dropped anything, or until the timeout;
+//! 2. it makes the cleaner's turns itself ([`Db::clean`]): the cleaner's
+//!    thread makes no turn in a session that is asked for no commit, and
+//!    `compact` asks for none. Each turn is a pass over the segments and
+//!    one over the value log, towards no dead byte in either. A segment
+//!    that a pass emptied and that the table checkpoint in force still
+//!    points into has a table checkpoint taken before it is removed. The
+//!    turns go on until neither pass of one has moved anything on
+//!    (`moved_on` in this module says what that is), or until the
+//!    timeout, which is looked at between two turns;
 //! 3. it closes the database, and prints the files on disk before and
 //!    after, with what the cleaner did.
 //!
 //! **Exit status.** A pass of the cleaner that failed, or other background
 //! work that failed, ends the work when the next look at the counts sees
-//! it, between two rounds of the reclaimer or two polls. The report is
-//! written from the counts taken before the close, and the exit status is
-//! 1 where those counts hold a failure or the close failed (the close's
-//! error is reported after the counts). The counts are taken once, before
-//! the close: a pass that fails while the close waits for it to end is
-//! not in them. A timeout is no failure: the report says that the work
-//! was cut.
+//! it, between two rounds of the reclaimer or two turns of the cleaner.
+//! The report is written from the counts taken before the close, and the
+//! exit status is 1 where those counts hold a failure or the close failed
+//! (the close's error is reported after the counts). A timeout is no
+//! failure: the report says that the work was cut.
 //!
 //! What stays: the segment and the value-log file the session was
 //! writing, which no cleaner moves while they are written; blocks and
@@ -42,11 +44,10 @@
 
 use std::{
     io::Write,
-    thread,
     time::{Duration, Instant},
 };
 
-use lignin_store::cleaner::{CleanerConfig, CleanerStats};
+use lignin_store::cleaner::{CleanerConfig, Pass, ValuePass};
 use lignindb::{db::DbStats, Db};
 
 use crate::{
@@ -56,32 +57,26 @@ use crate::{
     Outcome, ToolError,
 };
 
-/// How often the counts are looked at while the cleaner works.
-const POLL: Duration = Duration::from_millis(50);
-
 /// The cleaner's policy for a compaction: no dead byte left that a move
-/// can take, a table checkpoint as soon as any segment waits for one, and
-/// no rest between passes.
+/// can take, and a table checkpoint as soon as any segment waits for one.
 pub fn policy() -> CleanerConfig {
     CleanerConfig {
         target_dead_percent: 0,
         checkpoint_dead_percent: 0,
         value_dead_percent: 0,
-        idle: Duration::from_millis(10),
         ..CleanerConfig::new()
     }
 }
 
-/// What tells one moment of the cleaner's work from the next.
-fn progress(stats: &CleanerStats) -> [u64; 6] {
-    [
-        stats.blocks_moved,
-        stats.links_trimmed,
-        stats.segments_dropped,
-        stats.values_moved,
-        stats.value_files_dropped,
-        stats.checkpoints,
-    ]
+/// Whether a turn of the cleaner moved anything on, by what its two
+/// passes answered: the pass over the segments trimmed, moved, retired,
+/// dropped or sealed something, had a table checkpoint installed, or was
+/// ended by its throttle with more to move, or the pass over the value
+/// log moved a value or dropped a file. A turn that only sealed the
+/// segment that was being filled has moved something on: the next turn
+/// is the first that can move that segment's live blocks.
+fn moved_on(segments: &Pass, values: &ValuePass) -> bool {
+    segments.progressed() || segments.more || values.progressed()
 }
 
 /// Compacts the database in `common.dir`, for at most `timeout`, and
@@ -140,8 +135,7 @@ pub fn run(common: &Common, timeout: Duration, out: &mut dyn Write) -> Result<Ou
         )?;
     }
     closed?;
-    // The counts before the close decide, whatever the polls saw: a pass
-    // can fail after the last of them.
+    // The counts before the close decide.
     if failed(&stats) {
         let error = stats.background.last_error.as_deref();
         return Err(ToolError::Background(error.map_or_else(
@@ -177,39 +171,66 @@ fn total(files: &OnDisk) -> String {
         .map_or_else(|| "unknown".to_owned(), |bytes| bytes.to_string())
 }
 
-/// Reclaims, then waits until a pass over the segments and a pass over
-/// the value log have each begun and ended since the cleaner last changed
-/// anything, until the background work fails, or until `deadline`.
+/// Reclaims, then makes turns of the cleaner until one has moved nothing
+/// on ([`moved_on`]), until a pass or other background work fails, or
+/// until `deadline`.
 ///
-/// A pass is counted when it begins: of two that began since the last
-/// change, the first has ended, and found nothing to do.
+/// A turn is a pass over the segments and one over the value log
+/// ([`Db::clean`]).
 fn settle(db: &Db, deadline: Instant) -> Ended {
-    let stats = loop {
+    loop {
         let more = db.reclaim().more;
-        let stats = db.stats();
-        if failed(&stats) {
+        if failed(&db.stats()) {
             return Ended::Failed;
         }
         if !more || Instant::now() >= deadline {
-            break stats;
+            break;
         }
-    };
-    let mut last = progress(&stats.cleaner);
-    let mut since = (stats.cleaner.passes, stats.cleaner.value_passes);
+    }
     while Instant::now() < deadline {
-        thread::sleep(POLL);
-        let stats = db.stats();
-        if failed(&stats) {
+        let turn = db.clean();
+        if failed(&db.stats()) {
             return Ended::Failed;
         }
-        let now = progress(&stats.cleaner);
-        let passes = (stats.cleaner.passes, stats.cleaner.value_passes);
-        if now != last {
-            last = now;
-            since = passes;
-        } else if passes.0 >= since.0 + 2 && passes.1 >= since.1 + 2 {
-            return Ended::Quiet;
+        match turn {
+            Ok((segments, values)) if moved_on(&segments, &values) => {}
+            Ok(_) => return Ended::Quiet,
+            Err(_) => return Ended::Failed,
         }
     }
     Ended::Timeout
+}
+
+#[cfg(test)]
+mod tests {
+    use lignin_format::FileId;
+
+    use super::*;
+
+    /// A turn that only sealed the segment that was being filled is not
+    /// the last: none of the cleaner's counts of moved, trimmed and
+    /// dropped things has changed, and the next turn can move the live
+    /// blocks of that segment. So is one that the throttle ended, and one
+    /// whose pass over the value log dropped a file. A turn whose passes
+    /// answer that nothing was done is the last.
+    #[test]
+    fn a_turn_that_only_sealed_a_segment_is_not_the_last() {
+        let nothing = (Pass::default(), ValuePass::default());
+        assert!(!moved_on(&nothing.0, &nothing.1));
+        let sealed = Pass {
+            sealed: vec![FileId::MIN],
+            ..Pass::default()
+        };
+        assert!(moved_on(&sealed, &nothing.1));
+        let throttled = Pass {
+            more: true,
+            ..Pass::default()
+        };
+        assert!(moved_on(&throttled, &nothing.1));
+        let dropped = ValuePass {
+            dropped: vec![FileId::MIN],
+            ..ValuePass::default()
+        };
+        assert!(moved_on(&nothing.0, &dropped));
+    }
 }
