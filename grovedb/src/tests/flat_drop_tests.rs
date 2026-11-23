@@ -44,9 +44,10 @@ mod tests {
     /// the subtree with the commit of the drop, and its drain removes the
     /// record and what the drop left beside the subtree
     /// (`docs/lignindb/engine.md`, "Flat drops and their drain"). So a read
-    /// of the dropped prefix made directly, and a tree made again at the
-    /// dropped path before the drain, find the old records on the one and
-    /// not on the other: an open difference by the owner's ruling D-327,
+    /// of the data records under the dropped prefix made directly, and a
+    /// tree made again at the dropped path before the drain, find the old
+    /// data records on the one and not on the other: an open difference by
+    /// the owner's ruling D-327,
     /// which the three tests that name this constant assert for the
     /// engine they run on. Everything else of a flat drop and its drain
     /// is asserted alike.

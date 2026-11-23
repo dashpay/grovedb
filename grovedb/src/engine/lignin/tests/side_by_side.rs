@@ -2,10 +2,11 @@
 //! (GROVE-10), each written once for any engine and run on LigninDB and on
 //! RocksDB on every grove version, with what the history takes in compared
 //! call for call: the answer and the `OperationCost` of each read and each
-//! write, and the root hash after a write. The commit of a transaction is
-//! taken in by how it ended, and a refusal as a conflict by that word,
-//! both with no cost: an engine may refuse at a write what another refuses
-//! at the commit.
+//! write, and the root hash after a write. A write of a transaction that
+//! a commit of another writer may meet is taken in with no root hash
+//! after it. The commit of a transaction is taken in by how it ended, and
+//! a refusal as a conflict by that word, both with no cost: an engine may
+//! refuse at a write what another refuses at the commit.
 //!
 //!
 //! - a range that is read right to left and ends past the last key of its
@@ -45,6 +46,23 @@ fn item(n: u8) -> Element {
 
 fn owned(path: &[&[u8]]) -> Vec<Vec<u8>> {
     path.iter().map(|segment| segment.to_vec()).collect()
+}
+
+/// What a read of `element` is taken in as (`History::element`).
+fn read_as(element: Element, v: &GroveVersion) -> String {
+    let bytes = element.serialize(v).expect("the bytes of an element");
+    format!("{:?}", Ok::<_, Error>((element, bytes)))
+}
+
+/// What a read of `rows` by a query that skipped none is taken in as
+/// (`History::elements`).
+fn rows_as(rows: &[(&[u8], Element)], v: &GroveVersion) -> String {
+    let row = |(key, element): &(&[u8], Element)| {
+        let bytes = element.serialize(v).expect("the bytes of an element");
+        (key.to_vec(), (element.clone(), bytes))
+    };
+    let rows: Vec<_> = rows.iter().map(row).collect();
+    format!("{:?}", Ok::<_, Error>((rows, 0u16)))
 }
 
 /// The answer of the call named `call`.
@@ -403,19 +421,21 @@ fn a_clear_and_a_delete_in_a_transaction_that_a_commit_met_end_as_on_rocksdb() {
             let tree = answer_of(answers, &format!("the tree, met {met}"));
             let late = answer_of(answers, &format!("the item beside, met {met}"));
             assert!(late.starts_with("Ok("), "{met}: {late}");
-            // A clear that was made cleared the tree.
+            // The clear is made in every case: where the other writer
+            // commits before it, the transaction has written nothing yet.
+            // The delete is made where no commit landed between the clear
+            // and it; after such a commit an engine may refuse it as the
+            // conflict of the transaction.
             let clear = answer_of(answers, &format!("the clear, met {met}"));
-            assert!(
-                clear == "Ok(true)" || clear == "Ok(\"a conflict\")",
-                "{met}: {clear}"
-            );
-            if case == 0 {
-                assert_eq!(clear, "Ok(true)", "{met}");
-                assert_eq!(
-                    answer_of(answers, &format!("the delete, met {met}")),
-                    "Ok(())",
-                    "{met}"
+            assert_eq!(clear, "Ok(true)", "{met}, grove version {number}");
+            let delete = answer_of(answers, &format!("the delete, met {met}"));
+            if case == 1 {
+                assert!(
+                    delete == "Ok(())" || delete == "Ok(\"a conflict\")",
+                    "{met}, grove version {number}: {delete}"
                 );
+            } else {
+                assert_eq!(delete, "Ok(())", "{met}, grove version {number}");
             }
             if case == 0 {
                 assert_eq!(ended, "Ok(\"committed\")", "{met}, grove version {number}");
@@ -548,7 +568,8 @@ fn a_tree_is_moved_after_a_tree_inside_it_was_deleted_as_on_rocksdb() {
                 };
                 all("the deleted tree under the new key", "Ok(false)");
                 all("the old key", "Ok(false)");
-                assert_eq!(taken(answers, "the item of the moved tree"), 2);
+                let v = &GROVE_VERSIONS[number - 1];
+                all("the item of the moved tree", &read_as(item(1), v));
                 assert_eq!(taken(answers, "a tree under the key of the deleted one"), 2);
                 assert_eq!(taken(answers, "a tree under the old key"), 2);
                 assert_eq!(taken(answers, "an item in it"), 4);
@@ -646,8 +667,6 @@ fn dropped_flat_with_a_tree_in_it<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) 
 /// cases that come to it (`lignin-testkit::diff::families`).
 #[test]
 fn a_tree_made_again_below_a_flat_drop_reads_what_rocksdb_kept_and_lignindb_dropped() {
-    // The key `old`, as an answer shows it.
-    let old = "[111, 108, 100]";
     for (number, v) in GROVE_VERSIONS.iter().enumerate().skip(3) {
         let number = number + 1;
         let dir = tempfile::tempdir().expect("a directory");
@@ -671,6 +690,11 @@ fn a_tree_made_again_below_a_flat_drop_reads_what_rocksdb_kept_and_lignindb_drop
             answer_of(&on_lignin, "an insert only where the key holds none"),
             "Ok(true)"
         );
+        assert_eq!(
+            answer_of(&on_lignin, "the element under the old key"),
+            read_as(item(2), v),
+            "grove version {number}"
+        );
 
         #[cfg(feature = "rocksdb_storage")]
         {
@@ -693,16 +717,23 @@ fn a_tree_made_again_below_a_flat_drop_reads_what_rocksdb_kept_and_lignindb_drop
             // Required: RocksDB reads the records it kept.
             assert_eq!(answer_of(&on_rocksdb, "is it empty"), "Ok(false)");
             assert_eq!(answer_of(&on_rocksdb, "the old key"), "Ok(true)");
-            let range = answer_of(&on_rocksdb, "a range of a query");
-            assert!(
-                range.starts_with("Ok(([(") && range.contains(old),
-                "{range}"
+            assert_eq!(
+                answer_of(&on_rocksdb, "a range of a query"),
+                rows_as(&[(&b"old"[..], item(1))], v),
+                "grove version {number}"
             );
             assert_eq!(
                 answer_of(&on_rocksdb, "an insert only where the key holds none"),
                 "Ok(false)"
             );
+            // A read from the root of the new tree finds no element under
+            // the key: the old records are under the prefix, and no node
+            // of the new tree leads to them.
+            let read = answer_of(&on_rocksdb, "the element under the old key");
+            assert!(
+                read.starts_with("Err(PathKeyNotFound("),
+                "grove version {number}: {read}"
+            );
         }
-        let _ = old;
     }
 }

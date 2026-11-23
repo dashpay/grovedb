@@ -693,7 +693,7 @@ pub fn error_name(error: &grovedb::Error) -> String {
         return class;
     }
     let wrapped = match error {
-        grovedb::Error::MerkError(wrapped) => Some(variant_name(wrapped)),
+        grovedb::Error::MerkError(wrapped) => Some(merk_error_name(wrapped)),
         grovedb::Error::StorageError(wrapped) => Some(storage_error_name(wrapped)),
         grovedb::Error::VersionError(wrapped) => Some(variant_name(wrapped)),
         grovedb::Error::ElementError(wrapped) => Some(variant_name(wrapped)),
@@ -724,6 +724,25 @@ fn commit_class(_: &grovedb::Error) -> Option<String> {
     None
 }
 
+/// The name of an error of a Merk: its variant, and for what a write
+/// scope could not do, which a Merk hands on as its storage error, the
+/// reason as well, as in `StorageError::WriteScope::Overlap`.
+#[cfg(grovedb_engine_seam)]
+fn merk_error_name(error: &grovedb_merk::Error) -> String {
+    match error {
+        grovedb_merk::Error::StorageError(storage @ grovedb_storage::Error::WriteScope(_)) => {
+            format!("StorageError::{}", storage_error_name(storage))
+        }
+        error => variant_name(error),
+    }
+}
+
+/// The name of an error of a Merk at the pin: its variant.
+#[cfg(not(grovedb_engine_seam))]
+fn merk_error_name(error: &impl Debug) -> String {
+    variant_name(error)
+}
+
 /// The name of a storage error that is no outcome of a commit, in terms
 /// that name no engine.
 ///
@@ -733,7 +752,8 @@ fn commit_class(_: &grovedb::Error) -> Option<String> {
 /// failure carries words and no kind that RocksDB's could be held
 /// against, and the words of both are in the report of a step. What a
 /// write scope could not do is named with its reason, as in
-/// `WriteScope::Overlap`, which says what the caller has to do next.
+/// `WriteScope::Overlap`, which says what the caller has to do next, also
+/// where it came up through a Merk ([`merk_error_name`]).
 /// Every other variant is one that any engine returns, and keeps its
 /// name.
 ///
@@ -942,6 +962,17 @@ mod tests {
                 WriteScopeError::RollbackUnsupported
             )),
             "StorageError::WriteScope::RollbackUnsupported"
+        );
+        // So it is where a Merk hands it on, each reason by its name.
+        assert_eq!(
+            through_merk(grovedb_storage::Error::WriteScope(WriteScopeError::Overlap)),
+            "MerkError::StorageError::WriteScope::Overlap"
+        );
+        assert_eq!(
+            through_merk(grovedb_storage::Error::WriteScope(
+                WriteScopeError::ScopesOpen
+            )),
+            "MerkError::StorageError::WriteScope::ScopesOpen"
         );
     }
 

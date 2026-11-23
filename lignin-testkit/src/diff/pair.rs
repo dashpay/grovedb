@@ -301,6 +301,11 @@ pub struct Run {
     /// The named open difference at an answer of which the case ended
     /// before its last operation. It is no divergence.
     pub ended_at: Option<Family>,
+    /// The answers the engines gave differently where the case ended at
+    /// a named open difference.
+    pub ended_with: Option<Divergence>,
+    /// The steps that both engines answered alike with an error.
+    pub failed_steps: Vec<usize>,
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -525,6 +530,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
     let mut places: BTreeSet<Place> = BTreeSet::new();
     // The places of the named open differences that the case has made.
     let mut known = Known::default();
+    let failed_steps = std::cell::RefCell::new(Vec::new());
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
             tally,
@@ -532,6 +538,8 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             cut_short,
             interrupted,
             ended_at: None,
+            ended_with: None,
+            failed_steps: failed_steps.take(),
         })
     };
     let diverged = |tally, step, parts, reference, candidate| {
@@ -563,6 +571,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         })
         .unwrap_or_default();
         known.came_to_indexed_over_indexed(&over_indexed);
+        tally.families = known.counts();
         let was = observe(&mut reference_runner, op);
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
@@ -571,16 +580,6 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             Both::Alike(why) => return cut_short(tally, step, why),
             Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
         };
-        // The trees whose flat drop has a pending record now, as the
-        // reference's block sees it: the places of the family of a
-        // dropped tree. Where the reference cannot be read, none is.
-        if known.dropped_flat() {
-            let pending = catching(|| {
-                let block = reference_runner.transactions().block();
-                pending_drop_paths(&reference_db, block)
-            });
-            known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
-        }
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
             // An answer that differs at an operation which names a place
@@ -591,19 +590,43 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             if let Some(family) = refusal.or_else(|| known.family_of_answer(op)) {
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
+                let ended_with = Divergence {
+                    step,
+                    parts,
+                    reference: lines(&was),
+                    candidate: lines(&is),
+                };
                 return Ok(Run {
                     tally,
                     divergence: None,
                     cut_short: None,
                     interrupted: false,
                     ended_at: Some(family),
+                    ended_with: Some(ended_with),
+                    failed_steps: failed_steps.take(),
                 });
             }
             return diverged(tally, step, parts, lines(&was), lines(&is));
         }
         if !was.step.failed() {
             known.took(op, over);
-            tally.families = known.counts();
+        }
+        // The trees whose flat drop has a pending record now, as the
+        // reference's block sees it: the places of the family of a
+        // dropped tree from here on. It is read once both engines
+        // answered the operation alike, so the answers to an operation
+        // are held against the records as they were before it. Where the
+        // reference cannot be read, none is pending.
+        if known.dropped_flat() {
+            let pending = catching(|| {
+                let block = reference_runner.transactions().block();
+                pending_drop_paths(&reference_db, block)
+            });
+            known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
+        }
+        tally.families = known.counts();
+        if was.step.failed() {
+            failed_steps.borrow_mut().push(step);
         }
         tally.failed += u64::from(was.step.failed());
         tally.proofs += u64::from(was.step.proof.is_some());

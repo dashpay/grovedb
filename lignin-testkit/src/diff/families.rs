@@ -21,8 +21,10 @@
 //!   at the path again. RocksDB keeps the tree's records until then, and
 //!   a tree that is made again at the path before that reads them. The
 //!   pending records are read from the reference, as its block sees them,
-//!   after each operation both engines answered
-//!   ([`pending_drop_paths`](super::state::pending_drop_paths)).
+//!   after each operation both engines answered alike
+//!   ([`pending_drop_paths`](super::state::pending_drop_paths)): an
+//!   answer is of the family by the records as they were before its
+//!   operation.
 //!
 //! The fourth has no place, and is of an answer alone:
 //!
@@ -31,8 +33,8 @@
 //!   indexed tree at a key where the reference read an indexed tree
 //!   before the operation, and the candidate answers `NotSupported`
 //!   ([`Known::indexed_under`], [`Known::family_of_refusal`]). Both are
-//!   required. The case ends there, counted. Nothing was written, so no
-//!   stored record is passed over for it.
+//!   required. The case ends there, counted, before what is stored is
+//!   compared again: no stored record is passed over for it.
 //!
 //! A case keeps the paths it made so ([`Known`]), from the operations both
 //! engines took, and nothing else is of a family:
@@ -48,7 +50,11 @@
 //!   A query names the subtree it is of and every subtree below it that
 //!   it reads: one under a key its items select, where the branch of that
 //!   key has a subquery path or a subquery to go down by, and so on down
-//!   each subquery. A difference at any other operation ends the run, as
+//!   each subquery. That is asked of the query as it is written, and not
+//!   of the grove: whether such a key holds a tree, and whether a limit
+//!   ends the query before it comes there, is not looked at, so a query
+//!   can name a subtree that it did not come to in this grove. A
+//!   difference at any other operation ends the run, as
 //!   it always did: so does a read of the subtree of a dropped tree once
 //!   the record of its drop is reclaimed. Whether a record is pending is
 //!   asked for every read alike, also for one that reads an older version
@@ -226,6 +232,17 @@ fn puts(op: &Op) -> Vec<Path> {
     places.collect()
 }
 
+/// The operations of the batch that `op` applies. A partial batch with no
+/// operation of its own is answered before its caller is asked for the
+/// operations it adds last, so those are none of what it applies.
+fn applied(op: &Op) -> impl Iterator<Item = &BatchOp> {
+    let nothing_of_its_own = matches!(
+        op,
+        Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) if batch.ops.is_empty()
+    );
+    op.batch_ops().filter(move |_| !nothing_of_its_own)
+}
+
 /// The places of [`puts`], each with the element that is put there.
 fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     let mut puts = Vec::new();
@@ -238,7 +255,7 @@ fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     {
         puts.push((joined(path, key), element));
     }
-    for batch_op in op.batch_ops() {
+    for batch_op in applied(op) {
         if let BatchOp::InsertOrReplace {
             path, key, element, ..
         }
@@ -264,7 +281,7 @@ fn flat_drops(op: &Op) -> Vec<Path> {
     if let Op::Write(Write::DropFlat { path, key }) = op {
         drops.push(joined(path, key));
     }
-    for batch_op in op.batch_ops() {
+    for batch_op in applied(op) {
         if let BatchOp::DropFlat { path, key, .. } = batch_op {
             drops.push(joined(path, key));
         }
@@ -336,30 +353,60 @@ fn goes_down(branch: &SubqueryBranch) -> bool {
     branch.subquery.is_some() || along.is_some_and(|along| !along.is_empty())
 }
 
+/// The branch of `query` that `key` takes: the first conditional one
+/// whose item selects the key, and else the default one.
+fn branch_of<'query>(query: &'query grovedb::Query, key: &[u8]) -> &'query SubqueryBranch {
+    let mut conditional = query.conditional_subquery_branches.iter().flatten();
+    conditional
+        .find(|(item, _)| item.contains(key))
+        .map_or(&query.default_subquery_branch, |(_, branch)| branch)
+}
+
+/// Whether some key that the items of `query` select takes a branch that
+/// goes down.
+///
+/// A few keys decide it. The items of the query and of its conditional
+/// branches are ranges of keys, so the keys that are selected and take
+/// one branch are made of the bounds of those ranges and of the gaps
+/// between two bounds that follow each other. The least key of a gap is
+/// the bound before it with a zero byte added, and the least key of all
+/// is the empty one: where a set so made holds any key, it holds one of
+/// these.
+fn goes_down_somewhere(query: &grovedb::Query) -> bool {
+    let conditional = query.conditional_subquery_branches.iter().flatten();
+    let ranges = query.items.iter().chain(conditional.map(|(item, _)| item));
+    let mut keys = vec![Vec::new()];
+    for range in ranges {
+        let bounds = [range.lower_bound().0, range.upper_bound().0];
+        for bound in bounds.into_iter().flatten() {
+            keys.push(bound.to_vec());
+            keys.push([bound, &[0]].concat());
+        }
+    }
+    let selected = |key: &Vec<u8>| query.items.iter().any(|item| item.contains(key));
+    (keys.iter().filter(|key| selected(key))).any(|key| goes_down(branch_of(query, key)))
+}
+
 /// Whether `query`, asked of a subtree, reads the subtree at `below`, a
 /// path down from its own, and if it does, whether it goes on into a
 /// subtree below that one.
 ///
 /// A query goes into the subtree under a key that its items select where
-/// the branch of that key, the first conditional one that selects the key
-/// or else the default one, has a subquery path or a subquery. It reads
-/// the subtrees along the subquery path for the next key of the path, and
-/// with a subquery the subtree at the end of the path, of which the
-/// subquery is then asked. Which keys hold a tree, and where a limit ends
-/// the query, is not looked at.
+/// the branch of that key ([`branch_of`]) has a subquery path or a
+/// subquery. It reads the subtrees along the subquery path for the next
+/// key of the path, and with a subquery the subtree at the end of the
+/// path, of which the subquery is then asked. Of its own subtree it goes
+/// on below where some key its items select takes a branch that goes down
+/// ([`goes_down_somewhere`]). Which keys hold a tree, and where a limit
+/// ends the query, is not looked at.
 fn reads(query: &grovedb::Query, below: &[Vec<u8>]) -> Option<bool> {
     let Some((key, below)) = below.split_first() else {
-        let conditional = query.conditional_subquery_branches.iter().flatten();
-        let mut branches = conditional.map(|(_, branch)| branch);
-        return Some(goes_down(&query.default_subquery_branch) || branches.any(goes_down));
+        return Some(goes_down_somewhere(query));
     };
     if !query.items.iter().any(|item| item.contains(key)) {
         return None;
     }
-    let mut conditional = query.conditional_subquery_branches.iter().flatten();
-    let branch = conditional
-        .find(|(item, _)| item.contains(key))
-        .map_or(&query.default_subquery_branch, |(_, branch)| branch);
+    let branch = branch_of(query, key);
     let along = branch.subquery_path.as_deref().unwrap_or_default();
     if below.len() < along.len() {
         let further = below.len() + 1 < along.len() || branch.subquery.is_some();
@@ -413,7 +460,7 @@ fn places(op: &Op) -> Vec<Path> {
         | Op::FlagsPartialBatch(_)
         | Op::FlagsHandoverBatch(_) => {}
     }
-    for batch_op in op.batch_ops() {
+    for batch_op in applied(op) {
         places.push(batch_op.path().clone());
         match batch_op {
             BatchOp::InsertOrReplace { path, key, .. }
@@ -674,7 +721,11 @@ mod tests {
     use grovedb_version::version::GROVE_VERSIONS;
 
     use super::*;
-    use crate::{diff::pair::testing::scratch, golden::step::Value, workload::Transactions};
+    use crate::{
+        diff::pair::testing::scratch,
+        golden::step::Value,
+        workload::{PartialBatch, Transactions},
+    };
 
     /// An answer is of the family of an indexed tree over an indexed tree
     /// where the operation puts an indexed tree, unconditionally, at a
@@ -683,7 +734,8 @@ mod tests {
     /// `NotSupported`. Without any one of these it is of no family: at a
     /// key that holds a tree of another kind, an item or nothing, with
     /// another element put, with a conditional insert, on grove version
-    /// 4 or 5, and with another answer of the candidate.
+    /// 4 or 5, with a put that a partial batch with no operation of its
+    /// own would have added, and with another answer of the candidate.
     #[test]
     fn a_refusal_is_of_the_family_of_an_indexed_tree_over_an_indexed_tree_and_no_other() {
         let indexed = Element::empty_provable_count_indexed_tree;
@@ -737,7 +789,8 @@ mod tests {
 
             // A key that holds another tree, an item or nothing; another
             // element put over the indexed tree; an insert that is made
-            // only where the key holds nothing.
+            // only where the key holds nothing; a put that the caller of
+            // a partial batch is never asked for.
             let conditional = Op::Batch(vec![BatchOp::InsertIfNotExists {
                 path: path(&[b"t"]),
                 key: b"indexed".to_vec(),
@@ -750,6 +803,15 @@ mod tests {
                 put(b"indexed", Element::empty_tree()),
                 put(b"indexed", Element::new_item(vec![2])),
                 conditional,
+                Op::PartialBatch(PartialBatch {
+                    ops: Vec::new(),
+                    add_on: vec![BatchOp::InsertOrReplace {
+                        path: path(&[b"t"]),
+                        key: b"indexed".to_vec(),
+                        element: indexed(),
+                    }],
+                    pause_height: None,
+                }),
             ] {
                 let over = under(&elsewhere);
                 assert_eq!(over, Vec::<Path>::new(), "{elsewhere:?}");
@@ -1115,6 +1177,51 @@ mod tests {
         assert_eq!(known.family_of_answer(&branched(b"c", false)), over);
         assert_eq!(known.family_of_answer(&branched(b"b", false)), None);
         assert_eq!(known.family_of_answer(&branched(b"b", true)), None);
+        // Of its own subtree a query goes on below only where a key its
+        // items select takes a branch that goes down: not by a
+        // conditional branch of keys the items do not select, and not by
+        // a default branch where conditional ones that end there take
+        // every selected key.
+        let down = |items: Vec<grovedb::QueryItem>,
+                    default_goes_down: bool,
+                    conditional: grovedb::QueryItem,
+                    conditional_goes_down: bool| {
+            let mut query = grovedb::Query::new();
+            for item in items {
+                query.insert_item(item);
+            }
+            if default_goes_down {
+                query.set_subquery(grovedb::Query::new_range_full());
+            }
+            let subquery = conditional_goes_down.then(grovedb::Query::new_range_full);
+            query.add_conditional_subquery(conditional, None, subquery);
+            let query = grovedb::PathQuery::new_unsized(path(&[b"a", b"dropped"]), query);
+            known.family_of_answer(&Op::Read(Read::Prove(Prove::PathQuery(Box::new(query)))))
+        };
+        let key = |key: &[u8]| grovedb::QueryItem::Key(key.to_vec());
+        let from = |key: &[u8]| grovedb::QueryItem::RangeFrom(key.to_vec()..);
+        let after = |key: &[u8]| grovedb::QueryItem::RangeAfter(key.to_vec()..);
+        let full = || grovedb::QueryItem::RangeFull(..);
+        assert_eq!(down(vec![key(b"s")], false, key(b"x"), true), None);
+        assert_eq!(down(vec![key(b"s")], false, from(b"t"), true), None);
+        assert_eq!(down(vec![key(b"s")], false, key(b"s"), true), below);
+        assert_eq!(down(vec![key(b"s")], false, from(b"r"), true), below);
+        assert_eq!(down(vec![from(b"t")], false, key(b"s"), true), None);
+        assert_eq!(down(vec![from(b"s")], false, key(b"s"), true), below);
+        assert_eq!(down(vec![key(b"s")], true, key(b"s"), false), None);
+        assert_eq!(down(vec![key(b"s")], true, full(), false), None);
+        assert_eq!(down(vec![from(b"s")], true, from(b"s"), false), None);
+        assert_eq!(down(vec![full()], true, from(b""), false), None);
+        assert_eq!(
+            down(vec![key(b"s"), key(b"u")], true, key(b"s"), false),
+            below
+        );
+        // The keys between two bounds, the key right after a bound, and
+        // the empty key are left to the default branch.
+        assert_eq!(down(vec![from(b"s")], true, from(b"t"), false), below);
+        assert_eq!(down(vec![from(b"s")], true, key(b"s"), false), below);
+        assert_eq!(down(vec![full()], true, after(b""), false), below);
+        assert_eq!(down(vec![after(b"")], true, after(b""), false), None);
         assert_eq!(known.family_of_answer(&alone(&[b"b", b"over"])), over);
         assert_eq!(
             known.family_of_answer(&query(&[b"a", b"dropped"])),
@@ -1157,6 +1264,39 @@ mod tests {
         }]);
         assert!(puts(&batched).is_empty());
         assert_eq!(known.family_of_answer(&Op::Commit), None);
+        // A partial batch with no operation of its own is answered before
+        // its caller is asked for the operations it adds last: they put
+        // nothing, drop nothing and name no place. With an operation of
+        // its own the batch applies them.
+        let added = |ops: Vec<BatchOp>| {
+            let put = BatchOp::InsertOrReplace {
+                path: path(&[b"b"]),
+                key: b"over".to_vec(),
+                element: Element::empty_tree(),
+            };
+            let drop = BatchOp::DropFlat {
+                path: path(&[b"a"]),
+                key: b"dropped".to_vec(),
+                tree_type: grovedb::TreeType::NormalTree,
+            };
+            Op::PartialBatch(PartialBatch {
+                ops,
+                add_on: vec![put, drop],
+                pause_height: None,
+            })
+        };
+        let nothing_of_its_own = added(Vec::new());
+        assert!(puts(&nothing_of_its_own).is_empty());
+        assert!(flat_drops(&nothing_of_its_own).is_empty());
+        assert_eq!(known.family_of_answer(&nothing_of_its_own), None);
+        let one_of_its_own = added(vec![BatchOp::InsertOnly {
+            path: path(&[b"c"]),
+            key: b"k".to_vec(),
+            element: Element::new_item(vec![1]),
+        }]);
+        assert_eq!(puts(&one_of_its_own).len(), 2);
+        assert_eq!(flat_drops(&one_of_its_own), vec![path(&[b"a", b"dropped"])]);
+        assert_eq!(known.family_of_answer(&one_of_its_own), over);
 
         let mut counts = Counts::default();
         let mut one = self::known();

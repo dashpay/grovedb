@@ -219,7 +219,9 @@ fn the_candidate_answers_as_the_reference_does() {
 /// records left behind under the other kind of data, and LigninDB, which
 /// keeps the two apart, showed none. The walk lists such a record once
 /// (`diff::state`, "One column shown twice"), and the engines answer and
-/// store these cases alike to their last operation.
+/// store these cases alike to their last operation, with no record
+/// passed over for a named open difference. In each a batch that moves
+/// is taken by both engines.
 #[test]
 fn a_tree_moved_to_the_path_of_a_tree_of_the_other_kind_is_listed_once() {
     use lignin_testkit::{
@@ -265,6 +267,12 @@ fn a_tree_moved_to_the_path_of_a_tree_of_the_other_kind_is_listed_once() {
         assert_eq!((ran.cut_short, ran.ended_at), (None, None), "{seed:#x}");
         assert_eq!(ran.tally.steps, case.ops.len() as u64, "{seed:#x}");
         assert!(ran.tally.walks > 1, "{seed:#x}");
+        let taken = |step: &usize| moves(&case.ops[*step]) && !ran.failed_steps.contains(step);
+        let taken = (0..case.ops.len()).filter(taken).count();
+        assert!(taken > 0, "{seed:#x}: no batch that moves was taken");
+        let families = ran.tally.families;
+        let passed_over = (families.stored_differences(), families.answer_differences());
+        assert_eq!(passed_over, (0, 0), "{seed:#x}: {:?}", families.lines());
     }
 }
 
@@ -273,12 +281,13 @@ fn a_tree_moved_to_the_path_of_a_tree_of_the_other_kind_is_listed_once() {
 /// is pending, and a query of the new tree with no subquery reads the old
 /// tree's elements on RocksDB, which keeps them until the drain, and the
 /// new tree's alone on LigninDB. It is the open difference of a dropped
-/// tree until its drain: the case ends at that answer, counted for the
-/// family, and is no divergence.
+/// tree until its drain: the case ends at that answer, in which the
+/// engines return different rows, counted for the family, and is no
+/// divergence.
 #[test]
 fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_family() {
     use lignin_testkit::{
-        diff::{run, Case, Family, Stored},
+        diff::{run, Case, Family, Part, Stored},
         golden::run::STACK_BYTES,
         workload::{Op, Read},
     };
@@ -318,6 +327,10 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
         panic!("the case ended at {last:?}");
     };
     assert!(query.subquery_path.is_none() && !query.subquery_all);
+    let ended = ran.ended_with.as_ref().expect("the answers it ended with");
+    assert_eq!(ended.step as u64 + 1, ran.tally.steps);
+    assert!(ended.parts.contains(&Part::Result), "{ended:?}");
+    assert_eq!(ended.step, 113, "{:?}, {ended:?}", query.path);
     let families = ran.tally.families;
     assert_eq!(families.answers, [0, 0, 1, 0]);
     assert_eq!(families.answer_seed, [None, None, Some(case.seed), None]);
@@ -332,7 +345,7 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
 #[test]
 fn an_indexed_tree_over_an_indexed_tree_ends_the_case_for_its_family() {
     use lignin_testkit::{
-        diff::{run, Case, Family, Stored},
+        diff::{run, Case, Family, Part, Stored},
         golden::run::STACK_BYTES,
     };
 
@@ -371,6 +384,12 @@ fn an_indexed_tree_over_an_indexed_tree_ends_the_case_for_its_family() {
         }
         assert_eq!(ran.ended_at, Some(Family::IndexedOverIndexed), "{seed:#x}");
         assert_eq!(ran.tally.steps, at + 1, "{seed:#x}");
+        let ended = ran.ended_with.as_ref().expect("the answers it ended with");
+        assert_eq!(ended.step as u64, at, "{seed:#x}");
+        assert!(ended.parts.contains(&Part::Error), "{seed:#x}: {ended:?}");
+        let refused = |line: &String| line.contains("NotSupported");
+        assert!(ended.candidate.iter().any(refused), "{seed:#x}: {ended:?}");
+        assert!(!ended.reference.iter().any(refused), "{seed:#x}: {ended:?}");
         let families = ran.tally.families;
         assert_eq!(families.answers[3], 1, "{seed:#x}");
         assert_eq!(families.answer_seed[3], Some(seed));
