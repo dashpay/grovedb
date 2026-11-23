@@ -15,7 +15,7 @@ use std::{
 use grovedb_storage::Error as StorageError;
 use lignindb::{
     snapshot::{Kept, NodeWalk, Opened, Operation, ReadError, RecordWalk, Snapshot},
-    txn::{ChildKeys, Column, Subtree, Unit, WriteTxn},
+    txn::{ChildKeys, Column, StandIns, Subtree, Unit, WriteTxn},
 };
 
 use super::{
@@ -198,9 +198,14 @@ impl Walk for SnapshotNodes<'_, '_> {
         Ok(walk.key().is_some())
     }
 
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error> {
         let operation = self.snapshot.snapshot.operation();
-        let beside = operation.beside(Column::Data, self.subtree, back, limit);
+        let beside = operation.beside_with(Column::Data, self.subtree, back, limit, stand_ins);
         beside.map_err(unread)
     }
 
@@ -249,9 +254,14 @@ impl FlatWalk for SnapshotRecords<'_, '_> {
         Ok(walk.key().is_some())
     }
 
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error> {
         let (operation, unit) = (self.snapshot.operation(), self.unit);
-        let beside = operation.beside(unit.column, unit.subtree, back, limit);
+        let beside = operation.beside_with(unit.column, unit.subtree, back, limit, stand_ins);
         beside.map_err(unread)
     }
 

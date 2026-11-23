@@ -23,10 +23,10 @@ use lignindb::{
 };
 
 use super::{
-    super::{LigninSnapshot, MODEL},
+    super::{left_behind_key, LigninSnapshot, MODEL},
     *,
 };
-use crate::merk::KVIterator;
+use crate::{cost_model::Keyspace, merk::KVIterator};
 
 type RocksTransaction<'a> = <RocksDbStorage as Storage<'a>>::Transaction;
 
@@ -801,10 +801,24 @@ fn write_lignin<'a>(facade: &'a Facade, steps: &[Step]) -> WriteTxn<'a> {
 
 /// What the cursors of handles on `view` show, on every walk.
 fn lignin_answers<'db>(view: impl Into<LigninView<'db>> + Copy, model: &Model) -> Answers {
+    lignin_answers_counting(view, model, None)
+}
+
+/// [`lignin_answers`], through handles that were told that the marks of
+/// what flat drops left behind are kept under `home`, if one is given.
+fn lignin_answers_counting<'db>(
+    view: impl Into<LigninView<'db>> + Copy,
+    model: &Model,
+    home: Option<Prefix>,
+) -> Answers {
     let mut answers = Answers::new();
     for (prefix, space) in readings(model) {
         for (name, moves) in walks() {
             let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
+            let handle = match home {
+                Some(home) => handle.left_behind_in(home),
+                None => handle,
+            };
             let shown = with_cursor!(space, handle, |cursor| walk(cursor, &moves));
             answers.insert((prefix, space, name), shown);
         }
@@ -1676,5 +1690,194 @@ fn a_value_stated_over_a_flat_record_is_not_compared_with_its_bytes() {
         let back = handle.get_node(&key, NO_VALUE_DEFINED_COST, version());
         let back = back.value.expect("a read").expect("a node");
         assert_eq!(back.encode(), saved.encode(), "{through_change_set}");
+    }
+}
+
+/// The subtree that keeps the marks in the test below: after every other
+/// subtree but the last that was never entered.
+const HOME: Prefix = [0xd5; 32];
+/// A subtree before every other but the first that was never entered.
+const LOW: Prefix = [0x18; 32];
+
+/// What a subtree that is dropped holds in the test below.
+#[derive(Clone, Copy, Debug)]
+enum Held {
+    /// Nodes, aux records and meta records.
+    Each,
+    /// Nodes alone.
+    Nodes,
+    /// Flat data, and one meta record.
+    FlatAndMeta,
+}
+
+impl Held {
+    fn steps(self, prefix: Prefix, keys: &[u64]) -> Vec<Step> {
+        match self {
+            Self::Each => merk_with_side_records(prefix, keys),
+            Self::Nodes => vec![Step::Merk(prefix, keys.to_vec(), Vec::new())],
+            Self::FlatAndMeta => vec![
+                Step::Records(prefix, Space::Flat, keys.to_vec(), Vec::new()),
+                Step::Records(prefix, Space::Meta, keys[..1].to_vec(), Vec::new()),
+            ],
+        }
+    }
+
+    /// The keyspaces that the subtree holds a record in.
+    fn keyspaces(self) -> &'static [Keyspace] {
+        match self {
+            Self::Each => &[Keyspace::Data, Keyspace::Aux, Keyspace::Meta],
+            Self::Nodes => &[Keyspace::Data],
+            Self::FlatAndMeta => &[Keyspace::Data, Keyspace::Meta],
+        }
+    }
+}
+
+/// Two subtrees are dropped where RocksDB keeps their records until a
+/// drain: the first and the last of the grove in the order of the
+/// prefixes, so that nothing else lies before the subtrees between them,
+/// or after them. Each is dropped with a mark for each keyspace it held
+/// a record in ([`LigninSettled::leave_behind`]). The cursors of the
+/// other subtrees then stand where the cursors of RocksDB stand after
+/// every move, with the two subtrees there and one record in each of
+/// those keyspaces, and are charged the same: a mark is of its keyspace
+/// alone, stands for one record whatever the subtree held, and is no
+/// record of the subtree that keeps it. Once the marks are removed, the
+/// cursors answer as on RocksDB with the two subtrees gone.
+///
+/// In the transaction that drops the subtrees, in a writer's scope of
+/// it, in the next transaction and in a snapshot.
+#[test]
+fn what_a_flat_drop_left_is_counted_as_one_record_of_its_keyspace() {
+    let beside = |held: Option<(Held, &[u64])>| -> Vec<Step> {
+        let dropped = |prefix| match held {
+            Some((held, keys)) => held.steps(prefix, keys),
+            None => Vec::new(),
+        };
+        let mut steps = dropped(LOW);
+        steps.extend(merk_with_side_records(P1, &[1, 2, 3]));
+        steps.extend(merk_with_side_records(P3, &[4, 5]));
+        steps.extend(dropped(P4));
+        steps.push(Step::Enter(HOME));
+        steps.push(Step::Commit);
+        steps
+    };
+    let cases: [(&str, Held, &[u64]); 4] = [
+        ("one record in each keyspace", Held::Each, &[7]),
+        ("three records in each keyspace", Held::Each, &[6, 7, 8]),
+        ("nodes alone", Held::Nodes, &[6, 7]),
+        ("flat data and a meta record", Held::FlatAndMeta, &[6, 7]),
+    ];
+    let same = |found: &Answers, expected: &Answers, case: &str, view: &str| {
+        let mut compared = 0;
+        for ((prefix, space, name), expected) in expected {
+            if [LOW, P4, HOME].contains(prefix) {
+                continue;
+            }
+            let found = &found[&(*prefix, *space, name.clone())];
+            assert_eq!(found.len(), expected.len());
+            for (at, (found, expected)) in found.iter().zip(expected).enumerate() {
+                assert_eq!(
+                    found, expected,
+                    "{case}, {view}: {space:?} of {:?}, {name}, after move {at}",
+                    prefix[0]
+                );
+            }
+            compared += 1;
+        }
+        assert!(compared > 0);
+    };
+    let step_back = (
+        P3,
+        Space::Nodes,
+        "a seek past the end, then back".to_owned(),
+    );
+    let nothing_left = beside(None);
+    let (gone, _) = on_rocksdb(&nothing_left);
+    for (case, held, keys) in cases {
+        // On RocksDB each of the two subtrees holds one record in each
+        // keyspace that it holds any in.
+        let kept = beside(Some((held, &[7])));
+        let model = Model::of(&kept);
+        let (_, expected) = on_rocksdb(&kept);
+        assert_ne!(expected[&step_back], gone[&step_back], "{case}");
+        let facade = &Facade::new();
+        let transaction = write_lignin(facade, &beside(Some((held, keys))));
+
+        let staged = LigninBatch::new();
+        for dropped in [LOW, P4] {
+            staged.drop_subtree(&LigninSubtree::alone(dropped));
+        }
+        let mut settled = (staged.settle(&transaction).unwrap()).expect("the batch is settled");
+        // A statement that is taken back leaves no mark.
+        settled.leave_behind(&HOME, Keyspace::Data, &P1);
+        settled.forget_drops();
+        for dropped in [LOW, P4] {
+            for keyspace in held.keyspaces() {
+                settled.leave_behind(&HOME, *keyspace, &dropped);
+                // Stated twice, a mark is put once.
+                settled.leave_behind(&HOME, *keyspace, &dropped);
+            }
+            settled.leave_behind(&HOME, Keyspace::Roots, &dropped);
+        }
+        (LigninSettled::apply(vec![settled], &transaction, &[]).unwrap())
+            .expect("the batch is applied");
+
+        let counting = |view: LigninView<'_>| lignin_answers_counting(view, &model, Some(HOME));
+        let found = counting((&transaction).into());
+        same(&found, &expected, case, "the transaction");
+        let writer = LigninWriter::new(transaction.scope().expect("a scope"));
+        let found = counting((&writer).into());
+        same(&found, &expected, case, "a writer's scope");
+        writer.into_scope().merge();
+        // A handle that was told nothing counts no mark.
+        let untold = lignin_answers(&transaction, &model);
+        assert_eq!(untold[&step_back], gone[&step_back], "{case}");
+        // A cursor that is pointed at another Merk counts the marks
+        // beside that one.
+        let (_, moves) = (walks().into_iter())
+            .find(|(name, _)| *name == step_back.2)
+            .expect("the walk");
+        // The cursor is opened on a subtree that no mark follows.
+        let last = LigninSubtree::alone(NEVER_ENTERED[2]);
+        let handle = LigninNodeStore::read_only(&transaction, last);
+        let cursor = NodeStore::cursor(&handle.left_behind_in(HOME)).retarget(&P3);
+        assert_eq!(walk(cursor, &moves), expected[&step_back], "{case}");
+        facade.commit(&transaction);
+
+        let transaction = facade.db.begin();
+        let found = counting((&transaction).into());
+        same(&found, &expected, case, "the next transaction");
+        let snapshot = LigninSnapshot::new(facade.db.snapshot());
+        let found = counting((&snapshot).into());
+        same(&found, &expected, case, "a snapshot");
+        drop(snapshot);
+
+        // The marks are records of the aux keyspace of the subtree that
+        // keeps them, with no value. They are removed as records are.
+        let home = LigninNodeStore::immediate(&transaction, LigninSubtree::alone(HOME));
+        let aux = home.aux();
+        let taken_back = left_behind_key(Keyspace::Data, &P1).expect("a key");
+        assert_eq!(aux.get(&taken_back).unwrap().expect("a read"), None);
+        for dropped in [LOW, P4] {
+            assert_eq!(left_behind_key(Keyspace::Roots, &dropped), None);
+            for keyspace in [Keyspace::Data, Keyspace::Aux, Keyspace::Meta] {
+                let key = left_behind_key(keyspace, &dropped).expect("a key");
+                let mark = aux.get(&key).unwrap().expect("a read");
+                let marked = held.keyspaces().contains(&keyspace);
+                assert_eq!(mark, marked.then(Vec::new), "{case}, {keyspace:?}");
+                if marked {
+                    (aux.delete(&key, None).unwrap()).expect("the mark is removed");
+                }
+            }
+        }
+        drop(home);
+        let model = Model::of(&nothing_left);
+        let counting = |view: LigninView<'_>| lignin_answers_counting(view, &model, Some(HOME));
+        let found = counting((&transaction).into());
+        same(&found, &gone, case, "the marks removed");
+        facade.commit(&transaction);
+        let snapshot = LigninSnapshot::new(facade.db.snapshot());
+        let found = counting((&snapshot).into());
+        same(&found, &gone, case, "the marks removed, a snapshot");
     }
 }

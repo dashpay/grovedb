@@ -17,7 +17,7 @@ use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, valu
 use lignindb::txn::{
     Batch, BatchError, ChildKeys, Column, Entering, HostPut, Hosted, LinkPut, LinkView, MerkCursor,
     MerkSide, MerkWrite, NodePut, NodeView, ParkedCursor, RecordWrite, Resumed, RootPut, Scope,
-    Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
+    StandIns, Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
 };
 
 use super::{
@@ -295,8 +295,14 @@ pub(super) trait Walk: Send {
     /// those before it: nodes and flat records, as a cursor of each
     /// subtree shows them, counted from the nearest subtree on and up to
     /// `limit`. A step from no key asks this, and no other move
-    /// ([`Place`](super::place::Place)).
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error>;
+    /// ([`Place`](super::place::Place)). With `stand_ins`, as
+    /// [`Cursor::beside_with`](lignindb::txn::Cursor::beside_with) counts.
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error>;
 
     /// The node under the key the cursor stands on, with its value and
     /// with the key of each child in its link. `None` if the transaction
@@ -600,8 +606,13 @@ impl Walk for TxnWalk<'_, '_> {
         go(&mut self.0, to, key)
     }
 
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
-        self.0.beside(back, limit).map_err(fault)
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error> {
+        (self.0.beside_with(back, limit, stand_ins)).map_err(fault)
     }
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
@@ -639,8 +650,13 @@ impl Walk for ScopeWalk<'_, '_, '_> {
         self.resumed(|cursor| go_resumed(cursor, to, key))
     }
 
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
-        self.resumed(|cursor| cursor.beside(back, limit).map_err(fault))
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error> {
+        self.resumed(|cursor| (cursor.beside_with(back, limit, stand_ins)).map_err(fault))
     }
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {

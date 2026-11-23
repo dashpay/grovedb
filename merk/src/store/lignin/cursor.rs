@@ -8,11 +8,13 @@ use grovedb_storage::Error as StorageError;
 
 use super::{
     access::{Access, Failure, Prefix, Seek, StoredNode, Walk},
-    hash, node_inner,
-    place::Place,
+    hash,
+    left::Left,
+    node_inner,
+    place::{Marked, Place},
     MODEL,
 };
-use crate::{store::NodeCursor, Error};
+use crate::{cost_model::Keyspace, store::NodeCursor, Error};
 
 /// The cursor of a [`LigninNodeStore`](super::LigninNodeStore): the nodes
 /// of one Merk in key order, each as the record Merk encodes of it
@@ -49,6 +51,9 @@ pub struct LigninCursor<'db> {
     walk: Option<RefCell<Box<dyn Walk + 'db>>>,
     /// The key the cursor stands on, or where beside its Merk it stands.
     place: Place,
+    /// What the cursor knows of the marks of flat drops, if its handle
+    /// was told where they are kept.
+    left: Option<Left>,
     /// The record under the key, once it was asked for.
     record: OnceCell<Option<Vec<u8>>>,
     failure: RefCell<Option<Failure>>,
@@ -79,7 +84,11 @@ fn record(mut node: StoredNode) -> Result<Vec<u8>, Error> {
 }
 
 impl<'db> LigninCursor<'db> {
-    pub(super) fn open(access: &'db (dyn Access + 'db), subtree: &Prefix) -> Self {
+    pub(super) fn open(
+        access: &'db (dyn Access + 'db),
+        subtree: &Prefix,
+        left_behind: Option<Prefix>,
+    ) -> Self {
         let (walk, failure) = match access.cursor(subtree) {
             Ok(walk) => (Some(RefCell::new(walk)), None),
             Err(error) => (None, Some(error.into())),
@@ -87,6 +96,7 @@ impl<'db> LigninCursor<'db> {
         Self {
             walk,
             place: Place::default(),
+            left: Left::of(left_behind, Keyspace::Data, subtree),
             record: OnceCell::new(),
             failure: RefCell::new(failure),
         }
@@ -105,6 +115,7 @@ impl<'db> LigninCursor<'db> {
     pub fn retarget(mut self, prefix: &Prefix) -> Self {
         self.place.leave();
         self.record = OnceCell::new();
+        self.left = self.left.map(|left| left.of_subtree(prefix));
         if let Some(walk) = self.walk.as_mut() {
             match walk.get_mut().retarget(prefix) {
                 Ok(()) => *self.failure.get_mut() = None,
@@ -123,7 +134,11 @@ impl<'db> LigninCursor<'db> {
         let seeks = !matches!(to, Seek::Next | Seek::Prev);
         self.record = OnceCell::new();
         if let Some(walk) = self.walk.as_mut() {
-            match self.place.go(&mut **walk.get_mut(), to) {
+            let mut line = Marked {
+                walk: &mut **walk.get_mut(),
+                left: self.left,
+            };
+            match self.place.go(&mut line, to) {
                 Ok(()) if seeks => *self.failure.get_mut() = None,
                 Ok(()) => {}
                 Err(error) => *self.failure.get_mut() = Some(error.into()),

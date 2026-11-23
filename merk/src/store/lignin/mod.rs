@@ -162,6 +162,7 @@ mod directory;
 mod feature;
 mod flat;
 pub mod hash;
+mod left;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod open_tests;
 mod place;
@@ -191,6 +192,7 @@ pub use self::{
     cursor::LigninCursor,
     directory::{tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted},
     flat::{LigninFlatCursor, LigninKeyspace},
+    left::left_behind_key,
     view::{LigninSnapshot, LigninView},
 };
 use super::{NodeChange, NodeStore};
@@ -297,6 +299,9 @@ pub struct LigninNodeStore<'db> {
     /// The subtree that the handle keeps its root-key record under, where
     /// it was told one ([`Self::root_key_kept_in`]).
     root_keys: Option<[u8; 32]>,
+    /// The subtree that keeps the marks of what flat drops left behind,
+    /// where the handle was told one ([`Self::left_behind_in`]).
+    left_behind: Option<[u8; 32]>,
 }
 
 /// The keys a handle knows to hold an unlinked record: those its last
@@ -412,6 +417,7 @@ impl<'db> LigninNodeStore<'db> {
             path: None,
             loose: Loose::default(),
             root_keys: None,
+            left_behind: None,
         }
     }
 
@@ -462,6 +468,29 @@ impl<'db> LigninNodeStore<'db> {
             Some(home) => (home, access::kept_key(&self.subtree.prefix, ROOT_KEY_KEY)),
             None => (self.subtree.prefix, ROOT_KEY_KEY.to_vec()),
         }
+    }
+
+    /// The handle, whose cursors count what flat drops left behind: the
+    /// marks that are kept in the aux keyspace of the subtree `home`
+    /// ([`left_behind_key`]).
+    ///
+    /// A cursor of the handle that steps from no key asks how many
+    /// records lie beside its subtree (`flat-store.md`, rule 6). A cursor
+    /// of the data, the aux or the meta keyspace then counts each mark of
+    /// its keyspace under a prefix on that side as one record, read at
+    /// the version and with the writes that the cursor reads the
+    /// subtrees beside it with, and counts no record of the aux keyspace
+    /// of `home` as a record of `home`. A cursor of the roots keyspace
+    /// counts as one of a handle that was told nothing does.
+    ///
+    /// The marks are written by whoever applies a batch
+    /// ([`LigninSettled::leave_behind`]) and removed by whoever knows
+    /// that the records they stand for are gone. Every record that the
+    /// aux keyspace of `home` holds under a key which begins with the
+    /// tag of a mark is taken for one.
+    pub fn left_behind_in(mut self, home: [u8; 32]) -> Self {
+        self.left_behind = Some(home);
+        self
     }
 
     /// The handle, told the path that it was opened by: the segments that
@@ -883,7 +912,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn cursor(&self) -> LigninCursor<'db> {
-        LigninCursor::open(self.access, &self.subtree.prefix)
+        LigninCursor::open(self.access, &self.subtree.prefix, self.left_behind)
     }
 
     fn change_set(&self) -> LigninChangeSet {
