@@ -5,6 +5,7 @@ pub(crate) mod store;
 pub(crate) use super::testing as store;
 
 mod acceptance;
+mod both_kinds;
 mod converted;
 mod drops;
 mod enters;

@@ -683,6 +683,55 @@ fn one_transaction_moves_a_subtree_several_times_and_writes_at_every_prefix() {
     assert_eq!(db.private_ids(), 0);
 }
 
+/// What a transaction wrote into the data column of a subtree is the
+/// subtree's still under the prefix a move takes it to (`transactions.md`
+/// ST1): a flat record that it put beside the nodes of a tree that keeps
+/// flat records goes with the move, and a batch that states the moved
+/// subtree anew as a tree of a Merk's type is refused a node of it.
+#[test]
+fn the_flat_records_a_transaction_wrote_go_with_the_move_of_their_subtree() {
+    const FLAT_TYPE: &[u8] = b"flat";
+    let kinds: crate::txn::FlatKinds = |tree_type| tree_type == FLAT_TYPE;
+    let anew =
+        |name: u8, tree_type: &[u8]| OwnedSubtree::Convert(sub(name), tree_type.to_vec(), None);
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let flat_tree = subtrees(vec![anew(A, FLAT_TYPE)]);
+    assert!(committed(world.write_outside(&flat_tree, &[])));
+
+    let tx = world.begin();
+    let by_kind = |batch: &OwnedBatch| {
+        let scope = tx.txn.scope().expect("a scope");
+        let read = batch.through(&scope);
+        let applied = read.with(|batch| scope.apply_by_kind(batch, kinds));
+        scope.merge();
+        applied
+    };
+    let record = OwnedBatch {
+        records: vec![put(model::unit(Column::Data, A), b"r", b"flat")],
+        ..OwnedBatch::default()
+    };
+    by_kind(&record).expect("a flat record beside the nodes");
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    world.apply(&tx, &batch).expect("the move");
+
+    let more = edit_at(&world, &tx, &[(B, b"b")], |items| {
+        items.insert(b"k3".to_vec(), vec![5; 20]);
+    });
+    let mut batch = more.clone();
+    batch.subtrees.push(anew(B, super::store::TREE_TYPE));
+    let refused = batch_error(by_kind(&batch));
+    assert_eq!(refused, BatchError::NotMerk { subtree: sub(B) });
+    by_kind(&more).expect("a node beside the flat record, under the new prefix");
+    let mut out = Vec::new();
+    let found = tx.txn.get(model::unit(Column::Data, B), b"r", &mut out);
+    assert!(found.expect("a flat read"), "the record went with the move");
+    assert_eq!(out, b"flat");
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+}
+
 /// The same batch, in which each node that keeps its value names the read
 /// of it that is made here, through `tx`.
 fn read_now(tx: &Tx<'_>, batch: &OwnedBatch) -> OwnedBatch {
