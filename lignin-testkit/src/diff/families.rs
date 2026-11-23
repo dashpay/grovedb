@@ -28,6 +28,27 @@
 //!   answer is of the family by the records as they were before its
 //!   operation.
 //!
+//! Of the family of a dropped tree two more kinds of a step are counted
+//! apart, by the owner's ruling D-348, each of an answer alone:
+//!
+//! - [`Family::DroppedTreeProof`]: a proof binds a tree that is no Merk to
+//!   the tree's own records, and RocksDB reads there the records it kept
+//!   of the tree that was dropped, so its proof of a query that returns a
+//!   tree made again at a dropped path is refused by its own verifier. A
+//!   case ends there, counted, only where all of this holds
+//!   ([`Known::through_a_proof`]): the operation is a raw query of
+//!   committed state; under a key that its items select, at any level, is
+//!   a tree the case dropped flat whose record is pending and at whose
+//!   path the reference reads a tree again; the engines differ in the
+//!   proof or its cost and in nothing else, so they returned the same
+//!   rows at the same cost; and the candidate's proof verifies to the
+//!   root hash of its committed state and gives the rows the candidate
+//!   returned.
+//! - [`Family::DroppedTreeAssertion`]: in a debug build GroveDB's own
+//!   assertion fails there on RocksDB, and the reference panics. A case
+//!   ends there, counted, where the panic carries that assertion's words
+//!   and everything above holds that can be asked of the candidate alone.
+//!
 //! The fourth has no place, and is of an answer alone:
 //!
 //! - [`Family::IndexedOverIndexed`]: on grove versions 1 to 3, which leave
@@ -43,8 +64,9 @@
 //! engines took. Of a batch it counts the operations by a rule about its
 //! lists and not by what GroveDB applied: those the caller of a partial
 //! batch adds last only where the batch has an operation of its own and
-//! the reference took it, and no put or flat drop at a key that two
-//! operations of the batch name. Nothing else is of a family:
+//! the reference took it. A put or a flat drop at a key that the batch
+//! names twice makes no place of a family; the operations still name
+//! that key where an answer is compared. Nothing else is of a family:
 //!
 //! - **What is stored.** The records of a subtree of a family are not
 //!   compared. Where the two engines hold different records there, the
@@ -75,11 +97,11 @@
 
 use grovedb_version::version::GroveVersion;
 
-use grovedb::{Element, SubqueryBranch};
+use grovedb::{Element, GroveDb, SubqueryBranch};
 
 use super::state::Keyspace;
 use super::state::Record;
-use crate::golden::step::Outcome;
+use crate::golden::step::{Outcome, Proof, Proved, Step, Value, Verification};
 use crate::workload::{BatchOp, Db, Op, Path, Prove, Read, StreamEngine, TransactionOp, Tx, Write};
 
 /// A named open difference.
@@ -95,6 +117,13 @@ pub enum Family {
     /// An indexed tree put over an indexed tree on grove versions 1 to 3,
     /// which the candidate refuses.
     IndexedOverIndexed,
+    /// A tree made again at a dropped path whose record is pending, in a
+    /// proof of a query that returns it: the engines differ in the proof
+    /// alone.
+    DroppedTreeProof,
+    /// The same, in a debug build: the reference panics at GroveDB's own
+    /// assertion.
+    DroppedTreeAssertion,
 }
 
 /// How many families there are.
@@ -106,11 +135,13 @@ const LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS: u32 = 3;
 
 impl Family {
     /// Every family.
-    pub const ALL: [Family; 4] = [
+    pub const ALL: [Family; 6] = [
         Family::WrittenOver,
         Family::BelowFlatDrop,
         Family::DroppedTree,
         Family::IndexedOverIndexed,
+        Family::DroppedTreeProof,
+        Family::DroppedTreeAssertion,
     ];
 
     /// What a report calls the family.
@@ -122,6 +153,13 @@ impl Family {
             Family::IndexedOverIndexed => {
                 "an indexed tree written over an indexed tree, grove versions 1 to 3"
             }
+            Family::DroppedTreeProof => {
+                "a tree that was dropped flat and made again before the drain, through a proof"
+            }
+            Family::DroppedTreeAssertion => {
+                "a tree that was dropped flat and made again before the drain, the reference's \
+                 debug assertion"
+            }
         }
     }
 
@@ -131,6 +169,8 @@ impl Family {
             Family::BelowFlatDrop => 1,
             Family::DroppedTree => 2,
             Family::IndexedOverIndexed => 3,
+            Family::DroppedTreeProof => 4,
+            Family::DroppedTreeAssertion => 5,
         }
     }
 }
@@ -140,9 +180,10 @@ impl Family {
 pub struct Counts {
     /// The cases that made a place of the family: an element put over a
     /// tree that held elements, or a flat drop of a tree, whatever it
-    /// held; and for the family of an indexed tree over an indexed tree
-    /// the cases in which the reference took such a put, whatever the
-    /// candidate answered.
+    /// held; for the family of an indexed tree over an indexed tree the
+    /// cases in which the reference took such a put, whatever the
+    /// candidate answered; and for the two kinds of a dropped tree that
+    /// are counted apart, the cases that ended there.
     pub histories: [u64; FAMILIES],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
@@ -220,6 +261,9 @@ pub struct Known {
     /// The trees among `flat_drops` whose drop has a pending record, as
     /// [`Known::pending`] was last told.
     pending: Vec<Path>,
+    /// The trees among `pending` at whose path the reference reads a tree
+    /// again, as [`Known::made_again`] was last told.
+    remade: Vec<Path>,
     stored: [bool; FAMILIES],
     counts: Counts,
 }
@@ -280,10 +324,11 @@ fn keyed(batch_op: &BatchOp) -> Vec<Path> {
     }
 }
 
-/// Whether one operation at most of the batch `op`, those its caller adds
-/// last among them, names `place`. Where two do, one can take the place
-/// of the other, and which of them the batch applies is not looked at: a
-/// put or a flat drop there is not counted.
+/// Whether the operations of the batch `op`, those its caller adds last
+/// among them, name `place` once at most, each key an operation names
+/// counted. Where the batch names a key twice, one operation can take the
+/// place of another, and which of them the batch applies is not looked
+/// at: a put or a flat drop there makes no place of a family.
 fn named_once(op: &Op, place: &Path) -> bool {
     let named = op.batch_ops().flat_map(keyed);
     named.filter(|named| named == place).count() <= 1
@@ -450,22 +495,31 @@ fn goes_down_somewhere(query: &grovedb::Query) -> bool {
 /// on below where some key its items select takes a branch that goes down
 /// ([`goes_down_somewhere`]). Which keys hold a tree, and where a limit
 /// ends the query, is not looked at.
-fn reads(query: &grovedb::Query, below: &[Vec<u8>]) -> Option<bool> {
+///
+/// With `proved`, the subtree under a key that the items of the query, or
+/// of a subquery it comes to, select is read as well, and nothing below
+/// it: a proof binds a tree it returns that is no Merk to the tree's own
+/// records.
+fn reads(query: &grovedb::Query, below: &[Vec<u8>], proved: bool) -> Option<bool> {
     let Some((key, below)) = below.split_first() else {
         return Some(goes_down_somewhere(query));
     };
     if !query.items.iter().any(|item| item.contains(key)) {
         return None;
     }
+    let bound = (proved && below.is_empty()).then_some(false);
     let branch = branch_of(query, key);
     let along = branch.subquery_path.as_deref().unwrap_or_default();
     if below.len() < along.len() {
         let further = below.len() + 1 < along.len() || branch.subquery.is_some();
-        return along.starts_with(below).then_some(further);
+        return along.starts_with(below).then_some(further).or(bound);
     }
-    let subquery = branch.subquery.as_ref()?;
-    let below = below.strip_prefix(along)?;
-    reads(subquery, below)
+    let down = || {
+        let subquery = branch.subquery.as_ref()?;
+        let below = below.strip_prefix(along)?;
+        reads(subquery, below, proved)
+    };
+    down().or(bound)
 }
 
 /// The places `op` names: the subtree it reads or writes in, and with a
@@ -647,6 +701,93 @@ impl Known {
         self.pending.retain(|path| self.flat_drops.contains(path));
     }
 
+    /// The paths [`Known::pending`] was last told and kept.
+    pub fn pending_paths(&self) -> &[Path] {
+        &self.pending
+    }
+
+    /// Those of `paths` at which `transaction` reads a tree in `db`.
+    pub fn trees_at<'db, E: StreamEngine>(
+        db: &'db Db<E>,
+        transaction: &Tx<'db, E>,
+        paths: &[Path],
+        grove_version: &GroveVersion,
+    ) -> Vec<Path> {
+        let holds_a_tree = |place: &&Path| {
+            let Some((key, above)) = place.split_last() else {
+                return false;
+            };
+            let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+            let element = db
+                .get_raw(
+                    above.as_slice().into(),
+                    key,
+                    Some(transaction),
+                    grove_version,
+                )
+                .value;
+            element.is_ok_and(|element| element.is_any_tree())
+        };
+        paths.iter().filter(holds_a_tree).cloned().collect()
+    }
+
+    /// Told the paths at which the reference reads a tree now
+    /// ([`Known::trees_at`]): those of them that are places of
+    /// [`Family::DroppedTree`] are trees made again before the drain of
+    /// their drop, until this is told again.
+    pub fn made_again(&mut self, paths: Vec<Path>) {
+        self.remade = paths;
+        self.remade.retain(|path| self.pending.contains(path));
+    }
+
+    /// Whether `op`, which the candidate answered with `candidate`, is a
+    /// step of [`Family::DroppedTreeProof`] as far as the operation and
+    /// the candidate alone say (the owner's ruling D-348):
+    ///
+    /// - the operation is a raw query of committed state;
+    /// - under a key that its items select, or those of a subquery it
+    ///   comes to ([`reads`]), is a tree made again at a dropped path
+    ///   whose record is pending ([`Known::made_again`]);
+    /// - the candidate returned rows, and its proof verifies to the root
+    ///   hash of its committed state and gives those rows, path, key and
+    ///   bytes.
+    ///
+    /// What the two engines differ in is the caller's to ask.
+    pub fn through_a_proof(&self, op: &Op, candidate: &Step, grove_version: &GroveVersion) -> bool {
+        let Op::Read(Read::Query(query)) = op else {
+            return false;
+        };
+        if !query.raw {
+            return false;
+        }
+        let query = query.to_path_query();
+        let bound = |tree: &Path| {
+            let below = tree.strip_prefix(query.path.as_slice());
+            below.is_some_and(|below| reads(&query.query.query, below, true).is_some())
+        };
+        if !self.remade.iter().any(bound) {
+            return false;
+        }
+        let Outcome::Returned(Value::Rows(returned)) = &candidate.outcome else {
+            return false;
+        };
+        let Some(Proof {
+            proved: Proved::Bytes(proof, Verification::Verified),
+            ..
+        }) = &candidate.proof
+        else {
+            return false;
+        };
+        let Ok((_, proved)) = GroveDb::verify_query_raw(proof, &query, grove_version) else {
+            return false;
+        };
+        let mut rows = returned.iter().zip(&proved);
+        returned.len() == proved.len()
+            && rows.all(|(row, proved)| {
+                row.path == proved.path && row.key == proved.key && row.element == proved.value
+            })
+    }
+
     /// The family the subtree at `path` is of.
     pub fn family(&self, path: &[Vec<u8>]) -> Option<Family> {
         if self.over.iter().any(|over| path.starts_with(over)) {
@@ -667,7 +808,7 @@ impl Known {
     fn family_below(&self, query: &grovedb::PathQuery) -> Option<Family> {
         let read = |place: &Path| {
             let below = place.strip_prefix(query.path.as_slice())?;
-            reads(&query.query.query, below)
+            reads(&query.query.query, below, false)
         };
         if self.over.iter().any(|over| read(over).is_some()) {
             return Some(Family::WrittenOver);
@@ -750,6 +891,12 @@ impl Known {
 
     /// The case with the seed `seed` ended at an answer of `family`.
     pub fn ended_at(&mut self, family: Family, seed: u64) {
+        if matches!(
+            family,
+            Family::DroppedTreeProof | Family::DroppedTreeAssertion
+        ) {
+            self.counts.histories[family.index()] = 1;
+        }
         self.counts.answers[family.index()] = 1;
         self.counts.answer_seed[family.index()] = Some(seed);
     }
@@ -768,7 +915,7 @@ mod tests {
     use super::*;
     use crate::{
         diff::pair::testing::scratch,
-        golden::step::Value,
+        golden::{run::Runner, step::Row},
         workload::{PartialBatch, Transactions},
     };
 
@@ -900,15 +1047,15 @@ mod tests {
         // The family has no place: no path is of it, and no stored record.
         let mut known = Known::default();
         known.came_to_indexed_over_indexed(&over);
-        assert_eq!(known.counts().histories, [0, 0, 0, 1]);
+        assert_eq!(known.counts().histories, [0, 0, 0, 1, 0, 0]);
         assert_eq!(known.family(&over[0]), None);
         let differs = [record(&[b"t", b"indexed"], 1)];
         let (was, is) = known.passed_over(7, &differs, &[]);
         assert_eq!((was.len(), is.len()), (1, 0));
-        assert_eq!(known.counts().stored, [0; 4]);
+        assert_eq!(known.counts().stored, [0; 6]);
         known.ended_at(Family::IndexedOverIndexed, 11);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 1]);
+        assert_eq!(counts.answers, [0, 0, 0, 1, 0, 0]);
         assert_eq!(counts.answer_seed[3], Some(11));
         assert_eq!(
             counts.lines(),
@@ -967,15 +1114,15 @@ mod tests {
             let (was, is) = known.passed_over(7, &differs, &differs[..1]);
             assert_eq!((was.len(), is.len()), (2, 1), "{elsewhere:?}");
         }
-        assert_eq!(known.counts().stored, [0; 4]);
+        assert_eq!(known.counts().stored, [0; 6]);
 
         // A stored difference in the dropped tree's own subtree is passed
         // over and counted, but not in the record of its drop.
         let kept = [record(&[b"c"], 1), record(&[b"a", b"dropped"], 1)];
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (1, 1));
-        assert_eq!(known.counts().stored, [0, 0, 1, 0]);
-        assert_eq!(known.counts().stored_seed, [None, None, Some(7), None]);
+        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0, 0]);
+        assert_eq!(known.counts().stored_seed[..4], [None, None, Some(7), None]);
         let mut drop_record = record(&[b"a", b"dropped"], 1);
         drop_record.keyspace = Keyspace::DropRecord;
         let (was, is) = known.passed_over(7, &[drop_record], &[]);
@@ -1006,6 +1153,221 @@ mod tests {
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (2, 1));
         assert_eq!(known.family(&below), Some(Family::BelowFlatDrop));
+    }
+
+    /// A step is of a dropped tree through a proof where the operation
+    /// is a raw query of committed state, a tree made again at a dropped
+    /// path whose record is pending is under a key its items select, and
+    /// the candidate's proof verifies and gives the rows it returned.
+    /// Without any one of these it is not.
+    #[test]
+    fn a_step_is_of_a_dropped_tree_through_a_proof_by_the_query_and_the_candidates_proof() {
+        let grove_version = GROVE_VERSIONS.last().expect("a grove version");
+        let dir = scratch();
+        let db: GroveDb<RocksDbEngine> = GroveDb::open_with_engine(dir.path()).expect("a database");
+        let mut runner = Runner::new(&db, grove_version).expect("a runner");
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        for op in [
+            insert(&[], b"t", Element::empty_tree()),
+            insert(&[b"t"], b"again", Element::empty_tree()),
+            insert(&[b"t"], b"item", Element::new_item(vec![1])),
+            Op::Commit,
+        ] {
+            let taken = runner.step(&op).expect("a step");
+            assert!(!taken.step.failed(), "{op:?}: {taken:?}");
+        }
+        let query = |at: &[&[u8]], items, raw| crate::workload::Query {
+            path: path(at),
+            items,
+            subquery_path: None,
+            subquery_all: false,
+            limit: None,
+            left_to_right: true,
+            raw,
+        };
+        let everything = vec![crate::workload::QueryItem::RangeFull];
+        let asked = Op::Read(Read::Query(query(&[b"t"], everything.clone(), true)));
+        let answered = runner.step(&asked).expect("a step").step;
+        let Outcome::Returned(Value::Rows(rows)) = &answered.outcome else {
+            panic!("a query returns rows: {answered:?}");
+        };
+        assert_eq!(rows.len(), 2);
+        let verified = matches!(
+            &answered.proof,
+            Some(Proof {
+                proved: Proved::Bytes(_, Verification::Verified),
+                ..
+            })
+        );
+        assert!(verified, "{answered:?}");
+
+        let again = path(&[b"t", b"again"]);
+        let mut known = Known::default();
+        let drop = Op::Write(Write::DropFlat {
+            path: path(&[b"t"]),
+            key: b"again".to_vec(),
+        });
+        known.took(&drop, Vec::new());
+        // Dropped, and no record told: not pending, so not made again.
+        known.made_again(vec![again.clone()]);
+        assert!(!known.through_a_proof(&asked, &answered, grove_version));
+        // Pending, and not told that a tree stands there again.
+        known.pending(vec![again.clone()]);
+        assert!(!known.through_a_proof(&asked, &answered, grove_version));
+        // Pending and made again: what `trees_at` reads of the database.
+        let block = runner.transactions().block();
+        let standing = Known::trees_at(&db, block, known.pending_paths(), grove_version);
+        assert_eq!(standing, vec![again.clone()]);
+        let item = [path(&[b"t", b"item"]), path(&[b"t", b"absent"])];
+        assert!(Known::trees_at(&db, block, &item, grove_version).is_empty());
+        known.made_again(standing);
+        assert!(known.through_a_proof(&asked, &answered, grove_version));
+        // It is of no path: no place is of the kind, and no stored record.
+        assert_eq!(known.family(&again), Some(Family::DroppedTree));
+        assert_eq!(known.family(&path(&[b"t"])), None);
+
+        // Another operation: a query that is not raw, one whose items do
+        // not select the key, one of another subtree, a read through the
+        // block, and a read that is no query.
+        let one = |key: &[u8]| vec![crate::workload::QueryItem::Key(key.to_vec())];
+        let selects = Op::Read(Read::Query(query(&[b"t"], one(b"again"), true)));
+        let selected = runner.step(&selects).expect("a step").step;
+        assert!(known.through_a_proof(&selects, &selected, grove_version));
+        for other in [
+            Op::Read(Read::Query(query(&[b"t"], everything.clone(), false))),
+            Op::Read(Read::Query(query(&[b"t"], one(b"item"), true))),
+            Op::Read(Read::Query(query(&[], everything.clone(), true))),
+            Op::Read(Read::IsEmptyTree {
+                path: path(&[b"t"]),
+            }),
+        ] {
+            let step = runner.step(&other).expect("a step").step;
+            assert!(
+                !known.through_a_proof(&other, &step, grove_version),
+                "{other:?}"
+            );
+        }
+        let Op::Read(read) = asked.clone() else {
+            unreachable!()
+        };
+        let through_the_block = Op::Transaction(TransactionOp::BlockRead(read));
+        assert!(!known.through_a_proof(&through_the_block, &answered, grove_version));
+
+        // Another answer of the candidate: no rows, a row more or less or
+        // another one than its proof gives, a proof that verifies to
+        // another root, one the verifier refuses, one that is not the
+        // query's, and none.
+        let with = |change: &dyn Fn(&mut Step)| {
+            let mut step = answered.clone();
+            change(&mut step);
+            known.through_a_proof(&asked, &step, grove_version)
+        };
+        assert!(with(&|_| {}));
+        assert!(!with(
+            &|step| step.outcome = Outcome::Failed("InvalidQuery".to_string())
+        ));
+        assert!(!with(
+            &|step| step.outcome = Outcome::Returned(Value::Nothing)
+        ));
+        let rows_of = |step: &mut Step, change: &dyn Fn(&mut Vec<Row>)| {
+            if let Outcome::Returned(Value::Rows(rows)) = &mut step.outcome {
+                change(rows);
+            }
+        };
+        assert!(!with(&|step| rows_of(step, &|rows| drop_last(rows))));
+        assert!(!with(
+            &|step| rows_of(step, &|rows| rows.push(rows[0].clone()))
+        ));
+        assert!(!with(&|step| rows_of(step, &|rows| rows[1]
+            .element
+            .push(0))));
+        assert!(!with(&|step| rows_of(step, &|rows| rows[1].key.push(0))));
+        assert!(!with(&|step| rows_of(step, &|rows| rows[0]
+            .path
+            .push(vec![0]))));
+        let proof_of = |step: &mut Step, change: &dyn Fn(Vec<u8>) -> Proved| {
+            let Some(Proof {
+                proved: Proved::Bytes(bytes, _),
+                cost,
+            }) = step.proof.take()
+            else {
+                panic!("a proof");
+            };
+            step.proof = Some(Proof {
+                cost,
+                proved: change(bytes),
+            });
+        };
+        assert!(!with(&|step| proof_of(step, &|bytes| {
+            Proved::Bytes(bytes, Verification::OtherRoot)
+        })));
+        assert!(!with(&|step| proof_of(step, &|bytes| {
+            Proved::Bytes(bytes, Verification::Refused("InvalidProof".to_string()))
+        })));
+        assert!(!with(&|step| proof_of(step, &|_| {
+            Proved::Failed("InvalidQuery".to_string())
+        })));
+        let Some(Proof {
+            proved: Proved::Bytes(of_one_key, _),
+            ..
+        }) = &selected.proof
+        else {
+            panic!("a proof");
+        };
+        assert!(!with(&|step| proof_of(step, &|_| {
+            Proved::Bytes(of_one_key.clone(), Verification::Verified)
+        })));
+        assert!(!with(&|step| step.proof = None));
+
+        // The case that ends there is counted for the kind alone.
+        known.ended_at(Family::DroppedTreeProof, 5);
+        let counts = known.counts();
+        assert_eq!(counts.answers, [0, 0, 0, 0, 1, 0]);
+        assert_eq!(counts.histories, [0, 1, 1, 0, 1, 0]);
+        assert_eq!(counts.answer_seed[4], Some(5));
+    }
+
+    fn drop_last(rows: &mut Vec<Row>) {
+        rows.pop();
+    }
+
+    /// With a proof, a query reads the subtree under each key that its
+    /// items select, or those of a subquery it comes to, and no other.
+    #[test]
+    fn a_proved_query_reads_the_subtree_under_each_key_its_items_select() {
+        let key = |key: &[u8]| grovedb::QueryItem::Key(key.to_vec());
+        let below = |segments: &[&[u8]]| path(segments);
+        let mut plain = grovedb::Query::new();
+        plain.insert_item(key(b"k"));
+        assert_eq!(reads(&plain, &below(&[b"k"]), false), None);
+        assert_eq!(reads(&plain, &below(&[b"k"]), true), Some(false));
+        assert_eq!(reads(&plain, &below(&[b"other"]), true), None);
+        assert_eq!(reads(&plain, &below(&[b"k", b"l"]), true), None);
+        // Under a subquery: the keys its items select, one level down.
+        let mut inner = grovedb::Query::new();
+        inner.insert_item(key(b"l"));
+        let mut outer = grovedb::Query::new();
+        outer.insert_item(key(b"k"));
+        outer.set_subquery(inner);
+        assert_eq!(reads(&outer, &below(&[b"k"]), true), Some(false));
+        assert_eq!(reads(&outer, &below(&[b"k", b"l"]), false), None);
+        assert_eq!(reads(&outer, &below(&[b"k", b"l"]), true), Some(false));
+        assert_eq!(reads(&outer, &below(&[b"k", b"m"]), true), None);
+        assert_eq!(reads(&outer, &below(&[b"k", b"l", b"m"]), true), None);
+        // Along a subquery path the next key of the path is no key the
+        // items select: the tree at the end of the path is not bound by
+        // this rule.
+        let mut along = grovedb::Query::new();
+        along.insert_item(key(b"k"));
+        along.set_subquery_path(vec![b"a".to_vec()]);
+        assert_eq!(reads(&along, &below(&[b"k"]), true), Some(false));
+        assert_eq!(reads(&along, &below(&[b"k", b"a"]), true), None);
     }
 
     fn path(segments: &[&[u8]]) -> Path {
@@ -1100,9 +1462,12 @@ mod tests {
         let (was, is) = known.passed_over(7, &reference, &candidate);
         assert_eq!(was, is);
         let counts = known.counts();
-        assert_eq!(counts.stored, [1, 1, 0, 0]);
-        assert_eq!(counts.stored_seed, [Some(7), Some(7), None, None]);
-        assert_eq!((counts.histories, counts.answers), ([1, 1, 1, 0], [0; 4]));
+        assert_eq!(counts.stored, [1, 1, 0, 0, 0, 0]);
+        assert_eq!(counts.stored_seed[..4], [Some(7), Some(7), None, None]);
+        assert_eq!(
+            (counts.histories, counts.answers),
+            ([1, 1, 1, 0, 0, 0], [0; 6])
+        );
         assert_eq!(counts.stored_differences(), 2);
         assert_eq!(counts.answer_differences(), 0);
 
@@ -1123,7 +1488,7 @@ mod tests {
             let (was, is) = known.passed_over(7, &reference, &candidate);
             assert_eq!(was, vec![same.clone(), elsewhere]);
             assert_eq!(is, vec![same.clone()]);
-            assert_eq!(known.counts().stored, [0; 4]);
+            assert_eq!(known.counts().stored, [0; 6]);
         }
     }
 
@@ -1430,10 +1795,10 @@ mod tests {
         one.ended_at(Family::WrittenOver, 9);
         counts.add(&one.counts());
         counts.add(&one.counts());
-        assert_eq!(counts.answers, [2, 0, 0, 0]);
-        assert_eq!(counts.answer_seed, [Some(9), None, None, None]);
+        assert_eq!(counts.answers, [2, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.answer_seed[..4], [Some(9), None, None, None]);
         assert_eq!(counts.answer_differences(), 2);
-        assert_eq!(counts.histories, [2, 2, 2, 0]);
+        assert_eq!(counts.histories, [2, 2, 2, 0, 0, 0]);
         let lines = counts.lines();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with(

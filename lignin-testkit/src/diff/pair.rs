@@ -160,6 +160,11 @@ pub struct Divergence {
 /// How the line begins that stands for an engine that panicked.
 const PANICKED: &str = "panicked: ";
 
+/// The words of GroveDB's debug assertion that the state root a proof
+/// binds a tree that is no Merk to reproduces the value hash its parent
+/// committed (`grovedb/src/operations/proof/bind_terminal_non_merk_tree`).
+const REFERENCE_ASSERTION: &str = "which does not reproduce the committed value hash";
+
 /// How the line begins that stands for an engine that could not be
 /// observed.
 const NOT_OBSERVED: &str = "not observed: ";
@@ -579,6 +584,34 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
+        // In a debug build GroveDB's own assertion fails on the reference
+        // where it proves a query that returns a tree made again at a
+        // dropped path before the drain of its drop: the case ends there,
+        // counted apart, where the candidate's side of the step is as the
+        // rule of that open difference asks (`Known::through_a_proof`).
+        if let (Seen::Panicked(panic), Seen::Answered(answered)) = (&was, &is) {
+            let asserted = panic.contains(REFERENCE_ASSERTION);
+            if asserted && known.through_a_proof(op, &answered.step, case.grove_version) {
+                let family = Family::DroppedTreeAssertion;
+                known.ended_at(family, case.seed);
+                tally.families = known.counts();
+                let ended_with = Divergence {
+                    step,
+                    parts: vec![Part::Panic],
+                    reference: vec![format!("{PANICKED}{panic}")],
+                    candidate: lines(answered),
+                };
+                return Ok(Run {
+                    tally,
+                    divergence: None,
+                    cut_short: None,
+                    interrupted: false,
+                    ended_at: Some(family),
+                    ended_with: Some(ended_with),
+                    failed_steps: failed_steps.take(),
+                });
+            }
+        }
         let (was, is) = match both(was, is, |observed| lines(&observed)) {
             Both::Answered(was, is) => (was, is),
             Both::Alike(why) => return cut_short(tally, step, why),
@@ -593,7 +626,19 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             let (reference, candidate) = (&was.step.outcome, &is.step.outcome);
             let refusal = Known::family_of_refusal(&over_indexed, reference, candidate);
             let taken = !was.step.failed();
-            if let Some(family) = refusal.or_else(|| known.family_of_answer(op, taken)) {
+            // The engines differ in the proof of a query and in nothing
+            // else, and the candidate's proof holds: the open difference
+            // of a dropped tree, through a proof.
+            let through_a_proof = || {
+                let proof_alone = |part: &Part| matches!(part, Part::ProofCost | Part::Proof);
+                let held = parts.iter().all(proof_alone)
+                    && known.through_a_proof(op, &is.step, case.grove_version);
+                held.then_some(Family::DroppedTreeProof)
+            };
+            let family = refusal
+                .or_else(|| known.family_of_answer(op, taken))
+                .or_else(through_a_proof);
+            if let Some(family) = family {
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
                 let ended_with = Divergence {
@@ -629,6 +674,13 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
                 pending_drop_paths(&reference_db, block)
             });
             known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
+            // Those of them at which the reference reads a tree again.
+            let standing = catching(|| {
+                let block = reference_runner.transactions().block();
+                let pending = known.pending_paths();
+                Known::trees_at(&reference_db, block, pending, case.grove_version)
+            });
+            known.made_again(standing.unwrap_or_default());
         }
         tally.families = known.counts();
         if was.step.failed() {

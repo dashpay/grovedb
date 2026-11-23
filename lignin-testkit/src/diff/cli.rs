@@ -297,6 +297,9 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
     for line in summary.progress.tally.families.lines() {
         let _ = writeln!(out, "  {line}");
     }
+    for (family, seed, step) in &summary.apart {
+        let _ = writeln!(out, "  {}: seed {seed:#x}, step {step}", family.name());
+    }
     let _ = writeln!(out, "  {}", progress_line(&summary.progress));
     if let Some(why) = &summary.first_cut_short {
         let _ = writeln!(out, "  the first case cut short: {why}");
@@ -379,9 +382,10 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
         let _ = writeln!(out, "  {line}");
     }
     if let Some(family) = ran.ended_at {
+        let step = ran.ended_with.as_ref().map_or(0, |ended| ended.step);
         let _ = writeln!(
             out,
-            "  the case ended at an answer of the open difference: {}",
+            "  the case ended at step {step}, at an answer of the open difference: {}",
             family.name()
         );
     }

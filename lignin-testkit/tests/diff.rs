@@ -360,8 +360,8 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     assert_eq!(rows(&ended.reference)[1..], kept);
     assert_eq!(rows(&ended.candidate), [again]);
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 1, 0]);
-    assert_eq!(families.answer_seed, [None, None, Some(case.seed), None]);
+    assert_eq!(families.answers, [0, 0, 1, 0, 0, 0]);
+    assert_eq!(families.answer_seed[2], Some(case.seed));
 }
 
 /// Two cases the fuzzer reported on grove versions 2 and 3: a batch puts
@@ -447,4 +447,84 @@ fn the_fields_of_two_cost_lines_are_compared() {
     );
     assert_eq!(apart[2].0, "removed");
     assert_eq!(cost_of(&["root 00".to_string(), cost.to_string()]), cost);
+}
+
+/// A case the fuzzer reported on grove version 5: a commitment tree is
+/// dropped flat and made again by a repeated batch before the drain of
+/// its drop, which skips its record, and a raw query of the tree above
+/// with no subquery returns it. A proof binds such a tree to its own
+/// records, where RocksDB reads those it kept of the dropped tree: in a
+/// release build its proof is refused by its own verifier, and in a
+/// debug build GroveDB's assertion fails and the reference panics.
+/// LigninDB's proof verifies and gives the rows it returned. The case
+/// ends there, counted apart for the build it is run in (D-348).
+#[test]
+fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
+    use lignin_testkit::{
+        diff::{run, Case, Family, Part, Stored},
+        golden::run::STACK_BYTES,
+        workload::{Op, Read},
+    };
+
+    let scratch = scratch();
+    let shape = Shape::default()
+        .for_grove_version(5)
+        .expect("a grove version");
+    let case = Case::generate(0x3d7d_3d53_98d4_88dc, &shape);
+    let ran = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn_scoped(scope, || {
+                run(
+                    &case,
+                    &Side::<Reference>::of("RocksDB"),
+                    &Side::<Candidate>::of("LigninDB"),
+                    scratch.path(),
+                    Stored::Every(32),
+                    &|| false,
+                )
+            })
+            .expect("a thread")
+            .join()
+            .expect("the case runs")
+    })
+    .expect("the run");
+    if let Some(divergence) = &ran.divergence {
+        panic!(
+            "{}",
+            divergence.report(&case, "RocksDB", "LigninDB").join("\n")
+        );
+    }
+    let ended = ran.ended_with.as_ref().expect("the answers it ended with");
+    assert_eq!(ended.step, 1552, "{ended:?}");
+    let Op::Read(Read::Query(query)) = &case.ops[ended.step] else {
+        panic!("the case ended at {:?}", case.ops[ended.step]);
+    };
+    let above: [&[u8]; 1] = [b"drops"];
+    assert_eq!(query.path, above);
+    assert!(query.raw && query.subquery_path.is_none() && !query.subquery_all);
+    // The candidate returned the tree that was made again, and its proof
+    // verifies.
+    let has = |lines: &[String], text: &str| lines.iter().any(|line| line.contains(text));
+    let made_again: String = (b"round-0:commitment".iter())
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert!(has(&ended.candidate, &made_again), "{ended:?}");
+    assert!(has(&ended.candidate, "verification verified"), "{ended:?}");
+    let (family, at) = if cfg!(debug_assertions) {
+        assert_eq!(ended.parts, [Part::Panic]);
+        let asserted = "which does not reproduce the committed value hash";
+        assert!(has(&ended.reference, asserted), "{ended:?}");
+        (Family::DroppedTreeAssertion, 5)
+    } else {
+        assert_eq!(ended.parts, [Part::Proof]);
+        assert!(has(&ended.reference, "verification refused"), "{ended:?}");
+        (Family::DroppedTreeProof, 4)
+    };
+    assert_eq!(ran.ended_at, Some(family));
+    let families = ran.tally.families;
+    let mut answers = [0; 6];
+    answers[at] = 1;
+    assert_eq!(families.answers, answers);
+    assert_eq!(families.answer_seed[at], Some(case.seed));
 }
