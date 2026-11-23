@@ -1984,7 +1984,9 @@ merged.
 
 **SC4. A scope reads its own writes, then the transaction's merged writes,
 then the committed state**, each by RD3 to RD6. It never sees the writes of
-another scope that is still open.
+another scope that is still open. A scope says whether it reads the nodes of
+a Merk by their keys (`Scope::reads_nodes_by_key`): while it does, no child
+is shown it through the location of a parent.
 
 **SC5. A scope's writes get their first-write version when the scope makes
 them**, not when it merges (WT5).

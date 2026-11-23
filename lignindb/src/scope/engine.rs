@@ -163,6 +163,26 @@ impl<'t, 's> Scope<'t, 's> {
         self.txn.lock().scopes.laid(self.id)
     }
 
+    /// Whether the scope reads the nodes of the Merk `subtree` by their
+    /// keys, at the moment it is asked: its writes are not laid out
+    /// ([`Self::is_laid_out`]), and it holds the claim of a writer on the
+    /// Merk's data, or a drop or a clear that is not laid out is among
+    /// the transaction's writes. A batch takes that claim for every Merk
+    /// it writes, enters, states anew, clears or drops, and a claim that
+    /// was taken stays where the batch is refused afterwards. A cell of the
+    /// transaction's pages need not be the node it names for such a scope,
+    /// so while this is so [`Self::child`] shows it no child through the
+    /// handle of a parent and answers that the handle is no longer good,
+    /// whatever the handle: a caller that reads a node again on that
+    /// answer asks this first.
+    ///
+    /// It is a look at what the transaction holds: it claims nothing and
+    /// is refused for no other scope.
+    pub fn reads_nodes_by_key(&self, subtree: Subtree) -> bool {
+        let state = self.txn.lock();
+        WriteTxn::reads_by_key(&state, self.who(), Unit::data(subtree))
+    }
+
     /// Lays the writes of a scope that was opened beside another out on
     /// the transaction's pages, each applied by key through the tree layer
     /// as the transaction's pages are now (`transactions.md` LT4), and has
