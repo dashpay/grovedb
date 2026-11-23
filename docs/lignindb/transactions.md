@@ -166,6 +166,13 @@ tree's entries. For that case one batch is not refused:
   to say: by MV7 it can be given the refusal that stopped a layout, one
   of the first point among them.
 
+The physical invariant checker holds a version to this where its caller
+says which tree types keep flat entries (`lignindb::verify`, "The data
+column by the tree type of the entry"), and to more: under an entry of
+any other tree type it takes no flat entry but an unlinked record
+(below), also where the subtree has no node, and it holds an entry of a
+tree type that keeps flat entries to its place under its host.
+
 A Merk node is a record of its key whether or not a link of its Merk's tree
 leads to it. A storage batch can leave one that no link leads to (GM0). It
 is read by its key and under an iterator, written and deleted as any
