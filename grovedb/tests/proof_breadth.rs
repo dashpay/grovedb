@@ -163,7 +163,7 @@ fn v1_depth_limit_is_unchanged_in_all_decode_modes() {
     }
 }
 
-#[cfg(feature = "rocksdb_storage")]
+#[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 mod generation {
     use grovedb::{
         operations::proof::MAX_PROOF_CHILDREN, Element, GroveDb, PathQuery, Query, SizedQuery,

@@ -7,7 +7,7 @@
 //! plain tree a state `verify_grovedb` reports. `GROVE_V5` refuses the batch
 //! (`apply_batch.same_key_tree_type_conflict`).
 
-#![cfg(feature = "rocksdb_storage")]
+#![cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 #![allow(clippy::result_large_err)]
 
 use grovedb::{

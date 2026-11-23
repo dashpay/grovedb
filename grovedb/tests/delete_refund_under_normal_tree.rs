@@ -6,7 +6,7 @@
 //! element that is not declared a tree: more than a tree was charged, less
 //! than a sum item was.
 
-#![cfg(feature = "rocksdb_storage")]
+#![cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 #![allow(clippy::result_large_err)]
 
 use grovedb::{
