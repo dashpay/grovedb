@@ -2400,6 +2400,76 @@ fn an_emptied_indexed_tree_whose_axes_change_places_is_stated_anew_by_its_next_w
     check(dir.path(), v);
 }
 
+/// The first write into an emptied indexed tree that was converted
+/// states its Merks anew, where its element names them from then on.
+/// Where a commit beside the transaction deletes the tree and makes it
+/// again between the look and the application, the Merks that the look
+/// read are gone when the group is applied. The transaction refuses the
+/// statements as a conflict, and the engine does not look again: a
+/// statement anew is of an entry as the look read it. Nothing of the
+/// group is applied, and the tree that was made again takes the write.
+#[test]
+fn a_statement_anew_of_merks_that_a_commit_took_since_the_look_is_a_conflict() {
+    use std::sync::Arc;
+
+    use crate::engine::lignin::{Between, AFTER_A_LOOK, REFUSED};
+
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+        let narrow = CountSum::empty().tree_type().expect("a tree");
+        let wide = CountBigSum::empty().tree_type().expect("a tree");
+        tree_of_three_axes(&*db, v, 1, true);
+        let converted = db.convert_to_big_sum_tree(ROOT, b"idx", None, v);
+        converted.unwrap().expect("the emptied tree is converted");
+        // The entries are those of the narrow tree: the next write
+        // states them anew.
+        assert_eq!(hung(&db), (narrow, false, [1, 2, 3]));
+
+        let made_again: Between = {
+            let db = db.clone();
+            Box::new(move |_| {
+                let element = db.get(ROOT, b"idx", None, v).unwrap().expect("the element");
+                (db.delete(ROOT, b"idx", None, None, v).unwrap())
+                    .expect("a delete beside the write");
+                (db.insert(ROOT, b"idx", element, None, None, v).unwrap())
+                    .expect("the tree is made again");
+            })
+        };
+        REFUSED.take();
+        // A second look would take the second of these.
+        AFTER_A_LOOK.set([made_again, Box::new(|_| ())].into());
+        let tx = db.start_transaction();
+        let at: &[&[u8]] = &[b"idx"];
+        let child = CountBigSum::leaf(7);
+        let written = CountBigSum::insert(&*db, at, b"after", child, Some(&tx), v);
+        let refused = written
+            .unwrap()
+            .expect_err("the Merks left beside the write");
+        assert!(refused.is_commit_conflict(), "{refused}");
+        assert_eq!(REFUSED.take().len(), 1);
+        assert_eq!(AFTER_A_LOOK.take().len(), 1, "one look");
+        // The caller's transaction holds no write of the refused group.
+        let held = tx.write_transaction().expect("a write transaction");
+        assert_eq!(held.stats().writes, 0);
+        drop(tx);
+
+        // The grove is as the commit beside the transaction left it, and
+        // takes the write.
+        let primary = build_prefix(at.into()).value;
+        assert_eq!(entry(&db, primary), None);
+        let written = CountBigSum::insert(&*db, at, b"after", CountBigSum::leaf(7), None, v);
+        written
+            .unwrap()
+            .expect("a child of the tree that was made again");
+        assert_eq!(hung(&db), (wide, true, [1, 3, 2]));
+        db.flush().expect("a flush");
+        drop(Arc::into_inner(db).expect("the only handle on the database"));
+    }
+    check(dir.path(), v);
+}
+
 /// A subtree that a write through a handle by prefix entered is entered
 /// under no element, and no statement gives it one (D-277). A write into
 /// it through a handle that names an element is refused with
