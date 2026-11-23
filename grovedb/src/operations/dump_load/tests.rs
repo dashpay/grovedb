@@ -239,6 +239,20 @@ fn apply(db: &TempGroveDb, key: &[u8], bytes: &[u8]) -> DumpedSubtree {
     loaded
 }
 
+/// What `apply` does after its load: the root is checked and the element
+/// replaced, for a subtree that holds the records of `bytes` already.
+fn apply_after_load(db: &TempGroveDb, key: &[u8], bytes: &[u8]) {
+    let ((element, stated, ..), _) = read(bytes).expect("a dump");
+    let element = Element::deserialize(&element, v()).expect("an element");
+    let root = db
+        .subtree_root_as(EMPTY_PATH, key, &element, None, v())
+        .expect("a root");
+    assert_eq!(root, stated);
+    db.replace_subtree_root(EMPTY_PATH, key, element, root, None, v())
+        .unwrap()
+        .expect("the element");
+}
+
 fn same_grove(one: &TempGroveDb, other: &TempGroveDb) {
     let root = |db: &TempGroveDb| db.root_hash(None, v()).unwrap().expect("a root hash");
     assert_eq!(root(one), root(other));
@@ -422,6 +436,132 @@ fn node_records_that_are_not_one_tree_are_not_loaded() {
         let (_, after) = dump(&db, TREE);
         assert_eq!(after.data_records, 0, "{why}");
     }
+}
+
+#[test]
+fn a_node_record_that_merk_would_encode_otherwise_is_not_loaded() {
+    // A count tree whose root `b` has `a` on its left: the record of `b`
+    // begins with that link, which ends with the count of the nodes under
+    // it, 1, as a varint of one byte.
+    let db = grove_with(TREE, Element::empty_count_tree());
+    for key in [&b"b"[..], b"a", b"c"] {
+        put_item(&db, TREE, key);
+    }
+    let (bytes, _) = dump(&db, TREE);
+    let ((element, _, mut records, _), _) = read(&bytes).expect("a dump");
+    let root = &mut records[1].2;
+    assert_eq!(
+        (root[..3].to_vec(), root[37..39].to_vec()),
+        (b"\x01\x01a".to_vec(), vec![3, 1])
+    );
+    // The same count in two bytes: a record that decodes to the same node.
+    root.splice(38..39, [0x81, 0x00]);
+
+    let target = grove_with(TREE, Element::empty_count_tree());
+    let bytes = stream(&element, [0; 32], &records);
+    let loaded = target.load_subtree(EMPTY_PATH, TREE, &bytes[..], None, v());
+    match loaded {
+        Err(DumpLoadError::Malformed(said)) => {
+            assert_eq!(said, "a node record is not as Merk encodes its node")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(dump(&target, TREE).1.data_records, 0);
+}
+
+#[test]
+fn an_element_that_does_not_name_what_the_records_hold_is_refused() {
+    // The records of a tree whose root is `b`, and of an MMR tree.
+    let (named, tree) = node_records(&[b"b", b"a", b"c"]);
+    let mmr = grove_with(TREE, Element::empty_mmr_tree());
+    for n in 0..5u8 {
+        mmr.mmr_tree_append(EMPTY_PATH, TREE, vec![n; 20], None, v())
+            .unwrap()
+            .expect("an append");
+    }
+    let (mmr_bytes, _) = dump(&mmr, TREE);
+    let ((_, _, leaves, _), _) = read(&mmr_bytes).expect("a dump");
+    let bytes = |element: Element| element.serialize(v()).expect("bytes");
+
+    // A stream whose element names no root, another root, or a root of no
+    // record, and one whose element counts nothing over records.
+    let cases: [(Element, Vec<u8>, Vec<Record>); 4] = [
+        (
+            Element::empty_tree(),
+            bytes(Element::empty_tree()),
+            tree.clone(),
+        ),
+        (
+            Element::empty_tree(),
+            bytes(Element::Tree(Some(b"a".to_vec()), None)),
+            tree.clone(),
+        ),
+        (Element::empty_tree(), named.clone(), vec![]),
+        (
+            Element::empty_mmr_tree(),
+            bytes(Element::empty_mmr_tree()),
+            leaves,
+        ),
+    ];
+    for (empty, stated, records) in cases {
+        let db = grove_with(TREE, empty);
+        let stream = stream(&stated, [0; 32], &records);
+        let loaded = db.load_subtree(EMPTY_PATH, TREE, &stream[..], None, v());
+        match loaded {
+            Err(DumpLoadError::Malformed(said)) => assert_eq!(
+                said,
+                "the element of the dump does not name what its records hold"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // A subtree that was loaded and whose element was not replaced is such
+    // a subtree, and is not dumped.
+    let tree = grove_with(TREE, Element::empty_tree());
+    put_item(&tree, TREE, b"a");
+    for (source, empty) in [
+        (tree, Element::empty_tree()),
+        (mmr, Element::empty_mmr_tree()),
+    ] {
+        let (bytes, _) = dump(&source, TREE);
+        let target = grove_with(TREE, empty);
+        target
+            .load_subtree(EMPTY_PATH, TREE, &bytes[..], None, v())
+            .expect("a load");
+        let dumped = target.dump_subtree(EMPTY_PATH, TREE, Vec::new(), None, v());
+        assert_eq!(
+            refused(dumped),
+            "the element does not name what its subtree holds"
+        );
+        apply_after_load(&target, TREE, &bytes);
+        same_grove(&source, &target);
+    }
+}
+
+#[test]
+fn a_root_that_the_records_do_not_give_is_an_error() {
+    let db = grove_with(TREE, Element::empty_tree());
+    for key in [&b"a"[..], b"b", b"c"] {
+        put_item(&db, TREE, key);
+    }
+    let held = db
+        .get_raw(EMPTY_PATH, TREE, None, v())
+        .unwrap()
+        .expect("the tree");
+    let Element::Tree(Some(root_key), _) = &held else {
+        panic!("{held:?}");
+    };
+    let root = db.subtree_root_as(EMPTY_PATH, TREE, &held, None, v());
+    assert_ne!(root.expect("the root of the tree"), NULL_HASH);
+    // Read as a tree whose nodes carry a count, which these do not.
+    let counted = Element::ProvableCountTree(Some(root_key.clone()), 3, None);
+    let root = db.subtree_root_as(EMPTY_PATH, TREE, &counted, None, v());
+    assert!(matches!(root, Err(Error::MerkError(_))), "{root:?}");
+    // And under a root key that no node has.
+    let absent = Element::Tree(Some(b"no such node".to_vec()), None);
+    let root = db.subtree_root_as(EMPTY_PATH, TREE, &absent, None, v());
+    assert!(root.is_err(), "{root:?}");
 }
 
 #[test]

@@ -12,7 +12,8 @@
 use grovedb_commitment_tree::{DashMemo, NoteBytesData, TransmittedNoteCiphertext};
 use grovedb_costs::OperationCost;
 use grovedb_merk::proofs::Query;
-use grovedb_storage::FlatStore;
+use grovedb_merk::store::NodeStore;
+use grovedb_storage::{FlatStore, RawIterator};
 use lignindb::{verify::Census, Db, Options};
 
 use super::{version, ROOT};
@@ -189,34 +190,53 @@ fn all_of(path: &[&[u8]], under: Option<Query>) -> PathQuery {
     PathQuery::new(path, SizedQuery::new(query, None, None))
 }
 
-/// The reads and the proofs of the pool, each as text with its cost.
-fn pool_answers<E: Engine>(db: &GroveDb<E>) -> Vec<(String, String, OperationCost)> {
+/// One answer of a grove: what was asked, the answer as text, its cost.
+type Answer = (String, String, OperationCost);
+
+/// Takes in a call that has to succeed, and gives what it returned.
+fn answered<T: std::fmt::Debug>(
+    answers: &mut Vec<Answer>,
+    name: &str,
+    call: grovedb_costs::CostResult<T, crate::Error>,
+) -> T {
+    let cost = call.cost.clone();
+    let value = call
+        .unwrap()
+        .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+    answers.push((name.to_owned(), format!("{value:?}"), cost));
+    value
+}
+
+/// The reads and the proofs of the pool, each as text with its cost. Each
+/// has to succeed, and to hold what the pool holds.
+fn pool_answers<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
     let v = version();
     let mut answers = Vec::new();
-    let mut said = |name: &str, answer: String, cost: OperationCost| {
-        answers.push((name.to_owned(), answer, cost));
-    };
     let anchor = db.commitment_tree_anchor(&POOL, NOTES, None, v);
-    let cost = anchor.cost.clone();
-    let anchor = anchor.unwrap().expect("an anchor").to_bytes();
-    said("anchor", format!("{anchor:?}"), cost);
+    answered(
+        &mut answers,
+        "anchor",
+        anchor.map_ok(|anchor| anchor.to_bytes()),
+    );
     let count = db.commitment_tree_count(&POOL, NOTES, None, v);
-    said("count", format!("{:?}", count.value), count.cost);
+    assert_eq!(answered(&mut answers, "count", count), NOTE_COUNT as u64);
     let last = NOTE_COUNT as u64 - 1;
     for position in [0, 7, 8, 63, last, last + 1] {
         let value = db.commitment_tree_get_value(&POOL, NOTES, position, None, v);
-        said("value", format!("{:?}", value.value), value.cost);
+        let value = answered(&mut answers, "value", value);
+        assert_eq!(value.is_some(), position <= last, "the note at {position}");
     }
     for (start, limit) in [(0, 20), (60, 30), (0, u16::MAX)] {
         let page = db.commitment_tree_get_range(&POOL, NOTES, start, limit, None, v);
-        said("range", format!("{:?}", page.value), page.cost);
+        answered(&mut answers, "range", page);
     }
     let element = db.get_raw((&POOL).into(), NOTES, None, v);
-    let bytes = element.value.map(|element| element.serialize(v));
-    said("element", format!("{bytes:?}"), element.cost);
+    let bytes = element.map_ok(|element| element.serialize(v).expect("the bytes of an element"));
+    answered(&mut answers, "element", bytes);
     let pairs = QueryResultType::QueryKeyElementPairResultType;
     let read = db.query_raw(&all_of(&POOL, None), true, true, true, pairs, None, v);
-    said("the pool", format!("{:?}", read.value), read.cost);
+    let (read, _) = answered(&mut answers, "the pool", read);
+    assert_eq!(read.elements.len(), 5, "the children of the pool");
 
     let mut notes = Query::new();
     notes.insert_range_inclusive(0u64.to_be_bytes().to_vec()..=last.to_be_bytes().to_vec());
@@ -231,8 +251,8 @@ fn pool_answers<E: Engine>(db: &GroveDb<E>) -> Vec<(String, String, OperationCos
         ("proof of the pool", all_of(&POOL, None)),
         ("proof of the notes", fetch),
     ] {
-        let proof = db.prove_query(&query, None, v);
-        said(name, format!("{:?}", proof.value), proof.cost);
+        let proof = answered(&mut answers, name, db.prove_query(&query, None, v));
+        assert!(proof.len() > 500, "{name}: {} bytes", proof.len());
     }
     answers
 }
@@ -244,7 +264,7 @@ struct Flow {
     dump: Vec<u8>,
     dumped: DumpedSubtree,
     root: [u8; 32],
-    answers: Vec<(String, String, OperationCost)>,
+    answers: Vec<Answer>,
     appended: (String, OperationCost),
     root_after: [u8; 32],
 }
@@ -394,25 +414,43 @@ fn counted<E: Engine>(db: &GroveDb<E>) {
     db.commit_transaction(tx).unwrap().expect("a commit");
 }
 
-fn counted_answers<E: Engine>(db: &GroveDb<E>) -> Vec<(String, OperationCost)> {
+fn counted_answers<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
     let v = version();
     let mut answers = Vec::new();
     let element = db.get_raw(ROOT, COUNTED, None, v);
-    let bytes = element.value.map(|element| element.serialize(v));
-    answers.push((format!("{bytes:?}"), element.cost));
-    for n in [0, 17, 267, ITEMS - 1, ITEMS] {
+    let bytes = element.map_ok(|element| element.serialize(v).expect("the bytes of an element"));
+    answered(&mut answers, "element", bytes);
+    for n in [0, 17, 267, ITEMS - 1] {
         let read = db.get([COUNTED].as_ref(), &item_key(n), None, v);
-        answers.push((format!("{:?}", read.value), read.cost));
+        assert_eq!(answered(&mut answers, "item", read), item(n));
     }
+    // An item that is not there is not found, at the same cost.
+    let absent = db.get([COUNTED].as_ref(), &item_key(ITEMS), None, v);
+    assert!(absent.value.is_err(), "{:?}", absent.value);
+    answers.push((
+        "no item".to_owned(),
+        format!("{:?}", absent.value),
+        absent.cost,
+    ));
+
     let mut some = Query::new();
-    some.insert_range(item_key(9)..item_key(10));
+    some.insert_range(vec![0x40]..vec![0x60]);
     let path = vec![COUNTED.to_vec()];
     let query = PathQuery::new(path, SizedQuery::new(some, Some(300), None));
     let pairs = QueryResultType::QueryKeyElementPairResultType;
     let read = db.query_raw(&query, true, true, true, pairs, None, v);
-    answers.push((format!("{:?}", read.value), read.cost));
-    let proof = db.prove_query(&query, None, v);
-    answers.push((format!("{:?}", proof.value), proof.cost));
+    let (read, _) = answered(&mut answers, "a range of items", read);
+    assert_eq!(
+        read.elements.len(),
+        300,
+        "the items of the range, up to the limit"
+    );
+    let proof = answered(
+        &mut answers,
+        "proof of the range",
+        db.prove_query(&query, None, v),
+    );
+    assert!(proof.len() > 10_000, "{} bytes", proof.len());
     answers
 }
 
@@ -420,7 +458,7 @@ fn counted_answers<E: Engine>(db: &GroveDb<E>) -> Vec<(String, OperationCost)> {
 struct Counted {
     dump: Vec<u8>,
     root: [u8; 32],
-    answers: Vec<(String, OperationCost)>,
+    answers: Vec<Answer>,
     inserted: OperationCost,
     root_after: [u8; 32],
 }
@@ -557,10 +595,43 @@ fn small_dump<E: Hatched>(items: &[&[u8]]) -> Vec<u8> {
     dump
 }
 
-/// How many nodes the tree under `COUNTED` holds, as `through` reads it.
+/// How many records the data keyspace of the tree under `COUNTED` holds,
+/// as `through` reads it: nodes, or with `flat` flat records.
+fn data_of<'db, E: Engine>(
+    db: &'db GroveDb<E>,
+    through: TransactionArg<'db, '_, E>,
+    flat: bool,
+) -> u64 {
+    fn count<C: RawIterator>(mut cursor: C) -> u64 {
+        let mut records = 0;
+        cursor.seek_to_first().unwrap();
+        while cursor.valid().unwrap() {
+            records += 1;
+            cursor.next().unwrap();
+        }
+        cursor.status().expect("a cursor that did not fail");
+        records
+    }
+    let own;
+    let tx = match through {
+        Some(tx) => tx,
+        None => {
+            own = db.start_transaction();
+            &own
+        }
+    };
+    let handle = (db.engine())
+        .subtree([COUNTED].as_ref().into(), None, tx)
+        .unwrap();
+    if flat {
+        count(FlatStore::cursor(&handle))
+    } else {
+        count(NodeStore::cursor(&handle))
+    }
+}
+
 fn records_of<'db, E: Engine>(db: &'db GroveDb<E>, through: TransactionArg<'db, '_, E>) -> u64 {
-    let dumped = db.dump_subtree(ROOT, COUNTED, Vec::new(), through, version());
-    dumped.expect("a dump").data_records
+    data_of(db, through, false)
 }
 
 /// A load is a write of its transaction: nothing outside the transaction
@@ -628,6 +699,150 @@ fn a_load_is_a_write_of_its_transaction_on_rocksdb() {
     a_load_is_of_its_transaction::<crate::RocksDbEngine>();
 }
 
+/// A stream that inserts an item into the tree under `COUNTED`, with no
+/// transaction, when its first bytes arrive.
+struct CommitsBeside<'db, E: Engine> {
+    db: &'db GroveDb<E>,
+    taken: Vec<u8>,
+    committed: bool,
+}
+
+impl<E: Engine> std::io::Write for CommitsBeside<'_, E> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if !self.committed {
+            self.committed = true;
+            let late = Element::new_item(b"late".to_vec());
+            (self.db)
+                .insert([COUNTED].as_ref(), b"late", late, None, None, version())
+                .unwrap()
+                .expect("an insert beside the dump");
+        }
+        self.taken.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A dump with no transaction is of the state that was committed when it
+/// began: a commit that lands after its first bytes are out is in none of
+/// its records.
+fn a_dump_is_of_the_state_it_began_on<E: Hatched>() {
+    let v = version();
+    let grove = Grove::<E>::new();
+    (grove.db)
+        .insert(ROOT, COUNTED, Element::empty_count_tree(), None, None, v)
+        .unwrap()
+        .expect("a count tree");
+    for key in [&b"a"[..], b"b", b"c"] {
+        let item = Element::new_item(key.to_vec());
+        (grove.db)
+            .insert([COUNTED].as_ref(), key, item, None, None, v)
+            .unwrap()
+            .expect("an item");
+    }
+    let mut before = Vec::new();
+    (grove.db)
+        .dump_subtree(ROOT, COUNTED, &mut before, None, v)
+        .expect("a dump");
+
+    let mut out = CommitsBeside {
+        db: &grove.db,
+        taken: Vec::new(),
+        committed: false,
+    };
+    let dumped = (grove.db)
+        .dump_subtree(ROOT, COUNTED, &mut out, None, v)
+        .expect("a dump beside a commit");
+    assert!(out.committed, "{}", E::NAME);
+    assert_eq!(dumped.data_records, 3, "{}", E::NAME);
+    assert_eq!(out.taken, before, "{}", E::NAME);
+    assert_eq!(records_of(&grove.db, None), 4, "{}", E::NAME);
+    grove.close();
+}
+
+#[test]
+fn a_dump_is_of_the_state_it_began_on_on_lignindb() {
+    a_dump_is_of_the_state_it_began_on::<super::LigninEngine>();
+}
+
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_dump_is_of_the_state_it_began_on_on_rocksdb() {
+    a_dump_is_of_the_state_it_began_on::<crate::RocksDbEngine>();
+}
+
+/// A load through a snapshot read transaction is refused by the engine,
+/// for a Merk and for a tree that keeps its data flat, and writes nothing.
+fn a_load_through_a_snapshot_is_refused<E: Hatched>() {
+    let v = version();
+    let nodes = small_dump::<E>(&[b"a", b"b", b"c"]);
+    let flat = {
+        let source = Grove::<E>::new();
+        (source.db)
+            .insert(ROOT, COUNTED, Element::empty_mmr_tree(), None, None, v)
+            .unwrap()
+            .expect("an MMR tree");
+        for n in 0..5u8 {
+            (source.db)
+                .mmr_tree_append(ROOT, COUNTED, vec![n; 20], None, v)
+                .unwrap()
+                .expect("an append");
+        }
+        let mut dump = Vec::new();
+        (source.db)
+            .dump_subtree(ROOT, COUNTED, &mut dump, None, v)
+            .expect("a dump");
+        source.close();
+        dump
+    };
+    for (empty, dump, is_flat) in [
+        (Element::empty_count_tree(), nodes, false),
+        (Element::empty_mmr_tree(), flat, true),
+    ] {
+        let target = Grove::<E>::new();
+        (target.db)
+            .insert(ROOT, COUNTED, empty, None, None, v)
+            .unwrap()
+            .expect("an empty tree");
+        let snapshot = target.db.start_snapshot_read_transaction();
+        let loaded = (target.db).load_subtree(ROOT, COUNTED, &dump[..], Some(&snapshot), v);
+        match loaded {
+            Err(DumpLoadError::Grove(error)) => {
+                let said = format!("{error:?}");
+                assert!(said.contains("SnapshotReadOnlyTransaction"), "{said}");
+            }
+            other => panic!("{}: {other:?}", E::NAME),
+        }
+        drop(snapshot);
+        assert_eq!(data_of(&target.db, None, is_flat), 0, "{}", E::NAME);
+        let loaded = (target.db)
+            .load_subtree(ROOT, COUNTED, &dump[..], None, v)
+            .expect("a load with no transaction");
+        assert!(loaded.data_records > 0, "{}", E::NAME);
+        (target.db)
+            .replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, None, v)
+            .unwrap()
+            .expect("the element");
+        let issues = target.db.verify_grovedb(None, true, false, v);
+        assert!(issues.expect("a verification").is_empty(), "{}", E::NAME);
+        target.close();
+    }
+}
+
+#[test]
+fn a_load_through_a_snapshot_is_refused_on_lignindb() {
+    a_load_through_a_snapshot_is_refused::<super::LigninEngine>();
+}
+
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_load_through_a_snapshot_is_refused_on_rocksdb() {
+    a_load_through_a_snapshot_is_refused::<crate::RocksDbEngine>();
+}
+
 /// A transaction writes an item into a tree that holds none, and a load
 /// with no transaction fills the tree beside it and commits. Gives how
 /// the transaction's commit ended, and the nodes the tree holds after it.
@@ -645,13 +860,122 @@ fn a_load_beside_a_writer_of_its_subtree<E: Hatched>() -> (Result<(), crate::Err
         .insert([COUNTED].as_ref(), b"z", other, None, Some(&tx), v)
         .unwrap()
         .expect("an insert in the transaction");
-    (target.db)
+    let loaded = (target.db)
         .load_subtree(ROOT, COUNTED, &dump[..], None, v)
         .expect("a load beside the transaction");
     let committed = target.db.commit_transaction(tx).unwrap();
     let nodes = records_of(&target.db, None);
-    drop(target);
+    if committed.is_err() {
+        finish(&target.db, loaded);
+    }
+    target.close();
     (committed, nodes)
+}
+
+/// Two transactions each load a dump into one empty tree, with no node
+/// key in common and with no replacement of the element, and commit one
+/// after the other. Gives how the second commit ended, and the nodes the
+/// tree holds after it.
+fn two_loads_into_one_subtree<E: Hatched>() -> (Result<(), crate::Error>, u64) {
+    let v = version();
+    let one = small_dump::<E>(&[b"a", b"b", b"c"]);
+    let other = small_dump::<E>(&[b"x", b"y"]);
+    let target = Grove::<E>::new();
+    (target.db)
+        .insert(ROOT, COUNTED, Element::empty_count_tree(), None, None, v)
+        .unwrap()
+        .expect("a count tree");
+    let first = target.db.start_transaction();
+    let second = target.db.start_transaction();
+    let loaded = (target.db)
+        .load_subtree(ROOT, COUNTED, &one[..], Some(&first), v)
+        .expect("a load");
+    (target.db)
+        .load_subtree(ROOT, COUNTED, &other[..], Some(&second), v)
+        .expect("a load beside it");
+    (target.db.commit_transaction(first).unwrap()).expect("the first commit");
+    let committed = target.db.commit_transaction(second).unwrap();
+    let nodes = records_of(&target.db, None);
+    if committed.is_err() {
+        finish(&target.db, loaded);
+    }
+    target.close();
+    (committed, nodes)
+}
+
+/// Replaces the element of the tree under `COUNTED` after a load that was
+/// committed without it, and has the grove verified: a grove is left
+/// between a load and its replacement by no test.
+fn finish<E: Engine>(db: &GroveDb<E>, loaded: DumpedSubtree) {
+    let v = version();
+    db.replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, None, v)
+        .unwrap()
+        .expect("the element");
+    let issues = db.verify_grovedb(None, true, false, v);
+    assert!(issues.expect("a verification").is_empty());
+}
+
+/// Two transactions each apply a dump to one empty tree, the load and the
+/// replacement of the element together, and commit one after the other.
+/// The second commit is a conflict on every engine: both wrote the node
+/// of the element.
+fn the_second_of_two_applies_conflicts<E: Hatched>() {
+    let v = version();
+    let one = small_dump::<E>(&[b"a", b"b", b"c"]);
+    let other = small_dump::<E>(&[b"x", b"y"]);
+    let target = Grove::<E>::new();
+    (target.db)
+        .insert(ROOT, COUNTED, Element::empty_count_tree(), None, None, v)
+        .unwrap()
+        .expect("a count tree");
+    let first = target.db.start_transaction();
+    let second = target.db.start_transaction();
+    for (dump, tx) in [(&one, &first), (&other, &second)] {
+        let loaded = (target.db)
+            .load_subtree(ROOT, COUNTED, &dump[..], Some(tx), v)
+            .expect("a load");
+        (target.db)
+            .replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, Some(tx), v)
+            .unwrap()
+            .expect("the element");
+    }
+    (target.db.commit_transaction(first).unwrap()).expect("the first commit");
+    let error = (target.db.commit_transaction(second).unwrap()).expect_err("a conflict");
+    assert!(error.is_commit_conflict(), "{}: {error:?}", E::NAME);
+    assert_eq!(records_of(&target.db, None), 3, "{}", E::NAME);
+    let issues = target.db.verify_grovedb(None, true, false, v);
+    assert!(issues.expect("a verification").is_empty(), "{}", E::NAME);
+    target.close();
+}
+
+#[test]
+fn the_second_of_two_applies_conflicts_on_lignindb() {
+    the_second_of_two_applies_conflicts::<super::LigninEngine>();
+}
+
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn the_second_of_two_applies_conflicts_on_rocksdb() {
+    the_second_of_two_applies_conflicts::<crate::RocksDbEngine>();
+}
+
+/// On LigninDB the second of two loads into one subtree does not commit.
+#[test]
+fn the_second_of_two_loads_into_one_subtree_conflicts_on_lignindb() {
+    let (committed, nodes) = two_loads_into_one_subtree::<super::LigninEngine>();
+    let error = committed.expect_err("a conflict");
+    assert!(error.is_commit_conflict(), "{error:?}");
+    assert_eq!(nodes, 3, "the nodes of the first load");
+}
+
+/// On RocksDB both commit, and the tree holds the nodes of two Merks: a
+/// caller lets one writer at a time into the subtree it applies a dump to.
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn two_loads_into_one_subtree_both_commit_on_rocksdb() {
+    let (committed, nodes) = two_loads_into_one_subtree::<crate::RocksDbEngine>();
+    committed.expect("a commit");
+    assert_eq!(nodes, 5, "the nodes of both loads");
 }
 
 /// The difference that `engine.md` records ("Dump and load"): on LigninDB

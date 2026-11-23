@@ -20,10 +20,14 @@
 //!    root into the parent Merk and carries the change to the root of the
 //!    grove.
 //!
-//! A load checks no hash: it writes what the stream holds. Between the
-//! load and the replacement the element in the parent does not commit to
-//! what its subtree holds. Gated behind the `unsafe-dump-load` Cargo
-//! feature.
+//! A load makes no hash of a node and does not ask whether the keys of a
+//! Merk stand as the keys of a search tree do: it writes the records the
+//! stream holds. Between the load and the replacement the element in the
+//! parent does not commit to what its subtree holds: `verify_grovedb`
+//! reports such a grove, and a LigninDB database whose loaded Merk has
+//! nodes does not pass the engine's physical check. A caller that gives
+//! the three calls one transaction commits no such state. Gated behind
+//! the `unsafe-dump-load` Cargo feature.
 
 mod format;
 #[cfg(all(test, grovedb_test_engine))]
@@ -58,12 +62,14 @@ pub enum DumpLoadError {
     /// a dump is this, with the kind `UnexpectedEof`.
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
-    /// The stream is not a dump that this version reads whole: its magic,
-    /// its version, the element it names, its records, their order, their
-    /// count or its checksum, or the nodes of its Merk are not one tree.
+    /// The stream is not a dump that this version reads: its magic, its
+    /// version, the element it names, its records, their order, their
+    /// count or its checksum; a node record is not as Merk encodes the
+    /// node; the nodes are not one tree; or the element does not name
+    /// what the records hold.
     #[error("malformed dump: {0}")]
     Malformed(&'static str),
-    /// The subtree cannot be dumped, or cannot take the dump.
+    /// The subtree is not one that is dumped, or does not take the dump.
     #[error("refused: {0}")]
     Refused(&'static str),
     /// An error of the grove.
@@ -125,6 +131,11 @@ fn carried(element: &Element) -> Result<(), DumpLoadError> {
     }
 }
 
+/// The key of the root node that the element of a tree of nodes names.
+fn root_key_of(element: &Element) -> Option<Vec<u8>> {
+    (element.clone().root_key_and_tree_type_owned()).and_then(|(root_key, _)| root_key)
+}
+
 /// Whether the keyspace of `cursor` holds a record.
 fn holds_a_record<C: RawIterator>(mut cursor: C) -> Result<bool, DumpLoadError> {
     cursor.seek_to_first().unwrap();
@@ -157,9 +168,11 @@ fn dump_keyspace<C: RawIterator, W: Write>(
 /// they encode: the place of the root among them and the places of all of
 /// them, a child before its parent.
 ///
-/// It holds the records to being one tree: every link names a node of
-/// them, no node is named twice, and one node is named by none. It checks
-/// no hash and no order of keys.
+/// It holds each record to being what Merk encodes of the node it
+/// decodes to, and the records to being one tree: every link names a node
+/// of them, no node is named twice, and one node is named by none. It
+/// makes no hash, and does not ask whether the keys stand as the keys of a
+/// search tree do.
 fn whole_merk(
     records: Vec<(Vec<u8>, Vec<u8>)>,
     grove_version: &GroveVersion,
@@ -175,6 +188,13 @@ fn whole_merk(
             grove_version,
         )
         .map_err(|_| DumpLoadError::Malformed("a record of the data keyspace is no node"))?;
+        // A record that decodes and is encoded otherwise would be written
+        // as other bytes than the dump holds.
+        if node.encode() != record {
+            return Err(DumpLoadError::Malformed(
+                "a node record is not as Merk encodes its node",
+            ));
+        }
         nodes.push(node);
     }
     let mut children = Vec::with_capacity(nodes.len());
@@ -240,13 +260,18 @@ impl<E: Engine> GroveDb<E> {
     /// The root that the records of the subtree under `key` give when they
     /// are read as the subtree of `element`: the root hash of the Merk
     /// that `element` names the root key and the tree type of, or the
-    /// state root of the append-only tree that `element` is, made from
-    /// the stored values. The element that the grove holds under `key` is
-    /// not read.
+    /// state root of the append-only tree that `element` is, as
+    /// `verify_grovedb` makes it. The element that the grove holds under
+    /// `key` is not read. Where the element names a root key that no node
+    /// has, or the root node is not a node of a tree of that type, the
+    /// call is an error.
     ///
     /// It is what [`GroveDb::replace_subtree_root`] takes as the root of a
     /// subtree that was loaded, and what a caller compares with the root a
-    /// dump states.
+    /// dump states. It reads the records the root is made from, which are
+    /// not all the records of the subtree: the root node of a Merk, the
+    /// stored peaks of an MMR and not the leaves under them. It is no
+    /// check of every record.
     pub fn subtree_root_as<'db, 'b, B, P>(
         &'db self,
         path: P,
@@ -286,6 +311,7 @@ impl<E: Engine> GroveDb<E> {
             ));
         }
         let handle = self.db.subtree(subtree, None, transaction).unwrap();
+        let named = root_key.is_some();
         let merk = Merk::open_layered_with_root_key(
             handle,
             root_key,
@@ -295,7 +321,12 @@ impl<E: Engine> GroveDb<E> {
         )
         .unwrap()
         .map_err(Error::MerkError)?;
-        Ok(merk.root_hash().unwrap())
+        if named && !merk.has_root_key() {
+            return Err(Error::CorruptedData(
+                "the element names a root key that no node of the subtree has".to_owned(),
+            ));
+        }
+        merk.try_root_hash().unwrap().map_err(Error::MerkError)
     }
 
     /// Writes the records of the subtree under `key` in the Merk at `path`
@@ -311,7 +342,11 @@ impl<E: Engine> GroveDb<E> {
     ///
     /// What is under the subtree is not carried: the subtrees of the
     /// trees that its Merk holds, and the secondary Merks of an indexed
-    /// tree, which is refused.
+    /// tree, which is refused. A subtree whose element does not name what
+    /// it holds is refused as well: a tree of nodes whose element names
+    /// no root key or the key of no node, and an append-only tree that
+    /// holds records under an element that counts none. That is a subtree
+    /// between its load and the replacement of its element.
     pub fn dump_subtree<'db, 'b, B, P, W>(
         &'db self,
         path: P,
@@ -336,11 +371,25 @@ impl<E: Engine> GroveDb<E> {
         };
         let element = self.dumped_element(path.clone(), key, tx, grove_version)?;
         let subtree = path.derive_owned_with_child(key);
+        let handle = self.db.subtree((&subtree).into(), None, tx).unwrap();
+        let named = if element.uses_non_merk_data_storage() {
+            element.non_merk_entry_count() != Some(0)
+                || !holds_a_record(FlatStore::cursor(&handle))?
+        } else {
+            match root_key_of(&element) {
+                Some(root_key) => handle.has_node(&root_key).unwrap().map_err(merk)?,
+                None => !holds_a_record(NodeStore::cursor(&handle))?,
+            }
+        };
+        if !named {
+            return Err(DumpLoadError::Refused(
+                "the element does not name what its subtree holds",
+            ));
+        }
         let root = self.root_as((&subtree).into(), &element, tx, grove_version)?;
         let stated = element.serialize(grove_version).map_err(Error::from)?;
         let mut out = DumpWriter::new(out, &stated, &root)?;
 
-        let handle = self.db.subtree((&subtree).into(), None, tx).unwrap();
         if element.uses_non_merk_data_storage() {
             dump_keyspace(FlatStore::cursor(&handle), Keyspace::Data, &mut out)?;
         } else {
@@ -358,12 +407,18 @@ impl<E: Engine> GroveDb<E> {
     /// Reads one dump from `input` and writes its records into the subtree
     /// under `key` in the Merk at `path`.
     ///
-    /// The element under `key` has to be a tree of the tree type of the
-    /// dumped element, and its subtree has to hold no record in any
-    /// keyspace, as `transaction` reads it: anything else is refused, and
-    /// so is a stream that is not a whole dump. Nothing is written before
-    /// the whole stream is read, its checksum holds and those refusals are
-    /// past.
+    /// It reads one whole dump, and no byte of `input` after it. The
+    /// element under `key` has to be a tree of the tree type of the dumped
+    /// element, and its subtree has to hold no record in any keyspace, as
+    /// `transaction` reads it: anything else is refused. Nothing is
+    /// written before the dump is read to its end, its checksum holds and
+    /// those refusals are past.
+    ///
+    /// On the RocksDB engine nothing makes two writers of one subtree
+    /// meet but a key that both wrote. A load writes no key outside its
+    /// subtree, so a caller that commits a load apart from the replacement
+    /// lets no other writer into the subtree until the replacement is
+    /// committed.
     ///
     /// The load is a write of `transaction`, as an insert is: it is seen
     /// through that transaction alone until the transaction commits, and
@@ -403,13 +458,25 @@ impl<E: Engine> GroveDb<E> {
             records[keyspace as usize - 1].push((key, value));
         }
         let [data, aux, roots, meta] = records;
-        let (merk_nodes, flat_records) = if element.uses_non_merk_data_storage() {
-            (None, data)
-        } else if data.is_empty() {
+        let flat = element.uses_non_merk_data_storage();
+        let (merk_nodes, flat_records) = if flat || data.is_empty() {
             (None, data)
         } else {
             (Some(whole_merk(data, grove_version)?), Vec::new())
         };
+        let named = if flat {
+            element.non_merk_entry_count() != Some(0) || flat_records.is_empty()
+        } else {
+            let root = merk_nodes
+                .as_ref()
+                .map(|(nodes, root, _)| nodes[*root].key());
+            root_key_of(&element).as_deref() == root
+        };
+        if !named {
+            return Err(DumpLoadError::Malformed(
+                "the element of the dump does not name what its records hold",
+            ));
+        }
 
         let tx = TxRef::new(&self.db, transaction);
         let target = self.dumped_element(path.clone(), key, tx.as_ref(), grove_version)?;
@@ -423,7 +490,7 @@ impl<E: Engine> GroveDb<E> {
             .db
             .subtree((&subtree).into(), None, tx.as_ref())
             .unwrap();
-        let held = if element.uses_non_merk_data_storage() {
+        let held = if flat {
             holds_a_record(FlatStore::cursor(&look))?
         } else {
             holds_a_record(NodeStore::cursor(&look))?
