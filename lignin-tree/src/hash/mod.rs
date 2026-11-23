@@ -8,6 +8,8 @@
 //!   caller, so nothing here knows a rule of Merk.
 //! - [`ValueReader`] reads a value that is not in its cell.
 //! - [`check`] recomputes the hashes of one cell and says which differ.
+//! - [`made_with_other`] says of a value hash that differs whether it is
+//!   one the rules name as made with another hash of a hosted root.
 //!
 //! # What is stored, and what is stale
 //!
@@ -422,4 +424,24 @@ pub fn check<P: Pages, V: ValueReader, R: HashRules>(
     node: CellAddress,
 ) -> Result<Stale, HashError> {
     evaluate::check(pages, values, rules, node)
+}
+
+/// Whether the value hash that the cell at `node` stores is the one that
+/// the rules name as made with another hash of a hosted root: the value
+/// hash [`HashRules::value_hash_with_other`] makes, with
+/// [`HashRules::other_node_hash`] of each hosted root that has one in the
+/// place of the root's hash.
+///
+/// It is for a value hash that [`check`] returned: whoever checks a store
+/// can tell a hash that a writer made in a way the rules name from one
+/// that nothing explains. A cell that hosts no root, and one none of whose
+/// roots has another hash, is answered `false` with no value read. Like
+/// [`check`] it needs no mark, makes none and changes no page.
+pub fn made_with_other<P: Pages, V: ValueReader, R: HashRules>(
+    pages: &mut P,
+    values: &mut V,
+    rules: &mut R,
+    node: CellAddress,
+) -> Result<bool, HashError> {
+    evaluate::made_with_other(pages, values, rules, node)
 }

@@ -199,6 +199,30 @@ fn make<R: HashRules>(
     rules: &mut R,
     counters: &mut Counters,
 ) -> Result<Made, HashError> {
+    let mut made = place(node, frame, lists)?;
+    let hosted = &lists.hosted;
+    if frame.fields.has(HashField::Value) {
+        let value = node.value().inline().unwrap_or(value);
+        let hash = rules.value_hash(node, value, hosted);
+        made.value = Some(hash.map_err(HashError::Rule)?);
+        counters.value_hashes += 1;
+    }
+    if frame.fields.has(HashField::KeyValue) {
+        let value_hash = made.value.as_ref().filter(|_| chain);
+        let value_hash = value_hash.unwrap_or(node.value_hash());
+        let hash = rules.kv_hash(node.key(), value_hash);
+        made.kv = Some(hash.map_err(HashError::Rule)?);
+        counters.kv_hashes += 1;
+    }
+    Ok(made)
+}
+
+/// Puts the hashes of what the cell `node` shows points at where they are
+/// made into its own: the hash of each child of `frame` into what is
+/// returned, and the roots of the Merks it hosts, by position, into
+/// [`Lists::hosted`] if `frame` makes a value hash. A cell that points
+/// elsewhere than when `frame` was read is refused.
+fn place(node: NodeRef<'_>, frame: &Frame, lists: &mut Lists) -> Result<Made, HashError> {
     let changed = HashError::Changed { node: frame.at };
     let (deps, hashes) = (&lists.deps[frame.deps..], &lists.hashes[frame.hashes..]);
     let hosted = &mut lists.hosted;
@@ -234,19 +258,6 @@ fn make<R: HashRules>(
             return Err(changed);
         }
         *slot = Some(*hash);
-    }
-    if makes_value {
-        let value = node.value().inline().unwrap_or(value);
-        let hash = rules.value_hash(node, value, hosted);
-        made.value = Some(hash.map_err(HashError::Rule)?);
-        counters.value_hashes += 1;
-    }
-    if frame.fields.has(HashField::KeyValue) {
-        let value_hash = made.value.as_ref().filter(|_| chain);
-        let value_hash = value_hash.unwrap_or(node.value_hash());
-        let hash = rules.kv_hash(node.key(), value_hash);
-        made.kv = Some(hash.map_err(HashError::Rule)?);
-        counters.kv_hashes += 1;
     }
     Ok(made)
 }
@@ -387,6 +398,40 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
         self.hashes.counters.node_hashes += u64::from(hash.is_some());
         Ok(hash)
     }
+}
+
+/// Whether the value hash that the cell at `node` stores is the one the
+/// rules name as made with another hash of a hosted root.
+pub(super) fn made_with_other<P: Pages, V: ValueReader, R: HashRules>(
+    pages: &mut P,
+    values: &mut V,
+    rules: &mut R,
+    node: CellAddress,
+) -> Result<bool, HashError> {
+    let mut lists = Lists::default();
+    let frame = gather(pages, &mut lists, node, Stale::of(HashField::Value), false)?;
+    let mut any = false;
+    for dep in &lists.deps {
+        let other = read_node(pages, dep.at, |root| {
+            rules.other_node_hash(root).map_err(HashError::Rule)
+        })?;
+        any |= other.is_some();
+        lists.hashes.push(match other {
+            Some(other) => other,
+            None => node_hash_at(pages, rules, dep.at)?,
+        });
+    }
+    if !any {
+        return Ok(false);
+    }
+    let mut value = Vec::new();
+    fetch(values, &frame, &mut value)?;
+    read_node(pages, node, |cell| {
+        place(cell, &frame, &mut lists)?;
+        let value = cell.value().inline().unwrap_or(&value);
+        let made = rules.value_hash_with_other(cell, value, &lists.hosted);
+        Ok(made.map_err(HashError::Rule)?.as_ref() == Some(cell.value_hash()))
+    })
 }
 
 /// Which of the hashes the cell at `node` stores differ from their

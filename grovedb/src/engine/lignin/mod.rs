@@ -139,9 +139,20 @@ impl LigninEngine {
     /// hashes that those rules take as they are stored. Elements are
     /// read as the latest GroveVersion reads them, as the engine reads a
     /// host.
+    ///
+    /// The rules name the value hash that the delete of a tree with
+    /// elements left for the tree it was in on `GROVE_V1` to `GROVE_V3`
+    /// ([`MerkHashRules::naming_left_hashes`]): the engine does not know
+    /// which grove versions wrote its database, and that hash is no damage
+    /// of the store, so the close does not panic on it. A caller that
+    /// knows its grove was written on later versions only gives the
+    /// database the rules that name none
+    /// (`engine.database().check_hashes_by`, with
+    /// [`MerkHashRules::for_check`]), and the close then panics on that
+    /// hash as on any that differs.
     pub fn new(db: Db) -> Result<Self, Error> {
         if cfg!(debug_assertions) {
-            let rules = MerkHashRules::for_check(GroveVersion::latest());
+            let rules = MerkHashRules::for_check(GroveVersion::latest()).naming_left_hashes();
             db.check_hashes_by(Box::new(rules));
         }
         let engine = Self { db };

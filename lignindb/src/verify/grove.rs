@@ -7,7 +7,7 @@ use std::{
 };
 
 use lignin_format::{
-    tree_page::{Side, TreePage},
+    tree_page::{HashField, Side, TreePage},
     CellAddress, PageId,
 };
 use lignin_store::load::FRAME_FORMAT;
@@ -19,7 +19,7 @@ use lignin_tree::{
 
 use super::{
     pages::{Kind, Reach, Seen},
-    Grove, Place, Rule, Run, Unreached,
+    Grove, OtherHash, OtherHashes, Place, Rule, Run, Unreached,
 };
 
 /// A Merk as its entry in the directory has it.
@@ -291,7 +291,11 @@ impl Run<'_, '_, '_> {
                 self.check_value(value, at.page(), Place::Cell(at));
             }
             if reach == Reach::Live {
-                self.check_hashes(&node, rules);
+                let subtree = match walk {
+                    Walk::Entered { prefix, .. } => Some(*prefix),
+                    Walk::Rooted | Walk::Left => None,
+                };
+                self.check_hashes(&node, subtree, rules);
             }
             for (position, pointer) in node.hosted_roots().enumerate() {
                 let Some(pointer) = pointer else {
@@ -331,8 +335,16 @@ impl Run<'_, '_, '_> {
         }
     }
 
-    /// Recomputes the hashes that a cell in use stores.
-    fn check_hashes(&mut self, node: &NodeRef<'_>, rules: &mut Option<&mut dyn HashRules>) {
+    /// Recomputes the hashes that a cell in use stores, which is in the
+    /// Merk under `subtree` where the directory names its Merk. A value
+    /// hash that differs and that the rules name as made with another hash
+    /// of a hosted root is counted apart, and is no finding.
+    fn check_hashes(
+        &mut self,
+        node: &NodeRef<'_>,
+        subtree: Option<Prefix>,
+        rules: &mut Option<&mut dyn HashRules>,
+    ) {
         let at = node.address();
         let place = Place::Cell(at);
         let Some(rules) = rules.as_deref_mut() else {
@@ -343,6 +355,22 @@ impl Run<'_, '_, '_> {
         match hash::check(&mut self.tree, &mut self.values, &mut rules, at) {
             Ok(differing) => {
                 for field in differing.fields() {
+                    if field == HashField::Value {
+                        let named =
+                            hash::made_with_other(&mut self.tree, &mut self.values, &mut rules, at);
+                        if matches!(named, Ok(true)) {
+                            let other = &mut self.other_hashes;
+                            other.count += 1;
+                            if other.first.len() < OtherHashes::SAMPLE {
+                                other.first.push(OtherHash {
+                                    cell: at,
+                                    subtree,
+                                    key: node.key().to_vec(),
+                                });
+                            }
+                            continue;
+                        }
+                    }
                     let what = || "the stored hash differs from its recomputation".to_owned();
                     self.add(Rule::Hash(field), place, what);
                 }

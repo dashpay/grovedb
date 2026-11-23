@@ -4,6 +4,7 @@ use std::{fmt, time::Duration};
 
 use lignin_format::{CellAddress, FileId};
 use lignin_store::alloc;
+use lignin_tree::directory::Prefix;
 
 use super::finding::{Finding, Rule};
 
@@ -44,6 +45,45 @@ impl Unreached {
     /// Whether the store holds space that nothing reaches.
     pub const fn is_empty(&self) -> bool {
         self.cells == 0 && self.empty_pages == 0
+    }
+}
+
+/// A value hash that is not the one the rules make, and that the rules
+/// name all the same ([`OtherHashes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtherHash {
+    /// The cell that stores it.
+    pub cell: CellAddress,
+    /// The prefix of the Merk the cell is in, where the directory names
+    /// the Merk.
+    pub subtree: Option<Prefix>,
+    /// The key of the cell's node.
+    pub key: Vec<u8>,
+}
+
+/// The value hashes of cells in use that are not the ones the rules make,
+/// and that the rules name as made by a writer with another hash of a
+/// hosted root (`lignin_tree::hash::made_with_other`).
+///
+/// Such a hash is its writer's and no damage of the store. It is counted
+/// here and is no [`Finding`]. Rules that name no other hash, as the
+/// provided methods of [`HashRules`](lignin_tree::hash::HashRules) do,
+/// leave this empty, and every value hash that differs is a finding.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OtherHashes {
+    /// How many there are.
+    pub count: u64,
+    /// The first of them, in the order the walks came to them.
+    pub first: Vec<OtherHash>,
+}
+
+impl OtherHashes {
+    /// How many [`Self::first`] holds at most.
+    pub const SAMPLE: usize = 16;
+
+    /// Whether the run came to none.
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
     }
 }
 
@@ -147,6 +187,9 @@ pub struct Report {
     pub more_findings: u64,
     /// The cells that nothing reaches: space, and no finding.
     pub unreached: Unreached,
+    /// The value hashes that the rules name as another writer's: no
+    /// finding.
+    pub other_hashes: OtherHashes,
     /// What the run counted.
     pub census: Census,
     /// How long it took.
@@ -155,7 +198,8 @@ pub struct Report {
 
 impl Report {
     /// Whether every rule holds. Cells that nothing reaches do not make a
-    /// store unsound ([`Unreached`]).
+    /// store unsound ([`Unreached`]), and neither does a value hash that
+    /// the rules name as another writer's ([`OtherHashes`]).
     pub fn is_sound(&self) -> bool {
         self.findings.is_empty() && self.more_findings == 0
     }
@@ -213,6 +257,18 @@ impl fmt::Display for Report {
             }
             for address in &unreached.first {
                 writeln!(f, "  cell {address}")?;
+            }
+        }
+        let other = &self.other_hashes;
+        if !other.is_empty() {
+            writeln!(
+                f,
+                "value hashes that are not the ones the rules make, and that the rules name as \
+                 made with another hash of a hosted root: {}",
+                other.count
+            )?;
+            for hash in &other.first {
+                writeln!(f, "  cell {}, key {}", hash.cell, hex(&hash.key))?;
             }
         }
         writeln!(
@@ -280,4 +336,9 @@ impl fmt::Display for Report {
             phases.segments.as_secs_f64()
         )
     }
+}
+
+/// `bytes` in hexadecimal.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
