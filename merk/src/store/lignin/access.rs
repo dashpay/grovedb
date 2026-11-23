@@ -416,8 +416,9 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
 }
 
 /// The entry of a subtree as a transaction found it, where it refused a
-/// batch with one of two refusals of `lignindb::txn::BatchError`:
-/// `NotEntered` and `EnteredOtherwise`. No other refusal is told so, also
+/// batch with one of three refusals of `lignindb::txn::BatchError`:
+/// `NotEntered`, `EnteredOtherwise` and `HungOtherwise`. No other refusal
+/// is told so, also
 /// one that is of an entry: an enter of a subtree as one that is new,
 /// where the subtree is entered (`Entered`), is told as an error alone.
 ///
@@ -434,7 +435,9 @@ pub enum LigninEntryRefused {
     /// The subtree has no entry (`NotEntered`).
     NotEntered(Prefix),
     /// The subtree has an entry with another tree type or another host
-    /// than an enter if absent of the batch states (`EnteredOtherwise`).
+    /// than an enter if absent of the batch states (`EnteredOtherwise`),
+    /// or under another node than a drop of the batch names, or under
+    /// none (`HungOtherwise`).
     EnteredOtherwise(Prefix),
 }
 
@@ -443,9 +446,9 @@ fn entry_refused(error: &TxnError) -> Option<LigninEntryRefused> {
         TxnError::Batch(BatchError::NotEntered { subtree }) => {
             Some(LigninEntryRefused::NotEntered(*subtree.as_bytes()))
         }
-        TxnError::Batch(BatchError::EnteredOtherwise { subtree, .. }) => {
-            Some(LigninEntryRefused::EnteredOtherwise(*subtree.as_bytes()))
-        }
+        TxnError::Batch(
+            BatchError::EnteredOtherwise { subtree, .. } | BatchError::HungOtherwise { subtree },
+        ) => Some(LigninEntryRefused::EnteredOtherwise(*subtree.as_bytes())),
         _ => None,
     }
 }
@@ -995,8 +998,11 @@ pub(super) fn apply_batch(
     let mut written = Written::default();
     let fresh = |subtree: Subtree| {
         (batch.subtrees.iter()).any(|write| match write {
-            // A subtree that is stated anew keeps its nodes.
-            SubtreeWrite::EnterIfAbsent { .. } | SubtreeWrite::Convert { .. } => false,
+            // A subtree that is stated anew keeps its nodes, and so does
+            // one that is said not to be under a node.
+            SubtreeWrite::EnterIfAbsent { .. }
+            | SubtreeWrite::Convert { .. }
+            | SubtreeWrite::NotUnder { .. } => false,
             write => write.subtree() == subtree,
         })
     };
