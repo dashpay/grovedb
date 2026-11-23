@@ -948,10 +948,8 @@ fn the_second_of_two_applies_conflicts<E: Hatched>() {
         let loaded = (target.db)
             .load_subtree(ROOT, COUNTED, &dump[..], Some(tx), v)
             .expect("a load");
-        (target.db)
-            .replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, Some(tx), v)
-            .unwrap()
-            .expect("the element");
+        root_is_as_stated(&target.db, &loaded, Some(tx));
+        replace(&target.db, &loaded, Some(tx));
     }
     (target.db.commit_transaction(first).unwrap()).expect("the first commit");
     let error = (target.db.commit_transaction(second).unwrap()).expect_err("a conflict");
@@ -962,12 +960,14 @@ fn the_second_of_two_applies_conflicts<E: Hatched>() {
     target.close();
 }
 
-/// Two transactions each load a dump into one empty tree. The first
-/// replaces the element and commits, and only then does the second
-/// replace the element, and commit. Gives how the second commit ended,
-/// and the nodes the tree holds after it.
+/// Two transactions each load a dump into one empty tree, with no key in
+/// common, and each finds the root its dump states. The first replaces
+/// the element and commits, and only then does the second replace the
+/// element, and commit. Gives how the second commit ended, the nodes the
+/// tree holds after it, and whether its element is then the one of the
+/// first dump, and of the second.
 fn an_apply_whose_replacement_follows_the_commit_of_another<E: Hatched>(
-) -> (Result<(), crate::Error>, u64) {
+) -> (Result<(), crate::Error>, u64, [bool; 2]) {
     let v = version();
     let one = small_dump::<E>(&[b"a", b"b", b"c"]);
     let other = small_dump::<E>(&[b"x", b"y"]);
@@ -984,29 +984,58 @@ fn an_apply_whose_replacement_follows_the_commit_of_another<E: Hatched>(
     let beside = (target.db)
         .load_subtree(ROOT, COUNTED, &other[..], Some(&second), v)
         .expect("a load beside it");
-    (target.db)
-        .replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, Some(&first), v)
-        .unwrap()
-        .expect("the element");
+    assert_ne!(loaded.element, beside.element);
+    root_is_as_stated(&target.db, &loaded, Some(&first));
+    root_is_as_stated(&target.db, &beside, Some(&second));
+    replace(&target.db, &loaded, Some(&first));
     (target.db.commit_transaction(first).unwrap()).expect("the first commit");
-    (target.db)
-        .replace_subtree_root(ROOT, COUNTED, beside.element, beside.root, Some(&second), v)
-        .unwrap()
-        .expect("the element, after the commit of the other");
+    replace(&target.db, &beside, Some(&second));
     let committed = target.db.commit_transaction(second).unwrap();
     let nodes = records_of(&target.db, None);
+    let held = (target.db.get_raw(ROOT, COUNTED, None, v).unwrap()).expect("the count tree");
     target.close();
-    (committed, nodes)
+    (
+        committed,
+        nodes,
+        [held == loaded.element, held == beside.element],
+    )
+}
+
+/// The second step of an apply: the root that the loaded records give, as
+/// `through` reads them, is the root the dump states.
+fn root_is_as_stated<'db, E: Engine>(
+    db: &'db GroveDb<E>,
+    loaded: &DumpedSubtree,
+    through: TransactionArg<'db, '_, E>,
+) {
+    let made = db
+        .subtree_root_as(ROOT, COUNTED, &loaded.element, through, version())
+        .expect("the root of the loaded Merk");
+    assert_eq!(made, loaded.root);
+}
+
+/// The third step of an apply: the element of the dump takes the place of
+/// the one under `COUNTED`.
+fn replace<'db, E: Engine>(
+    db: &'db GroveDb<E>,
+    loaded: &DumpedSubtree,
+    through: TransactionArg<'db, '_, E>,
+) {
+    let element = loaded.element.clone();
+    db.replace_subtree_root(ROOT, COUNTED, element, loaded.root, through, version())
+        .unwrap()
+        .expect("the element");
 }
 
 /// On LigninDB the second apply does not commit, whenever it replaces.
 #[test]
 fn an_apply_whose_replacement_follows_another_commit_conflicts_on_lignindb() {
-    let (committed, nodes) =
+    let (committed, nodes, element_of) =
         an_apply_whose_replacement_follows_the_commit_of_another::<super::LigninEngine>();
     let error = committed.expect_err("a conflict");
     assert!(error.is_commit_conflict(), "{error:?}");
     assert_eq!(nodes, 3, "the nodes of the first apply");
+    assert_eq!(element_of, [true, false], "the element of the first apply");
 }
 
 /// On RocksDB it commits: it wrote the node of the element after the other
@@ -1015,10 +1044,11 @@ fn an_apply_whose_replacement_follows_another_commit_conflicts_on_lignindb() {
 #[cfg(feature = "rocksdb_storage")]
 #[test]
 fn an_apply_whose_replacement_follows_another_commit_commits_on_rocksdb() {
-    let (committed, nodes) =
+    let (committed, nodes, element_of) =
         an_apply_whose_replacement_follows_the_commit_of_another::<crate::RocksDbEngine>();
     committed.expect("a commit");
     assert_eq!(nodes, 5, "the nodes of both applies");
+    assert_eq!(element_of, [false, true], "the element of the second apply");
 }
 
 #[test]

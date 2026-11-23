@@ -22,12 +22,12 @@
 //!
 //! A load makes no hash of a node and does not ask whether the keys of a
 //! Merk stand as the keys of a search tree do: it writes the records the
-//! stream holds. After a load that wrote nodes or flat records, and until
-//! the replacement, the element in the parent commits to what it
-//! committed to before the load, and a LigninDB database whose loaded
-//! Merk has nodes does not pass the engine's physical check in that
-//! state. A caller that gives the three calls one transaction commits no
-//! such state. Gated behind the `unsafe-dump-load` Cargo feature.
+//! stream holds. After a load that wrote nodes or flat records under the
+//! element of an empty tree, and until the replacement, that element
+//! commits to an empty tree, and a LigninDB database whose loaded Merk
+//! has nodes does not pass the engine's physical check in that state. A
+//! caller that gives the three calls one transaction commits no such
+//! state. Gated behind the `unsafe-dump-load` Cargo feature.
 
 mod format;
 #[cfg(all(test, grovedb_test_engine))]
@@ -421,8 +421,7 @@ impl<E: Engine> GroveDb<E> {
     ///
     /// The look at the subtree is no lock. On the RocksDB engine a caller
     /// lets no other writer into the subtree from the load until the
-    /// replacement is committed: two transactions meet there only by a key
-    /// that both wrote while both were open.
+    /// replacement is committed.
     ///
     /// The load is a write of `transaction`, as an insert is: it is seen
     /// through that transaction alone until the transaction commits, and
