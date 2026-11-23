@@ -1672,3 +1672,60 @@ fn a_subtree_given_with_a_group_is_entered_only_where_it_is_absent() {
     drop(reader);
     facade.sound();
 }
+
+/// A subtree that whoever applies a batch says is not under a node keeps
+/// what it holds: a value that the batch puts again as it is is kept, and
+/// counted so, as without the statement.
+#[test]
+fn a_subtree_that_is_said_not_to_be_under_a_node_keeps_its_values() {
+    let facade = Facade::new();
+    let transaction = facade.db.begin();
+    let beside = LigninSubtree::alone([9; 32]);
+    LigninNodeStore::immediate(&transaction, beside.clone())
+        .enter(TreeType::NormalTree)
+        .expect("the subtree is entered");
+    let mut merk = open(
+        LigninNodeStore::immediate(&transaction, beside.clone()),
+        TreeType::NormalTree,
+    );
+    apply(&mut merk, &puts(5..7, 1));
+    drop(merk);
+    let again = |stated: bool| {
+        let batch = LigninBatch::new();
+        let handle = LigninNodeStore::deferred(&transaction, beside.clone(), Some(&batch));
+        let mut merk = open(handle, TreeType::NormalTree);
+        apply(&mut merk, &puts(5..7, 1));
+        drop(merk);
+        let settled = batch.settle(&transaction).unwrap();
+        let mut settled = settled.expect("a settled batch");
+        if stated {
+            settled.not_under(&beside.prefix, &[0; 32], b"node");
+        }
+        let applied = LigninSettled::apply(vec![settled], &transaction, &[]).unwrap();
+        let Ok(applied) = applied else {
+            panic!("the batch is refused");
+        };
+        (applied.values_written, applied.values_kept)
+    };
+    assert_eq!(again(false), (0, 2));
+    assert_eq!(again(true), (0, 2));
+
+    // Said of one subtree with two nodes, both are handed over: the
+    // transaction refuses a batch that names a subtree so twice.
+    let batch = LigninBatch::new();
+    let handle = LigninNodeStore::deferred(&transaction, beside.clone(), Some(&batch));
+    let mut merk = open(handle, TreeType::NormalTree);
+    apply(&mut merk, &puts(5..7, 2));
+    drop(merk);
+    let settled = batch.settle(&transaction).unwrap();
+    let mut settled = settled.expect("a settled batch");
+    settled.not_under(&beside.prefix, &[0; 32], b"node");
+    settled.not_under(&beside.prefix, &[0; 32], b"node");
+    settled.not_under(&beside.prefix, &[0; 32], b"other");
+    let refused = LigninSettled::apply(vec![settled], &transaction, &[]).unwrap();
+    let said = match refused {
+        Ok(_) => panic!("the batch is taken"),
+        Err(refused) => refused.to_string(),
+    };
+    assert!(said.contains("twice"), "{said}");
+}

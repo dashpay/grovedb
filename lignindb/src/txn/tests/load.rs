@@ -750,6 +750,66 @@ fn a_load_is_the_puts_of_its_nodes_to_the_conflict_rule() {
     assert_eq!(counted(&db), long_values(&merk) as u64);
 }
 
+/// A drop of a subtree if it is entered that takes nothing is no drop to
+/// what the transaction remembers of its looks (LD6). A transaction is
+/// shown a Merk with no root and states such a drop of another prefix;
+/// a commit beside it gives the Merk its first node; its load of the
+/// Merk is refused as a conflict (`BatchError::MerkTaken`), where the
+/// drop was stated in an operation before the load and where it is
+/// stated in the batch of the load.
+#[test]
+fn a_drop_if_entered_that_takes_nothing_forgets_no_look() {
+    for with_the_load in [false, true] {
+        let (db, versions) = Db::new(256);
+        let mut world = World::new(&db, &versions);
+        let merk = items(&mut Rng::new(31), b'q', 120, 3);
+        let idle = || OwnedSubtree::DropIfEntered {
+            subtree: model::subtree(super::store::ENTERED + 40),
+            host: (model::subtree(3), b"none".to_vec()),
+            named: false,
+        };
+        let tx = world.begin();
+        let rootless = tx.txn.subtree(model::subtree(1), |view| {
+            view.expect("the subtree is entered").root_key.is_none()
+        });
+        assert!(rootless.expect("a look"));
+        if !with_the_load {
+            let stated = OwnedBatch {
+                subtrees: vec![idle()],
+                ..OwnedBatch::default()
+            };
+            world
+                .apply(&tx, &stated)
+                .expect("a drop that takes nothing");
+        }
+        let other = world.begin();
+        let mut first = OwnedBatch::default();
+        first.merks.push(world.merk(&other, 1, |items| {
+            items.insert(b"zz-another-key".to_vec(), vec![5; 12]);
+        }));
+        world.apply(&other, &first).expect("a first node");
+        assert!(matches!(world.commit(other, &[&tx]), Outcome::Committed(_)));
+        let mut batch = OwnedBatch {
+            merks: vec![whole(1, &merk)],
+            ..OwnedBatch::default()
+        };
+        if with_the_load {
+            batch.subtrees.push(idle());
+        }
+        let refused = load(&world, &tx, &batch, &[1])
+            .map(drop)
+            .expect_err("the Merk has a root");
+        let taken = BatchError::MerkTaken {
+            subtree: model::subtree(1),
+        };
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == taken),
+            "with the load: {with_the_load}: {refused}"
+        );
+        assert!(refused.is_conflict());
+    }
+}
+
 /// Applies the load `batch` of the Merk `name` through a scope of `tx`
 /// that is laid out and merges, or, with `by_key`, through one that is
 /// open beside another and keeps its writes in the write set. Those two

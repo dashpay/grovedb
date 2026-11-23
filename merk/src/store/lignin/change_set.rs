@@ -16,8 +16,8 @@ use lignin_tree::node::NodeHandle;
 use lignindb::{
     batch::{Resolved, StagedBatch, Written as Staged},
     txn::{
-        Batch, Column, HostPut, Hosted, MerkWrite, NodePut, RecordWrite, RootPut, Subtree,
-        SubtreeWrite, TxnError, Unit, ValuePut,
+        Batch, Column, HostNode, HostPut, Hosted, MerkWrite, NodePut, RecordWrite, RootPut,
+        Subtree, SubtreeWrite, TxnError, Unit, ValuePut,
     },
 };
 
@@ -1186,8 +1186,9 @@ pub struct LigninSettled {
     /// The paths the handles of written subtrees were opened by.
     paths: BTreeMap<Prefix, Vec<Vec<u8>>>,
     /// The subtrees that whoever applies the batch dropped with it
-    /// ([`Self::drop_subtree`]).
-    drops: Vec<Subtree>,
+    /// ([`Self::drop_subtree`], [`Self::drop_under`],
+    /// [`Self::drop_if_entered`]).
+    drops: Vec<StatedDrop>,
     /// The subtrees whose writes the batch does not hand the transaction
     /// ([`Self::leave_out`]).
     left_out: BTreeSet<Subtree>,
@@ -1201,6 +1202,13 @@ pub struct LigninSettled {
     /// The subtrees that whoever applies the batch states anew with it
     /// ([`Self::state_anew`]).
     restated: Vec<SubtreeChange>,
+    /// The subtrees under which the batch removes if they are entered
+    /// ([`Self::remove_if_entered`]).
+    removing: BTreeSet<Subtree>,
+    /// The subtrees that whoever applies the batch says are not entered
+    /// under a node ([`Self::not_under`]): each with the subtree of that
+    /// node's Merk and its key.
+    not_under: Vec<(Subtree, Subtree, Vec<u8>)>,
 }
 
 /// Whether the outcome under `key` in `unit` is a record that its handle
@@ -1215,6 +1223,41 @@ fn kept_record(kept: &BTreeMap<Prefix, BTreeSet<Vec<u8>>>, unit: Unit, key: &[u8
 fn changed(change: &SubtreeChange) -> &Prefix {
     match change {
         SubtreeChange::Enter { subtree, .. } | SubtreeChange::Convert { subtree, .. } => subtree,
+    }
+}
+
+/// A drop as whoever applies a batch states it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct StatedDrop {
+    subtree: Subtree,
+    /// The node that the subtree was found under: the subtree of its Merk
+    /// and its key. A drop that names none takes whatever is entered.
+    under: Option<(Subtree, Vec<u8>)>,
+    /// The read the drop is dated at, if it is dated.
+    read: Option<NodeHandle>,
+    /// Whether the drop does nothing where the subtree is not entered
+    /// under that node.
+    if_entered: bool,
+}
+
+impl StatedDrop {
+    fn write(&self) -> SubtreeWrite<'_> {
+        let subtree = self.subtree;
+        let Some((above, key)) = &self.under else {
+            return SubtreeWrite::Drop { subtree };
+        };
+        let host = HostNode {
+            subtree: *above,
+            key,
+        };
+        match self.if_entered {
+            true => SubtreeWrite::DropIfEntered { subtree, host },
+            false => SubtreeWrite::DropUnder {
+                subtree,
+                host,
+                read: self.read,
+            },
+        }
     }
 }
 
@@ -1272,6 +1315,8 @@ impl BatchPart for LigninSettled {
     ) -> Result<Written, Error> {
         let told = self.drops.is_empty()
             && self.left_out.is_empty()
+            && self.removing.is_empty()
+            && self.not_under.is_empty()
             && self.moved.is_empty()
             && self.left_behind.is_empty();
         if self.hosts.is_empty() && told {
@@ -1340,7 +1385,18 @@ impl BatchPart for LigninSettled {
             // What is dropped with the batch leaves before anything is
             // moved, entered or written, wherever it stands among the
             // subtrees, and what is moved goes before anything is entered.
-            let drops = self.drops.iter();
+            let drops = self.drops.iter().map(StatedDrop::write);
+            // What is removed under a subtree if it is entered is said of
+            // each such subtree that the batch hands a write for.
+            let handed = |subtree: &Subtree| {
+                merks.iter().any(|merk| merk.subtree == *subtree)
+                    || records
+                        .iter()
+                        .any(|record| record.unit().subtree == *subtree)
+            };
+            let removing = (self.removing.iter())
+                .filter(|subtree| handed(subtree))
+                .map(|subtree| SubtreeWrite::RemoveIfEntered { subtree: *subtree });
             let moves = self.moved.iter().map(|moved| SubtreeWrite::Move {
                 from: moved.from,
                 to: moved.to,
@@ -1352,9 +1408,20 @@ impl BatchPart for LigninSettled {
                 read: moved.read,
                 below: &moved.below,
             });
-            let subtrees: Vec<SubtreeWrite<'_>> = drops
-                .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
+            // What the batch is said to find not under a node is held
+            // before anything of it is laid out.
+            let elsewhere = (self.not_under.iter()).map(|(subtree, above, key)| {
+                let (subtree, above) = (*subtree, *above);
+                let host = HostNode {
+                    subtree: above,
+                    key,
+                };
+                SubtreeWrite::NotUnder { subtree, host }
+            });
+            let subtrees: Vec<SubtreeWrite<'_>> = elsewhere
+                .chain(drops)
                 .chain(moves)
+                .chain(removing)
                 .chain(batch.subtrees.iter().copied())
                 .collect();
             let mut written = run(&Batch {
@@ -1442,6 +1509,8 @@ impl LigninSettled {
             kept,
             left_behind: Vec::new(),
             restated: Vec::new(),
+            removing: BTreeSet::new(),
+            not_under: Vec::new(),
         }
     }
 
@@ -1563,10 +1632,89 @@ impl LigninSettled {
     /// batch was settled with, the removals that a clear of the subtree
     /// staged among it ([`Self::leave_out`]).
     pub fn drop_subtree(&mut self, prefix: &[u8; 32]) {
-        let subtree = Subtree::new(*prefix);
-        if !self.drops.contains(&subtree) {
-            self.drops.push(subtree);
+        self.state_drop(StatedDrop {
+            subtree: Subtree::new(*prefix),
+            under: None,
+            read: None,
+            if_entered: false,
+        });
+    }
+
+    /// Drops the subtree `prefix` as [`Self::drop_subtree`] does, as the
+    /// subtree that whoever applies the batch found entered under the
+    /// node `key` of the subtree `above`
+    /// (`lignindb::txn::SubtreeWrite::DropUnder`): the transaction
+    /// refuses the batch where the subtree is entered under another node
+    /// or under none when the batch is laid out, as it does where the
+    /// subtree is not entered.
+    ///
+    /// With `dated`, the drop is dated at the read of that node, as the
+    /// handle that put or removed it first read it ([`Self::move_as`]):
+    /// a commit beside the transaction that wrote the node since refuses
+    /// the batch as a conflict. A node that no handle of the batch read
+    /// as the element of a tree gives the drop no date.
+    pub fn drop_under(&mut self, prefix: &[u8; 32], above: &[u8; 32], key: &[u8], dated: bool) {
+        let read = self.tree_reads.get(&(*above, key.to_vec()));
+        self.state_drop(StatedDrop {
+            subtree: Subtree::new(*prefix),
+            under: Some((Subtree::new(*above), key.to_vec())),
+            read: read.filter(|_| dated).map(|read| read.handle()),
+            if_entered: false,
+        });
+    }
+
+    /// Drops the subtree `prefix` with every subtree below it, with this
+    /// batch and before its other writes, if it is entered under the
+    /// node `key` of the subtree `above` when the batch is laid out
+    /// (`lignindb::txn::SubtreeWrite::DropIfEntered`). Where it is not,
+    /// nothing is dropped and nothing refused. The transaction refuses a
+    /// batch that also hands it a write for the subtree: whoever states
+    /// this leaves those out ([`Self::leave_out`]).
+    pub fn drop_if_entered(&mut self, prefix: &[u8; 32], above: &[u8; 32], key: &[u8]) {
+        self.state_drop(StatedDrop {
+            subtree: Subtree::new(*prefix),
+            under: Some((Subtree::new(*above), key.to_vec())),
+            read: None,
+            if_entered: true,
+        });
+    }
+
+    fn state_drop(&mut self, drop: StatedDrop) {
+        if !self
+            .drops
+            .iter()
+            .any(|stated| stated.subtree == drop.subtree)
+        {
+            self.drops.push(drop);
         }
+    }
+
+    /// Says that what the batch removes under the subtree `prefix` is
+    /// removed if the subtree is entered when the batch is laid out
+    /// (`lignindb::txn::SubtreeWrite::RemoveIfEntered`), and is no write
+    /// of a page, and no refusal, where it is not. The removals are keys
+    /// of the transaction's conflict rule either way. It is said of a
+    /// subtree for which the batch removes alone
+    /// ([`Self::removes_alone`]).
+    pub fn remove_if_entered(&mut self, prefix: &[u8; 32]) {
+        self.removing.insert(Subtree::new(*prefix));
+    }
+
+    /// Whether the writes that the batch holds for the subtree `prefix`
+    /// are removals alone: it puts no node and no record under it, and
+    /// states no root key for its Merk.
+    pub fn removes_alone(&self, prefix: &[u8; 32]) -> bool {
+        let subtree = Subtree::new(*prefix);
+        let mut puts = self.resolved.outcomes().filter(|outcome| outcome.is_put());
+        if puts.any(|outcome| outcome.unit.subtree == subtree) {
+            return false;
+        }
+        self.resolved.with_batch(|batch| {
+            let roots = |merk: &MerkWrite<'_>| {
+                merk.subtree == subtree && matches!(merk.root, RootPut::Set(Some(_)))
+            };
+            !batch.merks.iter().any(roots)
+        })
     }
 
     /// Says that the batch hands the transaction none of the writes it
@@ -1584,14 +1732,36 @@ impl LigninSettled {
         self.left_out.insert(Subtree::new(*prefix));
     }
 
-    /// Takes back every statement of [`Self::drop_subtree`], of
-    /// [`Self::leave_out`] and of [`Self::leave_behind`]: the batch drops
-    /// what its handles staged a drop of, hands over every write it
-    /// holds, and is applied with no mark.
+    /// Takes back every statement of [`Self::drop_subtree`],
+    /// [`Self::drop_under`], [`Self::drop_if_entered`],
+    /// [`Self::leave_out`], [`Self::remove_if_entered`],
+    /// [`Self::not_under`] and
+    /// [`Self::leave_behind`]: the batch drops what its handles staged a
+    /// drop of, hands over every write it holds as it is, and is applied
+    /// with no mark.
     pub fn forget_drops(&mut self) {
         self.drops.clear();
         self.left_out.clear();
         self.left_behind.clear();
+        self.removing.clear();
+        self.not_under.clear();
+    }
+
+    /// Says that the subtree `prefix` is not entered under the node `key`
+    /// of the subtree `above` when the batch is laid out
+    /// (`lignindb::txn::SubtreeWrite::NotUnder`): where it is, the
+    /// transaction refuses the batch as a conflict
+    /// (`lignindb::txn::BatchError::EnteredSince`). Whoever says it found
+    /// the subtree under another node, under none or not entered, and
+    /// hands a write over for it as it found it. It is no write, and can
+    /// be said in a batch that holds none for the subtree. Said of one
+    /// subtree with two nodes, both are handed to the transaction, which
+    /// refuses a batch that names a subtree so twice.
+    pub fn not_under(&mut self, prefix: &[u8; 32], above: &[u8; 32], key: &[u8]) {
+        let stated = (Subtree::new(*prefix), Subtree::new(*above), key.to_vec());
+        if !self.not_under.contains(&stated) {
+            self.not_under.push(stated);
+        }
     }
 
     /// States that what the batch is applied with leaves a record of
@@ -1819,6 +1989,14 @@ impl LigninSettled {
     /// the order they were said ([`LigninBatch::move_subtree`]).
     pub fn moves(&self) -> &[([u8; 32], [u8; 32])] {
         &self.moves
+    }
+
+    /// Whether a handle of the batch that put or removed the node `key`
+    /// of the Merk `above` first read it as the element of a tree: a drop
+    /// under that node, and a move from under it, can be dated at that
+    /// read ([`Self::drop_under`], [`Self::move_as`]).
+    pub fn read_as_tree(&self, above: &[u8; 32], key: &[u8]) -> bool {
+        self.tree_reads.contains_key(&(*above, key.to_vec()))
     }
 
     /// The subtrees that the walk of a move found none of, each with the

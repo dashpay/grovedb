@@ -105,6 +105,9 @@ fn kind(subtree: &Subtree) -> u8 {
 /// A key that no history puts a record under, in any column.
 const ABSENT: &[u8] = b"z";
 
+/// The key of a node that hosts no subtree in any history.
+const NO_HOST: &[u8] = b"y";
+
 /// The first byte of the keys that a history writes unlinked records
 /// under. No node of a tree has such a key.
 const UNLINKED: u8 = b'u';
@@ -202,6 +205,17 @@ pub(crate) struct Tally {
     pub refused_commits: u64,
     pub enters: u64,
     pub drops: u64,
+    /// Drops that name the node their subtree hangs under, and drops of
+    /// a subtree if it is entered under the node it hangs under.
+    pub drops_under: u64,
+    pub drops_if_entered: u64,
+    /// Drops of a subtree if it is entered under a node that hosts no
+    /// subtree, or of a prefix that is not entered: they take nothing.
+    pub drops_of_nothing: u64,
+    /// Batches of removals under a subtree if it is entered, and those
+    /// of them under a prefix that is not entered.
+    pub removals_if_entered: u64,
+    pub removals_of_absent: u64,
     pub clears: u64,
     /// Clears of a Merk with no node, and those of them that left a
     /// subtree entered below it.
@@ -297,6 +311,11 @@ impl Tally {
             refused_commits,
             enters,
             drops,
+            drops_under,
+            drops_if_entered,
+            drops_of_nothing,
+            removals_if_entered,
+            removals_of_absent,
             clears,
             clears_of_no_node,
             clears_that_kept,
@@ -833,9 +852,89 @@ impl<'s> Run<'s> {
         let key = self.key_of(hosts, &subtree);
         self.open(&mut draft, tx, above).remove(&key);
         self.hosts_above(&mut draft, tx, hosts, above);
-        draft.subtrees.push(OwnedSubtree::Drop(subtree));
-        draft.what = format!("drop {}", tag(&subtree));
+        // The drop names its subtree alone, or the node the subtree hangs
+        // under, or it is the drop of the subtree if it is entered under
+        // that node: the three take the same.
+        let host = (above, key);
+        let (dropped, how) = match self.rng.below(3) {
+            0 => (OwnedSubtree::Drop(subtree), "drop"),
+            1 => {
+                self.tally.drops_under += 1;
+                let read = None;
+                let dropped = OwnedSubtree::DropUnder {
+                    subtree,
+                    host,
+                    read,
+                };
+                (dropped, "drop under its node")
+            }
+            _ => {
+                self.tally.drops_if_entered += 1;
+                let named = true;
+                let dropped = OwnedSubtree::DropIfEntered {
+                    subtree,
+                    host,
+                    named,
+                };
+                (dropped, "drop if entered")
+            }
+        };
+        draft.subtrees.push(dropped);
+        draft.what = format!("{how} {}", tag(&subtree));
         self.tally.drops += 1;
+        Some(draft)
+    }
+
+    /// A drop of a subtree if it is entered that takes nothing: of a
+    /// subtree under a node that hosts none, whose key no history puts a
+    /// host under, or of a prefix that is not entered.
+    fn plan_drop_of_nothing(&mut self, hosts: &Hosts) -> Option<Draft> {
+        let hosted: Vec<Subtree> = hosts.keys().copied().collect();
+        let (subtree, above) = match self.pick(&hosted).filter(|_| self.rng.chance(60)) {
+            Some(subtree) => (subtree, hosts[&subtree]),
+            None => (self.fresh(POINTED), self.pick(&self.merks(hosts))?),
+        };
+        let mut draft = Draft::default();
+        draft.subtrees.push(OwnedSubtree::DropIfEntered {
+            subtree,
+            host: (above, NO_HOST.to_vec()),
+            named: false,
+        });
+        draft.what = format!(
+            "drop {} if entered under a node that hosts none",
+            tag(&subtree)
+        );
+        self.tally.drops_of_nothing += 1;
+        Some(draft)
+    }
+
+    /// Removals under a subtree if it is entered: of flat records of a
+    /// subtree that is entered, or of a prefix that is not.
+    fn plan_removals(&mut self, hosts: &Hosts) -> Option<Draft> {
+        let subtree = match self.pick(&self.live(hosts)).filter(|_| self.rng.chance(60)) {
+            Some(subtree) => subtree,
+            None => {
+                self.tally.removals_of_absent += 1;
+                self.fresh(BARE)
+            }
+        };
+        let column = [Column::Aux, Column::Meta][self.rng.below(2)];
+        let unit = Unit::new(column, subtree);
+        let mut draft = Draft::default();
+        let mut removed = BTreeSet::new();
+        for _ in 0..1 + self.rng.below(3) {
+            let at = self.rng.below(6) as u8;
+            if removed.insert(at) {
+                draft.records.push(delete(unit, &[b'f', at]));
+            }
+        }
+        draft.subtrees.push(OwnedSubtree::RemoveIfEntered(subtree));
+        draft.what = format!(
+            "removals under {} if entered: {}",
+            tag(&subtree),
+            told(&draft.records)
+        );
+        self.tally.removals_if_entered += 1;
         Some(draft)
     }
 
@@ -1198,9 +1297,11 @@ impl<'s> Run<'s> {
     fn write(&mut self, tx: &Tx<'s>, others: &[&Tx<'s>], who: &str) -> bool {
         let hosts = self.hosts(tx);
         let few = self.live(&hosts).len() < 14;
-        let draft = match self.rng.below(112) {
+        let draft = match self.rng.below(120) {
             100..=108 => self.plan_unlinked(tx, &hosts),
             109..=111 => self.plan_convert(tx, &hosts),
+            112..=114 => self.plan_drop_of_nothing(&hosts),
+            115..=119 => self.plan_removals(&hosts),
             0..=13 => self.plan_nodes(tx, &hosts),
             14..=23 => self.plan_flat(&hosts),
             24..=39 if few => self.plan_enter(tx, &hosts),
@@ -1627,7 +1728,15 @@ impl<'s> Run<'s> {
             (Step::Next | Step::Prev | Step::Read, None) => &Step::First,
             (step, _) => step,
         };
-        if self.rng.chance(12) && !kept.place {
+        // The read of a place fails where the committed side of the cursor
+        // changes its prefix, which a move of the cursor's subtree makes
+        // it do: there the failure is asked for more often.
+        let moved = {
+            let model = tx.model.borrow();
+            model.moves() && model.decided(&kept.hosts, kept.unit.subtree)
+        };
+        let often = if moved { 50 } else { 12 };
+        if self.rng.chance(often) && !kept.place {
             kept.place = true;
             match &mut kept.reader {
                 Reader::Flat(cursor) => cursor.refuse_place(),
@@ -2108,6 +2217,15 @@ fn histories_of_moves_clears_drops_rollbacks_and_cursors_agree_with_the_model() 
         "{tally:?}"
     );
     assert!(tally.clears_that_kept > 0, "{tally:?}");
+    assert!(
+        tally.drops_under > 20 && tally.drops_if_entered > 20,
+        "{tally:?}"
+    );
+    assert!(
+        tally.drops_of_nothing > 20 && tally.removals_if_entered > 40,
+        "{tally:?}"
+    );
+    assert!(tally.removals_of_absent > 10, "{tally:?}");
     assert!(tally.cursor_reads_behind > 300, "{tally:?}");
     assert!(
         tally.refused_beside > 10 && tally.refused_conflict > 0,

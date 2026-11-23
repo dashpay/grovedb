@@ -128,7 +128,12 @@
 //!
 //! - Where the look found the subtree and such a commit dropped it since,
 //!   the transaction refuses the drop of a subtree that is not entered
-//!   (`BatchError::NotEntered`) and takes nothing of the group. The
+//!   (`BatchError::NotEntered`) and takes nothing of the group. The drop
+//!   names the node of the element
+//!   (`lignindb::txn::SubtreeWrite::DropUnder`): where such commits
+//!   left an entry under the prefix that hangs under another node, or
+//!   under none, the transaction refuses that too
+//!   (`BatchError::HungOtherwise`). The
 //!   engine looks again by the rule of the enters
 //!   ([`Left::found_otherwise`], `Engine::apply_write_group`), and applies
 //!   the group with what that look states, which is no drop of a
@@ -190,7 +195,7 @@
 //!   group drops or clears itself, where neither that batch nor a later
 //!   one writes a node of it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
@@ -219,6 +224,9 @@ pub(super) struct Left {
     /// The subtrees that are dropped with the group. None of them is below
     /// another.
     pub(super) drops: Vec<[u8; 32]>,
+    /// The node that each of them was found entered under: the subtree
+    /// it is in, and its key.
+    pub(super) under: BTreeMap<[u8; 32], ([u8; 32], Vec<u8>)>,
     /// What is said of the elements that are written over a tree: one
     /// whose subtree is dropped and not entered again hosts nothing once
     /// the group is applied, and so does an indexed tree that names no
@@ -244,8 +252,10 @@ pub(super) struct Left {
 
 impl Left {
     /// Whether `refused` is of a subtree whose entry this look found
-    /// otherwise: no entry, for a subtree that the look found entered and
-    /// stated the drop of, or stated anew.
+    /// otherwise: no entry, or an entry under another node or under
+    /// none, for a subtree that the look found entered under the node of
+    /// its element and stated the drop of; or no entry, for a subtree
+    /// that the look found entered and stated anew.
     pub(super) fn found_otherwise(&self, refused: LigninEntryRefused) -> bool {
         let mut restated = self.restated.iter();
         match refused {
@@ -253,7 +263,7 @@ impl Left {
                 self.drops.contains(&subtree)
                     || restated.any(|(_, stated, _)| stated.prefix == subtree)
             }
-            LigninEntryRefused::EnteredOtherwise(_) => false,
+            LigninEntryRefused::EnteredOtherwise(subtree) => self.drops.contains(&subtree),
         }
     }
 
@@ -538,7 +548,10 @@ pub(super) fn left(
             let leaves = !found.drops.is_empty() || found.taken;
             let bare = leaves || found.entered > merks.len();
             let leave = (found.drops.into_iter()).filter(|prefix| !own_business(prefix));
-            dropped.extend(leave.map(|prefix| (prefix, *subtree)));
+            for prefix in leave {
+                left.under.insert(prefix, (*subtree, key.to_vec()));
+                dropped.push((prefix, *subtree));
+            }
             // A statement anew goes with the first batch that puts the
             // node of the element, as it does where the group writes
             // into the tree ([`super::enter`]).
@@ -603,6 +616,7 @@ pub(super) fn left(
                     host.is_some_and(|at| (at.subtree, at.key.as_slice()) == (*subtree, key))
                 };
                 if !own_business(&secondary) && entered(view, secondary)?.is_some_and(under) {
+                    left.under.insert(secondary, (*subtree, key.to_vec()));
                     dropped.push((secondary, *subtree));
                 }
             }
@@ -636,6 +650,7 @@ pub(super) fn left(
             }
         };
         dropped.push((own, *subtree));
+        left.under.insert(own, (*subtree, key.to_vec()));
         // The element's node hosts nothing where no Merk of the group
         // takes the place of the one that is dropped: where the subtree
         // is not entered again, and where it is entered again as a tree

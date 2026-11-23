@@ -75,10 +75,26 @@ pub(super) fn shape<C>(resolved: &Resolved<C>) -> Shape {
                     let host = host.unwrap_or_default();
                     format!("{enter} {} as {}{host}", name(*subtree), text(tree_type))
                 }
-                // A staged batch states no subtree anew.
+                // A staged batch states no subtree anew, and none of the
+                // writes that say what a look found.
                 SubtreeWrite::Convert {
                     subtree, tree_type, ..
                 } => format!("convert {} to {}", name(*subtree), text(tree_type)),
+                SubtreeWrite::DropUnder { subtree, host, .. } => {
+                    let (at, key) = (name(host.subtree), text(host.key));
+                    format!("drop {} under {at}/{key}", name(*subtree))
+                }
+                SubtreeWrite::DropIfEntered { subtree, host } => {
+                    let (at, key) = (name(host.subtree), text(host.key));
+                    format!("drop {} if under {at}/{key}", name(*subtree))
+                }
+                SubtreeWrite::RemoveIfEntered { subtree } => {
+                    format!("remove under {} if entered", name(*subtree))
+                }
+                SubtreeWrite::NotUnder { subtree, host } => {
+                    let (at, key) = (name(host.subtree), text(host.key));
+                    format!("{} not under {at}/{key}", name(*subtree))
+                }
                 SubtreeWrite::Move {
                     from,
                     to,

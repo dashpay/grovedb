@@ -485,9 +485,15 @@ impl WriteError {
     /// or the engine cannot tell whether one did ([`crate::txn`], "A kept
     /// value and the read it is of").
     ///
-    /// It is true as well for the refusal of a write that says commits
-    /// outside took away a node whose value the write keeps
-    /// ([`BatchError::ValueTaken`](crate::txn::BatchError::ValueTaken)).
+    /// It is true as well for a refusal that says commits outside are its
+    /// cause ([`BatchError::is_conflict`](crate::txn::BatchError::is_conflict)):
+    /// the refusal of a write, as the one that says commits outside took
+    /// away a node whose value the write keeps
+    /// ([`BatchError::ValueTaken`](crate::txn::BatchError::ValueTaken)),
+    /// and the refusal of a commit whose writes are not laid out over a
+    /// commit outside
+    /// ([`BatchError::EnteredSince`](crate::txn::BatchError::EnteredSince)),
+    /// which leaves the transaction open.
     /// A scope's write answers that itself, as a
     /// [`TxnError`](crate::txn::TxnError), which says the same of it
     /// ([`TxnError::is_conflict`](crate::txn::TxnError::is_conflict)).

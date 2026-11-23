@@ -31,7 +31,7 @@ use super::{
     reads::{Reads, Since},
     unlinked,
     view::{ChildKeys, FlatKinds, NodeView, SubtreeView},
-    write::{Applied, Batch, Hosted, MerkWrite, Moving, SubtreeWrite, ValuePut},
+    write::{Applied, Batch, HostNode, Hosted, MerkWrite, Moving, SubtreeWrite, ValuePut},
     write_set::{EntryId, Mark, NodeValue, Own, OwnSubtree, Restated, Said, WriteSet},
 };
 use crate::{
@@ -807,9 +807,15 @@ fn note_look(
 /// Forgets every look where `batch`, which the write set has just taken,
 /// drops, clears or moves a subtree: what leaves with such a write is the
 /// directory's to say, so a refusal of a load after it may be the
-/// transaction's own doing, and no look tells it as a conflict (LD6).
-fn forget_looks(looks: &mut HashMap<Subtree, CommitVersion>, batch: &Batch<'_>) {
-    if batch.has_leaves() || batch.moves().next().is_some() {
+/// transaction's own doing, and no look tells it as a conflict (LD6). A
+/// drop of a subtree if it is entered is such a write where it took its
+/// subtree, which `took` names, and none where it took nothing.
+fn forget_looks(looks: &mut HashMap<Subtree, CommitVersion>, batch: &Batch<'_>, took: &[Subtree]) {
+    let leaves = |write: &SubtreeWrite<'_>| match write {
+        SubtreeWrite::DropIfEntered { subtree, .. } => took.contains(subtree),
+        other => other.leaves(),
+    };
+    if batch.subtrees.iter().any(leaves) || batch.moves().next().is_some() {
         looks.clear();
     }
 }
@@ -1257,10 +1263,15 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
+        // What the batch says a subtree is not under is held first
+        // ([`SubtreeWrite::NotUnder`]), once the batch has the shape of
+        // one and its scope has its claims: where it does not hold, that
+        // is the answer, before any refusal of what the batch writes.
         let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
-            self.admit_by_key(state, batch)?;
+            self.admit_by_key(state, op, batch)?;
             return self.write_by_key(state, op, batch);
         };
+        frames.not_under(batch)?;
         // A batch that is given the tree types that keep flat records is
         // judged by the pages alone (ST1).
         if state.kinds.is_none() {
@@ -1268,6 +1279,7 @@ impl<'s> WriteTxn<'s> {
         }
         frames.kinds = state.kinds;
         Self::date_moves(&state.set, &state.reads, op.at, &mut frames, batch)?;
+        Self::date_drops(&state.set, &state.reads, op.at, frames.lease(), batch)?;
         // A value that is kept is one its writer read: when, and what the
         // commits did to its key since (CF2a).
         let kept = Kept::of(&state.set, &state.reads, op.at, frames.lease(), batch);
@@ -1297,9 +1309,12 @@ impl<'s> WriteTxn<'s> {
             Ok(applied) => {
                 let stored = frames.take_stored();
                 let (empty, left) = (frames.empty_before(), frames.left_with_moves());
-                let first = state.set.add(batch, op.at, empty, &cut, left, &stored);
+                let took = frames.took();
+                let first = state
+                    .set
+                    .add(batch, op.at, empty, &cut, left, &stored, took);
                 state.set.tell_both(frames.both);
-                forget_looks(&mut state.looks, batch);
+                forget_looks(&mut state.looks, batch, took);
                 if !kept.met.is_empty() {
                     for (offset, unit, key) in &kept.met {
                         state.set.meet_kept(first + offset, *unit, key);
@@ -1397,6 +1412,114 @@ impl<'s> WriteTxn<'s> {
         Ok(())
     }
 
+    /// Dates each drop of `batch` that names the read of the node its
+    /// subtree is entered under ([`SubtreeWrite::DropUnder`]), as a move
+    /// is dated at the read of its host ([`Self::date_moves`]). `current`
+    /// is the lease a handle of the operation's own view is of.
+    ///
+    /// The batch is refused, with nothing changed, where a commit
+    /// outside the transaction wrote that node's key since the read, or
+    /// may have ([`BatchError::ValueTaken`]). No date is needed where
+    /// the transaction gave the node its value itself: its newest write
+    /// under the node's key is the node with a value that it stated, in
+    /// that write or in one before it whose value the later writes keep,
+    /// or a removal, or a flat record.
+    fn date_drops(
+        set: &WriteSet,
+        reads: &Reads,
+        at: CommitVersion,
+        current: Lease,
+        batch: &Batch<'_>,
+    ) -> Result<(), TxnError> {
+        for write in batch.subtrees {
+            let SubtreeWrite::DropUnder {
+                host,
+                read: Some(read),
+                ..
+            } = write
+            else {
+                continue;
+            };
+            let unit = Unit::data(host.subtree);
+            if read.lease() == current
+                || reads.since(read.lease(), at, unit, host.key) == Since::Unwritten
+            {
+                continue;
+            }
+            let own = match set.own(unit, host.key) {
+                Own::Unwritten => false,
+                Own::Node(id) => set.states_value(id),
+                Own::Deleted | Own::Put(_) => true,
+            };
+            if !own {
+                let subtree = host.subtree;
+                return Err(BatchError::ValueTaken { subtree }.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the transaction has `subtree` entered under the node
+    /// `host`, by what its write set says over the committed version that
+    /// `op` reads ([`Self::said`]).
+    fn hangs_under(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        subtree: Subtree,
+        host: HostNode<'_>,
+    ) -> Result<bool, TxnError> {
+        self.said(state, op, subtree, |view| {
+            let at = view.and_then(|view| view.host);
+            at.is_some_and(|at| at.subtree == host.subtree && at.key == host.key)
+        })
+    }
+
+    /// What `batch` states of subtrees as a whole where it is taken by
+    /// key, and the subtrees that its drops of a subtree if it is entered
+    /// take ([`SubtreeWrite::DropIfEntered`]), or `None` for a batch that
+    /// states nothing which is judged where it is laid out
+    /// ([`Batch::is_judged`]).
+    ///
+    /// Nothing is held against the directory by key: a drop that names a
+    /// node is a drop, and what is removed under a subtree if it is
+    /// entered is taken as it is stated. A drop of a subtree if it is
+    /// entered is a drop where the transaction has the subtree entered
+    /// under the node it names ([`Self::said`]), and nothing otherwise.
+    /// A statement that a subtree is not entered under a node
+    /// ([`SubtreeWrite::NotUnder`]) was held to that before the batch
+    /// came here ([`Self::admit_by_key`]), and is nothing more.
+    #[allow(clippy::type_complexity)]
+    fn judged_by_key<'b>(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'b>,
+    ) -> Result<Option<(Vec<SubtreeWrite<'b>>, Vec<Subtree>)>, TxnError> {
+        if !batch.is_judged() {
+            return Ok(None);
+        }
+        let mut took = Vec::new();
+        let mut subtrees = Vec::with_capacity(batch.subtrees.len());
+        for write in batch.subtrees {
+            match *write {
+                SubtreeWrite::DropUnder { subtree, .. } => {
+                    subtrees.push(SubtreeWrite::Drop { subtree });
+                }
+                SubtreeWrite::DropIfEntered { subtree, host } => {
+                    if self.hangs_under(state, op, subtree, host)? {
+                        subtrees.push(SubtreeWrite::Drop { subtree });
+                        took.push(subtree);
+                    }
+                }
+                SubtreeWrite::RemoveIfEntered { .. } => {}
+                SubtreeWrite::NotUnder { .. } => {}
+                _ => subtrees.push(*write),
+            }
+        }
+        Ok(Some((subtrees, took)))
+    }
+
     /// Why a read or a write is not answered for where a move decides:
     /// where a commit has met a write of the transaction, that is a
     /// conflict ([`BatchError::MovedByKey`]); where its writes cannot be
@@ -1490,7 +1613,13 @@ impl<'s> WriteTxn<'s> {
     /// - the write set holds a move and the batch drops or clears a
     ///   subtree, whichever one: what such a write takes is asked of the
     ///   committed directory and of the transaction's own enters
-    ///   ([`ByKey`]), and those do not have a moved subtree where it is;
+    ///   ([`ByKey`]), and those do not have a moved subtree where it is.
+    ///   A drop of a subtree if it is entered
+    ///   ([`SubtreeWrite::DropIfEntered`]) is such a drop where the
+    ///   transaction has the subtree entered under the node the drop
+    ///   names ([`Self::hangs_under`]), and no drop where it has not: it
+    ///   is asked last, of a subtree that the next rule found no move to
+    ///   decide;
     /// - or the batch writes or reads a subtree that a move decides
     ///   ([`Self::refuse_moved`]): one it changes, puts a record under,
     ///   enters, states anew, enters a subtree under, or names as one
@@ -1499,8 +1628,9 @@ impl<'s> WriteTxn<'s> {
     /// The refusal is that of [`Self::unlaid`]. Where that is
     /// [`BatchError::MovedByKey`] or [`BatchError::MoveBeside`], it names
     /// the first subtree in that order: the prefix the first move takes a
-    /// subtree from, the first subtree that is dropped or cleared, or the
-    /// written subtree. The refusal of a layout that stopped is that
+    /// subtree from, the first subtree that is dropped or cleared, the
+    /// written subtree, or the first subtree that a drop if entered would
+    /// take. The refusal of a layout that stopped is that
     /// layout's own, as it is. It is asked before the batch takes a claim
     /// (SC3) and
     /// before it is judged by what the write set holds
@@ -1522,8 +1652,15 @@ impl<'s> WriteTxn<'s> {
         if !state.set.has_moves() {
             return Ok(());
         }
-        if let Some(first) = batch.leaving().first() {
-            return Err(self.unlaid(state, &op.guard, *first));
+        fn if_entered<'b>(write: &SubtreeWrite<'b>) -> Option<(Subtree, HostNode<'b>)> {
+            match *write {
+                SubtreeWrite::DropIfEntered { subtree, host } => Some((subtree, host)),
+                _ => None,
+            }
+        }
+        let mut leaves = batch.subtrees.iter().filter(|write| write.leaves());
+        if let Some(first) = leaves.find(|write| if_entered(write).is_none()) {
+            return Err(self.unlaid(state, &op.guard, first.subtree()));
         }
         let merks = batch.merks.iter().map(|merk| merk.subtree);
         let records = batch.records.iter().map(|record| record.unit().subtree);
@@ -1545,6 +1682,11 @@ impl<'s> WriteTxn<'s> {
             .collect();
         for subtree in written {
             self.guard_moved(state, op, who, subtree)?;
+        }
+        for (subtree, host) in batch.subtrees.iter().filter_map(if_entered) {
+            if self.hangs_under(state, op, subtree, host)? {
+                return Err(self.unlaid(state, &op.guard, subtree));
+            }
         }
         Ok(())
     }
@@ -1893,7 +2035,22 @@ impl<'s> WriteTxn<'s> {
     /// ([`WriteSet::admits`]): by key nothing asks the tree type of a
     /// subtree. The refusal is that of [`Self::kinds_by_key`]. Nothing is
     /// added to the write set here.
-    fn admit_by_key(&self, state: &State<'s>, batch: &Batch<'_>) -> Result<(), TxnError> {
+    ///
+    /// Before that, the batch is held to what it says a subtree is not
+    /// under ([`SubtreeWrite::NotUnder`]): where the transaction has the
+    /// subtree under that node ([`Self::hangs_under`]), the batch is
+    /// refused for it ([`BatchError::EnteredSince`]).
+    fn admit_by_key(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'_>,
+    ) -> Result<(), TxnError> {
+        for (subtree, host) in batch.not_under() {
+            if self.hangs_under(state, op, subtree, host)? {
+                return Err(BatchError::EnteredSince { subtree }.into());
+            }
+        }
         let admitted = state.set.admits(batch);
         admitted.map_err(|refused| Self::kinds_by_key(state, refused))
     }
@@ -1927,6 +2084,19 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
+        // The lease a handle of this operation's view is of: the frames',
+        // for a scope that keeps its writes in the write set beside them.
+        let current = (state.frames.as_ref()).map_or(state.lease, |frames| frames.tree.lease());
+        Self::date_drops(&state.set, &state.reads, op.at, current, batch)?;
+        // What the batch states of a subtree as its writer found it is
+        // taken by key as it is here, and judged where it is laid out.
+        let judged = self.judged_by_key(state, op, batch)?;
+        let stated = batch;
+        let took = judged.as_ref().map_or(&[][..], |(_, took)| took);
+        let batch = &match &judged {
+            Some((subtrees, _)) => Batch { subtrees, ..*batch },
+            None => *batch,
+        };
         // What a drop or a clear takes with it is the directory's to say,
         // which the frames have: by key a load is taken beside neither
         // (LD6).
@@ -1946,9 +2116,6 @@ impl<'s> WriteTxn<'s> {
                 return Err(Self::kinds_by_key(state, BatchError::NotFlat { unit }));
             }
         }
-        // The lease a handle of this operation's view is of: the frames',
-        // for a scope that keeps its writes in the write set beside them.
-        let current = (state.frames.as_ref()).map_or(state.lease, |frames| frames.tree.lease());
         let read = Kept::of(&state.set, &state.reads, op.at, current, batch);
         let mut kept = Vec::new();
         let mut empty = Vec::with_capacity(batch.merks.len());
@@ -2040,8 +2207,10 @@ impl<'s> WriteTxn<'s> {
             state.renew_lease();
             state.lease_at = Some(op.at);
         }
-        let first = state.set.add(batch, op.at, &empty, &cut, &[], &stored);
-        forget_looks(&mut state.looks, batch);
+        let first = state
+            .set
+            .add(stated, op.at, &empty, &cut, &[], &stored, took);
+        forget_looks(&mut state.looks, batch, took);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
         }
@@ -2445,9 +2614,9 @@ impl<'s> WriteTxn<'s> {
         let looked = state.looks.get(&subtree);
         if !looked.is_some_and(|looked| *looked < op.at)
             || !batch.merks.iter().any(loads)
-            || batch.has_leaves()
             || batch.moves().next().is_some()
             || state.set.states_root(&subtree).is_some()
+            || self.leaves_now(state, op, batch)
         {
             return error;
         }
@@ -2455,6 +2624,19 @@ impl<'s> WriteTxn<'s> {
             true => BatchError::MerkTaken { subtree }.into(),
             false => error,
         }
+    }
+
+    /// Whether `batch` drops or clears a subtree as the transaction has
+    /// the subtrees now: a drop of a subtree if it is entered counts
+    /// where the subtree hangs under the node it names
+    /// ([`Self::hangs_under`]), and where the read that would tell fails.
+    fn leaves_now(&self, state: &mut State<'s>, op: &Op<'s>, batch: &Batch<'_>) -> bool {
+        batch.subtrees.iter().any(|write| match *write {
+            SubtreeWrite::DropIfEntered { subtree, host } => {
+                (self.hangs_under(state, op, subtree, host)).unwrap_or(true)
+            }
+            _ => write.leaves(),
+        })
     }
 
     /// Whether the committed version that `op` reads is why a load into
@@ -3080,6 +3262,14 @@ impl<'s> WriteTxn<'s> {
                 Ok(_) => TxnError::Damaged("frames that could not be made are made"),
             });
         };
+        if state.set.writes_nothing() {
+            // Its drops if entered took nothing where they were laid out
+            // just now, and it has no other write: it commits nothing
+            // (CV2).
+            drop(frames);
+            state.end();
+            return Ok(Sealed::Empty);
+        }
         let keys = state.set.key_set();
         let pin = state.base.take();
         // The hold on the values of its loads goes to the commit, which

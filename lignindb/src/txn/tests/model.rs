@@ -17,8 +17,8 @@ use lignin_tree::{hash::Stale, node::NodeHandle};
 pub use super::store::hash_of;
 use super::store::{mix, Rng};
 use crate::txn::{
-    Batch, Column, Entering, HostPut, Hosted, LinkPut, MerkWrite, NodePut, NodeView, RecordWrite,
-    RootPut, Scope, Subtree, SubtreeWrite, TxnError, Unit, ValuePut,
+    Batch, Column, Entering, HostNode, HostPut, Hosted, LinkPut, MerkWrite, NodePut, NodeView,
+    RecordWrite, RootPut, Scope, Subtree, SubtreeWrite, TxnError, Unit, ValuePut,
 };
 
 pub fn subtree(name: u8) -> Subtree {
@@ -278,6 +278,7 @@ pub fn hosted(hosts: &mut Hosts, write: &Write) {
     match write {
         Write::Enter(subtree, Some(host)) => drop(hosts.insert(*subtree, *host)),
         Write::Enter(subtree, None) => drop(hosts.remove(subtree)),
+        Write::Leave(left) if left.idle => {}
         Write::Leave(left) => {
             for below in &left.below {
                 hosts.remove(below);
@@ -313,7 +314,7 @@ pub fn hosted(hosts: &mut Hosts, write: &Write) {
 /// the clear of one above it keeps the entry it has.
 pub fn stored(entries: &mut Hosts, write: &Write) {
     match write {
-        Write::Leave(left) if left.cleared => {}
+        Write::Leave(left) if left.cleared || left.idle => {}
         Write::Leave(left) => drop(entries.remove(&left.subtree)),
         other => hosted(entries, other),
     }
@@ -357,9 +358,45 @@ pub struct Left {
     /// its own: for such a batch the two can count the overlap
     /// differently, by which of its drops and clears a commit meets.
     pub cut: Vec<Subtree>,
+    /// For a drop of the subtree if it is entered under a node
+    /// (`SubtreeWrite::DropIfEntered`): the subtree that node is in, and
+    /// whether the node is the one that hosts the subtree where a node of
+    /// that subtree hosts it. The model keeps no key of a host: whoever
+    /// states the write says whether the key it names is that one.
+    pub under: Option<(Subtree, bool)>,
+    /// Whether the write took nothing in the operation that stated it: a
+    /// drop of a subtree if it is entered that found the subtree not
+    /// entered, or under another node (`World::note`). It is no write of
+    /// the transaction then: it takes no record, and no commit meets it.
+    pub idle: bool,
+    /// For such a write: whether the subtree hangs under the node where
+    /// the writes of the transaction were last laid out
+    /// ([`Self::lay`]). A commit beside the transaction entered it there
+    /// since, and that layout is refused
+    /// (`BatchError::EnteredSince`).
+    pub since: bool,
 }
 
 impl Left {
+    /// A drop of `subtree`, or a clear of it.
+    pub fn of(subtree: Subtree, cleared: bool) -> Self {
+        Self {
+            subtree,
+            cleared,
+            below: Vec::new(),
+            cut: Vec::new(),
+            under: None,
+            idle: false,
+            since: false,
+        }
+    }
+
+    /// Whether the subtree hangs under the node that a drop of it if it
+    /// is entered names, where the subtrees hang as `hosts` has them.
+    pub fn hung(&self, hosts: &Hosts) -> bool {
+        (self.under).is_some_and(|(above, named)| named && hosts.get(&self.subtree) == Some(&above))
+    }
+
     /// Works out what the write takes below its subtree, where the
     /// subtrees hang as `hosts` has them and the records are `records`:
     /// every subtree below it, and none for a clear of a Merk that has no
@@ -374,6 +411,13 @@ impl Left {
     /// first is what a transaction that a commit has met answers by
     /// (WT7b). It says whether the Merk has a node.
     pub fn lay(&mut self, hosts: &Hosts, records: &Records, said: Option<bool>) -> bool {
+        if self.idle {
+            // A drop of the subtree if it is entered that took nothing
+            // when it was stated takes nothing.
+            self.since = self.hung(hosts);
+            self.below = Vec::new();
+            return false;
+        }
         let data = Unit::data(self.subtree);
         let of_merk = records.range((data, Vec::new())..);
         let mut nodes = of_merk
@@ -405,21 +449,29 @@ impl Left {
         below && !self.own(unit) && !self.cut.contains(&unit.subtree)
     }
 
-    /// Whether `unit` is one the write takes of its own subtree: every
-    /// column of a drop, and the data of a clear.
-    fn own(&self, unit: Unit) -> bool {
+    /// Whether `unit` is one of the write's own subtree that a write of
+    /// its kind takes: every column for a drop, and the data for a clear.
+    fn names_own(&self, unit: Unit) -> bool {
         match self.cleared {
             true => unit == Unit::data(self.subtree),
             false => unit.subtree == self.subtree,
         }
     }
 
+    /// Whether `unit` is one the write takes of its own subtree: every
+    /// column of a drop, and the data of a clear. A write that takes
+    /// nothing where it is laid out takes none.
+    fn own(&self, unit: Unit) -> bool {
+        !self.idle && self.names_own(unit)
+    }
+
     /// Whether the write deletes every key of `unit`: a unit of its own,
     /// one of a subtree below, and one of a subtree that it cut when it
-    /// was stated, wherever that one hangs since.
+    /// was stated, wherever that one hangs since. A write that takes
+    /// nothing where it is laid out deletes none.
     fn takes(&self, unit: Unit) -> bool {
         let below = |subtrees: &[Subtree]| subtrees.contains(&unit.subtree);
-        self.own(unit) || below(&self.below) || below(&self.cut)
+        !self.idle && (self.names_own(unit) || below(&self.below) || below(&self.cut))
     }
 
     /// Whether the write meets every write of `unit` (CF5): it deletes
@@ -511,6 +563,10 @@ impl Write {
             (Self::Move(moved), Self::Move(other)) => {
                 moved.covered().any(|covered| other.covers(covered))
             }
+            // A drop of a subtree if it is entered that took nothing
+            // when it was stated is no write: of its transaction's write
+            // set, and of its commit.
+            (_, Self::Leave(left)) | (Self::Leave(left), _) if left.idle => false,
             // A commit that moved subtrees, and a drop or a clear of the
             // transaction: what that takes below its subtree is the
             // model's to say.
@@ -869,6 +925,7 @@ impl TxnModel {
         let wrote = writes.iter().flat_map(|write| match write {
             Write::Enter(..) | Write::Stated(_) => Vec::new(),
             Write::Move(moved) => moved.covered().collect(),
+            Write::Leave(left) if left.idle => Vec::new(),
             Write::Leave(left) => {
                 let own = std::iter::once(left.subtree);
                 own.chain(left.cut.iter().copied()).collect()
@@ -880,6 +937,9 @@ impl TxnModel {
             let Write::Leave(left) = own else {
                 continue;
             };
+            if left.idle {
+                continue;
+            }
             let under = below(stored, left.subtree);
             if *first_write < version && wrote.iter().any(|subtree| under.contains(subtree)) {
                 *met = true;
@@ -937,10 +997,16 @@ impl TxnModel {
     }
 
     /// Whether a move of the transaction is not made over the committed
-    /// state it was last laid out over ([`Moved::stopped`]): the refusals
-    /// of a layout that the model tells.
+    /// state it was last laid out over ([`Moved::stopped`]), or a
+    /// subtree hangs there under a node that a drop of it if it is
+    /// entered found nothing under ([`Left::since`]): the refusals of a
+    /// layout that the model tells.
     pub fn stopped(&self) -> bool {
-        (self.writes.iter()).any(|(write, ..)| matches!(write, Write::Move(moved) if moved.stopped))
+        (self.writes.iter()).any(|(write, ..)| match write {
+            Write::Move(moved) => moved.stopped,
+            Write::Leave(left) => left.since,
+            _ => false,
+        })
     }
 }
 
@@ -961,6 +1027,7 @@ impl Said {
     pub fn take(&mut self, roots: &[(usize, Subtree, bool)], at: usize, write: &Write) {
         match write {
             Write::Enter(subtree, _) => drop(self.0.insert(*subtree, false)),
+            Write::Leave(left) if left.idle => {}
             Write::Leave(left) => {
                 for subtree in std::iter::once(&left.subtree).chain(&left.cut) {
                     self.0.insert(*subtree, false);
@@ -1063,6 +1130,34 @@ pub enum OwnedSubtree {
     /// write found the subtree entered, and its records are those it had.
     EnterIfAbsent(Subtree, Option<(Subtree, Vec<u8>, u8)>),
     Drop(Subtree),
+    /// Drops the subtree as the one that is entered under the node with
+    /// the key `host.1` of the subtree `host.0`, dated at `read` where
+    /// one is given. To the model it is a drop: a batch that the engine
+    /// refuses for the node it names is no write of the model.
+    DropUnder {
+        subtree: Subtree,
+        host: (Subtree, Vec<u8>),
+        read: Option<NodeHandle>,
+    },
+    /// Drops the subtree if it is entered under the node with the key
+    /// `host.1` of the subtree `host.0`. `named` says whether that key is
+    /// the one the subtree hangs under where a node of `host.0` hosts it
+    /// ([`Left::under`]).
+    DropIfEntered {
+        subtree: Subtree,
+        host: (Subtree, Vec<u8>),
+        named: bool,
+    },
+    /// What the batch removes under the subtree is removed if the subtree
+    /// is entered. The model keeps nothing of it: a removal is a write of
+    /// its key, and takes a record where the model has one.
+    RemoveIfEntered(Subtree),
+    /// The subtree is not entered under the node with the key `host.1` of
+    /// the subtree `host.0`. The model keeps nothing of it.
+    NotUnder {
+        subtree: Subtree,
+        host: (Subtree, Vec<u8>),
+    },
     Clear(Subtree),
     /// States the subtree anew: its tree type and, where one is given, its
     /// position among the subtrees of its host. The model keeps neither.
@@ -1154,17 +1249,22 @@ impl OwnedBatch {
     /// leaves or moves is the model's to say (`World::apply`).
     pub fn writes(&self) -> Vec<Write> {
         let leaving = self.subtrees.iter().filter_map(|subtree| {
-            let (subtree, cleared) = match subtree {
-                OwnedSubtree::Drop(subtree) => (*subtree, false),
-                OwnedSubtree::Clear(subtree) => (*subtree, true),
+            let left = match subtree {
+                OwnedSubtree::Drop(subtree) | OwnedSubtree::DropUnder { subtree, .. } => {
+                    Left::of(*subtree, false)
+                }
+                OwnedSubtree::Clear(subtree) => Left::of(*subtree, true),
+                OwnedSubtree::DropIfEntered {
+                    subtree,
+                    host,
+                    named,
+                } => Left {
+                    under: Some((host.0, *named)),
+                    ..Left::of(*subtree, false)
+                },
                 _ => return None,
             };
-            Some(Write::Leave(Left {
-                subtree,
-                cleared,
-                below: Vec::new(),
-                cut: Vec::new(),
-            }))
+            Some(Write::Leave(left))
         });
         let entered = self.subtrees.iter().filter_map(|subtree| match subtree {
             OwnedSubtree::Enter(subtree, host) | OwnedSubtree::EnterIfAbsent(subtree, host) => {
@@ -1332,6 +1432,35 @@ impl OwnedBatch {
                     entering.write()
                 }
                 OwnedSubtree::Drop(subtree) => SubtreeWrite::Drop { subtree: *subtree },
+                OwnedSubtree::DropUnder {
+                    subtree,
+                    host,
+                    read,
+                } => SubtreeWrite::DropUnder {
+                    subtree: *subtree,
+                    host: HostNode {
+                        subtree: host.0,
+                        key: &host.1,
+                    },
+                    read: *read,
+                },
+                OwnedSubtree::DropIfEntered { subtree, host, .. } => SubtreeWrite::DropIfEntered {
+                    subtree: *subtree,
+                    host: HostNode {
+                        subtree: host.0,
+                        key: &host.1,
+                    },
+                },
+                OwnedSubtree::RemoveIfEntered(subtree) => {
+                    SubtreeWrite::RemoveIfEntered { subtree: *subtree }
+                }
+                OwnedSubtree::NotUnder { subtree, host } => SubtreeWrite::NotUnder {
+                    subtree: *subtree,
+                    host: HostNode {
+                        subtree: host.0,
+                        key: &host.1,
+                    },
+                },
                 OwnedSubtree::Clear(subtree) => SubtreeWrite::Clear { subtree: *subtree },
                 OwnedSubtree::Convert(subtree, tree_type, position) => SubtreeWrite::Convert {
                     subtree: *subtree,

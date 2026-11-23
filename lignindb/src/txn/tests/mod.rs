@@ -14,6 +14,7 @@ mod handles;
 mod hashes;
 mod histories;
 pub(crate) mod load;
+mod looks;
 mod moves;
 mod parked;
 pub(crate) mod random;
@@ -177,6 +178,9 @@ impl<'s> World<'s> {
             if let Write::Leave(left) = &mut write {
                 // A drop names one subtree: what is below it goes too, and
                 // what the transaction had written there is covered.
+                // A drop of a subtree if it is entered is a write of the
+                // transaction where it takes the subtree here.
+                left.idle = left.under.is_some() && !left.hung(&hosts);
                 let rooted = left.lay(&hosts, &records, said.0.get(&left.subtree).copied());
                 if left.cleared && !rooted {
                     bare.push(model.writes.len());
@@ -255,7 +259,11 @@ impl<'s> World<'s> {
     pub(crate) fn commit_of(&mut self, tx: &Tx<'s>, others: &[&Tx<'s>]) -> Outcome {
         let outcome = self.db.commit(self.versions, &tx.txn).expect("a commit");
         let model = tx.model.take();
-        let expected = match (model.writes.is_empty(), model.conflicts()) {
+        // A drop of a subtree if it is entered that took nothing is no
+        // write: a transaction of such drops alone commits nothing (CV2).
+        let idle = |write: &Write| matches!(write, Write::Leave(left) if left.idle);
+        let nothing = model.writes.iter().all(|(write, ..)| idle(write));
+        let expected = match (nothing, model.conflicts()) {
             (true, _) => Outcome::Empty,
             (false, true) => Outcome::Conflict,
             (false, false) => {

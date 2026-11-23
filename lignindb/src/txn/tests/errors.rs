@@ -916,6 +916,9 @@ fn every_error_says_what_it_is() {
         BatchError::TreeTypeTooLong { subtree, len: 256 },
         BatchError::MerkTaken { subtree },
         BatchError::LoadBeside { subtree },
+        BatchError::HungOtherwise { subtree },
+        BatchError::EnteredSince { subtree },
+        BatchError::IfEntered { subtree },
     ];
     let faults = [
         WholeFault::HasRoot,

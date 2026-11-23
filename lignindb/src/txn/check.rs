@@ -32,6 +32,11 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// that says it is the whole Merk and has a node is one the bulk loader
 /// can lay out ([`whole`], [`load_order`]).
 ///
+/// Of what it states of a subtree if the subtree is entered
+/// ([`if_entered`]): that it states nothing else of a subtree that it
+/// drops if it is entered and writes nothing under it, and that it puts
+/// nothing under a subtree that it removes under if it is entered.
+///
 /// Of its moves: that no prefix is named twice as one a subtree is taken
 /// from, and none twice as one a subtree is brought to; that the batch
 /// puts the node each move states as the host, and names the new prefix
@@ -53,7 +58,8 @@ pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError>
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
     let (mut entered, mut left) = (HashSet::new(), HashSet::new());
-    let mut stated = HashSet::new();
+    let (mut stated, mut removing) = (HashSet::new(), HashSet::new());
+    let mut guarded = HashSet::new();
     let (mut sources, mut targets) = (HashSet::new(), HashSet::new());
     for moving in batch.moves() {
         let twice = |subtree| Err(BatchError::SubtreeTwice { subtree });
@@ -97,7 +103,8 @@ pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError>
         }
         let subtree = write.subtree();
         // A drop makes room where a subtree is moved to.
-        let makes_room = matches!(write, SubtreeWrite::Drop { .. }) && !sources.contains(&subtree);
+        let drops = write.leaves() && !matches!(write, SubtreeWrite::Clear { .. });
+        let makes_room = drops && !sources.contains(&subtree);
         if named(&subtree) && !makes_room {
             return match write {
                 SubtreeWrite::Convert { .. } => Err(BatchError::ConvertMoved { subtree }),
@@ -108,6 +115,8 @@ pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError>
         let once = match (enter, write) {
             (Some(_), _) => entered.insert(subtree),
             (None, SubtreeWrite::Convert { .. }) => stated.insert(subtree),
+            (None, SubtreeWrite::RemoveIfEntered { .. }) => removing.insert(subtree),
+            (None, SubtreeWrite::NotUnder { .. }) => guarded.insert(subtree),
             (None, _) => left.insert(subtree),
         };
         if !once {
@@ -197,6 +206,7 @@ pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError>
         }
         load_order(batch)?;
     }
+    if_entered(batch, &entered, &removing)?;
     for record in batch.records {
         let unit = record.unit();
         if unit.column == Column::Data && merks.contains(&unit.subtree) && !laid_out {
@@ -212,6 +222,55 @@ pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError>
             }
             RecordWrite::Delete { unit, key } => once(&mut keys, unit, key)?,
             RecordWrite::DeleteRange { .. } => {}
+        }
+    }
+    Ok(())
+}
+
+/// Checks what `batch` states of a subtree if the subtree is entered.
+///
+/// A subtree that it drops if it is entered
+/// ([`SubtreeWrite::DropIfEntered`]) is not among `entered`, the
+/// subtrees it enters, and the batch holds no change set and no record
+/// of it. Under a subtree of
+/// `removing`, those it removes under if they are entered
+/// ([`SubtreeWrite::RemoveIfEntered`]), it puts no node and no record
+/// and states no root key, and no change set of the batch is a whole
+/// Merk then.
+fn if_entered(
+    batch: &Batch<'_>,
+    entered: &HashSet<Subtree>,
+    removing: &HashSet<Subtree>,
+) -> Result<(), BatchError> {
+    let refused = |subtree| Err(BatchError::IfEntered { subtree });
+    let written = |subtree: &Subtree| {
+        batch.merks.iter().any(|merk| merk.subtree == *subtree)
+            || (batch.records.iter()).any(|record| record.unit().subtree == *subtree)
+    };
+    for write in batch.subtrees {
+        let SubtreeWrite::DropIfEntered { subtree, .. } = write else {
+            continue;
+        };
+        if entered.contains(subtree) || written(subtree) {
+            return refused(*subtree);
+        }
+    }
+    let Some(first) = removing.iter().next() else {
+        return Ok(());
+    };
+    if batch.merks.iter().any(is_load) {
+        return refused(*first);
+    }
+    for merk in batch.merks {
+        let puts = !merk.nodes.is_empty() || matches!(merk.root, RootPut::Set(Some(_)));
+        if puts && removing.contains(&merk.subtree) {
+            return refused(merk.subtree);
+        }
+    }
+    for record in batch.records {
+        let subtree = record.unit().subtree;
+        if matches!(record, RecordWrite::Put { .. }) && removing.contains(&subtree) {
+            return refused(subtree);
         }
     }
     Ok(())
