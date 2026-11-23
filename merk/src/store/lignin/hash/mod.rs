@@ -52,7 +52,10 @@
 //!
 //! The root hash of a hosted Merk is what the tree layer hands the rule
 //! for each Merk the cell hosts, by position: the primary Merk first, then
-//! the secondaries in the order the element lists them. A hosted Merk with
+//! the secondaries in the order the element lists them. An axis that the
+//! element lists twice, as a batch on `GROVE_V4` can write one, is one
+//! Merk: the cell hosts it once, at the position of the first listing,
+//! and each listing has its root hash. A hosted Merk with
 //! no root has the hash of an empty Merk, `NULL_HASH`, and so has a
 //! position the cell has no pointer for: a cell points at the root of
 //! every Merk it hosts that has one (`tree-layout.md` C3, `tree-page.md`
@@ -454,9 +457,19 @@ impl<'v> MerkHashRules<'v> {
             ValueHash::IndexedByAxes => {
                 let element = self.element(value)?;
                 let axes = element.axes().unwrap_or_default();
-                hosts(1 + axes.len())?;
-                let axes: Vec<(u8, CryptoHash)> = (axes.iter().enumerate())
-                    .map(|(at, (tag, _))| (*tag, *root(1 + at)))
+                // An axis that the element names twice is one Merk, which
+                // the cell hosts once, at the place of its first naming:
+                // each naming has the root of that Merk.
+                let mut named: Vec<u8> = Vec::with_capacity(axes.len());
+                for (tag, _) in axes {
+                    if !named.contains(tag) {
+                        named.push(*tag);
+                    }
+                }
+                hosts(1 + named.len())?;
+                let place = |tag: &u8| named.iter().position(|known| known == tag);
+                let axes: Vec<(u8, CryptoHash)> = (axes.iter())
+                    .map(|(tag, _)| (*tag, *root(1 + place(tag).unwrap_or(named.len()))))
                     .collect();
                 let own = value_hash(value).unwrap_add_cost(&mut cost);
                 let digest = axes_digest(&axes).unwrap_add_cost(&mut cost);

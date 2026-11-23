@@ -657,6 +657,54 @@ fn the_value_hash_of_a_tree_with_axes_is_combined_with_the_digest_of_their_roots
     }
 }
 
+/// An element can list an axis twice: a batch on `GROVE_V4` that makes an
+/// indexed tree and fills it does not check its axes. Such an axis has
+/// one secondary. The cell hosts it once, at the position of its first
+/// listing, and each listing has the root of that Merk in the digest. A
+/// cell that hosts a Merk for the second listing too is refused.
+#[test]
+fn an_axis_that_an_element_lists_twice_is_one_merk_of_the_cell() {
+    let (primary, count, sum) = ([0x33; 32], [0x41; 32], [0x42; 32]);
+    let listed = |axes: Vec<(u8, Option<Vec<u8>>)>, roots: &[(u8, CryptoHash)]| {
+        let element = Element::ProvableCountProvableSumIndexedTree(None, 0, 0, axes, None);
+        let value = bytes(&element);
+        let expected = KV::new_with_layered_value_hash_three(
+            vec![1],
+            value.clone(),
+            3,
+            primary,
+            axes_digest(roots).unwrap(),
+            TreeFeatureType::BasicMerkNode,
+        );
+        (value, *expected.unwrap().value_hash())
+    };
+
+    // The count axis, twice.
+    let (value, expected) = listed(vec![(0, None), (0, None)], &[(0, count), (0, count)]);
+    assert_eq!(made(&value, &[Some(primary), Some(count)]), Ok(expected));
+    assert_eq!(
+        made(&value, &[Some(primary), Some(count), Some(count)]),
+        Err(HashRefusal::Hosted {
+            element: 2,
+            cell: 3
+        })
+    );
+
+    // The sum axis, the count axis, and the sum axis again: the second
+    // listing of the sum axis takes the root at the first one's place.
+    let axes = vec![(1, None), (0, None), (1, None)];
+    let (value, expected) = listed(axes, &[(1, sum), (0, count), (1, sum)]);
+    let hosted = [Some(primary), Some(sum), Some(count)];
+    assert_eq!(made(&value, &hosted), Ok(expected));
+    assert_eq!(
+        made(&value, &[Some(primary), Some(sum), Some(count), Some(sum)]),
+        Err(HashRefusal::Hosted {
+            element: 3,
+            cell: 4
+        })
+    );
+}
+
 #[test]
 fn a_value_hash_that_only_its_writer_can_make_is_refused() {
     let references = [

@@ -1058,17 +1058,42 @@ fn a_tree_is_moved_to_the_key_of_a_deleted_tree_of_leaves_on_grove_v4_and_v5() {
     }
 }
 
-/// A tree with elements and an indexed tree that was written into and
-/// emptied, and the batch that makes them change places: what it was
-/// answered, and whether the root hash is what it was.
+/// What changes places with the emptied indexed tree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Filled {
+    /// A tree with elements.
+    Tree,
+    /// A tree indexed by count and by sum, with a row.
+    Indexed,
+}
+
+/// A filled tree under `full` and under `idx` a tree indexed by count
+/// that was written into and emptied, the batch that makes them change
+/// places, and a child of the emptied tree under its new key: the cost of
+/// the batch and of the insert, and the root hash after each.
 fn swapped_with_an_emptied_indexed_tree<E: Engine>(
     dir: &Path,
+    filled_tree: Filled,
     version: &'static GroveVersion,
-) -> (Result<(), Error>, bool) {
+) -> [(OperationCost, [u8; 32]); 2] {
     let db = open::<E>(dir);
     let root: &[&[u8]] = &[];
-    let made = filled(&[], b"full", 0, made_by(version));
-    (db.apply_batch(made, None, None, version).unwrap()).expect("a tree with elements");
+    let held: &[u8] = match filled_tree {
+        Filled::Tree => {
+            let made = filled(&[], b"full", 0, made_by(version));
+            (db.apply_batch(made, None, None, version).unwrap()).expect("a tree with elements");
+            b"nested"
+        }
+        Filled::Indexed => {
+            (db.insert(root, b"full", CountSum::empty(), None, None, version))
+                .unwrap()
+                .expect("an indexed tree");
+            let row = CountSum::leaf(3);
+            (CountSum::insert(&db, &[b"full"], b"row", row, None, version).unwrap())
+                .expect("a row");
+            b"row"
+        }
+    };
     let indexed = Count::empty();
     (db.insert(root, b"idx", indexed, None, None, version))
         .unwrap()
@@ -1076,40 +1101,98 @@ fn swapped_with_an_emptied_indexed_tree<E: Engine>(
     (Count::insert(&db, &[b"idx"], b"row", Count::leaf(1), None, version).unwrap())
         .expect("a child");
     (Count::delete(&db, &[b"idx"], b"row", None, version).unwrap()).expect("no child");
-    let before = db.root_hash(None, version).unwrap().expect("a root hash");
+    let root_hash = || db.root_hash(None, version).unwrap().expect("a root hash");
+    let before = root_hash();
     let ops = vec![rename(&[], b"full", b"idx"), rename(&[], b"idx", b"full")];
-    let swapped = db.apply_batch(ops, None, None, version).unwrap();
-    let after = db.root_hash(None, version).unwrap().expect("a root hash");
-    let held = db.get(&[b"full".as_slice(), b"nested"], b"b", None, version);
-    assert_eq!(held.unwrap().is_ok(), swapped.is_err(), "under its old key");
+    let swapped = db.apply_batch(ops, None, None, version);
+    swapped.value.expect("the two change places");
+    let swapped = (swapped.cost, root_hash());
+    assert_ne!(swapped.1, before, "the swap moved no root hash");
+    let read = db.get(&[b"idx".as_slice()], held, None, version);
+    read.unwrap()
+        .expect("the filled tree is read under its new key");
+    let child = Count::insert(&db, &[b"full"], b"row", Count::leaf(2), None, version);
+    child
+        .value
+        .expect("a child of the emptied tree under its new key");
+    let child = (child.cost, root_hash());
     db.flush().expect("a flush");
-    (swapped, after == before)
+    [swapped, child]
 }
 
 /// An indexed tree that was written into and emptied keeps its primary
-/// and the secondary of each axis entered, with no node. Indexed trees
-/// are left as they are where another element takes their key
-/// (GROVE-04-F1): the engine makes no room where a tree is moved onto
-/// one, the transaction refuses the batch for a subtree that is entered
-/// already, and nothing of it is applied. RocksDB makes the swap.
+/// and the secondary of each axis entered, with no node. A filled tree
+/// that changes places with it comes to the prefix of that primary: the
+/// primary and its secondaries make room and are dropped with the batch
+/// that moves the filled tree there, a secondary too where a secondary of
+/// the filled tree comes to its prefix. The emptied tree has nothing
+/// entered under its new key, and its first write there enters its Merks.
+/// The costs and the root hashes are RocksDB's and the store is sound.
 #[test]
-fn a_tree_does_not_change_places_with_an_emptied_indexed_tree_yet() {
-    for version in [&GROVE_VERSIONS[3], &GROVE_VERSIONS[4]] {
+#[cfg_attr(not(feature = "rocksdb_storage"), allow(unused_variables))]
+fn a_tree_changes_places_with_an_emptied_indexed_tree() {
+    use grovedb_element::indexed::IndexAxis;
+    use grovedb_storage::prefix::{build_prefix, secondary_prefix_for};
+
+    use super::indexed::entry;
+
+    let prefix = |key: &[u8]| build_prefix([key].as_slice().into()).value;
+    let of = |axis: IndexAxis, primary: [u8; 32]| secondary_prefix_for(&primary, axis.tag()).value;
+    let (idx, full) = (prefix(b"idx"), prefix(b"full"));
+    for (filled_tree, version) in [Filled::Tree, Filled::Indexed]
+        .into_iter()
+        .flat_map(|filled_tree| [3, 4].map(|at| (filled_tree, &GROVE_VERSIONS[at])))
+    {
         let dir = tempfile::tempdir().expect("a directory");
-        let (swapped, unchanged) =
-            swapped_with_an_emptied_indexed_tree::<LigninEngine>(dir.path(), version);
-        let refused = swapped.expect_err("the swap is refused");
-        assert!(!refused.is_commit_conflict(), "{refused}");
-        assert!(refused.to_string().contains("entered already"), "{refused}");
-        assert!(unchanged);
+        let on_lignin =
+            swapped_with_an_emptied_indexed_tree::<LigninEngine>(dir.path(), filled_tree, version);
+        {
+            let db = open::<LigninEngine>(dir.path());
+            // What is entered under each key, by position, and that each
+            // has a root; and what is not entered at all.
+            let (under_idx, absent) = match filled_tree {
+                Filled::Tree => (vec![idx], vec![of(IndexAxis::Count, idx)]),
+                Filled::Indexed => (
+                    vec![
+                        idx,
+                        of(IndexAxis::Count, idx),
+                        of(IndexAxis::Sum, idx),
+                        of(IndexAxis::Avg, idx),
+                    ],
+                    vec![of(IndexAxis::Sum, full), of(IndexAxis::Avg, full)],
+                ),
+            };
+            let under_full = vec![full, of(IndexAxis::Count, full)];
+            for (key, merks) in [(&b"idx"[..], under_idx), (&b"full"[..], under_full)] {
+                for (place, merk) in merks.into_iter().enumerate() {
+                    let entered = entry(&db, merk).expect("a Merk under the key");
+                    let host = entered.host.expect("a host");
+                    assert_eq!(
+                        (host.key.as_slice(), usize::from(host.position)),
+                        (key, place),
+                        "{filled_tree:?}"
+                    );
+                    assert!(entered.root_key.is_some(), "{filled_tree:?}");
+                }
+            }
+            let moved = entry(&db, idx).expect("the filled tree");
+            let indexed = moved.tree_type().expect("a tree type").is_indexed_primary();
+            assert_eq!(indexed, filled_tree == Filled::Indexed);
+            for merk in absent {
+                assert_eq!(entry(&db, merk), None, "{filled_tree:?}");
+            }
+            db.flush().expect("a flush");
+        }
         check(dir.path(), version);
         #[cfg(feature = "rocksdb_storage")]
         {
             let dir = tempfile::tempdir().expect("a directory");
-            let (swapped, unchanged) =
-                swapped_with_an_emptied_indexed_tree::<crate::RocksDbEngine>(dir.path(), version);
-            swapped.expect("the swap on RocksDB");
-            assert!(!unchanged);
+            let on_rocksdb = swapped_with_an_emptied_indexed_tree::<crate::RocksDbEngine>(
+                dir.path(),
+                filled_tree,
+                version,
+            );
+            assert_eq!(on_lignin, on_rocksdb, "{filled_tree:?}");
         }
     }
 }

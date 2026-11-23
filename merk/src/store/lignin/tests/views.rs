@@ -1157,6 +1157,40 @@ fn settled_batches_are_applied_together_or_not_at_all() {
         .expect("a settled batch");
     assert_eq!(part.written().count(), 0);
     assert!(part.is_empty() && !part.enters(&gone.prefix));
+    // A statement anew that whoever applies the batch makes of it is a
+    // write of the batch, until it is taken back.
+    let mut part = part;
+    part.state_anew(&inner, &tree_type_bytes(TreeType::SumTree))
+        .expect("a statement anew");
+    assert!(!part.is_empty());
+    part.forget_stated();
+    assert!(part.is_empty());
+    // So is a drop that it was told.
+    part.drop_subtree(&inner.prefix);
+    assert!(!part.is_empty());
+    part.forget_drops();
+    assert!(part.is_empty());
+    // A batch that removes the one node of a Merk leaves it with none,
+    // and one that puts a node beside it does not.
+    let handle = LigninNodeStore::deferred(&transaction, outer.clone(), Some(&batch));
+    let mut merk = open(handle, TreeType::NormalTree);
+    apply(&mut merk, &puts(2..3, 1));
+    drop(merk);
+    let put = batch
+        .settle(&transaction)
+        .unwrap()
+        .expect("a settled batch");
+    assert!(put.writes_merk(&outer.prefix) && !put.empties(&outer.prefix));
+    let handle = LigninNodeStore::deferred(&transaction, outer.clone(), Some(&batch));
+    let mut merk = open(handle, TreeType::NormalTree);
+    apply(&mut merk, &deletes(1..2));
+    drop(merk);
+    let emptied = batch
+        .settle(&transaction)
+        .unwrap()
+        .expect("a settled batch");
+    assert!(emptied.writes_merk(&outer.prefix) && emptied.empties(&outer.prefix));
+    assert!(!emptied.empties(&inner.prefix));
 
     let reader = LigninNodeStore::read_only(&transaction, parent);
     assert!(reader.has_node(&plain(2)).unwrap().expect("a read"));
@@ -1166,6 +1200,215 @@ fn settled_batches_are_applied_together_or_not_at_all() {
     drop(reader);
     facade.commit(&transaction);
     facade.sound();
+}
+
+/// The batch that a subtree given with a group is entered with
+/// ([`LigninSettled::apply`]), where no batch enters the subtree its
+/// host is in. Under the key of each, another subtree holds the place
+/// or none does.
+///
+/// With the first batch that puts the node of its host, after what that
+/// batch was told to drop, which frees the place:
+///
+/// - one that no batch names;
+/// - one that a batch after that one drops.
+///
+/// With the first batch:
+///
+/// - one that a batch before the host's put drops, which finds it;
+/// - one under an element of which another subtree of the group hangs
+///   that the first batch writes into, directly or two levels down;
+/// - one under an element of which the first batch enters a subtree
+///   itself;
+/// - one that a batch holds a write for: where its place is taken until
+///   a later batch drops what holds it, the group is refused.
+///
+/// A batch that moves a subtree needs the one it moves away, and not
+/// the prefix it moves it to; it holds a statement of both.
+#[test]
+fn a_subtree_given_with_a_group_is_entered_with_the_batch_that_its_group_needs_it_in() {
+    /// A settled batch of `transaction` that puts the aux record `key`
+    /// of the subtree at `at`.
+    fn record(transaction: &WriteTxn<'_>, at: &LigninSubtree, key: &[u8]) -> LigninSettled {
+        let batch = LigninBatch::new();
+        let handle = LigninNodeStore::deferred(transaction, at.clone(), Some(&batch));
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        batch.settle(transaction).unwrap().expect("a settled batch")
+    }
+    /// A settled batch of `transaction` that puts the node `key` of the
+    /// Merk at `at`.
+    fn node(transaction: &WriteTxn<'_>, at: &LigninSubtree, key: u64, salt: u64) -> LigninSettled {
+        let batch = LigninBatch::new();
+        let handle = LigninNodeStore::deferred(transaction, at.clone(), Some(&batch));
+        let mut merk = open(handle, TreeType::NormalTree);
+        apply(&mut merk, &puts(key..key + 1, salt));
+        drop(merk);
+        batch.settle(transaction).unwrap().expect("a settled batch")
+    }
+    /// A settled batch of `transaction` that drops the subtree at `at`.
+    fn drops(transaction: &WriteTxn<'_>, at: &LigninSubtree) -> LigninSettled {
+        let batch = LigninBatch::new();
+        batch.drop_subtree(at);
+        batch.settle(transaction).unwrap().expect("a settled batch")
+    }
+    fn under(prefix: [u8; 32], above: [u8; 32], key: u64) -> LigninSubtree {
+        let host = LigninHost {
+            subtree: above,
+            key: plain(key),
+            hosted: vec![prefix],
+        };
+        LigninSubtree {
+            prefix,
+            host: Some(host),
+        }
+    }
+    fn entered(transaction: &WriteTxn<'_>, at: &LigninSubtree) -> bool {
+        let reader = LigninNodeStore::read_only(transaction, at.clone());
+        reader.entry().expect("the directory answers").is_some()
+    }
+
+    let facade = Facade::new();
+    let tree_type = tree_type_bytes(TreeType::NormalTree);
+    let given = |subtrees: &[&LigninSubtree]| -> Vec<(LigninSubtree, Vec<u8>)> {
+        let given = subtrees.iter().map(|subtree| (*subtree).clone());
+        given.map(|subtree| (subtree, tree_type.clone())).collect()
+    };
+    let parent = LigninSubtree::alone([0; 32]);
+    let beside = LigninSubtree::alone([9; 32]);
+    // Three subtrees that hold the first place under a key of the
+    // parent each.
+    let old = [1, 2, 7].map(|key| under([20 + key as u8; 32], parent.prefix, key));
+    let setup = facade.db.begin();
+    for alone in [&parent, &beside] {
+        LigninNodeStore::immediate(&setup, alone.clone())
+            .enter(TreeType::NormalTree)
+            .expect("the subtree is entered");
+    }
+    let batch = LigninBatch::new();
+    let handle = LigninNodeStore::deferred(&setup, parent.clone(), Some(&batch));
+    let mut merk = open(handle, TreeType::NormalTree);
+    apply(&mut merk, &puts(1..9, 1));
+    drop(merk);
+    let mut made = vec![batch.settle(&setup).unwrap().expect("a settled batch")];
+    made.extend(old.iter().map(|old| record(&setup, old, b"o")));
+    let applied = LigninSettled::apply(made, &setup, &given(&[&old[0], &old[1], &old[2]]));
+    applied
+        .unwrap()
+        .expect("the parent and a subtree under three of its keys");
+    facade.commit(&setup);
+    let transaction = facade.db.begin();
+
+    // Named by no batch: with the batch that puts the node of its host.
+    let new = under([8; 32], parent.prefix, 2);
+    let first = record(&transaction, &beside, b"1");
+    let mut second = node(&transaction, &parent, 2, 2);
+    second.drop_subtree(&old[1].prefix);
+    let applied = LigninSettled::apply(vec![first, second], &transaction, &given(&[&new]));
+    applied
+        .unwrap()
+        .expect("the place is free where the subtree is entered");
+    assert!(entered(&transaction, &new) && !entered(&transaction, &old[1]));
+
+    // Dropped by a batch after the one that puts the node of its host:
+    // with that one all the same.
+    let late = under([13; 32], parent.prefix, 1);
+    let first = record(&transaction, &beside, b"2");
+    let mut second = node(&transaction, &parent, 1, 2);
+    second.drop_subtree(&old[0].prefix);
+    let third = drops(&transaction, &late);
+    let applied = LigninSettled::apply(vec![first, second, third], &transaction, &given(&[&late]));
+    applied
+        .unwrap()
+        .expect("the place is free where the subtree is entered");
+    assert!(!entered(&transaction, &late) && !entered(&transaction, &old[0]));
+
+    // Dropped by a batch before the one that puts the node of its host:
+    // with the first batch.
+    let dropped = under([10; 32], parent.prefix, 3);
+    let first = record(&transaction, &beside, b"3");
+    let second = drops(&transaction, &dropped);
+    let third = node(&transaction, &parent, 3, 2);
+    let parts = vec![first, second, third];
+    let applied = LigninSettled::apply(parts, &transaction, &given(&[&dropped]));
+    applied
+        .unwrap()
+        .expect("the drop finds the subtree entered");
+    assert!(!entered(&transaction, &dropped));
+
+    // Another subtree of the group hangs under an element of it, and
+    // the first batch writes into that one.
+    let outer = under([11; 32], parent.prefix, 4);
+    let inner = under([12; 32], outer.prefix, 1);
+    let first = record(&transaction, &inner, b"4");
+    let second = node(&transaction, &parent, 4, 2);
+    let enters = given(&[&outer, &inner]);
+    let applied = LigninSettled::apply(vec![first, second], &transaction, &enters);
+    applied
+        .unwrap()
+        .expect("the first batch writes into a subtree that is entered");
+    assert!(entered(&transaction, &outer) && entered(&transaction, &inner));
+    let reader = LigninNodeStore::read_only(&transaction, inner);
+    let read = reader.aux().get(b"4").unwrap().expect("a read");
+    assert_eq!(read, Some(b"v".to_vec()));
+    drop(reader);
+
+    // The same two levels down.
+    let top = under([14; 32], parent.prefix, 5);
+    let mid = under([15; 32], top.prefix, 1);
+    let leaf = under([16; 32], mid.prefix, 1);
+    let first = record(&transaction, &leaf, b"5");
+    let second = node(&transaction, &parent, 5, 2);
+    let enters = given(&[&top, &mid, &leaf]);
+    let applied = LigninSettled::apply(vec![first, second], &transaction, &enters);
+    applied
+        .unwrap()
+        .expect("the first batch writes into a subtree that is entered");
+    assert!([&top, &mid, &leaf]
+        .into_iter()
+        .all(|at| entered(&transaction, at)));
+
+    // The first batch enters a subtree under an element of it itself.
+    let above = under([17; 32], parent.prefix, 6);
+    let own = under([18; 32], above.prefix, 1);
+    let batch = LigninBatch::new();
+    batch.enter(&own, &tree_type).expect("an enter");
+    let first = batch
+        .settle(&transaction)
+        .unwrap()
+        .expect("a settled batch");
+    assert!(first.enters(&own.prefix));
+    let second = node(&transaction, &parent, 6, 2);
+    let applied = LigninSettled::apply(vec![first, second], &transaction, &given(&[&above]));
+    applied
+        .unwrap()
+        .expect("the first batch enters a subtree under one that is entered");
+    assert!(entered(&transaction, &above) && entered(&transaction, &own));
+
+    // A batch holds a write for it: with the first batch, where its
+    // place is still taken.
+    let written = under([19; 32], parent.prefix, 7);
+    let first = record(&transaction, &beside, b"7");
+    let mut second = node(&transaction, &parent, 7, 2);
+    second.drop_subtree(&old[2].prefix);
+    let third = record(&transaction, &written, b"w");
+    let parts = vec![first, second, third];
+    let refused = LigninSettled::apply(parts, &transaction, &given(&[&written]));
+    assert!(refused.unwrap().is_err());
+    assert!(!entered(&transaction, &written) && entered(&transaction, &old[2]));
+
+    // What a batch that moves a subtree says: it needs the subtree
+    // that it moves away, and not the prefix that the subtree goes to,
+    // where the move brings the entry; and it holds a statement of
+    // both, so that no enter of either is put off to it.
+    let batch = LigninBatch::new();
+    batch.move_subtree(&[30; 32], &[31; 32]);
+    let moving = batch
+        .settle(&transaction)
+        .unwrap()
+        .expect("a settled batch");
+    assert!(moving.states(&[30; 32]) && moving.needs(&[30; 32]));
+    assert!(moving.states(&[31; 32]) && !moving.needs(&[31; 32]));
 }
 
 /// The keys a cursor shows from the first node to the last, each with a

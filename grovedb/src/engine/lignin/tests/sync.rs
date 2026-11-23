@@ -43,6 +43,7 @@ use super::{
     LigninEngine,
 };
 use crate::{
+    batch::QualifiedGroveDbOp,
     engine::Engine,
     operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag},
     query_result_type::QueryResultType,
@@ -921,6 +922,376 @@ fn a_grove_syncs_between_the_engines_in_all_four_directions() {
             first.reads.len(),
             first.writes.len(),
         );
+    }
+}
+
+/// A sum tree under `key` whose one child was deleted. Says whether
+/// every call was taken, as the fixtures after it do.
+fn emptied<E: Engine>(h: &mut History<'_, E>, key: &[u8]) -> bool {
+    let (db, v) = (h.db, h.v);
+    let made = db.insert(super::ROOT, key, Element::empty_sum_tree(), None, None, v);
+    let made = h.write("a sum tree", made).is_some();
+    let child = db.insert(&[key], b"child", Element::new_sum_item(4), None, None, v);
+    let child = h.write("a child", child).is_some();
+    let gone = db.delete(&[key], b"child", None, None, v);
+    made && child && h.write("the child goes", gone).is_some()
+}
+
+/// An indexed tree of the kind `I` under `key` with `children` children,
+/// each of which is deleted again where `emptied` says so.
+fn index<I: Indexed, E: Engine>(
+    h: &mut History<'_, E>,
+    key: &[u8],
+    children: usize,
+    emptied: bool,
+) -> bool {
+    let (db, v) = (h.db, h.v);
+    let made = db.insert(super::ROOT, key, I::empty(), None, None, v);
+    let mut made = h.write("an indexed tree", made).is_some();
+    for n in 0..children {
+        let child = I::insert(db, &[key], &row(n), I::leaf(n), None, v);
+        made &= h.write("a child", child).is_some();
+    }
+    for n in (0..children).filter(|_| emptied) {
+        let gone = I::delete(db, &[key], &row(n), None, v);
+        made &= h.write("the child goes", gone) == Some(true);
+    }
+    made
+}
+
+/// `element` written over what the key `key` holds, by a batch.
+fn over<E: Engine>(h: &mut History<'_, E>, key: &[u8], element: Element) -> bool {
+    let op = QualifiedGroveDbOp::insert_or_replace_op(vec![], key.to_vec(), element);
+    let written = h.db.apply_batch(vec![op], None, None, h.v);
+    h.write("written over", written).is_some()
+}
+
+fn converted<E: Engine>(h: &mut History<'_, E>, key: &[u8]) -> bool {
+    let converted = h.db.convert_to_big_sum_tree(super::ROOT, key, None, h.v);
+    h.write("converted", converted).is_some()
+}
+
+/// What a key of [`written_again`] holds at the end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Again {
+    /// A tree of one Merk that takes sum items.
+    Sums,
+    /// A count tree.
+    Counts,
+    /// An MMR tree.
+    Mmr,
+    /// An indexed tree of the kind with this name.
+    Index(&'static str),
+}
+
+/// Trees whose entries in the subtree directory of LigninDB are not the
+/// ones a restore makes of them: trees that were emptied and not
+/// deleted, trees that were written again and kept, or made a tree of
+/// another kind, and trees that were converted, filled and emptied.
+/// Returns the history, and the key of every tree that the grove version
+/// made, with what it holds at the end.
+fn written_again<E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+) -> (Vec<Answer>, Vec<(Vec<u8>, Again)>) {
+    fn emptied_index<I: Indexed, E: Engine>(h: &mut History<'_, E>) -> (Vec<u8>, Again, bool) {
+        let key = format!("emptied index: {}", I::NAME).into_bytes();
+        let taken = index::<I, E>(h, &key, 2, true);
+        (key, Again::Index(I::NAME), taken)
+    }
+
+    let mut h = History::new(db, v);
+    let mut made = Vec::new();
+    let mut keep = |key: &[u8], holds: Again, taken: bool| {
+        if taken {
+            made.push((key.to_vec(), holds));
+        }
+    };
+
+    // Trees of one Merk: emptied; emptied and written again as the tree
+    // it was, and as a tree of another kind; converted, emptied and
+    // filled.
+    let taken = emptied(&mut h, b"emptied");
+    keep(b"emptied", Again::Sums, taken);
+    let taken = emptied(&mut h, b"kept") && over(&mut h, b"kept", Element::empty_sum_tree());
+    keep(b"kept", Again::Sums, taken);
+    let taken = emptied(&mut h, b"another kind")
+        && over(&mut h, b"another kind", Element::empty_count_tree());
+    keep(b"another kind", Again::Counts, taken);
+    let taken = emptied(&mut h, b"emptied, converted") && converted(&mut h, b"emptied, converted");
+    keep(b"emptied, converted", Again::Sums, taken);
+    let filled = db.insert(
+        super::ROOT,
+        b"converted",
+        Element::empty_sum_tree(),
+        None,
+        None,
+        v,
+    );
+    let mut taken = h.write("a sum tree", filled).is_some();
+    for n in 0..5 {
+        let item = Element::new_sum_item(n as i64 * 3 - 4);
+        let child = db.insert(&[&b"converted"[..]], &row(n), item, None, None, v);
+        taken &= h.write("a child", child).is_some();
+    }
+    let taken = taken && converted(&mut h, b"converted");
+    keep(b"converted", Again::Sums, taken);
+
+    // Indexed trees of every kind, emptied.
+    for (key, holds, taken) in [
+        emptied_index::<Count, E>(&mut h),
+        emptied_index::<Sum, E>(&mut h),
+        emptied_index::<CountSum, E>(&mut h),
+        emptied_index::<SumAndAverage, E>(&mut h),
+        emptied_index::<BigSum, E>(&mut h),
+        emptied_index::<CountBigSum, E>(&mut h),
+    ] {
+        keep(&key, holds, taken);
+    }
+
+    // Indexed trees that were converted: emptied; with children, where
+    // the conversion names the axes in another order; and that emptied.
+    let taken = index::<Sum, E>(&mut h, b"emptied index, converted", 1, true)
+        && converted(&mut h, b"emptied index, converted");
+    keep(
+        b"emptied index, converted",
+        Again::Index(BigSum::NAME),
+        taken,
+    );
+    let wide = Again::Index(CountBigSum::NAME);
+    let taken = index::<CountSum, E>(&mut h, b"axes", 5, false) && converted(&mut h, b"axes");
+    keep(b"axes", wide, taken);
+    let taken = index::<CountSum, E>(&mut h, b"emptied axes", 1, true)
+        && converted(&mut h, b"emptied axes");
+    keep(b"emptied axes", wide, taken);
+
+    // Another element over an indexed tree: a tree of one Merk and a
+    // tree of flat records over an emptied one, and an empty indexed tree
+    // of another kind over a filled one where the grove version sweeps
+    // the filled one.
+    let taken = index::<Sum, E>(&mut h, b"sums over an index", 1, true)
+        && over(&mut h, b"sums over an index", Element::empty_sum_tree());
+    keep(b"sums over an index", Again::Sums, taken);
+    let mmr = Element::empty_mmr_tree_with_flags(None);
+    let taken = index::<Sum, E>(&mut h, b"mmr over an index", 1, true)
+        && over(&mut h, b"mmr over an index", mmr);
+    keep(b"mmr over an index", Again::Mmr, taken);
+    // GroveDB sweeps the old tree from grove version 4 on. Before it,
+    // RocksDB keeps the records of the old tree under its prefixes, and
+    // its source refuses the chunk of the primary to a session; LigninDB
+    // drops the old tree's subtrees, and refuses the batch where the new
+    // tree shares an axis with the old one (D-292).
+    if v.grovedb_versions
+        .apply_batch
+        .overwrite_indexed_cleanup_inspection
+        > 0
+    {
+        let taken = index::<Count, E>(&mut h, b"index over an index", 3, false)
+            && over(&mut h, b"index over an index", Sum::empty());
+        keep(b"index over an index", Again::Index(Sum::NAME), taken);
+    }
+
+    (h.answers, made)
+}
+
+/// Two children of the indexed tree under `key`, of the kind `I`: both
+/// are deleted again, and one is written after them.
+fn children_again<I: Indexed, E: Engine>(h: &mut History<'_, E>, key: &[u8], kind: &str) {
+    if kind != I::NAME {
+        return;
+    }
+    let (db, v) = (h.db, h.v);
+    let name = String::from_utf8_lossy(key).into_owned();
+    for n in [CHILDREN, CHILDREN + 1] {
+        let inserted = I::insert(db, &[key], &row(n), I::leaf(n), None, v);
+        h.write(format!("{name}: a child"), inserted);
+    }
+    for n in [CHILDREN, CHILDREN + 1] {
+        let deleted = I::delete(db, &[key], &row(n), None, v);
+        h.write(format!("{name}: the child goes"), deleted);
+    }
+    let n = CHILDREN + 2;
+    let inserted = I::insert(db, &[key], &row(n), I::leaf(n), None, v);
+    h.write(format!("{name}: a child more"), inserted);
+}
+
+/// Writes into every tree of [`written_again`] that was made: two
+/// children, their deletes and a child after them, or two appends; then
+/// the conversion of the tree that was emptied. Each comes with what it
+/// costs and the root hash after it.
+fn written_after<E: Engine>(
+    db: &GroveDb<E>,
+    made: &[(Vec<u8>, Again)],
+    v: &GroveVersion,
+) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    for (key, holds) in made {
+        let name = String::from_utf8_lossy(key).into_owned();
+        let at: [&[u8]; 1] = [key];
+        let child = |n: usize| match holds {
+            Again::Counts => Element::new_item(vec![n as u8; 9]),
+            _ => Element::new_sum_item(n as i64 + 5),
+        };
+        match *holds {
+            Again::Sums | Again::Counts => {
+                for n in 0..2 {
+                    let inserted = db.insert(&at, &row(n), child(n), None, None, v);
+                    h.write(format!("{name}: a child"), inserted);
+                }
+                for n in 0..2 {
+                    let deleted = db.delete(&at, &row(n), None, None, v);
+                    h.write(format!("{name}: the child goes"), deleted);
+                }
+                let inserted = db.insert(&at, &row(2), child(2), None, None, v);
+                h.write(format!("{name}: a child more"), inserted);
+            }
+            Again::Mmr => {
+                for n in 0..2u8 {
+                    let value = vec![n; 3 + usize::from(n)];
+                    let appended = db.mmr_tree_append(super::ROOT, key, value, None, v);
+                    let appended = appended.map_ok(|appended| format!("{appended:?}"));
+                    h.write(format!("{name}: an append"), appended);
+                }
+            }
+            Again::Index(kind) => {
+                children_again::<Count, E>(&mut h, key, kind);
+                children_again::<Sum, E>(&mut h, key, kind);
+                children_again::<CountSum, E>(&mut h, key, kind);
+                children_again::<SumAndAverage, E>(&mut h, key, kind);
+                children_again::<BigSum, E>(&mut h, key, kind);
+                children_again::<CountBigSum, E>(&mut h, key, kind);
+            }
+        }
+    }
+    // Where the grove version converts a tree, as the tree under
+    // `converted` shows.
+    if made.iter().any(|(key, _)| key == b"converted") {
+        let converted = db.convert_to_big_sum_tree(super::ROOT, b"emptied", None, v);
+        h.write("the tree that was emptied is converted", converted);
+    }
+    let verified = db.verify_grovedb(None, true, false, v);
+    h.plain("verify", verified.map(|issues| issues.len()));
+    h.answers
+}
+
+/// How many trees [`written_again`] makes on the latest grove version.
+const WRITTEN_AGAIN: usize = 17;
+
+/// What [`synced_and_written`] gives of one direction.
+struct Synced {
+    /// The history that made the source, and its writes after the sync.
+    source: Vec<Answer>,
+    /// The writes into the synced copy.
+    copy: Vec<Answer>,
+    /// How many of the trees the grove version made.
+    made: usize,
+    /// How many of the writes cost the source another amount than its
+    /// copy.
+    costs_apart: usize,
+}
+
+/// Makes the grove of [`written_again`] on `S`, syncs a new database on
+/// `T` from it, and writes into both ([`written_after`]): the two give
+/// every write the same answer and have the same root hash after it, and
+/// each is checked as it is closed.
+fn synced_and_written<S: Side, T: Side>(v: &GroveVersion) -> Synced {
+    let (from, to) = (tempfile::tempdir(), tempfile::tempdir());
+    let (from, to) = (from.expect("a directory"), to.expect("a directory"));
+    let source = open::<S>(from.path());
+    let (mut history, made) = written_again(&source, v);
+    let target = open::<T>(to.path());
+    whole(&source, &target, RestoreCommitMode::Atomic, v);
+    let root = target.root_hash(None, v).unwrap().expect("a root hash");
+    let of_the_source = source.root_hash(None, v).unwrap().expect("a root hash");
+    assert_eq!(root, of_the_source, "{} from {}", T::NAME, S::NAME);
+
+    let on_source = written_after(&source, &made, v);
+    let copy = written_after(&target, &made, v);
+    assert_eq!(on_source.len(), copy.len());
+    let mut costs_apart = 0;
+    for (source, copy) in on_source.iter().zip(&copy) {
+        // The root hash after a write is a call of its own.
+        let answered = |(call, _, answer): &Answer| (call.clone(), answer.clone());
+        assert_eq!(
+            answered(source),
+            answered(copy),
+            "{} from {}",
+            T::NAME,
+            S::NAME
+        );
+        // Every write into a tree that was made is taken: a write that
+        // both refuse alike would compare as equal.
+        assert!(source.2.starts_with("Ok("), "{source:?} on {}", S::NAME);
+        costs_apart += usize::from(source.1 != copy.1);
+    }
+    source.flush().expect("a flush");
+    target.flush().expect("a flush");
+    drop((source, target));
+    S::check(from.path(), v);
+    T::check(to.path(), v);
+    history.extend(on_source);
+    Synced {
+        source: history,
+        copy,
+        made: made.len(),
+        costs_apart,
+    }
+}
+
+/// A grove on LigninDB holds trees whose entries in the subtree directory
+/// a restore does not make: of a tree that was emptied the entry with no
+/// root, of a tree that was written again or converted the entry as the
+/// engine restated it or dropped it. A database synced from it has an
+/// entry only for the subtrees the restore wrote into. The two take
+/// every write into those trees with the same answer and the same root
+/// hash after it, on every grove version, and both stores are sound.
+#[test]
+fn a_synced_grove_takes_the_writes_into_trees_that_were_emptied_or_written_again_as_its_source() {
+    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+        let synced = synced_and_written::<LigninEngine, LigninEngine>(v);
+        if number + 1 == GROVE_VERSIONS.len() {
+            assert_eq!(synced.made, WRITTEN_AGAIN);
+        }
+        println!(
+            "grove version {}: {} trees, {} writes, {} of them at another cost on the copy",
+            number + 1,
+            synced.made,
+            synced.copy.len(),
+            synced.costs_apart
+        );
+    }
+}
+
+/// The same between the engines. The histories of the four sources are
+/// one history and those of the four copies are one, costs included: a
+/// source on LigninDB answers as a source on RocksDB does, and a copy as
+/// a copy, whichever engine it was synced from. Where a write costs a
+/// source another amount than its copy, it does so on RocksDB.
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn trees_that_were_emptied_or_written_again_sync_between_the_engines() {
+    type Rocks = crate::RocksDbEngine;
+    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+        let first = synced_and_written::<Rocks, Rocks>(v);
+        let others = [
+            synced_and_written::<Rocks, LigninEngine>(v),
+            synced_and_written::<LigninEngine, Rocks>(v),
+            synced_and_written::<LigninEngine, LigninEngine>(v),
+        ];
+        for (direction, other) in others.iter().enumerate() {
+            let told = format!("direction {direction} on grove version {}", number + 1);
+            assert_eq!(first.made, other.made, "{told}");
+            for (of, rocks, other) in [
+                ("the source", &first.source, &other.source),
+                ("the copy", &first.copy, &other.copy),
+            ] {
+                assert_eq!(rocks.len(), other.len(), "{told}: {of}");
+                for (step, (rocks, other)) in rocks.iter().zip(other).enumerate() {
+                    assert_eq!(rocks, other, "{told}: {of}, step {step}");
+                }
+            }
+            assert_eq!(first.costs_apart, other.costs_apart, "{told}");
+        }
     }
 }
 

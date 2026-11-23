@@ -392,8 +392,10 @@
 //! - **A flush of the pending drops that a fault fails.** It is made in
 //!   sessions into which no fault was injected ("Faults", above), so no
 //!   crash state is of a flush that a fault cut short.
-//! - **The conversion of a tree in place**, which the engine does not have
-//!   yet ([`workload::features`]). The streams are generated without it.
+//! - **A conversion of a tree in a transaction of its own.** The campaign
+//!   makes every commit itself, so a stream leaves out a conversion that
+//!   GroveDB commits by itself ([`workload::Plan::stream`]). A conversion
+//!   in the transaction of a block is in the streams.
 //! - **Appends on grove versions 1 to 3.** A run on one of them takes no
 //!   stream that appends to a tree, for a known defect of the engine
 //!   there ([`workload::left_out`]). On grove versions 4 and 5 the trees

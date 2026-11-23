@@ -128,6 +128,93 @@ fn a_tree_that_is_entered_after_the_look_outlives_the_item_written_over_it() {
     assert_eq!(broken(dir.path()), AFTER_AN_ENTER_BESIDE_THE_LOOK);
 }
 
+/// A group writes an empty indexed tree over a tree that nothing was
+/// written into, or over an indexed tree that was written into and
+/// emptied. Its look states no drop, and before the group is applied
+/// another writer's commit writes a child into the old tree. The
+/// element is written as the group states it, and the Merks of that
+/// commit stay entered with their roots, under an element that names
+/// none. The checker reads the store that this leaves: the value hash
+/// of the element's node, which was made from no root. Where the old
+/// tree had more axes than the new one, the node is written as one
+/// that hosts nothing, and the checker finds each of the four roots
+/// pointed at by no cell.
+#[test]
+fn a_tree_that_a_commit_writes_into_after_the_look_keeps_its_merks_under_an_empty_indexed_tree() {
+    use super::indexed::{Count, CountSum, Indexed, Sum};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Old {
+        NothingEntered,
+        Emptied,
+        EmptiedWithMoreAxes,
+    }
+    let v = version();
+    for old in [Old::NothingEntered, Old::Emptied, Old::EmptiedWithMoreAxes] {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+        let made = match old {
+            Old::NothingEntered => Element::empty_tree(),
+            Old::Emptied => Sum::empty(),
+            Old::EmptiedWithMoreAxes => CountSum::empty(),
+        };
+        (db.insert(ROOT, b"t", made, None, None, v))
+            .unwrap()
+            .expect("a tree");
+        match old {
+            Old::NothingEntered => {}
+            Old::Emptied => {
+                (Sum::insert(&*db, T, b"x", Sum::leaf(1), None, v).unwrap()).expect("a child");
+                (Sum::delete(&*db, T, b"x", None, v).unwrap()).expect("the child is deleted");
+            }
+            Old::EmptiedWithMoreAxes => {
+                let child = CountSum::insert(&*db, T, b"x", CountSum::leaf(1), None, v);
+                child.unwrap().expect("a child");
+                (CountSum::delete(&*db, T, b"x", None, v).unwrap()).expect("deleted");
+            }
+        }
+        let (other, done) = beside(&db, move |db| match old {
+            Old::NothingEntered => (db.insert(T, b"y", item(1), None, None, v))
+                .unwrap()
+                .expect("the first element of the tree"),
+            Old::Emptied => {
+                (Sum::insert(db, T, b"y", Sum::leaf(2), None, v).unwrap()).expect("a child")
+            }
+            Old::EmptiedWithMoreAxes => {
+                let child = CountSum::insert(db, T, b"y", CountSum::leaf(2), None, v);
+                child.unwrap().expect("a child")
+            }
+        });
+        let new = match old {
+            Old::EmptiedWithMoreAxes => Count::empty(),
+            Old::NothingEntered | Old::Emptied => Sum::empty(),
+        };
+        REFUSED.take();
+        AFTER_A_LOOK.set([apart(other)].into());
+        let applied = db.apply_batch(vec![insert(&[], b"t", new.clone())], None, None, v);
+        assert!(AFTER_A_LOOK.take().is_empty(), "{old:?}: the group looked");
+        assert!(done.get(), "{old:?}");
+        applied.unwrap().expect("the batch is applied");
+        assert_eq!(REFUSED.take().len(), 0, "{old:?}");
+        let read = (db.get(ROOT, b"t", None, v).unwrap()).expect("an element");
+        assert_eq!(read, new, "{old:?}");
+        assert!(entry_of_t(&db).is_some_and(|(_, rooted)| rooted), "{old:?}");
+        db.engine().database().unchecked_at_close();
+        drop(Arc::into_inner(db).expect("the only handle on the grove"));
+        let found: &[&str] = match old {
+            Old::NothingEntered | Old::Emptied => &["Hash(Value)"],
+            Old::EmptiedWithMoreAxes => &[
+                "Fragments",
+                "HostPointer",
+                "HostPointer",
+                "HostPointer",
+                "HostPointer",
+            ],
+        };
+        assert_eq!(broken(dir.path()), found, "{old:?}");
+    }
+}
+
 /// A group writes another tree over a tree that nothing was written
 /// into, with an element in it. The look for what the group enters finds
 /// no subtree, and before the look for what it drops another writer's
@@ -291,6 +378,464 @@ fn a_flat_tree_written_over_a_merk_with_a_record_of_its_own_hosts_no_root() {
     assert_eq!(read, Some(b"v".to_vec()));
     drop(below);
     drop(tx);
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
+/// A group writes a tree as an empty one in its first batch and removes
+/// the tree's one element in its second, as the two parts of a batch do
+/// that writes an empty tree over a filled one and removes the old
+/// records itself. The Merk is written after the last write of its
+/// element, and the group is taken all the same: the element names no
+/// root, no batch writes the Merk before it and the second batch states
+/// no root for it, so no root is left that a node would have to name.
+/// The node of the
+/// element is written as one that hosts nothing, and the Merk stays
+/// entered with no node. So it is where the first batch writes the root
+/// Merk through a handle by prefix, which tells the engine no path, and
+/// the look for what is written over says nothing of the tree.
+///
+/// Where the tree holds a second element, the second batch leaves the
+/// Merk with a root that no node would name: the group is refused as
+/// not supported, and nothing of it is applied. So is a group whose
+/// first batch writes a node of the Merk beside the element.
+#[test]
+fn a_group_that_empties_a_tree_after_the_batch_that_writes_its_empty_element_is_taken() {
+    use grovedb_merk::tree::hash::NULL_HASH;
+
+    let v = version();
+    let cases = [
+        (false, true, false),
+        (true, true, false),
+        (false, false, false),
+        (true, false, false),
+        (false, true, true),
+    ];
+    for (by_prefix, emptied, early) in cases {
+        let (dir, db) = grove(true);
+        if !emptied {
+            (db.insert(T, b"y", item(2), None, None, v))
+                .unwrap()
+                .expect("a second element in the tree");
+        }
+        let root_key = match db.get(ROOT, b"t", None, v).unwrap() {
+            Ok(Element::Tree(root_key, _)) => root_key,
+            other => panic!("{other:?}"),
+        };
+        let engine = db.engine();
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let root = match by_prefix {
+            // The root Merk is at the prefix of no path.
+            true => engine.subtree_by_prefix([0; 32], Some(&batch), &tx),
+            false => engine.subtree(ROOT, Some(&batch), &tx),
+        };
+        let mut merk = Merk::open_base(root.unwrap(), TreeType::NormalTree, NO_COST, v)
+            .unwrap()
+            .expect("the root Merk");
+        // The value hash of a tree with no node, as GroveDB makes it.
+        let empty = (Element::empty_tree().serialize(v)).expect("the bytes of an element");
+        let put = Op::PutCombinedReference(empty, NULL_HASH, TreeFeatureType::BasicMerkNode);
+        (merk.apply::<_, Vec<u8>>(&[(b"t".to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the root Merk");
+        drop(merk);
+        if early {
+            let mut merk = {
+                let below = engine.subtree(T.into(), Some(&batch), &tx).unwrap();
+                let root_key = root_key.clone();
+                Merk::open_layered_with_root_key(below, root_key, TreeType::NormalTree, NO_COST, v)
+                    .unwrap()
+                    .expect("the Merk of the tree")
+            };
+            let more = item(2).serialize(v).expect("the bytes of an element");
+            let put = Op::Put(more, TreeFeatureType::BasicMerkNode);
+            (merk.apply::<_, Vec<u8>>(&[(b"y".to_vec(), put)], &[], None, v))
+                .unwrap()
+                .expect("a write of the tree beside its element");
+        }
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let mut merk = {
+            let below = engine.subtree(T.into(), Some(&batch), &tx).unwrap();
+            let root_key = root_key.clone();
+            Merk::open_layered_with_root_key(below, root_key, TreeType::NormalTree, NO_COST, v)
+                .unwrap()
+                .expect("the Merk of the tree")
+        };
+        (merk.apply::<_, Vec<u8>>(&[(b"x".to_vec(), Op::Delete)], &[], None, v))
+            .unwrap()
+            .expect("the removal of the tree's element");
+        drop(merk);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+
+        let case = format!("by prefix: {by_prefix}, emptied: {emptied}, early: {early}");
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        if emptied && !early {
+            applied.expect("the group is applied");
+            (engine.commit_transaction(tx).unwrap()).expect("a commit");
+            assert_eq!(
+                entry_of_t(&db),
+                Some((TreeType::NormalTree, false)),
+                "{case}"
+            );
+            assert_eq!(
+                db.get(ROOT, b"t", None, v).unwrap().ok(),
+                Some(Element::empty_tree())
+            );
+            assert!(db.get(T, b"x", None, v).unwrap().is_err());
+        } else {
+            let said = match applied.expect_err("a root that no node names") {
+                StorageError::NotSupported(said) => said,
+                other => panic!("{case}: {other}"),
+            };
+            assert!(
+                said.contains("in a batch after the last one that writes the tree's element"),
+                "{case}: {said}"
+            );
+            drop(tx);
+            assert_eq!(
+                entry_of_t(&db),
+                Some((TreeType::NormalTree, true)),
+                "{case}"
+            );
+            for (key, byte) in [(b"x", 1), (b"y", 2)] {
+                let kept = db.get(T, key, None, v).unwrap().ok();
+                let held = (key == b"x" || !emptied).then(|| item(byte));
+                assert_eq!(kept, held, "{case}");
+            }
+        }
+        drop(Arc::into_inner(db).expect("the only handle on the grove"));
+        check(dir.path());
+    }
+}
+
+/// An empty indexed tree is written over a tree with an element, whose
+/// records the batch leaves: the subtree of the old tree leaves with the
+/// batch. A batch that also holds a write under the key, of a record of
+/// the new tree's primary or of one of its secondaries, is refused as not
+/// supported, and nothing of it is applied: what it writes would go into
+/// a subtree that leaves, or beside one. GroveDB makes no such batch.
+#[test]
+fn an_empty_indexed_tree_over_a_filled_tree_is_refused_beside_a_write_under_its_key() {
+    use grovedb_element::indexed::IndexAxis;
+    use grovedb_storage::prefix::secondary_prefix_for;
+
+    use super::indexed::{Indexed, Sum};
+
+    let v = version();
+    let (dir, db) = grove(true);
+    let engine = db.engine();
+    let own = build_prefix(T.into()).value;
+    let secondary = secondary_prefix_for(&own, IndexAxis::Sum.tag()).value;
+    for beside_the_primary in [false, true] {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let root = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+        let mut merk = Merk::open_base(root, TreeType::NormalTree, NO_COST, v)
+            .unwrap()
+            .expect("the root Merk");
+        let indexed = (Sum::empty().serialize(v)).expect("the bytes of an element");
+        let put = Op::Put(indexed, TreeFeatureType::BasicMerkNode);
+        (merk.apply::<_, Vec<u8>>(&[(b"t".to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the root Merk");
+        drop(merk);
+        let named = match beside_the_primary {
+            true => engine.subtree_beside(T.into(), secondary, Some(&batch), &tx),
+            false => engine.subtree(T.into(), Some(&batch), &tx),
+        };
+        let named = named.unwrap();
+        (named.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+        drop(named);
+        let refused = engine.apply_batch(batch, &tx).unwrap();
+        let said = match refused.expect_err("a write under the key of a tree that leaves") {
+            StorageError::NotSupported(said) => said,
+            other => panic!("{other}"),
+        };
+        assert!(
+            said.contains("in a group that writes under that key"),
+            "{said}"
+        );
+        drop(tx);
+        assert_eq!(entry_of_t(&db), Some((TreeType::NormalTree, true)));
+    }
+    let kept = (db.get(T, b"x", None, v).unwrap()).expect("the element of the tree");
+    assert_eq!(kept, item(1));
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
+/// An empty count-indexed tree is written over a sum tree that was
+/// written into and emptied, whose subtree is entered with no node. The
+/// subtree stays, and is stated anew with the batch as the primary of
+/// the new tree. A record that is then written through the handle of
+/// the count secondary enters that secondary under the element, and the
+/// delete of the tree takes both out of the directory.
+#[test]
+fn an_empty_indexed_tree_over_an_emptied_tree_takes_its_subtree_as_its_primary() {
+    use grovedb_element::indexed::IndexAxis;
+    use grovedb_storage::prefix::secondary_prefix_for;
+
+    use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
+
+    use super::indexed::{Count, Indexed};
+
+    let v = version();
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+    (db.insert(ROOT, b"t", Element::empty_sum_tree(), None, None, v))
+        .unwrap()
+        .expect("a sum tree");
+    (db.insert(T, b"x", Element::new_sum_item(3), None, None, v))
+        .unwrap()
+        .expect("an element in the tree");
+    (db.delete(T, b"x", None, None, v).unwrap()).expect("the tree is emptied");
+    assert_eq!(entry_of_t(&db), Some((TreeType::SumTree, false)));
+    (db.apply_batch(vec![insert(&[], b"t", Count::empty())], None, None, v))
+        .unwrap()
+        .expect("the indexed tree is written over the emptied tree");
+    let primary = Count::empty().tree_type().expect("a tree");
+    assert_eq!(entry_of_t(&db), Some((primary, false)));
+
+    let engine = db.engine();
+    let own = build_prefix(T.into()).value;
+    let secondary = secondary_prefix_for(&own, IndexAxis::Count.tag()).value;
+    let tx = engine.start_transaction();
+    let batch = <LigninEngine as Engine>::Batch::default();
+    let named = engine
+        .subtree_beside(T.into(), secondary, Some(&batch), &tx)
+        .unwrap();
+    (named.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+    drop(named);
+    (engine.apply_batch(batch, &tx).unwrap()).expect("the record is taken");
+    (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    let entered = |prefix: [u8; 32]| {
+        let tx = engine.start_read_transaction();
+        let handle = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+        handle.entry().expect("the directory answers").is_some()
+    };
+    assert!(entered(own) && entered(secondary));
+    (db.delete(ROOT, b"t", None, None, v).unwrap()).expect("the tree is deleted");
+    assert!(!entered(own) && !entered(secondary));
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
+/// A batch at the seam writes an empty indexed tree over a tree in the
+/// tree `t` and removes the node of `t`. The write of the element is
+/// left out with everything in the subtree of `t`, which leaves, and
+/// the look for what is written over says nothing of the indexed tree:
+/// no statement anew of a subtree that leaves with the drop above, and
+/// no refusal on account of a write that is not applied. The group is
+/// applied, where the tree under the element was written into and
+/// emptied and where it is a filled indexed tree with the axis of the
+/// new one.
+#[test]
+fn an_indexed_tree_written_below_a_removed_node_goes_with_the_drop_above() {
+    use super::indexed::{Count, Indexed};
+
+    let v = version();
+    let k: &[&[u8]] = &[b"t", b"k"];
+    for filled_index in [false, true] {
+        let (dir, db) = grove(true);
+        let old = if filled_index {
+            Count::empty()
+        } else {
+            Element::empty_tree()
+        };
+        (db.insert(T, b"k", old, None, None, v))
+            .unwrap()
+            .expect("a tree in the tree");
+        if filled_index {
+            (Count::insert(&*db, k, b"y", Count::leaf(1), None, v).unwrap()).expect("a child");
+        } else {
+            (db.insert(k, b"y", item(2), None, None, v))
+                .unwrap()
+                .expect("an element in it");
+            (db.delete(k, b"y", None, None, v).unwrap()).expect("the tree is emptied");
+        }
+        let root_of_t = match db.get_raw(ROOT, b"t", None, v).unwrap() {
+            Ok(Element::Tree(root, _)) => root,
+            other => panic!("{other:?}"),
+        };
+        {
+            let engine = db.engine();
+            let tx = engine.start_transaction();
+            let entered = |at: &[&[u8]]| {
+                let handle = engine.subtree(at.into(), None, &tx).unwrap();
+                handle.entry().expect("the directory answers").is_some()
+            };
+            assert!(entered(T) && entered(k));
+            let batch = <LigninEngine as Engine>::Batch::default();
+            {
+                let within = engine.subtree(T.into(), Some(&batch), &tx).unwrap();
+                let mut merk = Merk::open_layered_with_root_key(
+                    within,
+                    root_of_t,
+                    TreeType::NormalTree,
+                    NO_COST,
+                    v,
+                )
+                .unwrap()
+                .expect("the Merk of the tree");
+                let bytes = Count::empty()
+                    .serialize(v)
+                    .expect("the bytes of an element");
+                let over = Op::Put(bytes, TreeFeatureType::BasicMerkNode);
+                (merk.apply::<_, Vec<u8>>(&[(b"k".to_vec(), over)], &[], None, v))
+                    .unwrap()
+                    .expect("an indexed tree over the tree in it");
+            }
+            {
+                let root = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+                let mut merk = Merk::open_base(root, TreeType::NormalTree, NO_COST, v)
+                    .unwrap()
+                    .expect("the root Merk");
+                (merk.apply::<_, Vec<u8>>(&[(b"t".to_vec(), Op::Delete)], &[], None, v))
+                    .unwrap()
+                    .expect("the node of the tree is removed");
+            }
+            let mut group = <LigninEngine as Engine>::WriteGroup::default();
+            (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+            let applied = engine.apply_write_group(group, &tx).unwrap();
+            applied.map(|_| ()).expect("the group is applied");
+            assert!(!entered(T) && !entered(k), "a filled index: {filled_index}");
+            (engine.commit_transaction(tx).unwrap()).expect("a commit");
+        }
+        assert!(db.get_raw(ROOT, b"t", None, v).unwrap().is_err());
+        drop(Arc::into_inner(db).expect("the only handle on the grove"));
+        check(dir.path());
+    }
+}
+
+/// A batch at the seam writes an empty indexed tree over a tree with an
+/// element, and drops the subtree of that tree itself. The look for
+/// what is written over does not judge that subtree, which the batch's
+/// own drop takes, and has the node of the element written as one that
+/// hosts nothing: the batch is applied, and the subtree is entered no
+/// more.
+///
+/// Where the old tree is a filled indexed tree with the axis of the new
+/// one, and the batch drops its primary alone, the secondary keeps its
+/// rows: the batch is refused as not supported, and nothing of it is
+/// applied.
+#[test]
+fn an_indexed_tree_written_over_a_tree_whose_subtree_the_batch_drops_itself_is_applied() {
+    use grovedb_merk::{store::lignin::LigninSubtree, tree::hash::NULL_HASH};
+
+    use super::indexed::{Count, Indexed};
+
+    let v = version();
+    let (dir, db) = grove(true);
+    assert_eq!(entry_of_t(&db), Some((TreeType::NormalTree, true)));
+    let counted: &[&[u8]] = &[b"counted"];
+    (db.insert(ROOT, b"counted", Count::empty(), None, None, v))
+        .unwrap()
+        .expect("an indexed tree");
+    (Count::insert(&*db, counted, b"y", Count::leaf(1), None, v).unwrap()).expect("a child");
+    let empty = Count::empty()
+        .serialize(v)
+        .expect("the bytes of an element");
+    {
+        let engine = db.engine();
+        // The value hash of an indexed tree with no node in either of
+        // its two Merks, as GroveDB makes it.
+        fn over(
+            engine: &LigninEngine,
+            batch: &<LigninEngine as Engine>::Batch,
+            tx: &<LigninEngine as Engine>::Transaction<'_>,
+            (key, empty): (&[u8], &[u8]),
+            v: &GroveVersion,
+        ) {
+            let root = engine.subtree(ROOT, Some(batch), tx).unwrap();
+            let mut merk = Merk::open_base(root, TreeType::NormalTree, NO_COST, v)
+                .unwrap()
+                .expect("the root Merk");
+            let cost = u32::try_from(empty.len()).expect("a short element");
+            let feature = TreeFeatureType::BasicMerkNode;
+            let put = Op::PutLayeredCountIndexedReference(
+                empty.to_vec(),
+                cost,
+                NULL_HASH,
+                NULL_HASH,
+                feature,
+            );
+            (merk.apply::<_, Vec<u8>>(&[(key.to_vec(), put)], &[], None, v))
+                .unwrap()
+                .expect("an indexed tree over the tree");
+        }
+        {
+            let tx = engine.start_transaction();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            over(engine, &batch, &tx, (b"counted", &empty), v);
+            batch.drop_subtree(&LigninSubtree::alone(build_prefix(counted.into()).value));
+            let refused = engine.apply_batch(batch, &tx).unwrap();
+            let said = match refused.expect_err("the rows of the secondary stay") {
+                StorageError::NotSupported(said) => said,
+                other => panic!("{other}"),
+            };
+            assert!(
+                said.contains("holds rows that the batch does not remove"),
+                "{said}"
+            );
+        }
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        over(engine, &batch, &tx, (b"t", &empty), v);
+        batch.drop_subtree(&LigninSubtree::alone(build_prefix(T.into()).value));
+        (engine.apply_batch(batch, &tx).unwrap()).expect("the batch is applied");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    }
+    assert_eq!(entry_of_t(&db), None);
+    assert_eq!(
+        db.get(ROOT, b"t", None, v).unwrap().ok(),
+        Some(Count::empty())
+    );
+    (Count::insert(&*db, counted, b"z", Count::leaf(2), None, v).unwrap())
+        .expect("the filled tree takes a child");
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
+/// D-277 is of a subtree whose key holds an element. Where a key holds
+/// none, a record that a handle by prefix wrote entered the subtree of
+/// its path under no element, and a record written by that path
+/// afterwards finds no element to host the subtree either: it goes into
+/// the subtree as it is entered, as on RocksDB.
+#[test]
+fn a_record_by_the_path_of_a_key_with_no_element_goes_into_the_subtree_under_no_element() {
+    let (dir, db) = grove(false);
+    let engine = db.engine();
+    let at: &[&[u8]] = &[b"none"];
+    let prefix = build_prefix(at.into()).value;
+    for by_path in [false, true] {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = match by_path {
+            true => engine.subtree(at.into(), Some(&batch), &tx),
+            false => engine.subtree_by_prefix(prefix, Some(&batch), &tx),
+        };
+        let handle = handle.unwrap();
+        let key: &[u8] = if by_path { b"by path" } else { b"by prefix" };
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        (engine.apply_batch(batch, &tx).unwrap()).expect("the record is taken");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    }
+    {
+        let tx = engine.start_read_transaction();
+        let read = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+        for key in [&b"by path"[..], b"by prefix"] {
+            let record = read.aux().get(key).unwrap().expect("a read");
+            assert_eq!(record.as_deref(), Some(b"v".as_slice()));
+        }
+        let entry = read.entry().expect("the directory answers");
+        assert_eq!(entry.expect("entered").host, None);
+    }
     drop(Arc::into_inner(db).expect("the only handle on the grove"));
     check(dir.path());
 }
