@@ -17,13 +17,19 @@
 
 use std::sync::atomic::Ordering::Relaxed;
 
-use super::*;
+use super::{
+    full::Mode,
+    reserve::{device, held, DIR, KEPT},
+    *,
+};
+use lignin_io::sim::{Fault, FaultRule, OpKind};
 use lignin_store::flush::FlushConfig;
 
 use crate::{
     checkpoint::CheckpointOptions,
     commit::CommitError,
     db::{DbError, Reopen, WriteError},
+    space::{out_of_space, Reserve},
 };
 
 /// A checkpoint at `target` of a new database at `live`, both on `vfs`,
@@ -309,4 +315,160 @@ fn the_open_turns_the_log_that_its_checkpoint_filled() {
     );
     assert_eq!(changes, here, "a thread of the background work wrote");
     opened.close().expect("the session ends");
+}
+
+/// Every entry below `dir` on `vfs`, by its path.
+fn entries(vfs: &dyn Vfs, dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in vfs.read_dir(dir).expect("a listing") {
+        let path = dir.join(&entry.name);
+        if entry.kind == lignin_io::EntryKind::Dir {
+            found.extend(entries(vfs, &path));
+        }
+        found.push(path);
+    }
+    found.sort();
+    found
+}
+
+/// The release of a reserve starts neither thread (D-309): the gate
+/// wins. A session that keeps a reserve is opened on what an earlier
+/// session left in its log, with a Merk that was dropped and not
+/// reclaimed, and is asked for no commit. A call that a full device
+/// refuses, a flush or the creation of a checkpoint, releases the
+/// reserve, and the reclaimer's thread is woken as the thread of a
+/// session that runs is. Then the device has room again. The mark that
+/// the wait of the two threads looks at is not set; write-back's loop
+/// ends two turns, and no pass of the cleaner and no round of the
+/// reclaimer has been made; the reserve is not filled; and the directory
+/// has no entry that it did not have before the call, and the reserve's
+/// file no more.
+///
+/// A commit that is asked afterwards, whatever it is answered, starts
+/// both threads.
+#[test]
+fn the_release_of_a_reserve_starts_no_cleaning_where_no_commit_was_asked() {
+    for (seed, call) in [(91, "a flush"), (92, "the creation of a checkpoint")] {
+        let (fs, options) = device(seed, KEPT);
+        let dir = Path::new(DIR);
+        {
+            // It ends as a process that is killed: nothing is written
+            // back, and nothing of the drop is reclaimed.
+            let earlier = open_at_rest(dir, &options).expect("a new database");
+            plant(&earlier, subtree(1), Merk::sized(b'k', 10, 4000));
+            plant(&earlier, subtree(3), Merk::sized(b'm', 40, 20));
+            let writes = Writes {
+                drop: vec![subtree(3)],
+                ..Writes::default()
+            };
+            writes.commit(&earlier);
+        }
+        let db = Db::open(dir, &options).unwrap_or_else(|error| panic!("{call}: {error}"));
+        let store = &db.shared.store;
+        at_rest(&db);
+        assert!(db.stats().reserve.held, "{call}");
+        assert_eq!(held(&fs), KEPT, "{call}");
+        let before = entries(&fs, dir);
+        let woken = store.signal.wakes.load(Relaxed);
+
+        let full = match call {
+            "a flush" => Mode::Full,
+            _ => Mode::FullButSyncs,
+        };
+        fs.add_rule(full.rule(0).torn_append(false));
+        let refused: Box<dyn std::error::Error> = match call {
+            "a flush" => Box::new(db.flush().expect_err("a flush")),
+            _ => {
+                let made = db.checkpoint(Path::new("/checkpoint"), CheckpointOptions::default());
+                Box::new(made.expect_err("a checkpoint"))
+            }
+        };
+        assert!(out_of_space(&*refused), "{call}: {refused}");
+        fs.clear_rules();
+
+        let reserve = db.stats().reserve;
+        assert_eq!(
+            (reserve.held, reserve.releases, reserve.bytes_released),
+            (false, 1, KEPT),
+            "{call}: {reserve:?}"
+        );
+        assert_eq!(held(&fs), 0, "{call}");
+        assert!(store.signal.wakes.load(Relaxed) > woken, "{call}: not told");
+        assert!(!store.signal.was_asked(), "{call}: the release let them go");
+        at_rest(&db);
+        let stats = db.stats();
+        assert_eq!(
+            (stats.cleaner.passes, stats.cleaner.value_passes),
+            (0, 0),
+            "{call}: the cleaner made a pass"
+        );
+        assert_eq!(store.signal.rounds.load(Relaxed), 0, "{call}");
+        assert_eq!(stats.reclaimed, waiting(), "{call}");
+        assert_eq!(
+            (stats.reserve.held, stats.reserve.fills),
+            (false, 1),
+            "{call}: {:?}",
+            stats.reserve
+        );
+        let after = entries(&fs, dir);
+        let gained: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert!(gained.is_empty(), "{call}: {gained:?}");
+        assert!(!after.contains(&dir.join(Reserve::FILE_NAME)), "{call}");
+
+        // Whatever this is answered: the session of the flush has ended
+        // for writes.
+        let asked = Writes {
+            records: vec![(Column::Aux, subtree(1), b"a".to_vec(), b"x".to_vec())],
+            ..Writes::default()
+        };
+        let _ = asked.with(|batch| db.write(batch, &mut NoStaleHashes));
+        assert!(store.signal.was_asked(), "{call}");
+        wait_for("a round of the reclaimer and a pass of the cleaner", || {
+            store.signal.rounds.load(Relaxed) >= 1 && db.stats().cleaner.passes >= 1
+        });
+    }
+}
+
+/// The open makes its turns of write-back before it fills the reserve
+/// (DF9), so a turn of the open that the device refuses for room
+/// releases no reserve. The directory has the reserve of an earlier
+/// session, which ended as a process that is killed, and the first
+/// segment file that this open asks for is refused for room, once. The
+/// open succeeds. The session was told of one refusal for room and of one
+/// failed turn of write-back, it has released nothing, and it holds its
+/// reserve, which is whole on the device.
+#[test]
+fn a_turn_of_the_open_that_is_refused_for_room_releases_no_reserve() {
+    let (fs, options) = device(93, KEPT);
+    let dir = Path::new(DIR);
+    {
+        let earlier = open_at_rest(dir, &options).expect("a new database");
+        plant(&earlier, subtree(1), Merk::sized(b'k', 10, 20));
+    }
+    assert_eq!(held(&fs), KEPT);
+    fs.add_rule(
+        FaultRule::new(Fault::Enospc)
+            .on(OpKind::Open)
+            .at(dir.join("seg/00000001.seg"))
+            .times(1),
+    );
+    let db = Db::open(dir, &options).unwrap_or_else(|error| panic!("{error}"));
+    let stats = db.stats();
+    assert_eq!(
+        stats.background.write_back_errors, 1,
+        "{:?}",
+        stats.background
+    );
+    let reserve = stats.reserve;
+    assert_eq!(
+        (reserve.refusals, reserve.releases, reserve.held),
+        (1, 0, true),
+        "{reserve:?}"
+    );
+    assert_eq!(held(&fs), KEPT);
+    let store = &db.shared.store;
+    wait_for("the loop writes what the open could not", || {
+        store.pool.oldest_unwritten().is_none()
+    });
+    assert_eq!(db.stats().reserve.releases, 0);
 }
