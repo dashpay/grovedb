@@ -38,6 +38,18 @@ mod tests {
         Element, Error, PendingPrefixDropsReport,
     };
 
+    /// Whether the engine of the suite keeps the records of a tree that was
+    /// dropped flat under their prefix until the drain of the drop's
+    /// record. RocksDB does: the drain deletes the ranges. LigninDB drops
+    /// the subtree with the commit of the drop, and its drain removes the
+    /// record and what the drop left beside the subtree
+    /// (`docs/lignindb/engine.md`, "Flat drops and their drain"). So a read
+    /// of the dropped prefix made directly, and a tree made again at the
+    /// dropped path before the drain, find the old records on the one and
+    /// not on the other. Everything else of a flat drop and its drain is
+    /// asserted alike.
+    const KEPT_UNTIL_THE_DRAIN: bool = !cfg!(grovedb_test_engine = "lignin");
+
     /// Number of keys physically present in the data namespace under
     /// `prefix` (committed state).
     fn data_namespace_key_count(db: &TempGroveDb, prefix: [u8; 32]) -> usize {
@@ -336,9 +348,13 @@ mod tests {
         db.commit_transaction(tx).unwrap().expect("commit");
 
         // Committed but not yet flushed: the grove is consistent, the
-        // orphaned bytes still exist, the record is durable.
+        // orphaned bytes still exist where the engine keeps them until the
+        // drain, the record is durable.
         assert_grove_verifies(&db, grove_version);
-        assert!(data_namespace_key_count(&db, prefix) > 0);
+        assert_eq!(
+            data_namespace_key_count(&db, prefix) > 0,
+            KEPT_UNTIL_THE_DRAIN
+        );
         assert!(record_exists(&db, prefix));
 
         let report = db
@@ -489,14 +505,17 @@ mod tests {
         // record drains is a contract violation: the old tree's stale nodes
         // still sit inside the re-derived (identical) prefix, polluting the
         // new tree's namespace — verification-visible, even though the
-        // root hash and live reads are unaffected.
+        // root hash and live reads are unaffected. On an engine that
+        // dropped the old tree's records with the drop there is nothing
+        // under the prefix but the new tree, and the grove verifies.
         let polluted = db
             .verify_grovedb(None, true, false, grove_version)
             .map(|issues| !issues.is_empty())
             .unwrap_or(true);
-        assert!(
-            polluted,
-            "recreated-path pollution should be visible to verify_grovedb"
+        assert_eq!(
+            polluted, KEPT_UNTIL_THE_DRAIN,
+            "recreated-path pollution is visible to verify_grovedb where the engine keeps the \
+             dropped records until the drain, and nowhere else"
         );
     }
 
@@ -1165,7 +1184,10 @@ mod tests {
             .expect("apply batch in tx");
         db.commit_transaction(tx).unwrap().expect("commit");
 
-        assert!(data_namespace_key_count(&db, prefix) > 0);
+        assert_eq!(
+            data_namespace_key_count(&db, prefix) > 0,
+            KEPT_UNTIL_THE_DRAIN
+        );
         assert!(record_exists(&db, prefix));
         let report = db.flush_pending_prefix_drops(grove_version).expect("flush");
         assert_eq!(report.reclaimed_records, 1);
