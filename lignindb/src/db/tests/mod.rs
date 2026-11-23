@@ -23,6 +23,7 @@ mod power;
 mod reads;
 mod reclaim;
 mod reopen;
+mod reserve;
 mod room;
 mod schedules;
 mod stress;
@@ -999,23 +1000,9 @@ pub(super) fn halt_background(db: &Db) {
 /// - The cleaner's first turn is a pass over the segments and one over
 ///   the value log, with the file operations of both.
 ///
-/// This is [`Db::open`] up to the start of its threads, step for step, and
-/// has to be kept so. The handle ends as one that [`halt_background`] was
-/// called on does: when it is dropped, as a process that is killed.
+/// This is the part of [`Db::open`] before the start of its threads
+/// (`Db::open_at_rest`). The handle ends as one that [`halt_background`]
+/// was called on does: when it is dropped, as a process that is killed.
 pub(super) fn open_at_rest(dir: impl AsRef<Path>, options: &Options) -> Result<Db, OpenError> {
-    let dir = dir.as_ref();
-    let opened = crate::db::open::open_dir(dir, options)?;
-    let (shared, directory, _) = crate::db::open::open_store(dir, options, opened.manifest)?;
-    shared
-        .adopt_drops(&directory)
-        .map_err(OpenError::catalog("what earlier drops left"))?;
-    Ok(Db {
-        shared: Arc::new(shared),
-        threads: Mutex::new(None),
-        created: opened.created,
-        opening: crate::db::Opening::default(),
-        unchecked: std::sync::atomic::AtomicBool::new(false),
-        hash_rules: Mutex::new(None),
-        guard: opened.lock,
-    })
+    Db::open_at_rest(dir.as_ref(), options)
 }

@@ -27,11 +27,13 @@ use lignin_tree::{
 
 use super::{
     error::OpenError,
+    reserve::SessionReserve,
     store::{Catalog, Shared},
 };
 use crate::{
     checkpoint::{is_reserved, DELETING_FILE_NAME},
     options::Options,
+    space::Reserve,
     txn::{KeySet, Keyspaces, WritePath},
 };
 
@@ -417,7 +419,8 @@ pub(super) fn open_store(
     let recovered = recover(manifest, &options.recovery())?;
     let recovery = began.elapsed();
     let landed = recovered.landed();
-    let troubles = Arc::new(super::store::Troubles::default());
+    let reserve = SessionReserve::new(options.vfs.clone(), dir, options.reserve);
+    let troubles = Arc::new(super::store::Troubles::keeping(reserve));
     let told = troubles.clone();
     let store = super::store::Store {
         vfs: options.vfs.clone(),
@@ -640,6 +643,8 @@ pub(super) fn foreign_entries(vfs: &dyn Vfs, dir: &Path) -> std::io::Result<Vec<
             || name == ManifestStore::FILE_NAME
             || name == ManifestStore::TEMP_FILE_NAME
             || name == DELETING_FILE_NAME
+            || name == Reserve::FILE_NAME
+            || name == Reserve::UNFINISHED_FILE_NAME
     };
     let entries = vfs.read_dir(dir)?;
     let mut names: Vec<OsString> = (entries.into_iter())

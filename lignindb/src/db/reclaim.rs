@@ -281,7 +281,7 @@ impl Shared {
                 let Some(directory) = store.directories.at(guard.latest()) else {
                     store
                         .troubles
-                        .reclaim_failed(&"no handle is kept for the latest version");
+                        .reclaim_held_back(&"no handle is kept for the latest version");
                     return true;
                 };
                 let made = reclaimer.reclaim(&mut job.reclaim, &directory, &columns, &guard, STEPS);
@@ -432,6 +432,9 @@ impl Shared {
     /// up to `FlushConfig::max_failed_wait` of the session's write-back,
     /// whoever wakes it. The wait is `idle` again after the first round in
     /// which nothing fails. A call that a page held back is no failure.
+    /// A wait after a failed round ends before its time where the session
+    /// releases its reserve meanwhile, or has released it since the last
+    /// wait of the thread ended ([`Shared::room_made`]).
     pub(super) fn reclaim_loop(&self, idle: std::time::Duration) {
         let store = &*self.store;
         store.signal.attach(thread::current());
@@ -453,7 +456,7 @@ impl Shared {
                 None if !round.more => {
                     #[cfg(test)]
                     store.signal.idled.fetch_add(1, Ordering::Relaxed);
-                    thread::park_timeout(idle)
+                    store.signal.idle(idle)
                 }
                 None => {}
             }

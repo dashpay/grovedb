@@ -86,6 +86,14 @@ pub struct Options {
     /// write transaction held back, are tried again after this long at
     /// most. Write-back's loop has its own idle time, in [`Self::flush`].
     pub idle: Duration,
+    /// The bytes of the reserve that the session keeps in the database
+    /// directory ([`Reserve`](crate::space::Reserve)): room that the
+    /// session gives back when the device is full, and takes again once
+    /// room is back (`disk-full-and-backup.md`, DF13). The open writes
+    /// the reserve where the directory has none of this length. With 0,
+    /// the default, the session keeps none and touches no file of the
+    /// reserve's two names.
+    pub reserve: u64,
     /// The file system the database is in. Tests pass a simulated one
     /// (`lignin_io::sim`).
     pub vfs: Arc<dyn Vfs>,
@@ -124,6 +132,7 @@ impl Default for Options {
             flush: None,
             cleaner: None,
             idle: Self::DEFAULT_IDLE,
+            reserve: 0,
             vfs: Arc::new(StdVfs),
         }
     }
@@ -140,6 +149,7 @@ impl fmt::Debug for Options {
             .field("flush", &self.flush)
             .field("cleaner", &self.cleaner)
             .field("idle", &self.idle)
+            .field("reserve", &self.reserve)
             .finish_non_exhaustive()
     }
 }
@@ -161,6 +171,7 @@ mod tests {
         assert_eq!(options.flush, None);
         assert_eq!(options.cleaner, None);
         assert_eq!(options.idle, Duration::from_millis(100));
+        assert_eq!(options.reserve, 0);
     }
 
     /// What the store's recovery is told is what the options say: the
@@ -214,6 +225,7 @@ mod tests {
             "flush: None",
             "cleaner: Some(",
             "idle: 100ms",
+            "reserve: 0",
             "..",
         ] {
             assert!(text.contains(field), "{field} in {text}");

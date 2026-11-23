@@ -412,8 +412,7 @@ fn a_pass_that_holds_a_page_while_it_is_freed_links_nothing_of_it() {
         vfs: Arc::new(watched.clone()),
         ..options()
     };
-    let db = Db::open(dir.path(), &options).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest(dir.path(), &options).expect("a new database");
     let store = &*db.shared.store;
     let pass = || db.shared.write_back().pass().expect("a pass");
     let settle = |merks: u64| {
@@ -569,8 +568,10 @@ fn a_page_that_is_freed_before_it_was_written_back_is_reclaimed_and_recovered() 
         vfs: Arc::new(fs.clone()),
         ..options()
     };
-    let db = Db::open("/db", &options).expect("a new database");
-    halt_background(&db);
+    // With neither thread from the open on: a turn that write-back's
+    // thread made before it was ended would have given the pages of the
+    // creation their blocks.
+    let db = open_at_rest("/db", &options).expect("a new database");
 
     let settle = |merks: u64| {
         for _ in 0..1_000 {

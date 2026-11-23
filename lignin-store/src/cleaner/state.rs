@@ -109,6 +109,10 @@ pub struct CleanerState {
     pub(super) space: Mutex<Space>,
     pub(super) wake: Mutex<bool>,
     pub(super) woken: Condvar,
+    /// Whether room was made on the device since the loop last ended a
+    /// sleep ([`Self::room_made`]). It is set and cleared under the lock
+    /// on `wake` only.
+    pub(super) room_made: AtomicBool,
     pub(super) stopping: AtomicBool,
     /// What a test does between the copy of a block and the switch of its
     /// link.
@@ -141,6 +145,7 @@ impl CleanerState {
             space: Mutex::default(),
             wake: Mutex::new(false),
             woken: Condvar::new(),
+            room_made: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
             #[cfg(test)]
             at_switch: Mutex::default(),
@@ -187,16 +192,33 @@ impl CleanerState {
         self.woken.notify_all();
     }
 
+    /// Notes that room was made on the device, and wakes the loop
+    /// ([`Cleaner::room_made`](super::Cleaner::room_made)): the sleep
+    /// that the loop is in, or the one that follows the turn it is in,
+    /// ends at once, whichever kind it is ([`Self::sleep`]). The mark is
+    /// set under the lock that a sleep holds whenever it does not wait,
+    /// and the sleep that finds it clears it under the same lock: one
+    /// call ends one sleep.
+    pub(super) fn room_made(&self) {
+        let _woken = lock(&self.wake);
+        self.room_made.store(true, Ordering::Release);
+        self.woken.notify_all();
+    }
+
     /// The sleep of the background loop between two turns: until it is
     /// woken or its idle time has passed after a turn in which no pass
     /// failed (`failed_wait` is `None`), and for `failed_wait` after one in
-    /// which a pass did, whoever wakes it. The end of the loop ends both.
+    /// which a pass did, whoever wakes it. The end of the loop ends both,
+    /// and so does a call that room was made ([`Self::room_made`]), which
+    /// ends the one sleep that is running when it comes or that begins
+    /// next.
     pub(super) fn sleep(&self, failed_wait: Option<Duration>) {
         let stopping = || self.stopping.load(Ordering::Acquire);
+        let room_made = || self.room_made.load(Ordering::Acquire);
         let mut woken = lock(&self.wake);
         match failed_wait {
             None => {
-                if !*woken && !stopping() {
+                if !*woken && !stopping() && !room_made() {
                     let (next, _) = self
                         .woken
                         .wait_timeout(woken, self.config.idle)
@@ -206,7 +228,7 @@ impl CleanerState {
             }
             Some(wait) => {
                 let began = Instant::now();
-                while !stopping() {
+                while !stopping() && !room_made() {
                     let Some(left) = wait.checked_sub(began.elapsed()) else {
                         break;
                     };
@@ -219,5 +241,6 @@ impl CleanerState {
             }
         }
         *woken = false;
+        self.room_made.store(false, Ordering::Release);
     }
 }

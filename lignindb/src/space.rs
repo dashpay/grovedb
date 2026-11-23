@@ -63,10 +63,12 @@
 //! less than the writer needs, and the reserve cannot be filled again:
 //! the engine then runs on what the operator frees.
 //!
-//! **The engine does not do steps 2 and 6 yet.** Whoever opens a database
-//! can: the reserve is a file beside the store's, which the engine leaves
-//! alone as it leaves every entry that is not its own (P-03). The wiring
-//! into [`Db`](crate::Db) comes with the cleaner's.
+//! **A session that keeps a reserve does steps 2 and 6 by itself**
+//! ([`Options::reserve`](crate::Options::reserve)): it releases the
+//! reserve when the device refuses it something for room, and fills it
+//! again from the cleaner's thread. `disk-full-and-backup.md` says when,
+//! in DF13. A session that keeps none makes no call of a reserve, and
+//! whoever opens the database can keep one by the calls of [`Reserve`].
 
 use std::{
     collections::hash_map::RandomState,
@@ -131,6 +133,9 @@ const CHUNK_LEN: usize = 1 << 20;
 /// fills at once, or a fill beside a release, one can take away the file
 /// the other is writing or give its name to another, and a fill can then
 /// return with no reserve left, or with one that is short or not durable.
+/// A session that keeps a reserve
+/// ([`Options::reserve`](crate::Options::reserve)) is that caller from
+/// its open to its close, and makes its calls one at a time.
 #[derive(Debug, Clone)]
 pub struct Reserve {
     vfs: Arc<dyn Vfs>,
@@ -240,6 +245,31 @@ impl Reserve {
         match self.vfs.remove_file(&self.path) {
             Ok(()) => Ok(held),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Takes the two files of a reserve off the device, each by itself:
+    /// what a fill that was cut short left
+    /// ([`Self::UNFINISHED_FILE_NAME`]) and the reserve
+    /// ([`Self::FILE_NAME`]), in this order. For each it returns the
+    /// bytes that the file held if it was removed, `None` if there was no
+    /// file of that name, and the file layer's error if the length of the
+    /// file could not be read or the file could not be removed. Nothing
+    /// is synced, as in [`Self::release`].
+    pub fn take_away(&self) -> [io::Result<Option<u64>>; 2] {
+        [&self.unfinished, &self.path].map(|path| self.take(path))
+    }
+
+    fn take(&self, path: &Path) -> io::Result<Option<u64>> {
+        let len = match self.vfs.open(path, OpenMode::Read) {
+            Ok(file) => file.len()?,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        match self.vfs.remove_file(path) {
+            Ok(()) => Ok(Some(len)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error),
         }
     }

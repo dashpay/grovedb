@@ -506,6 +506,95 @@ fn a_turn_in_which_a_pass_failed_is_followed_by_a_wait_that_grows_to_a_bound() {
     assert_eq!(reported, 7);
 }
 
+/// The cleaner's loop waits an hour after a turn in which a pass
+/// failed. Told that room was made, it takes its next turn at once, each
+/// time it is told: during its wait, or in the turn before it. A call
+/// that came during an earlier sleep ends no later one.
+#[test]
+fn the_cleaners_loop_takes_its_next_turn_at_once_when_it_is_told_that_room_was_made() {
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::{Duration, Instant},
+    };
+
+    let hour = Duration::from_secs(3600);
+    let flush = FlushConfig {
+        max_failed_wait: hour,
+        ..small_segments()
+    };
+    let db = Db::with(flush);
+    let state = CleanerState::new(CleanerConfig {
+        idle: hour,
+        ..eager()
+    });
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let turns = AtomicU64::new(0);
+    let reached = |wanted: u64| {
+        let began = Instant::now();
+        while turns.load(Ordering::Acquire) < wanted && began.elapsed() < Duration::from_secs(60) {
+            std::thread::yield_now();
+        }
+        turns.load(Ordering::Acquire) >= wanted
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            cleaner.run(
+                |_| {
+                    turns.fetch_add(1, Ordering::AcqRel);
+                    Err(CleanerError::Values(ValueStoreError::FileIdsExhausted))
+                },
+                |_| {},
+            )
+        });
+        let first = reached(1);
+        let mut told = Vec::new();
+        for wanted in 2..=4 {
+            cleaner.room_made();
+            told.push(reached(wanted));
+        }
+        cleaner.stop();
+        assert!(first, "the loop made no turn");
+        assert_eq!(told, [true; 3], "the loop went on waiting");
+    });
+
+    // The sleep by itself: a call ends the one that is running or that
+    // begins next, and no later one.
+    let state = CleanerState::new(CleanerConfig {
+        idle: hour,
+        ..eager()
+    });
+    // Whether a sleep of an hour ends by itself within a minute. A
+    // sleeper whose wait goes on is let go.
+    let ends = |failed_wait: Option<Duration>| {
+        std::thread::scope(|scope| {
+            let sleeper = scope.spawn(|| state.sleep(failed_wait));
+            let began = Instant::now();
+            while !sleeper.is_finished() && began.elapsed() < Duration::from_secs(60) {
+                std::thread::yield_now();
+            }
+            let ended = sleeper.is_finished();
+            state.stopping.store(true, Ordering::Release);
+            state.wake();
+            sleeper.join().expect("the sleeper");
+            state.stopping.store(false, Ordering::Release);
+            ended
+        })
+    };
+    state.room_made();
+    assert!(ends(Some(hour)), "the wait went on");
+    let wait = Duration::from_millis(60);
+    let began = Instant::now();
+    state.sleep(Some(wait));
+    assert!(began.elapsed() >= wait, "{:?}", began.elapsed());
+    // The sleep after a turn in which no pass failed ends for the call
+    // as well, and uses it up.
+    state.room_made();
+    assert!(ends(None), "the idle sleep went on");
+    let began = Instant::now();
+    state.sleep(Some(wait));
+    assert!(began.elapsed() >= wait, "{:?}", began.elapsed());
+}
+
 /// The loop itself, with somebody who wakes it all the time: after each
 /// turn in which a pass failed it waits as long as it was to, at least.
 #[test]

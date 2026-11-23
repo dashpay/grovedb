@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use lignin_io::sim::{FaultRule, OpSet, SimConfig, SimVfs};
 
-use super::{halt_background, numbered, options, plant, subtree, temp, Merk, Writes};
+use super::{numbered, open_at_rest, options, plant, subtree, temp, Merk, Writes};
 use crate::{
     db::Db,
     snapshot::{Listed, ReadError},
@@ -32,9 +32,8 @@ fn listed(db: &Db) -> Vec<Listed> {
 #[test]
 fn every_entry_is_listed_in_the_order_of_its_prefix_with_whether_it_is_in_use() {
     let dir = temp();
-    let db = Db::open(dir.path(), &options()).expect("a new database");
     // Nothing is reclaimed but what the test asks for.
-    halt_background(&db);
+    let db = open_at_rest(dir.path(), &options()).expect("a new database");
     assert!(listed(&db).is_empty());
 
     plant(&db, subtree(9), Merk::sized(1, 5, 10));

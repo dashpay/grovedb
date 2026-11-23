@@ -153,8 +153,7 @@ fn the_cleaner_moves_what_lives_beside_what_a_drop_left_dead() {
         cleaner: Some(policy()),
         ..options()
     };
-    let db = Db::open(dir.path(), &cleaning).expect("a new database");
-    halt_background(&db);
+    let db = open_at_rest(dir.path(), &cleaning).expect("a new database");
     let (stays, goes) = half_dead(&db);
 
     let mut turns = 0;
@@ -264,6 +263,12 @@ struct Moving {
 
 impl Moving {
     fn new(seed: u64) -> Self {
+        Self::keeping(seed, 0)
+    }
+
+    /// As [`Self::new`], in a session that keeps a reserve of `reserve`
+    /// bytes.
+    fn keeping(seed: u64, reserve: u64) -> Self {
         use std::collections::BTreeSet;
 
         use lignin_io::sim::{Event, OpKind, SimConfig, SimVfs};
@@ -278,6 +283,7 @@ impl Moving {
                 max_pass_bytes: 1,
                 ..policy()
             }),
+            reserve,
             ..options()
         };
         let db = open_at_rest("/db", &options).expect("a new database");
@@ -404,6 +410,85 @@ fn a_sync_of_a_segment_that_the_cleaner_was_refused_ends_the_session() {
     let db = open_at_rest("/db", &options).expect("the database is opened again");
     assert_eq!(db.reopen(), None);
     whole_of(&db, stays, goes);
+}
+
+/// The cleaner's thread is refused the sync of its segment, for room, in
+/// a turn of its loop that nobody is answered for and after which nobody
+/// asks the session: the last turn that a close waits for is such a turn.
+/// The cleaner has given the segment up by then, so the close finds
+/// nothing of the cleaner's to seal, and write-back says only that no
+/// table checkpoint is installed. The close answers with the error of
+/// that pass, which names the segment and has the device's refusal as its
+/// cause, as the close does that meets the refusal itself (D-225).
+#[test]
+fn a_close_after_the_cleaners_loop_lost_its_segment_answers_with_what_the_device_said() {
+    use lignin_io::sim::OpSet;
+    use lignin_store::cleaner::CleanerError;
+
+    use crate::{db::DbError, space::out_of_space};
+
+    let moving = Moving::new(49);
+    moving.refuse_the_segment(OpSet::WRITES | OpSet::SYNCS);
+    let shared = &*moving.db.shared;
+    let failed = || shared.store.troubles.cleaner.load(Ordering::Relaxed);
+    thread::scope(|scope| {
+        scope.spawn(|| crate::db::clean(shared));
+        // The loop has failed a pass: a state it reaches alone.
+        let began = std::time::Instant::now();
+        while failed() == 0 && began.elapsed() < std::time::Duration::from_secs(60) {
+            thread::yield_now();
+        }
+        shared.cleaner().stop();
+    });
+    assert!(failed() > 0, "the cleaner's loop failed no pass");
+    let (closed, options, stays, goes) = moving.close();
+    let closed = closed.expect_err("the cleaner's segment is not durable");
+    assert!(
+        matches!(
+            closed,
+            DbError::Clean(CleanerError::SegmentNotDurable { .. })
+        ),
+        "{closed}"
+    );
+    assert!(out_of_space(&closed), "{closed}");
+    let db = open_at_rest("/db", &options).expect("the database is opened again");
+    assert_eq!(db.reopen(), None);
+    whole_of(&db, stays, goes);
+}
+
+/// A close is given two errors and answers with one. The cleaner is
+/// refused, for room, the append that seals its segment, and syncs what
+/// the segment holds. Write-back, which has pages of its own to write,
+/// then fails by itself for something else. The close answers with
+/// write-back's error, which a full device did not cause, and the
+/// session, which was given both, has released its reserve (DF13).
+#[test]
+fn a_close_whose_cleaner_is_refused_for_room_releases_the_reserve_whatever_it_answers() {
+    use std::path::Path;
+
+    use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
+
+    use crate::space::{out_of_space, Reserve};
+
+    const KEPT: u64 = 48 << 10;
+    let moving = Moving::keeping(50, KEPT);
+    // A commit whose pages wait for write-back.
+    Writes {
+        enter: vec![(subtree(5), None)],
+        merks: vec![(subtree(5), Merk::sized(b'x', 8, 30))],
+        ..Writes::default()
+    }
+    .commit(&moving.db);
+    let reserve = Reserve::of(moving.options.vfs.clone(), Path::new("/db"));
+    assert_eq!(reserve.held().expect("the reserve"), KEPT);
+    moving.refuse_the_segment(OpSet::WRITES);
+    // Every other append fails, and not for room.
+    let failing = FaultRule::new(Fault::Eio).on(OpKind::Append);
+    moving.fs.add_rule(failing.forever());
+    let (closed, ..) = moving.close();
+    let closed = closed.expect_err("a close on a device that fails");
+    assert!(!out_of_space(&closed), "{closed}");
+    assert_eq!(reserve.held().expect("the reserve"), 0);
 }
 
 /// The device fills while nothing of a session is being written, and

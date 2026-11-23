@@ -507,7 +507,8 @@
 //! [`WriteBack::run`] counts a turn that fails, passes the error to its
 //! caller and goes on. **After a turn that failed it waits before the
 //! next, whoever asks for a turn** ([`FlushConfig::wait_after_failure`];
-//! `disk-full-and-backup.md`, DF12). A turn makes its pass whatever became
+//! `disk-full-and-backup.md`, DF12), unless it is told that room was made
+//! ([`WriteBack::room_made`]). A turn makes its pass whatever became
 //! of the log before it, so a committer that waits for room is never left
 //! waiting: after a turn that failed, the turn it waits for is the one
 //! after that wait.
