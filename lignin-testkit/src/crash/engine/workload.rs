@@ -9,10 +9,10 @@
 //! end of a stream, and one whose database was wiped, goes on with the next
 //! one.
 //!
-//! One kind of operation is generated with its feature switched off,
-//! because the engine does not have it yet ([`features`]), and a run on
-//! one of the first three grove versions takes no stream that appends to a
-//! tree ([`left_out`]).
+//! A stream leaves out an operation that GroveDB commits in a
+//! transaction of its own ([`Plan::stream`]), and a run on one of the
+//! first three grove versions takes no stream that appends to a tree
+//! ([`left_out`]).
 //!
 //! **The steps** are what a node does to a database beside the blocks it
 //! applies ([`Step`]). A lineage takes them from a list, or draws them:
@@ -40,15 +40,11 @@ const STREAM: u64 = 0x7665_7230_3420_7374;
 const STEPS: u64 = 0x7665_7230_3420_7370;
 
 /// What the streams of the campaign are generated for: everything the
-/// grove version has, a move in a batch among it, without the one
-/// operation that is not on the LigninDB engine yet: **the conversion of a
-/// tree in place** (`GROVE-04-F1`), for which the engine states no
-/// conversion of an indexed tree.
+/// grove version has, a move in a batch and the conversion of a tree in
+/// place among it. Of the conversions a stream keeps those that are made
+/// in the transaction of a block ([`Plan::stream`]).
 pub fn features(grove_version: &GroveVersion) -> Features {
-    Features {
-        convert_to_big_sum_tree: false,
-        ..Features::for_grove_version(grove_version)
-    }
+    Features::for_grove_version(grove_version)
 }
 
 /// Whether the stream of `ops` is left out of a run on `grove_version`:
@@ -122,7 +118,12 @@ impl Plan {
             let workload = &suite[self.order[self.tried % self.order.len()]];
             let seed = Rng::derive(self.seed, STREAM, self.tried as u64).next_u64();
             self.tried += 1;
-            let ops: Vec<Op> = workload.stream(seed).take(self.max_stream_ops).collect();
+            // The campaign makes every commit itself: an operation that
+            // GroveDB commits in a transaction of its own is left out.
+            let ops: Vec<Op> = (workload.stream(seed))
+                .filter(|op| !op.commits_by_itself())
+                .take(self.max_stream_ops)
+                .collect();
             if !left_out(self.grove_version, &ops) {
                 self.streams.push(Stream {
                     workload: workload.name(),
@@ -347,22 +348,31 @@ mod tests {
         assert_eq!(versions.len(), GROVE_VERSIONS.len());
     }
 
-    /// No stream converts a tree in place, and the streams of the grove
-    /// versions that have a move in a batch move subtrees, within the
-    /// operations a lineage takes of a stream.
+    /// The streams of the grove version that has the conversion of a
+    /// tree in place convert trees, in the transaction of a block and
+    /// never in one of their own, and those of the grove versions that
+    /// have a move in a batch move subtrees, within the operations a
+    /// lineage takes of a stream. No stream of another grove version
+    /// does either.
     #[test]
-    fn no_stream_converts_a_tree_and_some_move_a_subtree() {
-        let mut moved = 0;
+    fn streams_convert_trees_and_move_subtrees_where_the_grove_version_has_them() {
+        let (mut converted, mut moved) = (0, 0);
         for seed in 0..12 {
             let mut plan = Plan::of_seed(seed, 60);
             let has_moves = features(plan.grove_version).move_element;
             assert_eq!(has_moves, plan.grove_version.protocol_version >= 4);
+            let has_conversions = features(plan.grove_version).convert_to_big_sum_tree;
+            assert_eq!(has_conversions, plan.grove_version.protocol_version >= 5);
             let suite = Workload::suite(features(plan.grove_version)).len();
             for index in 0..suite {
                 for op in plan.stream(index).ops.iter() {
                     let converts = matches!(op, Op::Write(Write::ConvertToBigSumTree { .. }));
                     let moves = (op.batch_ops()).any(|op| matches!(op, BatchOp::Move { .. }));
-                    assert!(!converts, "seed {seed}, stream {index}: {op:?}");
+                    assert!(
+                        has_conversions || !converts,
+                        "seed {seed}, stream {index}: {op:?}"
+                    );
+                    converted += usize::from(converts);
                     assert!(has_moves || !moves, "seed {seed}, stream {index}: {op:?}");
                     assert!(
                         !op.commits_by_itself(),
@@ -373,6 +383,7 @@ mod tests {
             }
         }
         assert!(moved > 0, "no stream of twelve plans moves a subtree");
+        assert!(converted > 0, "no stream of twelve plans converts a tree");
     }
 
     /// On the first three grove versions no stream of a plan appends to a
