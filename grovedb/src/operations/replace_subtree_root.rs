@@ -11,12 +11,14 @@
 //! The caller is responsible for ensuring `new_combined_root` actually
 //! matches the subtree's underlying storage state. Intended pattern:
 //!
-//! 1. Ingest the subtree's raw storage out-of-band (typically via
-//!    [`grovedb_storage::rocksdb_storage::RocksDbStorage::ingest_subtree_sst`]).
-//! 2. Open a `StorageContext` at the subtree path and reconstruct the
-//!    appropriate typed tree (CommitmentTree / Mmr / BulkAppend / Dense).
-//! 3. Compute the post-ingest combined root via that tree's own root fn.
-//! 4. Call [`GroveDb::replace_subtree_root`] with the verified hash and a
+//! 1. Load the subtree's records with [`GroveDb::load_subtree`], on any
+//!    engine. (On the RocksDB engine alone they can also be ingested
+//!    out-of-band, with `RocksDbStorage::ingest_subtree_sst`.)
+//! 2. Compute the post-load combined root with
+//!    [`GroveDb::subtree_root_as`], which reads the subtree as the typed
+//!    tree of the element given (a Merk, or an append-only tree:
+//!    CommitmentTree / Mmr / BulkAppend / Dense / PrivateDocumentStore).
+//! 3. Call [`GroveDb::replace_subtree_root`] with the verified hash and a
 //!    correctly-constructed [`Element`] (e.g. `Element::new_commitment_tree`).
 //!
 //! Mismatches between `new_combined_root` and what re-reading the subtree

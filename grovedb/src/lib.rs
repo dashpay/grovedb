@@ -496,8 +496,9 @@ impl<E: Engine> GroveDb<E> {
 }
 
 /// The hatches to the storage of the RocksDB engine. No other engine has
-/// them, so they are on that engine by name.
-#[cfg(feature = "unsafe-dump-load")]
+/// them, so they are on that engine by name. The hatches that every engine
+/// has are in `operations/dump_load`.
+#[cfg(all(feature = "unsafe-dump-load", feature = "rocksdb_storage"))]
 impl GroveDb<RocksDbEngine> {
     /// Reborrow the underlying [`grovedb_storage::rocksdb_storage::RocksDbStorage`]
     /// for callers that need to use the public [`grovedb_storage::Storage`]

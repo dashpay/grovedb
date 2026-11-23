@@ -25,4 +25,4 @@ integer-encoding = { workspace = true }
 
 [features]
 rocksdb_storage = []
-unsafe-dump-load = ["rocksdb_storage"]
+unsafe-dump-load = []
