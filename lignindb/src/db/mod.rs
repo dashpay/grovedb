@@ -1314,6 +1314,15 @@ impl Db {
         shared.finish_reclaiming();
         let cleaned = shared.cleaner().finish();
         let written = shared.write_back().finish();
+        // The session was given both, whichever of them the close
+        // answers with: a refusal for room releases the reserve (DF13).
+        let troubles = &shared.store.troubles;
+        if let Err(error) = &cleaned {
+            troubles.refused(error);
+        }
+        if let Err(error) = &written {
+            troubles.refused(error);
+        }
         match (cleaned, written) {
             // The cleaner could not make its segment durable, and
             // write-back answers with what follows from that: it installs
@@ -1329,7 +1338,7 @@ impl Db {
             // cleaner has no segment left to close then, and the error
             // of that pass is the one that names the segment.
             (_, Err(FlushError::SegmentsNotDurable)) => {
-                let lost = shared.store.troubles.segment_lost();
+                let lost = troubles.segment_lost();
                 Err(lost.map_or(
                     DbError::Flush(FlushError::SegmentsNotDurable),
                     DbError::Clean,
