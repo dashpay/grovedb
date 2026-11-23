@@ -138,3 +138,85 @@ fn a_database_of_the_fixtures_pins_its_reads() {
     assert_eq!(engine.reads_started.load(Ordering::Relaxed), reads + 1);
     assert_eq!(engine.writes_started.load(Ordering::Relaxed), writes);
 }
+
+/// On this engine a database is checked when it is closed in a debug
+/// build: the physical checker reads every page of it and makes the stored
+/// hashes of the nodes of every Merk in use again by Merk's rules
+/// (`lignindb::Db::check_hashes_by`, which `LigninEngine` calls for every
+/// database it opens). So every database a test of the suite leaves is
+/// checked, and a store the checker calls unsound fails the test that
+/// closed it.
+///
+/// Shown on a database of the fixtures: a node of the root Merk is written
+/// with a key-value hash that is not its own, through the engine's handle,
+/// which breaks no rule of the layout. The close panics with the finding.
+#[cfg(all(grovedb_test_engine = "lignin", debug_assertions))]
+#[test]
+fn a_database_of_the_fixtures_is_checked_by_merks_rules_when_it_is_closed() {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use grovedb_merk::{
+        store::{NodeChange, NodeStore},
+        tree::{kv::ValueDefinedCostType, TreeNode},
+    };
+
+    use crate::{engine::Engine, tests::SuiteBatch};
+
+    const NO_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> = None;
+    let grove_version = GroveVersion::latest();
+
+    // A database of the fixtures that GroveDB alone wrote closes with
+    // nothing found.
+    drop(make_test_grovedb(grove_version));
+
+    let db = make_test_grovedb(grove_version);
+    {
+        let engine = db.engine();
+        let transaction = engine.start_transaction();
+        let batch = SuiteBatch::default();
+        let root_path: &[&[u8]] = &[];
+        let handle = engine
+            .subtree(root_path.into(), Some(&batch), &transaction)
+            .unwrap();
+        let root = handle
+            .root_key()
+            .unwrap()
+            .expect("a read of the root key")
+            .expect("the root Merk has a root");
+        let node = handle
+            .get_node(&root, NO_COST, grove_version)
+            .unwrap()
+            .expect("a read of the node")
+            .expect("the root is stored");
+        let wrong = TreeNode::from_fields(
+            root,
+            node.value_as_slice().to_vec(),
+            [0xee; 32],
+            node.link(true).cloned(),
+            node.link(false).cloned(),
+            node.feature_type(),
+        )
+        .unwrap();
+        handle
+            .write_node(&wrong, NodeChange::HashOnly)
+            .unwrap()
+            .expect("the node is written");
+        drop(handle);
+        engine
+            .apply_batch(batch, &transaction)
+            .unwrap()
+            .expect("the batch is applied");
+        engine
+            .commit_transaction(transaction)
+            .unwrap()
+            .expect("the commit");
+    }
+    let closed = catch_unwind(AssertUnwindSafe(move || drop(db)));
+    let panic = closed.expect_err("the database holds a hash that is not its node's");
+    let said = panic.downcast_ref::<String>().expect("a text");
+    assert!(
+        said.contains("is left unsound at version")
+            && said.contains("the stored hash differs from its recomputation"),
+        "{said}"
+    );
+}
