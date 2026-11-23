@@ -500,6 +500,8 @@ GROVE-03, D-133. On RocksDB an element that is written over a tree changes one r
 
 It looks at each write over a tree: a node that a batch of the group puts with a stated value, through a handle that had loaded the node with the element of a tree as its value (`LigninSettled::over_trees`), in a subtree whose path the engine knows. It knows the path of a subtree that a handle by path wrote into with the group: the engine tells such a handle its path (`LigninNodeStore::at_path`), and the batch keeps it for the subtree (`LigninSettled::path`). A handle keeps the keys of the nodes it loaded so, and reads nothing for it. The subtree in question is the one of the element's own path. The engine derives its prefix from that path and the node's key, and looks at it where the directory has it under that element. The element as the group leaves it is the one that the last batch of the group to state a value for the node states.
 
+The table is read for an element that is no tree or a tree that hosts one subtree. What becomes of the subtrees under an indexed tree is said in [An empty indexed tree written over a tree](#an-empty-indexed-tree-written-over-a-tree).
+
 | The element as the group leaves it | The subtree |
 | --- | --- |
 | no tree | is dropped |

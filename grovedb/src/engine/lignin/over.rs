@@ -17,6 +17,8 @@
 //! The element as the group leaves it is the one that the last batch of
 //! the group to state a value for the node states.
 //!
+//! Of an element that is no tree, or a tree that hosts one subtree:
+//!
 //! - **No tree:** the subtree is dropped.
 //! - **A tree, whose subtree the group does not write:** the subtree is
 //!   dropped if the element has no root key and the subtree has a node or
