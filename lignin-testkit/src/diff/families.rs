@@ -113,8 +113,8 @@ use grovedb_version::version::GroveVersion;
 
 use grovedb::{Element, GroveDb, SubqueryBranch};
 
-use super::state::Keyspace;
 use super::state::Record;
+use super::state::{a_secondary_holds_a_row, Keyspace};
 use crate::golden::step::{Outcome, Proof, Proved, Step, Value, Verification};
 use crate::workload::{BatchOp, Db, Op, Path, Prove, Read, StreamEngine, TransactionOp, Tx, Write};
 
@@ -676,10 +676,14 @@ impl Known {
 
     /// The places at which a batch `op` lists an insert that its caller
     /// knows not to replace (`InsertOnly`) of an indexed tree where
-    /// `transaction` reads an indexed tree in `db`, filled or not: asked
-    /// before the operation is applied. On a grove version up to the
-    /// third, where [`Known::indexed_under`] has every such put, there is
-    /// none.
+    /// `transaction` reads in `db` an indexed tree a secondary of which
+    /// holds a row, and the batch names no key in that tree or below it,
+    /// so that it removes no row of it (D-358): asked before the
+    /// operation is applied. The candidate's refusal names a key by its
+    /// bytes and no path, so a place counts only where no other operation
+    /// of the batch names a key of those bytes, in whatever tree. On a
+    /// grove version up to the third, where [`Known::indexed_under`] has
+    /// every such put, there is none.
     pub fn indexed_under_an_insert_only<'db, E: StreamEngine>(
         db: &'db Db<E>,
         transaction: &Tx<'db, E>,
@@ -712,7 +716,24 @@ impl Known {
                 places.push(joined(path, key));
             }
         }
-        places.retain(|place| named_once(op, place) && holds_an_indexed_tree(place));
+        let named_by_its_key_once = |place: &Path| {
+            let named = op.batch_ops().flat_map(keyed);
+            named.filter(|named| named.last() == place.last()).count() == 1
+        };
+        let untouched_below = |place: &Path| {
+            let mut named = op.batch_ops().flat_map(keyed);
+            !named.any(|named| named.len() > place.len() && named.starts_with(place))
+        };
+        let holds_a_row = |place: &Path| {
+            let read = a_secondary_holds_a_row(db, transaction, place);
+            read.is_ok_and(|holds| holds)
+        };
+        places.retain(|place| {
+            named_by_its_key_once(place)
+                && untouched_below(place)
+                && holds_an_indexed_tree(place)
+                && holds_a_row(place)
+        });
         places
     }
 
@@ -1052,7 +1073,7 @@ mod tests {
     use crate::{
         diff::pair::testing::scratch,
         golden::{run::Runner, step::Row},
-        workload::{PartialBatch, Transactions},
+        workload::{IndexedTree, PartialBatch, Transactions},
     };
 
     impl Known {
@@ -1203,10 +1224,11 @@ mod tests {
 
     /// An answer is of the family of an insert known not to replace over
     /// an indexed tree where a batch lists such an insert of an indexed
-    /// tree at a key at which the reference reads an indexed tree, on
-    /// grove version 4 or 5, the reference took the batch, and the
-    /// candidate's answer is `NotSupported` in the words of that refusal
-    /// for that key. Without any one of these it is of no such family.
+    /// tree at a key at which the reference reads an indexed tree with a
+    /// row in a secondary, on grove version 4 or 5, the reference took
+    /// the batch, and the candidate's answer is `NotSupported` in the
+    /// words of that refusal for that key. Without any one of these it is
+    /// of no such family.
     #[test]
     fn a_refusal_of_an_insert_known_not_to_replace_is_of_its_family_on_versions_4_and_5_alone() {
         let indexed = Element::empty_provable_count_indexed_tree;
@@ -1242,6 +1264,13 @@ mod tests {
             for op in [
                 insert(&[], b"t", Element::empty_tree()),
                 insert(&[b"t"], b"indexed", indexed()),
+                Op::Write(Write::IndexedInsert {
+                    path: path(&[b"t", b"indexed"]),
+                    key: b"entry".to_vec(),
+                    element: Element::empty_count_tree(),
+                    tree: IndexedTree::Count,
+                }),
+                insert(&[b"t"], b"bare", indexed()),
                 insert(&[b"t"], b"tree", Element::empty_tree()),
                 Op::Commit,
             ] {
@@ -1250,6 +1279,10 @@ mod tests {
                     .unwrap()
                     .unwrap_or_else(|error| panic!("{op:?}: {error}"));
             }
+            let block = transactions.block();
+            let rows = |at: &[&[u8]]| a_secondary_holds_a_row(&db, block, &path(at));
+            assert_eq!(rows(&[b"t", b"indexed"]), Ok(true));
+            assert_eq!(rows(&[b"t", b"bare"]), Ok(false));
             let under = |op: &Op| {
                 Known::indexed_under_an_insert_only(&db, transactions.block(), op, grove_version)
             };
@@ -1276,7 +1309,9 @@ mod tests {
 
             // Another operation at the key: one that can replace, a
             // conditional insert, a direct insert; another element; a
-            // key that holds another tree or nothing; the key named twice.
+            // key that holds another tree, an indexed tree with no row,
+            // or nothing; the key named twice; a key of the same bytes
+            // named in another tree; a key named in the tree itself.
             let replacing = |op: BatchOp| Op::Batch(vec![op]);
             let at = || (path(&[b"t"]), b"indexed".to_vec());
             let twice = Op::Batch(vec![
@@ -1288,6 +1323,29 @@ mod tests {
                 BatchOp::Delete {
                     path: at().0,
                     key: at().1,
+                },
+            ]);
+            let in_another_tree = Op::Batch(vec![
+                BatchOp::InsertOnly {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                },
+                BatchOp::InsertOrReplace {
+                    path: path(&[b"t", b"tree"]),
+                    key: at().1,
+                    element: indexed(),
+                },
+            ]);
+            let with_a_delete_in_it = Op::Batch(vec![
+                BatchOp::InsertOnly {
+                    path: at().0,
+                    key: at().1,
+                    element: indexed(),
+                },
+                BatchOp::Delete {
+                    path: path(&[b"t", b"indexed"]),
+                    key: b"entry".to_vec(),
                 },
             ]);
             for elsewhere in [
@@ -1310,8 +1368,11 @@ mod tests {
                 insert_only(b"indexed", Element::empty_tree()),
                 insert_only(b"indexed", Element::new_item(vec![1])),
                 insert_only(b"tree", indexed()),
+                insert_only(b"bare", indexed()),
                 insert_only(b"absent", indexed()),
                 twice,
+                in_another_tree,
+                with_a_delete_in_it,
             ] {
                 let over = under(&elsewhere);
                 assert_eq!(over, Vec::<Path>::new(), "{elsewhere:?}");

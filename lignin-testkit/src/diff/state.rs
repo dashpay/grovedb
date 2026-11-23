@@ -434,6 +434,29 @@ fn without_a_column_shown_twice(records: Vec<Record>) -> Vec<Record> {
     records
 }
 
+/// Whether a secondary tree of the indexed tree at `path` holds a row as
+/// `transaction` sees `db`: a node under the tag of one of the axes an
+/// indexed tree can be ranked on ([`AXES`]).
+pub fn a_secondary_holds_a_row<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+) -> Result<bool, String> {
+    let mut records = Vec::new();
+    for axis in AXES {
+        let secondary = Place {
+            path: path.to_vec(),
+            secondary: Some(axis.tag()),
+            data: Keyspace::Nodes,
+        };
+        list(db.engine(), transaction, &secondary, false, &mut records)?;
+    }
+    let mut rows = records
+        .iter()
+        .filter(|record| record.keyspace == Keyspace::Nodes);
+    Ok(rows.next().is_some())
+}
+
 /// The paths of the trees whose flat drops have a pending record as
 /// `transaction` sees `db`, the records it staged itself among them. A
 /// record that does not decode names no path.
