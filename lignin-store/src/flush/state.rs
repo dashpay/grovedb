@@ -320,6 +320,14 @@ pub(super) struct Turns {
     pub(super) progress: bool,
 }
 
+/// Whether a wait of `wait` after a failed turn has put a turn off
+/// ([`FlushStats::turns_put_off`](super::FlushStats::turns_put_off)): a
+/// turn was `asked` for, and the wait had `lasted` its time when the loop
+/// left it, whatever the loop found then.
+pub(super) fn put_off(asked: bool, lasted: Duration, wait: Duration) -> bool {
+    asked && lasted >= wait
+}
+
 /// The state of write-back for one open store.
 ///
 /// It is made once, when the store is opened, and lives beside the stores
@@ -522,11 +530,8 @@ impl FlushState {
             }
             Some(wait) => {
                 let began = Instant::now();
-                // Whether the wait lasted as long as it was to.
-                let mut lasted = false;
                 while !stopping() && !room_made() {
                     let Some(left) = wait.checked_sub(began.elapsed()) else {
-                        lasted = true;
                         break;
                     };
                     let (next, _) = self
@@ -535,7 +540,7 @@ impl FlushState {
                         .unwrap_or_else(PoisonError::into_inner);
                     asked = next;
                 }
-                if *asked && lasted {
+                if put_off(*asked, began.elapsed(), wait) {
                     count(&self.counters.turns_put_off, 1);
                 }
             }

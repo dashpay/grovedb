@@ -754,6 +754,39 @@ fn a_call_that_room_was_made_ends_one_wait_after_a_failed_turn() {
     assert!(began.elapsed() >= ms(60), "{:?}", began.elapsed());
 }
 
+/// A wait that lasted its time has put off the turn that was asked for
+/// in it, whatever the loop finds when it leaves the wait: a call that
+/// room was made, or the end of the loop. A wait that was left before its
+/// time has put none off, and neither has one in which no turn was asked
+/// for.
+#[test]
+fn a_wait_that_lasted_its_time_has_put_a_turn_off_whatever_came_at_its_end() {
+    use crate::flush::state::put_off;
+
+    let wait = ms(60);
+    assert!(put_off(true, wait, wait));
+    assert!(put_off(true, wait + ms(1), wait));
+    assert!(!put_off(true, wait - Duration::from_nanos(1), wait));
+    assert!(!put_off(false, wait, wait));
+
+    // The sleep itself, with a wait whose time has passed when it
+    // begins: a turn was asked for, and room was made.
+    let state = FlushState::new(FlushConfig::new(Db::SIZE));
+    state.wake();
+    state.room_made();
+    state.sleep(Some(Duration::ZERO));
+    assert_eq!(state.stats().turns_put_off, 1);
+    // No turn was asked for.
+    state.room_made();
+    state.sleep(Some(Duration::ZERO));
+    assert_eq!(state.stats().turns_put_off, 1);
+    // A turn was asked for, and the loop is told to end.
+    state.wake();
+    state.stopping.store(true, Ordering::Release);
+    state.sleep(Some(Duration::ZERO));
+    assert_eq!(state.stats().turns_put_off, 2);
+}
+
 /// The loop itself: its turns fail on a device that stays full, and its
 /// waits are an hour. Told that room was made, it takes its next turn at
 /// once, each time it is told.
