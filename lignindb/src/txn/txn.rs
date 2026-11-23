@@ -83,6 +83,10 @@ pub struct TxnStats {
 /// What a transaction keeps between its operations.
 struct State<'s> {
     set: WriteSet,
+    /// The tree types that keep flat records, as the batch that is being
+    /// applied was given them ([`Scope::apply_by_kind`]), and `None`
+    /// outside such a call.
+    kinds: Option<FlatKinds>,
     /// The version the write set's kept values are read at (WT3): pinned
     /// from the transaction's first write until the frames are made over
     /// another version, or until the transaction has its own copy of every
@@ -825,6 +829,7 @@ impl<'s> WriteTxn<'s> {
             path,
             state: Mutex::new(State {
                 set: WriteSet::new(),
+                kinds: None,
                 base: None,
                 frames: None,
                 loaded: Loaded::default(),
@@ -1252,10 +1257,16 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
-        state.set.admits(batch)?;
         let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
+            self.admit_by_key(state, batch)?;
             return self.write_by_key(state, op, batch);
         };
+        // A batch that is given the tree types that keep flat records is
+        // judged by the pages alone (ST1).
+        if state.kinds.is_none() {
+            state.set.admits(batch)?;
+        }
+        frames.kinds = state.kinds;
         Self::date_moves(&state.set, &state.reads, op.at, &mut frames, batch)?;
         // A value that is kept is one its writer read: when, and what the
         // commits did to its key since (CF2a).
@@ -1287,6 +1298,7 @@ impl<'s> WriteTxn<'s> {
                 let stored = frames.take_stored();
                 let (empty, left) = (frames.empty_before(), frames.left_with_moves());
                 let first = state.set.add(batch, op.at, empty, &cut, left, &stored);
+                state.set.tell_both(frames.both);
                 forget_looks(&mut state.looks, batch);
                 if !kept.met.is_empty() {
                     for (offset, unit, key) in &kept.met {
@@ -1876,6 +1888,35 @@ impl<'s> WriteTxn<'s> {
         Ok(taken)
     }
 
+    /// Checks a batch that is taken by key against what the transaction
+    /// has written, as one that is given no tree types is checked
+    /// ([`WriteSet::admits`]): by key nothing asks the tree type of a
+    /// subtree. The refusal is that of [`Self::kinds_by_key`]. Nothing is
+    /// added to the write set here.
+    fn admit_by_key(&self, state: &State<'s>, batch: &Batch<'_>) -> Result<(), TxnError> {
+        let admitted = state.set.admits(batch);
+        admitted.map_err(|refused| Self::kinds_by_key(state, refused))
+    }
+
+    /// The refusal of nodes and flat records in one data column
+    /// ([`BatchError::NotFlat`], [`BatchError::NotMerk`]) as a batch that
+    /// is taken by key is told it. A batch that was given the tree types
+    /// that keep flat records, in a transaction that a commit has met,
+    /// is told a conflict ([`BatchError::BothByKey`]): pages would say
+    /// whether the tree type of the subtree takes both, and it has none.
+    /// Every other batch is told the refusal as it is.
+    fn kinds_by_key(state: &State<'s>, refused: BatchError) -> TxnError {
+        let subtree = match refused {
+            BatchError::NotFlat { unit } => unit.subtree,
+            BatchError::NotMerk { subtree } => subtree,
+            refused => return refused.into(),
+        };
+        match state.kinds.is_some() && state.set.met() > 0 {
+            true => BatchError::BothByKey { subtree }.into(),
+            false => refused.into(),
+        }
+    }
+
     /// Adds a batch to a write set that is served by key: no page is
     /// changed, and every value the batch keeps is copied now. What a
     /// move decides is refused before ([`Self::guard_batch`]).
@@ -1902,7 +1943,7 @@ impl<'s> WriteTxn<'s> {
             let unit = record.unit();
             let flat = unit.column != Column::Data || batch.leaves(unit.subtree);
             if !flat && self.rooted(state, op, &unit.subtree)? {
-                return Err(BatchError::NotFlat { unit }.into());
+                return Err(Self::kinds_by_key(state, BatchError::NotFlat { unit }));
             }
         }
         // The lease a handle of this operation's view is of: the frames',

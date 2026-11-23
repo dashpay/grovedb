@@ -10,9 +10,7 @@
 //! one.
 //!
 //! A stream leaves out an operation that GroveDB commits in a
-//! transaction of its own ([`Plan::stream`]), and a run on one of the
-//! first three grove versions takes no stream that appends to a tree
-//! ([`left_out`]).
+//! transaction of its own ([`Plan::stream`]).
 //!
 //! **The steps** are what a node does to a database beside the blocks it
 //! applies ([`Step`]). A lineage takes them from a list, or draws them:
@@ -32,7 +30,7 @@ use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use super::model::Position;
 use crate::{
     crash::campaign::Faults,
-    workload::{BatchOp, Features, Op, Rng, Workload, Write},
+    workload::{Features, Op, Rng, Workload},
 };
 
 const PLAN: u64 = 0x7665_7230_3420_706c;
@@ -45,24 +43,6 @@ const STEPS: u64 = 0x7665_7230_3420_7370;
 /// in the transaction of a block ([`Plan::stream`]).
 pub fn features(grove_version: &GroveVersion) -> Features {
     Features::for_grove_version(grove_version)
-}
-
-/// Whether the stream of `ops` is left out of a run on `grove_version`:
-/// on grove versions 1 to 3, a stream that appends to a tree is.
-///
-/// The engine has a known defect there (D-282, D-283, to be fixed by
-/// `TXN-03-F5`): under a tree that keeps its data flat (MMR, bulk-append,
-/// dense, commitment) and has a keyed child, a typed append is refused
-/// that RocksDB takes, and an append followed by a keyed child leaves a
-/// store that the physical checker finds unsound. Both need an append, so
-/// a stream with none meets neither, and the campaign would report the
-/// second in every state of a database that has it.
-pub fn left_out(grove_version: &GroveVersion, ops: &[Op]) -> bool {
-    let appends = |op: &Op| match op {
-        Op::Write(Write::Append { .. } | Write::CommitmentInsert { .. }) => true,
-        other => (other.batch_ops()).any(|op| matches!(op, BatchOp::Append { .. })),
-    };
-    grove_version.protocol_version <= 3 && ops.iter().any(appends)
 }
 
 /// One stream of a plan.
@@ -85,9 +65,6 @@ pub struct Plan {
     /// The most operations taken of one stream.
     pub max_stream_ops: usize,
     order: Vec<usize>,
-    /// How many streams were generated, those that were left out among
-    /// them.
-    tried: usize,
     streams: Vec<Stream>,
 }
 
@@ -103,34 +80,30 @@ impl Plan {
             grove_version,
             max_stream_ops,
             order,
-            tried: 0,
             streams: Vec::new(),
         }
     }
 
     /// The stream `index` of the plan. The workloads of the suite come in
     /// an order drawn from the seed, again and again, each time with
-    /// another seed of its own, without the streams that are left out of a
-    /// run on the plan's grove version ([`left_out`]).
+    /// another seed of its own.
     pub fn stream(&mut self, index: usize) -> &Stream {
         while self.streams.len() <= index {
+            let made = self.streams.len();
             let suite = Workload::suite(features(self.grove_version));
-            let workload = &suite[self.order[self.tried % self.order.len()]];
-            let seed = Rng::derive(self.seed, STREAM, self.tried as u64).next_u64();
-            self.tried += 1;
+            let workload = &suite[self.order[made % self.order.len()]];
+            let seed = Rng::derive(self.seed, STREAM, made as u64).next_u64();
             // The campaign makes every commit itself: an operation that
             // GroveDB commits in a transaction of its own is left out.
             let ops: Vec<Op> = (workload.stream(seed))
                 .filter(|op| !op.commits_by_itself())
                 .take(self.max_stream_ops)
                 .collect();
-            if !left_out(self.grove_version, &ops) {
-                self.streams.push(Stream {
-                    workload: workload.name(),
-                    seed,
-                    ops: Arc::new(ops),
-                });
-            }
+            self.streams.push(Stream {
+                workload: workload.name(),
+                seed,
+                ops: Arc::new(ops),
+            });
         }
         &self.streams[index]
     }
@@ -309,6 +282,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use crate::workload::{BatchOp, Write};
 
     #[test]
     fn a_plan_is_a_function_of_its_seed() {
@@ -386,36 +360,27 @@ mod tests {
         assert!(converted > 0, "no stream of twelve plans converts a tree");
     }
 
-    /// On the first three grove versions no stream of a plan appends to a
-    /// tree, and on the later ones some do: the trees that keep their data
-    /// flat are in the campaign.
+    /// Streams of a plan append to a tree on the first three grove
+    /// versions and on the later ones: the trees that keep their data flat
+    /// are in the campaign on each.
     #[test]
-    fn a_run_on_an_early_grove_version_takes_no_stream_that_appends() {
-        // How many of the first thirty streams of a plan append: each is
-        // asked as the rule asks it on a grove version it holds for.
-        let appends = |plan: &mut Plan| {
-            (0..30)
-                .filter(|index| {
-                    let ops = plan.stream(*index).ops.clone();
-                    left_out(&GROVE_VERSIONS[0], &ops)
-                })
-                .count()
+    fn a_run_on_any_grove_version_takes_streams_that_append() {
+        let appends = |op: &Op| match op {
+            Op::Write(Write::Append { .. } | Write::CommitmentInsert { .. }) => true,
+            other => (other.batch_ops()).any(|op| matches!(op, BatchOp::Append { .. })),
         };
         let (mut early, mut late) = (0, 0);
         for seed in 0..40 {
             let mut plan = Plan::of_seed(seed, 60);
-            let with_appends = appends(&mut plan);
+            let with_appends = (0..30)
+                .filter(|index| plan.stream(*index).ops.iter().any(appends))
+                .count();
             match plan.grove_version.protocol_version {
-                1..=3 => {
-                    assert_eq!(with_appends, 0, "seed {seed}");
-                    early += 1;
-                }
+                1..=3 => early += with_appends,
                 _ => late += with_appends,
             }
         }
-        assert!(early > 0 && late > 0, "{early} early runs, {late} streams");
-        assert!(!left_out(&GROVE_VERSIONS[3], &[]));
-        assert!(!left_out(&GROVE_VERSIONS[0], &[Op::Commit]));
+        assert!(early > 0 && late > 0, "{early} and {late} streams");
     }
 
     #[test]

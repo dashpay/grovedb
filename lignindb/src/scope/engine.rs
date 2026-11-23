@@ -87,7 +87,27 @@ impl<'t, 's> Scope<'t, 's> {
     ///
     /// A cursor of the scope may be open: it sees the writes (RD6).
     pub fn apply(&self, batch: &Batch<'_>) -> Result<Applied, TxnError> {
-        self.txn.apply_scoped(self.id, batch)
+        self.txn.apply_scoped(self.id, batch, None)
+    }
+
+    /// As [`Self::apply`], for a writer whose subtrees can be of trees
+    /// that keep their data as flat records of the data column. `flat`
+    /// says of a tree type whether it is one.
+    ///
+    /// Where the batch is laid out on the transaction's pages, the data
+    /// column of a subtree that the batch leaves with such a tree type
+    /// takes a put or a delete of a flat record though the subtree holds
+    /// nodes, and a change set though the transaction wrote flat records
+    /// there (`transactions.md` ST1). The flat record goes under no key
+    /// that a node is under ([`BatchError::RecordUnderNode`]), and a
+    /// range delete is not taken there.
+    ///
+    /// A batch that is taken by key is held to what [`Self::apply`] holds
+    /// a batch to. Where that refuses it as [`BatchError::NotFlat`] or
+    /// [`BatchError::NotMerk`] in a transaction that a commit has met,
+    /// it is told [`BatchError::BothByKey`] in its place, a conflict.
+    pub fn apply_by_kind(&self, batch: &Batch<'_>, flat: FlatKinds) -> Result<Applied, TxnError> {
+        self.txn.apply_scoped(self.id, batch, Some(flat))
     }
 
     /// A cursor over the nodes of the Merk `subtree`, as
@@ -684,11 +704,13 @@ impl<'s> WriteTxn<'s> {
             .map(|(_, key)| key)
             .collect();
         for op in (0..set.ops()).filter(|op| set.laid(*op)) {
+            frames.kinds = set.kinds(op);
             set.with_batch(op, |batch, again| {
                 frames.apply(path, batch, Some(again), loaded)
             })
             .map_err(|refused| refused.error)?;
         }
+        frames.kinds = None;
         frames.tree.behind_keys.clear();
         for mark in scopes.laid_marks() {
             let cell = marked_cell(&mut frames, &mark)?;
@@ -697,8 +719,18 @@ impl<'s> WriteTxn<'s> {
         Ok(frames.park())
     }
 
-    pub(super) fn apply_scoped(&self, id: ScopeId, batch: &Batch<'_>) -> Result<Applied, TxnError> {
-        check(batch)?;
+    pub(super) fn apply_scoped(
+        &self,
+        id: ScopeId,
+        batch: &Batch<'_>,
+        kinds: Option<FlatKinds>,
+    ) -> Result<Applied, TxnError> {
+        // A batch that is given the tree types that keep flat records is
+        // checked below, once it is known whether it is laid out. One
+        // that writes nothing is checked alike either way.
+        if kinds.is_none() || batch.is_empty() {
+            check(batch, false)?;
+        }
         // A batch that writes nothing adds nothing (GM0), and claims
         // nothing.
         if batch.is_empty() {
@@ -706,7 +738,20 @@ impl<'s> WriteTxn<'s> {
         }
         let mut state = self.lock();
         let state = &mut *state;
-        let applied = (self.begin(state, true)).and_then(|op| {
+        state.kinds = kinds;
+        let begun = self.begin(state, true);
+        // Where the batch is laid out, the pages say whether a subtree
+        // takes nodes and flat records both. By key the batch is held to
+        // the rule of one that is given nothing (ST1), before it is
+        // asked anything else and before it takes a claim.
+        let checked = match kinds {
+            Some(_) => {
+                let laid_out = state.scopes.laid(id) && state.frames.is_some();
+                check(batch, laid_out).map_err(|refused| Self::kinds_by_key(state, refused))
+            }
+            None => Ok(()),
+        };
+        let applied = checked.and(begun).and_then(|op| {
             let laid = state.scopes.laid(id);
             // What a move decides is not written by key, and a move is
             // laid out on the frames when it is stated: asked first, so
@@ -740,10 +785,11 @@ impl<'s> WriteTxn<'s> {
                     applied
                 }
                 false => {
-                    state.set.admits(batch)?;
+                    self.admit_by_key(state, batch)?;
                     self.write_by_key(state, &op, batch)?
                 }
             };
+            state.set.tell_kinds(kinds);
             state.set.tag_last(id, laid);
             let serial = state.set.last_serial();
             let above = above.into_iter().map(|(subtree, names)| Above {
@@ -754,6 +800,7 @@ impl<'s> WriteTxn<'s> {
             state.above.extend(above);
             Ok(applied)
         });
+        state.kinds = None;
         if state.set.is_empty() {
             // Nothing was added, so nothing is held (PN1).
             state.release();
@@ -931,6 +978,7 @@ impl<'s> WriteTxn<'s> {
             dirty |= cell.is_some_and(|cell| frames.tree.behind.insert(cell));
         }
         for op in ops {
+            frames.kinds = set.kinds(*op);
             set.with_batch(*op, |batch, again| {
                 // A host that is behind here may be marked: every mark of
                 // the scope is of a host that was found above.

@@ -1508,22 +1508,20 @@ fn keyed_child_on_both<T: Appended>(
 /// taken, the typed reads count both values, and the grove's own check
 /// finds nothing wrong once the tree is deleted.
 ///
-/// On LigninDB:
+/// On LigninDB every answer, cost and root hash is RocksDB's in the
+/// three histories:
 ///
-/// - **With no append** every answer, cost and root hash is RocksDB's.
-/// - **A known difference, with the child before the appends** (D-282,
-///   `TXN-03-F5`): every step before the first append is RocksDB's, and
-///   the append is refused, because the transaction takes no flat data
-///   record beside the nodes of a Merk.
-/// - **With the child after the appends** (D-283) every answer, cost
-///   and root hash is RocksDB's: the query of every key under the tree
-///   fails on both engines alike, and the delete of the tree is taken.
+/// - **with no append**;
+/// - **with the child before the appends** (D-282): the appends are
+///   taken beside the nodes of the Merk of the child's level, since the
+///   transaction takes a flat record there under a tree that keeps flat
+///   records;
+/// - **with the child after the appends** (D-283): the query of every
+///   key under the tree fails on both engines alike, and the delete of
+///   the tree is taken.
 ///
 /// The store is sound at the close of each
 /// ([`a_keyed_child_under_a_tree_of_flat_records_leaves_a_sound_store`]).
-/// The second turns with the change of the transaction: this test
-/// fails then, and is to hold LigninDB to RocksDB's answers in all
-/// three.
 #[cfg(feature = "rocksdb_storage")]
 fn a_keyed_child_under<T: Appended>() {
     let step = |answers: &[Answer], call: &str| {
@@ -1561,14 +1559,10 @@ fn a_keyed_child_under<T: Appended>() {
                     assert!(sound, "{case}");
                 }
                 Keyed::BeforeAppends => {
-                    let append = step(&on_rocksdb, "append");
-                    same(0..append, "");
-                    let refused = &on_lignin[append].2;
-                    assert!(
-                        refused.contains("a flat record is written among the Merk nodes"),
-                        "{case}: {refused}"
-                    );
-                    assert_eq!(taken(&on_lignin, "append"), 0, "{case}");
+                    // The appends are taken beside the nodes of the Merk
+                    // of the keyed child's level.
+                    same(0..on_rocksdb.len(), "");
+                    assert_eq!(taken(&on_lignin, "append"), 2, "{case}");
                     assert!(sound, "{case}");
                 }
                 Keyed::AfterAppends => {

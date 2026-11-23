@@ -38,6 +38,7 @@ use super::{
     pages::{find, follow, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
     unlinked,
+    view::FlatKinds,
     write::{
         Applied, Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, Moving, RecordWrite,
         RootPut, SubtreeWrite, ValuePut,
@@ -213,6 +214,33 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// and every one that leaves by the writes that are applied to them
     /// (`lignin_tree::directory`). It is made again with them.
     pub(crate) directory: Directory,
+    /// The tree types that keep flat records, as the batch that is
+    /// applied was given them, or `None` for a batch that was given
+    /// nothing: whoever applies a batch says it before
+    /// ([`Self::apply`]).
+    pub(crate) kinds: Option<FlatKinds>,
+    /// The subtrees of whose Merk an operation that is laid out on these
+    /// frames wrote a node or removed one (`noded`), and those into whose
+    /// data column one put a flat record or deleted one (`recorded`),
+    /// each since a batch last named the subtree in an enter that made
+    /// its entry, a clear or a drop. A flat record of one of the first,
+    /// and a change set of one of the second, is judged by the tree type
+    /// of the subtree ([`Self::apply`]). What is known of a Merk that a
+    /// move takes goes with it to its new prefix.
+    ///
+    /// A subtree that went with one above it is not named by the batch
+    /// that took it, and what is kept of it stays here. It refuses no
+    /// batch while the subtree is not entered, and the batch that enters
+    /// a subtree under its prefix again is not asked ([`Self::apply`]).
+    /// The two are of these pages, so they are made again with them.
+    noded: HashSet<Subtree>,
+    recorded: HashSet<Subtree>,
+    /// Whether the batch that was applied last was taken by the tree type
+    /// of a subtree: the pages asked the tree type for a flat record or
+    /// for a change set of it ([`Self::apply`]). The write set is told of
+    /// an operation that is taken so when it is added
+    /// (`WriteSet::tell_both`).
+    pub(crate) both: bool,
     /// What each Merk that the transaction dropped or cleared left for the
     /// reclaimer.
     pub(crate) dropped: Vec<Dropped>,
@@ -714,6 +742,10 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
         H: lignin_tree::OperationGuard,
     {
         Frames {
+            kinds: self.kinds,
+            noded: self.noded,
+            recorded: self.recorded,
+            both: self.both,
             base: self.base,
             tree: self.tree,
             values: self.values,
@@ -757,6 +789,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             values: TreeValues::new(path.inline),
             source: ValueSource::new(path.values, path.loader, at),
             directory: path.directory_at(at)?,
+            kinds: None,
+            noded: HashSet::new(),
+            recorded: HashSet::new(),
+            both: false,
             dropped: Vec::new(),
             flat: FlatFrames(Some(flat)),
             hashes: Hashes::new(),
@@ -1032,6 +1068,69 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(below)
     }
 
+    /// Whether `subtree`, once the subtrees of `batch` have left, are
+    /// entered and are stated anew, is of a tree type that keeps its data
+    /// as flat records, by what the batch was given ([`Self::kinds`]): the
+    /// tree type that the batch states for it, or the one of its entry.
+    /// An enter that finds the subtree entered states the tree type of
+    /// its entry ([`same`]). A batch that was given nothing is answered
+    /// no.
+    fn keeps_flat(&self, batch: &Batch<'_>, subtree: &Subtree) -> Result<bool, TxnError> {
+        let Some(kinds) = self.kinds else {
+            return Ok(false);
+        };
+        let stated = batch.subtrees.iter().rev().find_map(|write| match *write {
+            SubtreeWrite::Convert {
+                subtree: named,
+                tree_type,
+                ..
+            } if named == *subtree => Some(tree_type),
+            _ => {
+                let entering = write.entering();
+                let entering = entering.filter(|entering| entering.subtree == *subtree);
+                entering.map(|entering| entering.tree_type)
+            }
+        });
+        if let Some(tree_type) = stated {
+            return Ok(kinds(tree_type));
+        }
+        let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+        Ok(entry.is_some_and(|entry| kinds(entry.tree_type())))
+    }
+
+    /// Checks that `record`, a flat record of the data column of a
+    /// subtree that holds nodes and takes flat records beside them, is
+    /// one that goes beside them: a put or a delete of one key, under
+    /// which the Merk, whose root is `root` before the change sets of the
+    /// batch are applied, has no node, and under which these frames keep
+    /// no node of the transaction as an unlinked record ([`Self::own`]).
+    /// A key holds one record (ST1). A range delete is refused as a flat
+    /// record among the nodes of a Merk is.
+    ///
+    /// `anew` says that the batch drops or clears the subtree, or enters
+    /// it as one that is new: the unlinked records that these frames keep
+    /// under its prefix are of the subtree that was there before.
+    fn beside_nodes(
+        &mut self,
+        record: &RecordWrite<'_>,
+        root: Option<CellAddress>,
+        anew: bool,
+    ) -> Result<(), TxnError> {
+        let (unit, key) = match *record {
+            RecordWrite::Put { unit, key, .. } | RecordWrite::Delete { unit, key } => (unit, key),
+            RecordWrite::DeleteRange { .. } => {
+                let unit = record.unit();
+                return Err(BatchError::NotFlat { unit }.into());
+            }
+        };
+        stored_key(&mut self.key, &unit.subtree, key);
+        let unlinked = !anew && self.own.contains(&self.key);
+        if unlinked || find(&mut self.tree, root, key)?.is_some() {
+            return Err(BatchError::RecordUnderNode { unit }.into());
+        }
+        Ok(())
+    }
+
     /// Whether `subtree` is entered once the subtrees of the batch have
     /// left and are entered, and with which root: `None` for a subtree that
     /// is not entered then, `Some(None)` for one with no node.
@@ -1168,6 +1267,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     ) -> Result<Applied, Refused> {
         let view = self.subtrees(batch).map_err(Refused::clean)?;
         self.hosts_moved(batch).map_err(Refused::clean)?;
+        self.both = false;
         let mut entered = HashMap::new();
         for record in batch.records {
             // A record is of a subtree that is entered, in every column,
@@ -1185,8 +1285,47 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let Some(root) = root else {
                 return Err(Refused::clean(BatchError::NotEntered { subtree }));
             };
-            if unit.column == Column::Data && root.is_some() {
-                return Err(Refused::clean(BatchError::NotFlat { unit }));
+            if unit.column != Column::Data {
+                continue;
+            }
+            // The subtree holds nodes: its Merk has a root, the batch
+            // holds a change set of it, or an operation that is laid out
+            // wrote a node of it or removed one. The tree type of the
+            // subtree says whether a flat record goes beside them (ST1),
+            // and the record is one that does. What an earlier operation
+            // wrote is not of a subtree that the batch drops, clears or
+            // enters as one that is new.
+            let anew = batch.leaves(subtree) || view.entering.contains(&subtree);
+            let own = batch.merks.iter().any(|merk| merk.subtree == subtree);
+            let wrote = !anew && self.noded.contains(&subtree);
+            if root.is_some() || own || wrote {
+                let kept = self.keeps_flat(batch, &subtree);
+                if !kept.map_err(Refused::clean)? {
+                    return Err(Refused::clean(BatchError::NotFlat { unit }));
+                }
+                (self.beside_nodes(record, root, anew)).map_err(Refused::clean)?;
+                self.both = true;
+            }
+        }
+        for merk in batch.merks {
+            // A change set where an operation that is laid out wrote a
+            // flat record into the data column of the subtree as the
+            // batch has it: the tree type says that as well.
+            let subtree = merk.subtree;
+            let anew = batch.leaves(subtree) || view.entering.contains(&subtree);
+            if !anew && self.recorded.contains(&subtree) {
+                // What is known is of a subtree that is entered. One that
+                // is not entered is not judged here: its change set goes
+                // on to where the change sets are applied.
+                let entered = self.entered(&view, &subtree).map_err(Refused::clean)?;
+                if entered.is_none() {
+                    continue;
+                }
+                let kept = self.keeps_flat(batch, &subtree);
+                if !kept.map_err(Refused::clean)? {
+                    return Err(Refused::clean(BatchError::NotMerk { subtree }));
+                }
+                self.both = true;
             }
         }
         let (applied, unlinked) = self.apply_merks(path, batch, &view, again, loaded)?;
@@ -1244,9 +1383,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 }
                 SubtreeWrite::Convert { .. } | SubtreeWrite::Move { .. } => continue,
             }
-            // What the transaction left under a subtree goes with it.
+            // What the transaction left under a subtree goes with it, and
+            // so does what is known of what it wrote there.
             let prefix = write.subtree();
             (self.own).retain(|key| !key.starts_with(prefix.as_bytes()));
+            self.noded.remove(&prefix);
+            self.recorded.remove(&prefix);
         }
         // A Merk that is moved has its flat records under its new prefix,
         // the unlinked ones among them: what is known of whether it holds
@@ -1269,6 +1411,22 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 match known {
                     Some(known) => drop(self.unlinked.insert(to, known)),
                     None => drop(self.unlinked.remove(&to)),
+                }
+            }
+            // And so does what is known of what the transaction wrote
+            // into it, of either kind.
+            for written in [&mut self.noded, &mut self.recorded] {
+                let taken: Vec<(Subtree, bool)> = (moved.iter())
+                    .map(|(from, to)| (*to, written.remove(from)))
+                    .collect();
+                for left in plan.left() {
+                    written.remove(&Subtree::new(*left));
+                }
+                for (to, was) in taken {
+                    match was {
+                        true => drop(written.insert(to)),
+                        false => drop(written.remove(&to)),
+                    }
                 }
             }
             // Each key is asked first of the prefixes that a Merk is taken
@@ -1296,9 +1454,17 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             self.own.remove(key);
         }
         (self.own).extend(unlinked.kept.into_iter().map(|(key, _)| key));
+        // A change set that writes no node and removes none says nothing
+        // of what the subtree holds.
+        let written = |merk: &&MerkWrite<'_>| !merk.nodes.is_empty() || !merk.removed.is_empty();
+        let written = batch.merks.iter().filter(written);
+        self.noded.extend(written.map(|merk| merk.subtree));
         for record in batch.records {
             let tree = path.keyspaces.of(record.unit().column);
             let subtree = record.unit().subtree;
+            if record.unit().column == Column::Data {
+                self.recorded.insert(subtree);
+            }
             // A delete in the data column can take the last record out:
             // whether the subtree holds one is looked up when it is next
             // asked.

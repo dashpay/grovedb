@@ -228,12 +228,25 @@ pub enum BatchError {
     /// transaction's write set, or in the state it reads. A node is written
     /// through the change set of its Merk, and a Merk is dropped, not
     /// deleted by range (ST1, CV9, TREE-09).
+    ///
+    /// One batch is not refused a put or a delete so, by the rule of ST1:
+    /// one that is given the tree types which keep their data as flat
+    /// records ([`Scope::apply_by_kind`](super::Scope::apply_by_kind)),
+    /// where it is laid out on the transaction's pages and leaves the
+    /// subtree with such a type. It is refused a range delete as this,
+    /// and a put or a delete under the key of a node as
+    /// [`Self::RecordUnderNode`].
     NotFlat {
         /// The unit.
         unit: Unit,
     },
     /// A change set names a Merk in whose data column the transaction has
-    /// written flat records (ST1).
+    /// written flat records (ST1). One batch is not refused so, by the
+    /// rule of ST1: one that is given the tree types which keep their
+    /// data as flat records
+    /// ([`Scope::apply_by_kind`](super::Scope::apply_by_kind)), where it
+    /// is laid out on the transaction's pages and leaves the subtree with
+    /// such a type.
     NotMerk {
         /// The Merk's subtree.
         subtree: Subtree,
@@ -382,6 +395,40 @@ pub enum BatchError {
         /// The subtree that was read or written, the first one the
         /// refused batch drops or clears, or the one a move was stated
         /// for.
+        subtree: Subtree,
+    },
+    /// A flat record is put or deleted under a key that a node is under:
+    /// a node of the subtree's Merk, or one that the transaction wrote
+    /// and no link reaches. A key holds one record (ST1).
+    ///
+    /// It is the refusal of a batch that the transaction's pages take
+    /// flat records from where the subtree holds nodes: one that is given
+    /// the tree types which keep their data as flat records
+    /// ([`Scope::apply_by_kind`](super::Scope::apply_by_kind)), is laid
+    /// out, and leaves the subtree with such a type. A batch that is
+    /// refused the record whatever its key is refused that, and not this
+    /// ([`Self::NotFlat`], [`Self::BothByKey`]).
+    ///
+    /// The other order is no refusal of such a batch: a node that it
+    /// writes under the key of a flat record takes the record (ST1).
+    RecordUnderNode {
+        /// The data column the record was written into.
+        unit: Unit,
+    },
+    /// The transaction serves its records by key because a commit outside
+    /// it met one of its writes (WT7b), and a batch that is given the
+    /// tree types which keep their data as flat records
+    /// ([`Scope::apply_by_kind`](super::Scope::apply_by_kind)) writes
+    /// what a batch that is given none is refused there as
+    /// [`Self::NotFlat`] or [`Self::NotMerk`] (ST1). The transaction's
+    /// pages would say whether the tree type of the subtree takes both,
+    /// and it has none.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]): the transaction's
+    /// commit fails with one while the met writes are among its writes.
+    /// The batch added no write, and the transaction is still open.
+    BothByKey {
+        /// The subtree whose data column the batch writes.
         subtree: Subtree,
     },
     /// The tree type of an entered subtree is longer than the subtree
@@ -603,6 +650,20 @@ impl fmt::Display for BatchError {
                     "the subtree {subtree} is of a move, in a transaction that a commit has met"
                 )
             }
+            Self::RecordUnderNode { unit } => {
+                write!(
+                    f,
+                    "a flat record is written under a key of {unit} that a Merk node is under: \
+                     a tree that keeps flat records has a child under a key of one of its records"
+                )
+            }
+            Self::BothByKey { subtree } => {
+                write!(
+                    f,
+                    "nodes and flat records in the data column of the subtree {subtree}, \
+                     in a transaction that a commit has met"
+                )
+            }
             Self::TreeTypeTooLong { subtree, len } => {
                 write!(f, "a tree type of {len} bytes for the subtree {subtree}")
             }
@@ -619,13 +680,16 @@ impl fmt::Display for BatchError {
 impl Error for BatchError {}
 
 impl BatchError {
-    /// Whether the refusal is [`Self::ValueTaken`], [`Self::MovedByKey`]
-    /// or [`Self::MerkTaken`]: those that a caller answers as it answers a
-    /// commit that fails with a conflict.
+    /// Whether the refusal is [`Self::ValueTaken`], [`Self::MovedByKey`],
+    /// [`Self::BothByKey`] or [`Self::MerkTaken`]: those that a caller
+    /// answers as it answers a commit that fails with a conflict.
     pub const fn is_conflict(&self) -> bool {
         matches!(
             self,
-            Self::ValueTaken { .. } | Self::MovedByKey { .. } | Self::MerkTaken { .. }
+            Self::ValueTaken { .. }
+                | Self::MovedByKey { .. }
+                | Self::BothByKey { .. }
+                | Self::MerkTaken { .. }
         )
     }
 }
@@ -765,9 +829,9 @@ from! {
 }
 
 impl TxnError {
-    /// Whether the operation was refused with [`BatchError::ValueTaken`]
-    /// or [`BatchError::MovedByKey`] ([`BatchError::is_conflict`]). The
-    /// transaction is as it was, and still open.
+    /// Whether the operation was refused with a refusal that is a
+    /// conflict ([`BatchError::is_conflict`]). The transaction is as it
+    /// was, and still open.
     pub const fn is_conflict(&self) -> bool {
         matches!(self, Self::Batch(refused) if refused.is_conflict())
     }

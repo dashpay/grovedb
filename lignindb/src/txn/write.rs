@@ -209,7 +209,10 @@ pub enum RootPut<'a> {
 /// The data column of the Merk's subtree holds its nodes and no flat
 /// record (ST1): a batch that writes both there is refused
 /// ([`BatchError::NotFlat`](super::BatchError::NotFlat),
-/// [`BatchError::NotMerk`](super::BatchError::NotMerk)). Whether the
+/// [`BatchError::NotMerk`](super::BatchError::NotMerk)), but for a
+/// batch that is given the tree types which keep their data as flat
+/// records, by the rule of ST1
+/// ([`Scope::apply_by_kind`](super::Scope::apply_by_kind)). Whether the
 /// committed state holds flat records under a subtree that had no Merk is
 /// not looked up: which of the two a subtree holds is its writer's to know.
 ///

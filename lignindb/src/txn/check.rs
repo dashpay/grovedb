@@ -42,7 +42,14 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// names, but the drop of a subtree that is entered where one is moved to
 /// and that no move takes away. A subtree that is stated anew under such
 /// a prefix is refused as that ([`BatchError::ConvertMoved`]).
-pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
+///
+/// `laid_out` says that the batch was given the tree types that keep
+/// flat records ([`Scope::apply_by_kind`](crate::txn::Scope::apply_by_kind))
+/// and is laid out on the transaction's pages. A flat record in the data
+/// column of a subtree that the batch holds a change set of is not
+/// refused here then: the pages say it. Every other batch is refused it
+/// here, where this rule stands among the others.
+pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
     let (mut entered, mut left) = (HashSet::new(), HashSet::new());
@@ -192,7 +199,7 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     }
     for record in batch.records {
         let unit = record.unit();
-        if unit.column == Column::Data && merks.contains(&unit.subtree) {
+        if unit.column == Column::Data && merks.contains(&unit.subtree) && !laid_out {
             return Err(BatchError::NotFlat { unit });
         }
         if named(&unit.subtree) {

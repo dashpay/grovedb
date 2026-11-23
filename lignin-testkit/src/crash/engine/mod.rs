@@ -396,10 +396,6 @@
 //!   makes every commit itself, so a stream leaves out a conversion that
 //!   GroveDB commits by itself ([`workload::Plan::stream`]). A conversion
 //!   in the transaction of a block is in the streams.
-//! - **Appends on grove versions 1 to 3.** A run on one of them takes no
-//!   stream that appends to a tree, for a known defect of the engine
-//!   there ([`workload::left_out`]). On grove versions 4 and 5 the trees
-//!   that keep their data flat are in the streams.
 //! - **A restore by state sync.** No lineage restores a database, so none
 //!   is crashed during a restore at every write boundary. One session is
 //!   stopped at one moment by the tests of the mark, above.
