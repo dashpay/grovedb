@@ -1240,6 +1240,62 @@ fn a_met_move_goes_with_a_rollback_and_none_is_stated_by_key() {
     world.check_committed();
 }
 
+/// A mover that a commit met serves its records by key, and is refused
+/// every drop and every clear of a subtree (MV7). A drop of a subtree if
+/// it is entered is such a drop where the transaction has the subtree
+/// under the node the drop names, and is refused as a conflict there.
+/// Where nothing hangs under that node it takes nothing, and its batch is
+/// taken. One of a subtree that a move decides is refused.
+#[test]
+fn a_met_mover_is_refused_a_drop_if_entered_where_it_would_take_its_subtree() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    {
+        let tx = world.begin();
+        let batch = nested(&world, &tx, b"c", C, C_IN, 5);
+        world.apply(&tx, &batch).expect("a second pair of subtrees");
+        assert!(committed(world.commit(tx, &[])));
+    }
+    let pairs = [(A, B), (A_IN, B_IN)];
+    let tx = world.begin();
+    let batch = rename(&world, &tx, b"a", b"b", &pairs);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    let other = world.begin();
+    world.write(&other, vec![put(aux(A), b"f", b"foreign")]);
+    assert!(committed(world.commit(other, &[&tx])));
+    let refused = get(&tx, aux(B), b"f").expect_err("a refusal");
+    assert!(moved_by_key(&refused, B), "{refused}");
+
+    let drop_if = |name: u8, host: u8, key: &[u8], named: bool| {
+        subtrees(vec![OwnedSubtree::DropIfEntered {
+            subtree: sub(name),
+            host: (sub(host), key.to_vec()),
+            named,
+        }])
+    };
+    let entered = shown(&tx, C_IN);
+    assert!(entered.is_some());
+    // No subtree is under the prefix, or the subtree hangs under another
+    // node: nothing is taken, and nothing is refused.
+    for idle in [
+        drop_if(FREE, C, b"k1", false),
+        drop_if(C_IN, C, b"k1", false),
+    ] {
+        world.apply(&tx, &idle).expect("a drop that takes nothing");
+        assert_eq!(shown(&tx, C_IN), entered);
+    }
+    let refused = world.apply(&tx, &drop_if(C_IN, C, b"in", true));
+    let refused = refused.expect_err("a drop of a subtree that is entered under its node");
+    assert!(moved_by_key(&refused, C_IN), "{refused}");
+    assert_eq!(shown(&tx, C_IN), entered);
+    let refused = world.apply(&tx, &drop_if(B_IN, B, b"in", true));
+    let refused = refused.expect_err("a drop of a subtree that a move decides");
+    assert!(moved_by_key(&refused, B_IN), "{refused}");
+    assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+    world.check_committed();
+}
+
 /// Frames that are made again apply a move again, over a directory that
 /// can have other subtrees below the moved one than when it was stated:
 /// one with no node that a commit beside entered leaves as well, with its
