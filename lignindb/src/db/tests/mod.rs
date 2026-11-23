@@ -20,6 +20,7 @@ mod moves;
 mod open;
 mod pacing;
 mod power;
+mod quiet;
 mod reads;
 mod reclaim;
 mod reopen;
@@ -103,6 +104,19 @@ pub(super) struct Counts {
     /// What is run before every open of a log file below a directory, for
     /// reading, and that directory.
     at_log_open: Mutex<Option<(PathBuf, Again)>>,
+    /// The directory of segments that is watched, if one is.
+    segments: Mutex<Option<WatchedSegments>>,
+}
+
+/// A directory of segments that a [`Watched`] file layer watches.
+struct WatchedSegments {
+    dir: PathBuf,
+    /// Whether the next file that is opened in it to be written is
+    /// refused.
+    refuse: bool,
+    /// Every such open so far, in order: who asked, and whether it was
+    /// refused.
+    asked: Vec<(ThreadId, bool)>,
 }
 
 impl fmt::Debug for Counts {
@@ -272,6 +286,25 @@ impl Watched {
         *self.0.at_lock.lock().expect("the hook") = Some((true, Box::new(change)));
     }
 
+    /// Has the next file that is opened to be written in the directory of
+    /// segments of the database in `dir` refused, once, with an error of
+    /// the device, and every such open recorded from here on.
+    pub(super) fn refuse_the_next_segment_of(&self, dir: &Path) {
+        let watched = WatchedSegments {
+            dir: dir.join("seg"),
+            refuse: true,
+            asked: Vec::new(),
+        };
+        *self.0.segments.lock().expect("the list") = Some(watched);
+    }
+
+    /// Every file that was opened to be written in that directory since,
+    /// in order: the thread that asked, and whether the file was refused.
+    pub(super) fn segments_asked(&self) -> Vec<(ThreadId, bool)> {
+        let segments = self.0.segments.lock().expect("the list");
+        (segments.as_ref()).map_or_else(Vec::new, |watched| watched.asked.clone())
+    }
+
     /// How many appends have waited so far.
     pub(super) fn held(&self) -> u64 {
         self.0.held.load(Ordering::Acquire)
@@ -420,8 +453,22 @@ impl Vfs for Watched {
         } else {
             self.change_at_a_log_open(path);
         }
-        let file = StdVfs.open(&self.at(path), mode)?;
         let segment = path.components().any(|part| part.as_os_str() == "seg");
+        if !matches!(mode, OpenMode::Read) {
+            // Whether the open is refused and its place in the list are
+            // decided under one lock.
+            let mut segments = self.0.segments.lock().expect("the list");
+            if let Some(watched) = &mut *segments
+                && path.parent() == Some(watched.dir.as_path())
+            {
+                let refused = std::mem::take(&mut watched.refuse);
+                (watched.asked).push((thread::current().id(), refused));
+                if refused {
+                    return Err(io::Error::other("the test refuses this segment"));
+                }
+            }
+        }
+        let file = StdVfs.open(&self.at(path), mode)?;
         Ok(Box::new(WatchedFile {
             file,
             watched: self.clone(),
@@ -1001,8 +1048,10 @@ pub(super) fn halt_background(db: &Db) {
 ///   the value log, with the file operations of both.
 ///
 /// This is the part of [`Db::open`] before the start of its threads
-/// (`Db::open_at_rest`). The handle ends as one that [`halt_background`]
-/// was called on does: when it is dropped, as a process that is killed.
+/// (`Db::open_at_rest`), without the turns of write-back that the open
+/// makes there itself: it makes none. The handle ends as one that
+/// [`halt_background`] was called on does: when it is dropped, as a
+/// process that is killed.
 pub(super) fn open_at_rest(dir: impl AsRef<Path>, options: &Options) -> Result<Db, OpenError> {
-    Db::open_at_rest(dir.as_ref(), options)
+    Db::open_at_rest(dir.as_ref(), options, 0)
 }

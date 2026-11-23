@@ -8,7 +8,7 @@
 //!
 //! | Call | What it does | Rule |
 //! | --- | --- | --- |
-//! | [`Db::open`] | Opens the database in a directory, and makes it if the directory has none ([`Options`]). It takes the directory's lock, recovers, and starts the background work. | P-01 to P-04, DU2 to DU4 |
+//! | [`Db::open`] | Opens the database in a directory, and makes it if the directory has none ([`Options`]). It takes the directory's lock, recovers, makes turns of write-back for what the recovery replayed, and starts the background work. | P-01 to P-04, DU2 to DU4 |
 //! | [`Db::close`], or dropping the handle | Ends the session: the background work stops, what can be written back is, a table checkpoint is taken, the log is made durable, and the lock is released. | P-04, P-35 |
 //! | [`Db::begin`] | Begins a write transaction ([`WriteTxn`]). | WT1 |
 //! | [`Db::commit`], [`Db::rollback`] | Commits a write transaction as the next version, or gives up what it holds. | CM1 to CM9, WT9 |
@@ -336,6 +336,38 @@
 //!   loop and has it close the files that took its copies, before
 //!   write-back's last checkpoint names them.
 //!
+//! **Until a session is asked for its first commit, two of the three
+//! make no turn, and the open has made the first turns of the third.** A
+//! caller may remove the directory of a database under its handle (P-18),
+//! and a file that a thread makes there meanwhile can make that removal
+//! fail. So:
+//!
+//! - The open makes turns of write-back on its own thread before it
+//!   starts the three ([`Db::open`]), for what its recovery replayed.
+//!   What those turns did not write, because one of them failed or
+//!   because they were as many as an open makes, is left to write-back's
+//!   thread.
+//! - The reclaiming thread and the cleaner's wait for the first commit
+//!   that a caller asks of this handle, by [`Db::commit`], [`Db::write`]
+//!   or a wipe, whatever that call is answered: a commit that is refused
+//!   for room has asked too, and the cleaner is what gives room back.
+//!   What earlier sessions left to reclaim and to clean is space and no
+//!   state. It waits with the two threads, for as long as the session
+//!   lasts if no commit is asked of it, unless it is asked for:
+//!   [`Db::reclaim`] makes a round of the reclaiming and [`Db::clean`] a
+//!   turn of the cleaner, each on the calling thread and in any session.
+//! - **A release of the reserve does not end that wait.** A session that
+//!   keeps a reserve gives it back where it is given an error for room,
+//!   and tells the three loops (DF13). Where no commit was asked of it,
+//!   by a flush that is refused, say, or the creation of a checkpoint,
+//!   the two threads go on waiting: no pass of the cleaner and no round
+//!   of the reclaimer follows the release. The fill of a reserve that
+//!   was released is made by the cleaner's thread at the end of a turn
+//!   and waits for a version that is published after the refusal, so
+//!   none is made before a commit is asked. Such a session can therefore
+//!   remove the two files of its reserve from its directory, and makes
+//!   neither once its open has returned.
+//!
 //! An error of any of them changes nothing that is committed. It is counted
 //! and kept as text ([`DbStats::background`]). After a turn that failed,
 //! each of the three waits before its next turn, whoever wakes it, unless
@@ -597,8 +629,8 @@ pub struct Flushed {
 /// ([`DbStats::background`]). None of it changes what is committed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Background {
-    /// Turns of write-back that failed, in its loop and in the turns that
-    /// committers made or waited for.
+    /// Turns of write-back that failed: in its loop, in the turns that
+    /// committers made or waited for, and among those that the open made.
     pub write_back_errors: u64,
     /// Calls of the reclaimer that failed.
     pub reclaim_errors: u64,
@@ -625,6 +657,9 @@ pub struct Opening {
     /// directory, or the first commit of a new database, and reading what
     /// earlier drops left.
     pub keyspaces: Duration,
+    /// The turns of write-back that the open makes for what the recovery
+    /// replayed and left owed.
+    pub write_back: Duration,
     /// Filling the reserve, in a session that keeps one: the writing of
     /// its bytes where the directory had none of its length, and the sync
     /// of its name.
@@ -636,7 +671,12 @@ pub struct Opening {
 impl Opening {
     /// The whole open.
     pub fn total(&self) -> Duration {
-        self.directory + self.recovery + self.keyspaces + self.reserve + self.threads
+        self.directory
+            + self.recovery
+            + self.keyspaces
+            + self.write_back
+            + self.reserve
+            + self.threads
     }
 }
 
@@ -646,11 +686,12 @@ impl fmt::Display for Opening {
         write!(
             f,
             "opened in {:.2} ms: the directory {:.2}, the recovery {:.2}, the keyspaces {:.2}, \
-             the reserve {:.2}, the threads {:.2}",
+             write-back {:.2}, the reserve {:.2}, the threads {:.2}",
             ms(self.total()),
             ms(self.directory),
             ms(self.recovery),
             ms(self.keyspaces),
+            ms(self.write_back),
             ms(self.reserve),
             ms(self.threads)
         )
@@ -894,24 +935,57 @@ impl Db {
     /// The directory's lock is held from here until the handle is dropped.
     /// The store is recovered to the last commit whose group its log holds
     /// whole (DU2), which is every commit of a session that was closed,
-    /// and the background work is started.
+    /// turns of write-back are made on the calling thread, and the
+    /// background work is started.
+    ///
+    /// The turns are for what the recovery replayed and left owed. The
+    /// segment, the value-log file and the manifests that take it are
+    /// made here, and what the turns did not write of it is left to
+    /// write-back's thread. A table checkpoint that is due is taken in
+    /// these turns, and where a turn filled the log's file the next of
+    /// them, if one is left, turns the log to its next file. What
+    /// write-back's thread does by itself afterwards, a table checkpoint
+    /// or a turn of the log, it does by its policy
+    /// (`lignin_store::flush::FlushConfig`), as in any session, and a
+    /// close takes its own checkpoint. The turns are made until the pass
+    /// of one moves nothing on, the turn takes the log to no other file
+    /// and leaves no turn of the log due, and [`OPEN_TURNS`] at most. A
+    /// turn that fails is the last. It does not fail the open: it is
+    /// counted in [`Background::write_back_errors`] and kept as the last
+    /// error there, as a turn of the loop that failed is, and what it did
+    /// not write stays owed to the loop. The store's own count of the
+    /// loop's errors does not take it, and the loop's first turn follows
+    /// with no wait.
+    ///
+    /// The turns come before the fill of the reserve
+    /// ([`Options::reserve`]), which is the open's last step before the
+    /// threads: what the open itself needs of the device comes first
+    /// (DF9). A turn that is refused for room is told to the session as a
+    /// refusal for room, and finds no reserve that this session has
+    /// written to release.
+    ///
+    /// The cleaner's thread and the reclaimer's are started with
+    /// write-back's, and wait for the first commit that is asked of the
+    /// session (the module documentation, "Background work").
     ///
     /// A directory that this build does not open is refused before
     /// anything is written to it ([`OpenError::left_untouched`]), and
     /// entries that are not the engine's are never read, removed or
     /// renamed.
     pub fn open(dir: impl AsRef<Path>, options: &Options) -> Result<Self, OpenError> {
-        let mut db = Self::open_at_rest(dir.as_ref(), options)?;
+        let mut db = Self::open_at_rest(dir.as_ref(), options, OPEN_TURNS)?;
         db.start(options)?;
         Ok(db)
     }
 
     /// The open up to the start of the background work: the directory's
-    /// lock, the recovery, the keyspaces, and what earlier sessions
-    /// dropped and did not reclaim. The handle it returns has none of the
-    /// three threads. Dropped as it is, it does nothing of what a close
-    /// does: the session ends as a process that is killed ends.
-    fn open_at_rest(dir: &Path, options: &Options) -> Result<Self, OpenError> {
+    /// lock, the recovery, the keyspaces, what earlier sessions dropped
+    /// and did not reclaim, at most `turns` turns of write-back for what
+    /// the recovery replayed, and the fill of the reserve, in this order.
+    /// The handle it returns has none of the three threads. Dropped as it
+    /// is, it does nothing of what a close does: the session ends as a
+    /// process that is killed ends.
+    fn open_at_rest(dir: &Path, options: &Options, turns: usize) -> Result<Self, OpenError> {
         let mut opening = Opening::default();
         let began = Instant::now();
         let opened = open::open_dir(dir, options)?;
@@ -926,8 +1000,13 @@ impl Db {
         let shared = Arc::new(shared);
         let store = &shared.store;
         store.troubles.of(&shared);
-        // The reserve last: what the open itself needs of the device
-        // comes first (DF9).
+        // The turns of write-back before the reserve: what the open
+        // itself needs of the device comes first (DF9), and a turn that
+        // is refused for room finds no reserve of this session to
+        // release.
+        let writing = Instant::now();
+        turns_at_the_open(&shared, turns);
+        opening.write_back = writing.elapsed();
         let filling = Instant::now();
         store.troubles.reserve.fill_at_open(|| shared.marks());
         opening.reserve = filling.elapsed();
@@ -1072,7 +1151,7 @@ impl Db {
     ///
     /// A pin whose holder leaked it (`std::mem::forget`) borrows nothing
     /// any more. A close does not wait for it: what it holds back from
-    /// being reclaimed is reclaimed by the next session.
+    /// being reclaimed is left to the next session.
     pub fn close(self) -> Result<(), DbError> {
         self.shut_and_check()
     }
@@ -1599,6 +1678,7 @@ impl Db {
     /// [`CommitError::Unsettled`]), are of the wipe with its enters, and
     /// never of the wipe alone.
     pub fn wipe_entering(&self, enters: &[(Subtree, &[u8])]) -> Result<Committed, WriteError> {
+        self.shared.store.signal.commit_asked();
         self.answered(self.wipe_and_enter(enters))
     }
 
@@ -1728,18 +1808,21 @@ impl Db {
     /// calling thread: a pass over the segments and then one over the
     /// value log, each made whatever became of the other. A pass that
     /// fails is counted and told as a pass of the thread that failed
-    /// ([`Background::cleaner_errors`]), and the first such error is
-    /// returned. A tool that has to see the space back in a session that
+    /// ([`Background::cleaner_errors`]) when it returns, before the next
+    /// pass begins, and the first such error is returned. A tool that has to see the space back in a session that
     /// it asks for no commit, and a test, call it; nothing else has to.
+    ///
+    /// It may be called while the cleaner's thread makes its turns: one
+    /// pass of the cleaner runs at a time, over the segments or over the
+    /// value log, and a pass of this call waits for the one that is under
+    /// way, as one of the thread waits for a pass of this call.
     pub fn clean(&self) -> Result<(Pass, ValuePass), CleanerError> {
         let troubles = &self.shared.store.troubles;
         with_cleaner(&self.shared, |cleaner, owners| {
-            let segments = cleaner.pass();
-            let values = cleaner.pass_values(owners);
-            let errors = [segments.as_ref().err(), values.as_ref().err()];
-            for error in errors.into_iter().flatten() {
-                troubles.cleaner_failed(error);
-            }
+            // Each pass is told when it returns, before the next begins.
+            let told = |error: &CleanerError| troubles.cleaner_failed(error);
+            let segments = cleaner.pass().inspect_err(told);
+            let values = cleaner.pass_values(owners).inspect_err(told);
             Ok((segments?, values?))
         })
     }
@@ -1759,6 +1842,7 @@ impl Db {
         rules: &mut R,
         commit: impl FnOnce(&Committer<'_>, &mut Counted<'_, R>) -> Result<Committed, CommitError>,
     ) -> Result<Committed, WriteError> {
+        self.shared.store.signal.commit_asked();
         let written = self.refused().and_then(|()| {
             let mut rules = Counted { rules, calls: 0 };
             let committed = commit(&self.shared.committer(), &mut rules);
@@ -1865,6 +1949,37 @@ fn with_page_values<R>(shared: &Shared, work: impl FnOnce(WriteBack<'_>) -> R) -
     work(WriteBack::new(stores, &store.flush, store.page_size).unwrap_or(plain))
 }
 
+/// How many turns of write-back an open makes at most ([`Db::open`]).
+pub const OPEN_TURNS: usize = 8;
+
+/// The turns of write-back that an open makes on its own thread, before
+/// the background threads are started ([`Db::open`]): turns as the loop
+/// makes them, with the loop's view of the store, until the pass of one
+/// moves nothing on, the turn takes the log to no other file and leaves
+/// no turn of the log due, and `at_most` turns. A table checkpoint that
+/// such a last turn takes asks for no further turn by itself: the record
+/// it appends can, where it fills the log's file. The error of a turn
+/// that fails is told to the session where the loop tells its own
+/// (`Troubles::write_back_failed`), and no turn is made after it.
+fn turns_at_the_open(shared: &Shared, at_most: usize) {
+    let store = &*shared.store;
+    let troubles = &store.troubles;
+    with_page_values(shared, |write_back| {
+        for _ in 0..at_most {
+            match write_back.tick() {
+                // The mark of a table checkpoint that the turn took can
+                // have filled the log's file: the next turn turns the log.
+                Ok(tick) if tick.rolled || tick.pass.progressed() || store.log.is_due() => {}
+                Ok(_) => break,
+                Err(error) => {
+                    troubles.write_back_failed(&error);
+                    break;
+                }
+            }
+        }
+    });
+}
+
 /// The background loop of write-back, for as long as the session lives
 /// (`lignin_store::flush`).
 fn write_back(shared: &Shared) {
@@ -1899,8 +2014,15 @@ fn with_cleaner<R>(shared: &Shared, work: impl FnOnce(&Cleaner<'_>, &Owners<'_>)
 /// (`lignin_store::cleaner`): a pass over the segments and one over the
 /// value log, again and again. At the end of each turn a reserve that the
 /// session released is filled again, if it is time for that (DF13).
+///
+/// The loop begins when the session is asked for its first commit
+/// (`store::Signal::wait_for_a_commit`), and not at all in a session that
+/// is asked for none.
 fn clean(shared: &Shared) {
     let store = &*shared.store;
+    if !store.signal.wait_for_a_commit() {
+        return;
+    }
     with_cleaner(shared, |cleaner, owners| {
         let mut turns = CleanerTurns::begun(store);
         cleaner.run(
