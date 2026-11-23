@@ -77,8 +77,8 @@ impl Catalog {
 pub(super) struct Signal {
     thread: OnceLock<Thread>,
     stop: AtomicBool,
-    /// Whether the session has made room on the device since the thread
-    /// last began a wait ([`Self::room_made`]).
+    /// Whether the session has made room on the device and no wait of
+    /// the thread has used that call up ([`Self::room_made`]).
     room: AtomicBool,
     /// How often the thread was woken, how many rounds it has begun, and
     /// after how many of them it took its idle wait: what a test of its
@@ -213,9 +213,10 @@ impl Troubles {
     /// what follows this refusal.
     ///
     /// The caller can hold the commit lock or the lock of the
-    /// reclaiming. Beside the lock of the reserve this takes the lock on
-    /// each loop's wake in turn, and nothing is waited for under any of
-    /// them but an unlink.
+    /// reclaiming. This takes the lock of the reserve, and after it the
+    /// lock on each loop's wake in turn. Under the lock of the reserve
+    /// the file layer is asked for the two files of the reserve and for
+    /// their removal, and nothing else is waited for under any of them.
     pub(super) fn refused(&self, error: &(dyn Error + 'static)) {
         if !self.reserve.kept() {
             return;
@@ -223,7 +224,7 @@ impl Troubles {
         let Some(session) = self.session.get().and_then(Weak::upgrade) else {
             return;
         };
-        if self.reserve.refused(error, || session.store.marks()) {
+        if self.reserve.refused(error, || session.marks()) {
             session.room_made();
         }
     }
@@ -368,15 +369,6 @@ impl Store {
         let ours = lock(&self.manifest);
         let ours = ours.manifest()?;
         Ok(read_manifest(&*self.vfs, &self.dir).is_ok_and(|stored| stored == *ours))
-    }
-
-    /// How far the session has come, for the reserve that waits to be
-    /// filled again.
-    pub(super) fn marks(&self) -> Marks {
-        Marks {
-            checkpoints: self.flush.stats().checkpoints,
-            published: self.committing.stats().published,
-        }
     }
 
     /// Why the session takes no write any more, if it does not.
@@ -624,6 +616,15 @@ impl Shared {
     /// counts.
     pub(super) fn cleaner_on<'a>(&'a self, write_back: WriteBack<'a>) -> Cleaner<'a> {
         Cleaner::new(write_back, &self.store.cleaner).with_stats(&self.store.stats)
+    }
+
+    /// How far the session has come, for the reserve that waits to be
+    /// filled again. It takes no lock.
+    pub(super) fn marks(&self) -> Marks {
+        Marks {
+            checkpoints: self.store.flush.stats().checkpoints,
+            published: self.versions.latest(),
+        }
     }
 
     /// Tells the three loops of the background work that the session has

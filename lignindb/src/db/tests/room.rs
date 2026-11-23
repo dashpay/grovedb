@@ -91,7 +91,7 @@ pub(super) fn cleaner_turn(db: &Db, turns: &mut CleanerTurns) -> bool {
             assert!(out_of_space(error), "{error}");
             store.troubles.cleaner_failed(error);
         }
-        let values = crate::db::end_turn(store, cleaner, owners, turns).map(drop);
+        let values = crate::db::end_turn(shared, cleaner, owners, turns).map(drop);
         if let Err(error) = &values {
             assert!(out_of_space(error), "{error}");
             store.troubles.cleaner_failed(error);

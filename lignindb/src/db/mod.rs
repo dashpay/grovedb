@@ -399,16 +399,19 @@
 //!   a close that returns an error which a full device caused
 //!   ([`crate::space::out_of_space`]), and a turn of write-back, a pass of
 //!   the cleaner or a call of the reclaimer that failed with such an
-//!   error, in their threads or on the thread of a caller. A session that
-//!   has nothing of its reserve on the device then makes no operation on
-//!   a file for it. The thread that released the reserve has each of the
-//!   three loops take its next turn at once.
+//!   error, in their threads or on the thread of a caller. The thread
+//!   that took a file of the reserve off the device has each of the
+//!   three loops take its next turn at once. Once both files of the
+//!   reserve are away with no removal that failed, and until the next
+//!   fill begins, a refusal makes no operation on a file for the
+//!   reserve.
 //! - **The session fills it again from the cleaner's thread**, at the end
-//!   of a turn of its loop in which the cleaner was at rest, once a
-//!   commit was published and a table checkpoint was installed since the
-//!   session was last told of a refusal for room. A fill that fails is
-//!   tried again by the same rule, counted from the fill, and what it
-//!   left on the device goes at the next refusal for room.
+//!   of a turn of its loop in which the cleaner was at rest, once the
+//!   session has published a version and counted a table checkpoint that
+//!   it installed since it was last told of a refusal for room. A fill
+//!   that fails is tried again by the same rule, counted from the fill,
+//!   and what it left on the device is taken off it at the next refusal
+//!   for room.
 //!
 //! [`DbStats::reserve`] says what the session holds and what it did. An
 //! open that is refused for room does not release a reserve: whoever
@@ -567,7 +570,7 @@ pub use self::{
 };
 use self::{
     reserve::CleanerTurns,
-    store::{lock, Shared, Store},
+    store::{lock, Shared},
 };
 use crate::{
     checkpoint::{CheckpointError, CheckpointOptions, Checkpointer, Created},
@@ -785,13 +788,14 @@ impl fmt::Display for DbStats {
             let reserve = &self.reserve;
             writeln!(
                 f,
-                "reserve: {} bytes, {}; released {} times ({} bytes), filled {} times, {} fills \
-                 failed",
+                "reserve: {} bytes, {}; refused for room {} times, released {} times ({} bytes), \
+                 filled {} times, {} fills failed",
                 reserve.len,
                 match reserve.held {
                     true => "held",
                     false => "not held",
                 },
+                reserve.refusals,
                 reserve.releases,
                 reserve.bytes_released,
                 reserve.fills,
@@ -924,7 +928,7 @@ impl Db {
         // The reserve last: what the open itself needs of the device
         // comes first (DF9).
         let filling = Instant::now();
-        store.troubles.reserve.fill_at_open(|| store.marks());
+        store.troubles.reserve.fill_at_open(|| shared.marks());
         opening.reserve = filling.elapsed();
         Ok(Self {
             shared,
@@ -1879,7 +1883,7 @@ fn clean(shared: &Shared) {
     with_cleaner(shared, |cleaner, owners| {
         let mut turns = CleanerTurns::begun(store);
         cleaner.run(
-            |cleaner| end_turn(store, cleaner, owners, &mut turns),
+            |cleaner| end_turn(shared, cleaner, owners, &mut turns),
             |error| store.troubles.cleaner_loop_failed(error),
         );
     });
@@ -1888,12 +1892,12 @@ fn clean(shared: &Shared) {
 /// What ends a turn of the cleaner's loop: the pass over the value log,
 /// and the look at the turn for the reserve of the session.
 fn end_turn(
-    store: &Store,
+    session: &Shared,
     cleaner: &Cleaner<'_>,
     owners: &Owners<'_>,
     turns: &mut CleanerTurns,
 ) -> Result<ValuePass, CleanerError> {
     let passed = cleaner.pass_values(owners);
-    turns.ended(store);
+    turns.ended(session);
     passed
 }

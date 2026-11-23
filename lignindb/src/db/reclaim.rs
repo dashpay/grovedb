@@ -433,8 +433,8 @@ impl Shared {
     /// whoever wakes it. The wait is `idle` again after the first round in
     /// which nothing fails. A call that a page held back is no failure.
     /// A wait after a failed round ends before its time where the session
-    /// releases its reserve meanwhile, or has since the thread last began
-    /// a wait ([`Shared::room_made`]).
+    /// releases its reserve meanwhile, or has released it since the last
+    /// wait of the thread ended ([`Shared::room_made`]).
     pub(super) fn reclaim_loop(&self, idle: std::time::Duration) {
         let store = &*self.store;
         store.signal.attach(thread::current());

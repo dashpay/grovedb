@@ -249,6 +249,31 @@ impl Reserve {
         }
     }
 
+    /// Takes the two files of a reserve off the device, each by itself:
+    /// what a fill that was cut short left
+    /// ([`Self::UNFINISHED_FILE_NAME`]) and the reserve
+    /// ([`Self::FILE_NAME`]), in this order. For each it returns the
+    /// bytes that the file held if it was removed, `None` if there was no
+    /// file of that name, and the file layer's error if the length of the
+    /// file could not be read or the file could not be removed. Nothing
+    /// is synced, as in [`Self::release`].
+    pub fn take_away(&self) -> [io::Result<Option<u64>>; 2] {
+        [&self.unfinished, &self.path].map(|path| self.take(path))
+    }
+
+    fn take(&self, path: &Path) -> io::Result<Option<u64>> {
+        let len = match self.vfs.open(path, OpenMode::Read) {
+            Ok(file) => file.len()?,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        match self.vfs.remove_file(path) {
+            Ok(()) => Ok(Some(len)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Removes what a fill that was cut short left, if anything.
     fn remove_unfinished(&self) -> io::Result<()> {
         match self.vfs.remove_file(&self.unfinished) {

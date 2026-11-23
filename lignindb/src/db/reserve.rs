@@ -11,10 +11,11 @@ use std::{
     },
 };
 
+use lignin_format::CommitVersion;
 use lignin_io::Vfs;
 use lignin_store::cleaner::CleanerStats;
 
-use super::store::{lock, Store};
+use super::store::{lock, Shared, Store};
 use crate::space::{out_of_space, Reserve};
 
 /// What a session has done with its reserve
@@ -26,50 +27,59 @@ pub struct ReserveStats {
     /// none, and every other count here is 0.
     pub len: u64,
     /// Whether the session holds its reserve: a fill of it returned with
-    /// the reserve whole, and the session has not released it since.
+    /// the reserve whole, and the session has not taken the reserve's
+    /// file off the device since.
     pub held: bool,
-    /// How often the session released its reserve: one that it held, or
-    /// what a fill that failed can have left of one.
+    /// How often the session was given an error that a full device
+    /// caused. A fill waits for what follows the last of them.
+    pub refusals: u64,
+    /// How often the session, refused for room, took a file of its
+    /// reserve off the device: the reserve that it held, or what a fill
+    /// that failed had left.
     pub releases: u64,
-    /// The bytes those releases gave back.
+    /// The bytes that those files held.
     pub bytes_released: u64,
     /// Fills that returned with the reserve whole and durable: the open's,
-    /// and those after a release.
+    /// and those that the session made later.
     pub fills: u64,
     /// Fills that failed. The session does not hold its reserve after
     /// one, whatever the fill left on the device. That can be the whole
     /// reserve under its name, where the device refused no more than to
-    /// make the name durable: the next refusal for room releases it as it
-    /// releases a reserve that is held.
+    /// make the name durable. The next refusal for room takes what was
+    /// left off the device.
     pub fills_failed: u64,
-    /// What the last fill or release that failed said.
+    /// What the last fill, or the last removal of a file of the reserve,
+    /// that failed said.
     pub last_error: Option<String>,
 }
 
-/// How far a session has come, by two of its counts: what a fill of the
-/// reserve after a release waits for.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How far a session has come: what a fill of the reserve after a
+/// release waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Marks {
-    /// Table checkpoints that were installed.
+    /// The count of the table checkpoints that were installed
+    /// (`FlushStats::checkpoints`). Write-back counts a checkpoint once
+    /// its manifest is in force.
     pub(super) checkpoints: u64,
-    /// Commits that were published.
-    pub(super) published: u64,
+    /// The latest version that was published.
+    pub(super) published: CommitVersion,
 }
 
 /// What the session knows of its reserve.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Hold {
-    /// Whether a fill returned with the reserve whole, and it was not
-    /// released since.
+    /// Whether a fill returned with the reserve whole, and the reserve's
+    /// file was not taken off the device since.
     held: bool,
     /// Whether a file of the reserve can be on the device by this
-    /// session's doing: it began a fill, and no release of its has
-    /// returned since. That is so while the reserve is held, and after a
-    /// fill or a release that failed.
+    /// session's doing: it began a fill, and has not since taken both
+    /// files of the reserve away with no removal that failed. That is so
+    /// while the reserve is held, after a fill that failed, and after a
+    /// removal that failed.
     on_device: bool,
     /// How far the session had come when it was last told of a refusal
     /// for room, or when a fill of its last failed if that was later. A
-    /// fill is tried once both counts have moved on from here.
+    /// fill is tried once both marks have moved on from here.
     since: Marks,
 }
 
@@ -77,6 +87,7 @@ struct Hold {
 struct Counts {
     /// Whether the reserve is held, for a reader that waits for no fill.
     held: AtomicBool,
+    refusals: AtomicU64,
     releases: AtomicU64,
     bytes_released: AtomicU64,
     fills: AtomicU64,
@@ -110,7 +121,14 @@ impl SessionReserve {
         Self((len > 0).then(|| Kept {
             reserve: Reserve::of(vfs, dir),
             len,
-            hold: Mutex::default(),
+            hold: Mutex::new(Hold {
+                held: false,
+                on_device: false,
+                since: Marks {
+                    checkpoints: 0,
+                    published: CommitVersion::EMPTY,
+                },
+            }),
             counts: Counts::default(),
         }))
     }
@@ -130,16 +148,18 @@ impl SessionReserve {
     }
 
     /// What the session does with an error it was given: if a device that
-    /// is full caused it, the session gives back what it can have of its
-    /// reserve on the device, and a fill waits for what follows this
+    /// is full caused it, the session takes off the device what it can
+    /// have of its reserve there, and a fill waits for what follows this
     /// refusal. `marks` says how far the session has come, and is called
     /// under the lock of the reserve.
     ///
-    /// Returns whether files of the reserve were taken off the device:
+    /// Returns whether a file of the reserve was taken off the device:
     /// the loops of the background work are told of that
-    /// ([`Troubles::refused`](super::store::Troubles::refused)). With
-    /// nothing of the reserve on the device the call makes no operation
-    /// on a file.
+    /// ([`Troubles::refused`](super::store::Troubles::refused)). A file
+    /// whose removal failed is left, and the next refusal for room tries
+    /// again. Where the session last took both files away with no
+    /// removal that failed, and has begun no fill since, the call makes
+    /// no operation on a file.
     pub(super) fn refused(
         &self,
         error: &(dyn Error + 'static),
@@ -151,24 +171,35 @@ impl SessionReserve {
         }
         let mut hold = lock(&kept.hold);
         hold.since = marks();
+        // Counted once the marks are read: a commit that is begun by
+        // whoever has seen this count is published after them.
+        kept.counts.refusals.fetch_add(1, Ordering::SeqCst);
         if !hold.on_device {
             return false;
         }
-        match kept.reserve.release() {
-            Ok(bytes) => {
-                kept.counts.releases.fetch_add(1, Ordering::Relaxed);
-                (kept.counts.bytes_released).fetch_add(bytes, Ordering::Relaxed);
-                hold.on_device = false;
-                kept.set(&mut hold, false);
-                true
-            }
-            // What the session knows of its reserve is as it was, and
-            // the next refusal for room tries the release again.
-            Err(error) => {
-                kept.failed("the release", &error);
-                false
+        let [unfinished, whole] = kept.reserve.take_away();
+        if whole.is_ok() {
+            // No file has the reserve's name any more.
+            kept.set(&mut hold, false);
+        }
+        hold.on_device = unfinished.is_err() || whole.is_err();
+        let (mut files, mut bytes) = (0, 0);
+        for taken in [unfinished, whole] {
+            match taken {
+                Ok(Some(len)) => {
+                    files += 1;
+                    bytes += len;
+                }
+                Ok(None) => {}
+                Err(error) => kept.failed("the release", &error),
             }
         }
+        if files == 0 {
+            return false;
+        }
+        kept.counts.releases.fetch_add(1, Ordering::Relaxed);
+        (kept.counts.bytes_released).fetch_add(bytes, Ordering::Relaxed);
+        true
     }
 
     /// What follows a turn of the cleaner's loop, for a reserve that is
@@ -177,9 +208,8 @@ impl SessionReserve {
     /// the lock of the reserve.
     ///
     /// A fill is tried at the end of a turn in which the cleaner was at
-    /// rest, once a commit was published and a table checkpoint was
-    /// installed since the session was last told of a refusal for room,
-    /// and since its last fill that failed.
+    /// rest, once both marks have moved on since the session was last
+    /// told of a refusal for room, and since its last fill that failed.
     pub(super) fn turn_ended(&self, at_rest: bool, marks: impl Fn() -> Marks) {
         let Some(kept) = &self.0 else { return };
         let mut hold = lock(&kept.hold);
@@ -197,10 +227,11 @@ impl SessionReserve {
             return ReserveStats::default();
         };
         let counts = &kept.counts;
-        let read = |count: &AtomicU64| count.load(Ordering::Relaxed);
+        let read = |count: &AtomicU64| count.load(Ordering::SeqCst);
         ReserveStats {
             len: kept.len,
             held: counts.held.load(Ordering::Relaxed),
+            refusals: read(&counts.refusals),
             releases: read(&counts.releases),
             bytes_released: read(&counts.bytes_released),
             fills: read(&counts.fills),
@@ -214,7 +245,7 @@ impl Kept {
     /// Fills the reserve, under the lock on what the session knows of it.
     /// After a fill that failed the reserve is to be filled from the
     /// marks on that are read then, and what the fill left on the device
-    /// goes at the next refusal for room.
+    /// is taken off it at the next refusal for room.
     fn fill(&self, hold: &mut MutexGuard<'_, Hold>, marks: impl FnOnce() -> Marks) {
         hold.on_device = true;
         match self.reserve.fill(self.len) {
@@ -223,10 +254,11 @@ impl Kept {
                 self.set(hold, true);
             }
             Err(error) => {
-                self.counts.fills_failed.fetch_add(1, Ordering::Relaxed);
                 self.failed("the fill", &error);
                 self.set(hold, false);
                 hold.since = marks();
+                // Counted once the marks are read, as a refusal is.
+                self.counts.fills_failed.fetch_add(1, Ordering::SeqCst);
             }
         }
     }
@@ -277,7 +309,8 @@ impl CleanerTurns {
 
     /// Called at the end of a turn of the cleaner's loop, when both of its
     /// passes were made.
-    pub(super) fn ended(&mut self, store: &Store) {
+    pub(super) fn ended(&mut self, session: &Shared) {
+        let store = &session.store;
         let reserve = &store.troubles.reserve;
         if !reserve.kept() {
             return;
@@ -285,6 +318,6 @@ impl CleanerTurns {
         let counted = store.cleaner.stats();
         let at_rest = work(&counted) == work(&self.counted);
         self.counted = counted;
-        reserve.turn_ended(at_rest, || store.marks());
+        reserve.turn_ended(at_rest, || session.marks());
     }
 }
