@@ -115,8 +115,10 @@ pub struct LigninEntry {
 /// subtree is read as RocksDB reads it wherever a node is asked for: as
 /// the bytes it is stored with (`node-store.md`, "Reads" and "The cursor"
 /// of the LigninDB store). The engine is told with this which subtrees
-/// those are (`lignindb::txn::FlatKinds`).
-pub(super) fn keeps_flat_records(tree_type: &[u8]) -> bool {
+/// those are (`lignindb::txn::FlatKinds`), and so is a check of its
+/// database that holds the data column of each subtree to the tree type
+/// of its entry (`lignindb::Db::check_kinds_by`).
+pub fn keeps_flat_records(tree_type: &[u8]) -> bool {
     tree_type_from_bytes(tree_type).is_ok_and(|tree_type| tree_type.uses_non_merk_data_storage())
 }
 

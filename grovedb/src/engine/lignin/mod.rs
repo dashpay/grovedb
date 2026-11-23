@@ -89,9 +89,9 @@ use grovedb_costs::{
 use grovedb_merk::{
     store::{
         lignin::{
-            hash::MerkHashRules, tree_type_bytes, LigninApplied, LigninBatch, LigninCursor,
-            LigninFlatCursor, LigninHost, LigninKeyspace, LigninNodeStore, LigninSettled,
-            LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
+            hash::MerkHashRules, keeps_flat_records, tree_type_bytes, LigninApplied, LigninBatch,
+            LigninCursor, LigninFlatCursor, LigninHost, LigninKeyspace, LigninNodeStore,
+            LigninSettled, LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
         },
         NodeStore,
     },
@@ -149,7 +149,13 @@ impl LigninEngine {
     /// database the rules that name none
     /// ([`Self::check_closes_with_no_left_hashes`]), and the close then
     /// panics on that hash as on any that differs.
+    ///
+    /// In any build, the checks of the database are given the tree types
+    /// that keep flat records (`grovedb_merk::store::lignin::keeps_flat_records`),
+    /// so that each holds the data column of every subtree to the tree
+    /// type of its entry (`lignindb::Db::check_kinds_by`).
     pub fn new(db: Db) -> Result<Self, Error> {
+        db.check_kinds_by(keeps_flat_records);
         if cfg!(debug_assertions) {
             let rules = MerkHashRules::for_check(GroveVersion::latest()).naming_left_hashes();
             db.check_hashes_by(Box::new(rules));

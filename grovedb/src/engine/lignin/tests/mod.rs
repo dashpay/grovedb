@@ -73,10 +73,12 @@ macro_rules! path {
 
 /// Opens the database in `dir` again, which nothing has open, closes it,
 /// and has the physical checker read it as a store that is still: every
-/// rule of the layout, and the stored hashes of the nodes of every Merk
-/// in use by Merk's rules, as the module documentation says.
+/// rule of the layout, the data column of every subtree by the tree type
+/// of its entry, and the stored hashes of the nodes of every Merk in use
+/// by Merk's rules, as the module documentation says.
 fn check(dir: &std::path::Path) {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
+    db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
     let mut rules = MerkHashRules::for_check(version());
     let report = db.close_and_verify(Some(&mut rules)).expect("a close");
     assert!(report.is_sound(), "{:#?}", report.findings);

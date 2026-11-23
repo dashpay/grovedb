@@ -821,9 +821,9 @@ fn a_subtree_is_entered_through_its_handle() {
     };
     for (position, prefix) in [CHILD, OTHER].into_iter().enumerate() {
         let store = LigninNodeStore::immediate(&writer, hosts(prefix, &[CHILD, OTHER]));
-        store.enter(TreeType::BulkAppendTree(9)).unwrap();
+        store.enter(TreeType::ProvableCountTree).unwrap();
         let entry = store.entry().unwrap().expect("the subtree is entered");
-        assert_eq!(entry.tree_type().unwrap(), TreeType::BulkAppendTree(9));
+        assert_eq!(entry.tree_type().unwrap(), TreeType::ProvableCountTree);
         let hosted = LigninHosted {
             subtree: FRESH,
             key: b"element".to_vec(),

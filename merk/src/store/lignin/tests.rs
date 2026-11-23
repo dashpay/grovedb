@@ -33,8 +33,8 @@ use super::{
     },
     flat::{FlatAccess, FlatWalk},
     hash::MerkHashRules,
-    tree_type_bytes, LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore,
-    LigninOutcome, LigninSettled, LigninSubtree, LigninView, LigninWriter, Mode,
+    keeps_flat_records, tree_type_bytes, LigninApplied, LigninBatch, LigninEntry, LigninHost,
+    LigninNodeStore, LigninOutcome, LigninSettled, LigninSubtree, LigninView, LigninWriter, Mode,
 };
 use crate::{
     cost_model::Keyspace,
@@ -166,6 +166,7 @@ impl Drop for Lignin {
             rules,
             stated: self.stated,
         };
+        again.check_kinds_by(keeps_flat_records);
         let report = again.close_and_verify(Some(&mut rules));
         let report = report.expect("the database is closed again");
         assert!(
@@ -203,6 +204,7 @@ impl Lignin {
         let db = Db::open(dir.path(), &options).expect("a new database");
         let rules = MerkHashRules::for_check(version());
         db.check_hashes_by(Box::new(RawValues { rules, stated }));
+        db.check_kinds_by(keeps_flat_records);
         let entered: Vec<SubtreeWrite<'_>> = (0..ENTERED)
             .map(|name| SubtreeWrite::Enter {
                 subtree: Subtree::new([name; 32]),
@@ -229,6 +231,21 @@ impl Lignin {
         self.db.as_ref().expect("the database is open")
     }
 
+    /// Closes the database of a test that leaves it in a state the
+    /// engine's check does not call sound, and returns the report of that
+    /// check on the store the close left, by the rules of the check at a
+    /// drop. Nothing more is checked of the database.
+    pub(super) fn closed_and_checked(mut self) -> lignindb::verify::Report {
+        let db = self.db.take().expect("the database is open");
+        let rules = MerkHashRules::for_check(version());
+        let mut rules = RawValues {
+            rules,
+            stated: self.stated,
+        };
+        let report = db.close_and_verify(Some(&mut rules));
+        report.expect("the database is closed")
+    }
+
     /// Closes the database and opens it again. A close writes back what
     /// the session had to write, so the next session begins with every
     /// value that was out of line in the value log, whatever the
@@ -243,6 +260,7 @@ impl Lignin {
         let rules = MerkHashRules::for_check(version());
         let stated = self.stated;
         db.check_hashes_by(Box::new(RawValues { rules, stated }));
+        db.check_kinds_by(keeps_flat_records);
         self.db = Some(db);
         self
     }

@@ -56,6 +56,7 @@ impl Hatched for super::LigninEngine {
 
     fn closed(dir: &std::path::Path) -> Option<Census> {
         let db = Db::open(dir, &Options::default()).expect("the database opens again");
+        db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
         let mut rules = grovedb_merk::store::lignin::hash::MerkHashRules::for_check(version());
         let report = db.close_and_verify(Some(&mut rules)).expect("a close");
         assert!(report.is_sound(), "{:#?}", report.findings);
@@ -977,6 +978,7 @@ fn a_store_between_a_load_and_its_replacement_is_reported_for_one_value_hash() {
     drop(db);
 
     let store = Db::open(dir.path(), &Options::default()).expect("the store opens again");
+    store.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
     let mut rules = grovedb_merk::store::lignin::hash::MerkHashRules::for_check(v);
     let report = store.close_and_verify(Some(&mut rules)).expect("a close");
     let found: Vec<String> = (report.findings.iter())

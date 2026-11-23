@@ -88,6 +88,7 @@ const AFTER_AN_ENTER_BESIDE_THE_LOOK: [&str; 1] = ["HashUnchecked"];
 /// `dir`, which nothing has open.
 fn broken(dir: &std::path::Path) -> Vec<String> {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
+    db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
     let mut rules = MerkHashRules::for_check(version());
     let report = db.close_and_verify(Some(&mut rules)).expect("a close");
     for finding in &report.findings {

@@ -1036,6 +1036,7 @@ impl Lignin {
         };
         let db = Db::open(dir.path(), &options).expect("a new database");
         db.check_hashes_by(Box::new(MerkHashRules::for_check(version())));
+        db.check_kinds_by(crate::store::lignin::keeps_flat_records);
         // The subtree of these tests, as a Merk that stands alone.
         let entered = [SubtreeWrite::Enter {
             subtree: Subtree::new(SUBTREE),

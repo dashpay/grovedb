@@ -210,8 +210,14 @@ fn required_space(len: u64) -> u64 {
 /// and under a Merk it reads a flat record as a node that no node links.
 /// One that is not in that form, as the record of this test, has no
 /// value under the cursor, which says why in its status, and a read of
-/// the node by its key is refused. GroveDB comes to this state on grove
-/// versions 1 to 3, under an entry that outlived its element
+/// the node by its key is refused.
+///
+/// The check of the database holds the data of a subtree to the tree type
+/// of its entry (`lignindb::verify`, "The data column by the tree type of
+/// the entry"), and finds the record of this test: under an entry of a
+/// Merk's tree type it is no node that no node links. GroveDB came to
+/// this state on grove version 3, under an entry that outlived its
+/// element, and the engine takes such an entry out now
 /// (`engine::lignin::tests::append_only`, D-280).
 #[test]
 fn a_flat_record_that_is_no_node_has_no_value_under_the_node_cursor_of_a_merk() {
@@ -285,6 +291,15 @@ fn a_flat_record_that_is_no_node_has_no_value_under_the_node_cursor_of_a_merk() 
     on_rocks.next().unwrap();
     on_lignin.next().unwrap();
     assert!(!on_rocks.valid().unwrap() && !on_lignin.valid().unwrap());
+    drop((on_rocks, on_lignin));
+    drop(step);
+    drop(transaction);
+
+    // The check finds the record, and nothing else.
+    let report = lignin.closed_and_checked();
+    let found: Vec<_> = report.findings.iter().map(|found| found.rule).collect();
+    assert_eq!(found, [lignindb::verify::Rule::RecordKind], "{report}");
+    assert_eq!(report.more_findings, 0, "{report}");
 }
 
 /// What a read of the node under `key` answers, and what the node cursor
@@ -321,6 +336,10 @@ fn node_and_cursor<'db, S: NodeStore<'db>>(
 /// under such an entry, which GroveDB writes on grove versions 1 to 3
 /// (`engine::lignin::tests::append_only`, D-280), is a cell and is read
 /// as a node: only a node that no node links is read so.
+///
+/// To the check of the database the record is a flat record of a tree
+/// that keeps flat records, which has no form to keep, and the database
+/// of this test is sound when it is dropped.
 #[test]
 fn a_node_that_no_node_links_under_a_tree_that_keeps_flat_records_is_read_as_it_is_stored() {
     const FLAT: Prefix = [250; 32];
