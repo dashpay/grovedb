@@ -143,9 +143,14 @@ fn the_candidate_answers_as_the_reference_does() {
     // A run of each grove version by itself, so that a case it reports is
     // the case `lignin-diff case --seed SEED --grove-version N` runs again.
     for number in 1..=GROVE_VERSIONS.len() {
-        let shape = Shape::default()
+        let mut shape = Shape::default()
             .for_grove_version(number as u32)
             .expect("a grove version");
+        // GroveDB asserts in a debug build what a tree made again at a
+        // dropped path before the drain of its drop breaks, and the
+        // reference panics there: a debug run on a grove version with
+        // flat drops keeps the contract of their caller (D-348, D-352).
+        shape.keeps_the_drop_contract = cfg!(debug_assertions) && number >= 4;
         let summary = fuzz(
             &Side::<Reference>::of("reference"),
             &Side::<Candidate>::of("candidate"),
@@ -360,7 +365,7 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     assert_eq!(rows(&ended.reference)[1..], kept);
     assert_eq!(rows(&ended.candidate), [again]);
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 1, 0, 0, 0]);
+    assert_eq!(families.answers, [0, 0, 1, 0, 0]);
     assert_eq!(families.answer_seed[2], Some(case.seed));
 }
 
@@ -453,11 +458,15 @@ fn the_fields_of_two_cost_lines_are_compared() {
 /// dropped flat and made again by a repeated batch before the drain of
 /// its drop, which skips its record, and a raw query of the tree above
 /// with no subquery returns it. A proof binds such a tree to its own
-/// records, where RocksDB reads those it kept of the dropped tree: in a
-/// release build its proof is refused by its own verifier, and in a
-/// debug build GroveDB's assertion fails and the reference panics.
-/// LigninDB's proof verifies and gives the rows it returned. The case
-/// ends there, counted apart for the build it is run in (D-348).
+/// records, where RocksDB reads those it kept of the dropped tree.
+///
+/// In a release build RocksDB's proof is refused by its own verifier,
+/// LigninDB's verifies and gives the rows both returned, and the case
+/// ends there, counted apart (D-348). In a debug build GroveDB's
+/// assertion fails on RocksDB and the reference panics, which is a
+/// divergence of the run; with the switch that keeps the contract of a
+/// flat drop's caller the tree is not made again, and the case of the
+/// seed has no divergence.
 #[test]
 fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
     use lignin_testkit::{
@@ -467,28 +476,73 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
     };
 
     let scratch = scratch();
+    let on_both = |case: &Case| {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    run(
+                        case,
+                        &Side::<Reference>::of("RocksDB"),
+                        &Side::<Candidate>::of("LigninDB"),
+                        scratch.path(),
+                        Stored::Every(32),
+                        &|| false,
+                    )
+                })
+                .expect("a thread")
+                .join()
+                .expect("the case runs")
+        })
+        .expect("the run")
+    };
     let shape = Shape::default()
         .for_grove_version(5)
         .expect("a grove version");
-    let case = Case::generate(0x3d7d_3d53_98d4_88dc, &shape);
-    let ran = std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(STACK_BYTES)
-            .spawn_scoped(scope, || {
-                run(
-                    &case,
-                    &Side::<Reference>::of("RocksDB"),
-                    &Side::<Candidate>::of("LigninDB"),
-                    scratch.path(),
-                    Stored::Every(32),
-                    &|| false,
-                )
-            })
-            .expect("a thread")
-            .join()
-            .expect("the case runs")
-    })
-    .expect("the run");
+    let seed = 0x3d7d_3d53_98d4_88dc;
+    let case = Case::generate(seed, &shape);
+    let ran = on_both(&case);
+    let step = 1552;
+    let Op::Read(Read::Query(query)) = &case.ops[step] else {
+        panic!("step {step} is {:?}", case.ops[step]);
+    };
+    let above: [&[u8]; 1] = [b"drops"];
+    assert_eq!(query.path, above);
+    assert!(query.raw && query.subquery_path.is_none() && !query.subquery_all);
+    let hex = |bytes: &[u8]| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
+    let made_again = hex(b"round-0:commitment");
+    let has = |lines: &[String], text: &str| lines.iter().any(|line| line.contains(text));
+
+    if cfg!(debug_assertions) {
+        // The reference panics at GroveDB's assertion for that tree: a
+        // divergence, of no family.
+        let divergence = ran.divergence.as_ref().expect("a divergence");
+        assert_eq!(divergence.step, step);
+        assert_eq!(divergence.parts, [Part::Panic]);
+        let origin = "/operations/proof/bind_terminal_non_merk_tree/";
+        let asserted = format!("non-Merk tree at key {made_again} has state root ");
+        let panicked = |line: &String| line.contains(origin) && line.contains(&asserted);
+        assert!(divergence.reference.iter().any(panicked), "{divergence:?}");
+        assert_eq!(ran.ended_at, None);
+        assert_eq!(ran.tally.families.answers, [0; 5]);
+
+        // With the contract kept, the case of the seed has no divergence.
+        let mut keeping = shape.clone();
+        keeping.keeps_the_drop_contract = true;
+        let kept = Case::generate(seed, &keeping);
+        assert!(kept.ops.len() < case.ops.len());
+        let ran = on_both(&kept);
+        if let Some(divergence) = &ran.divergence {
+            panic!(
+                "{}",
+                divergence.report(&kept, "RocksDB", "LigninDB").join("\n")
+            );
+        }
+        assert_eq!(ran.cut_short, None);
+        assert_ne!(ran.ended_at, Some(Family::DroppedTreeProof));
+        return;
+    }
+
     if let Some(divergence) = &ran.divergence {
         panic!(
             "{}",
@@ -496,72 +550,22 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
         );
     }
     let ended = ran.ended_with.as_ref().expect("the answers it ended with");
-    assert_eq!(ended.step, 1552, "{ended:?}");
-    let Op::Read(Read::Query(query)) = &case.ops[ended.step] else {
-        panic!("the case ended at {:?}", case.ops[ended.step]);
-    };
-    let above: [&[u8]; 1] = [b"drops"];
-    assert_eq!(query.path, above);
-    assert!(query.raw && query.subquery_path.is_none() && !query.subquery_all);
-    // The candidate returned the tree that was made again, and its proof
-    // verifies.
-    let has = |lines: &[String], text: &str| lines.iter().any(|line| line.contains(text));
-    let made_again: String = (b"round-0:commitment".iter())
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    let above: String = b"drops".iter().map(|byte| format!("{byte:02x}")).collect();
-    let row = format!("row {above} {made_again} ");
+    assert_eq!(ended.step, step, "{ended:?}");
+    assert_eq!(ended.parts, [Part::Proof]);
+    // LigninDB returned the tree that was made again, its proof verifies,
+    // RocksDB's is refused, and both returned the same rows.
+    let row = format!("row {} {made_again} ", hex(b"drops"));
     let returned = |line: &String| line.starts_with(&row);
     assert!(ended.candidate.iter().any(returned), "{ended:?}");
     assert!(has(&ended.candidate, "verification verified"), "{ended:?}");
-    let (family, at) = if cfg!(debug_assertions) {
-        assert_eq!(ended.parts, [Part::Panic]);
-        // The reference's panic is GroveDB's assertion for that tree.
-        let [panic] = ended.reference.as_slice() else {
-            panic!("{ended:?}");
-        };
-        let origin = "/operations/proof/bind_terminal_non_merk_tree/";
-        assert!(panic.starts_with("panicked: panicked at ") && panic.contains(origin));
-        // From its first word to its last: the equality that failed, the
-        // key, a hash each for the state root and the committed value
-        // hash, and the two sides, of which the right one is that hash.
-        let begins = format!(
-            ": assertion `left == right` failed: non-Merk tree at key {made_again} has state root "
-        );
-        let (_, said) = panic.split_once(&begins).expect("the assertion's words");
-        let (root, said) = said
-            .split_once(" which does not reproduce the committed value hash ")
-            .expect("the assertion's words");
-        let (hash, said) = said.split_once("left: [").expect("the left side");
-        let (left, right) = said.split_once("right: [").expect("the right side");
-        let is_a_hash =
-            |hash: &str| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
-        assert!(is_a_hash(root) && is_a_hash(hash.trim_end()), "{panic}");
-        let listed = |side: &str| -> Option<String> {
-            let side = side.trim_end().strip_suffix(']')?;
-            let bytes: Option<Vec<u8>> = side.split(", ").map(|byte| byte.parse().ok()).collect();
-            bytes.map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-        };
-        let (left, right) = (listed(left), listed(right));
-        assert!(left.as_deref().is_some_and(is_a_hash), "{panic}");
-        assert_eq!(right.as_deref(), Some(hash.trim_end()), "{panic}");
-        assert_ne!(left, right, "{panic}");
-        (Family::DroppedTreeAssertion, 5)
-    } else {
-        assert_eq!(ended.parts, [Part::Proof]);
-        assert!(has(&ended.reference, "verification refused"), "{ended:?}");
-        // The reference returned the same rows.
-        let rows = |lines: &[String]| -> Vec<String> {
-            let rows = lines.iter().filter(|line| line.starts_with("row "));
-            rows.cloned().collect()
-        };
-        assert_eq!(rows(&ended.reference), rows(&ended.candidate));
-        (Family::DroppedTreeProof, 4)
+    assert!(has(&ended.reference, "verification refused"), "{ended:?}");
+    let rows = |lines: &[String]| -> Vec<String> {
+        let rows = lines.iter().filter(|line| line.starts_with("row "));
+        rows.cloned().collect()
     };
-    assert_eq!(ran.ended_at, Some(family));
+    assert_eq!(rows(&ended.reference), rows(&ended.candidate));
+    assert_eq!(ran.ended_at, Some(Family::DroppedTreeProof));
     let families = ran.tally.families;
-    let mut answers = [0; 6];
-    answers[at] = 1;
-    assert_eq!(families.answers, answers);
-    assert_eq!(families.answer_seed[at], Some(case.seed));
+    assert_eq!(families.answers, [0, 0, 0, 0, 1]);
+    assert_eq!(families.answer_seed[4], Some(case.seed));
 }

@@ -132,9 +132,8 @@ pub struct Summary {
     /// engines panicked, or neither could be observed.
     pub first_cut_short: Option<String>,
     /// The cases that ended at a step of a dropped tree that is counted
-    /// apart ([`Family::DroppedTreeProof`], [`Family::DroppedTreeAssertion`]):
-    /// which of the two, the seed of the case and the step, in the order
-    /// of the seeds.
+    /// apart ([`Family::DroppedTreeProof`]): the family, the seed of the
+    /// case and the step, in the order of the seeds.
     pub apart: Vec<(Family, u64, usize)>,
 }
 
@@ -211,10 +210,8 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 &abandoned,
             )?;
             tally.lock().expect("no worker panics").add(&run.tally);
-            if let (
-                Some(family @ (Family::DroppedTreeProof | Family::DroppedTreeAssertion)),
-                Some(ended),
-            ) = (run.ended_at, &run.ended_with)
+            if let (Some(family @ Family::DroppedTreeProof), Some(ended)) =
+                (run.ended_at, &run.ended_with)
             {
                 let mut apart = apart.lock().expect("no worker panics");
                 apart.push((family, case.seed, ended.step));

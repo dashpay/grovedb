@@ -28,8 +28,8 @@
 //!   answer is of the family by the records as they were before its
 //!   operation.
 //!
-//! Of the family of a dropped tree two more kinds of a step are counted
-//! apart, by the owner's ruling D-348, each of an answer alone:
+//! Of the family of a dropped tree one more kind of a step is counted
+//! apart, by the owner's ruling D-348, of an answer alone:
 //!
 //! - [`Family::DroppedTreeProof`]: a proof binds a tree that is no Merk to
 //!   the tree's own records, and RocksDB reads there the records it kept
@@ -44,14 +44,12 @@
 //!   rows at the same cost; and the candidate's proof verifies to the
 //!   root hash of its committed state and gives the rows the candidate
 //!   returned.
-//! - [`Family::DroppedTreeAssertion`]: in a debug build GroveDB's own
-//!   assertion fails there on RocksDB, and the reference panics. A case
-//!   ends there, counted, in a debug build alone, where the query has no
-//!   subquery, so that a key names one tree it returns, the panic is
-//!   that assertion's by the file it comes from and by every word and
-//!   both sides of it, names the key of such a tree, and everything
-//!   above holds that can be asked of the operation and the candidate
-//!   alone.
+//!
+//! In a debug build GroveDB's own assertion fails there on RocksDB and the
+//! reference panics, which ends a run as a divergence. A debug run on
+//! grove versions 4 and 5 generates cases that keep the contract of a
+//! flat drop's caller instead
+//! ([`Shape::keeps_the_drop_contract`](super::case::Shape)).
 //!
 //! The fourth has no place, and is of an answer alone:
 //!
@@ -125,9 +123,6 @@ pub enum Family {
     /// proof of a query that returns it: the engines differ in the proof
     /// alone.
     DroppedTreeProof,
-    /// The same, in a debug build: the reference panics at GroveDB's own
-    /// assertion.
-    DroppedTreeAssertion,
 }
 
 /// How many families there are.
@@ -139,13 +134,12 @@ const LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS: u32 = 3;
 
 impl Family {
     /// Every family.
-    pub const ALL: [Family; 6] = [
+    pub const ALL: [Family; 5] = [
         Family::WrittenOver,
         Family::BelowFlatDrop,
         Family::DroppedTree,
         Family::IndexedOverIndexed,
         Family::DroppedTreeProof,
-        Family::DroppedTreeAssertion,
     ];
 
     /// What a report calls the family.
@@ -160,10 +154,6 @@ impl Family {
             Family::DroppedTreeProof => {
                 "a tree that was dropped flat and made again before the drain, through a proof"
             }
-            Family::DroppedTreeAssertion => {
-                "a tree that was dropped flat and made again before the drain, the reference's \
-                 debug assertion"
-            }
         }
     }
 
@@ -174,7 +164,6 @@ impl Family {
             Family::DroppedTree => 2,
             Family::IndexedOverIndexed => 3,
             Family::DroppedTreeProof => 4,
-            Family::DroppedTreeAssertion => 5,
         }
     }
 }
@@ -186,8 +175,8 @@ pub struct Counts {
     /// tree that held elements, or a flat drop of a tree, whatever it
     /// held; for the family of an indexed tree over an indexed tree the
     /// cases in which the reference took such a put, whatever the
-    /// candidate answered; and for the two kinds of a dropped tree that
-    /// are counted apart, the cases that ended there.
+    /// candidate answered; and for a dropped tree through a proof, which
+    /// is counted apart, the cases that ended there.
     pub histories: [u64; FAMILIES],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
@@ -764,23 +753,6 @@ impl Known {
         self.remade.iter().filter(bound).cloned().collect()
     }
 
-    /// The trees of [`Known::trees_a_proof_binds`] where `op` is a query
-    /// with no subquery and no subquery path, and none otherwise. Such a
-    /// query returns elements of its own subtree alone, so each of these
-    /// trees is the one element it can return under that tree's key: a
-    /// diagnostic that names a key names one tree.
-    pub fn trees_a_plain_proof_binds(&self, op: &Op) -> Vec<Path> {
-        let plain = matches!(
-            op,
-            Op::Read(Read::Query(query)) if query.subquery_path.is_none() && !query.subquery_all
-        );
-        if plain {
-            self.trees_a_proof_binds(op)
-        } else {
-            Vec::new()
-        }
-    }
-
     /// Whether `op`, which the reference answered with `reference` and
     /// the candidate with `candidate`, is a step of
     /// [`Family::DroppedTreeProof`] (the owner's ruling D-348):
@@ -809,15 +781,14 @@ impl Known {
         proof_alone && self.proof_holds(op, candidate, grove_version)
     }
 
-    /// What a step of a dropped tree in a proof needs of the operation
-    /// and of the candidate alone, which is all that can be asked where
-    /// the reference panicked ([`Family::DroppedTreeAssertion`]): the
-    /// operation is a raw query of committed state and a proof of it
-    /// binds a tree made again at a dropped path whose record is pending
+    /// What a step of a dropped tree through a proof needs of the
+    /// operation and of the candidate alone: the operation is a raw query
+    /// of committed state and a proof of it binds a tree made again at a
+    /// dropped path whose record is pending
     /// ([`Known::trees_a_proof_binds`]), and the candidate returned rows
     /// and its proof verifies to the root hash of its committed state and
     /// gives those rows, path, key and bytes.
-    pub fn proof_holds(&self, op: &Op, candidate: &Step, grove_version: &GroveVersion) -> bool {
+    fn proof_holds(&self, op: &Op, candidate: &Step, grove_version: &GroveVersion) -> bool {
         let Op::Read(Read::Query(query)) = op else {
             return false;
         };
@@ -948,10 +919,7 @@ impl Known {
 
     /// The case with the seed `seed` ended at an answer of `family`.
     pub fn ended_at(&mut self, family: Family, seed: u64) {
-        if matches!(
-            family,
-            Family::DroppedTreeProof | Family::DroppedTreeAssertion
-        ) {
+        if family == Family::DroppedTreeProof {
             self.counts.histories[family.index()] = 1;
         }
         self.counts.answers[family.index()] = 1;
@@ -1104,15 +1072,15 @@ mod tests {
         // The family has no place: no path is of it, and no stored record.
         let mut known = Known::default();
         known.came_to_indexed_over_indexed(&over);
-        assert_eq!(known.counts().histories, [0, 0, 0, 1, 0, 0]);
+        assert_eq!(known.counts().histories, [0, 0, 0, 1, 0]);
         assert_eq!(known.family(&over[0]), None);
         let differs = [record(&[b"t", b"indexed"], 1)];
         let (was, is) = known.passed_over(7, &differs, &[]);
         assert_eq!((was.len(), is.len()), (1, 0));
-        assert_eq!(known.counts().stored, [0; 6]);
+        assert_eq!(known.counts().stored, [0; 5]);
         known.ended_at(Family::IndexedOverIndexed, 11);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 1, 0, 0]);
+        assert_eq!(counts.answers, [0, 0, 0, 1, 0]);
         assert_eq!(counts.answer_seed[3], Some(11));
         assert_eq!(
             counts.lines(),
@@ -1171,14 +1139,14 @@ mod tests {
             let (was, is) = known.passed_over(7, &differs, &differs[..1]);
             assert_eq!((was.len(), is.len()), (2, 1), "{elsewhere:?}");
         }
-        assert_eq!(known.counts().stored, [0; 6]);
+        assert_eq!(known.counts().stored, [0; 5]);
 
         // A stored difference in the dropped tree's own subtree is passed
         // over and counted, but not in the record of its drop.
         let kept = [record(&[b"c"], 1), record(&[b"a", b"dropped"], 1)];
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (1, 1));
-        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0, 0]);
+        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0]);
         assert_eq!(known.counts().stored_seed[..4], [None, None, Some(7), None]);
         let mut drop_record = record(&[b"a", b"dropped"], 1);
         drop_record.keyspace = Keyspace::DropRecord;
@@ -1287,23 +1255,6 @@ mod tests {
         assert!(known.through_a_proof(&asked, &answered, &answered, grove_version));
         assert!(known.proof_holds(&asked, &answered, grove_version));
         assert_eq!(known.trees_a_proof_binds(&asked), vec![again.clone()]);
-        assert_eq!(known.trees_a_plain_proof_binds(&asked), vec![again.clone()]);
-        // A query that goes down by a subquery can return an element of
-        // another subtree under the same key: it is no plain one, though
-        // a proof of it binds the tree.
-        let Op::Read(Read::Query(mut down)) = asked.clone() else {
-            unreachable!()
-        };
-        down.subquery_all = true;
-        let down = Op::Read(Read::Query(down));
-        assert_eq!(known.trees_a_proof_binds(&down), vec![again.clone()]);
-        assert!(known.trees_a_plain_proof_binds(&down).is_empty());
-        let Op::Read(Read::Query(mut along)) = asked.clone() else {
-            unreachable!()
-        };
-        along.subquery_path = Some(path(&[b"k"]));
-        let along = Op::Read(Read::Query(along));
-        assert!(known.trees_a_plain_proof_binds(&along).is_empty());
         // It is of no path: no place is of the kind, and no stored record.
         assert_eq!(known.family(&again), Some(Family::DroppedTree));
         assert_eq!(known.family(&path(&[b"t"])), None);
@@ -1438,8 +1389,8 @@ mod tests {
         // The case that ends there is counted for the kind alone.
         known.ended_at(Family::DroppedTreeProof, 5);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 0, 1, 0]);
-        assert_eq!(counts.histories, [0, 1, 1, 0, 1, 0]);
+        assert_eq!(counts.answers, [0, 0, 0, 0, 1]);
+        assert_eq!(counts.histories, [0, 1, 1, 0, 1]);
         assert_eq!(counts.answer_seed[4], Some(5));
     }
 
@@ -1572,11 +1523,11 @@ mod tests {
         let (was, is) = known.passed_over(7, &reference, &candidate);
         assert_eq!(was, is);
         let counts = known.counts();
-        assert_eq!(counts.stored, [1, 1, 0, 0, 0, 0]);
+        assert_eq!(counts.stored, [1, 1, 0, 0, 0]);
         assert_eq!(counts.stored_seed[..4], [Some(7), Some(7), None, None]);
         assert_eq!(
             (counts.histories, counts.answers),
-            ([1, 1, 1, 0, 0, 0], [0; 6])
+            ([1, 1, 1, 0, 0], [0; 5])
         );
         assert_eq!(counts.stored_differences(), 2);
         assert_eq!(counts.answer_differences(), 0);
@@ -1598,7 +1549,7 @@ mod tests {
             let (was, is) = known.passed_over(7, &reference, &candidate);
             assert_eq!(was, vec![same.clone(), elsewhere]);
             assert_eq!(is, vec![same.clone()]);
-            assert_eq!(known.counts().stored, [0; 6]);
+            assert_eq!(known.counts().stored, [0; 5]);
         }
     }
 
@@ -1905,10 +1856,10 @@ mod tests {
         one.ended_at(Family::WrittenOver, 9);
         counts.add(&one.counts());
         counts.add(&one.counts());
-        assert_eq!(counts.answers, [2, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.answers, [2, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[..4], [Some(9), None, None, None]);
         assert_eq!(counts.answer_differences(), 2);
-        assert_eq!(counts.histories, [2, 2, 2, 0, 0, 0]);
+        assert_eq!(counts.histories, [2, 2, 2, 0, 0]);
         let lines = counts.lines();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with(

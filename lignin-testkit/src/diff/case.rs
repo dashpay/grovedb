@@ -56,6 +56,13 @@ pub struct Shape {
     pub mutated: u64,
     /// The most mutations of one case.
     pub max_mutations: u64,
+    /// Whether a case keeps the contract of a flat drop's caller: no
+    /// operation makes an element again at the path of a tree that was
+    /// dropped flat before the drain of its drop
+    /// ([`keeping_the_drop_contract`]). GroveDB asserts in a debug build
+    /// what such a history breaks, so a debug run on a grove version with
+    /// flat drops sets it; a release run does not.
+    pub keeps_the_drop_contract: bool,
 }
 
 impl Default for Shape {
@@ -67,6 +74,7 @@ impl Default for Shape {
             mutated_out_of: 2,
             mutated: 1,
             max_mutations: 6,
+            keeps_the_drop_contract: false,
         }
     }
 }
@@ -81,6 +89,98 @@ impl Shape {
         }
         Ok(self)
     }
+}
+
+/// The places at which `op` makes an element: the path of the subtree it
+/// writes in with the key, for every insert, conditional or not, and for
+/// the new key of a move.
+fn made(op: &Op) -> Vec<Vec<Vec<u8>>> {
+    let at = |path: &Vec<Vec<u8>>, key: &[u8]| {
+        let mut place = path.clone();
+        place.push(key.to_vec());
+        place
+    };
+    let mut made = Vec::new();
+    if let Op::Write(
+        Write::Insert { path, key, .. }
+        | Write::IndexedInsert { path, key, .. }
+        | Write::InsertIfNotExists { path, key, .. }
+        | Write::InsertIfChanged { path, key, .. },
+    ) = op
+    {
+        made.push(at(path, key));
+    }
+    for batch_op in op.batch_ops() {
+        match batch_op {
+            BatchOp::InsertOrReplace { path, key, .. }
+            | BatchOp::InsertOnly { path, key, .. }
+            | BatchOp::InsertIfNotExists { path, key, .. }
+            | BatchOp::Replace { path, key, .. }
+            | BatchOp::Patch { path, key, .. } => made.push(at(path, key)),
+            BatchOp::Move { path, new_key, .. } => made.push(at(path, new_key)),
+            BatchOp::RefreshReference { .. }
+            | BatchOp::Delete { .. }
+            | BatchOp::DeleteTree { .. }
+            | BatchOp::DropFlat { .. }
+            | BatchOp::Append { .. } => {}
+        }
+    }
+    made
+}
+
+/// The trees `op` drops flat, by their paths.
+fn dropped_flat(op: &Op) -> Vec<Vec<Vec<u8>>> {
+    let at = |path: &Vec<Vec<u8>>, key: &[u8]| {
+        let mut place = path.clone();
+        place.push(key.to_vec());
+        place
+    };
+    let mut dropped = Vec::new();
+    if let Op::Write(Write::DropFlat { path, key }) = op {
+        dropped.push(at(path, key));
+    }
+    for batch_op in op.batch_ops() {
+        if let BatchOp::DropFlat { path, key, .. } = batch_op {
+            dropped.push(at(path, key));
+        }
+    }
+    dropped
+}
+
+/// `ops` without the operations that make an element again at the path
+/// of a tree that was dropped flat before the drain of its drop: what the
+/// caller of a flat drop gives its word not to do.
+///
+/// A path counts as dropped from the operation that lists its flat drop,
+/// whether or not the drop was taken, until a drain
+/// ([`Op::FlushPendingDrops`]) that follows a commit that follows the
+/// drop, whether or not the block of the drop was rolled back before. An
+/// operation that makes an element at such a path, an insert of any kind
+/// or a move to it, alone or in a batch, is left out whole. The rule
+/// leaves out more than the contract asks, and never less.
+pub fn keeping_the_drop_contract(ops: Vec<Op>) -> Vec<Op> {
+    // The dropped paths, each with whether a commit followed its drop.
+    let mut dropped: Vec<(Vec<Vec<u8>>, bool)> = Vec::new();
+    let mut kept = Vec::with_capacity(ops.len());
+    for op in ops {
+        let again = |place: &Vec<Vec<u8>>| dropped.iter().any(|(path, _)| path == place);
+        if made(&op).iter().any(again) {
+            continue;
+        }
+        for path in dropped_flat(&op) {
+            dropped.retain(|(earlier, _)| *earlier != path);
+            dropped.push((path, false));
+        }
+        match &op {
+            Op::Commit => dropped
+                .iter_mut()
+                .for_each(|(_, committed)| *committed = true),
+            Op::FlushPendingDrops => dropped.retain(|(_, committed)| !committed),
+            _ => {}
+        }
+        kept.push(op);
+    }
+    kept
 }
 
 /// How the streams of a case are put together.
@@ -233,6 +333,9 @@ impl Case {
         let mut mutations = Vec::new();
         for _ in 0..tries {
             mutations.extend(mutate(&mut ops, &mut rng));
+        }
+        if shape.keeps_the_drop_contract {
+            ops = keeping_the_drop_contract(ops);
         }
         Case {
             seed,
@@ -1043,5 +1146,135 @@ mod tests {
         ] {
             assert_eq!(mutation.to_string(), text);
         }
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use grovedb::{Element, TreeType};
+
+    use super::*;
+
+    fn path(segments: &[&[u8]]) -> Path {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    }
+
+    fn insert(at: &[&[u8]], key: &[u8]) -> Op {
+        Op::Write(Write::Insert {
+            path: path(at),
+            key: key.to_vec(),
+            element: Element::empty_tree(),
+        })
+    }
+
+    fn drop_flat(at: &[&[u8]], key: &[u8]) -> Op {
+        Op::Write(Write::DropFlat {
+            path: path(at),
+            key: key.to_vec(),
+        })
+    }
+
+    /// An operation that makes an element at a dropped path is left out
+    /// from the drop until a drain that follows a commit that follows the
+    /// drop, and no other operation is.
+    #[test]
+    fn no_element_is_made_again_at_a_dropped_path_before_the_drain_of_its_drop() {
+        let in_a_batch = Op::Batch(vec![
+            BatchOp::InsertOnly {
+                path: path(&[b"a"]),
+                key: b"other".to_vec(),
+                element: Element::new_item(vec![1]),
+            },
+            BatchOp::InsertIfNotExists {
+                path: path(&[b"a"]),
+                key: b"t".to_vec(),
+                element: Element::empty_tree(),
+            },
+        ]);
+        let moved_there = Op::Batch(vec![BatchOp::Move {
+            path: path(&[b"a"]),
+            key: b"src".to_vec(),
+            new_key: b"t".to_vec(),
+        }]);
+        let conditional = Op::Write(Write::InsertIfNotExists {
+            path: path(&[b"a"]),
+            key: b"t".to_vec(),
+            element: Element::empty_tree(),
+            return_existing: false,
+        });
+        let dropped_in_a_batch = Op::Batch(vec![BatchOp::DropFlat {
+            path: path(&[b"a"]),
+            key: b"u".to_vec(),
+            tree_type: TreeType::NormalTree,
+        }]);
+        // Each operation with whether it is kept.
+        let ops = vec![
+            (insert(&[b"a"], b"t"), true),
+            (drop_flat(&[b"a"], b"t"), true),
+            // Before a commit and a drain: every way to make the element.
+            (insert(&[b"a"], b"t"), false),
+            (in_a_batch.clone(), false),
+            (moved_there.clone(), false),
+            (conditional.clone(), false),
+            // Another path, a path below, and the path above are no
+            // dropped path.
+            (insert(&[b"a"], b"other"), true),
+            (insert(&[b"a", b"t"], b"below"), true),
+            (insert(&[], b"a"), true),
+            // A drain before the commit reclaims no record of this drop.
+            (Op::FlushPendingDrops, true),
+            (insert(&[b"a"], b"t"), false),
+            (Op::Commit, true),
+            (insert(&[b"a"], b"t"), false),
+            (dropped_in_a_batch, true),
+            (Op::FlushPendingDrops, true),
+            // Drained: the path is free again. The drop of the batch was
+            // not committed before that drain.
+            (in_a_batch, true),
+            (insert(&[b"a"], b"u"), false),
+            (Op::Commit, true),
+            (Op::FlushPendingDrops, true),
+            (insert(&[b"a"], b"u"), true),
+            (moved_there, true),
+            (conditional, true),
+        ];
+        let all: Vec<Op> = ops.iter().map(|(op, _)| op.clone()).collect();
+        let expected: Vec<Op> = (ops.iter().filter(|(_, kept)| *kept))
+            .map(|(op, _)| op.clone())
+            .collect();
+        let kept = keeping_the_drop_contract(all.clone());
+        assert_eq!(kept, expected);
+        // What is kept keeps the contract already.
+        assert_eq!(keeping_the_drop_contract(kept.clone()), kept);
+        // A stream with no flat drop is left as it is.
+        let none: Vec<Op> = (all.iter())
+            .filter(|op| dropped_flat(op).is_empty())
+            .cloned()
+            .collect();
+        assert_eq!(keeping_the_drop_contract(none.clone()), none);
+    }
+
+    /// A case generated with the switch is the case of its seed without
+    /// the operations that break the contract, and the reported case of
+    /// a tree made again before the drain loses some.
+    #[test]
+    fn a_case_generated_with_the_switch_keeps_the_contract() {
+        let plain = Shape::default()
+            .for_grove_version(5)
+            .expect("a grove version");
+        let mut keeping = plain.clone();
+        keeping.keeps_the_drop_contract = true;
+        let mut left_out = 0;
+        for seed in [0x3d7d_3d53_98d4_88dc_u64, 1, 2, 3, 4, 5, 6, 7] {
+            let as_it_is = Case::generate(seed, &plain);
+            let kept = Case::generate(seed, &keeping);
+            assert_eq!(kept.ops, keeping_the_drop_contract(as_it_is.ops.clone()));
+            assert_eq!(kept.mutations.len(), as_it_is.mutations.len());
+            if seed == 0x3d7d_3d53_98d4_88dc {
+                assert!(kept.ops.len() < as_it_is.ops.len());
+            }
+            left_out += as_it_is.ops.len() - kept.ops.len();
+        }
+        assert!(left_out > 0);
     }
 }

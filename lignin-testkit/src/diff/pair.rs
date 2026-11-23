@@ -160,66 +160,6 @@ pub struct Divergence {
 /// How the line begins that stands for an engine that panicked.
 const PANICKED: &str = "panicked: ";
 
-/// Where GroveDB's debug assertion is that the state root a proof binds
-/// a tree that is no Merk to reproduces the value hash its parent
-/// committed: the files of this directory.
-const ASSERTION_ORIGIN: &str = "/operations/proof/bind_terminal_non_merk_tree/";
-
-/// `text` after a hash of 32 bytes in lowercase hexadecimal digits that it
-/// begins with.
-fn after_a_hash(text: &str) -> Option<&str> {
-    let (hash, rest) = text.split_at_checked(64)?;
-    let digit = |byte: u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte);
-    hash.bytes().all(digit).then_some(rest)
-}
-
-/// The bytes of a side of a failed equality of two hashes, as a panic
-/// prints it after `name`, and what follows it in `text`.
-fn side<'text>(text: &'text str, name: &str) -> Option<(Vec<u8>, &'text str)> {
-    let listed = text.trim_start().strip_prefix(name)?.strip_prefix(": [")?;
-    let (bytes, rest) = listed.split_once(']')?;
-    let bytes: Option<Vec<u8>> = bytes.split(", ").map(|byte| byte.parse().ok()).collect();
-    bytes
-        .filter(|bytes| bytes.len() == 32)
-        .map(|bytes| (bytes, rest))
-}
-
-/// Whether `panic`, as [`catching`] hands it on, is that assertion
-/// failing for one of `trees`: in a debug build, a panic at a place of
-/// [`ASSERTION_ORIGIN`] that is, from its first word to its last, what
-/// the assertion prints for the key of one of the trees: an equality
-/// that failed, the key, the state root and the committed value hash,
-/// each a hash in its place, and then the two sides, two hashes that
-/// differ, of which the right one is the committed value hash. The
-/// assertion names the key alone, so the caller hands trees of which no
-/// two have the same key among what the query returns
-/// (`Known::trees_a_plain_proof_binds`). A release build has no such
-/// assertion, and no panic is it there.
-fn is_the_binding_assertion(panic: &str, trees: &[Vec<Vec<u8>>]) -> bool {
-    if !cfg!(debug_assertions) {
-        return false;
-    }
-    let Some((origin, said)) =
-        (panic.strip_prefix("panicked at ")).and_then(|panic| panic.split_once(": "))
-    else {
-        return false;
-    };
-    let says = |tree: &Vec<Vec<u8>>| {
-        let key = tree.last().map(hex::encode)?;
-        let begins =
-            format!("assertion `left == right` failed: non-Merk tree at key {key} has state root ");
-        let root = after_a_hash(said.strip_prefix(&begins)?)?;
-        let hash = root.strip_prefix(" which does not reproduce the committed value hash ")?;
-        let sides = after_a_hash(hash)?;
-        let committed = &hash[..64];
-        let (left, rest) = side(sides, "left")?;
-        let (right, rest) = side(rest, "right")?;
-        let whole = rest.trim().is_empty() && left != right && hex::encode(right) == committed;
-        whole.then_some(())
-    };
-    origin.contains(ASSERTION_ORIGIN) && trees.iter().any(|tree| says(tree).is_some())
-}
-
 /// How the line begins that stands for an engine that could not be
 /// observed.
 const NOT_OBSERVED: &str = "not observed: ";
@@ -639,36 +579,6 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
-        // In a debug build GroveDB's own assertion fails on the reference
-        // where it proves a query that returns a tree made again at a
-        // dropped path before the drain of its drop: the case ends there,
-        // counted apart, where the candidate's side of the step is as the
-        // rule of that open difference asks (`Known::proof_holds`).
-        if let (Seen::Panicked(panic), Seen::Answered(answered)) = (&was, &is) {
-            let trees = known.trees_a_plain_proof_binds(op);
-            let asserted = is_the_binding_assertion(panic, &trees);
-            let candidate = &answered.step;
-            if asserted && known.proof_holds(op, candidate, case.grove_version) {
-                let family = Family::DroppedTreeAssertion;
-                known.ended_at(family, case.seed);
-                tally.families = known.counts();
-                let ended_with = Divergence {
-                    step,
-                    parts: vec![Part::Panic],
-                    reference: vec![format!("{PANICKED}{panic}")],
-                    candidate: lines(answered),
-                };
-                return Ok(Run {
-                    tally,
-                    divergence: None,
-                    cut_short: None,
-                    interrupted: false,
-                    ended_at: Some(family),
-                    ended_with: Some(ended_with),
-                    failed_steps: failed_steps.take(),
-                });
-            }
-        }
         let (was, is) = match both(was, is, |observed| lines(&observed)) {
             Both::Answered(was, is) => (was, is),
             Both::Alike(why) => return cut_short(tally, step, why),
@@ -870,80 +780,6 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    /// The reference's panic is GroveDB's assertion for a tree by the
-    /// file it comes from, the key it names and its words, in a debug
-    /// build alone.
-    #[test]
-    fn the_binding_assertion_is_known_by_its_file_its_key_and_its_words() {
-        let tree = vec![b"drops".to_vec(), b"k".to_vec()];
-        let other = vec![b"drops".to_vec(), b"other".to_vec()];
-        let one = std::slice::from_ref(&tree);
-        let (root, hash) = ("7a".repeat(32), "a2".repeat(32));
-        let bytes = |byte: u8| format!("{:?}", [byte; 32]);
-        let sides = format!("  left: {} right: {}", bytes(0x3c), bytes(0xa2));
-        let words = |key: &str, root: &str, hash: &str, sides: &str| {
-            format!(
-                "assertion `left == right` failed: non-Merk tree at key {key} has state root \
-                 {root} which does not reproduce the committed value hash {hash} {sides}"
-            )
-        };
-        let said = words("6b", &root, &hash, &sides);
-        let at = "grovedb/src/operations/proof/bind_terminal_non_merk_tree/v1.rs:102:13";
-        let from = |at: &str, said: &str| format!("panicked at {at}: {said}");
-        let genuine = from(at, &said);
-        let is = super::is_the_binding_assertion;
-        assert_eq!(is(&genuine, one), cfg!(debug_assertions));
-        assert_eq!(
-            is(&genuine, &[other.clone(), tree.clone()]),
-            cfg!(debug_assertions)
-        );
-        // Another tree's key, no tree, another file, and the words
-        // inside another panic.
-        assert!(!is(&genuine, &[other]));
-        assert!(!is(&genuine, &[]));
-        assert!(!is(
-            &from("grovedb/src/operations/proof/generate.rs:1:1", &said),
-            one
-        ));
-        let quoted = format!("panicked at storage/src/lib.rs:1:1: an error ({genuine})");
-        assert!(!is(&quoted, one));
-        assert!(!is(&said, one));
-        // Another panic of the same file: one that carries the two ends
-        // of the assertion's words around other words, one that is no
-        // failed equality, a state root or a value hash that is no hash,
-        // words that stop before the value hash, and words before the
-        // assertion's.
-        let around = "unexpected error: non-Merk tree at key 6b has state root 00; no child was \
-                      found which does not reproduce the committed value hash";
-        assert!(!is(&from(at, around), one));
-        let no_equality = said.replace("assertion `left == right` failed: ", "");
-        assert!(!is(&from(at, &no_equality), one));
-        assert!(!is(&from(at, &words("6b", "7a0f", &hash, &sides)), one));
-        assert!(!is(&from(at, &words("6b", &root, "a281", &sides)), one));
-        assert!(!is(
-            &from(at, &words("6b", &"7A".repeat(32), &hash, &sides)),
-            one
-        ));
-        let cut = said.split(" which ").next().expect("the first words");
-        assert!(!is(&from(at, cut), one));
-        assert!(!is(&from(at, &format!("in a batch: {said}")), one));
-        // The sides: none, a left one that is no hash, no right one, a
-        // right one that is not the committed value hash, two that are
-        // equal, a side of another length, and words after them.
-        let with = |sides: &str| from(at, &words("6b", &root, &hash, sides));
-        assert_eq!(is(&with(&sides), one), cfg!(debug_assertions));
-        assert!(!is(&with(""), one));
-        assert!(!is(&with("  left: unavailable"), one));
-        assert!(!is(&with(&format!("  left: {}", bytes(0x3c))), one));
-        let other_right = format!("  left: {} right: {}", bytes(0x3c), bytes(0xa3));
-        assert!(!is(&with(&other_right), one));
-        let equal = format!("  left: {} right: {}", bytes(0xa2), bytes(0xa2));
-        assert!(!is(&with(&equal), one));
-        let short = format!("  left: {:?} right: {}", [0x3c_u8; 31], bytes(0xa2));
-        assert!(!is(&with(&short), one));
-        assert!(!is(&with(&format!("{sides} and more")), one));
-    }
-
     use grovedb::Element;
     use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;
