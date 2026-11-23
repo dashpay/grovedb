@@ -531,7 +531,11 @@ fn dropped_flat_with_a_tree_in_it<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) 
         .expect("the trees above");
     }
     let insert_only = |at: &[&[u8]], key: &[u8], element: Element| {
-        QualifiedGroveDbOp::insert_only_op(owned(at), key.to_vec(), element)
+        QualifiedGroveDbOp::insert_only_known_to_not_already_exist_op(
+            owned(at),
+            key.to_vec(),
+            element,
+        )
     };
     let batch = vec![
         insert_only(FLAT_AT, b"t", Element::empty_tree()),
