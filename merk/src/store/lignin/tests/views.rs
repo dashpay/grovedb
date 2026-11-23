@@ -13,8 +13,8 @@ use lignindb::{
 use super::{super::LigninSnapshot, *};
 
 pub(super) struct Facade {
-    _dir: tempfile::TempDir,
     pub(super) db: Database,
+    _dir: tempfile::TempDir,
 }
 
 impl Facade {

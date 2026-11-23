@@ -1264,7 +1264,10 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
     );
     // A commit that found the log ahead of the session has failed, and
     // says that the database has to be opened again.
-    let version = engine().1.database().version();
+    let version = {
+        let (_dir, engine) = engine();
+        engine.database().version()
+    };
     let gap = WriteError::Commit(Commit::Failed(lignindb::commit::Failure::VersionGap {
         log: version,
         latest: version,

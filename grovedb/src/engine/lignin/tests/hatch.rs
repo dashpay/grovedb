@@ -73,8 +73,8 @@ impl Hatched for crate::RocksDbEngine {
 }
 
 struct Grove<E: Engine> {
-    dir: tempfile::TempDir,
     db: GroveDb<E>,
+    dir: tempfile::TempDir,
 }
 
 impl<E: Hatched> Grove<E> {

@@ -718,8 +718,8 @@ fn rocksdb_steps_from_no_key_along_the_line_of_its_column_family() {
 
 /// A database of the engine's facade.
 struct Facade {
-    _dir: tempfile::TempDir,
     db: Database,
+    _dir: tempfile::TempDir,
 }
 
 impl Facade {
