@@ -597,24 +597,36 @@ mod tests {
         assert_eq!(holds_drops(&history.last().state), 2);
 
         // What the flush leaves after each of its commits is said by a
-        // copy of the files that is flushed first. The two trees are
-        // dropped with their elements, so the flush has no prefix to
-        // drop, and commits once for each record that it removes.
+        // copy of the files that is flushed first, and so is how many
+        // commits it makes: its versions follow one another from the one
+        // after the last block, the records of the drops go one by one,
+        // and a version inside it has the record of one drop.
         let mut on_the_copy =
             flushed_on_a_copy(watcher.fs(), &tuning, version, &places).expect("flushed");
-        let versions: Vec<u64> = on_the_copy.keys().copied().collect();
-        assert_eq!(versions, [before + 1, before + 2]);
-        let after_one = on_the_copy.remove(&(before + 1)).expect("the first commit");
+        let end = before + on_the_copy.len() as u64;
+        assert!(on_the_copy.keys().copied().eq(before + 1..=end));
+        let state = on_the_copy.remove(&end).expect("the last commit");
         let after = Arc::new(Block {
             first: before + 1,
-            version: before + 2,
-            state: on_the_copy.remove(&(before + 2)).expect("the last commit"),
+            version: end,
+            state,
             resume: Position { stream: 0, op: 0 },
             made: Made::DropsFlushed,
-            inside: vec![after_one.clone()],
+            inside: on_the_copy.into_values().collect(),
         });
-        assert_eq!(holds_drops(&after_one), 1);
-        assert_eq!(holds_drops(&after.state), 0);
+        // The records of drops that the database holds at each version
+        // from the block before the flush to the end of the flush.
+        let held: Vec<usize> = std::iter::once(&history.last().state)
+            .chain(&after.inside)
+            .chain([&after.state])
+            .map(holds_drops)
+            .collect();
+        assert!(held.windows(2).all(|pair| pair[0] >= pair[1]), "{held:?}");
+        assert_eq!((held[0], held[held.len() - 1]), (2, 0), "{held:?}");
+        let one_left = held[..held.len() - 1].iter().position(|held| *held == 1);
+        let one_left = one_left.expect("a version inside the flush with one record") as u64;
+        let with_one = before + one_left;
+        let after_one = after.inside[one_left as usize - 1].clone();
         assert_eq!(
             grove::version_of(&db),
             before,
@@ -661,30 +673,36 @@ mod tests {
             ));
         }
         // The commits of the flush are appends to the log, and each is a
-        // write boundary: a crash after the first of them leaves the
-        // record of one drop, and after the second none.
-        let inside_it = (Landing::InsideAttempt, before + 1, 1);
-        let at_its_end = (Landing::Attempt, before + 2, 0);
-        assert!(met.contains(&inside_it), "{met:?}");
-        assert!(met.contains(&at_its_end), "{met:?}");
-        let allowed = [(Landing::Point(2), before, 2), inside_it, at_its_end];
+        // write boundary: a crash after one of them leaves the records
+        // of the drops that the copy held at that version, and after the
+        // last none.
+        let landed = |at: usize| match before + at as u64 {
+            version if version == before => (Landing::Point(2), version, held[at]),
+            version if version == end => (Landing::Attempt, version, held[at]),
+            version => (Landing::InsideAttempt, version, held[at]),
+        };
+        let allowed: Vec<_> = (0..held.len()).map(landed).collect();
+        for inside_or_at_its_end in &allowed[1..] {
+            assert!(met.contains(inside_or_at_its_end), "{met:?}");
+        }
         assert!(met.iter().all(|met| allowed.contains(met)), "{met:?}");
 
-        // After the first commit of the flush the database holds what the
-        // copy held then, and neither the records of both drops, which is
-        // what it held before the flush, nor none, which is what the flush
-        // leaves: each of the two is sound, and no version of the flush.
+        // At the first version of the flush with the record of one drop
+        // the database holds what the copy held then, and neither the
+        // records of both drops, which is what it held before the flush,
+        // nor none, which is what the flush leaves: each of the two is
+        // sound, and not that version of the flush.
         let flushed = history.block(3);
         let last = &history.block(2).state;
-        assert_eq!(inside(&after_one, flushed, before + 1), None);
-        let both_left = inside(last, flushed, before + 1);
+        assert_eq!(inside(&after_one, flushed, with_one), None);
+        let both_left = inside(last, flushed, with_one);
         assert!(both_left.expect("too many").contains("differ"));
-        let none_left = inside(&after.state, flushed, before + 1);
+        let none_left = inside(&after.state, flushed, with_one);
         assert!(none_left.expect("too few").contains("differ"));
         // The same, of a state that was recovered before and is left again.
         let expect = Expect::exactly(3);
         let landing = Landing::Inside(3);
-        let again = |state: &State| not_the_block(rules, &expect, landing, before + 1, state);
+        let again = |state: &State| not_the_block(rules, &expect, landing, with_one, state);
         assert_eq!(again(&after_one), None);
         let said = again(last).expect("too many");
         assert!(said.contains("inside the making of point 3"), "{said}");
@@ -694,7 +712,7 @@ mod tests {
             inside: Vec::new(),
             ..(**flushed).clone()
         };
-        let said = inside(&after_one, &wipe, before + 1);
+        let said = inside(&after_one, &wipe, with_one);
         assert!(said.expect("no such version").contains("is one commit"));
         drop(db);
     }
