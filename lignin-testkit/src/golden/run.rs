@@ -684,10 +684,13 @@ fn root_hash<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
 ///
 /// The name is what a caller matches on and what another engine has to
 /// return as well. The message is free text and is not compared.
+///
+/// A storage error is named in terms that name no engine
+/// ([`storage_error_name`]).
 pub fn error_name(error: &grovedb::Error) -> String {
     let wrapped = match error {
         grovedb::Error::MerkError(wrapped) => Some(variant_name(wrapped)),
-        grovedb::Error::StorageError(wrapped) => Some(variant_name(wrapped)),
+        grovedb::Error::StorageError(wrapped) => Some(storage_error_name(wrapped)),
         grovedb::Error::VersionError(wrapped) => Some(variant_name(wrapped)),
         grovedb::Error::ElementError(wrapped) => Some(variant_name(wrapped)),
         grovedb::Error::QueryError(wrapped) => Some(variant_name(wrapped)),
@@ -697,6 +700,38 @@ pub fn error_name(error: &grovedb::Error) -> String {
         Some(wrapped) => format!("{}::{wrapped}", variant_name(error)),
         None => variant_name(error),
     }
+}
+
+/// The name of a storage error, in terms that name no engine.
+///
+/// An engine reports a failure of its own in its own variant, with its
+/// own words: the RocksDB engine as `RocksDBError` or `StorageError`,
+/// LigninDB as `StorageError`. Both are named `StorageError`. An error
+/// that the seam classes as an outcome of a commit
+/// (`grovedb_storage::Error::commit_error`) is named by its class, as in
+/// `Commit::Conflict`: a conflict is a `RocksDBError` of kind `Busy` on
+/// RocksDB and `Commit(Conflict)` on LigninDB. Every other variant is one
+/// that any engine returns, and keeps its name.
+///
+/// The corpus records no storage error of an engine's own (a test of
+/// `tests/golden.rs` holds that), so the names of its traces are what the
+/// engine it is pinned to gave them.
+#[cfg(grovedb_engine_seam)]
+fn storage_error_name(error: &grovedb_storage::Error) -> String {
+    if let Some(class) = error.commit_error() {
+        return format!("Commit::{}", variant_name(&class));
+    }
+    match variant_name(error).as_str() {
+        "RocksDBError" => "StorageError".to_string(),
+        name => name.to_string(),
+    }
+}
+
+/// The name of a storage error at the pin, where the seam does not exist:
+/// its variant.
+#[cfg(not(grovedb_engine_seam))]
+fn storage_error_name(error: &impl Debug) -> String {
+    variant_name(error)
 }
 
 /// The name of the variant of an enum value, without what the variant
@@ -780,6 +815,80 @@ mod tests {
                 }
             )),
             "VersionError::UnknownVersionMismatch"
+        );
+    }
+
+    /// A rollback to a savepoint that was never set fails on each engine
+    /// in the engine's own words, and a commit that met another is a
+    /// conflict in each engine's own form. Both are named alike.
+    #[cfg(grovedb_engine_seam)]
+    #[test]
+    fn a_storage_error_is_named_in_terms_that_name_no_engine() {
+        use grovedb::{engine::Engine, LigninEngine, RocksDbEngine};
+        use grovedb_storage::error::CommitError;
+
+        fn names<E: Engine>() -> (String, String, String) {
+            let grove_version = GroveVersion::latest();
+            let dir = tempfile::tempdir().expect("temp dir");
+            let db = GroveDb::<E>::open_with_engine(dir.path()).expect("open");
+            let root: &[&[u8]] = &[];
+            let put = |key: &[u8], transaction| {
+                db.insert(
+                    root,
+                    key,
+                    Element::new_item(vec![1]),
+                    None,
+                    transaction,
+                    grove_version,
+                )
+                .unwrap()
+            };
+
+            let transaction = db.start_transaction();
+            let no_savepoint = db
+                .rollback_to_savepoint(&transaction)
+                .expect_err("no savepoint was set");
+            assert_eq!(no_savepoint.commit_error(), None);
+            drop(transaction);
+
+            let transaction = db.start_transaction();
+            put(b"k", Some(&transaction)).expect("a write of the transaction");
+            put(b"k", None).expect("a commit beside it");
+            let conflict = db
+                .commit_transaction(transaction)
+                .unwrap()
+                .expect_err("the commit met another");
+            assert!(conflict.is_commit_conflict());
+            let debug = format!("{:?} {:?}", no_savepoint, conflict);
+            (error_name(&no_savepoint), error_name(&conflict), debug)
+        }
+
+        let (no_savepoint, conflict, in_its_words) = names::<RocksDbEngine>();
+        assert_eq!(no_savepoint, "StorageError::StorageError");
+        assert_eq!(conflict, "StorageError::Commit::Conflict");
+        // RocksDB's own variant is what was named so.
+        assert_eq!(
+            in_its_words.matches("RocksDBError").count(),
+            2,
+            "{in_its_words}"
+        );
+        let (no_savepoint, conflict, in_its_words) = names::<LigninEngine>();
+        assert_eq!(no_savepoint, "StorageError::StorageError");
+        assert_eq!(conflict, "StorageError::Commit::Conflict");
+        assert!(!in_its_words.contains("RocksDBError"), "{in_its_words}");
+
+        // A variant that every engine returns keeps its name, and so does
+        // a class of a commit that is no conflict.
+        let named = |error: grovedb_storage::Error| error_name(&GroveError::StorageError(error));
+        assert_eq!(
+            named(grovedb_storage::Error::SnapshotReadOnlyTransaction(
+                "a write"
+            )),
+            "StorageError::SnapshotReadOnlyTransaction"
+        );
+        assert_eq!(
+            named(grovedb_storage::Error::Commit(CommitError::NotDurable)),
+            "StorageError::Commit::NotDurable"
         );
     }
 

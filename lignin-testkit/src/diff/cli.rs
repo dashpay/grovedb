@@ -567,7 +567,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "RocksDbEngine against StandIn: seed 0x1, 2 at once, grove versions 1 2 3 4 5, 3 cases"
+            "RocksDbEngine against LigninEngine: seed 0x1, 2 at once, grove versions 1 2 3 4 5, 3 cases"
         );
         let [.., run, held, verdict] = lines[..] else {
             panic!("{text}")
@@ -613,7 +613,7 @@ mod tests {
         // Without the fault the engines answer that case the same.
         let (code, clean) = ran(&format!("case --seed {seed} --max-ops 60"), scratch.path());
         assert_eq!(code, 0, "{clean}");
-        assert!(clean.starts_with("RocksDbEngine against StandIn:\n  seed 0x"));
+        assert!(clean.starts_with("RocksDbEngine against LigninEngine:\n  seed 0x"));
         assert!(clean.ends_with("the engines answered the same\n"));
     }
 
@@ -737,6 +737,7 @@ mod tests {
     fn the_numbers_of_a_report_are_readable() {
         assert_eq!(engine_name::<Reference>(), "RocksDbEngine");
         assert_eq!(engine_name::<StandIn>(), "StandIn");
+        assert_eq!(engine_name::<Candidate>(), "LigninEngine");
         assert_eq!(engine_name::<u8>(), "u8");
         assert_eq!(mebibytes(3 << 19), "1.5 MiB");
         assert_eq!(seconds(Duration::from_millis(2540)), "2.5 s");

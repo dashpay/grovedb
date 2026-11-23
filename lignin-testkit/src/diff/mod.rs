@@ -44,10 +44,10 @@
 //!
 //! # The engines
 //!
-//! [`engines`] names the two: [`Reference`] and [`Candidate`]. Until
-//! LigninDB exists the candidate is [`StandIn`], RocksDB behind an `Engine`
-//! of its own whose reads are pinned as LigninDB's will be, and in which a
-//! defect can be planted. Naming another candidate is one line there.
+//! [`engines`] names the two: [`Reference`] and [`Candidate`], which is
+//! LigninDB's engine. [`StandIn`] is RocksDB behind an `Engine` of its own
+//! whose reads are pinned as LigninDB's are, and in which a defect can be
+//! planted. Naming another candidate is one line there.
 //!
 //! # A divergence
 //!
