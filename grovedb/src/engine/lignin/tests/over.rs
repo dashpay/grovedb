@@ -1220,18 +1220,21 @@ fn what_is_written_over_below_a_removed_node_goes_with_the_drop_above() {
     }
 }
 
-/// A tree of leaves that nothing was appended to is deleted, and after
-/// the look of its delete a commit beside the delete puts a record that
-/// is no leaf under the tree's prefix: the entry outlives its element
-/// (`engine.md`, "A subtree leaves with its element", the open point),
-/// as the subtree of a tree that keeps its data flat, with no record in
-/// its data keyspace. A tree with an element is then moved to that key.
-/// The subtree that is entered there makes room: it is dropped with the
-/// move, the record that was put under it goes with the drop, and the
-/// moved tree is read under the new key.
+/// A tree with an element changes places with a tree of leaves that
+/// nothing was appended to. After both walks, while the group is looked
+/// for, a commit beside the mover puts a record that is no leaf under
+/// the prefix of the tree of leaves, through its path: the look for what
+/// is moved finds the subtree of that tree entered where the moved one
+/// goes, with no record in its data keyspace. It makes no room: the
+/// transaction refuses the batch as a conflict, since a commit wrote
+/// under that prefix after the mover's read, and both trees are where
+/// they were, with the record. No operation of GroveDB puts such a
+/// record. One that is put before the walk of the tree of leaves ends is
+/// found by that walk, and goes with the tree.
 #[test]
-#[ignore = "no schedule leaves the entry that this test moves a tree onto: a delete takes what a commit entered under its node after the look"]
-fn leaves_that_outlived_their_tree_with_no_leaf_make_room_where_a_moved_tree_goes() {
+fn leaves_with_no_leaf_that_a_commit_entered_where_a_moved_tree_goes_make_no_room() {
+    use crate::batch::QualifiedGroveDbOp;
+
     let v = version();
     let (dir, db) = grove(true);
     (db.insert(ROOT, b"u", Element::empty_mmr_tree(), None, None, v))
@@ -1248,49 +1251,34 @@ fn leaves_that_outlived_their_tree_with_no_leaf_make_room_where_a_moved_tree_goe
         (engine.apply_batch(batch, &tx).unwrap()).expect("a batch");
         (engine.commit_transaction(tx).unwrap()).expect("a commit");
     });
-    let tx = db.start_transaction();
-    AFTER_A_LOOK.set([apart(other)].into_iter().collect());
-    let deleted = db.delete(ROOT, b"u", None, Some(&tx), v).unwrap();
-    assert!(AFTER_A_LOOK.take().is_empty(), "the group looked");
-    assert!(done.get(), "the other writer came after the look");
-    deleted.expect("the delete of a tree of leaves that holds none");
-    (db.commit_transaction(tx).unwrap()).expect("no key was written by both");
-    let gone = db.get_raw(ROOT, b"u", None, v).unwrap();
-    assert!(
-        matches!(gone, Err(crate::Error::PathKeyNotFound(_))),
-        "{gone:?}"
-    );
-    // The entry of the subtree under the key `u`, as its tree type and
-    // whether it has a root, and the record that was put under it.
-    let under_u = || {
+    let swap = vec![
+        QualifiedGroveDbOp::move_op(Vec::new(), b"t".to_vec(), b"u".to_vec()),
+        QualifiedGroveDbOp::move_op(Vec::new(), b"u".to_vec(), b"t".to_vec()),
+    ];
+    REFUSED.take();
+    // The walk of each tree reads its entry where it begins, and the
+    // look for what the group enters reads an entry after them.
+    AFTER_ENTRY_READS.set(Some((3, other)));
+    let swapped = db.apply_batch(swap, None, None, v).unwrap();
+    assert!(AFTER_ENTRY_READS.take().is_none());
+    assert!(done.get(), "the other writer came after the walks");
+    let refused = swapped.expect_err("a subtree is entered where the moved one goes");
+    assert!(refused.is_commit_conflict(), "{refused}");
+    assert_eq!(REFUSED.take().len(), 1);
+    let held = db.get(T, b"x", None, v).unwrap();
+    assert_eq!(held.expect("the tree is where it was"), item(1));
+    let leaves = db.mmr_tree_leaf_count(ROOT, b"u", None, v).unwrap();
+    assert_eq!(leaves.expect("the tree of leaves is where it was"), 0);
+    {
         let engine = db.engine();
         let tx = engine.start_read_transaction();
         let handle = engine.subtree(u.into(), None, &tx).unwrap();
         let entry = handle.entry().expect("the directory answers");
-        let entry = entry.map(|entry| {
-            (
-                entry.tree_type().expect("a tree type"),
-                entry.root_key.is_some(),
-            )
-        });
+        let entry = entry.expect("the subtree is entered");
+        assert_eq!(entry.tree_type().expect("a tree type"), TreeType::MmrTree);
         let record = handle.aux().get(b"k").unwrap().expect("a read");
-        (entry, record.is_some())
-    };
-    assert_eq!(
-        under_u(),
-        (Some((TreeType::MmrTree, false)), true),
-        "the entry outlives its element"
-    );
-    (db.apply_batch(rename_t_to_u(), None, None, v).unwrap())
-        .expect("the tree is moved to the key that the leaves had");
-    assert_eq!(under_u(), (Some((TreeType::NormalTree, true)), false));
-    let moved = (db.get(u, b"x", None, v).unwrap()).expect("the element under the new key");
-    assert_eq!(moved, item(1));
-    let gone = db.get_raw(ROOT, b"t", None, v).unwrap();
-    assert!(
-        matches!(gone, Err(crate::Error::PathKeyNotFound(_))),
-        "{gone:?}"
-    );
+        assert_eq!(record.as_deref(), Some(b"v".as_slice()));
+    }
     drop(Arc::into_inner(db).expect("the only handle on the grove"));
     check(dir.path());
 }

@@ -37,10 +37,11 @@
 //!   with the move, where the batch does not move it away. A subtree
 //!   makes room where it is entered at the first position of its host,
 //!   and is the Merk with no node of a tree whose data is one Merk, or
-//!   the subtree of a tree that keeps its data flat with no record in
-//!   its data keyspace, or the primary with no node of an indexed tree
-//!   whose secondaries have none either, which leave with it
-//!   ([`makes_room`]).
+//!   the primary with no node of an indexed tree whose secondaries have
+//!   none either, which leave with it ([`makes_room`]). The subtree of a
+//!   tree that keeps its data flat makes none: GroveDB asks the walk of
+//!   such a tree whenever it moves it away, so one that is entered where
+//!   a moved subtree goes was entered since that walk.
 //!   Such is the Merk of a tree that was written into and emptied, which
 //!   GroveDB asks no walk for when it moves the tree away. The look
 //!   states the drop of the subtree under the node it found it under
@@ -142,14 +143,11 @@ use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     store::lignin::{
-        LigninEntry, LigninHost, LigninMove, LigninNodeStore, LigninOutcome, LigninSettled,
-        LigninSubtree, LigninView,
+        LigninEntry, LigninHost, LigninMove, LigninOutcome, LigninSettled, LigninView,
     },
     TreeType,
 };
-use grovedb_storage::{
-    error::CommitError, prefix::secondary_prefix_for, Error, FlatStore, RawIterator,
-};
+use grovedb_storage::{error::CommitError, prefix::secondary_prefix_for, Error};
 
 use super::{
     enter::{element_of, entered, hosted_by},
@@ -185,10 +183,9 @@ struct Pair {
 ///
 /// A subtree makes room where it is entered at the first position of its
 /// host, and is the Merk with no node of a tree whose data is one Merk,
-/// whatever records that no node links it holds; or the subtree of a
-/// tree that keeps its data flat with no record in its data keyspace; or
-/// the primary with no node of an indexed tree whose secondaries have
-/// none either.
+/// whatever records that no node links it holds; or the primary with no
+/// node of an indexed tree whose secondaries have none either. The
+/// subtree of a tree that keeps its data flat makes none.
 fn makes_room(
     view: LigninView<'_>,
     prefix: [u8; 32],
@@ -219,17 +216,10 @@ fn makes_room(
         }
         return Ok(leaving);
     }
-    if !tree.uses_non_merk_data_storage() {
-        return Ok(vec![prefix]);
-    }
-    let subtree = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
-    let mut records = FlatStore::cursor(&subtree);
-    records.seek_to_first().unwrap();
-    if records.valid().unwrap() {
-        return Ok(Vec::new());
-    }
-    // A cursor that stopped on an error shows no record either.
-    records.status().map(|()| vec![prefix])
+    Ok(match tree.uses_non_merk_data_storage() {
+        true => Vec::new(),
+        false => vec![prefix],
+    })
 }
 
 /// What `parts` do to the subtrees they were told to move.
