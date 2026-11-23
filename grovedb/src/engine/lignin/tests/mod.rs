@@ -31,6 +31,8 @@ mod inspection;
 mod kinds;
 mod left_behind;
 mod legacy;
+#[cfg(feature = "rocksdb_storage")]
+mod made_again;
 mod many_trees;
 mod moves;
 mod nested;
