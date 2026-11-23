@@ -46,8 +46,10 @@
 //!   returned.
 //! - [`Family::DroppedTreeAssertion`]: in a debug build GroveDB's own
 //!   assertion fails there on RocksDB, and the reference panics. A case
-//!   ends there, counted, where the panic carries that assertion's words
-//!   and everything above holds that can be asked of the candidate alone.
+//!   ends there, counted, in a debug build alone, where the panic is that
+//!   assertion's by the file it comes from and by its words, names the
+//!   key of such a tree, and everything above holds that can be asked of
+//!   the operation and the candidate alone.
 //!
 //! The fourth has no place, and is of an answer alone:
 //!
@@ -740,32 +742,62 @@ impl Known {
         self.remade.retain(|path| self.pending.contains(path));
     }
 
-    /// Whether `op`, which the candidate answered with `candidate`, is a
-    /// step of [`Family::DroppedTreeProof`] as far as the operation and
-    /// the candidate alone say (the owner's ruling D-348):
+    /// The trees made again at a dropped path whose record is pending
+    /// ([`Known::made_again`]) that a proof of `op` binds: those under a
+    /// key that the items of the query select, or those of a subquery it
+    /// comes to ([`reads`]), where `op` is a raw query of committed state.
+    /// None for any other operation.
+    pub fn trees_a_proof_binds(&self, op: &Op) -> Vec<Path> {
+        let Op::Read(Read::Query(query)) = op else {
+            return Vec::new();
+        };
+        if !query.raw {
+            return Vec::new();
+        }
+        let query = query.to_path_query();
+        let bound = |tree: &&Path| {
+            let below = tree.strip_prefix(query.path.as_slice());
+            below.is_some_and(|below| reads(&query.query.query, below, true).is_some())
+        };
+        self.remade.iter().filter(bound).cloned().collect()
+    }
+
+    /// Whether `op`, which the reference answered with `reference` and
+    /// the candidate with `candidate`, is a step of
+    /// [`Family::DroppedTreeProof`] (the owner's ruling D-348):
     ///
-    /// - the operation is a raw query of committed state;
-    /// - under a key that its items select, or those of a subquery it
-    ///   comes to ([`reads`]), is a tree made again at a dropped path
-    ///   whose record is pending ([`Known::made_again`]);
+    /// - the operation is a raw query of committed state, and a proof of
+    ///   it binds a tree made again at a dropped path whose record is
+    ///   pending ([`Known::trees_a_proof_binds`]);
+    /// - the reference's cost, its outcome with every row, and its root
+    ///   hash are the candidate's: the two differ in the proof or its
+    ///   cost alone, if they differ;
     /// - the candidate returned rows, and its proof verifies to the root
     ///   hash of its committed state and gives those rows, path, key and
     ///   bytes.
     ///
-    /// What the two engines differ in is the caller's to ask.
-    pub fn through_a_proof(&self, op: &Op, candidate: &Step, grove_version: &GroveVersion) -> bool {
+    /// With no `reference`, where the reference panicked, the first and
+    /// the last are asked, of the operation and the candidate alone.
+    pub fn through_a_proof(
+        &self,
+        op: &Op,
+        reference: Option<&Step>,
+        candidate: &Step,
+        grove_version: &GroveVersion,
+    ) -> bool {
         let Op::Read(Read::Query(query)) = op else {
             return false;
         };
-        if !query.raw {
+        if self.trees_a_proof_binds(op).is_empty() {
             return false;
         }
         let query = query.to_path_query();
-        let bound = |tree: &Path| {
-            let below = tree.strip_prefix(query.path.as_slice());
-            below.is_some_and(|below| reads(&query.query.query, below, true).is_some())
+        let proof_alone = |reference: &Step| {
+            reference.cost == candidate.cost
+                && reference.outcome == candidate.outcome
+                && reference.root_hash == candidate.root_hash
         };
-        if !self.remade.iter().any(bound) {
+        if !reference.is_none_or(proof_alone) {
             return false;
         }
         let Outcome::Returned(Value::Rows(returned)) = &candidate.outcome else {
@@ -1216,10 +1248,10 @@ mod tests {
         known.took(&drop, Vec::new());
         // Dropped, and no record told: not pending, so not made again.
         known.made_again(vec![again.clone()]);
-        assert!(!known.through_a_proof(&asked, &answered, grove_version));
+        assert!(!known.through_a_proof(&asked, Some(&answered), &answered, grove_version));
         // Pending, and not told that a tree stands there again.
         known.pending(vec![again.clone()]);
-        assert!(!known.through_a_proof(&asked, &answered, grove_version));
+        assert!(!known.through_a_proof(&asked, Some(&answered), &answered, grove_version));
         // Pending and made again: what `trees_at` reads of the database.
         let block = runner.transactions().block();
         let standing = Known::trees_at(&db, block, known.pending_paths(), grove_version);
@@ -1227,7 +1259,9 @@ mod tests {
         let item = [path(&[b"t", b"item"]), path(&[b"t", b"absent"])];
         assert!(Known::trees_at(&db, block, &item, grove_version).is_empty());
         known.made_again(standing);
-        assert!(known.through_a_proof(&asked, &answered, grove_version));
+        assert!(known.through_a_proof(&asked, Some(&answered), &answered, grove_version));
+        assert!(known.through_a_proof(&asked, None, &answered, grove_version));
+        assert_eq!(known.trees_a_proof_binds(&asked), vec![again.clone()]);
         // It is of no path: no place is of the kind, and no stored record.
         assert_eq!(known.family(&again), Some(Family::DroppedTree));
         assert_eq!(known.family(&path(&[b"t"])), None);
@@ -1238,7 +1272,7 @@ mod tests {
         let one = |key: &[u8]| vec![crate::workload::QueryItem::Key(key.to_vec())];
         let selects = Op::Read(Read::Query(query(&[b"t"], one(b"again"), true)));
         let selected = runner.step(&selects).expect("a step").step;
-        assert!(known.through_a_proof(&selects, &selected, grove_version));
+        assert!(known.through_a_proof(&selects, Some(&selected), &selected, grove_version));
         for other in [
             Op::Read(Read::Query(query(&[b"t"], everything.clone(), false))),
             Op::Read(Read::Query(query(&[b"t"], one(b"item"), true))),
@@ -1249,15 +1283,22 @@ mod tests {
         ] {
             let step = runner.step(&other).expect("a step").step;
             assert!(
-                !known.through_a_proof(&other, &step, grove_version),
+                !known.through_a_proof(&other, Some(&step), &step, grove_version),
                 "{other:?}"
             );
+            assert!(!known.through_a_proof(&other, None, &step, grove_version));
+            assert!(known.trees_a_proof_binds(&other).is_empty(), "{other:?}");
         }
         let Op::Read(read) = asked.clone() else {
             unreachable!()
         };
         let through_the_block = Op::Transaction(TransactionOp::BlockRead(read));
-        assert!(!known.through_a_proof(&through_the_block, &answered, grove_version));
+        assert!(!known.through_a_proof(
+            &through_the_block,
+            Some(&answered),
+            &answered,
+            grove_version
+        ));
 
         // Another answer of the candidate: no rows, a row more or less or
         // another one than its proof gives, a proof that verifies to
@@ -1266,7 +1307,7 @@ mod tests {
         let with = |change: &dyn Fn(&mut Step)| {
             let mut step = answered.clone();
             change(&mut step);
-            known.through_a_proof(&asked, &step, grove_version)
+            known.through_a_proof(&asked, Some(&step), &step, grove_version)
         };
         assert!(with(&|_| {}));
         assert!(!with(
@@ -1324,6 +1365,38 @@ mod tests {
             Proved::Bytes(of_one_key.clone(), Verification::Verified)
         })));
         assert!(!with(&|step| step.proof = None));
+
+        // Another answer of the reference: it may differ from the
+        // candidate's in the proof, in what the verifier made of it and
+        // in the cost of proving, and in nothing else. A row with another
+        // byte, a row less, another cost of the query, an error or a root
+        // hash beside the candidate's valid proof is not of the kind.
+        let against = |change: &dyn Fn(&mut Step)| {
+            let mut reference = answered.clone();
+            change(&mut reference);
+            assert_ne!(reference, answered);
+            known.through_a_proof(&asked, Some(&reference), &answered, grove_version)
+        };
+        assert!(against(&|step| proof_of(step, &|bytes| {
+            Proved::Bytes(bytes, Verification::Refused("InvalidProof".to_string()))
+        })));
+        assert!(against(&|step| proof_of(step, &|mut bytes| {
+            bytes.push(0);
+            Proved::Bytes(bytes, Verification::Verified)
+        })));
+        assert!(against(&|step| {
+            let proof = step.proof.as_mut().expect("a proof");
+            proof.cost.seek_count += 1;
+        }));
+        assert!(!against(&|step| rows_of(step, &|rows| rows[1]
+            .element
+            .push(0))));
+        assert!(!against(&|step| rows_of(step, &|rows| drop_last(rows))));
+        assert!(!against(&|step| step.cost.seek_count += 1));
+        assert!(!against(
+            &|step| step.outcome = Outcome::Failed("InvalidQuery".to_string())
+        ));
+        assert!(!against(&|step| step.root_hash = Some([0; 32])));
 
         // The case that ends there is counted for the kind alone.
         known.ended_at(Family::DroppedTreeProof, 5);

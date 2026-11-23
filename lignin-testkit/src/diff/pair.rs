@@ -160,10 +160,36 @@ pub struct Divergence {
 /// How the line begins that stands for an engine that panicked.
 const PANICKED: &str = "panicked: ";
 
-/// The words of GroveDB's debug assertion that the state root a proof
-/// binds a tree that is no Merk to reproduces the value hash its parent
-/// committed (`grovedb/src/operations/proof/bind_terminal_non_merk_tree`).
+/// Where GroveDB's debug assertion is that the state root a proof binds
+/// a tree that is no Merk to reproduces the value hash its parent
+/// committed: the files of this directory.
+const ASSERTION_ORIGIN: &str = "/operations/proof/bind_terminal_non_merk_tree/";
+
+/// How that assertion's words end.
 const REFERENCE_ASSERTION: &str = "which does not reproduce the committed value hash";
+
+/// Whether `panic`, as [`catching`] hands it on, is that assertion
+/// failing for one of `trees`: in a debug build, a panic at a place of
+/// [`ASSERTION_ORIGIN`] whose words name the key of one of the trees and
+/// end as the assertion's do. A release build has no such assertion, and
+/// no panic is it there.
+fn is_the_binding_assertion(panic: &str, trees: &[Vec<Vec<u8>>]) -> bool {
+    if !cfg!(debug_assertions) {
+        return false;
+    }
+    let Some((origin, said)) =
+        (panic.strip_prefix("panicked at ")).and_then(|panic| panic.split_once(": "))
+    else {
+        return false;
+    };
+    let names = |tree: &Vec<Vec<u8>>| {
+        let key = tree.last().map(hex::encode).unwrap_or_default();
+        said.contains(&format!("non-Merk tree at key {key} has state root "))
+    };
+    origin.contains(ASSERTION_ORIGIN)
+        && said.contains(REFERENCE_ASSERTION)
+        && trees.iter().any(names)
+}
 
 /// How the line begins that stands for an engine that could not be
 /// observed.
@@ -590,8 +616,9 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         // counted apart, where the candidate's side of the step is as the
         // rule of that open difference asks (`Known::through_a_proof`).
         if let (Seen::Panicked(panic), Seen::Answered(answered)) = (&was, &is) {
-            let asserted = panic.contains(REFERENCE_ASSERTION);
-            if asserted && known.through_a_proof(op, &answered.step, case.grove_version) {
+            let asserted = is_the_binding_assertion(panic, &known.trees_a_proof_binds(op));
+            let candidate = &answered.step;
+            if asserted && known.through_a_proof(op, None, candidate, case.grove_version) {
                 let family = Family::DroppedTreeAssertion;
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
@@ -630,9 +657,8 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             // else, and the candidate's proof holds: the open difference
             // of a dropped tree, through a proof.
             let through_a_proof = || {
-                let proof_alone = |part: &Part| matches!(part, Part::ProofCost | Part::Proof);
-                let held = parts.iter().all(proof_alone)
-                    && known.through_a_proof(op, &is.step, case.grove_version);
+                let (reference, candidate) = (Some(&was.step), &is.step);
+                let held = known.through_a_proof(op, reference, candidate, case.grove_version);
                 held.then_some(Family::DroppedTreeProof)
             };
             let family = refusal
@@ -814,6 +840,37 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
+    /// The reference's panic is GroveDB's assertion for a tree by the
+    /// file it comes from, the key it names and its words, in a debug
+    /// build alone.
+    #[test]
+    fn the_binding_assertion_is_known_by_its_file_its_key_and_its_words() {
+        let tree = vec![b"drops".to_vec(), b"k".to_vec()];
+        let other = vec![b"drops".to_vec(), b"other".to_vec()];
+        let one = std::slice::from_ref(&tree);
+        let said = "assertion `left == right` failed: non-Merk tree at key 6b has state root 7a0f \
+                    which does not reproduce the committed value hash a281   left: [1]  right: [2]";
+        let at = "grovedb/src/operations/proof/bind_terminal_non_merk_tree/v1.rs:102:13";
+        let genuine = format!("panicked at {at}: {said}");
+        let is = super::is_the_binding_assertion;
+        assert_eq!(is(&genuine, one), cfg!(debug_assertions));
+        assert_eq!(
+            is(&genuine, &[other.clone(), tree.clone()]),
+            cfg!(debug_assertions)
+        );
+        // Another tree's key, no tree, another file, other words, and
+        // the words inside another panic.
+        assert!(!is(&genuine, &[other]));
+        assert!(!is(&genuine, &[]));
+        let elsewhere = format!("panicked at grovedb/src/operations/proof/generate.rs:1:1: {said}");
+        assert!(!is(&elsewhere, one));
+        let other_words = format!("panicked at {at}: non-Merk tree at key 6b has state root 7a0f");
+        assert!(!is(&other_words, one));
+        let quoted = format!("panicked at storage/src/lib.rs:1:1: an error ({genuine})");
+        assert!(!is(&quoted, one));
+        assert!(!is(said, one));
+    }
+
     use grovedb::Element;
     use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;

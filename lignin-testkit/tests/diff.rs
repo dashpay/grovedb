@@ -509,16 +509,31 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
     let made_again: String = (b"round-0:commitment".iter())
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    assert!(has(&ended.candidate, &made_again), "{ended:?}");
+    let above: String = b"drops".iter().map(|byte| format!("{byte:02x}")).collect();
+    let row = format!("row {above} {made_again} ");
+    let returned = |line: &String| line.starts_with(&row);
+    assert!(ended.candidate.iter().any(returned), "{ended:?}");
     assert!(has(&ended.candidate, "verification verified"), "{ended:?}");
     let (family, at) = if cfg!(debug_assertions) {
         assert_eq!(ended.parts, [Part::Panic]);
-        let asserted = "which does not reproduce the committed value hash";
-        assert!(has(&ended.reference, asserted), "{ended:?}");
+        // The reference's panic is GroveDB's assertion for that tree.
+        let [panic] = ended.reference.as_slice() else {
+            panic!("{ended:?}");
+        };
+        let origin = "/operations/proof/bind_terminal_non_merk_tree/";
+        assert!(panic.starts_with("panicked: panicked at ") && panic.contains(origin));
+        let asserted = format!("non-Merk tree at key {made_again} has state root ");
+        assert!(panic.contains(&asserted), "{panic}");
         (Family::DroppedTreeAssertion, 5)
     } else {
         assert_eq!(ended.parts, [Part::Proof]);
         assert!(has(&ended.reference, "verification refused"), "{ended:?}");
+        // The reference returned the same rows.
+        let rows = |lines: &[String]| -> Vec<String> {
+            let rows = lines.iter().filter(|line| line.starts_with("row "));
+            rows.cloned().collect()
+        };
+        assert_eq!(rows(&ended.reference), rows(&ended.candidate));
         (Family::DroppedTreeProof, 4)
     };
     assert_eq!(ran.ended_at, Some(family));
