@@ -89,7 +89,7 @@ pub struct DumpedSubtree {
     pub data_records: u64,
     /// The records of the aux keyspace.
     pub aux_records: u64,
-    /// One, where the Merk keeps a record of its root key.
+    /// One, where the handle of the subtree reads a record of a root key.
     pub root_key_records: u64,
     /// The records of the meta keyspace.
     pub meta_records: u64,
@@ -414,10 +414,11 @@ impl<E: Engine> GroveDb<E> {
     ///
     /// It reads one whole dump, and no byte of `input` after it. The
     /// element under `key` has to be a tree of the tree type of the dumped
-    /// element, and its subtree has to hold no record in any keyspace, as
-    /// `transaction` reads it: anything else is refused. Nothing is
-    /// written before the dump is read to its end, its checksum holds and
-    /// those refusals are past.
+    /// element. Its subtree has to hold no node or flat record, no aux
+    /// record and no meta record, and its handle has to read no record of
+    /// a root key, as `transaction` reads them. A target that is otherwise
+    /// is refused. Nothing is written before the dump is read to its end,
+    /// its checksum holds and those refusals are past.
     ///
     /// The look at the subtree is no lock. On the RocksDB engine a caller
     /// lets no other writer into the subtree from the load until the
