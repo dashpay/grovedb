@@ -1629,8 +1629,8 @@ fn a_node_from_a_flat_record_is_written_back_after_reads_of_other_kinds() {
 /// compared with the record's bytes, which are no node's value. Here the
 /// value of the node a handle read from a flat record is, byte for byte,
 /// the record that another commit puts under the key afterwards. The
-/// write of the saved node states its value, and the handle reads the
-/// node back, through the handle and through a change set of it.
+/// handle writes the saved node directly or through its change set. In
+/// both cases it reads the saved encoding back.
 #[test]
 fn a_value_stated_over_a_flat_record_is_not_compared_with_its_bytes() {
     for through_change_set in [false, true] {

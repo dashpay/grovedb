@@ -314,7 +314,9 @@ impl TreeNode {
     /// it is handed with. The mark is the node's and is copied with it.
     /// Like every mark it is not kept where the node is decoded anew in
     /// place ([`Self::decode_into`]): the node is then that of the bytes
-    /// it was handed, as one that is built from fields is.
+    /// it was handed, as one that is built from fields is. Whoever writes
+    /// such a node and cannot tell that a cell holds its value writes it
+    /// with `NodeChange::ValueWritten`.
     #[inline]
     pub fn from_flat_record(&self) -> bool {
         self.inner.marks.from_flat_record
