@@ -343,7 +343,9 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.needs-tests == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    # The tests grow with the engine: 74, 88 and 86 minutes on macOS on three
+    # heads, then more than 90. The limit is well above the slowest run seen.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
