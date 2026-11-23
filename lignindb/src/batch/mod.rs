@@ -134,8 +134,12 @@
 //! A Merk of which nothing is said stands alone, as the root of a grove
 //! does. The pointer in a host that the batch does not write is behind
 //! once an anchored Merk has another root, until a later batch of the
-//! transaction writes the host (T3): never on existing GroveVersions,
-//! where every operation writes the path up to the root of the grove.
+//! transaction writes the host (T3). On existing GroveVersions every
+//! operation of GroveDB that propagates to the root writes the path up to
+//! the root of the grove, and no pointer is behind once it is applied;
+//! between the two batches that a partial batch is applied as, one can
+//! be, and after a batch that holds the nodes of a Merk alone, as the
+//! hand-over of a restored Merk is, until the write that names the Merk.
 //!
 //! # Subtrees
 //!

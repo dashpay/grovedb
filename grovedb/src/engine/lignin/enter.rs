@@ -93,10 +93,12 @@
 //!   data is one Merk names that Merk in every batch that puts it**
 //!   ([`Owed::apart`]). One batch can write the nodes of the Merk and a
 //!   later one the node of its element, as the two segments of a partial
-//!   batch do. The first then leaves the root of the Merk for the
-//!   element's node to name (`tree-layout.md` T3), and a node that kept
-//!   what it hosts would point at the root the Merk had before, or at
-//!   none. A group in which a batch writes nodes of the Merk after the
+//!   batch do. The first then holds the element where the Merk store
+//!   can (`node-store.md`, "A batch that stops below an element"), and
+//!   otherwise leaves the root of the Merk for the element's node to
+//!   name (`tree-layout.md` T3); a node that kept what it hosts would
+//!   point at the root the Merk had before the batch that writes it
+//!   again, or at none. A group in which a batch writes nodes of the Merk after the
 //!   last batch that puts the element's node is refused with
 //!   `Error::NotSupported`: where that batch moves the root, no node
 //!   would name it. It is taken where the element as the group leaves
