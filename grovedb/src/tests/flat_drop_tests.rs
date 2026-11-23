@@ -46,8 +46,10 @@ mod tests {
     /// (`docs/lignindb/engine.md`, "Flat drops and their drain"). So a read
     /// of the dropped prefix made directly, and a tree made again at the
     /// dropped path before the drain, find the old records on the one and
-    /// not on the other. Everything else of a flat drop and its drain is
-    /// asserted alike.
+    /// not on the other: an open difference by the owner's ruling D-327,
+    /// which the three tests that name this constant assert for the
+    /// engine they run on. Everything else of a flat drop and its drain
+    /// is asserted alike.
     const KEPT_UNTIL_THE_DRAIN: bool = !cfg!(grovedb_test_engine = "lignin");
 
     /// Number of keys physically present in the data namespace under

@@ -715,7 +715,7 @@ What this does not do:
 - **`remove_pending_prefix_drop_record(prefix)`** is one write with no transaction.
 - **A drain reports what it reports on RocksDB**: the liveness check, the order and the counts are GroveDB's. A step that fails ends the pass with its error, the record stays, and the next pass takes it up; the records that the pass reclaimed before stay reclaimed.
 
-What differs between a flat drop and its drain is the reads `transactions.md` 14.5 D3 names: a read of the dropped prefix made directly, and a tree that is made again at the dropped path before the drain, which finds the old records on RocksDB and, of them, the root-key records alone here. A drain skips the record of a path that is live again, and the marks of its prefixes stay with it, as the old records stay on RocksDB, until a drain reclaims a record that names them.
+What differs between a flat drop and its drain is the reads `transactions.md` 14.5 D3 names: a read of the dropped prefix made directly, and a tree that is made again at the dropped path before the drain, which finds the old records on RocksDB and, of them, the root-key records alone here. A drain skips the record of a path that is live again, and the marks of its prefixes stay with it, as the old records stay on RocksDB, until a drain reclaims a record that names them. The difference is ruled open and is put to the maintainer of GroveDB at gate M5 (D-327): three tests of `flat_drop_tests` assert it for the engine they run on, and the differential fuzzer counts the cases that come to it as the family of a dropped tree until its drain ([test-engines.md](test-engines.md#the-workloads-and-the-differential-fuzzer)).
 
 What else holds of the marks:
 
