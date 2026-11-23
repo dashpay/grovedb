@@ -1,6 +1,6 @@
 # Test engines: the suites run once on every registered engine
 
-LigninDB task SEAM-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)). MERK-08 registered LigninDB for Merk's suite ([Merk on LigninDB](#merk-on-lignindb)).
+LigninDB task SEAM-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)). MERK-08 registered LigninDB for Merk's suite ([Merk on LigninDB](#merk-on-lignindb)), and GROVE-10 for GroveDB's ([GroveDB on LigninDB](#grovedb-on-lignindb)).
 
 GroveDB's and Merk's test suites name no storage engine. Each is built for one engine at a time, and run once for every engine registered for it. This document says how an engine is selected, what a test may name, which tests are about one engine, and what registering an engine takes. It builds on [`engine.md`](engine.md) and [`node-store.md`](node-store.md).
 
@@ -10,6 +10,7 @@ GroveDB's and Merk's test suites name no storage engine. Each is built for one e
 | --- | --- |
 | `cargo test -p grovedb` | GroveDB's suite on the first engine of `grovedb/test-engines.txt` |
 | `GROVEDB_TEST_ENGINE=pinned-reads cargo test -p grovedb` | the same suite on the engine of that name |
+| `GROVEDB_TEST_ENGINE=lignin cargo test -p grovedb --features lignin_storage --lib` | GroveDB's suite on LigninDB, whose feature is not among the crate's defaults |
 | `cargo test -p grovedb-merk` | Merk's suite on the first engine of `merk/test-engines.txt` |
 | `MERK_TEST_ENGINE=node-store-only cargo test -p grovedb-merk` | the same suite on the engine of that name |
 | `MERK_TEST_ENGINE=lignin cargo test -p grovedb-merk --features lignin_storage --lib` | Merk's suite on LigninDB, whose feature is not among the crate's defaults |
@@ -49,6 +50,7 @@ The engines registered today:
 | --- | --- | --- |
 | GroveDB | `rocksdb` | `RocksDbEngine` |
 | GroveDB | `pinned-reads` | `PinnedReads` (`grovedb/src/tests/pinned_reads.rs`): the RocksDB engine, except that the transaction of a read that was given none is a read-only snapshot, as on LigninDB (RD2 of [`transactions.md`](transactions.md)). A read that wrote would be refused, and a read that started a second transaction could read another state. The engine is a type of its own and gives no way to the storage underneath. |
+| GroveDB | `lignin` | `LigninEngine` (feature `lignin_storage`): a database of `lignindb` ([GroveDB on LigninDB](#grovedb-on-lignindb)) |
 | Merk | `rocksdb` | `RocksDbTestEngine`: a handle is the RocksDB storage context of its subtree |
 | Merk | `node-store-only` | `NodeStoreOnlyEngine`: RocksDB behind handles that are a `NodeStore` and nothing else |
 | Merk | `lignin` | `LigninTestEngine` (feature `lignin_storage`): a database of `lignindb`, whose handles are the store of `merk::store::lignin` on a write transaction ([Merk on LigninDB](#merk-on-lignindb)) |
@@ -204,11 +206,15 @@ The differential fuzzer (`lignin-testkit::diff`, VER-01) applies random operatio
 | Alias | Engine |
 | --- | --- |
 | `Reference` | `RocksDbEngine` |
-| `Candidate` | `StandIn`, until LigninDB's engine is named there (GROVE-10) |
+| `Candidate` | `LigninEngine` (GROVE-10) |
 
-`StandIn` is RocksDB behind an `Engine` implementation of the test kit's own: the engine that stands in for LigninDB until it exists. Like `PinnedReads`, which lives in GroveDB's test build and cannot be named from another crate, it gives a read that was given no transaction a snapshot read transaction (RD2). It can also be opened with a planted defect (`Fault`), a cost that is one byte off for one size of write, which the fuzzer's own acceptance test has to find (`lignin-diff seeded`, `lignin-testkit/tests/diff.rs`). That test keeps planting its defect in `StandIn` whatever `Candidate` names.
+`StandIn` is RocksDB behind an `Engine` implementation of the test kit's own: the engine that stood in for LigninDB until it existed. Like `PinnedReads`, which lives in GroveDB's test build and cannot be named from another crate, it gives a read that was given no transaction a snapshot read transaction (RD2). It can also be opened with a planted defect (`Fault`), a cost that is one byte off for one size of write, which the fuzzer's own acceptance test has to find (`lignin-diff seeded`, `lignin-testkit/tests/diff.rs`). That test keeps planting its defect in `StandIn` whatever `Candidate` names.
 
 Registering an engine with the fuzzer is two things: `impl StreamEngine` for it, and its name in `Candidate`.
+
+Two engines report a failure of their own in their own variant of the storage error: RocksDB as `RocksDBError`, and a conflict as one of kind `Busy`; LigninDB as `StorageError`, and a conflict as `Commit(Conflict)`. So the name a step's error is compared by names no engine (`golden::run::error_name`): an engine's own failure is `StorageError`, and what the seam classes as an outcome of a commit (`grovedb_storage::Error::commit_error`) is named by its class, as in `Commit::Conflict`. The corpus records no error under RocksDB's own name, which `tests/golden.rs` holds.
+
+The streams of the golden corpus are also applied to both engines side by side (`lignin-testkit/tests/pair_replay.rs`): each trace's stream is generated again and run through the fuzzer's pair runner on a fresh database of each engine, every step compared, and what the two databases store compared at the end. A database of LigninDB is checked when it is closed in a debug build, so a trace that leaves a store the check calls unsound fails the test although every answer was RocksDB's. The traces that may differ are listed in the test, each with the unit that owns the difference; every other trace has to be the same to its last step.
 
 | Command | What runs |
 | --- | --- |
@@ -216,6 +222,7 @@ Registering an engine with the fuzzer is two things: `impl StreamEngine` for it,
 | `cargo run --release -p lignin-testkit --bin lignin-diff -- seeded` | `Reference` against a `StandIn` with a planted defect: fails unless the fuzzer finds it within a minute |
 | `cargo run --release -p lignin-testkit --bin lignin-diff -- case --seed SEED` | the one case a run reported, again |
 | `cargo test -p lignin-testkit --test diff` | both, for as long as a test may take |
+| `cargo test -p lignin-testkit --test pair_replay -- --nocapture` | the streams of the corpus on RocksDB and on LigninDB, with the count of traces that were the same to the end |
 
 ## CI
 
