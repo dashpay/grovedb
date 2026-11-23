@@ -294,6 +294,9 @@ pub struct LigninNodeStore<'db> {
     path: Option<Vec<Vec<u8>>>,
     /// The keys the handle knows to hold an unlinked record.
     loose: Loose,
+    /// The subtree that the handle keeps its root-key record under, where
+    /// it was told one ([`Self::root_key_kept_in`]).
+    root_keys: Option<[u8; 32]>,
 }
 
 /// The keys a handle knows to hold an unlinked record: those its last
@@ -328,6 +331,15 @@ impl fmt::Debug for LigninNodeStore<'_> {
 
 fn refused(what: &str) -> Error {
     Error::StorageError(StorageError::StorageError(format!("lignindb: {what}")))
+}
+
+/// The key under which a handle of `subtree` that keeps its root-key
+/// record outside its subtree keeps it
+/// ([`LigninNodeStore::root_key_kept_in`]), in the roots keyspace of the
+/// subtree it was told: the prefix of `subtree`, and then the key of the
+/// record.
+pub fn kept_root_key(subtree: &[u8; 32]) -> Vec<u8> {
+    access::kept_key(subtree, ROOT_KEY_KEY)
 }
 
 /// The record length of a stored node: the bytes Merk's own record of it
@@ -399,14 +411,64 @@ impl<'db> LigninNodeStore<'db> {
             placed: Cell::new(false),
             path: None,
             loose: Loose::default(),
+            root_keys: None,
+        }
+    }
+
+    /// The handle, with its root-key record kept outside its subtree: in
+    /// the roots keyspace of the subtree `home`, under the handle's own
+    /// prefix and then the record's key. [`NodeStore::root_key`] reads it
+    /// there, and a write of it is handed to the transaction there. It is
+    /// charged as the record of this subtree that it is for Merk: by its
+    /// own key and its value. A handle that is told its own subtree keeps
+    /// the record in its subtree as one that was told nothing: none of
+    /// the following is of it.
+    ///
+    /// The record is then a record of `home`, for the transaction and for
+    /// a batch, and none of this subtree: an immediate handle hands a
+    /// write of it to the transaction there, and a handle that stages its
+    /// writes stages it there. A batch counts it as a write into no
+    /// subtree, neither into this one nor into `home`
+    /// ([`LigninSettled::written`], [`LigninSettled::put_into`]), and
+    /// hands it over whichever subtrees it is told to hand no write of
+    /// ([`LigninSettled::leave_out`]). A change set of the handle that
+    /// holds nothing else tells the batch nothing of this subtree:
+    /// neither the element that the handle names for it nor the path
+    /// that the handle was opened by. Where `home` is no subtree that
+    /// leaves with this one: a drop of this subtree leaves the record,
+    /// also a drop that the batch stages after the write
+    /// ([`LigninBatch::drop_subtree`]); a move of this subtree does not
+    /// carry it; and a write of it is taken whether or not this subtree
+    /// is entered. What takes `home`, or the records of its roots
+    /// keyspace, takes the record.
+    /// The store finds no node by the record: the root of the subtree's
+    /// Merk is the one its entry in the subtree directory names. `home`
+    /// has to be entered when the record is written.
+    ///
+    /// Each handle keeps the record where it was told. Of two handles of
+    /// one subtree, one that was told nothing reads and writes the record
+    /// of the subtree itself, and two that were told two subtrees read
+    /// and write two records.
+    pub fn root_key_kept_in(mut self, home: [u8; 32]) -> Self {
+        self.root_keys = (home != self.subtree.prefix).then_some(home);
+        self
+    }
+
+    /// Where the handle keeps its root-key record: the subtree, and the
+    /// key that the record has in the roots keyspace of that subtree
+    /// ([`Self::root_key_kept_in`]).
+    pub fn root_key_place(&self) -> ([u8; 32], Vec<u8>) {
+        match self.root_keys {
+            Some(home) => (home, access::kept_key(&self.subtree.prefix, ROOT_KEY_KEY)),
+            None => (self.subtree.prefix, ROOT_KEY_KEY.to_vec()),
         }
     }
 
     /// The handle, told the path that it was opened by: the segments that
     /// its prefix was derived from. The store reads nothing by it. A batch
-    /// that takes a write of the handle keeps it for whoever applies the
-    /// batch ([`LigninSettled::path`]), who derives from it the prefix of
-    /// the subtree under a key of this one.
+    /// that takes a write of the handle into its subtree keeps it for
+    /// whoever applies the batch ([`LigninSettled::path`]), who derives
+    /// from it the prefix of the subtree under a key of this one.
     pub fn at_path(mut self, path: Vec<Vec<u8>>) -> Self {
         self.path = Some(path);
         self
@@ -597,7 +659,13 @@ impl<'db> LigninNodeStore<'db> {
     }
 
     fn read_record(&self, keyspace: Keyspace, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
-        let record = self.access.record(keyspace, &self.subtree.prefix, key);
+        let record = match (keyspace, self.root_keys) {
+            (Keyspace::Roots, Some(home)) => {
+                let kept = access::kept_key(&self.subtree.prefix, key);
+                self.access.record(keyspace, &home, &kept)
+            }
+            _ => self.access.record(keyspace, &self.subtree.prefix, key),
+        };
         self.charged(record.map(|record| {
             let len = record.as_ref().map(Vec::len);
             (record, len)
@@ -612,7 +680,8 @@ impl<'db> LigninNodeStore<'db> {
         value: Option<&[u8]>,
     ) -> CostResult<(), Error> {
         let subtree = self.subtree.clone();
-        let change_set = LigninChangeSet::of_record(subtree, keyspace, key, value, None);
+        let change_set =
+            LigninChangeSet::of_record_of(subtree, self.root_keys, keyspace, key, value);
         self.submit(change_set, "a write", false)
     }
 
@@ -819,7 +888,9 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
 
     fn change_set(&self) -> LigninChangeSet {
         let immediate = matches!(self.mode, Mode::Immediate);
-        LigninChangeSet::new(self.subtree.clone(), immediate).of_handle(self.loose.clone())
+        LigninChangeSet::new(self.subtree.clone(), immediate)
+            .of_handle(self.loose.clone())
+            .keeping_root_keys_in(self.root_keys)
     }
 
     fn commit(&self, change_set: LigninChangeSet) -> CostResult<(), Error> {

@@ -104,7 +104,7 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 use lignindb::{
     commit::NoStaleHashes,
-    txn::{Batch, Column, RecordWrite, Subtree, SubtreeWrite, WriteTxn},
+    txn::{Batch, Column, RecordWrite, Subtree, SubtreeWrite, Unit, WriteTxn},
     Db, Options,
 };
 
@@ -210,10 +210,41 @@ impl LigninEngine {
     }
 }
 
+/// `handle`, as the engine hands a handle out: with its root-key record
+/// kept by its prefix in the roots keyspace of the namespace that no
+/// element hosts ([`hostless`]), unless it is the root Merk's, which
+/// stays under its own prefix. A handle of the namespace's own prefix
+/// keeps its record in the namespace as the record of its own subtree
+/// ([`LigninNodeStore::root_key_kept_in`]).
+///
+/// RocksDB keeps a root-key record in a column of its own under the
+/// prefix of its subtree. GroveDB's delete of a tree and its move of a
+/// tree remove and copy records of the data keyspace alone, so the
+/// record of a secondary of an indexed tree stays under its prefix when
+/// the tree is deleted or moved away, does not come with a tree that is
+/// moved, and is read by the next open of a secondary under that prefix
+/// whose element names no root (`Merk::open_base`), which is charged the
+/// bytes of the key in it and the fetch of the node it names. Kept in the
+/// subtree, the record would leave with a drop and go with a move. Kept
+/// here, it stays under the prefix of a subtree that is dropped or moved
+/// away, and a moved subtree brings none. The store finds a node from
+/// the root that the Merk's entry in the subtree directory names, and by
+/// no such record. A record stays under its prefix, as on RocksDB, until
+/// a write of it puts another or removes it, a drain names the prefix
+/// ([`PendingPrefixDrops::delete_prefix_ranges`]) or the grove is wiped.
+fn keeping_its_root_key(handle: LigninNodeStore<'_>) -> LigninNodeStore<'_> {
+    match handle.subtree().prefix == ROOT {
+        true => handle,
+        false => handle.root_key_kept_in(*pending_prefix_drops_namespace()),
+    }
+}
+
 /// The subtrees that no element hosts and that every grove has, each with
 /// the tree type it is entered with: the root Merk, as a normal tree whose
 /// type bytes are `normal`, and the namespace of the pending-drop records,
-/// which keeps no tree.
+/// which keeps no tree. The namespace holds the pending-drop records in
+/// its meta keyspace and the root-key records of the grove's subtrees in
+/// its roots keyspace ([`keeping_its_root_key`]).
 fn hostless(normal: &[u8]) -> [(Subtree, &[u8]); 2] {
     let namespace = Subtree::new(*pending_prefix_drops_namespace());
     [(Subtree::new(ROOT), normal), (namespace, &[])]
@@ -560,17 +591,33 @@ impl PendingPrefixDrops for LigninEngine {
         Ok(records)
     }
 
-    /// Drops each of `prefixes` that the latest version has entered,
-    /// with every subtree below it: one commit for each, outside any
-    /// transaction. A prefix that is not entered has no record in any
-    /// keyspace, and nothing is written for it.
+    /// Removes what is under each of `prefixes`, outside any transaction.
+    /// A subtree that the latest version has entered under the prefix is
+    /// dropped, with every subtree below it, but for the namespace of the
+    /// root-key records (below), and the root-key record that
+    /// is kept for the prefix outside its subtree
+    /// ([`keeping_its_root_key`]) is removed, as the range delete of
+    /// RocksDB covers the roots column. A prefix is one commit where it
+    /// has either, and no write where it has neither.
     ///
     /// A flat drop on this engine drops the subtree with its element, in
     /// the drop's own commit (`transactions.md` 14.5 D3), so the drain of
     /// its pending-drop record finds nothing entered under the record's
-    /// prefixes. What it would find is a subtree that was entered under
-    /// such a prefix by a write that no element leads to.
+    /// prefixes, unless a write that no element leads to entered a
+    /// subtree under one of them since. What it does find is the root-key
+    /// record of each of those prefixes that has one.
+    ///
+    /// The namespace that keeps those records is not dropped where its
+    /// own prefix is given, which the record of no flat drop of GroveDB
+    /// names. The records of its data, aux and meta keyspaces are
+    /// removed, and of its roots keyspace its own root-key record, in
+    /// one commit. The root-key records that it keeps for
+    /// other prefixes stay, as they do on RocksDB, where they are under
+    /// those prefixes. The transaction refuses the removal by range of
+    /// the data keyspace of a subtree whose Merk has a root, so the call
+    /// fails while a Merk under the namespace's prefix has a node.
     fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), Error> {
+        let namespace = *pending_prefix_drops_namespace();
         for prefix in prefixes {
             if *prefix == [0xFF; 32] {
                 // The words of the RocksDB engine, which refuses the same.
@@ -580,12 +627,49 @@ impl PendingPrefixDrops for LigninEngine {
                 ));
             }
             let subtree = Subtree::new(*prefix);
-            if !self.entered(subtree)? {
+            // Where the root-key record of the prefix is kept, and whether
+            // there is one. The record of the root Merk is in its own
+            // subtree and leaves with it: it is not looked for.
+            let (home, key, keeps_a_root_key) = {
+                let snapshot = LigninSnapshot::new(self.db.snapshot());
+                let handle = LigninNodeStore::read_only(&snapshot, LigninSubtree::alone(*prefix));
+                let handle = keeping_its_root_key(handle);
+                let (home, key) = handle.root_key_place();
+                let kept = *prefix != ROOT
+                    && (NodeStore::root_key(&handle).value)
+                        .map_err(merk_error)?
+                        .is_some();
+                (home, key, kept)
+            };
+            let entered = self.entered(subtree)?;
+            if !entered && !keeps_a_root_key {
                 continue;
             }
-            let drop = [SubtreeWrite::Drop { subtree }];
+            let kept_record = RecordWrite::delete(Column::Roots, Subtree::new(home), &key);
+            let kept_record = keeps_a_root_key.then_some(kept_record);
+            let every_record_of = |column| RecordWrite::DeleteRange {
+                unit: Unit::new(column, subtree),
+                start: &[],
+                end: None,
+            };
+            let (subtrees, records): (Vec<_>, Vec<_>) = match *prefix == namespace {
+                // What is under the namespace's own prefix, and no record
+                // that it keeps for another.
+                true => {
+                    let own = [Column::Data, Column::Aux, Column::Meta].map(every_record_of);
+                    (Vec::new(), own.into_iter().chain(kept_record).collect())
+                }
+                false => {
+                    let drop = entered.then_some(SubtreeWrite::Drop { subtree });
+                    (
+                        drop.into_iter().collect(),
+                        kept_record.into_iter().collect(),
+                    )
+                }
+            };
             let batch = Batch {
-                subtrees: &drop,
+                subtrees: &subtrees,
+                records: &records,
                 ..Batch::default()
             };
             (self.db.write(&batch, &mut NoStaleHashes)).map_err(write_error)?;
@@ -838,6 +922,7 @@ impl Engine for LigninEngine {
         let segments = batch.map(|_| path.to_vec());
         named(path, batch.is_some()).map(|subtree| {
             let handle = LigninNodeStore::deferred(transaction.view(), subtree, batch);
+            let handle = keeping_its_root_key(handle);
             match segments {
                 Some(segments) => handle.at_path(segments),
                 None => handle,
@@ -853,7 +938,8 @@ impl Engine for LigninEngine {
     ) -> CostContext<LigninNodeStore<'a>> {
         let view = transaction.view();
         let subtree = named_by_prefix(prefix, batch.map(|_| view));
-        LigninNodeStore::deferred(view, subtree, batch).wrap_with_cost(OperationCost::default())
+        keeping_its_root_key(LigninNodeStore::deferred(view, subtree, batch))
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn subtree_beside<'a, 'b, B>(
@@ -867,8 +953,12 @@ impl Engine for LigninEngine {
         B: AsRef<[u8]> + 'b,
     {
         let subtree = beside(path, prefix, batch.is_some());
-        LigninNodeStore::deferred(transaction.view(), subtree, batch)
-            .wrap_with_cost(OperationCost::default())
+        keeping_its_root_key(LigninNodeStore::deferred(
+            transaction.view(),
+            subtree,
+            batch,
+        ))
+        .wrap_with_cost(OperationCost::default())
     }
 
     fn immediate_subtree<'a, 'b, B>(
@@ -879,7 +969,9 @@ impl Engine for LigninEngine {
     where
         B: AsRef<[u8]> + 'b,
     {
-        named(path, true).map(|subtree| LigninNodeStore::immediate(transaction.view(), subtree))
+        named(path, true).map(|subtree| {
+            keeping_its_root_key(LigninNodeStore::immediate(transaction.view(), subtree))
+        })
     }
 
     fn immediate_subtree_by_prefix<'a>(
@@ -889,7 +981,8 @@ impl Engine for LigninEngine {
     ) -> CostContext<LigninNodeStore<'a>> {
         let view = transaction.view();
         let subtree = named_by_prefix(prefix, Some(view));
-        LigninNodeStore::immediate(view, subtree).wrap_with_cost(OperationCost::default())
+        keeping_its_root_key(LigninNodeStore::immediate(view, subtree))
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn adopt_restored_subtrees<'b, B>(

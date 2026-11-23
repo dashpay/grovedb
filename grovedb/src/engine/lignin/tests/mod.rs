@@ -29,6 +29,7 @@ mod nested;
 mod over;
 mod queries;
 mod restore;
+mod root_keys;
 mod sync;
 
 use grovedb_costs::OperationCost;
