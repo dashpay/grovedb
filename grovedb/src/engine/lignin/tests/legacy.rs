@@ -374,10 +374,32 @@ struct Case {
     hashes: Option<[Hash; 3]>,
 }
 
+/// The tree that a case of the family deletes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Child {
+    /// A tree of a kind whose data is one Merk, with an item.
+    Kind(usize),
+    /// A tree that keeps flat records, with one value.
+    Mmr,
+    Bulk,
+    Dense,
+}
+
+impl Child {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Kind(kind) => KINDS[kind].name,
+            Self::Mmr => "mmr tree",
+            Self::Bulk => "bulk append tree",
+            Self::Dense => "dense tree",
+        }
+    }
+}
+
 /// One case of the family: a tree `parent` of the kind `p` with elements,
-/// a tree in it of the kind `c`, or an MMR tree where `c` is no kind,
-/// that holds one element, and the delete of that with what it holds.
-fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Option<usize>) -> Case {
+/// the tree `c` in it with one element, and the delete of that with what
+/// it holds.
+fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Child) -> Case {
     let ok = "a write of the setup";
     let insert = |at: &[&[u8]], key: &[u8], element: Element| {
         db.insert(at, key, element, None, None, v)
@@ -390,16 +412,27 @@ fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Option
     if KINDS[p].sums {
         insert(AT_PARENT, b"sum", Element::new_sum_item(5));
     }
+    let value = b"value".to_vec();
     match c {
-        Some(c) => {
+        Child::Kind(c) => {
             insert(AT_PARENT, CHILD, (KINDS[c].make)());
-            insert(AT_CHILD, b"leaf", Element::new_item(b"value".to_vec()));
+            insert(AT_CHILD, b"leaf", Element::new_item(value));
         }
-        None => {
+        Child::Mmr => {
             insert(AT_PARENT, CHILD, Element::empty_mmr_tree());
-            db.mmr_tree_append(AT_PARENT, CHILD, b"value".to_vec(), None, v)
-                .unwrap()
-                .expect(ok);
+            let appended = db.mmr_tree_append(AT_PARENT, CHILD, value, None, v);
+            appended.unwrap().expect(ok);
+        }
+        Child::Bulk => {
+            let tree = Element::empty_bulk_append_tree(2).expect("a chunk power");
+            insert(AT_PARENT, CHILD, tree);
+            let appended = db.bulk_append(AT_PARENT, CHILD, value, None, v);
+            appended.unwrap().expect(ok);
+        }
+        Child::Dense => {
+            insert(AT_PARENT, CHILD, Element::empty_dense_tree(3));
+            let inserted = db.dense_tree_insert(AT_PARENT, CHILD, value, None, v);
+            inserted.unwrap().expect(ok);
         }
     }
     let deleted = catch_unwind(AssertUnwindSafe(|| {
@@ -424,8 +457,8 @@ fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Option
 }
 
 /// The family of the delete: every kind of tree the grove version makes
-/// as `parent`, with every kind and an MMR tree as the tree that is
-/// deleted from it.
+/// as `parent`, with every kind, an MMR tree, a bulk append tree and a
+/// dense tree as the tree that is deleted from it.
 ///
 /// On every case the answers of the two engines are the same, and the
 /// value hashes that the checker of LigninDB names as left by a delete
@@ -444,9 +477,9 @@ fn the_hashes_the_checker_names_are_the_paths_the_groves_check_reports() {
         let made = made_by(v);
         let mut classes: BTreeMap<&str, usize> = BTreeMap::new();
         for p in 0..made {
-            for c in (0..made).map(Some).chain([None]) {
-                let child = c.map_or("mmr tree", |c| KINDS[c].name);
-                let told = format!("grove version {number}, {} in {}", child, KINDS[p].name);
+            let flat = [Child::Mmr, Child::Bulk, Child::Dense];
+            for c in (0..made).map(Child::Kind).chain(flat) {
+                let told = format!("grove version {number}, {} in {}", c.name(), KINDS[p].name);
                 let dir = tempfile::tempdir().expect("a directory");
                 let on_lignin = {
                     let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
@@ -488,9 +521,9 @@ fn the_hashes_the_checker_names_are_the_paths_the_groves_check_reports() {
             }
         }
         let expected: &[(&str, usize)] = match number {
-            1..=3 => &[("left", 24), ("of the rules", 34), ("panic", 32)],
-            4 => &[("of the rules", 90)],
-            _ => &[("of the rules", 156)],
+            1..=3 => &[("left", 32), ("of the rules", 44), ("panic", 32)],
+            4 => &[("of the rules", 108)],
+            _ => &[("of the rules", 180)],
         };
         let expected: BTreeMap<&str, usize> = expected.iter().copied().collect();
         assert_eq!(classes, expected, "grove version {number}");
