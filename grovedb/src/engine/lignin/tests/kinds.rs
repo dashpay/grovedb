@@ -10,10 +10,11 @@
 //! that went (`engine.md`, "An element written over a tree"), and RocksDB
 //! keeps its records, so the answers of the two engines after such a
 //! write are not compared here. These tests hold LigninDB alone: where
-//! the history is taken, the new tree is read back, and the check of the
-//! database, which the engine gives the tree types that keep flat
-//! records, finds nothing when the database is closed and when it is
-//! opened again.
+//! the history is taken, the element at the path is one of the new
+//! tree's kind and what was written into the new tree is read back
+//! (`Kind::read_back`), and the check of the database, which the engine
+//! gives the tree types that keep flat records, finds nothing when the
+//! database is closed and when it is opened again.
 
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
@@ -51,10 +52,6 @@ impl Kind {
         Self::Dense,
         Self::Commitment,
     ];
-
-    fn keeps_flat_records(self) -> bool {
-        !matches!(self, Self::Plain | Self::Indexed)
-    }
 
     fn empty(self) -> Element {
         match self {
@@ -111,6 +108,40 @@ impl Kind {
     }
 }
 
+impl Kind {
+    /// Reads the tree under [`TREE`] back after [`Self::fill`]: its
+    /// element is one of the kind, and holds what was written. For a
+    /// normal tree that is its item, and the item of the tree in it; for
+    /// an indexed tree its row; and for a tree that keeps flat records
+    /// the element itself, which is no longer that of an empty tree: it
+    /// states how many values the tree has.
+    fn read_back(self, db: &Lignin, v: &GroveVersion, told: &str) {
+        let tree: &[&[u8]] = &[TREE];
+        let element = db.get(ROOT, TREE, None, v).unwrap().expect("the tree");
+        let kind = std::mem::discriminant(&element);
+        assert_eq!(
+            kind,
+            std::mem::discriminant(&self.empty()),
+            "{told}: {element:?}"
+        );
+        let item = Element::new_item(b"an item".to_vec());
+        match self {
+            Self::Plain => {
+                let below: &[&[u8]] = &[TREE, b"child"];
+                let read = db.get(tree, b"item", None, v).unwrap();
+                assert_eq!(read.expect("the item"), item, "{told}");
+                let read = db.get(below, b"item", None, v).unwrap();
+                assert_eq!(read.expect("the item below"), item, "{told}");
+            }
+            Self::Indexed => {
+                let read = db.get(tree, b"child", None, v).unwrap();
+                assert_eq!(read.expect("the row"), Sum::leaf(4), "{told}");
+            }
+            _ => assert_ne!(element, self.empty(), "{told}"),
+        }
+    }
+}
+
 /// How a tree comes to stand where another stood.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Way {
@@ -152,19 +183,11 @@ fn replaced(v: &GroveVersion, number: usize, old: Kind, new: Kind, way: Way) -> 
             };
         let taken = put && new.fill(&db, v, number);
         if taken {
-            // The new tree is the one at the path, and holds what was
-            // written into it.
-            let element = db.get(ROOT, TREE, None, v).unwrap().expect("the tree");
-            let kept_flat = !element.is_any_tree() || element.uses_non_merk_data_storage();
-            assert_eq!(
-                kept_flat,
-                new.keeps_flat_records(),
-                "{old:?} then {new:?} on grove version {number}: {element:?}"
+            new.read_back(
+                &db,
+                v,
+                &format!("{old:?} then {new:?} on grove version {number}"),
             );
-            if new == Kind::Plain {
-                let below: &[&[u8]] = &[TREE, b"child"];
-                (db.get(below, b"item", None, v).unwrap()).expect("the item below");
-            }
         }
         db.flush().expect("a flush");
         taken

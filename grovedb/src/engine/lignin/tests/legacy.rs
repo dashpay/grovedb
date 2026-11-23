@@ -89,6 +89,7 @@ fn issues<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<(Vec<Vec<u8>>, Ha
 /// none.
 fn report(dir: &Path, v: &GroveVersion, naming: bool) -> Report {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
+    db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
     let rules = MerkHashRules::for_check(v);
     let mut rules = match naming {
         true => rules.naming_left_hashes(),
