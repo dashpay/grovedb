@@ -15,7 +15,10 @@ use grovedb_storage::{
     error::{CommitError, WriteScopeError},
     Error as StorageError,
 };
-use lignin_format::tree_page::{HashField, Side};
+use lignin_format::{
+    tree_page::{HashField, Side},
+    CommitVersion,
+};
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
     Batch, BatchError, ChildKeys, Column, Entering, HostPut, Hosted, LinkPut, LinkView, MerkCursor,
@@ -420,6 +423,25 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, Error>;
 
+    /// The record under `key` in a keyspace of `home` that holds no
+    /// nodes, and the key of the root that the subtree directory holds
+    /// for `subtree`, where it holds one. A view of one version reads
+    /// them one after the other. A write transaction makes each read as
+    /// an operation of its own, so it reads the root on both sides of
+    /// the record, and all of it again where the two roots differ or a
+    /// commit landed between the reads ([`read_record_with_root`]).
+    fn record_with_root(
+        &self,
+        keyspace: Keyspace,
+        home: &Prefix,
+        key: &[u8],
+        subtree: &Prefix,
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Error> {
+        let record = self.record(keyspace, home, key)?;
+        let root = self.subtree(subtree)?.and_then(|entry| entry.root_key);
+        Ok((record, root))
+    }
+
     /// Applies `write` to the transaction as one operation: all of it or
     /// nothing.
     fn apply(&self, write: &Write) -> Result<Written, Error>;
@@ -763,6 +785,10 @@ pub(super) trait Reads {
     /// that a parent's location is no longer good whatever the location.
     /// A write transaction that is read outside any scope never does.
     fn by_key(&self, subtree: Subtree) -> bool;
+
+    /// The committed version that a read of this moment is made over:
+    /// the one a cursor over `unit` that is opened now pins.
+    fn version(&self, unit: Unit) -> CommitVersion;
 }
 
 /// [`Reads::by_key`] of a write transaction that is read outside any
@@ -826,6 +852,10 @@ macro_rules! reads {
                 read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
             ) -> Result<R, TxnError> {
                 self.subtree(subtree, read)
+            }
+
+            fn version(&self, unit: Unit) -> CommitVersion {
+                self.cursor(unit).version()
             }
         }
     };
@@ -912,6 +942,39 @@ fn read_subtree(reads: &impl Reads, subtree: &Prefix) -> Result<Option<LigninEnt
         }),
     };
     Reads::subtree(reads, Subtree::new(*subtree), |view| view.map(entry)).map_err(fault)
+}
+
+/// The record under `key` in a keyspace of `home` and the key of the root
+/// that the directory holds for `subtree` ([`Access::record_with_root`]).
+///
+/// Each read of a write transaction is an operation of its own: over the
+/// committed version of its moment, and over what the transaction holds
+/// at that moment. So the root is read before the record and after it,
+/// and the committed version is looked at before the three reads and
+/// after them. They are made again where the two roots differ or the
+/// version is another one: a commit of another transaction, or a write
+/// of this one through another handle, that changes the root between
+/// the reads is then not in one of them and missing from another. A
+/// write of this transaction between the reads that leaves the root
+/// under the key it had, as one of the record alone, is not seen so.
+pub(super) fn read_record_with_root(
+    reads: &impl Reads,
+    keyspace: Keyspace,
+    home: &Prefix,
+    key: &[u8],
+    subtree: &Prefix,
+) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Error> {
+    let unit = Unit::new(column(keyspace), Subtree::new(*home));
+    let root = || Ok::<_, Error>(read_subtree(reads, subtree)?.and_then(|entry| entry.root_key));
+    loop {
+        let version = reads.version(unit);
+        let before = root()?;
+        let record = read_record(reads, keyspace, home, key, false)?;
+        let after = root()?;
+        if before == after && reads.version(unit) == version {
+            return Ok((record, after));
+        }
+    }
 }
 
 /// What the transaction holds under the key of a written node, as far as
@@ -2185,6 +2248,16 @@ impl<A: Reader + super::flat::FlatAccess> Access for A {
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, Error> {
         self.reading(|reads| read_record(reads, keyspace, subtree, key, true))
+    }
+
+    fn record_with_root(
+        &self,
+        keyspace: Keyspace,
+        home: &Prefix,
+        key: &[u8],
+        subtree: &Prefix,
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Error> {
+        self.reading(|reads| read_record_with_root(reads, keyspace, home, key, subtree))
     }
 
     fn apply(&self, write: &Write) -> Result<Written, Error> {

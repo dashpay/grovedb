@@ -304,6 +304,75 @@ pub struct LigninNodeStore<'db> {
     /// The subtree that keeps the marks of what flat drops left behind,
     /// where the handle was told one ([`Self::left_behind_in`]).
     left_behind: Option<[u8; 32]>,
+    /// What the last read of the root-key record through this handle
+    /// found, where the handle writes at once and the record does not
+    /// name the root of the handle's Merk ([`RootLeftBehind`]).
+    root_left_behind: RefCell<Option<RootLeftBehind>>,
+}
+
+/// A root-key record that does not name the root of its Merk: the record
+/// as a handle read it, and the key of the root that the subtree
+/// directory held for the Merk at that read.
+///
+/// The store finds a node from the root that the directory names. A Merk
+/// that is opened with no root key given is opened from the record
+/// (`Merk::open_base`): with the node the record names where the tree
+/// holds one, and with no node otherwise. Such a Merk is not the tree
+/// that the store holds, and a commit of it would state a root which
+/// leaves cells of that tree with no link to them. So no node of the
+/// Merk is written where the record was read:
+///
+/// - **A handle that writes at once** refuses a change set that puts or
+///   removes a node, from such a read of the record through it until its
+///   next read of the record that is answered, with
+///   [`Error::NotSupported`].
+/// - **A batch** takes no node of that Merk from the first such read by
+///   a handle that stages into it, for as long as it is there
+///   ([`LigninBatch::note_root_left_behind`]): it is refused where it is
+///   settled ([`LigninBatch::settle`]), with [`Error::NotSupported`], if
+///   it holds a put or a removal of a node of that Merk. Nothing of the
+///   batch reaches the transaction.
+///
+/// The root is read before the record and after it, and the three are
+/// read again where the two roots differ or a commit landed between
+/// them ([`Access::record_with_root`]). A handle that only reads, or
+/// that stages into no batch, reads the record alone and keeps nothing
+/// of it. A write of a record that is no node is taken as before. A
+/// record is not judged where the directory holds no root for the Merk,
+/// or no entry. What a handle of one batch read says nothing of the
+/// nodes of a batch that was neither taken out of that one nor merged
+/// with it.
+///
+/// GroveDB leaves a record so on grove versions 1 to 3: the delete of a
+/// tree that holds elements writes the Merk the tree was in through a
+/// Merk that is opened with a root key given, whose commit writes no
+/// root-key record, and at the root path that Merk is the root Merk
+/// (`grovedb/src/operations/delete/delete_internal_on_transaction/v0.rs`,
+/// GroveDB #686). GroveDB #1065 is the report of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RootLeftBehind {
+    record: Option<Vec<u8>>,
+    root: Vec<u8>,
+}
+
+impl RootLeftBehind {
+    /// The refusal of a write of nodes of the Merk of `subtree`.
+    pub(super) fn refusal(&self, subtree: &[u8; 32]) -> Error {
+        let record = match &self.record {
+            Some(key) => format!("names the key {}", hex::encode(key)),
+            None => "is absent".to_owned(),
+        };
+        Error::NotSupported(format!(
+            "lignindb: the root-key record of Merk {} {record}, and the root of that Merk is \
+             the node under the key {}: no node of a Merk is written where its root-key record \
+             was read and does not name its root. On grove versions 1 to 3 the delete of a \
+             tree that holds elements leaves the record so where it changes the root of the \
+             Merk the tree was in \
+             (grovedb/src/operations/delete/delete_internal_on_transaction/v0.rs, GroveDB #686 and #1065)",
+            hex::encode(subtree),
+            hex::encode(&self.root),
+        ))
+    }
 }
 
 /// The keys a handle knows to hold an unlinked record: those its last
@@ -420,6 +489,7 @@ impl<'db> LigninNodeStore<'db> {
             loose: Loose::default(),
             root_keys: None,
             left_behind: None,
+            root_left_behind: RefCell::new(None),
         }
     }
 
@@ -763,6 +833,12 @@ impl<'db> LigninNodeStore<'db> {
                 staged.wrap_with_cost(MODEL.staged_write())
             }
             Mode::Immediate => {
+                if let Some(found) = &*self.root_left_behind.borrow()
+                    && change_set.writes_nodes()
+                {
+                    let refusal = found.refusal(&self.subtree.prefix);
+                    return Err(refusal).wrap_with_cost(MODEL.refused_write());
+                }
                 let checked = change_set.check_stale();
                 let (cost, write) = change_set.into_write();
                 let applied = checked.and_then(|()| self.apply(&write));
@@ -921,7 +997,31 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn root_key(&self) -> CostResult<Option<Vec<u8>>, Error> {
-        self.read_record(Keyspace::Roots, ROOT_KEY_KEY)
+        if matches!(self.mode, Mode::ReadOnly | Mode::Deferred(None)) {
+            return self.read_record(Keyspace::Roots, ROOT_KEY_KEY);
+        }
+        let (home, key) = self.root_key_place();
+        let prefix = &self.subtree.prefix;
+        let both = (self.access).record_with_root(Keyspace::Roots, &home, &key, prefix);
+        let read = self.charged(both.map(|both| {
+            let len = both.0.as_ref().map(Vec::len);
+            (both, len)
+        }));
+        read.map_ok(|(record, root)| {
+            let found = root.filter(|root| record.as_ref() != Some(root));
+            let found = found.map(|root| RootLeftBehind {
+                record: record.clone(),
+                root,
+            });
+            match (&self.mode, found) {
+                (Mode::Deferred(Some(batch)), Some(found)) => {
+                    batch.note_root_left_behind(*prefix, found);
+                }
+                (Mode::Immediate, found) => *self.root_left_behind.borrow_mut() = found,
+                _ => {}
+            }
+            record
+        })
     }
 
     fn set_root_key(&self, root_key: Option<&[u8]>) -> CostResult<(), Error> {
