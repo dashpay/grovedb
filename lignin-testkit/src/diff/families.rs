@@ -3,7 +3,8 @@
 //!
 //! RocksDB leaves records behind where GroveDB changes one element and
 //! does not clear what hung under it, and reads them again later. LigninDB
-//! drops a subtree with its element. Four such histories are ruled as
+//! drops a subtree with its element, and refuses a write that would put
+//! such records to use. Four such histories are ruled as
 //! open differences that are put to the maintainer of GroveDB, and are no
 //! defect of an engine until that is answered. Each is a [`Family`]. Three
 //! have a rule that is a path:
@@ -21,7 +22,8 @@
 //!   at the path again. RocksDB keeps the tree's records until then, and
 //!   a tree that is made again at the path before that reads them. The
 //!   pending records are read from the reference, as its block sees them,
-//!   after each operation both engines answered alike
+//!   after each operation both engines answered alike, from the case's
+//!   first flat drop on
 //!   ([`pending_drop_paths`](super::state::pending_drop_paths)): an
 //!   answer is of the family by the records as they were before its
 //!   operation.
@@ -31,10 +33,11 @@
 //! - [`Family::IndexedOverIndexed`]: on grove versions 1 to 3, which leave
 //!   the records of the old tree where they are, an operation puts an
 //!   indexed tree at a key where the reference read an indexed tree
-//!   before the operation, and the candidate answers `NotSupported`
-//!   ([`Known::indexed_under`], [`Known::family_of_refusal`]). Both are
-//!   required. The case ends there, counted, before what is stored is
-//!   compared again: no stored record is passed over for it.
+//!   before the operation, the reference takes the operation, and the
+//!   candidate answers `NotSupported` ([`Known::indexed_under`],
+//!   [`Known::family_of_refusal`]). All three are required. The case
+//!   ends there, counted, before what is stored is compared again: no
+//!   stored record is passed over for it.
 //!
 //! A case keeps the paths it made so ([`Known`]), from the operations both
 //! engines took, and nothing else is of a family:
@@ -62,7 +65,7 @@
 //!
 //! The counts are in the [`Tally`](super::pair::Tally) of a run
 //! ([`Counts`]): the cases that made a place of a family, or for the
-//! fourth came to such a put whatever was answered, those with a stored
+//! fourth those in which the reference took such a put, those with a stored
 //! difference passed over and those ended at an answer, and for the last
 //! two the seed of one such case.
 
@@ -134,7 +137,8 @@ pub struct Counts {
     /// The cases that made a place of the family: an element put over a
     /// tree that held elements, or a flat drop of a tree, whatever it
     /// held; and for the family of an indexed tree over an indexed tree
-    /// the cases that came to such a put, whatever the engines answered.
+    /// the cases in which the reference took such a put, whatever the
+    /// candidate answered.
     pub histories: [u64; FAMILIES],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
@@ -232,18 +236,27 @@ fn puts(op: &Op) -> Vec<Path> {
     places.collect()
 }
 
-/// The operations of the batch that `op` applies. A partial batch with no
-/// operation of its own is answered before its caller is asked for the
-/// operations it adds last, so those are none of what it applies.
-fn applied(op: &Op) -> impl Iterator<Item = &BatchOp> {
-    let nothing_of_its_own = matches!(
-        op,
-        Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) if batch.ops.is_empty()
-    );
-    op.batch_ops().filter(move |_| !nothing_of_its_own)
+/// The operations of the batch `op` that an engine comes to, where
+/// `taken` says whether it took the operation. The caller of a partial
+/// batch is asked for the operations it adds last once the batch's own
+/// were applied: they are none of a batch with no operation of its own,
+/// which is answered before, and none of one the engine did not take,
+/// which may have failed before.
+fn applied(op: &Op, taken: bool) -> impl Iterator<Item = &BatchOp> {
+    let own = match op {
+        Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) => Some(batch.ops.len()),
+        _ => None,
+    };
+    let reached = match own {
+        Some(0) => 0,
+        Some(own) if !taken => own,
+        _ => usize::MAX,
+    };
+    op.batch_ops().take(reached)
 }
 
-/// The places of [`puts`], each with the element that is put there.
+/// The places of [`puts`], each with the element that is put there, as an
+/// engine that takes the operation comes to them.
 fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     let mut puts = Vec::new();
     if let Op::Write(
@@ -255,7 +268,7 @@ fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     {
         puts.push((joined(path, key), element));
     }
-    for batch_op in applied(op) {
+    for batch_op in applied(op, true) {
         if let BatchOp::InsertOrReplace {
             path, key, element, ..
         }
@@ -275,13 +288,13 @@ fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     puts
 }
 
-/// The trees `op` drops flat.
+/// The trees `op` drops flat where an engine takes it.
 fn flat_drops(op: &Op) -> Vec<Path> {
     let mut drops = Vec::new();
     if let Op::Write(Write::DropFlat { path, key }) = op {
         drops.push(joined(path, key));
     }
-    for batch_op in applied(op) {
+    for batch_op in applied(op, true) {
         if let BatchOp::DropFlat { path, key, .. } = batch_op {
             drops.push(joined(path, key));
         }
@@ -418,8 +431,9 @@ fn reads(query: &grovedb::Query, below: &[Vec<u8>]) -> Option<bool> {
 }
 
 /// The places `op` names: the subtree it reads or writes in, and with a
-/// key the place under that key.
-fn places(op: &Op) -> Vec<Path> {
+/// key the place under that key. Of a batch, those of the operations an
+/// engine comes to that took it or not, as `taken` says ([`applied`]).
+fn places(op: &Op, taken: bool) -> Vec<Path> {
     let mut places = Vec::new();
     match op {
         Op::Read(read)
@@ -460,7 +474,7 @@ fn places(op: &Op) -> Vec<Path> {
         | Op::FlagsPartialBatch(_)
         | Op::FlagsHandoverBatch(_) => {}
     }
-    for batch_op in applied(op) {
+    for batch_op in applied(op, taken) {
         places.push(batch_op.path().clone());
         match batch_op {
             BatchOp::InsertOrReplace { path, key, .. }
@@ -557,7 +571,7 @@ impl Known {
         places
     }
 
-    /// The case came to an operation that puts an indexed tree over the
+    /// The reference took an operation that puts an indexed tree over the
     /// indexed trees at `over` ([`Known::indexed_under`]).
     pub fn came_to_indexed_over_indexed(&mut self, over: &[Path]) {
         if !over.is_empty() {
@@ -567,13 +581,19 @@ impl Known {
 
     /// The family of a differing answer to an operation that puts an
     /// indexed tree over the indexed trees at `over`
-    /// ([`Known::indexed_under`]), which the candidate answered with
-    /// `candidate`: [`Family::IndexedOverIndexed`] where there is such a
-    /// tree and the candidate's answer is the error `NotSupported`, and
-    /// none otherwise.
-    pub fn family_of_refusal(over: &[Path], candidate: &Outcome) -> Option<Family> {
+    /// ([`Known::indexed_under`]), which the reference answered with
+    /// `reference` and the candidate with `candidate`:
+    /// [`Family::IndexedOverIndexed`] where there is such a tree, the
+    /// reference took the operation and the candidate's answer is the
+    /// error `NotSupported`, and none otherwise.
+    pub fn family_of_refusal(
+        over: &[Path],
+        reference: &Outcome,
+        candidate: &Outcome,
+    ) -> Option<Family> {
+        let taken = matches!(reference, Outcome::Returned(_));
         let refused = matches!(candidate, Outcome::Failed(error) if error == "NotSupported");
-        (refused && !over.is_empty()).then_some(Family::IndexedOverIndexed)
+        (taken && refused && !over.is_empty()).then_some(Family::IndexedOverIndexed)
     }
 
     /// Both engines took `op` and answered it alike: its flat drops and
@@ -640,11 +660,14 @@ impl Known {
             .then_some(Family::BelowFlatDrop)
     }
 
-    /// The family an answer to `op` is of: that of the first place the
-    /// operation names that is of one, and else, for a query, that of a
-    /// subtree below its own that it reads.
-    pub fn family_of_answer(&self, op: &Op) -> Option<Family> {
-        let named = places(op).iter().find_map(|place| self.family(place));
+    /// The family an answer to `op` is of, where `taken` says whether the
+    /// reference took the operation: that of the first place the
+    /// operation names that is of one ([`places`]), and else, for a
+    /// query, that of a subtree below its own that it reads.
+    pub fn family_of_answer(&self, op: &Op, taken: bool) -> Option<Family> {
+        let named = places(op, taken)
+            .iter()
+            .find_map(|place| self.family(place));
         let read = match op {
             Op::Read(read)
             | Op::Transaction(TransactionOp::SnapshotRead(read) | TransactionOp::BlockRead(read)) => {
@@ -727,11 +750,19 @@ mod tests {
         workload::{PartialBatch, Transactions},
     };
 
+    impl Known {
+        /// The family of an answer to an operation the reference took.
+        fn family_of_taken(&self, op: &Op) -> Option<Family> {
+            self.family_of_answer(op, true)
+        }
+    }
+
     /// An answer is of the family of an indexed tree over an indexed tree
     /// where the operation puts an indexed tree, unconditionally, at a
     /// key at which the reference reads an indexed tree, on a grove
-    /// version up to the third, and the candidate's answer is
-    /// `NotSupported`. Without any one of these it is of no family: at a
+    /// version up to the third, the reference took the operation and the
+    /// candidate's answer is `NotSupported`. Without any one of these it
+    /// is of no family: at a
     /// key that holds a tree of another kind, an item or nothing, with
     /// another element put, with a conditional insert, on grove version
     /// 4 or 5, with a put that a partial batch with no operation of its
@@ -753,6 +784,7 @@ mod tests {
                 element,
             })
         };
+        let took = Outcome::Returned(Value::Nothing);
         let refused = Outcome::Failed("NotSupported".to_string());
         let family = Some(Family::IndexedOverIndexed);
         for grove_version in GROVE_VERSIONS.iter() {
@@ -783,7 +815,7 @@ mod tests {
             assert_eq!(under(&insert(&[b"t"], b"indexed", indexed())), expected);
             let on_a_kept_version = !expected.is_empty();
             assert_eq!(
-                Known::family_of_refusal(&over_indexed, &refused),
+                Known::family_of_refusal(&over_indexed, &took, &refused),
                 family.filter(|_| on_a_kept_version)
             );
 
@@ -815,7 +847,7 @@ mod tests {
             ] {
                 let over = under(&elsewhere);
                 assert_eq!(over, Vec::<Path>::new(), "{elsewhere:?}");
-                assert_eq!(Known::family_of_refusal(&over, &refused), None);
+                assert_eq!(Known::family_of_refusal(&over, &took, &refused), None);
                 let mut known = Known::default();
                 known.came_to_indexed_over_indexed(&over);
                 assert!(known.counts().is_empty());
@@ -824,14 +856,24 @@ mod tests {
 
         // Another answer of the candidate at such a put is of no family.
         let over = vec![path(&[b"t", b"indexed"])];
-        assert_eq!(Known::family_of_refusal(&over, &refused), family);
+        assert_eq!(Known::family_of_refusal(&over, &took, &refused), family);
         for other in [
             Outcome::Failed("StorageError::StorageError".to_string()),
             Outcome::Failed("InvalidBatchOperation".to_string()),
             Outcome::Failed("NotSupported::".to_string()),
             Outcome::Returned(Value::Nothing),
         ] {
-            assert_eq!(Known::family_of_refusal(&over, &other), None, "{other:?}");
+            assert_eq!(
+                Known::family_of_refusal(&over, &took, &other),
+                None,
+                "{other:?}"
+            );
+        }
+        // Where the reference did not take the operation, a refusal of
+        // the candidate is of no family.
+        for failed in ["InvalidInput", "NotSupported"] {
+            let failed = Outcome::Failed(failed.to_string());
+            assert_eq!(Known::family_of_refusal(&over, &failed, &refused), None);
         }
         // The family has no place: no path is of it, and no stored record.
         let mut known = Known::default();
@@ -881,11 +923,11 @@ mod tests {
         let mut known = known();
         assert!(known.dropped_flat());
         assert_eq!(known.family(&dropped), None);
-        assert_eq!(known.family_of_answer(&get(&dropped)), None);
+        assert_eq!(known.family_of_taken(&get(&dropped)), None);
         known.pending(vec![foreign.clone(), dropped.clone()]);
         assert_eq!(known.family(&dropped), tree);
-        assert_eq!(known.family_of_answer(&get(&dropped)), tree);
-        assert_eq!(known.family_of_answer(&remake), tree);
+        assert_eq!(known.family_of_taken(&get(&dropped)), tree);
+        assert_eq!(known.family_of_taken(&remake), tree);
         let below = path(&[b"a", b"dropped", b"child"]);
         assert_eq!(known.family(&below), Some(Family::BelowFlatDrop));
         for elsewhere in [
@@ -897,7 +939,7 @@ mod tests {
             foreign.clone(),
         ] {
             assert_eq!(known.family(&elsewhere), None, "{elsewhere:?}");
-            assert_eq!(known.family_of_answer(&get(&elsewhere)), None);
+            assert_eq!(known.family_of_taken(&get(&elsewhere)), None);
             let mut differs = vec![record(&[b"c"], 1), record(&[], 2)];
             differs[1].path = elsewhere.clone();
             let (was, is) = known.passed_over(7, &differs, &differs[..1]);
@@ -930,15 +972,15 @@ mod tests {
                 raw: false,
             }))
         };
-        assert_eq!(known.family_of_answer(&query(b"dropped", true)), tree);
-        assert_eq!(known.family_of_answer(&query(b"dropped", false)), None);
-        assert_eq!(known.family_of_answer(&query(b"beside", true)), None);
+        assert_eq!(known.family_of_taken(&query(b"dropped", true)), tree);
+        assert_eq!(known.family_of_taken(&query(b"dropped", false)), None);
+        assert_eq!(known.family_of_taken(&query(b"beside", true)), None);
 
         // The record is reclaimed: the subtree is compared again.
         known.pending(vec![foreign]);
         assert_eq!(known.family(&dropped), None);
-        assert_eq!(known.family_of_answer(&get(&dropped)), None);
-        assert_eq!(known.family_of_answer(&remake), None);
+        assert_eq!(known.family_of_taken(&get(&dropped)), None);
+        assert_eq!(known.family_of_taken(&remake), None);
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (2, 1));
         assert_eq!(known.family(&below), Some(Family::BelowFlatDrop));
@@ -1082,14 +1124,14 @@ mod tests {
             })
         };
         let over = Some(Family::WrittenOver);
-        assert_eq!(known.family_of_answer(&empty(&[b"b", b"over"])), over);
-        assert_eq!(known.family_of_answer(&get(&[b"b", b"over"], b"old")), over);
-        assert_eq!(known.family_of_answer(&delete(&[b"b"], b"over")), over);
+        assert_eq!(known.family_of_taken(&empty(&[b"b", b"over"])), over);
+        assert_eq!(known.family_of_taken(&get(&[b"b", b"over"], b"old")), over);
+        assert_eq!(known.family_of_taken(&delete(&[b"b"], b"over")), over);
         assert_eq!(
-            known.family_of_answer(&get(&[b"a", b"dropped", b"child"], b"k")),
+            known.family_of_taken(&get(&[b"a", b"dropped", b"child"], b"k")),
             Some(Family::BelowFlatDrop)
         );
-        assert_eq!(known.family_of_answer(&empty(&[b"b"])), None);
+        assert_eq!(known.family_of_taken(&empty(&[b"b"])), None);
         // A query of the subtree above goes down to the place by its
         // subquery, which is of one subtree down.
         let query = |at: &[&[u8]]| {
@@ -1103,11 +1145,11 @@ mod tests {
                 raw: false,
             }))
         };
-        assert_eq!(known.family_of_answer(&query(&[b"b"])), over);
-        assert_eq!(known.family_of_answer(&query(&[])), None);
-        assert_eq!(known.family_of_answer(&query(&[b"a"])), None);
-        assert_eq!(known.family_of_answer(&query(&[b"c"])), None);
-        assert_eq!(known.family_of_answer(&query(&[b"b", b"other"])), None);
+        assert_eq!(known.family_of_taken(&query(&[b"b"])), over);
+        assert_eq!(known.family_of_taken(&query(&[])), None);
+        assert_eq!(known.family_of_taken(&query(&[b"a"])), None);
+        assert_eq!(known.family_of_taken(&query(&[b"c"])), None);
+        assert_eq!(known.family_of_taken(&query(&[b"b", b"other"])), None);
         // With no subquery a query reads its own subtree alone: the one
         // above a place is of no family, and neither is the one of the
         // dropped tree's own subtree.
@@ -1118,9 +1160,9 @@ mod tests {
             query.subquery_all = false;
             Op::Read(Read::Query(query))
         };
-        assert_eq!(known.family_of_answer(&alone(&[b"b"])), None);
-        assert_eq!(known.family_of_answer(&alone(&[b"a", b"dropped"])), None);
-        assert_eq!(known.family_of_answer(&alone(&[])), None);
+        assert_eq!(known.family_of_taken(&alone(&[b"b"])), None);
+        assert_eq!(known.family_of_taken(&alone(&[b"a", b"dropped"])), None);
+        assert_eq!(known.family_of_taken(&alone(&[])), None);
         // With one, a query reads the subtrees under the keys its items
         // select, and no other.
         let of_key = |at: &[&[u8]], key: &[u8], subquery_path: Option<&[&[u8]]>, all: bool| {
@@ -1135,7 +1177,7 @@ mod tests {
         let below = Some(Family::BelowFlatDrop);
         let check = |at: &[&[u8]], key: &[u8], along: Option<&[&[u8]]>, all: bool, family| {
             let asked = of_key(at, key, along, all);
-            assert_eq!(known.family_of_answer(&asked), family, "{asked:?}");
+            assert_eq!(known.family_of_taken(&asked), family, "{asked:?}");
         };
         check(&[b"b"], b"over", None, true, over);
         check(&[b"b"], b"other", None, true, None);
@@ -1174,9 +1216,9 @@ mod tests {
             let query = grovedb::PathQuery::new_unsized(Vec::new(), query);
             Op::Read(Read::Prove(Prove::PathQuery(Box::new(query))))
         };
-        assert_eq!(known.family_of_answer(&branched(b"c", false)), over);
-        assert_eq!(known.family_of_answer(&branched(b"b", false)), None);
-        assert_eq!(known.family_of_answer(&branched(b"b", true)), None);
+        assert_eq!(known.family_of_taken(&branched(b"c", false)), over);
+        assert_eq!(known.family_of_taken(&branched(b"b", false)), None);
+        assert_eq!(known.family_of_taken(&branched(b"b", true)), None);
         // Of its own subtree a query goes on below only where a key its
         // items select takes a branch that goes down: not by a
         // conditional branch of keys the items do not select, and not by
@@ -1196,7 +1238,7 @@ mod tests {
             let subquery = conditional_goes_down.then(grovedb::Query::new_range_full);
             query.add_conditional_subquery(conditional, None, subquery);
             let query = grovedb::PathQuery::new_unsized(path(&[b"a", b"dropped"]), query);
-            known.family_of_answer(&Op::Read(Read::Prove(Prove::PathQuery(Box::new(query)))))
+            known.family_of_taken(&Op::Read(Read::Prove(Prove::PathQuery(Box::new(query)))))
         };
         let key = |key: &[u8]| grovedb::QueryItem::Key(key.to_vec());
         let from = |key: &[u8]| grovedb::QueryItem::RangeFrom(key.to_vec()..);
@@ -1222,13 +1264,13 @@ mod tests {
         assert_eq!(down(vec![from(b"s")], true, key(b"s"), false), below);
         assert_eq!(down(vec![full()], true, after(b""), false), below);
         assert_eq!(down(vec![after(b"")], true, after(b""), false), None);
-        assert_eq!(known.family_of_answer(&alone(&[b"b", b"over"])), over);
+        assert_eq!(known.family_of_taken(&alone(&[b"b", b"over"])), over);
         assert_eq!(
-            known.family_of_answer(&query(&[b"a", b"dropped"])),
+            known.family_of_taken(&query(&[b"a", b"dropped"])),
             Some(Family::BelowFlatDrop)
         );
-        assert_eq!(known.family_of_answer(&get(&[b"b"], b"other")), None);
-        assert_eq!(known.family_of_answer(&delete(&[b"a"], b"dropped")), None);
+        assert_eq!(known.family_of_taken(&get(&[b"b"], b"other")), None);
+        assert_eq!(known.family_of_taken(&delete(&[b"a"], b"dropped")), None);
         // A proof of a chunk names its subtree, and a move its new key.
         let trunk = |at: &[&[u8]]| {
             Op::Read(Read::Prove(Prove::TrunkChunk {
@@ -1237,8 +1279,8 @@ mod tests {
                 min_depth: None,
             }))
         };
-        assert_eq!(known.family_of_answer(&trunk(&[b"b", b"over"])), over);
-        assert_eq!(known.family_of_answer(&trunk(&[b"b"])), None);
+        assert_eq!(known.family_of_taken(&trunk(&[b"b", b"over"])), over);
+        assert_eq!(known.family_of_taken(&trunk(&[b"b"])), None);
         let moved = |key: &[u8], new_key: &[u8]| {
             Op::Batch(vec![BatchOp::Move {
                 path: path(&[b"b"]),
@@ -1246,8 +1288,8 @@ mod tests {
                 new_key: new_key.to_vec(),
             }])
         };
-        assert_eq!(known.family_of_answer(&moved(b"src", b"over")), over);
-        assert_eq!(known.family_of_answer(&moved(b"src", b"other")), None);
+        assert_eq!(known.family_of_taken(&moved(b"src", b"over")), over);
+        assert_eq!(known.family_of_taken(&moved(b"src", b"other")), None);
         // An insert that is made only where the key holds none names no
         // place it puts an element at.
         let conditional = Op::Write(Write::InsertIfNotExists {
@@ -1263,11 +1305,13 @@ mod tests {
             element: Element::empty_tree(),
         }]);
         assert!(puts(&batched).is_empty());
-        assert_eq!(known.family_of_answer(&Op::Commit), None);
+        assert_eq!(known.family_of_taken(&Op::Commit), None);
         // A partial batch with no operation of its own is answered before
         // its caller is asked for the operations it adds last: they put
         // nothing, drop nothing and name no place. With an operation of
-        // its own the batch applies them.
+        // its own, a batch that an engine takes applies them; one that
+        // the reference did not take may have failed before, and names
+        // the places of its own operations alone.
         let added = |ops: Vec<BatchOp>| {
             let put = BatchOp::InsertOrReplace {
                 path: path(&[b"b"]),
@@ -1288,7 +1332,8 @@ mod tests {
         let nothing_of_its_own = added(Vec::new());
         assert!(puts(&nothing_of_its_own).is_empty());
         assert!(flat_drops(&nothing_of_its_own).is_empty());
-        assert_eq!(known.family_of_answer(&nothing_of_its_own), None);
+        assert_eq!(known.family_of_taken(&nothing_of_its_own), None);
+        assert_eq!(known.family_of_answer(&nothing_of_its_own, false), None);
         let one_of_its_own = added(vec![BatchOp::InsertOnly {
             path: path(&[b"c"]),
             key: b"k".to_vec(),
@@ -1296,7 +1341,13 @@ mod tests {
         }]);
         assert_eq!(puts(&one_of_its_own).len(), 2);
         assert_eq!(flat_drops(&one_of_its_own), vec![path(&[b"a", b"dropped"])]);
-        assert_eq!(known.family_of_answer(&one_of_its_own), over);
+        assert_eq!(known.family_of_taken(&one_of_its_own), over);
+        assert_eq!(known.family_of_answer(&one_of_its_own, false), None);
+        let own_over = added(vec![BatchOp::Delete {
+            path: path(&[b"b"]),
+            key: b"over".to_vec(),
+        }]);
+        assert_eq!(known.family_of_answer(&own_over, false), over);
 
         let mut counts = Counts::default();
         let mut one = self::known();

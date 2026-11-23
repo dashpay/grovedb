@@ -570,8 +570,6 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             )
         })
         .unwrap_or_default();
-        known.came_to_indexed_over_indexed(&over_indexed);
-        tally.families = known.counts();
         let was = observe(&mut reference_runner, op);
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
@@ -580,14 +578,22 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             Both::Alike(why) => return cut_short(tally, step, why),
             Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
         };
+        // A put of an indexed tree over an indexed tree that the reference
+        // took is counted, whatever the candidate answered.
+        if !was.step.failed() {
+            known.came_to_indexed_over_indexed(&over_indexed);
+            tally.families = known.counts();
+        }
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
             // An answer that differs at an operation which names a place
             // of a named open difference, or in which the candidate
             // refuses an indexed tree over an indexed tree, ends the
             // case, and is none of the run's.
-            let refusal = Known::family_of_refusal(&over_indexed, &is.step.outcome);
-            if let Some(family) = refusal.or_else(|| known.family_of_answer(op)) {
+            let (reference, candidate) = (&was.step.outcome, &is.step.outcome);
+            let refusal = Known::family_of_refusal(&over_indexed, reference, candidate);
+            let taken = !was.step.failed();
+            if let Some(family) = refusal.or_else(|| known.family_of_answer(op, taken)) {
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
                 let ended_with = Divergence {

@@ -54,9 +54,10 @@ options:
 A case is a function of its seed and of --grove-version and --max-ops, so
 `case` takes the two as the run had them. fuzz and case exit with 1 when the
 engines differ at a step or in a stored record that is of no named open
-difference, and with 0 otherwise: also where a case ended at an answer of a
-named open difference, which the last line then says. seeded exits with 0
-when the defect was found in time and with 1 when it was not.
+difference, and with 0 when the run was made and found no such difference:
+also where a case ended at an answer of a named open difference, which the
+last line then says. seeded exits with 0 when the defect was found in time
+and with 1 when it was not. A command that could not be run exits with 2.
 ";
 
 /// The defect `seeded` plants unless another is named: one byte too many

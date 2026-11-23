@@ -222,8 +222,12 @@ fn the_candidate_answers_as_the_reference_does() {
 /// store these cases alike to their last operation, with no record
 /// passed over for a named open difference. In each a batch that moves
 /// is taken by both engines.
+///
+/// The rule of the walk is held by the tests of `diff::state`. This holds
+/// that the two cases, as their seeds generate them, run alike to their
+/// end.
 #[test]
-fn a_tree_moved_to_the_path_of_a_tree_of_the_other_kind_is_listed_once() {
+fn two_cases_reported_for_a_column_shown_twice_run_alike_to_their_end() {
     use lignin_testkit::{
         diff::{run, Case, Stored},
         golden::run::STACK_BYTES,
@@ -281,8 +285,9 @@ fn a_tree_moved_to_the_path_of_a_tree_of_the_other_kind_is_listed_once() {
 /// is pending, and a query of the new tree with no subquery reads the old
 /// tree's elements on RocksDB, which keeps them until the drain, and the
 /// new tree's alone on LigninDB. It is the open difference of a dropped
-/// tree until its drain: the case ends at that answer, in which the
-/// engines return different rows, counted for the family, and is no
+/// tree until its drain: the case ends at that answer, in which RocksDB
+/// returns the new tree's element and three of the old tree and LigninDB
+/// the new tree's element alone, counted for the family, and is no
 /// divergence.
 #[test]
 fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_family() {
@@ -330,7 +335,26 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     let ended = ran.ended_with.as_ref().expect("the answers it ended with");
     assert_eq!(ended.step as u64 + 1, ran.tally.steps);
     assert!(ended.parts.contains(&Part::Result), "{ended:?}");
-    assert_eq!(ended.step, 113, "{:?}, {ended:?}", query.path);
+    assert_eq!(ended.step, 113, "{ended:?}");
+    let remade: [&[u8]; 2] = [b"drops", b"round-1:provable-count-provable-sum"];
+    assert_eq!(query.path, remade);
+    // The keys of the rows an engine returned: the element of the new
+    // tree, and on RocksDB the three of the old one after it.
+    let keys = |lines: &[String]| -> Vec<String> {
+        let rows = lines.iter().filter(|line| line.starts_with("row "));
+        rows.filter_map(|row| row.split(' ').nth(2).map(str::to_string))
+            .collect()
+    };
+    let key = |key: &[u8]| {
+        key.iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    assert_eq!(
+        keys(&ended.reference),
+        [key(b"again"), key(b"r0"), key(b"r1"), key(b"r2")]
+    );
+    assert_eq!(keys(&ended.candidate), [key(b"again")]);
     let families = ran.tally.families;
     assert_eq!(families.answers, [0, 0, 1, 0]);
     assert_eq!(families.answer_seed, [None, None, Some(case.seed), None]);
@@ -387,9 +411,16 @@ fn an_indexed_tree_over_an_indexed_tree_ends_the_case_for_its_family() {
         let ended = ran.ended_with.as_ref().expect("the answers it ended with");
         assert_eq!(ended.step as u64, at, "{seed:#x}");
         assert!(ended.parts.contains(&Part::Error), "{seed:#x}: {ended:?}");
-        let refused = |line: &String| line.contains("NotSupported");
-        assert!(ended.candidate.iter().any(refused), "{seed:#x}: {ended:?}");
-        assert!(!ended.reference.iter().any(refused), "{seed:#x}: {ended:?}");
+        // RocksDB took the batch, and LigninDB refused it.
+        let failed = |lines: &[String]| {
+            let mut failed = lines.iter().filter(|line| line.starts_with("failed "));
+            failed.next().cloned()
+        };
+        let rooted = |line: &String| line.starts_with("root ");
+        assert_eq!(failed(&ended.reference), None, "{seed:#x}: {ended:?}");
+        assert!(ended.reference.iter().any(rooted), "{seed:#x}: {ended:?}");
+        let refused = Some("failed NotSupported".to_string());
+        assert_eq!(failed(&ended.candidate), refused, "{seed:#x}: {ended:?}");
         let families = ran.tally.families;
         assert_eq!(families.answers[3], 1, "{seed:#x}");
         assert_eq!(families.answer_seed[3], Some(seed));

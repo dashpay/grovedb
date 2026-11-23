@@ -2,9 +2,10 @@
 //! (GROVE-10), each written once for any engine and run on LigninDB and on
 //! RocksDB on every grove version, with what the history takes in compared
 //! call for call: the answer and the `OperationCost` of each read and each
-//! write, and the root hash after a write. A write of a transaction that
-//! a commit of another writer may meet is taken in with no root hash
-//! after it. The commit of a transaction is taken in by how it ended, and
+//! write, and the root hash after a write. The clear and the delete of
+//! the transaction that a commit of another writer meets
+//! (`in_a_met_transaction`) are taken in with no root hash after them.
+//! The commit of a transaction is taken in by how it ended, and
 //! a refusal as a conflict by that word, both with no cost: an engine may
 //! refuse at a write what another refuses at the commit.
 //!
