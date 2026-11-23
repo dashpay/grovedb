@@ -340,7 +340,8 @@ pub struct FlushState {
     pub(super) wake: Mutex<bool>,
     pub(super) woken: Condvar,
     /// Whether room was made on the device since the loop last ended a
-    /// sleep ([`Self::room_made`]).
+    /// sleep ([`Self::room_made`]). It is set and cleared under the lock
+    /// on `wake` only.
     pub(super) room_made: AtomicBool,
     /// The page versions that wait to be written back, as far as
     /// write-back knows.
@@ -483,13 +484,17 @@ impl FlushState {
         self.woken.notify_all();
     }
 
-    /// Notes that room was made on the device, and asks for a turn
+    /// Notes that room was made on the device, and wakes the loop
     /// ([`WriteBack::room_made`](super::WriteBack::room_made)): the sleep
     /// that the loop is in, or the one that follows the turn it is in,
-    /// ends at once, whichever kind it is ([`Self::sleep`]).
+    /// ends at once, whichever kind it is ([`Self::sleep`]). The mark is
+    /// set under the lock that a sleep holds whenever it does not wait,
+    /// and the sleep that finds it clears it under the same lock: one
+    /// call ends one sleep. It asks for no turn as [`Self::wake`] does.
     pub(super) fn room_made(&self) {
+        let _asked = lock(&self.wake);
         self.room_made.store(true, Ordering::Release);
-        self.wake();
+        self.woken.notify_all();
     }
 
     /// The sleep of the background loop between two turns.
@@ -503,10 +508,11 @@ impl FlushState {
     /// running when it comes or that begins next.
     pub(super) fn sleep(&self, failed_wait: Option<Duration>) {
         let stopping = || self.stopping.load(Ordering::Acquire);
+        let room_made = || self.room_made.load(Ordering::Acquire);
         let mut asked = lock(&self.wake);
         match failed_wait {
             None => {
-                if !*asked && !stopping() {
+                if !*asked && !stopping() && !room_made() {
                     let (next, _) = self
                         .woken
                         .wait_timeout(asked, self.config.idle)
@@ -516,10 +522,6 @@ impl FlushState {
             }
             Some(wait) => {
                 let began = Instant::now();
-                // The call that room was made sets its mark and then
-                // takes the lock that is held here from the look at the
-                // mark to the wait, so none is missed.
-                let room_made = || self.room_made.load(Ordering::Acquire);
                 while !stopping() && !room_made() {
                     let Some(left) = wait.checked_sub(began.elapsed()) else {
                         break;

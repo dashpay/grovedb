@@ -559,15 +559,37 @@ fn the_cleaners_loop_takes_its_next_turn_at_once_when_it_is_told_that_room_was_m
 
     // The sleep by itself: a call ends the one that is running or that
     // begins next, and no later one.
-    let state = CleanerState::new(eager());
+    let state = CleanerState::new(CleanerConfig {
+        idle: hour,
+        ..eager()
+    });
+    // Whether a sleep of an hour ends by itself within a minute. A
+    // sleeper whose wait goes on is let go.
+    let ends = |failed_wait: Option<Duration>| {
+        std::thread::scope(|scope| {
+            let sleeper = scope.spawn(|| state.sleep(failed_wait));
+            let began = Instant::now();
+            while !sleeper.is_finished() && began.elapsed() < Duration::from_secs(60) {
+                std::thread::yield_now();
+            }
+            let ended = sleeper.is_finished();
+            state.stopping.store(true, Ordering::Release);
+            state.wake();
+            sleeper.join().expect("the sleeper");
+            state.stopping.store(false, Ordering::Release);
+            ended
+        })
+    };
     state.room_made();
-    let began = Instant::now();
-    state.sleep(Some(hour));
-    assert!(
-        began.elapsed() < Duration::from_secs(60),
-        "the wait went on"
-    );
+    assert!(ends(Some(hour)), "the wait went on");
     let wait = Duration::from_millis(60);
+    let began = Instant::now();
+    state.sleep(Some(wait));
+    assert!(began.elapsed() >= wait, "{:?}", began.elapsed());
+    // The sleep after a turn in which no pass failed ends for the call
+    // as well, and uses it up.
+    state.room_made();
+    assert!(ends(None), "the idle sleep went on");
     let began = Instant::now();
     state.sleep(Some(wait));
     assert!(began.elapsed() >= wait, "{:?}", began.elapsed());
