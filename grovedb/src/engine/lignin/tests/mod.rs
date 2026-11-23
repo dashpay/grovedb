@@ -19,6 +19,7 @@
 mod append_only;
 mod axes;
 mod batches;
+mod both_kinds;
 mod cases;
 mod checkpoint;
 mod deletes;
