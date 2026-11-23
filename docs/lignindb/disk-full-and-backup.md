@@ -515,6 +515,12 @@ made there stays as it is.
   log it puts a step off and returns no error: the session is told of
   none then, and the reserve is released where a later turn or call is
   refused for room.
+  An operation of a write transaction that the device refuses is
+  answered to its caller by the transaction, and the session is not
+  given its error: so the append of a value of a load, which is made
+  before the commit (`transactions.md`, LD2). The reserve is released
+  where the commit of that transaction, or another call or turn, is
+  refused for room.
   A file that the file layer does not let the release remove stays, and
   the other one goes all the same. `DbStats::reserve` keeps what the
   last such removal said, and the next refusal for room tries again.
