@@ -378,6 +378,39 @@ where the batch is laid out").
   node is refused the same way, *T* serves its records by key, and its
   commit is refused with that refusal, a conflict to the caller (CF6).
 
+**A subtree whose entry an enter if absent made is held to its host at
+the commit.** A writer that enters a subtree if it is absent
+(`EnterIfAbsent`) under an element names that element as the host. Where
+*T*'s writes are laid out for its commit, each subtree whose entry such
+an enter of *T* made, and that is entered there under an element, is
+held to the node of that element: the Merk of the host is searched for
+the host's key, from its root, and where the search finds no node the
+commit is refused (`HostAbsent`) and *T* is as it was. It commits once a
+node is found there. A subtree that a move of *T* took to another prefix
+since the enter is held to the host it has there, and the refusal names
+it by that prefix.
+
+The search is left out where *T*'s newest write under the host's key is
+a node which *T*'s pages did not keep as an unlinked record (ST1). So a
+host is not found out where the tree of its Merk does not reach its cell
+and *T*'s pages keep no unlinked record for it. There are two such
+cells: one that a change set of *T* stops linking and neither writes nor
+removes, and one that a change set writes under a root that is kept
+while its parent stops linking it (`MerkWrite`, "Only written nodes are
+looked at").
+
+The refusal says what the layout holds, and not how it came to hold it.
+It is told as a conflict (CF6) for the writer that reads the element
+before it enters the subtree, as GroveDB's engine does: that writer gets
+it where a foreign commit removed the element since, found nothing
+entered under it in the committed state, and met no write of *T* (CF2).
+Where such a commit met a write of *T*, which is one that *T* first made
+before it, the commit of *T* fails with `Conflict` and *T* is ended:
+this refusal is not told. A writer that enters a subtree under a key
+which never held a node gets this refusal as well, at every commit. The node is not asked for where
+the batch is taken: a writer can enter a subtree with one batch and put
+the node of its host with a later one.
+
 While *T* serves its records by key (WT7b), there are no frames to hold
 these writes against. A drop under a node is taken as a drop, and is
 held to its node where its batch is laid out later. A drop if entered
@@ -402,6 +435,24 @@ propagate to the root (14.2), as row D5 of 14.5 does. A clear has to read
 every node for what it is charged on these versions either way; a later
 GroveVersion that charges a clear by a rule of its own can take the range
 delete (GROVE-13).
+
+**A subtree that *T* cleared is held to the cell of its host at the
+commit.** A clear keeps the host (`tree-layout.md` D4) and does not write
+the cell of the host: a pointer that the cell has for the cleared Merk
+stays until a write of the host's node says what the node hosts
+(`Hosted::Set`), with the cleared Merk or without it. The clear alone is
+taken. Where *T*'s writes are laid out for its commit, a subtree that
+*T* cleared and that is entered there with no node under an element,
+under the prefix it has there where a move of *T* took it since, is held
+to that element: where the cell of the element has a pointer at the
+subtree's position, or the Merk of the host has no node under the
+element's key, the commit is refused (`ClearedAlone`) and *T* is as it
+was. Only what the layout holds is asked, and not which write left it
+so: a subtree whose host's cell has no pointer for it commits with no
+write of the host. Where `HostAbsent` applies to the subtree as well,
+that is the refusal. Nothing is asked for a subtree that no element
+hosts, and for one that *T* gave a node again: its pointer is its
+writers' to state. No operation of GroveDB states this clear.
 
 ## 4. What each handle reads
 
@@ -1878,7 +1929,7 @@ else.** GROVE-01 maps it to the engine-neutral conflict error of SEAM-04, the
 one RocksDB's `Busy` also satisfies. A commit that fails for another reason
 must not return it, and a conflict must not be reported as anything else.
 
-Five refusals are conflicts too, and say so. `ValueTaken` is the refusal of
+Six refusals are conflicts too, and say so. `ValueTaken` is the refusal of
 a write: the keep of a value that a foreign commit took away since its read
 (CF2a), what CF10 tells in the same way for a move and for a write
 into a subtree that a foreign commit took, and a drop under a node that a
@@ -1896,7 +1947,9 @@ its subtree, because a foreign commit entered the subtree under the
 node the drop names, and of *T*'s commit over that commit (CV9a). It
 is also the refusal of a batch that says a subtree is not entered under
 a node where it is, of a later layout that finds it so, and of *T*'s
-commit then (CV9a).
+commit then (CV9a). `HostAbsent` is the refusal of *T*'s commit where the
+layout for it has a subtree, whose entry an enter if absent of *T* made,
+under a host that the search of CV9a does not find.
 None is `Conflict`: each is the answer to a read or a write, or the
 refusal of a commit that leaves the transaction as it was, and it leaves
 the transaction open with what it wrote before (WT10). A caller that takes it as a conflict rolls the
@@ -1930,6 +1983,7 @@ together with the differences that are not about conflicts.
 | A foreign commit writes the node that hosts a subtree between *T*'s read of that node and *T*'s move of the subtree | success: the copy under the new path holds the records *T* read, under the hash *T* states for them, and what the foreign commit wrote under the old path is deleted with it | the batch is refused as a conflict (`ValueTaken`, CF10) | only with two writers of one Merk at a time |
 | A foreign commit writes the node that hosts a subtree between *T*'s read of that node and a batch of *T* that drops the subtree under that node and names the read (CV9a): the subtree that makes room where *T* moves another | success: the element of the moved tree is put over the node, and the records that the foreign commit left under the prefix stay there, under the copy | the batch is refused as a conflict (`ValueTaken`, CV9a) | only with two writers of one Merk at a time |
 | A foreign commit enters a subtree under a node that a batch of *T* removed with nothing under it, after that batch was taken and with no key in common with *T* | success: the subtree's records stay under a prefix that no element leads to | *T*'s writes are not laid out over that commit, and its commit is refused as a conflict (`EnteredSince`, CV9a) | only with two writers at a time, and a first write into the subtree that writes no node above it: a record that is put through the path of a tree, which no operation of GroveDB in an existing version does |
+| A foreign commit removes the node that hosts a subtree which *T* entered if it was absent, where nothing is entered under the node in the committed state, *T* put no node under its key, and the two wrote no key in common | success: the subtree's records stay under a prefix that no element leads to | *T*'s commit is refused as a conflict (`HostAbsent`, CV9a), and *T* stays open | only with two writers at a time, and a first write into the subtree that writes no node above it: a record that is put through the path of a tree, which no operation of GroveDB in an existing version does |
 | A foreign commit moves a subtree away or drops it, so that nothing is entered under its prefix, and *T* then writes into it by a call that lays the writes of *T* out over the latest version (WT7a) | success: *T*'s records are under the old prefix, which no element leads to | the batch is refused: as a conflict (`ValueTaken`) where *T* holds the key set of a commit that names the subtree as one it moved or dropped, and as `NotEntered` where it holds none (CF10) | only with two writers at a time |
 | A foreign commit meets a write of *T*, and *T* then states a move, reads or writes where a move of its own decides, or drops or clears a subtree while it holds a move | the call is served, and the commit fails with `Busy` | the call is refused as a conflict (`MovedByKey`, MV7), and the commit fails with `Conflict` | only with two writers at a time |
 | A foreign commit meets a write of *T*, and *T* then applies a batch that is given the tree types which keep flat entries and that is refused by key as a batch that is given none is: with `NotFlat` or `NotMerk`, by what *T* wrote and what the committed state holds (ST1) | the call is served, and the commit is decided by RocksDB's own check of the writes of *T* (A4, A9, A10) | the call is refused as a conflict (`BothByKey`, ST1), and the commit fails with `Conflict` while the met write is among the writes of *T*. A batch that is not refused so goes on to the other checks of a batch that is taken by key | only with two writers at a time. Where GroveDB writes both kinds into one subtree: `engine.md`, "What differs on grove versions 1 to 3 under a tree that keeps flat records" |
@@ -3316,7 +3370,14 @@ same result.
   and so is the commit; the transaction serves its records by key from
   then on. A subtree that a batch states as not under a node refuses the
   batch where it is under it, laid out and by key, and a later layout
-  over a commit that entered it there. A
+  over a commit that entered it there. A subtree that a transaction
+  entered if it was absent, under a node which a commit removed since
+  with no write of the transaction met, refuses the transaction's commit
+  as a conflict, whether the batch was taken before that commit or after
+  it; so does one under a key that the transaction left as an unlinked
+  record, and one under a key that holds no node where a move of the
+  transaction took it to another prefix; and the node is asked for at
+  the commit alone. A
   drop under a node is refused where the subtree hangs elsewhere or
   nowhere, and is dated at the read it names. Removals if entered are
   entries of the write set where the subtree is not entered, are a

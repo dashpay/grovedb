@@ -918,6 +918,8 @@ fn every_error_says_what_it_is() {
         BatchError::LoadBeside { subtree },
         BatchError::HungOtherwise { subtree },
         BatchError::EnteredSince { subtree },
+        BatchError::HostAbsent { subtree },
+        BatchError::ClearedAlone { subtree },
         BatchError::IfEntered { subtree },
     ];
     let faults = [

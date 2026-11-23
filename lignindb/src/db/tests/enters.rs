@@ -463,7 +463,10 @@ fn a_drop_above_an_enter_that_was_rolled_back_meets_nothing() {
 /// A delete of every flat record of a subtree's data column is no clear
 /// of a Merk, and takes no subtree with it: a commit that makes one in
 /// the subtree which hosts a first writer's subtree meets no write of
-/// that writer.
+/// that writer. The writer's commit is refused all the same, and left
+/// open: a key of a flat keyspace is no node, so its subtree would hang
+/// under none (`BatchError::HostAbsent`). A met write would have ended
+/// it as a conflict before that was asked (CF6).
 #[test]
 fn a_delete_of_every_flat_record_above_a_first_writer_is_no_conflict() {
     const FLAT: u8 = 4;
@@ -496,22 +499,28 @@ fn a_delete_of_every_flat_record_above_a_first_writer_is_no_conflict() {
         ..Writes::default()
     };
     again.commit(&db);
-    published(db.commit(&txn, &mut NoStaleHashes));
+    assert_eq!(txn.stats().overlapped, 0);
+    for _ in 0..2 {
+        let refused = (db.commit(&txn, &mut NoStaleHashes)).expect_err("its host is no node");
+        assert!(refused.is_conflict(), "{refused}");
+        let child = subtree(CHILD);
+        assert!(
+            matches!(
+                &refused,
+                WriteError::Commit(CommitError::Refused(TxnError::Batch(
+                    BatchError::HostAbsent { subtree }
+                ))) if *subtree == child
+            ),
+            "{refused:?}"
+        );
+    }
+    txn.rollback().expect("no scope is open");
     let snapshot = db.snapshot();
     let operation = snapshot.operation();
-    let found = seen(&operation, subtree(CHILD), b"x");
-    assert_eq!(found, Some((0, vec![(Column::Aux, b"x".to_vec())])));
+    assert_eq!(seen(&operation, subtree(CHILD), b"x"), None);
     drop(operation);
     drop(snapshot);
-    // A subtree under a key of a flat keyspace hangs under no node, which
-    // the physical checker reports for as long as the subtree is there:
-    // it is dropped before the store is checked.
-    let dropped = Writes {
-        drop: vec![subtree(CHILD)],
-        ..Writes::default()
-    };
-    dropped.commit(&db);
-    sound(&db, "a subtree that hung under a flat keyspace");
+    sound(&db, "a subtree that would hang under a flat keyspace");
 }
 
 /// A scope's claim on a record is on the subtree as it hangs when the

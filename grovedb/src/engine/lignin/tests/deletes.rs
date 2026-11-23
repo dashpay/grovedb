@@ -3136,3 +3136,91 @@ fn a_subtree_that_another_commit_enters_after_its_delete_was_applied_refuses_the
         assert_eq!(left.as_deref(), Some(b"v".as_slice()));
     }
 }
+
+/// The other order of the two writers of
+/// `a_subtree_that_another_commit_enters_after_the_look_of_its_delete_leaves_with_its_element`.
+/// A writer puts a record through a handle of a tree's path: its group
+/// enters the tree's subtree if it is absent, under the tree's node, and
+/// puts no node. Another writer deletes the tree, finds nothing entered
+/// under the node and commits first: after the look of the first
+/// writer's group and before its application, or after the group was
+/// applied. The two wrote no key in common. The commit of the first is
+/// refused as a conflict (`lignindb::txn::BatchError::HostAbsent`): its
+/// subtree would hang under a node that is none. Nothing of it is
+/// written, and the same write made again is refused by the look, as a
+/// first write under a key that holds no element. RocksDB commits both
+/// and keeps the record (`engine.md`, "Subtrees are entered by the first
+/// batch that writes into them").
+#[test]
+fn the_commit_of_a_record_put_into_a_tree_that_another_commit_deleted_is_a_conflict() {
+    use std::sync::Arc;
+
+    use grovedb_storage::{prefix::build_prefix, FlatStore};
+
+    use super::super::AFTER_A_LOOK;
+
+    let cases = GROVE_VERSIONS.iter().flat_map(|v| [(v, false), (v, true)]);
+    for (number, (v, applied_first)) in cases.enumerate() {
+        let dir = tempfile::tempdir().expect("a directory");
+        {
+            let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database is made"));
+            for key in [b"kept", b"tree"] {
+                (db.insert(ROOT, key, Element::empty_tree(), None, None, v)
+                    .unwrap())
+                .expect("a tree");
+            }
+            let tree: &[&[u8]] = &[b"tree"];
+            let delete: Box<dyn FnOnce()> = {
+                let db = db.clone();
+                Box::new(move || {
+                    (db.delete(ROOT, b"tree", None, None, v).unwrap())
+                        .expect("the delete of a tree that holds nothing");
+                })
+            };
+            let engine = db.engine();
+            let tx = engine.start_transaction();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let handle = engine.subtree(tree.into(), Some(&batch), &tx).unwrap();
+            (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+            drop(handle);
+            if applied_first {
+                (engine.apply_batch(batch, &tx).unwrap()).expect("a batch");
+                delete();
+            } else {
+                AFTER_A_LOOK.set([super::apart(delete)].into_iter().collect());
+                let applied = engine.apply_batch(batch, &tx).unwrap();
+                assert!(AFTER_A_LOOK.take().is_empty(), "the group looked");
+                applied.expect("the node of the host is asked for at the commit");
+            }
+            let refused = engine.commit_transaction(tx).unwrap();
+            let refused = refused.expect_err("the tree's node is none");
+            assert!(refused.is_commit_conflict(), "case {number}: {refused}");
+
+            let gone = db.get(ROOT, b"tree", None, v).unwrap();
+            assert!(matches!(gone, Err(Error::PathKeyNotFound(_))), "{gone:?}");
+            let own = build_prefix(tree.into()).value;
+            {
+                let read = engine.start_read_transaction();
+                let handle = engine.subtree_by_prefix(own, None, &read).unwrap();
+                let entry = handle.entry().expect("the directory answers");
+                assert!(entry.is_none(), "case {number}: {entry:?}");
+                let record = handle.aux().get(b"k").unwrap().expect("a read");
+                assert_eq!(record, None, "case {number}");
+            }
+
+            // The write made again finds no element at its look.
+            let tx = engine.start_transaction();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let handle = engine.subtree(tree.into(), Some(&batch), &tx).unwrap();
+            (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+            drop(handle);
+            let again = engine.apply_batch(batch, &tx).unwrap();
+            let again = again.expect_err("a first write under a key that holds no element");
+            assert!(!again.is_commit_conflict(), "case {number}: {again}");
+            drop(tx);
+            (db.get(ROOT, b"kept", None, v).unwrap()).expect("the tree beside it");
+            db.flush().expect("a flush");
+        }
+        check(dir.path(), v);
+    }
+}

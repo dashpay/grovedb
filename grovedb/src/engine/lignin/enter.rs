@@ -170,6 +170,14 @@
 //! (`engine.md`, "Subtrees are entered by the first batch that writes
 //! into them").
 //!
+//! The host that such an enter names is the element that the look
+//! found, or that a batch of the group puts. A commit of another
+//! transaction that removes the element finds nothing entered under it
+//! where the committed state has nothing entered there, and need not
+//! meet a write of the group. The transaction holds the subtree to the
+//! node at its commit, and refuses the commit as a conflict where a
+//! search of the host's Merk finds none (`BatchError::HostAbsent`).
+//!
 //! **The look can be stale when the group is applied.** The look is
 //! several reads of the transaction and the application an operation
 //! after them, and a commit of another transaction can be published

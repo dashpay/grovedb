@@ -2,7 +2,9 @@
 //! ([`SubtreeWrite::DropUnder`], [`SubtreeWrite::DropIfEntered`],
 //! [`SubtreeWrite::RemoveIfEntered`]): a commit beside the transaction
 //! can be published between the writer's look at the directory and the
-//! operation that takes its batch.
+//! operation that takes its batch. And the node that a writer found for
+//! a subtree it enters if it is absent, judged at the transaction's
+//! commit ([`BatchError::HostAbsent`]).
 
 use lignin_tree::node::NodeHandle;
 
@@ -917,4 +919,187 @@ fn a_batch_states_nothing_else_of_a_subtree_that_it_writes_if_it_is_entered() {
     assert_eq!(refusal(apply(&twice)), BatchError::SubtreeTwice { subtree });
     scope.rollback();
     world.check(&tx);
+}
+
+/// A subtree under the node `host` of `OUTER`, entered if it is absent,
+/// with one record of its own and no node: a first write into a tree
+/// that writes no node above it.
+fn entering_if_absent() -> OwnedBatch {
+    let host = (model::subtree(OUTER), b"host".to_vec(), 0);
+    OwnedBatch {
+        subtrees: vec![OwnedSubtree::EnterIfAbsent(
+            model::subtree(INNER),
+            Some(host),
+        )],
+        records: vec![put(aux(INNER), b"k", b"v")],
+        ..OwnedBatch::default()
+    }
+}
+
+/// A store with `OUTER`, which has the nodes `left` and, with `hosting`,
+/// `host`, and hosts nothing.
+fn with_outer<'s>(db: &'s Db, versions: &'s Versions, hosting: bool) -> World<'s> {
+    let mut world = World::new(db, versions);
+    let tx = world.begin();
+    let outer = world.merk(&tx, OUTER, |items| {
+        if hosting {
+            items.insert(b"host".to_vec(), b"tree".to_vec());
+        }
+        items.insert(b"left".to_vec(), vec![1; 40]);
+    });
+    let batch = OwnedBatch {
+        merks: vec![outer],
+        subtrees: vec![enter(OUTER)],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the Merk is made");
+    assert!(committed(world.commit(tx, &[])));
+    world
+}
+
+/// A transaction enters a subtree if it is absent, under a node that its
+/// writer found, and writes a record there and no node. A commit beside
+/// it removes that node and drops the subtree if it is entered under it,
+/// which takes nothing: neither wrote a key of the other. The commit of
+/// the first is refused as a conflict, in both orders of its batch and
+/// the other's commit, and leaves it as it was: the subtree would hang
+/// under a node that is none. Once the node is there again it commits.
+#[test]
+fn a_subtree_entered_if_absent_under_a_node_that_a_commit_removed_is_a_conflict() {
+    for first in [false, true] {
+        let (db, versions) = Db::new(128);
+        let mut world = with_outer(&db, &versions, true);
+        let entering = entering_if_absent();
+
+        let enterer = world.begin();
+        if first {
+            (world.apply(&enterer, &entering)).expect("the subtree is entered under the node");
+        }
+        let remover = world.begin();
+        let batch = with_its_node(&world, &remover, drop_if(INNER, OUTER, b"host", true));
+        (world.apply(&remover, &batch)).expect("nothing hangs under the node");
+        let others: Vec<&Tx<'_>> = match first {
+            true => vec![&enterer],
+            false => Vec::new(),
+        };
+        assert!(committed(world.commit(remover, &others)));
+        if !first {
+            // The node is asked for at the commit, and not where the
+            // batch is taken.
+            (world.apply(&enterer, &entering)).expect("the subtree is entered");
+        }
+
+        // No write of the enterer was met, and its writes are laid out.
+        assert_eq!(enterer.txn.stats().overlapped, 0, "{first}");
+        assert!(enterer.txn.stats().base.is_some(), "it has frames");
+        world.check(&enterer);
+        let subtree = model::subtree(INNER);
+        for _ in 0..2 {
+            let refused = world.db.commit(world.versions, &enterer.txn);
+            assert!(matches!(&refused, Err(error) if error.is_conflict()));
+            assert_eq!(
+                refusal(refused.map(|_| Applied::default())),
+                BatchError::HostAbsent { subtree },
+                "{first}"
+            );
+            // The transaction is as it was.
+            assert!(shown(&enterer, INNER).is_some(), "{first}");
+            world.check(&enterer);
+        }
+
+        // The node is there again: the subtree hangs under it.
+        let back = world.edit_outside(
+            OUTER,
+            |items| drop(items.insert(b"host".to_vec(), b"tree".to_vec())),
+            &[&enterer],
+        );
+        assert!(committed(back));
+        world.check(&enterer);
+        assert!(committed(world.commit(enterer, &[])));
+        world.check_committed();
+    }
+}
+
+/// The node of a subtree's host is asked for at the commit: a
+/// transaction that enters the subtree if it is absent with one batch
+/// and puts the node with a later one commits, and one that never puts
+/// the node is refused.
+#[test]
+fn the_host_of_a_subtree_entered_if_absent_is_asked_for_at_the_commit() {
+    for puts in [true, false] {
+        let (db, versions) = Db::new(128);
+        let mut world = with_outer(&db, &versions, false);
+        let tx = world.begin();
+        (world.apply(&tx, &entering_if_absent())).expect("the subtree is entered");
+        world.check(&tx);
+        if puts {
+            world.edit(&tx, OUTER, |items| {
+                items.insert(b"host".to_vec(), b"tree".to_vec());
+            });
+            world.check(&tx);
+            // The node is the transaction's own, in the tree: the commit
+            // does not search for it.
+            let searched = db.stats.keyed_lookups();
+            assert!(committed(world.commit(tx, &[])));
+            assert_eq!(db.stats.keyed_lookups(), searched);
+            world.check_committed();
+            continue;
+        }
+        let searched = db.stats.keyed_lookups();
+        let refused = world.db.commit(world.versions, &tx.txn);
+        assert_eq!(db.stats.keyed_lookups(), searched + 1, "one search");
+        let subtree = model::subtree(INNER);
+        assert_eq!(
+            refusal(refused.map(|_| Applied::default())),
+            BatchError::HostAbsent { subtree }
+        );
+        // A rollback ends it, with nothing written.
+        tx.txn.rollback().expect("no scope is open");
+        tx.forget();
+        world.check_committed();
+    }
+}
+
+/// The node of a host is one that the tree of its Merk reaches. A
+/// transaction that wrote the key of the host itself, as a node that no
+/// link of the tree leads to, holds an unlinked record under the key and
+/// no node: its commit is refused as it is where it wrote nothing there.
+#[test]
+fn a_host_that_its_transaction_left_as_an_unlinked_record_is_no_node() {
+    let (db, versions) = Db::new(128);
+    let world = with_outer(&db, &versions, false);
+    let tx = world.begin();
+    let unit = Unit::data(model::subtree(OUTER));
+    let view = tx.model.borrow().view(&world.model.records, unit);
+    let Some(Val::Node(left)) = view.get(&b"left"[..]) else {
+        panic!("the node of the Merk");
+    };
+    // A node under the key of the host that the kept root does not
+    // reach.
+    let loose = model::NodeRec {
+        value: b"tree".to_vec(),
+        left: None,
+        right: None,
+        ..left.clone()
+    };
+    let mut outer = world.merk(&tx, OUTER, |_| {});
+    outer.nodes.push((b"host".to_vec(), loose, true));
+    let unlinked = OwnedBatch {
+        merks: vec![outer],
+        ..OwnedBatch::default()
+    };
+    let applied = world
+        .apply(&tx, &unlinked)
+        .expect("a node that the tree does not reach");
+    assert_eq!(applied.unlinked, [0]);
+    (world.apply(&tx, &entering_if_absent())).expect("the subtree is entered");
+    let refused = world.db.commit(world.versions, &tx.txn);
+    let subtree = model::subtree(INNER);
+    assert_eq!(
+        refusal(refused.map(|_| Applied::default())),
+        BatchError::HostAbsent { subtree }
+    );
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    world.check_committed();
 }

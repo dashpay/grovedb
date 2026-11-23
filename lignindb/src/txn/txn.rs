@@ -3255,6 +3255,7 @@ impl<'s> WriteTxn<'s> {
         // The values of its loads are covered before the frames are taken:
         // a refusal leaves the transaction as it was.
         self.cover(state)?;
+        self.hosts_stand(state, &op)?;
         let Some(frames) = state.frames.take() else {
             if state.set.met() > 0 {
                 // A commit was published since: the caller does not hold
@@ -3312,6 +3313,55 @@ impl<'s> WriteTxn<'s> {
             keys,
             loaded,
         })))
+    }
+
+    /// Holds two kinds of subtree to their hosts where the transaction's
+    /// writes are laid out for its commit, and refuses the commit, with
+    /// the transaction as it was, where one does not stand. Which
+    /// subtrees they are is kept by the frames, where the batches are
+    /// applied: it goes with a subtree to the prefix that a move of the
+    /// transaction takes it to, and a refusal names the subtree by the
+    /// prefix it has at the commit.
+    ///
+    /// - A subtree whose entry an enter if absent under an element made
+    ///   ([`BatchError::HostAbsent`]): the Merk of its host is searched
+    ///   for the host's key, and the commit is refused where no node is
+    ///   found. The search is left out where the transaction's newest
+    ///   write under that key is a node which its frames did not keep as
+    ///   an unlinked record. A cell that the tree does not reach, and
+    ///   that the frames keep no unlinked record for, is not found out
+    ///   so (`MerkWrite`, "Only written nodes are looked at").
+    /// - A subtree that the transaction cleared
+    ///   ([`BatchError::ClearedAlone`]): where it is entered with no node
+    ///   under an element, the commit is refused where the cell of the
+    ///   element has a pointer at its position, or the Merk of the host
+    ///   has no node under the element's key.
+    ///
+    /// The first is asked first. Both are asked at the commit and not
+    /// where a batch is taken: a writer can enter a subtree, or clear
+    /// one, with one batch and write the node of its host with a later
+    /// one. With no frames nothing is asked: the commit is then refused
+    /// for what stopped the layout.
+    fn hosts_stand(&self, state: &mut State<'s>, op: &Op<'s>) -> Result<(), TxnError> {
+        let State { frames, set, .. } = state;
+        if !frames
+            .as_ref()
+            .is_some_and(|frames| frames.holds_to_hosts())
+        {
+            return Ok(());
+        }
+        let Some(mut frames) = Woken::wake(frames, &op.guard) else {
+            return Ok(());
+        };
+        let wrote =
+            |above: &Subtree, key: &[u8]| matches!(set.own(Unit::data(*above), key), Own::Node(_));
+        if let Some(subtree) = frames.unhosted(wrote)? {
+            return Err(BatchError::HostAbsent { subtree }.into());
+        }
+        match frames.pointed_at()? {
+            Some(subtree) => Err(BatchError::ClearedAlone { subtree }.into()),
+            None => Ok(()),
+        }
     }
 
     /// Makes a transaction that holds a load ready for its commit, before

@@ -273,6 +273,17 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// until then. The keys of a Merk that is moved go with it to its
     /// new prefix.
     own: HashSet<Vec<u8>>,
+    /// What the commit holds to its host: the subtrees whose entries an
+    /// enter if absent under an element made in these frames
+    /// ([`Self::unhosted`]), and those that a clear applied to them
+    /// cleared ([`Self::pointed_at`]), each until a batch drops the
+    /// subtree or makes its entry anew. A subtree that went with one
+    /// above it stays here, and is passed while it is not entered. What
+    /// is kept of a Merk that a move takes goes with it to its new
+    /// prefix. The two are of these pages, so they are made again with
+    /// them.
+    if_absent: HashSet<Subtree>,
+    cleared: HashSet<Subtree>,
     /// The subtrees that left with the moves of the batch that was applied
     /// last.
     left: Vec<Subtree>,
@@ -765,6 +776,12 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
         self.base
     }
 
+    /// Whether the frames keep a subtree that the commit holds to its
+    /// host ([`Awake::unhosted`], [`Awake::pointed_at`]).
+    pub(crate) fn holds_to_hosts(&self) -> bool {
+        !self.if_absent.is_empty() || !self.cleared.is_empty()
+    }
+
     /// The same frames, with all they hold, bound to `guard`.
     fn under<'q, H>(self, guard: &'q H) -> Frames<'s, 'q, H>
     where
@@ -789,6 +806,8 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             empty: self.empty,
             unlinked: self.unlinked,
             own: self.own,
+            if_absent: self.if_absent,
+            cleared: self.cleared,
             left: self.left,
             renewed: self.renewed,
             stored: self.stored,
@@ -832,6 +851,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             empty: Vec::new(),
             unlinked: HashMap::new(),
             own: HashSet::new(),
+            if_absent: HashSet::new(),
+            cleared: HashSet::new(),
             left: Vec::new(),
             renewed: HashMap::new(),
             stored: Vec::new(),
@@ -898,6 +919,80 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// the transaction dropped or cleared.
     pub(crate) fn entry(&self, subtree: &Subtree) -> Result<Option<Entry>, TxnError> {
         Ok(self.directory.open(&*self.flat, subtree.as_bytes())?)
+    }
+
+    /// The first, in the order of their prefixes, of the subtrees whose
+    /// entries an enter if absent under an element made in these frames
+    /// that is entered under a node which a search of its host's Merk
+    /// for the host's key, from the root, does not find. A record that
+    /// the tree of that Merk does not reach is not found.
+    ///
+    /// `wrote` says whether the newest write of the transaction under a
+    /// key of the data column of a subtree is a node. The search is left
+    /// out for a host of which it says so, unless these frames kept that
+    /// node as an unlinked record. A cell that the tree does not reach,
+    /// and that these frames keep no unlinked record for, is not told
+    /// from one in the tree so.
+    pub(crate) fn unhosted(
+        &mut self,
+        wrote: impl Fn(&Subtree, &[u8]) -> bool,
+    ) -> Result<Option<Subtree>, TxnError> {
+        let mut subtrees: Vec<Subtree> = self.if_absent.iter().copied().collect();
+        subtrees.sort_unstable();
+        for subtree in subtrees {
+            let Some(entry) = self.entry(&subtree)? else {
+                continue;
+            };
+            let Some(host) = entry.host() else {
+                continue;
+            };
+            let above = Subtree::new(*host.parent);
+            stored_key(&mut self.key, &above, host.key);
+            if wrote(&above, host.key) && !self.own.contains(&self.key) {
+                continue;
+            }
+            let root = self.root(&above)?;
+            if find(&mut self.tree, root, host.key)?.is_none() {
+                return Ok(Some(subtree));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The first, in the order of their prefixes, of the subtrees that a
+    /// clear applied to these frames cleared that is entered with no
+    /// node, under an element whose cell still has a pointer at the
+    /// subtree's position, or under a node that is none. One keyed search
+    /// of the host's Merk and a read of the host's cell are made for
+    /// each that is entered so. A subtree that has a node is passed: its
+    /// pointer is its writers' to state.
+    pub(crate) fn pointed_at(&mut self) -> Result<Option<Subtree>, TxnError> {
+        let mut subtrees: Vec<Subtree> = self.cleared.iter().copied().collect();
+        subtrees.sort_unstable();
+        for subtree in subtrees {
+            let Some(entry) = self.entry(&subtree)? else {
+                continue;
+            };
+            if entry.root().is_some() {
+                continue;
+            }
+            let Some(host) = entry.host() else {
+                continue;
+            };
+            let root = self.root(&Subtree::new(*host.parent))?;
+            let Some(at) = find(&mut self.tree, root, host.key)? else {
+                return Ok(Some(subtree));
+            };
+            let position = usize::from(host.position);
+            let pointer = self.tree.page(at.page(), |page| {
+                let node = page.node(at.slot())?;
+                Some(node.hosted_roots().nth(position).flatten())
+            })?;
+            if pointer.ok_or(NodeError::NoNode { address: at })?.is_some() {
+                return Ok(Some(subtree));
+            }
+        }
+        Ok(None)
     }
 
     /// What `batch` comes to where it is laid out on these frames, with
@@ -1631,6 +1726,18 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             self.noded.remove(&prefix);
             self.recorded.remove(&prefix);
         }
+        // What the commit holds to its host. The drops and the clears of
+        // a batch come before its moves, and its enters after them.
+        for write in batch.subtrees {
+            match write {
+                SubtreeWrite::Drop { subtree } => {
+                    self.if_absent.remove(subtree);
+                    self.cleared.remove(subtree);
+                }
+                SubtreeWrite::Clear { subtree } => drop(self.cleared.insert(*subtree)),
+                _ => {}
+            }
+        }
         // A Merk that is moved has its flat records under its new prefix,
         // the unlinked ones among them: what is known of whether it holds
         // any goes there with it, and so do the keys of the records that
@@ -1656,7 +1763,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             }
             // And so does what is known of what the transaction wrote
             // into it, of either kind.
-            for written in [&mut self.noded, &mut self.recorded] {
+            let hosted = [&mut self.if_absent, &mut self.cleared];
+            for written in [&mut self.noded, &mut self.recorded]
+                .into_iter()
+                .chain(hosted)
+            {
                 let taken: Vec<(Subtree, bool)> = (moved.iter())
                     .map(|(from, to)| (*to, written.remove(from)))
                     .collect();
@@ -1687,6 +1798,18 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 (!gone.contains(prefix)).then_some(key)
             });
             self.own = rekeyed.collect();
+        }
+        // An entry that the batch made is no cleared one, and is held
+        // to its host where an enter if absent under an element made it.
+        for enter in batch.subtrees.iter().filter_map(SubtreeWrite::entering) {
+            if !view.entering.contains(&enter.subtree) {
+                continue;
+            }
+            self.cleared.remove(&enter.subtree);
+            match enter.if_absent && enter.host.is_some() {
+                true => drop(self.if_absent.insert(enter.subtree)),
+                false => drop(self.if_absent.remove(&enter.subtree)),
+            }
         }
         for subtree in unlinked.holding {
             self.unlinked.insert(subtree, true);

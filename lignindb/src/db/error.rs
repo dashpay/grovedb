@@ -485,15 +485,19 @@ impl WriteError {
     /// or the engine cannot tell whether one did ([`crate::txn`], "A kept
     /// value and the read it is of").
     ///
-    /// It is true as well for a refusal that says commits outside are its
-    /// cause ([`BatchError::is_conflict`](crate::txn::BatchError::is_conflict)):
+    /// It is true as well for a refusal that a caller answers as it
+    /// answers a conflict
+    /// ([`BatchError::is_conflict`](crate::txn::BatchError::is_conflict)):
     /// the refusal of a write, as the one that says commits outside took
     /// away a node whose value the write keeps
     /// ([`BatchError::ValueTaken`](crate::txn::BatchError::ValueTaken)),
-    /// and the refusal of a commit whose writes are not laid out over a
-    /// commit outside
+    /// and the refusal of a commit, which leaves the transaction open:
+    /// of one whose writes are not laid out over a commit outside
     /// ([`BatchError::EnteredSince`](crate::txn::BatchError::EnteredSince)),
-    /// which leaves the transaction open.
+    /// and of one whose layout has a subtree, whose entry an enter if
+    /// absent of the transaction made, under a host that a search does
+    /// not find, whatever left it so
+    /// ([`BatchError::HostAbsent`](crate::txn::BatchError::HostAbsent)).
     /// A scope's write answers that itself, as a
     /// [`TxnError`](crate::txn::TxnError), which says the same of it
     /// ([`TxnError::is_conflict`](crate::txn::TxnError::is_conflict)).
