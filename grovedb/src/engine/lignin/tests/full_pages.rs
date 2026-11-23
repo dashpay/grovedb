@@ -7,9 +7,9 @@
 //! and not the elements that host them. On LigninDB the root of a Merk
 //! stays in its page in a write that does not hold the element
 //! (`tree-layout.md` T3), and the tree pages refuse such a write where
-//! the root's cell grows in a page with no room. So a batch of a group
-//! holds the way to the element (`node-store.md`, "A batch that stops
-//! below an element").
+//! the root's cell grows in a page with no room for it and with nothing
+//! below the root. So a batch of a group holds the element
+//! (`node-store.md`, "A batch that stops below an element").
 //!
 //! A history is a function that returns its calls with their answers,
 //! on either engine. It makes trees whose Merks have one node under one
@@ -34,20 +34,32 @@
 //! batch the cost and the leftover levels that the caller is shown
 //! after the first segment, the cost and the answer of the whole batch,
 //! and the root hash after it.
+//!
+//! A restore names a Merk in its element after it has handed the Merk
+//! over, which grows the element's cell by a pointer in a page that the
+//! bulk loader filled, and the write that names the Merk holds the
+//! element in the same way. [`restored_alike`] restores a tree that
+//! holds many trees between the two engines.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, path::Path};
 
-use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, proofs::Query};
+use grovedb_merk::{
+    element::insert::ElementInsertToStorageExtensions, proofs::Query,
+    store::lignin::hash::MerkHashRules,
+};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
+use lignindb::{Db, Options};
 
 use super::{
     append_only::{check, sound, verified, Answer, History},
     nested::{made_by, number, segments, KINDS},
+    sync::{begin, open, Requests, Side, PARTS},
     LigninEngine,
 };
 use crate::{
     batch::{BatchApplyOptions, QualifiedGroveDbOp},
     engine::Engine,
+    replication::RestoreCommitMode,
     Element, GroveDb, PathQuery, Transaction, TransactionArg,
 };
 
@@ -1059,4 +1071,218 @@ fn a_commit_after_the_partial_batch_meets_the_transaction_as_on_rocksdb() {
             assert!(sound(answers), "{what}");
         },
     );
+}
+
+/// How the trees of a grove that is restored lie under the tree `p`.
+#[derive(Clone, Copy, Debug)]
+enum Lies {
+    /// Each tree holds one item.
+    Under,
+    /// Each tree holds one tree, which holds the item: the element of
+    /// that tree is the root of its Merk.
+    TwoDown,
+}
+
+/// The tree `p` with `trees` trees in it, each with what `lies` says.
+fn many_trees<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, trees: u16, lies: Lies) {
+    let put = |at: &[&[u8]], key: &[u8], element: Element| {
+        (db.insert(at, key, element, None, None, v).unwrap()).expect("an element");
+    };
+    put(&[], b"p", Element::empty_tree());
+    for n in 0..trees {
+        let key = n.to_be_bytes();
+        put(&[b"p"], &key, Element::empty_tree());
+        match lies {
+            Lies::Under => put(&[b"p", &key], b"k", Element::new_item(vec![1; 8])),
+            Lies::TwoDown => {
+                put(&[b"p", &key], b"in", Element::empty_tree());
+                put(&[b"p", &key, b"in"], b"k", Element::new_item(vec![1; 8]));
+            }
+        }
+    }
+}
+
+/// What a restore left: how many requests the session made, the root
+/// hash of the restored grove, how many issues its own check finds, and
+/// the item of its last tree.
+#[derive(Debug, PartialEq)]
+struct Restored {
+    requests: usize,
+    root: [u8; 32],
+    issues: usize,
+    item: Element,
+}
+
+/// Syncs a new database on `T` from `source`, whose trees lie as `lies`
+/// says, and commits the session. `counted` is shown the restored
+/// database before it is closed. With what the restore left, how many
+/// times the session committed before its end, and the directory of the
+/// database, which is closed.
+fn restored<S: Engine, T: Side>(
+    source: &GroveDb<S>,
+    v: &GroveVersion,
+    mode: RestoreCommitMode,
+    (trees, lies): (u16, Lies),
+    counted: impl FnOnce(&GroveDb<T>),
+) -> (Restored, usize, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("a directory");
+    let target = open::<T>(dir.path());
+    let root = source.root_hash(None, v).unwrap().expect("a root hash");
+    let mut session = begin(&target, root, mode, v).expect("a session starts");
+    let mut requests = Requests::new(source, root, v);
+    let mut served = 0;
+    while let Some((request, payload)) = requests.fetch() {
+        let applied = requests.apply(&mut session, &request, &payload);
+        applied.expect("the chunk is taken");
+        served += 1;
+    }
+    assert!(session.is_sync_completed());
+    let commits = session.intermediate_commits();
+    (target.commit_session(session, v)).expect("the session commits");
+    let last = (trees - 1).to_be_bytes();
+    let at: Vec<&[u8]> = match lies {
+        Lies::Under => vec![b"p", &last],
+        Lies::TwoDown => vec![b"p", &last, b"in"],
+    };
+    let issues = target.verify_grovedb(None, true, false, v);
+    let left = Restored {
+        requests: served,
+        root: target.root_hash(None, v).unwrap().expect("a root hash"),
+        issues: issues.expect("the verification ends").len(),
+        item: (target.get(at.as_slice(), b"k", None, v).unwrap()).expect("the item"),
+    };
+    counted(&target);
+    target.flush().expect("a flush");
+    drop(target);
+    (left, commits, dir)
+}
+
+/// The physical checker reads the LigninDB database in `dir`, which
+/// nothing has open, and finds it sound. Returns how many tree pages it
+/// has and how many cells are in them.
+fn census(dir: &Path, v: &GroveVersion) -> (u64, u64) {
+    let db = Db::open(dir, &Options::default()).expect("the database opens again");
+    let mut rules = MerkHashRules::for_check(v);
+    let report = db.close_and_verify(Some(&mut rules)).expect("a close");
+    assert!(report.is_sound(), "{:#?}", report.findings);
+    (report.census.tree_pages, report.census.cells)
+}
+
+/// What the store of a LigninDB database has written to its log since
+/// the database was opened.
+fn written(db: &GroveDb<LigninEngine>) -> String {
+    let store = db.engine().database().stats().store;
+    format!(
+        "{} log bytes in {} groups, {} node records of {} bytes",
+        store.log_bytes, store.log_groups, store.node_records, store.node_record_bytes
+    )
+}
+
+/// A restore of `shape` on the grove version `v` from LigninDB into
+/// LigninDB, which ends on the root hash of its source with no issue
+/// and leaves a store that the physical checker finds sound. With
+/// `both`, also from LigninDB into RocksDB and from RocksDB into
+/// LigninDB: the three are left alike, and the two LigninDB targets
+/// with as many tree pages and cells.
+fn restored_alike(v: &GroveVersion, shape: (u16, Lies), both: bool) {
+    let what = format!("{shape:?}");
+    let once = RestoreCommitMode::default();
+    let source_dir = tempfile::tempdir().expect("a directory");
+    let source = open::<LigninEngine>(source_dir.path());
+    many_trees(&source, v, shape.0, shape.1);
+    let root = source.root_hash(None, v).unwrap().expect("a root hash");
+    let mut log = String::new();
+    let (on_lignin, _, dir) =
+        restored::<_, LigninEngine>(&source, v, once, shape, |db| log = written(db));
+    assert_eq!((on_lignin.root, on_lignin.issues), (root, 0), "{what}");
+    let (pages, cells) = census(dir.path(), v);
+    eprintln!("RESTORED {what}: {log}; {pages} tree pages, {cells} cells");
+    #[cfg(feature = "rocksdb_storage")]
+    if both {
+        type Rocks = crate::RocksDbEngine;
+        let (on_rocksdb, ..) = restored::<_, Rocks>(&source, v, once, shape, |_| ());
+        assert_eq!(on_rocksdb, on_lignin, "{what}, into RocksDB");
+        let other_dir = tempfile::tempdir().expect("a directory");
+        let other = open::<Rocks>(other_dir.path());
+        many_trees(&other, v, shape.0, shape.1);
+        let (from_rocksdb, _, dir) = restored::<_, LigninEngine>(&other, v, once, shape, |_| ());
+        assert_eq!(from_rocksdb, on_lignin, "{what}, from RocksDB");
+        assert_eq!(
+            census(dir.path(), v),
+            (pages, cells),
+            "{what}, from RocksDB"
+        );
+    }
+    let _ = both;
+}
+
+/// A restore of a tree that holds many trees, in the three directions
+/// between the engines: 300, 1,500 and 4,000 trees with one item each,
+/// and 1,500 trees with a tree in each, whose element is the root of
+/// its Merk. Each tree is named in its element after its Merk was
+/// handed over, in pages that the bulk loader filled.
+#[test]
+fn a_restore_names_many_trees_in_pages_with_no_room() {
+    let v = GROVE_VERSIONS.last().expect("a grove version");
+    for shape in [
+        (300, Lies::Under),
+        (1500, Lies::Under),
+        (4000, Lies::Under),
+        (1500, Lies::TwoDown),
+    ] {
+        restored_alike(v, shape, true);
+    }
+}
+
+/// The restore of 1,500 trees under one tree from LigninDB into
+/// LigninDB, on the grove versions before the last.
+#[test]
+fn a_restore_names_many_trees_on_every_grove_version() {
+    let before_the_last = &GROVE_VERSIONS[..GROVE_VERSIONS.len() - 1];
+    for v in before_the_last {
+        restored_alike(v, (1500, Lies::Under), false);
+    }
+}
+
+/// A session that commits in parts, with a budget of one byte and one
+/// subtree in flight, names its trees across its commits: it commits
+/// more than a thousand times before its end, in more requests than a
+/// session that commits once, and leaves what that one leaves, in a
+/// store that is sound and holds as many cells. A session of the same
+/// kind that is dropped after its third commit leaves a database that
+/// says it holds an incomplete restore, in which the physical checker
+/// finds what such a database has and nothing else.
+#[test]
+fn a_restore_that_commits_in_parts_names_many_trees_as_one_that_commits_once() {
+    let v = GROVE_VERSIONS.last().expect("a grove version");
+    let shape = (1500, Lies::Under);
+    let in_parts = PARTS;
+    let source_dir = tempfile::tempdir().expect("a directory");
+    let source = open::<LigninEngine>(source_dir.path());
+    many_trees(&source, v, shape.0, shape.1);
+    let once = RestoreCommitMode::default();
+    let (at_once, none, dir) = restored::<_, LigninEngine>(&source, v, once, shape, |_| ());
+    assert_eq!(none, 0);
+    let whole = census(dir.path(), v);
+    let (parts, commits, dir) = restored::<_, LigninEngine>(&source, v, in_parts, shape, |_| ());
+    assert!(commits > 1000, "{commits} commits");
+    let requests = at_once.requests;
+    assert!(parts.requests > requests, "{} requests", parts.requests);
+    assert_eq!(Restored { requests, ..parts }, at_once);
+    assert_eq!(census(dir.path(), v).1, whole.1, "the cells");
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let target = open::<LigninEngine>(dir.path());
+    let root = source.root_hash(None, v).unwrap().expect("a root hash");
+    let mut session = begin(&target, root, in_parts, v).expect("a session starts");
+    let mut requests = Requests::new(&source, root, v);
+    while session.intermediate_commits() < 3 {
+        let (request, payload) = requests.fetch().expect("a request");
+        let applied = requests.apply(&mut session, &request, &payload);
+        applied.expect("the chunk is taken");
+    }
+    drop(session);
+    assert!(target.has_incomplete_restore().expect("a read of the mark"));
+    drop(target);
+    LigninEngine::check_incomplete(dir.path(), v);
 }
