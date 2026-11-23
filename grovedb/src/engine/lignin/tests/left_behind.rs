@@ -531,8 +531,9 @@ fn the_cursors_of_each_keyspace_beside_a_flat_drop_step_as_on_rocksdb() {
     let dir = tempfile::tempdir().expect("a directory");
     let on_lignin = lines::<LigninEngine>(dir.path());
     check(dir.path(), GroveVersion::latest());
-    // Each cursor comes back onto the last key until the drain, and
-    // stays on no key after it.
+    // A cursor of the latest state comes back onto the last key until
+    // the drain, and stays on no key after it. The cursors of the two
+    // snapshots come back onto it after the drain too.
     let back = |line: &&String| line.contains("back on Some(");
     assert_eq!(on_lignin.iter().filter(back).count(), 27, "{on_lignin:#?}");
     assert_eq!(on_lignin.len(), 40);
