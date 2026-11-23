@@ -28,7 +28,8 @@ use grovedb::GroveDb;
 
 use super::{
     case::Case,
-    state::{first_difference, stored, Listing, Place, Record},
+    families::{Counts, Family, Known},
+    state::{first_difference, pending_drop_paths, stored, Listing, Place, Record},
 };
 use crate::{
     golden::{
@@ -267,6 +268,9 @@ pub struct Tally {
     /// The cases that ended early because both engines panicked or neither
     /// could be observed.
     pub cut_short: u64,
+    /// What was met of the open differences that are named
+    /// ([`super::families`]).
+    pub families: Counts,
 }
 
 impl Tally {
@@ -278,6 +282,7 @@ impl Tally {
         self.walks += other.walks;
         self.records += other.records;
         self.cut_short += other.cut_short;
+        self.families.add(&other.families);
     }
 }
 
@@ -293,6 +298,14 @@ pub struct Run {
     pub cut_short: Option<String>,
     /// Whether the caller interrupted the run before the last operation.
     pub interrupted: bool,
+    /// The named open difference at an answer of which the case ended
+    /// before its last operation. It is no divergence.
+    pub ended_at: Option<Family>,
+    /// The answers the engines gave differently where the case ended at
+    /// a named open difference.
+    pub ended_with: Option<Divergence>,
+    /// The steps that both engines answered alike with an error.
+    pub failed_steps: Vec<usize>,
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -515,12 +528,18 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
     // The subtrees the last walk handed on: the ones it reached, and the
     // ones a pending drop kept it from looking at (`super::state`).
     let mut places: BTreeSet<Place> = BTreeSet::new();
+    // The places of the named open differences that the case has made.
+    let mut known = Known::default();
+    let failed_steps = std::cell::RefCell::new(Vec::new());
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
             tally,
             divergence,
             cut_short,
             interrupted,
+            ended_at: None,
+            ended_with: None,
+            failed_steps: failed_steps.take(),
         })
     };
     let diverged = |tally, step, parts, reference, candidate| {
@@ -537,10 +556,27 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         ended(tally, None, Some(format!("at step {step}, {why}")), false)
     };
     for (step, op) in case.ops.iter().enumerate() {
+        tally.families = known.counts();
         if interrupted() {
             return ended(tally, None, None, true);
         }
+        // Asked of the reference before the operation: a read of its
+        // block's state, which changes nothing.
+        let (over, over_indexed) = catching(|| {
+            let block = reference_runner.transactions().block();
+            (
+                Known::trees_under(&reference_db, block, op, case.grove_version),
+                Known::indexed_under(&reference_db, block, op, case.grove_version),
+            )
+        })
+        .unwrap_or_default();
         let was = observe(&mut reference_runner, op);
+        // A put of an indexed tree over an indexed tree that the reference
+        // took is counted, whatever the candidate did.
+        if matches!(&was, Seen::Answered(observed) if !observed.step.failed()) {
+            known.came_to_indexed_over_indexed(&over_indexed);
+            tally.families = known.counts();
+        }
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
         let (was, is) = match both(was, is, |observed| lines(&observed)) {
@@ -550,7 +586,71 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         };
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
+            // An answer that differs at an operation which names a place
+            // of a named open difference, or in which the candidate
+            // refuses an indexed tree over an indexed tree, ends the
+            // case, and is none of the run's.
+            let (reference, candidate) = (&was.step.outcome, &is.step.outcome);
+            let refusal = Known::family_of_refusal(&over_indexed, reference, candidate);
+            let taken = !was.step.failed();
+            // The engines differ in the proof of a query and in nothing
+            // else, and the candidate's proof holds: the open difference
+            // of a dropped tree, through a proof.
+            let through_a_proof = || {
+                let (reference, candidate) = (&was.step, &is.step);
+                let held = known.through_a_proof(op, reference, candidate, case.grove_version);
+                held.then_some(Family::DroppedTreeProof)
+            };
+            let family = refusal
+                .or_else(|| known.family_of_answer(op, taken))
+                .or_else(through_a_proof);
+            if let Some(family) = family {
+                known.ended_at(family, case.seed);
+                tally.families = known.counts();
+                let ended_with = Divergence {
+                    step,
+                    parts,
+                    reference: lines(&was),
+                    candidate: lines(&is),
+                };
+                return Ok(Run {
+                    tally,
+                    divergence: None,
+                    cut_short: None,
+                    interrupted: false,
+                    ended_at: Some(family),
+                    ended_with: Some(ended_with),
+                    failed_steps: failed_steps.take(),
+                });
+            }
             return diverged(tally, step, parts, lines(&was), lines(&is));
+        }
+        if !was.step.failed() {
+            known.took(op, over);
+        }
+        // The trees whose flat drop has a pending record now, as the
+        // reference's block sees it: the places of the family of a
+        // dropped tree from here on. It is read once both engines
+        // answered the operation alike, so the answers to an operation
+        // are held against the records as they were before it. Where the
+        // reference cannot be read, none is pending.
+        if known.dropped_flat() {
+            let pending = catching(|| {
+                let block = reference_runner.transactions().block();
+                pending_drop_paths(&reference_db, block)
+            });
+            known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
+            // Those of them at which the reference reads a tree again.
+            let standing = catching(|| {
+                let block = reference_runner.transactions().block();
+                let pending = known.pending_paths();
+                Known::trees_at(&reference_db, block, pending, case.grove_version)
+            });
+            known.made_again(standing.unwrap_or_default());
+        }
+        tally.families = known.counts();
+        if was.step.failed() {
+            failed_steps.borrow_mut().push(step);
         }
         tally.failed += u64::from(was.step.failed());
         tally.proofs += u64::from(was.step.proof.is_some());
@@ -577,7 +677,11 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         };
         tally.walks += 1;
         tally.records += was.records.len() as u64;
-        if let Some((was, is)) = first_difference(&was.records, &is.records) {
+        // The records of a subtree of a named open difference are counted
+        // where they differ, and not compared.
+        let (compared_was, compared_is) = known.passed_over(case.seed, &was.records, &is.records);
+        tally.families = known.counts();
+        if let Some((was, is)) = first_difference(&compared_was, &compared_is) {
             let text = |record: Option<&Record>| {
                 vec![record.map_or("no further record".to_string(), Record::text)]
             };
@@ -585,6 +689,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         places = was.handed_on();
     }
+    tally.families = known.counts();
     ended(tally, None, None, false)
 }
 
@@ -772,6 +877,7 @@ mod tests {
                 walks: 3,
                 records: 3 + 3 + 3,
                 cut_short: 0,
+                families: Counts::default(),
             }
         );
         let once = with(Stored::AtTheEnd);
@@ -1248,6 +1354,7 @@ mod tests {
             walks: 4,
             records: 5,
             cut_short: 6,
+            families: Counts::default(),
         };
         tally.add(&tally.clone());
         assert_eq!(
@@ -1259,6 +1366,7 @@ mod tests {
                 walks: 8,
                 records: 10,
                 cut_short: 12,
+                families: Counts::default(),
             }
         );
     }

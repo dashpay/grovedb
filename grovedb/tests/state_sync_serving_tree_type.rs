@@ -14,13 +14,13 @@
 //! and the request is `pack([global_id])`. The serving path is not
 //! version-gated, so the checks run under `GROVE_V3` as well as the latest
 //! version.
-#![cfg(feature = "rocksdb_storage")]
+#![cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use grovedb::{replication::CURRENT_STATE_SYNC_VERSION, Element, GroveDb};
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::prefix::build_prefix;
 use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
 const SUBTREE: &[u8] = b"plain";
@@ -83,7 +83,7 @@ fn plain_subtree_source(
         other => panic!("unexpected subtree element {other:?}"),
     };
     let path: &[&[u8]] = &[SUBTREE];
-    let prefix = RocksDbStorage::build_prefix(SubtreePath::from(path)).unwrap();
+    let prefix = build_prefix(SubtreePath::from(path)).unwrap();
     (dir, db, prefix, root_key)
 }
 

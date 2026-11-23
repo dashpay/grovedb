@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::SuiteBatch;
     use assert_matches::assert_matches;
     use grovedb_merk::{
         element::costs::ElementCostExtensions,
@@ -9,7 +10,6 @@ mod tests {
         tree::{kv::ValueDefinedCostType, AggregateData},
         TreeFeatureType::{BasicMerkNode, CountedMerkNode},
     };
-    use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -376,7 +376,7 @@ mod tests {
         .unwrap()
         .expect("should insert item");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Open merk and check all elements in it
@@ -522,7 +522,7 @@ mod tests {
         .unwrap()
         .expect("should insert tree");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Sum should be non for non count tree
@@ -796,7 +796,7 @@ mod tests {
             .expect("should fetch tree");
         assert_eq!(count_tree.count_value_or_default(), 5);
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         // Assert node feature types
@@ -930,7 +930,7 @@ mod tests {
             .unwrap()
             .expect("should apply batch");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let transaction = db.start_transaction();
 
         let count_tree = db
@@ -978,7 +978,7 @@ mod tests {
             .unwrap()
             .expect("should apply batch");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let count_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),
@@ -1068,7 +1068,7 @@ mod tests {
             .unwrap()
             .expect("should apply batch");
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let count_tree = db
             .open_transactional_merk_at_path(
                 [TEST_LEAF, b"key1"].as_ref().into(),

@@ -12,15 +12,13 @@ mod tests {
         BatchEntry, CryptoHash, Merk,
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::PrefixedRocksDbTransactionContext, Storage, StorageBatch, StorageContext,
-    };
+    use grovedb_storage::{Storage, StorageContext};
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use crate::{
         operations::indexed_tree::make_axis_secondary_key,
-        tests::{make_test_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, SuiteBatch, TEST_LEAF},
         AggregateData, Element, Error, GroveDb,
     };
 
@@ -56,7 +54,7 @@ mod tests {
     #[cfg(grovedb_test_engine = "rocksdb")]
     fn raw_put_in_subtree(db: &GroveDb, path: &[&[u8]], key: &[u8], value: &[u8]) {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let ctx = db
                 .db
@@ -93,7 +91,7 @@ mod tests {
         let path: SubtreePath<&[u8]> = path_vec.as_slice().into();
         let (parent_path, indexed_key) = path.derive_parent().expect("non-root indexed tree");
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let secondary_root_key = {
             let parent = db
                 .open_transactional_merk_at_path(parent_path, &tx, Some(&batch), grove_version)
@@ -147,7 +145,7 @@ mod tests {
     ) {
         let prefix = axis_secondary_prefix(primary_path, axis);
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let ctx = db
                 .db
@@ -178,7 +176,7 @@ mod tests {
         grove_version: &GroveVersion,
     ) {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let mut merk = db
                 .open_transactional_merk_at_path(
@@ -219,7 +217,7 @@ mod tests {
         grove_version: &GroveVersion,
     ) {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         {
             let mut merk = db
                 .open_transactional_merk_at_path(
@@ -281,17 +279,14 @@ mod tests {
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let result = {
             let sp = subtree_path(path);
             let merk = db
                 .open_transactional_merk_at_path(sp.clone(), &tx, Some(&batch), grove_version)
                 .unwrap()
                 .expect("open merk at propagation start");
-            let mut merk_cache: HashMap<
-                SubtreePath<&[u8]>,
-                Merk<PrefixedRocksDbTransactionContext>,
-            > = HashMap::new();
+            let mut merk_cache: HashMap<SubtreePath<&[u8]>, Merk<_>> = HashMap::new();
             merk_cache.insert(sp.clone(), merk);
             db.propagate_changes_with_transaction_with_initial_deferred(
                 merk_cache,
@@ -537,7 +532,7 @@ mod tests {
         let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let result = {
             let root_path: SubtreePath<[u8; 0]> = SubtreePath::empty();
             let merk = db
@@ -549,10 +544,7 @@ mod tests {
                 )
                 .unwrap()
                 .expect("open root merk");
-            let mut merk_cache: HashMap<
-                SubtreePath<[u8; 0]>,
-                Merk<PrefixedRocksDbTransactionContext>,
-            > = HashMap::new();
+            let mut merk_cache: HashMap<SubtreePath<[u8; 0]>, Merk<_>> = HashMap::new();
             merk_cache.insert(root_path.clone(), merk);
             db.propagate_changes_with_transaction_with_initial_deferred(
                 merk_cache,
@@ -591,7 +583,7 @@ mod tests {
         let root_before = db.root_hash(None, grove_version).unwrap().unwrap();
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let result = {
             let root_path: SubtreePath<[u8; 0]> = SubtreePath::empty();
             let merk = db
@@ -603,10 +595,7 @@ mod tests {
                 )
                 .unwrap()
                 .expect("open root merk");
-            let mut merk_cache: HashMap<
-                SubtreePath<[u8; 0]>,
-                Merk<PrefixedRocksDbTransactionContext>,
-            > = HashMap::new();
+            let mut merk_cache: HashMap<SubtreePath<[u8; 0]>, Merk<_>> = HashMap::new();
             merk_cache.insert(root_path.clone(), merk);
             db.propagate_changes_inner(
                 merk_cache,
@@ -836,7 +825,7 @@ mod tests {
         .expect("create plain tree");
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let merk = db
             .open_transactional_merk_at_path(
                 subtree_path(&[TEST_LEAF]),

@@ -301,16 +301,16 @@ impl<E: Engine> GroveDb<E> {
 mod tests {
     use crate::{tests::make_empty_grovedb, GroveDb, TransactionArg};
 
-    fn put(db: &GroveDb, key: &[u8], value: &[u8], transaction: TransactionArg) {
+    fn put<'db>(db: &'db GroveDb, key: &[u8], value: &[u8], transaction: TransactionArg<'db, '_>) {
         db.put_aux(key, value, None, transaction)
             .unwrap()
             .expect("put aux");
     }
 
-    fn listing(
-        db: &GroveDb,
+    fn listing<'db>(
+        db: &'db GroveDb,
         key_prefix: &[u8],
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_>,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
         db.get_aux_by_key_prefix(key_prefix, transaction)
             .unwrap()

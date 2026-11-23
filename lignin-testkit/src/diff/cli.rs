@@ -40,6 +40,12 @@ options:
   --grove-version N   only cases of this grove version
   --max-ops N         the most operations a case takes from one workload
                       (default: 1500)
+  --keep-the-drop-contract
+                      leave out of a case every operation that makes an
+                      element again at the path of a tree that was dropped
+                      flat before the drain of its drop: for a debug build
+                      on grove versions 4 and 5, where GroveDB asserts what
+                      such a history breaks
   --stored-every N    compare the records the engines store after every N
                       operations that are not reads, and after the last
                       (default: 32; 0 for after the last only)
@@ -51,10 +57,13 @@ options:
                       on may take (default: 300)
   --no-shrink         leave a stream the engines differ on as it is
 
-A case is a function of its seed and of --grove-version and --max-ops, so
-`case` takes the two as the run had them. fuzz and case exit with 0 when the
-engines answered the same and with 1 when they differ. seeded exits with 0
-when the defect was found in time and with 1 when it was not.
+A case is a function of its seed and of --grove-version, --max-ops and
+--keep-the-drop-contract, so `case` takes the three as the run had them. fuzz and case exit with 1 when the
+engines differ at a step or in a stored record that is of no named open
+difference, and with 0 when the run was made and found no such difference:
+also where a case ended at an answer of a named open difference, which the
+last line then says. seeded exits with 0 when the defect was found in time
+and with 1 when it was not. A command that could not be run exits with 2.
 ";
 
 /// The defect `seeded` plants unless another is named: one byte too many
@@ -112,6 +121,7 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
             "--scratch" => settings.scratch = PathBuf::from(value()?),
             "--grove-version" => grove_version = Some(number(value()?)?),
             "--max-ops" => settings.shape.max_ops_per_stream = number(value()?)?.max(1) as usize,
+            "--keep-the-drop-contract" => settings.shape.keeps_the_drop_contract = true,
             "--stored-every" => {
                 settings.stored = match number(value()?)? {
                     0 => Stored::AtTheEnd,
@@ -254,7 +264,7 @@ fn write_finding(out: &mut dyn Write, finding: &Finding, reference: &str, candid
     let _ = writeln!(
         out,
         "to run the case again: lignin-diff case --seed {:#x} (with the --grove-version, \
-         --max-ops, --stored-every and --fault of this run)",
+         --max-ops, --keep-the-drop-contract, --stored-every and --fault of this run)",
         finding.case.seed
     );
 }
@@ -291,6 +301,12 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
         let _ = writeln!(out, "  {}", progress_line(progress));
         let _ = out.flush();
     })?;
+    for line in summary.progress.tally.families.lines() {
+        let _ = writeln!(out, "  {line}");
+    }
+    for (family, seed, step) in &summary.apart {
+        let _ = writeln!(out, "  {}: seed {seed:#x}, step {step}", family.name());
+    }
     let _ = writeln!(out, "  {}", progress_line(&summary.progress));
     if let Some(why) = &summary.first_cut_short {
         let _ = writeln!(out, "  the first case cut short: {why}");
@@ -309,8 +325,16 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
             write_finding(out, finding, reference.name(), candidate.name());
             Ok(Some(finding.after))
         }
-        None => {
+        None if summary.progress.tally.families.answer_differences() == 0 => {
             let _ = writeln!(out, "the engines answered the same");
+            Ok(None)
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "the engines answered the same but for the answers of the open differences \
+                 counted above"
+            );
             Ok(None)
         }
     }
@@ -361,8 +385,25 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
     if let Some(why) = ran.cut_short {
         let _ = writeln!(out, "  cut short {why}");
     }
+    for line in tally.families.lines() {
+        let _ = writeln!(out, "  {line}");
+    }
+    if let Some(family) = ran.ended_at {
+        let step = ran.ended_with.as_ref().map_or(0, |ended| ended.step);
+        let _ = writeln!(
+            out,
+            "  the case ended at step {step}, at an answer of the open difference: {}",
+            family.name()
+        );
+    }
     let Some(divergence) = ran.divergence else {
-        let _ = writeln!(out, "the engines answered the same");
+        let _ = match ran.ended_at {
+            None => writeln!(out, "the engines answered the same"),
+            Some(_) => writeln!(
+                out,
+                "the engines answered the same up to that answer, and the case was not run further"
+            ),
+        };
         return Ok(false);
     };
     for line in divergence.report(&case, reference.name(), candidate.name()) {
@@ -567,7 +608,7 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "RocksDbEngine against StandIn: seed 0x1, 2 at once, grove versions 1 2 3 4 5, 3 cases"
+            "RocksDbEngine against LigninEngine: seed 0x1, 2 at once, grove versions 1 2 3 4 5, 3 cases"
         );
         let [.., run, held, verdict] = lines[..] else {
             panic!("{text}")
@@ -613,7 +654,7 @@ mod tests {
         // Without the fault the engines answer that case the same.
         let (code, clean) = ran(&format!("case --seed {seed} --max-ops 60"), scratch.path());
         assert_eq!(code, 0, "{clean}");
-        assert!(clean.starts_with("RocksDbEngine against StandIn:\n  seed 0x"));
+        assert!(clean.starts_with("RocksDbEngine against LigninEngine:\n  seed 0x"));
         assert!(clean.ends_with("the engines answered the same\n"));
     }
 
@@ -710,7 +751,7 @@ mod tests {
         assert!(text.contains("\nthe stream was not shrunk: no database any more\n"));
         assert!(text.ends_with(
             "to run the case again: lignin-diff case --seed 0x9 (with the --grove-version, \
-             --max-ops, --stored-every and --fault of this run)\n"
+             --max-ops, --keep-the-drop-contract, --stored-every and --fault of this run)\n"
         ));
 
         // The case command: a candidate that opens once, for the run that
@@ -737,6 +778,7 @@ mod tests {
     fn the_numbers_of_a_report_are_readable() {
         assert_eq!(engine_name::<Reference>(), "RocksDbEngine");
         assert_eq!(engine_name::<StandIn>(), "StandIn");
+        assert_eq!(engine_name::<Candidate>(), "LigninEngine");
         assert_eq!(engine_name::<u8>(), "u8");
         assert_eq!(mebibytes(3 << 19), "1.5 MiB");
         assert_eq!(seconds(Duration::from_millis(2540)), "2.5 s");
@@ -753,6 +795,7 @@ mod tests {
                 walks: 7,
                 records: 8,
                 cut_short: 9,
+                families: crate::diff::Counts::default(),
             },
             scratch_bytes: 0,
         });

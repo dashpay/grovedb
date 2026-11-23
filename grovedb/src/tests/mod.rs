@@ -215,6 +215,8 @@ use crate::{
 pub type SuiteEngine = crate::RocksDbEngine;
 #[cfg(grovedb_test_engine = "pinned-reads")]
 pub type SuiteEngine = pinned_reads::PinnedReads;
+#[cfg(grovedb_test_engine = "lignin")]
+pub type SuiteEngine = crate::LigninEngine;
 
 /// The batch of the suite's engine.
 pub type SuiteBatch = <SuiteEngine as Engine>::Batch;

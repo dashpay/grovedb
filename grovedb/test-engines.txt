@@ -11,3 +11,4 @@
 # `docs/lignindb/test-engines.md` says what registering an engine takes.
 rocksdb       rocksdb_storage
 pinned-reads  rocksdb_storage
+lignin        lignin_storage

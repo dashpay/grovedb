@@ -188,8 +188,8 @@ mod tests {
         // NonCounted subtree. Only `plain` should count, so the outer's
         // root aggregate count is 1. (If propagation dropped the wrapper,
         // the subtree would be counted as a regular tree → 2.)
-        use grovedb_storage::StorageBatch;
-        let batch = StorageBatch::new();
+        use crate::tests::SuiteBatch;
+        let batch = SuiteBatch::default();
         let tx = db.start_transaction();
         let outer_merk = db
             .open_transactional_merk_at_path(

@@ -140,8 +140,8 @@ mod tests {
 
         // The outer sum tree's running aggregate must be 7 (only `plain`
         // contributes; the wrapped subtree's internal 99 is suppressed).
-        use grovedb_storage::StorageBatch;
-        let batch = StorageBatch::new();
+        use crate::tests::SuiteBatch;
+        let batch = SuiteBatch::default();
         let tx = db.start_transaction();
         let outer_merk = db
             .open_transactional_merk_at_path(
@@ -228,8 +228,8 @@ mod tests {
         // subtree's internal sum (123). Only `plain` (5) should
         // contribute. If propagation dropped the wrapper, the subtree's
         // 123 would bubble up to 128.
-        use grovedb_storage::StorageBatch;
-        let batch = StorageBatch::new();
+        use crate::tests::SuiteBatch;
+        let batch = SuiteBatch::default();
         let tx = db.start_transaction();
         let outer_merk = db
             .open_transactional_merk_at_path(

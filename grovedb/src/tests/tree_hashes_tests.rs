@@ -28,10 +28,10 @@
 
 //! Tree hashes tests
 
+use crate::tests::SuiteBatch;
 use grovedb_merk::tree::{
     combine_hash, kv::ValueDefinedCostType, kv_digest_to_kv_hash, node_hash, value_hash, NULL_HASH,
 };
-use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -55,7 +55,7 @@ fn test_node_hashes_when_inserting_item() {
     .unwrap()
     .expect("successful subtree insert");
 
-    let batch = StorageBatch::new();
+    let batch = SuiteBatch::default();
     let transaction = db.start_transaction();
 
     let test_leaf_merk = db
@@ -130,7 +130,7 @@ fn test_tree_hashes_when_inserting_empty_tree() {
     .unwrap()
     .expect("successful subtree insert");
 
-    let batch = StorageBatch::new();
+    let batch = SuiteBatch::default();
     let transaction = db.start_transaction();
 
     let test_leaf_merk = db
@@ -229,7 +229,7 @@ fn test_tree_hashes_when_inserting_empty_trees_twice_under_each_other() {
     .unwrap()
     .expect("successful subtree insert");
 
-    let batch = StorageBatch::new();
+    let batch = SuiteBatch::default();
     let transaction = db.start_transaction();
 
     let under_top_merk = db

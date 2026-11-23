@@ -2,6 +2,7 @@
 
 use grovedb_merk::{element::get::ElementFetchFromStorageExtensions, tree_type::TreeType};
 use grovedb_path::SubtreePath;
+#[cfg(feature = "rocksdb_storage")]
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
@@ -1498,39 +1499,43 @@ fn delete_op_builders_carry_the_declared_displaced_value() {
 
     // The estimated builders declare the same way, so the estimator sees the
     // op the stateful path would apply.
-    let path = KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]);
-    let key = KeyInfo::KnownKey(b"item".to_vec());
-    let average = GroveDb::average_case_delete_operation_for_delete::<RocksDbStorage>(
-        &path,
-        &key,
-        TreeType::NormalTree,
-        false,
-        true,
-        0,
-        (4, 8),
-        BackwardsReferences::DontCheck,
-        version,
-    )
-    .unwrap()
-    .unwrap();
-    assert!(matches!(
-        average.op,
-        GroveOp::DeleteDontCheckForBackwardsReferences
-    ));
-    let worst = GroveDb::worst_case_delete_operation_for_delete::<RocksDbStorage>(
-        &path,
-        &key,
-        TreeType::NormalTree,
-        false,
-        true,
-        0,
-        8,
-        BackwardsReferences::Check,
-        version,
-    )
-    .unwrap()
-    .unwrap();
-    assert!(matches!(worst.op, GroveOp::Delete));
+    // By the names that take RocksDB's storage type, where a build has it.
+    #[cfg(feature = "rocksdb_storage")]
+    {
+        let path = KeyInfoPath::from_known_owned_path(vec![TEST_LEAF.to_vec()]);
+        let key = KeyInfo::KnownKey(b"item".to_vec());
+        let average = GroveDb::average_case_delete_operation_for_delete::<RocksDbStorage>(
+            &path,
+            &key,
+            TreeType::NormalTree,
+            false,
+            true,
+            0,
+            (4, 8),
+            BackwardsReferences::DontCheck,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            average.op,
+            GroveOp::DeleteDontCheckForBackwardsReferences
+        ));
+        let worst = GroveDb::worst_case_delete_operation_for_delete::<RocksDbStorage>(
+            &path,
+            &key,
+            TreeType::NormalTree,
+            false,
+            true,
+            0,
+            8,
+            BackwardsReferences::Check,
+            version,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(worst.op, GroveOp::Delete));
+    }
 }
 
 #[test]

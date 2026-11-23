@@ -1,9 +1,11 @@
 //! The two engines the fuzzer compares.
 //!
 //! [`Reference`] is the engine every answer is measured against: RocksDB,
-//! as `GroveDb` runs on it today. [`Candidate`] is the engine under test.
-//! Until LigninDB exists it is [`StandIn`]: RocksDB again, behind an
-//! [`Engine`] implementation of its own.
+//! as `GroveDb` runs on it today. [`Candidate`] is the engine under test:
+//! LigninDB's engine, [`LigninEngine`] (GROVE-10). [`StandIn`] is RocksDB
+//! again, behind an [`Engine`] implementation of its own: the candidate
+//! before LigninDB's engine existed, and still the engine a defect is
+//! planted in.
 //!
 //! # Registering an engine
 //!
@@ -17,7 +19,7 @@
 //! `GroveDb<StandIn>` is a second instance of all of GroveDB, compiled
 //! against the seam and nothing below it, so it reaches RocksDB only
 //! through the operations of `Engine`. It differs from the reference in the
-//! one way the seam allows an engine to differ and LigninDB will: the
+//! one way the seam allows an engine to differ and LigninDB does: the
 //! transaction of a read that was given none is pinned to the state
 //! committed when it starts (RD2 of `docs/lignindb/transactions.md`), where
 //! the RocksDB engine starts a write transaction for it. A read that wrote
@@ -34,7 +36,7 @@
 
 use std::{fmt, path::Path, str::FromStr};
 
-use grovedb::{engine::SubtreeCursor, Engine, GroveDb, RocksDbEngine, Transaction};
+use grovedb::{engine::SubtreeCursor, Engine, GroveDb, LigninEngine, RocksDbEngine, Transaction};
 use grovedb_costs::{CostContext, CostResult};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -48,8 +50,10 @@ use crate::workload::StreamEngine;
 /// The engine the candidate is compared with.
 pub type Reference = RocksDbEngine;
 
-/// The engine under test. GROVE-10 names LigninDB's engine here.
-pub type Candidate = StandIn;
+/// The engine under test: LigninDB's. In a debug build a database of it is
+/// checked when it is closed, and a store the checker calls unsound is a
+/// panic of the case that closed it.
+pub type Candidate = LigninEngine;
 
 /// A defect planted in a [`StandIn`].
 ///

@@ -2510,6 +2510,8 @@ fn batch_average_case_delete_sum_tree_cost() {
 // estimated_costs/average_case_costs.rs coverage: individual functions
 // ===========================================================================
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn average_case_get_merk_at_path_non_empty() {
     use grovedb_costs::OperationCost;
@@ -2540,6 +2542,8 @@ fn average_case_get_merk_at_path_non_empty() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn average_case_get_merk_at_path_empty_root() {
     use grovedb_costs::OperationCost;
@@ -2566,6 +2570,8 @@ fn average_case_get_merk_at_path_empty_root() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn average_case_get_merk_at_path_sum_tree_type() {
     use grovedb_costs::OperationCost;
@@ -2590,6 +2596,8 @@ fn average_case_get_merk_at_path_sum_tree_type() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn average_case_get_raw_cost_function() {
     use grovedb_costs::OperationCost;
@@ -2618,6 +2626,8 @@ fn average_case_get_raw_cost_function() {
     assert!(cost.storage_loaded_bytes > 0, "get raw should load bytes");
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn average_case_get_raw_tree_cost_function() {
     use grovedb_costs::OperationCost;
@@ -2650,6 +2660,8 @@ fn average_case_get_raw_tree_cost_function() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn average_case_has_raw_tree_cost_function() {
     use grovedb_costs::OperationCost;
@@ -2678,6 +2690,8 @@ fn average_case_has_raw_tree_cost_function() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn average_case_get_cost_with_references() {
     use grovedb_costs::OperationCost;
@@ -2714,6 +2728,8 @@ fn average_case_get_cost_with_references() {
 // estimated_costs/worst_case_costs.rs coverage: individual functions
 // ===========================================================================
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn worst_case_get_merk_at_path_non_root() {
     use grovedb_costs::OperationCost;
@@ -2741,6 +2757,8 @@ fn worst_case_get_merk_at_path_non_root() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn worst_case_get_merk_at_path_root() {
     use grovedb_costs::OperationCost;
@@ -2762,6 +2780,8 @@ fn worst_case_get_merk_at_path_root() {
     // Root path has no key, so storage_loaded_bytes only from storage context cost
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn worst_case_get_raw_cost_function() {
     use grovedb_costs::OperationCost;
@@ -2793,6 +2813,8 @@ fn worst_case_get_raw_cost_function() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn worst_case_get_raw_tree_cost_function() {
     use grovedb_costs::OperationCost;
@@ -2824,6 +2846,8 @@ fn worst_case_get_raw_tree_cost_function() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn worst_case_get_cost_with_references() {
     use grovedb_costs::OperationCost;
@@ -2856,6 +2880,8 @@ fn worst_case_get_cost_with_references() {
     );
 }
 
+// The storage parameter of the call is RocksDB's type.
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn worst_case_has_raw_cost_function() {
     use grovedb_costs::OperationCost;

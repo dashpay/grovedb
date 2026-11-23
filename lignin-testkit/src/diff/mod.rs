@@ -44,10 +44,10 @@
 //!
 //! # The engines
 //!
-//! [`engines`] names the two: [`Reference`] and [`Candidate`]. Until
-//! LigninDB exists the candidate is [`StandIn`], RocksDB behind an `Engine`
-//! of its own whose reads are pinned as LigninDB's will be, and in which a
-//! defect can be planted. Naming another candidate is one line there.
+//! [`engines`] names the two: [`Reference`] and [`Candidate`], which is
+//! LigninDB's engine. [`StandIn`] is RocksDB behind an `Engine` of its own
+//! whose reads are pinned as LigninDB's are, and in which a defect can be
+//! planted. Naming another candidate is one line there.
 //!
 //! # A divergence
 //!
@@ -98,6 +98,7 @@
 pub mod case;
 pub mod cli;
 pub mod engines;
+pub mod families;
 pub mod fuzz;
 pub mod pair;
 pub mod shrink;
@@ -106,6 +107,7 @@ pub mod state;
 pub use self::{
     case::{Case, Shape},
     engines::{Candidate, Fault, Reference, StandIn},
+    families::{Counts, Family},
     fuzz::{fuzz, Finding, Settings, Summary},
     pair::{run, Divergence, Part, Run, Side, Stored, Tally},
     shrink::{shrink, Budget, Shrunk},

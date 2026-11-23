@@ -36,6 +36,7 @@ mod over;
 mod queries;
 mod restore;
 mod root_keys;
+mod side_by_side;
 mod sync;
 
 use grovedb_costs::OperationCost;

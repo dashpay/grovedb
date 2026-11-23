@@ -26,7 +26,7 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 
 ### Both engines on every pull request
 
-A pull request that changes either engine runs the suites of both. Detect Changes does not look at which crate changed: a change of code other than doc comments runs every job above. The RocksDB side is GroveDB's, Merk's and the storage crate's suites (the shards and the per-engine jobs); the LigninDB side is the LigninDB crates' tests, which include the corpus replayed through the LigninDB node store (`lignin-testkit/tests/merk_store.rs`), on all three platforms. When LigninDB is registered as an engine of GroveDB's and Merk's suites (GROVE-01, MERK-08), the per-engine jobs run those suites on it with no change here.
+A pull request that changes either engine runs the suites of both. Detect Changes does not look at which crate changed: a change of code other than doc comments runs every job above. The RocksDB side is GroveDB's, Merk's and the storage crate's suites (the shards and the per-engine jobs); the LigninDB side is the LigninDB crates' tests, which include the corpus replayed through the LigninDB node store (`lignin-testkit/tests/merk_store.rs`), on all three platforms. LigninDB is registered as an engine of Merk's suite (MERK-08) and of GroveDB's (GROVE-10), so the per-engine jobs run both suites on it: the matrix of `test-engines` is read from the registries, and `Test grovedb on lignin` is one more job of the size of `Test grovedb on pinned-reads` ([test-engines.md](test-engines.md#grovedb-on-lignindb)).
 
 ### The platforms of DEC-06
 
@@ -61,6 +61,8 @@ For a pull request from the repository, then, LigninDB on Linux aarch64 is the o
 `lignin-ci.sh features` builds what must build without the rest:
 
 - **GroveDB with no engine** (SEAM-07, `engine.md`, "Features and engines"): no crate of RocksDB and no LigninDB crate among the crates of `grovedb --no-default-features --features estimated_costs`, its normal, build and dev dependencies; no gate in `grovedb` that says `minimal`; `engine_generic` alone type-checks; the tests of GroveDB and Merk that open no database pass.
+- **GroveDB on LigninDB alone**: `grovedb --no-default-features --features lignin_storage` builds with no RocksDB crate, its library and its tests type-check, and it is linted with warnings denied on every target (`cargo clippy -p grovedb --no-default-features --features lignin_storage --all-targets -- -D warnings`, GROVE-10). The workspace lint has every feature on, where a line that is compiled for LigninDB alone is left out, so no other job lints this feature set. In that build the suite has no engine unless one is selected, so its tests are also type-checked with LigninDB selected (`GROVEDB_TEST_ENGINE=lignin cargo check -p grovedb --no-default-features --features lignin_storage,estimated_costs --lib --tests`).
+- **GroveDB on RocksDB alone**: `--features rocksdb_storage` has no LigninDB crate.
 - **Merk on LigninDB alone**: `grovedb-merk --no-default-features --features lignin_storage` builds with no RocksDB crate.
 - **Merk on RocksDB alone**: `--features rocksdb_storage` has no LigninDB crate (D-082: neither engine is in a build that did not ask for it).
 - **The LigninDB crates with features** (today `lignindb` with `testing`): each type-checks with none and with all of them.

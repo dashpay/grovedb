@@ -1049,7 +1049,9 @@ mod tests {
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
-        transaction.commit().expect("cannot commit transaction");
+        db.commit_transaction(transaction)
+            .unwrap()
+            .expect("cannot commit transaction");
         assert!(matches!(
             db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
                 .unwrap(),
@@ -1386,7 +1388,9 @@ mod tests {
             .unwrap(),
             Err(Error::PathParentLayerNotFound(_))
         ));
-        transaction.commit().expect("cannot commit transaction");
+        db.commit_transaction(transaction)
+            .unwrap()
+            .expect("cannot commit transaction");
         assert!(matches!(
             db.get([TEST_LEAF].as_ref(), b"key1", None, grove_version)
                 .unwrap(),

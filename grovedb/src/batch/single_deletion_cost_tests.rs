@@ -213,7 +213,9 @@ mod tests {
             )
             .cost_as_result()
             .expect("expected to delete successfully");
-        tx.commit().expect("expected to commit");
+        db.commit_transaction(tx)
+            .unwrap()
+            .expect("expected to commit");
 
         (
             total_added_bytes,
@@ -343,7 +345,7 @@ mod tests {
                 .total_removed_bytes()
         );
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
@@ -413,7 +415,7 @@ mod tests {
                 .total_removed_bytes()
         );
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_op(vec![], b"key1".to_vec())];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)
@@ -638,7 +640,7 @@ mod tests {
                 .total_removed_bytes()
         );
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
@@ -738,7 +740,7 @@ mod tests {
             SectionedStorageRemoval(_)
         ));
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_tree_op(
             vec![],
             b"key1".to_vec(),
@@ -834,7 +836,7 @@ mod tests {
                 .total_removed_bytes()
         );
 
-        tx.rollback().expect("expected to rollback");
+        db.rollback_transaction(&tx).expect("expected to rollback");
         let ops = vec![QualifiedGroveDbOp::delete_op(vec![], b"key1".to_vec())];
         let batch_cost = db
             .apply_batch(ops, None, Some(&tx), grove_version)

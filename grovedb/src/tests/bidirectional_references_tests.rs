@@ -69,14 +69,14 @@ fn absolute_bidi(path: Vec<Vec<u8>>, cascade: bool, max_hop: Option<u8>) -> Elem
 }
 
 /// A fresh `tree` at `[parent.., name]` holding `key => element`.
-fn nested(
-    db: &TempGroveDb,
+fn nested<'db>(
+    db: &'db TempGroveDb,
     parent: &[&[u8]],
     name: &[u8],
     tree: Element,
     key: &[u8],
     element: Element,
-    transaction: TransactionArg,
+    transaction: TransactionArg<'db, '_>,
     grove_version: &GroveVersion,
 ) {
     db.insert(parent, name, tree, None, transaction, grove_version)
@@ -101,10 +101,10 @@ fn nested(
 /// `clear_subtree`. Registrations pointing at, or held by, the removed
 /// element are deliberately left stale; that inconsistency is what the
 /// regressions below reproduce.
-fn raw_clear(
-    db: &TempGroveDb,
+fn raw_clear<'db>(
+    db: &'db TempGroveDb,
     path: &[&[u8]],
-    transaction: TransactionArg,
+    transaction: TransactionArg<'db, '_>,
     grove_version: &GroveVersion,
 ) {
     db.clear_subtree(

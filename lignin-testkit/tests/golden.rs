@@ -170,6 +170,31 @@ fn every_trace_file_is_text() {
     }
 }
 
+/// No trace records a failure under the name of RocksDB's own error. The
+/// replay names such an error in terms that name no engine
+/// (`StorageError`, or `Commit::Conflict` for a conflict), and the engine
+/// the corpus is pinned to, which has no seam, records it as
+/// `RocksDBError`. A trace that came to hold one would be recorded with a
+/// name the replay does not give: the case has to be recorded under the
+/// neutral name then.
+#[test]
+fn no_trace_records_an_error_of_rocksdb_by_its_own_name() {
+    for scale in [Scale::Standard, Scale::Reference] {
+        for planned in plan::plan(scale) {
+            let path = corpus_dir().join(&planned.file);
+            let text = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let line = text.lines().position(|line| line.contains("RocksDBError"));
+            assert!(
+                line.is_none(),
+                "{}: line {} names an error of RocksDB",
+                planned.file,
+                line.map_or(0, |line| line + 1)
+            );
+        }
+    }
+}
+
 /// A generated workload applies and proves on every grove version, so its
 /// traces record no failure. The hand-written cases are the ones that do,
 /// on the grove versions that have the behaviour.
