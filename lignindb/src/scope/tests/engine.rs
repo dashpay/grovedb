@@ -683,6 +683,72 @@ fn nested(world: &mut World<'_>, flat: bool) {
     world.check_committed();
 }
 
+/// A scope reads the nodes of a Merk by their keys while its writes are
+/// not laid out and it has written the Merk, or while a drop that is not
+/// laid out is among the transaction's writes: then for every Merk. A
+/// scope whose writes are laid out as it makes them never does, and
+/// neither does one whose writes were laid out since.
+#[test]
+fn a_scope_says_whether_it_reads_the_nodes_of_a_merk_by_key() {
+    let (db, versions) = Db::new(64);
+    let mut world = World::new(&db, &versions);
+    planted(&mut world, 4);
+    let tx = world.begin();
+    let owners = Owners::default();
+    let one = tx.txn.scope().expect("a scope");
+    let two = tx.txn.scope().expect("a scope beside it");
+    assert!(one.is_laid_out() && !two.is_laid_out());
+    let by_key = |scope: &Scope<'_, '_>| {
+        [1, 2, 3, 4].map(|name| scope.reads_nodes_by_key(model::subtree(name)))
+    };
+    // Neither has written.
+    assert_eq!((by_key(&one), by_key(&two)), ([false; 4], [false; 4]));
+
+    // The first writes a Merk on the transaction's pages.
+    let edit = |items: &mut Items| drop(items.insert(key(1), b"of the first".to_vec()));
+    (owners.edit(&world, &tx, (1, &one), 1, edit)).expect("nobody holds the Merk");
+    assert_eq!((by_key(&one), by_key(&two)), ([false; 4], [false; 4]));
+
+    // The second writes another, and its write is kept in the write set:
+    // it reads that Merk's nodes by key, and no other Merk's.
+    let edit = |items: &mut Items| drop(items.insert(key(1), b"of the second".to_vec()));
+    (owners.edit(&world, &tx, (2, &two), 2, edit)).expect("nobody holds the Merk");
+    assert_eq!(by_key(&one), [false; 4]);
+    assert_eq!(by_key(&two), [false, true, false, false]);
+    // A child of a node it has not written is not shown it there, by a
+    // handle that was just read.
+    let subtree = model::subtree(2);
+    let handle = |view: Option<NodeView<'_>>| view.and_then(|view| view.handle());
+    let parent = (0..12).find_map(|node| {
+        let read = two.node(subtree, &key(node), handle);
+        read.expect("the scope reads its Merk")
+    });
+    let parent = parent.expect("a node of the Merk is in a cell");
+    for side in [Side::Left, Side::Right] {
+        let child = two.child(subtree, parent, side, |view| view.is_some());
+        assert_eq!(child.expect("the read is made"), None);
+    }
+
+    // A drop that is not laid out: every Merk is read by key by the
+    // scope whose writes are not laid out.
+    let drops = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Drop(model::subtree(3))],
+        ..OwnedBatch::default()
+    };
+    (owners.apply(&world, &tx, (2, &two), &drops)).expect("nobody holds the subtree");
+    assert_eq!(by_key(&one), [false; 4]);
+    assert_eq!(by_key(&two), [true; 4]);
+
+    // Laid out, the scope reads the cells of the transaction's pages.
+    two.lay_out().expect("its writes are laid out");
+    assert!(two.is_laid_out());
+    assert_eq!((by_key(&one), by_key(&two)), ([false; 4], [false; 4]));
+    two.rollback();
+    owners.forget(&tx, 2);
+    one.rollback();
+    owners.forget(&tx, 1);
+}
+
 /// A batch that drops [`OUTER`], with everything below it.
 fn drop_outer() -> OwnedBatch {
     OwnedBatch {

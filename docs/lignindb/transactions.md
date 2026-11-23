@@ -657,6 +657,11 @@ for a private frame, the frame itself:
 - Where nothing pins the version, the location is good only until the next
   commit. That is the case for what a write transaction with an empty write
   set keeps between operations, outside any cursor.
+- A location that names a cell, and not a page alone, also ends when any
+  cell leaves the version of that page that its holder reads (`tree-page.md`
+  TP7), with a pin or with none: a step of the reclaiming of what a dropped
+  subtree left takes cells out with no commit (CL6), and the node is then
+  found by its key.
 - A location into a private frame is good until that frame is replaced: by a
   rebase, a rollback, a rollback to a savepoint, a scope rollback, or the
   reconciliation of a scope merge (LT4). It also ends when a write of the
@@ -2066,7 +2071,9 @@ merged.
 
 **SC4. A scope reads its own writes, then the transaction's merged writes,
 then the committed state**, each by RD3 to RD6. It never sees the writes of
-another scope that is still open.
+another scope that is still open. A scope says whether it reads the nodes of
+a Merk by their keys (`Scope::reads_nodes_by_key`): while it does, no child
+is shown it through the location of a parent.
 
 **SC5. A scope's writes get their first-write version when the scope makes
 them**, not when it merges (WT5).

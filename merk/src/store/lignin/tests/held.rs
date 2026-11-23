@@ -887,6 +887,10 @@ impl Reads for Unsteady<'_, '_> {
     ) -> Result<R, TxnError> {
         Reads::subtree(self.transaction, subtree, read)
     }
+
+    fn by_key(&self, subtree: Subtree) -> bool {
+        Reads::by_key(self.transaction, subtree)
+    }
 }
 
 impl Reader for Unsteady<'_, '_> {
@@ -912,10 +916,9 @@ impl Reader for Unsteady<'_, '_> {
 /// A node and its children are read in operations of their own. Where
 /// the transaction says that the location a child is read by is good no
 /// more, as it does where a commit landed between the two reads, the
-/// node is read again, and what the batch holds is what it holds with
-/// no such commit. A node that changes under every read of it, and a
-/// link that leads to no node, are errors: no element is taken as one
-/// that is not held on their account.
+/// node is read again, however often that is, and what the batch holds
+/// is what it holds with no such commit. A link that leads to no node is
+/// an error: no element is taken as one that is not held on its account.
 #[test]
 fn a_node_whose_location_went_stale_is_read_again_for_the_element() {
     let lignin = Lignin::new();
@@ -943,16 +946,12 @@ fn a_node_whose_location_went_stale_is_read_again_for_the_element() {
         let shown = shown_in_a_group(&reader, &writing, run).map(|_| ());
         (shown, seen.flatten(), reader.stale.load(Ordering::Relaxed))
     };
-    for stale in [1, 2, 7] {
+    for stale in [1, 2, 7, 20] {
         let (shown, held, left) = shown_by(stale, false);
         shown.expect("the batch is shown");
         assert_eq!(left, 0, "{stale}: no child was read by a location");
         assert_eq!(held.as_ref(), Some(&steady), "{stale}");
     }
-    let (refused, held, _) = shown_by(u32::MAX, false);
-    let refused = refused.expect_err("every read is stale").to_string();
-    assert!(refused.contains("changed under every read"), "{refused}");
-    assert_eq!(held, None);
     let (refused, held, _) = shown_by(0, true);
     let refused = refused.expect_err("a link to no node").to_string();
     assert!(refused.contains("a link leads to no node"), "{refused}");

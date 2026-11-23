@@ -27,7 +27,7 @@ use super::{
     change_set::node_put,
     directory::keeps_flat_records,
     feature::{decode_aggregate, decode_feature, encode_aggregate, encode_feature, Tp12},
-    refused, LigninEntry, LigninHost, LigninHosted, READ_ATTEMPTS,
+    refused, LigninEntry, LigninHost, LigninHosted,
 };
 use crate::{cost_model::Keyspace, tree::AggregateData, CryptoHash, Error, TreeFeatureType};
 
@@ -109,6 +109,11 @@ impl StoredNode {
 pub(super) enum Child {
     /// The parent's location is no longer good: the parent is read again.
     Stale,
+    /// The reader reads the nodes of the Merk by their keys, and is shown
+    /// no child through the location of a parent, whatever the location
+    /// ([`Scope::reads_nodes_by_key`]): the read is refused
+    /// ([`read_by_key`]).
+    ByKey,
     /// The link leads to no node.
     Missing,
     /// The child, with where its cell is.
@@ -116,6 +121,21 @@ pub(super) enum Child {
         key: Vec<u8>,
         location: Option<Location>,
     },
+}
+
+/// The refusal of the read of a node whose children are not shown through
+/// its location, because the reader reads the Merk's nodes by key
+/// ([`Child::ByKey`]). The store is as it should be: such a reader is a
+/// write scope whose writes are not laid out, and a cell does not hold
+/// the keys of its children. It is a read that storage does not support,
+/// and an error of storage: what reads an element through the store
+/// keeps such an error as a read that failed, and takes any other for a
+/// record that cannot be read.
+pub(super) fn read_by_key() -> Error {
+    Error::StorageError(StorageError::NotSupported(
+        "lignindb: a scope whose writes are not laid out reads the children of a node by key"
+            .to_owned(),
+    ))
 }
 
 /// A link of a written node: the child is named by its key.
@@ -737,11 +757,27 @@ pub(super) trait Reads {
         subtree: Subtree,
         read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
     ) -> Result<R, TxnError>;
+
+    /// Whether the reader reads the nodes of the Merk `subtree` by their
+    /// keys ([`Scope::reads_nodes_by_key`]): [`Self::child`] then answers
+    /// that a parent's location is no longer good whatever the location.
+    /// A write transaction that is read outside any scope never does.
+    fn by_key(&self, subtree: Subtree) -> bool;
+}
+
+/// [`Reads::by_key`] of a write transaction that is read outside any
+/// scope.
+fn never_by_key(_: &WriteTxn<'_>, _: Subtree) -> bool {
+    false
 }
 
 macro_rules! reads {
-    ($reader:ty) => {
+    ($reader:ty, $by_key:path) => {
         impl Reads for $reader {
+            fn by_key(&self, subtree: Subtree) -> bool {
+                $by_key(self, subtree)
+            }
+
             fn node<R>(
                 &self,
                 subtree: Subtree,
@@ -795,8 +831,8 @@ macro_rules! reads {
     };
 }
 
-reads!(WriteTxn<'_>);
-reads!(Scope<'_, '_>);
+reads!(WriteTxn<'_>, never_by_key);
+reads!(Scope<'_, '_>, Scope::reads_nodes_by_key);
 
 fn read_node(
     reads: &impl Reads,
@@ -840,6 +876,12 @@ fn read_child(
         })
         .map_err(fault)?;
     Ok(match child {
+        // The transaction gives one answer where the location has ended
+        // and where the reader is shown no child through any location.
+        // The question is asked after the answer: a scope beside the
+        // reader can change it in between, and the read is refused if
+        // the reader reads by key by now, and made again if not.
+        None if reads.by_key(Subtree::new(*subtree)) => Child::ByKey,
         None => Child::Stale,
         Some(None) => Child::Missing,
         Some(Some(found)) => found,
@@ -1295,18 +1337,20 @@ type Linked = (StoredNode, [Option<Vec<u8>>; 2]);
 /// the key of its child on the left and on the right, where `sides` asks
 /// for it: as the link states it, or read from the child's cell.
 ///
-/// The node and its children are read in operations of their own, and a
-/// commit can land between two of them. The transaction then says that
-/// the node's location is no longer good, and the node is read again, as
-/// a handle reads it (`LigninNodeStore::load`). A link that leads to no
-/// node is refused there too.
+/// The node and its children are read in operations of their own, the
+/// children through the location of the node's cell, and that location
+/// can end between two of them. The transaction then says that the
+/// location is no longer good, and the node is read again, as a handle
+/// reads it (`LigninNodeStore::load`): with no count of tries, and
+/// refused at once where the reader reads the Merk's nodes by key
+/// ([`Child::ByKey`]). A link that leads to no node is refused there too.
 fn linked(
     reads: &impl Reads,
     subtree: Subtree,
     key: &[u8],
     sides: [bool; 2],
 ) -> Result<Option<Linked>, Error> {
-    'node: for _ in 0..READ_ATTEMPTS {
+    'node: loop {
         let stored = read_node(reads, subtree.as_bytes(), key, None, false)?;
         let Some(stored) = stored.filter(|stored| !stored.unlinked && stored.record.is_none())
         else {
@@ -1327,6 +1371,7 @@ fn linked(
                     match read_child(reads, subtree.as_bytes(), location, left)? {
                         Child::Found { key, .. } => key,
                         Child::Stale => continue 'node,
+                        Child::ByKey => return Err(read_by_key()),
                         Child::Missing => return Err(refused("a link leads to no node")),
                     }
                 }
@@ -1338,7 +1383,6 @@ fn linked(
         }
         return Ok(Some((stored, children)));
     }
-    Err(refused("a node changed under every read of it"))
 }
 
 /// The node under `key` of `subtree` as the transaction holds it, to be

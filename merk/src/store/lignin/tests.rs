@@ -1725,12 +1725,127 @@ fn a_merk_on_lignindb_moves_to_another_thread_and_is_written_there() {
     );
 }
 
-/// A transaction that answers a number of reads in its own way before it
-/// passes them on.
+/// A gap between two operations that the load of a node makes of its
+/// transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Gap {
+    /// After the read of a node by its key.
+    Read,
+    /// After a read of a child through the location of its parent that
+    /// found the child.
+    Found,
+    /// After a read of a child that was answered that the location of
+    /// its parent is no longer good, before the node is read again.
+    Ended,
+}
+
+/// What runs in a gap: what another committer or the engine's background
+/// work does there.
+type Between<'a> = &'a (dyn Fn(Gap) + Sync);
+
+/// What a transaction was asked.
+#[derive(Default)]
+struct Asked {
+    /// Nodes by their keys.
+    nodes: AtomicUsize,
+    /// Children through the location of their parent.
+    children: AtomicUsize,
+    /// How many of those were answered that the location is no longer
+    /// good.
+    stale: AtomicUsize,
+    /// The location of the parent of each child that was asked for, in
+    /// the order of the reads.
+    parents: std::sync::Mutex<Vec<Location>>,
+}
+
+impl Asked {
+    /// The counts: nodes, children, children that were answered with a
+    /// location that is no longer good.
+    fn counts(&self) -> [usize; 3] {
+        [&self.nodes, &self.children, &self.stale].map(|count| count.load(Ordering::Relaxed))
+    }
+
+    /// The locations through which children were asked for since the
+    /// last call, in the order of the reads.
+    fn parents(&self) -> Vec<Location> {
+        std::mem::take(&mut *self.parents.lock().unwrap())
+    }
+
+    /// As [`Self::parents`], each once where it was asked through in a
+    /// row.
+    fn locations(&self) -> Vec<Location> {
+        let mut parents = self.parents();
+        parents.dedup();
+        parents
+    }
+}
+
+/// A transaction that answers a number of reads of a child in its own way
+/// before it passes them on, that runs `between` in the gaps of a load
+/// ([`Gap`]), and that counts what it is asked.
 struct Unsteady<'a> {
     under: &'a dyn Access,
+    /// The reads of a child that are passed on before any is answered
+    /// otherwise.
+    passed: AtomicUsize,
     stale: AtomicUsize,
     missing: AtomicUsize,
+    between: Option<Between<'a>>,
+    asked: Asked,
+}
+
+impl<'a> Unsteady<'a> {
+    fn over(under: &'a dyn Access) -> Self {
+        Self {
+            under,
+            passed: AtomicUsize::new(0),
+            stale: AtomicUsize::new(0),
+            missing: AtomicUsize::new(0),
+            between: None,
+            asked: Asked::default(),
+        }
+    }
+
+    /// Passes the next `passed` reads of a child on before it answers
+    /// any in its own way.
+    fn passing(self, passed: usize) -> Self {
+        Self {
+            passed: AtomicUsize::new(passed),
+            ..self
+        }
+    }
+
+    /// Answers the next `stale` reads of a child that the location of its
+    /// parent is no longer good, with nothing done to the store.
+    fn stale(self, stale: usize) -> Self {
+        Self {
+            stale: AtomicUsize::new(stale),
+            ..self
+        }
+    }
+
+    /// Answers the next `missing` reads of a child that the link leads to
+    /// no node.
+    fn missing(self, missing: usize) -> Self {
+        Self {
+            missing: AtomicUsize::new(missing),
+            ..self
+        }
+    }
+
+    /// Runs `between` in the gaps of a load.
+    fn beside(self, between: Between<'a>) -> Self {
+        Self {
+            between: Some(between),
+            ..self
+        }
+    }
+
+    fn gap(&self, gap: Gap) {
+        if let Some(between) = self.between {
+            between(gap);
+        }
+    }
 }
 
 fn take(left: &AtomicUsize) -> bool {
@@ -1752,7 +1867,10 @@ impl Access for Unsteady<'_> {
         hint: Option<Location>,
         with_value: bool,
     ) -> Result<Option<StoredNode>, Error> {
-        self.under.node(subtree, key, hint, with_value)
+        self.asked.nodes.fetch_add(1, Ordering::Relaxed);
+        let node = self.under.node(subtree, key, hint, with_value);
+        self.gap(Gap::Read);
+        node
     }
 
     fn committed_node(&self, subtree: &Prefix, key: &[u8]) -> Result<Option<StoredNode>, Error> {
@@ -1760,13 +1878,26 @@ impl Access for Unsteady<'_> {
     }
 
     fn child(&self, subtree: &Prefix, parent: Location, left: bool) -> Result<Child, Error> {
-        if take(&self.stale) {
-            return Ok(Child::Stale);
+        self.asked.children.fetch_add(1, Ordering::Relaxed);
+        self.asked.parents.lock().unwrap().push(parent);
+        let child = if take(&self.passed) {
+            self.under.child(subtree, parent, left)
+        } else if take(&self.stale) {
+            Ok(Child::Stale)
+        } else if take(&self.missing) {
+            Ok(Child::Missing)
+        } else {
+            self.under.child(subtree, parent, left)
+        };
+        match child {
+            Ok(Child::Stale) => {
+                self.asked.stale.fetch_add(1, Ordering::Relaxed);
+                self.gap(Gap::Ended);
+            }
+            Ok(Child::Found { .. }) => self.gap(Gap::Found),
+            _ => {}
         }
-        if take(&self.missing) {
-            return Ok(Child::Missing);
-        }
-        self.under.child(subtree, parent, left)
+        child
     }
 
     fn subtree(&self, subtree: &Prefix) -> Result<Option<LigninEntry>, Error> {
@@ -1819,6 +1950,10 @@ impl FlatAccess for Unsteady<'_> {
     }
 }
 
+/// The text of the refusal of a node whose reader reads its Merk's nodes
+/// by key.
+const BY_KEY: &str = "a scope whose writes are not laid out reads the children of a node by key";
+
 #[test]
 fn a_node_whose_location_went_stale_between_two_reads_is_read_again() {
     let lignin = Lignin::new();
@@ -1828,43 +1963,805 @@ fn a_node_whose_location_went_stale_between_two_reads_is_read_again() {
     let mut root = None;
     let nodes: Vec<_> = (1..=7).map(|n| basic(n, &[n as u8; 8])).collect();
     commit(&writer, &ROOT, &mut root, &nodes);
-    let expected = records(
-        &LigninNodeStore::deferred(&writer, ROOT, None),
-        root.clone(),
-    );
-    let unsteady = |stale: usize, missing: usize| Unsteady {
-        under: &writer,
-        stale: AtomicUsize::new(stale),
-        missing: AtomicUsize::new(missing),
-    };
+    let quiet = LigninNodeStore::deferred(&writer, ROOT, None);
+    let quiet_read = quiet.get_node(&be(4), NO_VALUE_DEFINED_COST, version());
+    let quiet_node = quiet_read.value.unwrap().expect("the root is stored");
+    // The read of the root, the handle's first read, left where the
+    // root's children are.
+    assert!(quiet.hint(&be(2)).is_some() && quiet.hint(&be(6)).is_some());
+    let expected = records(&quiet, root.clone());
 
-    // A commit that lands between the read of a cell and the read of its
-    // child ends the cell's location: the node is read again, and is whole.
-    let transaction_view = unsteady(5, 0);
+    // The transaction says once that the location of a cell ended
+    // between the read of the cell and the read of its child: the node
+    // is read again, and is whole. So is each of the three nodes that
+    // have children, at the cost of one read.
+    for n in [4, 2, 6] {
+        let transaction_view = Unsteady::over(&writer).stale(1);
+        let store = LigninNodeStore::new(&transaction_view, ROOT, Mode::Deferred(None));
+        let read = store.get_node(&be(n), NO_VALUE_DEFINED_COST, version());
+        let again = quiet.get_node(&be(n), NO_VALUE_DEFINED_COST, version());
+        assert_eq!(read.cost, again.cost);
+        let (node, again) = (read.value.unwrap(), again.value.unwrap());
+        assert_eq!(node.unwrap().encode(), again.unwrap().encode());
+        assert_eq!(transaction_view.asked.counts(), [2, 3, 1]);
+    }
+    // So is a node that is read without its value.
+    let transaction_view = Unsteady::over(&writer).stale(1);
     let store = LigninNodeStore::new(&transaction_view, ROOT, Mode::Deferred(None));
-    assert_same_records(&records(&store, root.clone()), &expected, "read again");
-    assert_eq!(store.entry().unwrap().unwrap().root_key, root);
-
-    // It is not read again for ever.
-    let transaction_view = unsteady(usize::MAX, 0);
+    let link = quiet_node.link(true).expect("the root has a left child");
+    let fetched = store.fetch_node_without_value(link, version());
+    let quiet_fetched = quiet.fetch_node_without_value(link, version());
+    assert_eq!(fetched.cost, quiet_fetched.cost);
+    let (fetched, quiet_fetched) = (fetched.value.unwrap(), quiet_fetched.value.unwrap());
+    assert!(fetched.value_absent() && quiet_fetched.value_absent());
+    for left in [true, false] {
+        let keys = [&fetched, &quiet_fetched].map(|node| node.link(left).map(Link::key));
+        assert_eq!(keys[0], keys[1]);
+        assert!(keys[0].is_some());
+    }
+    assert_eq!(transaction_view.asked.counts(), [2, 3, 1]);
+    // The location ends after the left child was found: the node is read
+    // again whole, and the handle has where both children are.
+    let transaction_view = Unsteady::over(&writer).passing(1).stale(1);
     let store = LigninNodeStore::new(&transaction_view, ROOT, Mode::Deferred(None));
     let read = store.get_node(&be(4), NO_VALUE_DEFINED_COST, version());
-    assert_eq!(read.cost.seek_count, 1);
-    let error = read.value.unwrap_err();
-    assert!(matches!(error, Error::StorageError(_)));
-    assert!(
-        error.to_string().contains("changed under every read"),
-        "{error}"
-    );
+    assert_eq!(read.cost, quiet_read.cost);
+    let node = read.value.unwrap().expect("the root is stored");
+    assert_eq!(node.encode(), quiet_node.encode());
+    assert_eq!(transaction_view.asked.counts(), [2, 4, 1]);
+    assert!(store.hint(&be(2)).is_some() && store.hint(&be(6)).is_some());
+    assert_same_records(&records(&store, root.clone()), &expected, "read again");
 
-    // A link that leads to no node is damage, and is reported.
-    let transaction_view = unsteady(0, 1);
+    // However often the transaction says that the location ended, the
+    // node is read again: there is no count of tries. After twenty such
+    // answers, more than the eight tries there were, the node is whole,
+    // at the cost of one read.
+    let transaction_view = Unsteady::over(&writer).stale(20);
+    let store = LigninNodeStore::new(&transaction_view, ROOT, Mode::Deferred(None));
+    let read = store.get_node(&be(4), NO_VALUE_DEFINED_COST, version());
+    assert_eq!(read.cost, quiet_read.cost);
+    let node = read.value.unwrap().expect("the root is stored");
+    assert_eq!(node.encode(), quiet_node.encode());
+    assert_eq!(transaction_view.asked.counts(), [21, 22, 20]);
+
+    // A store that lost a child: a link that leads to no node is damage,
+    // and is reported at once. The node is not read again for it.
+    let transaction_view = Unsteady::over(&writer).missing(1);
     let store = LigninNodeStore::new(&transaction_view, ROOT, Mode::Deferred(None));
     let error = store.get_node_for_read(&be(4)).unwrap().unwrap_err();
     assert!(
         error.to_string().contains("a link leads to no node"),
         "{error}"
     );
+    assert_eq!(transaction_view.asked.counts(), [1, 1, 0]);
+    // So it is where the location ended once before the link is found
+    // to lead nowhere.
+    let transaction_view = Unsteady::over(&writer).stale(1).missing(1);
+    let store = LigninNodeStore::new(&transaction_view, ROOT, Mode::Deferred(None));
+    let error = store.get_node_for_read(&be(4)).unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("a link leads to no node"),
+        "{error}"
+    );
+    assert_eq!(transaction_view.asked.counts(), [2, 2, 1]);
+}
+
+/// What ends the location of a node between two tries of its load.
+#[derive(Clone, Copy, Debug)]
+enum Ended {
+    /// A commit: the next read of the node is under another lease.
+    ByACommit,
+    /// A cell that left the page of the node's cell, with no commit: the
+    /// next read of the node is under the same lease, with the page's
+    /// count of departures one higher.
+    ByADeparture,
+}
+
+/// How often the other side acts in the gaps of one load: after the read
+/// of the node's cell, in that many tries in a row, and after a child was
+/// found.
+const SCHEDULES: [(usize, usize); 2] = [(9, 0), (0, 1)];
+
+/// Runs `read`, which loads one node that has two children, once for
+/// each of [`SCHEDULES`] on a view of `under`, with `act` run in the gaps
+/// of the load as the schedule says. `acted` says how often `act` has
+/// done its work.
+///
+/// Each load is held to what it asks of its transaction. Every time
+/// `act` ran, the next read of a child found the location of the node
+/// ended and the node was read again: as many tries more than one as
+/// `act` ran, nine of them in a row in the first load. The location each
+/// further try read the node with differs from the one before as `ended`
+/// says.
+fn in_loads(
+    under: &dyn Access,
+    at: &str,
+    ended: Ended,
+    act: &(dyn Fn() + Sync),
+    acted: &dyn Fn() -> usize,
+    read: &dyn Fn(&Unsteady<'_>, &str),
+) {
+    let (after_read, after_found) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    let between = |gap: Gap| {
+        let left = match gap {
+            Gap::Read => &after_read,
+            Gap::Found => &after_found,
+            Gap::Ended => return,
+        };
+        if take(left) {
+            act();
+        }
+    };
+    let view = Unsteady::over(under).beside(&between);
+    for (reads, founds) in SCHEDULES {
+        after_read.store(reads, Ordering::Relaxed);
+        after_found.store(founds, Ordering::Relaxed);
+        let (before, asked) = (acted(), view.asked.counts());
+        view.asked.locations();
+        read(&view, at);
+        let tries = reads + founds;
+        let now = view.asked.counts();
+        let asked = [now[0] - asked[0], now[1] - asked[1], now[2] - asked[2]];
+        // A try that found its location ended asked for one child, and
+        // for the one before it where that was found; the last asked for
+        // both.
+        assert_eq!(asked, [tries + 1, tries + founds + 2, tries], "{at}");
+        assert_eq!(acted() - before, tries, "{at}");
+        let locations = view.asked.locations();
+        assert_eq!(locations.len(), tries + 1, "{at}");
+        for pair in locations.windows(2) {
+            let [before, after] = [pair[0].handle(), pair[1].handle()];
+            assert_eq!(before.address(), after.address(), "{at}");
+            match ended {
+                Ended::ByACommit => assert_ne!(before.lease(), after.lease(), "{at}"),
+                Ended::ByADeparture => {
+                    assert_eq!(before.lease(), after.lease(), "{at}");
+                    assert_eq!(before.departures() + 1, after.departures(), "{at}");
+                }
+            }
+        }
+    }
+}
+
+/// The store of [`seven_nodes`], and a committer that lands a commit of
+/// another Merk each time it is called: what another writer does beside a
+/// reader, made on purpose.
+struct Beside {
+    lignin: Lignin,
+    root: Option<Vec<u8>>,
+    landed: AtomicUsize,
+    other_root: std::sync::Mutex<Option<Vec<u8>>>,
+}
+
+impl Beside {
+    const OTHER: LigninSubtree = LigninSubtree::alone([1; 32]);
+
+    fn new() -> Self {
+        let (lignin, root) = seven_nodes();
+        Self {
+            lignin,
+            root,
+            landed: AtomicUsize::new(0),
+            other_root: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Commits a write of the other Merk, in a transaction of its own.
+    fn land(&self) {
+        let n = self.landed.fetch_add(1, Ordering::Relaxed) as u64;
+        let mut root = self.other_root.lock().unwrap();
+        let transaction = self.lignin.path().begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        commit(&writer, &Self::OTHER, &mut root, &[basic(n % 5, &be(n))]);
+        writer.into_scope().merge();
+        let committed = self.lignin.commit(&transaction);
+        assert!(matches!(committed, Outcome::Committed(_)));
+    }
+
+    /// Runs `read` as [`in_loads`] does, with a commit landed in the gaps
+    /// of each load, on a view of each kind of reader that follows a
+    /// location from one operation to the next: a write transaction with
+    /// no write, a write scope with none, and a write scope whose
+    /// transaction holds a write of a third Merk, and so reads through
+    /// frames of its own.
+    fn each_reader(&self, read: &dyn Fn(&Unsteady<'_>, &str)) {
+        let path = self.lignin.path();
+        let land = || self.land();
+        let landed = || self.landed.load(Ordering::Relaxed);
+        let by = Ended::ByACommit;
+
+        let transaction = path.begin();
+        in_loads(&transaction, "a transaction", by, &land, &landed, read);
+
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        in_loads(&writer, "a scope", by, &land, &landed, read);
+
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let third = LigninSubtree::alone([2; 32]);
+        commit(&writer, &third, &mut None, &[basic(1, b"its own")]);
+        assert!(transaction.stats().writes > 0);
+        in_loads(&writer, "a scope with a write", by, &land, &landed, read);
+    }
+}
+
+/// What the Merk that `batches` make costs to read on RocksDB: its root
+/// node by its key, and the open of the Merk by its root key, which is
+/// `root`.
+fn costs_on_rocksdb(
+    batches: &[Vec<(Vec<u8>, Op)>],
+    root: &Option<Vec<u8>>,
+) -> (OperationCost, OperationCost) {
+    let rocks = Rocks {
+        storage: TempStorage::new(),
+        tree_type: TreeType::NormalTree,
+    };
+    let mut rocks_root = None;
+    for batch in batches {
+        (.., rocks_root) = rocks.apply(batch);
+    }
+    assert_eq!(&rocks_root, root);
+    let key = root.clone().expect("the Merk has a root");
+    let transaction = rocks.storage.start_transaction();
+    let context = || {
+        (rocks.storage)
+            .get_transactional_storage_context(SubtreePath::empty(), None, &transaction)
+            .unwrap()
+    };
+    let node = context().get_node(&key, NO_VALUE_DEFINED_COST, version());
+    node.value.unwrap().expect("the root is stored");
+    let opened = Merk::open_layered_with_root_key(
+        context(),
+        root.clone(),
+        TreeType::NormalTree,
+        NO_VALUE_DEFINED_COST,
+        version(),
+    );
+    opened.value.expect("the Merk opens on RocksDB");
+    (node.cost, opened.cost)
+}
+
+/// The batch that makes the root Merk of [`seven_nodes`].
+fn seven_puts() -> Vec<(Vec<u8>, Op)> {
+    (1..=7).map(|n| basic(n, &[n as u8; 8])).collect()
+}
+
+/// One writer, and a committer beside it. The read of a node is up to
+/// three operations of its transaction, the cell and then the key of
+/// each child through the cell's location, and for a reader that pins no
+/// version that location ends with every commit: the next read of the
+/// node is under another lease. Here a commit of another Merk lands
+/// between the read of the cell and the read of its first child nine
+/// times in a row in one load, and after the left child was found in
+/// another ([`SCHEDULES`]), for each kind of reader. The node is read
+/// whole each time, and the load costs what it costs with nothing beside
+/// it and on RocksDB.
+#[test]
+fn a_node_is_read_whole_while_commits_land_in_the_gaps_of_its_read() {
+    let beside = Beside::new();
+    let root = beside.root.clone();
+    let (quiet_cost, quiet_node) = {
+        let quiet = beside.lignin.path().begin();
+        let store = LigninNodeStore::read_only(&quiet, ROOT);
+        let read = store.get_node(&be(4), NO_VALUE_DEFINED_COST, version());
+        let node = read.value.unwrap().expect("the root is stored");
+        assert!(node.link(true).is_some() && node.link(false).is_some());
+        (read.cost, node.encode())
+    };
+    assert_eq!(quiet_cost, costs_on_rocksdb(&[seven_puts()], &root).0);
+
+    beside.each_reader(&|view, at| {
+        let store = LigninNodeStore::new(view, ROOT, Mode::Deferred(None));
+        let read = store.get_node(&be(4), NO_VALUE_DEFINED_COST, version());
+        let node = read.value.unwrap_or_else(|error| panic!("{at}: {error}"));
+        let node = node.expect("the root is stored");
+        assert_eq!(node.encode(), quiet_node, "{at}");
+        assert_eq!(read.cost, quiet_cost, "the cost of one read, {at}");
+    });
+    assert_eq!(beside.landed.load(Ordering::Relaxed), 3 * 10);
+}
+
+/// The Merk that [`Reclaims`] makes to be dropped under the number `n`:
+/// the element under the key `100 + n` of the root Merk hosts it.
+fn doomed(n: usize) -> LigninSubtree {
+    let prefix = [200 + n as u8; 32];
+    let host = LigninHost {
+        subtree: ROOT.prefix,
+        key: be(100 + n as u64),
+        hosted: vec![prefix],
+    };
+    LigninSubtree {
+        prefix,
+        host: Some(host),
+    }
+}
+
+/// The page of the cell of the node under `key` in `subtree`, as it is
+/// committed.
+fn page_of(lignin: &Lignin, subtree: &LigninSubtree, key: &[u8]) -> lignin_format::PageId {
+    let transaction = lignin.path().begin();
+    let subtree = Subtree::new(subtree.prefix);
+    let handle = transaction.node(subtree, key, |node| node.and_then(|node| node.handle()));
+    let handle = handle.expect("the node is read");
+    handle.expect("the node is in a cell").page()
+}
+
+/// Applies `batch` to the root Merk through `staged`, and returns the
+/// key of its root.
+fn write_root(
+    writer: &LigninWriter<'_, '_>,
+    staged: &LigninBatch,
+    root: &Option<Vec<u8>>,
+    batch: &[(Vec<u8>, Op)],
+) -> Option<Vec<u8>> {
+    let store = LigninNodeStore::deferred(writer, ROOT, Some(staged));
+    let mut merk = open_layered(store, root.clone());
+    apply(&mut merk, batch);
+    merk.root_key()
+}
+
+/// A store whose root Merk holds the nodes 1 to 3 and the hosts of 20
+/// Merks of one node each. A Merk's root goes into the page of its host
+/// (`tree-layout.md` P2), so the cells of those Merks are in the page of
+/// the root Merk's cells. Each of them is then dropped with its host, by
+/// a commit of its own, and each is kept from the engine's reclaiming by
+/// a snapshot from before its drop (`transactions.md` PN6): what a drop
+/// left is reclaimed only when no pin is below the drop's version. So
+/// the cells of the dropped Merks leave the page they share with the
+/// root's cell one at a time, when this is asked for it.
+struct Reclaims<'s> {
+    lignin: &'s Lignin,
+    /// The key of the root of the root Merk, with every host gone.
+    root: Option<Vec<u8>>,
+    /// The batches that made the root Merk, in their order.
+    batches: Vec<Vec<(Vec<u8>, Op)>>,
+    held: std::sync::Mutex<std::collections::VecDeque<lignindb::snapshot::Snapshot<'s>>>,
+    taken: AtomicUsize,
+}
+
+impl<'s> Reclaims<'s> {
+    /// A reclaim step for every time [`in_loads`] acts, for two readers.
+    const DOOMED: usize = 2 * 10;
+
+    fn new(lignin: &'s Lignin) -> Self {
+        let path = lignin.path();
+        let plain = (1..=3).map(|n| basic(n, &[n as u8; 8]));
+        let hosts = (0..Self::DOOMED as u64).map(|n| basic(100 + n, b"host"));
+        let mut batches = vec![plain.chain(hosts).collect::<Vec<_>>()];
+        let committed = |transaction: &WriteTxn<'_>, writer: LigninWriter<'_, '_>| {
+            writer.into_scope().merge();
+            assert!(matches!(lignin.commit(transaction), Outcome::Committed(_)));
+        };
+
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let staged = LigninBatch::new();
+        for n in 0..Self::DOOMED {
+            staged.enter(&doomed(n), TREE_TYPE).unwrap();
+        }
+        let mut root = write_root(&writer, &staged, &None, &batches[0]);
+        for n in 0..Self::DOOMED {
+            let store = LigninNodeStore::deferred(&writer, doomed(n), Some(&staged));
+            apply(&mut open_layered(store, None), &[basic(1, b"")]);
+        }
+        (staged.apply(&writer).unwrap()).expect("the batch is applied");
+        committed(&transaction, writer);
+        let shared = page_of(lignin, &ROOT, root.as_deref().expect("a root"));
+        for n in 0..Self::DOOMED {
+            let page = page_of(lignin, &doomed(n), &be(1));
+            assert_eq!(page, shared, "the cell of the Merk {n}");
+        }
+
+        let mut held = std::collections::VecDeque::new();
+        for n in 0..Self::DOOMED {
+            held.push_back(path.snapshot());
+            let transaction = path.begin();
+            let writer = LigninWriter::new(transaction.scope().unwrap());
+            let staged = LigninBatch::new();
+            let mut gone = doomed(n);
+            gone.host.as_mut().expect("a host").hosted.clear();
+            staged.drop_subtree(&gone);
+            batches.push(vec![(be(100 + n as u64), Op::Delete)]);
+            root = write_root(&writer, &staged, &root, &batches[1 + n]);
+            (staged.apply(&writer).unwrap()).expect("the subtree is dropped");
+            committed(&transaction, writer);
+            // The reclaiming knows of the drop from here on, and waits.
+            path.reclaim();
+        }
+        assert_eq!(path.stats().reclaimed.merks, 0);
+        let root_page = page_of(lignin, &ROOT, root.as_deref().expect("a root"));
+        assert_eq!(root_page, shared, "the cell of the root");
+        Self {
+            lignin,
+            root,
+            batches,
+            held: std::sync::Mutex::new(held),
+            taken: AtomicUsize::new(0),
+        }
+    }
+
+    /// Lets go of the oldest snapshot and has the engine reclaim what the
+    /// drop after it left: one cell leaves the page of the root's cell,
+    /// in a page step, and no version is taken. The engine's own thread
+    /// may make the step before this thread does: it is made when the
+    /// count of reclaimed Merks has gone up, and that is waited for.
+    fn step(&self) {
+        let path = self.lignin.path();
+        let (before, version) = (path.stats().reclaimed, path.version());
+        let oldest = self.held.lock().unwrap().pop_front();
+        drop(oldest.expect("a dropped Merk is left to reclaim"));
+        let began = std::time::Instant::now();
+        loop {
+            path.reclaim();
+            let stats = path.stats();
+            if stats.reclaimed.merks > before.merks {
+                break;
+            }
+            assert!(
+                began.elapsed() < std::time::Duration::from_secs(120),
+                "a dropped Merk is not reclaimed: {:?}, {} pins, {} guards",
+                stats.reclaimed,
+                stats.pins,
+                stats.guards,
+            );
+            std::thread::yield_now();
+        }
+        let after = path.stats().reclaimed;
+        assert_eq!(
+            (after.merks, after.cells),
+            (before.merks + 1, before.cells + 1),
+            "{after:?}"
+        );
+        assert_eq!(path.version(), version, "reclaiming takes no version");
+        self.taken.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Runs `read` as [`in_loads`] does, with a reclaim step in the gaps
+    /// of each load, on a view of a write transaction with no write and
+    /// on one of a write scope with none. No commit is made meanwhile.
+    fn each_reader(&self, read: &dyn Fn(&Unsteady<'_>, &str)) {
+        let path = self.lignin.path();
+        let version = path.version();
+        let step = || self.step();
+        let taken = || self.taken.load(Ordering::Relaxed);
+        let by = Ended::ByADeparture;
+        let transaction = path.begin();
+        in_loads(&transaction, "a transaction", by, &step, &taken, read);
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        in_loads(&writer, "a scope", by, &step, &taken, read);
+        assert!(self.held.lock().unwrap().is_empty());
+        assert_eq!(taken(), Self::DOOMED);
+        assert_eq!(path.version(), version);
+    }
+}
+
+/// One writer and a sound store, and beside the reader the engine's
+/// reclaiming of what drops left (`transactions.md` CL6). The read of a
+/// node is up to three operations of its transaction, the cell and then
+/// the key of each child through the cell's location, and that location
+/// ends when a cell leaves the cell's page: a page holds cells of several
+/// Merks, and reclaiming takes the cells of a dropped Merk out in page
+/// steps that take no version. The next read of the node is then under
+/// the same lease, with the page's count of departures one higher. Here
+/// such a step lands between the read of the cell and the read of its
+/// first child nine times in a row in one load, and after the left child
+/// was found in another ([`SCHEDULES`]). The node is read whole each
+/// time, and the load costs what it costs with nothing beside it and on
+/// RocksDB.
+#[test]
+fn a_node_is_read_whole_while_reclaim_steps_land_in_the_gaps_of_its_read() {
+    let lignin = Lignin::new();
+    let reclaims = Reclaims::new(&lignin);
+    let key = reclaims.root.clone().expect("a root");
+    let (quiet_cost, quiet_node) = {
+        let quiet = lignin.path().begin();
+        let store = LigninNodeStore::read_only(&quiet, ROOT);
+        let read = store.get_node(&key, NO_VALUE_DEFINED_COST, version());
+        let node = read.value.unwrap().expect("the root is stored");
+        assert!(node.link(true).is_some() && node.link(false).is_some());
+        (read.cost, node.encode())
+    };
+    let on_rocksdb = costs_on_rocksdb(&reclaims.batches, &reclaims.root);
+    assert_eq!(quiet_cost, on_rocksdb.0);
+
+    reclaims.each_reader(&|view, at| {
+        let store = LigninNodeStore::new(view, ROOT, Mode::Deferred(None));
+        let read = store.get_node(&key, NO_VALUE_DEFINED_COST, version());
+        let node = read.value.unwrap_or_else(|error| panic!("{at}: {error}"));
+        let node = node.expect("the root is stored");
+        assert_eq!(node.encode(), quiet_node, "{at}");
+        assert_eq!(read.cost, quiet_cost, "the cost of one read, {at}");
+    });
+}
+
+/// The open of a Merk by its root key reads the root node, so it is the
+/// same read beside the same reclaiming. GroveDB opens a subtree by this
+/// open and reports a failure of it as an error of its own, which for a
+/// transactional open is "cannot open a subtree with given root key"
+/// (`grovedb/src/lib.rs`, `open_transactional_merk_at_path`).
+#[test]
+fn a_merk_opens_by_its_root_key_while_reclaim_steps_land_in_the_gaps_of_the_read() {
+    fn open<'db>(
+        store: LigninNodeStore<'db>,
+        root: &Option<Vec<u8>>,
+    ) -> grovedb_costs::CostResult<Merk<LigninNodeStore<'db>>, Error> {
+        Merk::open_layered_with_root_key(
+            store,
+            root.clone(),
+            TreeType::NormalTree,
+            NO_VALUE_DEFINED_COST,
+            version(),
+        )
+    }
+    let lignin = Lignin::new();
+    let reclaims = Reclaims::new(&lignin);
+    let root = &reclaims.root;
+    let (quiet_cost, quiet_hash) = {
+        let quiet = lignin.path().begin();
+        let opened = open(LigninNodeStore::read_only(&quiet, ROOT), root);
+        let merk = opened.value.expect("the Merk opens");
+        (opened.cost, merk.root_hash().unwrap())
+    };
+    let on_rocksdb = costs_on_rocksdb(&reclaims.batches, root);
+    assert_eq!(quiet_cost, on_rocksdb.1);
+
+    reclaims.each_reader(&|view, at| {
+        let opened = open(LigninNodeStore::new(view, ROOT, Mode::Deferred(None)), root);
+        let merk = (opened.value)
+            .unwrap_or_else(|error| panic!("the Merk opens by its root key, {at}: {error}"));
+        assert_eq!(merk.root_hash().unwrap(), quiet_hash, "{at}");
+        assert_eq!(opened.cost, quiet_cost, "the cost of one open, {at}");
+    });
+}
+
+/// A write scope that was opened beside another keeps its writes in the
+/// write set until they are laid out, and once it has written a Merk it
+/// reads that Merk's nodes by their keys: the transaction shows it no
+/// child through the location of a parent, whatever the location, and
+/// says of each that it is no longer good. A cell does not hold the keys
+/// of its children, so the store cannot read such a node with its links.
+/// It refuses the read at the first such answer, as a read that storage
+/// does not support and as no damage, and does not read the node again.
+/// What reads an element through the store keeps the error as a read
+/// that failed: it answers neither damage nor a key that is not there.
+#[test]
+fn a_node_whose_children_its_reader_is_not_shown_is_refused_at_once() {
+    let (lignin, root) = seven_nodes();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let first = transaction.scope().unwrap();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let load = |n: u64| {
+        // No node is read a second time in one load here.
+        let reads = AtomicUsize::new(0);
+        let once = |gap: Gap| match gap {
+            Gap::Read => assert_eq!(reads.fetch_add(1, Ordering::Relaxed), 0),
+            Gap::Ended => panic!("a location is said to have ended"),
+            Gap::Found => {}
+        };
+        let view = Unsteady::over(&writer).beside(&once);
+        let store = LigninNodeStore::new(&view, ROOT, Mode::Deferred(None));
+        let read = store.get_node(&be(n), NO_VALUE_DEFINED_COST, version());
+        (read, view.asked.counts())
+    };
+    let quiet = {
+        let quiet = path.begin();
+        let store = LigninNodeStore::read_only(&quiet, ROOT);
+        store.get_node(&be(6), NO_VALUE_DEFINED_COST, version())
+    };
+    let quiet_node = quiet.value.unwrap().expect("the node is stored");
+    assert!(quiet_node.link(true).is_some() && quiet_node.link(false).is_some());
+
+    // With nothing written, the scope is shown the children.
+    let (read, asked) = load(6);
+    assert_eq!(read.cost, quiet.cost);
+    let node = read.value.unwrap().expect("the node is stored");
+    assert_eq!((node.encode(), asked), (quiet_node.encode(), [1, 2, 0]));
+
+    // It writes the leaf 1: the nodes 1, 2 and 4 are its records now.
+    commit(&writer, &ROOT, &mut root.clone(), &[basic(1, b"written")]);
+    assert!(!writer.scope().is_laid_out());
+    // A node it wrote names its children by their keys.
+    let (read, asked) = load(4);
+    assert!(read.value.unwrap().is_some());
+    assert_eq!(asked, [1, 0, 0]);
+    // A node it did not write is in a cell, and its children are not
+    // shown: the read is refused at the first child, and is charged as
+    // one that found nothing.
+    let (read, asked) = load(6);
+    assert_eq!(asked, [1, 1, 0]);
+    assert_eq!(read.cost.seek_count, 1);
+    assert_eq!(read.cost.storage_loaded_bytes, 0);
+    let error = read.value.unwrap_err();
+    let unsupported = |error: &Error| {
+        let said = format!("lignindb: {BY_KEY}");
+        matches!(
+            error,
+            Error::StorageError(grovedb_storage::Error::NotSupported(what)) if *what == said
+        )
+    };
+    assert!(unsupported(&error), "{error:?}");
+    // A read of the element under the key, as GroveDB reads the element
+    // of a subtree it opens, ends in the same error.
+    let store = LigninNodeStore::deferred(&writer, ROOT, None);
+    let element = {
+        use crate::element::get::ElementFetchFromStorageExtensions;
+        grovedb_element::Element::get_optional_from_storage(&store, be(6), version())
+    };
+    let error = element.value.expect_err("the node is not read");
+    assert!(unsupported(&error), "{error:?}");
+
+    writer.into_scope().rollback();
+    first.rollback();
+}
+
+/// What the reader's own transaction does can end a location and give
+/// the next read of the node the same location again. A scope reads a
+/// node. A scope beside it writes a record of another subtree, which
+/// gives the transaction frames of its own, under another lease: the
+/// read of the first child finds the location ended. The scope beside
+/// rolls its write back and the frames go: the node is read at the
+/// location it had. Then a commit of another transaction lands, and the
+/// location ends a second time. Nothing here is damage, and the third
+/// read of the node answers it whole, at the cost of one read.
+#[test]
+fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_whole() {
+    let beside = Beside::new();
+    let path = beside.lignin.path();
+    let (quiet_cost, quiet_node) = {
+        let quiet = path.begin();
+        let store = LigninNodeStore::read_only(&quiet, ROOT);
+        let read = store.get_node(&be(4), NO_VALUE_DEFINED_COST, version());
+        (read.cost, read.value.unwrap().expect("the root").encode())
+    };
+
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let sibling = std::sync::Mutex::new(None);
+    let reads = AtomicUsize::new(0);
+    let between = |gap: Gap| match (gap, reads.load(Ordering::Relaxed)) {
+        (Gap::Read, 0) => {
+            reads.store(1, Ordering::Relaxed);
+            let other = LigninWriter::new(transaction.scope().unwrap());
+            {
+                let third = LigninSubtree::alone([2; 32]);
+                let record = LigninNodeStore::immediate(&other, third);
+                let put = record.put_meta_record(b"key", b"of the scope beside");
+                put.unwrap().expect("the record is put");
+            }
+            *sibling.lock().unwrap() = Some(other);
+        }
+        (Gap::Ended, 1) => {
+            reads.store(2, Ordering::Relaxed);
+            let other: LigninWriter<'_, '_> = sibling.lock().unwrap().take().expect("a scope");
+            other.into_scope().rollback();
+        }
+        (Gap::Read, 2) => {
+            reads.store(3, Ordering::Relaxed);
+            beside.land();
+        }
+        _ => {}
+    };
+    let view = Unsteady::over(&writer).beside(&between);
+    let store = LigninNodeStore::new(&view, ROOT, Mode::Deferred(None));
+    let read = store.get_node(&be(4), NO_VALUE_DEFINED_COST, version());
+    let node = read.value.unwrap().expect("the root is stored");
+    assert_eq!(node.encode(), quiet_node);
+    assert_eq!(read.cost, quiet_cost);
+    assert_eq!(reads.load(Ordering::Relaxed), 3);
+    // Three tries: the location of the first ended twice, and the third
+    // read the node under another lease.
+    assert_eq!(view.asked.counts(), [3, 4, 2]);
+    let parents = view.asked.parents();
+    assert_eq!(parents[0], parents[1]);
+    assert_ne!(parents[1].handle().lease(), parents[2].handle().lease());
+    assert_eq!(parents[2], parents[3]);
+}
+
+/// A reader beside a writer that commits as fast as it can. Each commit
+/// ends the location of every node the reader has read, so a load is
+/// tried again for as long as a commit lands between the read of the
+/// node's cell and the read of a child's: nothing but the writer's pauses
+/// bounds the tries of one load. The writer commits for two seconds and
+/// stops, and the reader loads a node that has two children until then,
+/// once with a value of eight bytes and once with one of half a mebibyte,
+/// which a try copies before it asks for a child. Every load that ends
+/// answers the node, at the cost of one read. How many loads ended beside
+/// the writer and how many tries the longest took is printed as it was
+/// seen, and asserted of nothing: it is the machine's, and nothing here
+/// makes a load meet a commit, which the tests above do.
+#[test]
+fn a_reader_beside_a_writer_that_commits_in_a_loop_ends_each_load_with_the_node() {
+    use std::{
+        sync::{atomic::AtomicBool, Barrier},
+        time::{Duration, Instant},
+    };
+
+    /// Says that the writer has ended, however it ended.
+    struct Ending<'a>(&'a AtomicBool);
+
+    impl Drop for Ending<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+
+    for len in [8, 512 * 1024] {
+        let lignin = Lignin::new();
+        let path = lignin.path();
+        let mut root = None;
+        let nodes = [
+            basic(1, b"left"),
+            basic(2, &vec![7; len]),
+            basic(3, b"right"),
+        ];
+        commit_outside(&lignin, &mut root, &nodes);
+        let key = root.clone().expect("a root");
+        let (quiet_cost, quiet_node) = {
+            let quiet = path.begin();
+            let store = LigninNodeStore::read_only(&quiet, ROOT);
+            let read = store.get_node(&key, NO_VALUE_DEFINED_COST, version());
+            let node = read.value.unwrap().expect("the root is stored");
+            assert!(node.link(true).is_some() && node.link(false).is_some());
+            (read.cost, node.encode())
+        };
+        assert!(quiet_node.len() > len);
+
+        let (writing, together) = (AtomicBool::new(true), Barrier::new(2));
+        let (mut loads, mut beside, mut most, mut tries) = (0, 0, 0, 0);
+        let commits = std::thread::scope(|threads| {
+            let writer = threads.spawn(|| {
+                let _ending = Ending(&writing);
+                let other = LigninSubtree::alone([1; 32]);
+                let (mut other_root, mut commits) = (None, 0_u64);
+                together.wait();
+                let began = Instant::now();
+                while began.elapsed() < Duration::from_secs(2) {
+                    let transaction = path.begin();
+                    let writer = LigninWriter::new(transaction.scope().unwrap());
+                    let put = [basic(commits % 5, &be(commits))];
+                    commit(&writer, &other, &mut other_root, &put);
+                    writer.into_scope().merge();
+                    let committed = path.commit(&transaction, &mut MerkHashRules::new(version()));
+                    assert!(matches!(committed, Ok(Committed::Published(_))));
+                    commits += 1;
+                }
+                commits
+            });
+            let transaction = path.begin();
+            let view = Unsteady::over(&transaction);
+            together.wait();
+            loop {
+                let began_beside = writing.load(Ordering::Acquire);
+                let asked = view.asked.counts()[0];
+                let store = LigninNodeStore::new(&view, ROOT, Mode::Deferred(None));
+                let read = store.get_node(&key, NO_VALUE_DEFINED_COST, version());
+                let ended_beside = writing.load(Ordering::Acquire);
+                let node = read.value.expect("the load ends with no error");
+                assert_eq!(node.expect("the root is stored").encode(), quiet_node);
+                assert_eq!(read.cost, quiet_cost);
+                let took = view.asked.counts()[0] - asked;
+                view.asked.parents();
+                loads += 1;
+                tries += took;
+                most = most.max(took);
+                beside += usize::from(ended_beside);
+                if !began_beside {
+                    break;
+                }
+            }
+            writer.join().expect("the writer commits")
+        });
+        // The last load began after the writer had stopped.
+        assert!(loads > beside);
+        println!(
+            "MERK-05-F3 a reader beside a committer: value of {len} bytes, {commits} commits in \
+             2 s, {loads} loads ({beside} ended beside the writer), {tries} tries, the most in \
+             one load {most}"
+        );
+    }
 }
 
 #[test]
