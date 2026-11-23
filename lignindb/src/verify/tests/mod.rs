@@ -7,6 +7,7 @@
 //! and asks for the finding; `sound` has the stores that pass.
 
 mod injected;
+mod kinds;
 mod sound;
 
 use std::sync::{atomic::AtomicU64, Arc};

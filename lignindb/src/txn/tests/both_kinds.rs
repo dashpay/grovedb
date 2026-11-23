@@ -65,8 +65,11 @@ fn restate<'s>(world: &mut World<'s>, name: u8, tree_type: &[u8], others: &[&Tx<
 }
 
 /// A store in which the subtree `FLAT` is of the type that keeps flat
-/// records.
+/// records. Its checks are given that type, so the check at its drop
+/// holds what the test left in the data columns to the tree types
+/// (`verify::DataColumn`).
 fn store<'s>(db: &'s Db, versions: &'s Versions) -> World<'s> {
+    db.check_kinds_by(kinds());
     let mut world = World::new(db, versions);
     restate(&mut world, FLAT, FLAT_TYPE, &[]);
     world

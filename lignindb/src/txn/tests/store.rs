@@ -214,6 +214,9 @@ pub struct Db {
     /// The rules that the check of its drop recomputes the hashes by, where
     /// they are not those of the model of these tests.
     hash_rules: Mutex<Option<Box<dyn HashRules + Send>>>,
+    /// The tree types that keep flat records, where a test gave them to
+    /// the checks of the store.
+    flat_kinds: Mutex<Option<crate::txn::FlatKinds>>,
     /// Whether the check of its drop recomputes no hash.
     unhashed: AtomicBool,
     /// Whether its drop leaves the recovery of its files out.
@@ -360,6 +363,7 @@ impl Db {
             // the test that knows what it did to them.
             unchecked: AtomicBool::new(keep.is_none()),
             hash_rules: Mutex::new(None),
+            flat_kinds: Mutex::new(None),
             unhashed: AtomicBool::new(false),
             files_gone: AtomicBool::new(false),
             _dir: keep,
@@ -438,6 +442,7 @@ impl Db {
             // store in a directory of its own is.
             unchecked: AtomicBool::new(false),
             hash_rules: Mutex::new(None),
+            flat_kinds: Mutex::new(None),
             unhashed: AtomicBool::new(false),
             files_gone: AtomicBool::new(false),
             _dir: None,
@@ -1046,6 +1051,10 @@ impl Db {
             grove: Grove::Directory {
                 tree: self.directory(),
                 columns: &columns,
+                data: (*locked(&self.flat_kinds)).map(|keeps_flat_records| verify::DataColumn {
+                    column: 0,
+                    keeps_flat_records,
+                }),
             },
             flat_drops,
             flat: &[],
@@ -1099,6 +1108,13 @@ impl Db {
     /// of the model of these tests ([`Rules`]).
     pub fn check_hashes_by(&self, rules: Box<dyn HashRules + Send>) {
         *locked(&self.hash_rules) = Some(rules);
+    }
+
+    /// The tree types that keep flat records, by which every check of
+    /// this store from now on holds the data column to the entries
+    /// (`verify::DataColumn`).
+    pub fn check_kinds_by(&self, keeps_flat_records: crate::txn::FlatKinds) {
+        *locked(&self.flat_kinds) = Some(keeps_flat_records);
     }
 
     /// Has the check at the drop of this store recompute no hash: for a

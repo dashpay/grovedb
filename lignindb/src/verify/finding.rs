@@ -94,6 +94,17 @@ pub enum Rule {
     /// A flat record stands under a prefix that the directory has no entry
     /// for (`tree-layout.md` D6).
     FlatRecordWithoutEntry,
+    /// A flat record in the data column of a subtree whose entry is of a
+    /// tree type that keeps a Merk is no node that no node links
+    /// (`transactions.md` ST1; `lignindb::txn`, "Unlinked records").
+    RecordKind,
+    /// A key of a subtree holds a node of the subtree's Merk and a flat
+    /// record of the data column (`transactions.md` ST1).
+    KeyHeldTwice,
+    /// An entry of a tree type that keeps flat records is hosted in
+    /// another place than the first, or its host hosts another Merk in
+    /// use.
+    FlatTreeHost,
     /// A flat page is not well formed, or is of the wrong kind where it
     /// stands.
     FlatPageFormat,
@@ -169,6 +180,13 @@ impl Rule {
             Self::HostedUnentered => "every hosted root has its entry in the directory",
             Self::HostUnnamed => "the entry of a hosted Merk names its host",
             Self::FlatRecordWithoutEntry => "a flat record stands under a prefix with an entry",
+            Self::RecordKind => {
+                "a flat record in the data of a Merk's subtree is a node that no node links"
+            }
+            Self::KeyHeldTwice => "a key of a subtree holds a node or a flat record, not both",
+            Self::FlatTreeHost => {
+                "a tree that keeps flat records hosts one Merk, in the first place"
+            }
             Self::FlatPageFormat => "a flat page is well formed",
             Self::FlatDanglingPage => "a branch or a bucket names a flat page",
             Self::FlatPageNamedTwice => "a flat page is reached once",

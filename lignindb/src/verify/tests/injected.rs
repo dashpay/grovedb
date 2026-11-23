@@ -1458,7 +1458,7 @@ fn every_corruption_of_what_is_left_is_found() {
 }
 
 /// The lists name every rule but those that need a store of another kind,
-/// which `sound.rs` and the tests below have.
+/// which `sound.rs`, `kinds.rs` and the tests below have.
 #[test]
 fn the_lists_cover_the_rules() {
     let lists = [

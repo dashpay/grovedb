@@ -21,6 +21,7 @@ use super::{
     pages::{Kind, Reach, Seen},
     Grove, OtherHash, OtherHashes, Place, Rule, Run, Unreached,
 };
+use crate::txn::FlatKinds;
 
 /// A Merk as its entry in the directory has it.
 #[derive(Debug)]
@@ -28,6 +29,8 @@ pub(super) struct Merk {
     pub(super) prefix: Prefix,
     /// Whether the Merk is in use: not below a dropped one.
     pub(super) live: bool,
+    /// The tree type that the entry states, as its writer gave it.
+    pub(super) tree_type: Vec<u8>,
     /// The root's cell and its key.
     pub(super) root: Option<(CellAddress, Vec<u8>)>,
     /// The element that hosts the Merk: the prefix of the Merk it is in,
@@ -132,7 +135,10 @@ impl Run<'_, '_, '_> {
                     self.walk_merk(*root, None, Walk::Rooted, rules, &mut hosts);
                 }
             }
-            (Grove::Directory { .. }, Some(entries)) => {
+            (Grove::Directory { data, .. }, Some(entries)) => {
+                if let Some(data) = data {
+                    self.check_flat_hosts(entries, data.keeps_flat_records);
+                }
                 for merk in entries.merks.iter().filter(|merk| merk.live) {
                     if let Some((parent, key, _)) = &merk.host
                         && let Some(parent) = entries.by_prefix.get(parent)
@@ -285,6 +291,17 @@ impl Run<'_, '_, '_> {
             {
                 hosts.cells.insert((merk, *key), at);
             }
+            let record = entered
+                .and_then(|merk| self.records.get(&merk))
+                .and_then(|keys| keys.get(key))
+                .copied();
+            if let Some(record) = record {
+                self.add(Rule::KeyHeldTwice, Place::Cell(at), || {
+                    format!(
+                        "the key of the node holds a flat record of the data column too: {record}"
+                    )
+                });
+            }
             // The value of a cell that a dropped Merk left is read as well:
             // the reclaimer releases the pointer it finds there.
             if let Some(value) = node.cell().value_place() {
@@ -376,6 +393,31 @@ impl Run<'_, '_, '_> {
                 }
             }
             Err(error) => self.add(Rule::HashUnchecked, place, || error.to_string()),
+        }
+    }
+
+    /// Holds the entries in use of a tree type that keeps flat records to
+    /// where they are hosted ([`DataColumn`](super::DataColumn)): in the
+    /// first place of their host, which hosts no other Merk in use.
+    fn check_flat_hosts(&mut self, entries: &Entries, keeps_flat: FlatKinds) {
+        let in_use = || entries.merks.iter().filter(|merk| merk.live);
+        let mut hosted: HashMap<(&Prefix, &[u8]), usize> = HashMap::new();
+        for (parent, key, _) in in_use().filter_map(|merk| merk.host.as_ref()) {
+            *hosted.entry((parent, key.as_slice())).or_default() += 1;
+        }
+        for merk in in_use().filter(|merk| keeps_flat(&merk.tree_type)) {
+            let Some((parent, key, position)) = &merk.host else {
+                continue;
+            };
+            let beside = hosted[&(parent, key.as_slice())] - 1;
+            if *position != 0 || beside != 0 {
+                self.add(Rule::FlatTreeHost, Place::Merk(merk.prefix), || {
+                    format!(
+                        "the entry is of a tree type that keeps flat records, is hosted in \
+                         place {position}, and its host hosts {beside} more in use"
+                    )
+                });
+            }
         }
     }
 

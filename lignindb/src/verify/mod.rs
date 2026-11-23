@@ -42,6 +42,7 @@
 //! | Every Merk in use has an entry that agrees with the cells: the entry names the root's cell and key, the host is a node of the Merk it is said to be in, and the host's pointer is the entry's root. No pointer of a host in use is without its entry. | plan, draft 17 | [`Rule::EntryRoot`], [`Rule::EntryHost`], [`Rule::HostPointer`], [`Rule::HostedUnentered`], [`Rule::HostUnnamed`] |
 //! | The flat trees are trees: every page is reached once, by one tree, a child is one level below its branch, and the keys are in order between the separators above them. A bucket of long keys is followed into its tree. | `flat-page.md` P6, P8; TREE-07 | [`Rule::FlatDanglingPage`], [`Rule::FlatPageNamedTwice`], [`Rule::FlatLevel`], [`Rule::FlatKeyOrder`], [`Rule::FlatBucket`], [`Rule::FlatPageUnreached`] |
 //! | No flat record stands under a prefix that the directory has no entry for. | `tree-layout.md` D6 | [`Rule::FlatRecordWithoutEntry`] |
+//! | Where the caller says which tree types keep flat records, the data column of a subtree holds what the tree type of its entry allows (below). | `transactions.md` ST1 | [`Rule::RecordKind`], [`Rule::KeyHeldTwice`], [`Rule::FlatTreeHost`] |
 //! | A page that a lazy range delete left is a flat page that no tree reaches. | `lignin_tree::drop` | [`Rule::FlatDropRecord`], [`Rule::FlatPageNamedTwice`] |
 //!
 //! Where the caller vouches that the store is still ([`Scope::Still`]),
@@ -68,6 +69,38 @@
 //! provided methods do, leave every value hash that differs a finding
 //! ([`Rule::Hash`]). The other hashes of such a cell are compared as those
 //! of any cell.
+//!
+//! # The data column by the tree type of the entry
+//!
+//! A subtree keeps the records of its data that are no cells in one
+//! column: the flat records of a tree that keeps its data so, and the
+//! nodes of a Merk that no node links (`transactions.md` ST1). Which of
+//! the two a record is, the tree type of the subtree's entry says, and
+//! nothing here knows a tree type. A caller that says which tree types
+//! keep flat records ([`DataColumn`]) has the records of that column held
+//! to them, under every entry that is in use:
+//!
+//! - **Under an entry of a tree type that keeps a Merk**, which is every
+//!   tree type the caller does not name, a record of the column has the
+//!   form of a node that no node links ([`Rule::RecordKind`]), and its
+//!   key is the key of no node of the Merk ([`Rule::KeyHeldTwice`]).
+//! - **Under an entry of a tree type that keeps flat records**, a record
+//!   has no form to keep. The subtree may hold the nodes of a Merk beside
+//!   its records: a key holds a node or a record and not both
+//!   ([`Rule::KeyHeldTwice`]). An entry of such a type that names a host
+//!   is hosted in the first place of that host, and no other entry in use
+//!   names the same host ([`Rule::FlatTreeHost`]).
+//!
+//! So the bytes of a node that no node links, under an entry that keeps
+//! flat records, are a flat record like any other and no finding: the
+//! rule goes by the tree type and not by the bytes.
+//!
+//! A key that is held twice is found where the walk of the Merk enters
+//! the node, so it is said only of nodes that were read. For that, a run
+//! keeps the key and the place of every record of the column under an
+//! entry in use that names a root, in memory, to its end. A record whose
+//! value is not read has the finding of its value, and is asked no form.
+//! With no [`DataColumn`], none of this is checked.
 //!
 //! # Cells that nothing reaches
 //!
@@ -280,6 +313,7 @@ use self::{
     pages::Seen,
     read::{Frames, Shared, TreeRead, ValueRead},
 };
+use crate::txn::FlatKinds;
 
 /// The structures of one open store, as the checker reads them. The caller
 /// vouches that all of them are of one store.
@@ -324,11 +358,30 @@ pub enum Grove<'c> {
         /// **Every** flat keyspace that holds records of subtrees, with
         /// what stands before a subtree's prefix in its keys.
         columns: &'c [Column<'c>],
+        /// The data column, where its records are held to the tree types
+        /// of the entries. With `None` they are not.
+        data: Option<DataColumn>,
     },
     /// The store has no directory. These are the root cells of the Merks
     /// that no element hosts, and every hosted-root pointer below them is
     /// followed.
     Roots(&'c [CellAddress]),
+}
+
+/// The column of a store in which a subtree keeps the records of its
+/// data that are no cells: the flat records of a tree that keeps its data
+/// so, and the nodes of a Merk that no node links (`transactions.md` ST1).
+/// With it a run holds the records of that column to the tree type of
+/// their subtree's entry (the [module documentation](self), "The data
+/// column by the tree type of the entry").
+#[derive(Debug, Clone, Copy)]
+pub struct DataColumn {
+    /// Which of the columns of [`Grove::Directory`] it is.
+    pub column: usize,
+    /// Whether the tree type of an entry, as the entry states it, is one
+    /// that keeps flat records: what the writers of the store gave their
+    /// batches ([`Scope::apply_by_kind`](crate::txn::Scope::apply_by_kind)).
+    pub keeps_flat_records: FlatKinds,
 }
 
 /// How much of a store a run may look at.
@@ -447,6 +500,11 @@ struct Run<'a, 's, 'c> {
     census: Census,
     unreached: Unreached,
     other_hashes: OtherHashes,
+    /// The flat records in the data column of each Merk in use whose
+    /// entry names a root, by the Merk's place among the entries: the
+    /// record's key in its subtree, and where the record is
+    /// ([`DataColumn`]).
+    records: HashMap<usize, HashMap<Vec<u8>, Place>>,
     cut: Cut,
 }
 
@@ -483,6 +541,7 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
             census: Census::default(),
             unreached: Unreached::default(),
             other_hashes: OtherHashes::default(),
+            records: HashMap::new(),
             cut: Cut::default(),
         }
     }

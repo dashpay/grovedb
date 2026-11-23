@@ -15,9 +15,10 @@ use lignin_tree::{
 
 use super::{
     grove::{Entries, Merk},
-    pages::{FlatReach, Kind, Seen},
+    pages::{out_of_line, FlatReach, Kind, Seen},
     Grove, Place, Rule, Run,
 };
+use crate::txn::{unlinked, FlatKinds};
 
 /// What the records of a keyspace are checked against.
 #[derive(Clone, Copy)]
@@ -29,8 +30,23 @@ enum Records<'a> {
     /// those of every column that is kept in the keyspace.
     Columns {
         leads: &'a [&'a [u8]],
-        prefixes: &'a HashMap<Prefix, usize>,
+        entries: &'a Entries,
+        /// Which of `leads` is the data column's, and the tree types that
+        /// keep flat records, where the store says them
+        /// ([`DataColumn`](super::DataColumn)).
+        data: Option<(usize, FlatKinds)>,
     },
+}
+
+/// A record of the data column, under a prefix that the directory has an
+/// entry for.
+struct Record<'a> {
+    prefix: Prefix,
+    /// The key in its subtree.
+    key: &'a [u8],
+    value: FlatValue<'a>,
+    page: PageId,
+    place: Place,
 }
 
 /// How a walk came to its pages.
@@ -82,14 +98,17 @@ impl Run<'_, '_, '_> {
     ) -> Option<Entries> {
         let store = self.store;
         let mut entries = None;
-        if let Grove::Directory { tree, columns } = store.grove {
+        if let Grove::Directory {
+            tree,
+            columns,
+            data,
+        } = store.grove
+        {
             if self.walk_flat(&tree, Records::Any) {
                 entries = self.read_directory(&tree, guard);
             } else {
                 self.add(Rule::Directory, Place::Page(tree.root()), not_scanned);
             }
-            let none = HashMap::new();
-            let prefixes = (entries.as_ref()).map_or(&none, |entries| &entries.by_prefix);
             // Several columns may share one keyspace, each under a lead of
             // its own (`lignin_tree::drop::Column`): a keyspace is walked
             // once, with the leads of all its columns.
@@ -100,14 +119,19 @@ impl Run<'_, '_, '_> {
                     continue;
                 }
                 walked.push(root);
-                let shares = |other: &&lignin_tree::drop::Column<'_>| other.tree.root() == root;
-                let leads: Vec<&[u8]> = (columns.iter().filter(shares))
-                    .map(|column| column.lead)
+                let sharing: Vec<usize> = (0..columns.len())
+                    .filter(|other| columns[*other].tree.root() == root)
                     .collect();
+                let leads: Vec<&[u8]> =
+                    (sharing.iter()).map(|other| columns[*other].lead).collect();
                 let records = match &entries {
-                    Some(_) => Records::Columns {
+                    Some(entries) => Records::Columns {
                         leads: &leads,
-                        prefixes,
+                        entries,
+                        data: data.and_then(|data| {
+                            let lead = sharing.iter().position(|other| *other == data.column)?;
+                            Some((lead, data.keeps_flat_records))
+                        }),
                     },
                     None => Records::Any,
                 };
@@ -173,6 +197,7 @@ impl Run<'_, '_, '_> {
                     entries.merks.push(Merk {
                         prefix,
                         live: directory.is_live(&entry),
+                        tree_type: entry.tree_type().to_vec(),
                         root: entry.root().map(|root| (root.address, root.key.to_vec())),
                         host: (entry.host())
                             .map(|host| (*host.parent, host.key.to_vec(), host.position)),
@@ -427,16 +452,35 @@ impl Run<'_, '_, '_> {
                             }
                         } else if !left {
                             self.census.flat_records += 1;
-                            if let Records::Columns { leads, prefixes } = records {
+                            if let Records::Columns {
+                                leads,
+                                entries,
+                                data,
+                            } = records
+                            {
                                 let full = [&visit.outer[..], &key[..]].concat();
-                                let prefix = record_prefix(&full, leads, prefixes);
+                                let found = record_prefix(&full, leads, &entries.by_prefix);
+                                let prefix = found.map(|(prefix, _)| prefix);
                                 let known = match prefix {
                                     Some(prefix) if entered == Some(prefix) => true,
-                                    Some(prefix) => prefixes.contains_key(&prefix),
+                                    Some(prefix) => entries.by_prefix.contains_key(&prefix),
                                     None => false,
                                 };
                                 if known {
                                     entered = prefix;
+                                    if let (Some((prefix, lead)), Some((data, keeps_flat))) =
+                                        (found, data)
+                                        && lead == data
+                                    {
+                                        let record = Record {
+                                            prefix,
+                                            key: &full[leads[lead].len() + PREFIX_LEN..],
+                                            value,
+                                            page,
+                                            place,
+                                        };
+                                        self.check_kind(entries, &record, keeps_flat);
+                                    }
                                 } else {
                                     self.add(
                                         Rule::FlatRecordWithoutEntry,
@@ -460,6 +504,48 @@ impl Run<'_, '_, '_> {
         }
         self.cut.flat |= !whole;
         whole
+    }
+
+    /// Holds a record of the data column to the tree type of its
+    /// subtree's entry ([`DataColumn`](super::DataColumn)).
+    ///
+    /// Under an entry of a tree type that keeps a Merk, the record is a
+    /// node that no node links. Where the entry names a root, the record's
+    /// key is kept for the walk of that Merk, which holds it against the
+    /// keys of the nodes. Nothing is asked of a record under an entry that
+    /// is not in use.
+    fn check_kind(&mut self, entries: &Entries, record: &Record<'_>, keeps_flat: FlatKinds) {
+        let Some(index) = entries.by_prefix.get(&record.prefix).copied() else {
+            return;
+        };
+        let merk = &entries.merks[index];
+        if !merk.live {
+            return;
+        }
+        if !keeps_flat(&merk.tree_type) {
+            // A value that is not read was reported where its page was
+            // read, and nothing is said of its form.
+            let refused = match record.value {
+                FlatValue::Inline(bytes) => unlinked::decode(record.key, bytes).err(),
+                FlatValue::OutOfLine(_) => out_of_line(record.value)
+                    .and_then(|value| self.values.fetch(value, record.page).ok())
+                    .and_then(|bytes| unlinked::decode(record.key, bytes).err()),
+            };
+            if let Some(refused) = refused {
+                let prefix = record.prefix;
+                self.add(Rule::RecordKind, record.place, || {
+                    format!(
+                        "the record is in the data of {}, whose entry is of a tree type that \
+                         keeps a Merk: {refused}",
+                        Place::Merk(prefix)
+                    )
+                });
+            }
+        }
+        if merk.root.is_some() {
+            let keys = self.records.entry(index).or_default();
+            keys.insert(record.key.to_vec(), record.place);
+        }
     }
 }
 
@@ -499,19 +585,25 @@ fn bucket_root(key: &[u8], key_limit: usize, value: FlatValue<'_>) -> Option<Pag
 }
 
 /// The prefix of the subtree that the record under `key` is of, in a
-/// keyspace whose columns begin their keys with `leads`: the one that
-/// `prefixes` has, where one lead is the beginning of another.
-fn record_prefix(key: &[u8], leads: &[&[u8]], prefixes: &HashMap<Prefix, usize>) -> Option<Prefix> {
-    let under = |lead: &&[u8]| {
+/// keyspace whose columns begin their keys with `leads`, and which of the
+/// leads it stands under: the one whose prefix `prefixes` has, where one
+/// lead is the beginning of another.
+fn record_prefix(
+    key: &[u8],
+    leads: &[&[u8]],
+    prefixes: &HashMap<Prefix, usize>,
+) -> Option<(Prefix, usize)> {
+    let under = |(index, lead): (usize, &&[u8])| {
         let rest = key.strip_prefix(*lead)?;
-        rest.first_chunk::<PREFIX_LEN>().copied()
+        let prefix = rest.first_chunk::<PREFIX_LEN>()?;
+        Some((*prefix, index))
     };
-    let mut found = leads.iter().filter_map(under);
+    let mut found = leads.iter().enumerate().filter_map(under);
     let first = found.next()?;
-    match prefixes.contains_key(&first) {
+    match prefixes.contains_key(&first.0) {
         true => Some(first),
         false => found
-            .find(|prefix| prefixes.contains_key(prefix))
+            .find(|(prefix, _)| prefixes.contains_key(prefix))
             .or(Some(first)),
     }
 }

@@ -164,6 +164,7 @@ fn check(db: &Db) {
         grove: Grove::Directory {
             tree: catalog.directory,
             columns: &columns,
+            data: None,
         },
         flat_drops: Some(catalog.flat_drops),
         flat: &other,

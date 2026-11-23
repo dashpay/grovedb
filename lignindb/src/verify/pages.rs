@@ -335,7 +335,7 @@ impl Run<'_, '_, '_> {
 
 /// The place of the value that a record of a flat leaf holds out of line,
 /// if it holds one.
-fn out_of_line(value: FlatValue<'_>) -> Option<ValuePlace> {
+pub(super) fn out_of_line(value: FlatValue<'_>) -> Option<ValuePlace> {
     let FlatValue::OutOfLine(bytes) = value else {
         return None;
     };
