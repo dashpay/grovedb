@@ -183,15 +183,22 @@ grovedbg = [
 ]
 # Snapshot-bootstrap primitives — escape hatches that bypass grovedb's normal
 # validation:
-#  - `GroveDb::raw_storage`            (escape hatch to StorageContext)
-#  - `RocksDbStorage::ingest_subtree_sst` (bulk-load SST into a CF)
+#  - `GroveDb::dump_subtree`, `GroveDb::load_subtree` (the records of one
+#                                       subtree to and from a stream, on any
+#                                       engine; `docs/lignindb/engine.md`)
+#  - `GroveDb::subtree_root_as`        (the root a subtree's records give)
 #  - `GroveDb::replace_subtree_root`   (caller-provided child hash, no
 #                                       cross-check against actual subtree state)
+# and, where the RocksDB engine is compiled in (`rocksdb_storage`):
+#  - `GroveDb::raw_storage`            (escape hatch to StorageContext)
+#  - `RocksDbStorage::ingest_subtree_sst` (bulk-load SST into a CF)
+# The feature names no engine: it adds the hatches to the engines of the
+# build.
 # Enable ONLY for build-time tooling that needs to dump+restore a subtree
 # out-of-band (e.g. devnet shielded-pool snapshot bake/apply). Misuse will
 # produce an inconsistent Merk tree — there is no runtime check that the
 # caller-provided hash matches the underlying state.
-unsafe-dump-load = ["rocksdb_storage", "grovedb-storage/unsafe-dump-load"]
+unsafe-dump-load = ["engine_generic", "grovedb-storage/unsafe-dump-load"]
 
 # `lignin_cost_model` is set where `lignin-testkit/cost-model-storage/check.sh`
 # builds GroveDB on a storage crate that has no RocksDB.

@@ -38,6 +38,11 @@ pub(crate) mod rewrap_non_merk_tree_parent_element;
 #[cfg(all(feature = "engine_generic", feature = "unsafe-dump-load"))]
 pub mod replace_subtree_root;
 
+/// The dump of one subtree to a stream and its load into an empty subtree,
+/// on any engine. See the module-level docs in `dump_load/mod.rs`.
+#[cfg(all(feature = "engine_generic", feature = "unsafe-dump-load"))]
+pub mod dump_load;
+
 #[cfg(feature = "engine_generic")]
 pub mod indexed_tree;
 

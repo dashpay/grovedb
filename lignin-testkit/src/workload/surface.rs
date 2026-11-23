@@ -109,6 +109,13 @@ const DUMP_LOAD: Status = Status::LeftOut(
      GroveDB's operations; GROVE-09 replaces the hatch",
 );
 
+const SUBTREE_DUMP: Status = Status::LeftOut(
+    "the dump and the load of one subtree behind the `unsafe-dump-load` feature (GROVE-09), \
+     which carry the records of a subtree between two databases and write no element; \
+     `grovedb::engine::lignin::tests::hatch` runs them on both engines and from each to the \
+     other",
+);
+
 const AGGREGATE_READER: Status = inside("run_path_query");
 
 /// Every public method of `GroveDb`, the methods of the traits implemented
@@ -350,6 +357,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         produced(&[Operation::DenseRootHash]),
     ),
     ("drop_flat_subtree", produced(&[Operation::FlatDrop])),
+    ("dump_subtree", SUBTREE_DUMP),
     (
         "engine",
         Status::LeftOut(
@@ -459,6 +467,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         produced(&[Operation::IndexedInsertSum]),
     ),
     ("is_empty_tree", produced(&[Operation::IsEmptyTree])),
+    ("load_subtree", SUBTREE_DUMP),
     ("mmr_tree_append", produced(&[Operation::MmrAppend])),
     ("mmr_tree_get_value", produced(&[Operation::MmrValue])),
     ("mmr_tree_leaf_count", produced(&[Operation::MmrLeafCount])),
@@ -675,6 +684,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
              a person, not a caller",
         ),
     ),
+    ("subtree_root_as", SUBTREE_DUMP),
     ("verify_aggregate_big_sum_query", VERIFIER),
     ("verify_aggregate_big_sum_query_per_key", VERIFIER),
     (

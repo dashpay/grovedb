@@ -34,5 +34,6 @@ blake3 = []
 rocksdb_storage = ["rocksdb", "num_cpus", "lazy_static", "tempfile", "integer-encoding"]
 # See `grovedb`'s `unsafe-dump-load` feature for context. On this crate it
 # gates `RocksDbStorage::ingest_subtree_sst` — the RocksDB IngestExternalFile
-# wrapper used to bulk-load a precomputed subtree SST.
-unsafe-dump-load = ["rocksdb_storage"]
+# wrapper used to bulk-load a precomputed subtree SST. It names no engine:
+# without `rocksdb_storage` it compiles nothing.
+unsafe-dump-load = []

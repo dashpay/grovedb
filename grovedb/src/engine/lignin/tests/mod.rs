@@ -22,6 +22,8 @@ mod batches;
 mod cases;
 mod checkpoint;
 mod deletes;
+#[cfg(feature = "unsafe-dump-load")]
+mod hatch;
 mod indexed;
 mod inspection;
 mod moves;
