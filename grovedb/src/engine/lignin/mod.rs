@@ -1080,10 +1080,10 @@ impl Engine for LigninEngine {
             // an element is written over a tree and its look states a
             // drop, the first look is made again with that drop.
             let looked = gone::gone(view, &parts, own, &over::Left::default()).and_then(|gone| {
-                let owed = enter::owed(view, &parts, &gone.left_out)?;
-                let left = over::left(view, &parts, &gone.left_out)?;
                 // What the enters were worked out with.
-                let before = gone.left_out.clone();
+                let before = gone.unentered();
+                let owed = enter::owed(view, &parts, &before)?;
+                let left = over::left(view, &parts, &gone.left_out)?;
                 let gone = match left.drops.is_empty() {
                     true => gone,
                     false => gone::gone(view, &parts, own, &left)?,
@@ -1115,11 +1115,29 @@ impl Engine for LigninEngine {
                 for left_out in &gone.left_out {
                     part.leave_out(left_out);
                 }
+                for removing in &gone.removing {
+                    part.remove_if_entered(removing);
+                }
             }
-            // What is entered under a removed node leaves with the batch
-            // that removes the node.
-            for (part, dropped) in &gone.drops {
-                parts[*part].drop_subtree(dropped);
+            // What is entered under a removed node when the group is laid
+            // out leaves with the batch that removes the node.
+            // Where the group hands a write over for the prefix as the
+            // look found it, which is not under the node, no drop is
+            // stated: the first batch says that the prefix is not
+            // entered under the node, before anything of the group is
+            // laid out.
+            for under in &gone.drops {
+                let (prefix, above, key) = (&under.prefix, &under.above, &under.key);
+                let part = match gone.beside.contains(prefix) {
+                    false => {
+                        parts[under.part].drop_if_entered(prefix, above, key);
+                        continue;
+                    }
+                    true => parts.first_mut(),
+                };
+                if let Some(first) = part {
+                    first.not_under(prefix, above, key);
+                }
             }
             // A secondary that hangs under an indexed tree whose element
             // hosts it no more leaves with the batch that writes the
@@ -1143,23 +1161,29 @@ impl Engine for LigninEngine {
             // What an element was written over leaves with the first
             // batch, which is the one that enters again what the group
             // still writes; what is below a drop above goes with that.
+            // The drop names the node of the element.
             if let Some(first) = parts.first_mut() {
                 let stated = (left.drops.iter()).filter(|dropped| !gone.covered.contains(*dropped));
                 for dropped in stated {
-                    first.drop_subtree(dropped);
+                    match left.under.get(dropped) {
+                        Some((above, key)) => first.drop_under(dropped, above, key, false),
+                        None => first.drop_subtree(dropped),
+                    }
                 }
             }
             // A subtree is moved with the batch that was told of it, and
-            // what makes room for it is dropped with the same batch.
-            for (part, dropped) in &moved.drops {
-                parts[*part].drop_subtree(dropped);
+            // what makes room for it is dropped with the same batch,
+            // under the node it was found under and dated at the read of
+            // that node.
+            for (part, dropped, above, key) in &moved.drops {
+                parts[*part].drop_under(dropped, above, key, true);
             }
             for (part, stated) in &moved.moves {
                 parts[*part].move_as(stated);
             }
             // What a flat drop of the group leaves behind on RocksDB.
-            let dropped = (gone.drops.iter().chain(&moved.drops))
-                .map(|(_, dropped)| *dropped)
+            let dropped = (gone.found.iter().copied())
+                .chain(moved.drops.iter().map(|(_, dropped, ..)| *dropped))
                 .chain(left.drops.iter().copied())
                 .collect();
             match behind::left_behind(view, &parts, &dropped) {
@@ -1178,15 +1202,38 @@ impl Engine for LigninEngine {
                 |prefix: &[u8; 32]| left.enters.iter().any(|(known, _)| known.prefix == *prefix);
             // Two enters are not handed over: one of the look for what
             // is written over, for a subtree that a drop of a removed
-            // node takes, and one of the look for what is entered, for a
-            // subtree whose element hosts one Merk and that the second
-            // look for what leaves left out after the enters were
-            // worked out. The enters of the Merks of an indexed tree are
-            // handed over as they were stated.
+            // node takes, and one of the look for what is entered, where
+            // the second look for what leaves found, after the enters
+            // were worked out, that the group holds nothing to apply to
+            // the subtree: its writes are left out, or are removals
+            // that are made if the subtree is entered. For a subtree
+            // whose element hosts one Merk that is asked of the subtree
+            // itself. The Merks of an indexed tree are entered together
+            // or not at all, also those that the group holds no write
+            // for: not at all where that holds of each of them that the
+            // group holds a write for, and no batch of the group states a
+            // value for their element or removes it. A node of the
+            // element that a batch puts with the value it had names
+            // them all the same, and its cell points at no Merk where
+            // they are not entered.
+            let unentered = gone.unentered();
+            let held: std::collections::BTreeSet<[u8; 32]> = (parts.iter())
+                .flat_map(LigninSettled::written)
+                .map(|subtree| subtree.prefix)
+                .collect();
             let since = |subtree: &LigninSubtree| {
-                let alone = (subtree.host.as_ref()).is_none_or(|host| host.hosted.len() <= 1);
                 let prefix = &subtree.prefix;
-                alone && gone.left_out.contains(prefix) && !left_before.contains(prefix)
+                match &subtree.host {
+                    Some(host) if host.hosted.len() > 1 => {
+                        let written = host.hosted.iter().filter(|merk| held.contains(*merk));
+                        let mut written = written.peekable();
+                        let stored = matches!(enter::host_of(&parts, host), enter::Host::Stored);
+                        stored
+                            && written.peek().is_some()
+                            && written.all(|merk| unentered.contains(merk))
+                    }
+                    _ => unentered.contains(prefix) && !left_before.contains(prefix),
+                }
             };
             let entered_again = (left.enters.iter())
                 .filter(|(subtree, _)| !gone.left_out.contains(&subtree.prefix));
@@ -1208,11 +1255,15 @@ impl Engine for LigninEngine {
             // a subtree which the group hands a write for; no batch of
             // the group enters, drops or clears a subtree itself, or
             // states one anew; and a commit was published since before
-            // the look. Every other refusal is the caller's answer.
+            // the look. Every other refusal is the caller's answer. What
+            // is entered under a removed node is judged by the
+            // transaction where the group is laid out: it leaves with
+            // the node, and nothing is refused, where the group hands no
+            // write over for it; where the group wrote it as its look
+            // found it, the group is refused as a conflict, which is
+            // the caller's answer.
             let stale = (refused.entry).is_some_and(|entry| {
-                let found_otherwise = owed.found_otherwise(entry)
-                    || left.found_otherwise(entry)
-                    || gone.found_otherwise(entry);
+                let found_otherwise = owed.found_otherwise(entry) || left.found_otherwise(entry);
                 let own_doing = left.own_doing(entry) && !gone.leaves_out(entry);
                 found_otherwise && !own_doing
             });

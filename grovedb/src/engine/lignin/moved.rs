@@ -43,9 +43,17 @@
 //!   ([`makes_room`]).
 //!   Such is the Merk of a tree that was written into and emptied, which
 //!   GroveDB asks no walk for when it moves the tree away. The look
-//!   states the drop, the drop takes what is entered under the prefix
-//!   when the batch is applied, and the transaction is asked for no date
-//!   of it. A drop takes the records of the subtree in every keyspace:
+//!   states the drop of the subtree under the node it found it under
+//!   (`lignindb::txn::SubtreeWrite::DropUnder`), dated at the read of
+//!   that node as the element of a tree by a handle of the batch that
+//!   writes the node's key: the transaction refuses the batch as a
+//!   conflict where a commit beside it wrote the node since and the
+//!   transaction did not give the node its value itself, as it does
+//!   for the move, and refuses it where the subtree hangs under another
+//!   node by then. Where no such handle read the node as the element
+//!   of a tree, there is no read to date the drop at, and the look
+//!   refuses the group as a conflict: the tree was made since. A
+//!   drop takes the records of the subtree in every keyspace:
 //!   those that no node links, where a Merk with no node holds any, go
 //!   with it. RocksDB's move neither reads nor deletes them: it leaves
 //!   each under the prefix, unless the copy of the moved tree, which
@@ -158,8 +166,9 @@ pub(super) struct Moved {
     /// once the group is applied.
     pub(super) hosts: Vec<LigninHost>,
     /// The subtrees that are dropped where a moved one goes, each with
-    /// the batch that moves it there.
-    pub(super) drops: Vec<(usize, [u8; 32])>,
+    /// the batch that moves it there and the node it was found under:
+    /// the subtree that node is in, and its key.
+    pub(super) drops: Vec<(usize, [u8; 32], [u8; 32], Vec<u8>)>,
 }
 
 /// A pair that a batch was told of, with the entry of its subtree.
@@ -316,9 +325,19 @@ pub(super) fn moved(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Mov
                 && let Some(there) = entered(view, pair.to)?
             {
                 let leaving = makes_room(view, pair.to, &there)?;
-                moved
-                    .drops
-                    .extend(leaving.into_iter().map(|left| (at, left)));
+                if let (false, Some(under)) = (leaving.is_empty(), &there.host) {
+                    // The drops are dated at the mover's read of the node
+                    // as the element of a tree. A node that its handle
+                    // read as no tree hosted nothing then: a commit
+                    // beside the transaction made the tree since.
+                    if !part.read_as_tree(&under.subtree, &under.key) {
+                        return Err(Error::Commit(CommitError::Conflict));
+                    }
+                    // What leaves is entered under that one node.
+                    for left in leaving {
+                        (moved.drops).push((at, left, under.subtree, under.key.clone()));
+                    }
+                }
             }
         }
         // A node that hosted a moved subtree and is put again hosts what

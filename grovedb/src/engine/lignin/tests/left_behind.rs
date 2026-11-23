@@ -853,3 +853,51 @@ fn what_a_flat_drop_left_is_kept_over_a_close_and_in_a_checkpoint_as_on_rocksdb(
         }
     }
 }
+
+/// A tree that nothing was written into is dropped flat while the prefix
+/// of its path is entered under no node, with a record that was put by
+/// the prefix at the seam. The look for what leaves finds no subtree
+/// under the tree's node, the drop that is stated for the prefix takes
+/// nothing, and the record stays where it is until the drain, as on
+/// RocksDB: no mark stands for it.
+#[test]
+fn a_flat_drop_leaves_no_mark_for_a_prefix_that_is_entered_under_no_node() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
+        (db.insert(ROOT, b"t", Element::empty_tree(), None, None, v)
+            .unwrap())
+        .expect("a tree");
+        let own = prefix_of(b"t");
+        let engine = db.engine();
+        {
+            let tx = engine.start_transaction();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let handle = engine.subtree_by_prefix(own, Some(&batch), &tx).unwrap();
+            (handle.aux().put(b"x", b"12345678", None).unwrap()).expect("staging");
+            drop(handle);
+            (engine.apply_batch(batch, &tx).unwrap()).expect("a batch");
+            (engine.commit_transaction(tx).unwrap()).expect("a commit");
+        }
+        // In a transaction of the caller's, which defers the drain.
+        let unchecked = BackwardsReferences::DontCheck;
+        let tx = db.start_transaction();
+        (db.drop_flat_subtree(ROOT, b"t", unchecked, Some(&tx), v)
+            .unwrap())
+        .expect("a flat drop");
+        (db.commit_transaction(tx).unwrap()).expect("a commit");
+        assert!(
+            db.get(ROOT, b"t", None, v).unwrap().is_err(),
+            "the tree is gone"
+        );
+        assert_eq!(marks(&db), Vec::<Vec<u8>>::new());
+        let read = engine.start_read_transaction();
+        let handle = engine.subtree_by_prefix(own, None, &read).unwrap();
+        let entry = handle.entry().expect("the directory answers");
+        assert!(entry.expect("the entry stays").host.is_none());
+        let left = handle.aux().get(b"x").unwrap().expect("a read");
+        assert_eq!(left.as_deref(), Some(b"12345678".as_slice()));
+    }
+    check(dir.path(), v);
+}

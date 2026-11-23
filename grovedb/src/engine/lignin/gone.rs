@@ -24,6 +24,33 @@
 //!   the old key removes the node there, and a subtree that goes to
 //!   another prefix with the element is stated by the look for what is
 //!   moved ([`moved`](super::moved)).
+//! - **The drop is judged where the group is laid out.** For each node
+//!   that the group removes in a subtree whose writes it hands over, the
+//!   four prefixes are each stated as dropped if the subtree is entered
+//!   under that node then
+//!   (`lignindb::txn::SubtreeWrite::DropIfEntered`), whatever this look
+//!   found under them, but for a prefix that the group hands a write
+//!   over for as the look found it (below). So a subtree that a commit
+//!   beside the
+//!   transaction enters under the node after the look leaves with the
+//!   node, one that such a commit took is not dropped again, and an
+//!   entry that such commits left under the prefix and under another
+//!   node, or under none, stays. That is said of a prefix that the
+//!   group hands no write over for.
+//! - **Where the group itself hands a write over for a prefix that the
+//!   look did not find under the node**, it writes the prefix as the
+//!   look found it ([`Gone::beside`]): under another node, under none,
+//!   or not entered. No drop is stated for such a prefix. The first
+//!   batch of the group says that the prefix is not entered under the
+//!   node ([`LigninSettled::not_under`],
+//!   `lignindb::txn::SubtreeWrite::NotUnder`), and the transaction
+//!   refuses the group as a conflict where it is
+//!   (`lignindb::txn::BatchError::EnteredSince`): nothing of the group is
+//!   applied, and a look that is made afterwards finds the subtree under
+//!   the node. Removals alone that state no root key are handed over to
+//!   be made if the prefix is entered
+//!   ([`LigninSettled::remove_if_entered`]); a put and removals with a
+//!   root key are handed over as they are.
 //! - **A drop takes every subtree below it**, by the hosts the directory
 //!   names, and none of them is dropped by name: the nodes that the group
 //!   removes in a subtree which is below a drop are not looked at.
@@ -43,10 +70,22 @@
 //!     holds removals for it and no put. A put into such a subtree is
 //!     that look's to refuse;
 //!   - the writes into a subtree that is not entered, where the group
-//!     holds removals for it and no put. There is nothing to remove.
+//!     holds removals for it and no put, and its change set states a
+//!     root key.
 //!
 //!   They are settled before, so the group is charged for them as it is
 //!   on RocksDB.
+//! - **Removals alone, for a subtree that is not entered, are removed
+//!   if the subtree is entered where the group is laid out**
+//!   ([`LigninSettled::remove_if_entered`],
+//!   `lignindb::txn::SubtreeWrite::RemoveIfEntered`): a record that a
+//!   commit beside the transaction put under such a key after the look
+//!   is removed where the group is applied, as on RocksDB, and a commit
+//!   that writes such a key after the group was applied meets the
+//!   removal. A group that is refused removes nothing: so it is where
+//!   the subtree is a prefix under a node that the group removes and is
+//!   entered under that node when the first batch of the group is
+//!   applied (above). No enter is stated on their account either.
 //! - **A look that states a drop follows the hosts above the subtrees
 //!   the group writes into**, by a read of the entry of each, up to a
 //!   dropped subtree or to one with no host, to tell which are below a
@@ -57,15 +96,11 @@
 //! - A node that is removed in a subtree whose path no handle of the
 //!   group was told states no drop: none is inferred from it.
 //! - A group in which a batch enters, drops or clears a subtree itself,
-//!   or states one anew, leaves nothing out, and is refused where a
-//!   subtree would be dropped with it.
-//! - Open, `TXN-03-F5`: what the look found is not judged again where
-//!   the group is laid out. A subtree that a commit beside the
-//!   transaction enters under a removed node after the look is not
-//!   dropped; a removal that was left out for a subtree which such a
-//!   commit enters is not applied; and a drop that was stated for a
-//!   subtree takes an entry that such commits put in its place under
-//!   another host (`engine.md`, "A subtree leaves with its element").
+//!   or states one anew, leaves nothing out, and is refused where the
+//!   look finds a subtree entered under a node it removes. Nothing is
+//!   stated for what the look did not find, and what a commit beside
+//!   the transaction enters under such a node after the look outlives
+//!   the node.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -81,17 +116,52 @@ use super::{
     over::{prefix_under, Left},
 };
 
+/// A subtree that is dropped if it is entered under a node the group
+/// removes.
+#[derive(Debug)]
+pub(super) struct Under {
+    /// The batch that removes the node.
+    pub(super) part: usize,
+    /// The subtree.
+    pub(super) prefix: [u8; 32],
+    /// The subtree that the node is in.
+    pub(super) above: [u8; 32],
+    /// The node's key.
+    pub(super) key: Vec<u8>,
+}
+
 /// What a group that removes nodes does to the subtrees under them.
 #[derive(Debug, Default)]
 pub(super) struct Gone {
-    /// The subtrees that are dropped with the group, each with the batch
-    /// that removes the node it is entered under. None is below another.
-    pub(super) drops: Vec<(usize, [u8; 32])>,
+    /// The subtrees that are dropped with the group if they are entered
+    /// under a node it removes when it is laid out. None that the look
+    /// found is below another that it found.
+    pub(super) drops: Vec<Under>,
+    /// Those of them that the look found entered under the node: what a
+    /// flat drop leaves behind is worked out with what the look found
+    /// ([`behind`](super::behind)).
+    pub(super) found: BTreeSet<[u8; 32]>,
     /// The subtrees whose writes the group does not hand over.
     pub(super) left_out: BTreeSet<[u8; 32]>,
+    /// The subtrees under which the group removes if they are entered
+    /// when it is laid out: what it holds for them is removals alone,
+    /// and the look found them not entered, or they are prefixes under
+    /// a removed node that the look found no subtree under the node
+    /// for.
+    pub(super) removing: BTreeSet<[u8; 32]>,
     /// The drops of the look for what is written over that are below a
     /// drop of this look: they go with it, and are not stated.
     pub(super) covered: BTreeSet<[u8; 32]>,
+    /// The prefixes under a removed node that the look found no subtree
+    /// under the node for, and that the group hands a write over for: a
+    /// put, removals with a root key stated, or removals that are made
+    /// if the prefix is entered. The group writes such a prefix as the
+    /// look found it, so no drop is stated for it: the first batch of
+    /// the group says that the prefix is not entered under the node
+    /// (`lignindb::txn::SubtreeWrite::NotUnder`), and the transaction
+    /// refuses the group as a conflict where it is
+    /// (`lignindb::txn::BatchError::EnteredSince`).
+    pub(super) beside: BTreeSet<[u8; 32]>,
 }
 
 impl Gone {
@@ -104,16 +174,11 @@ impl Gone {
         }
     }
 
-    /// Whether `refused` is of a subtree whose entry this look found
-    /// otherwise: no entry, for a subtree that the look found entered and
-    /// stated the drop of.
-    pub(super) fn found_otherwise(&self, refused: LigninEntryRefused) -> bool {
-        match refused {
-            LigninEntryRefused::NotEntered(subtree) => {
-                self.drops.iter().any(|(_, dropped)| *dropped == subtree)
-            }
-            LigninEntryRefused::EnteredOtherwise(_) => false,
-        }
+    /// The subtrees that no enter is stated on account of: those whose
+    /// writes the group leaves out, and those under which it removes if
+    /// they are entered.
+    pub(super) fn unentered(&self) -> BTreeSet<[u8; 32]> {
+        self.left_out.union(&self.removing).copied().collect()
     }
 }
 
@@ -216,11 +281,34 @@ pub(super) fn gone(
     let moved: BTreeSet<[u8; 32]> = (parts.iter())
         .flat_map(|part| part.moves().iter().map(|(from, _)| *from))
         .collect();
+    // The subtrees that some batch of the group puts a node or a record
+    // into, and those that it holds a write for.
+    let put: BTreeSet<[u8; 32]> = (parts.iter().flat_map(LigninSettled::put_into)).collect();
+    let held: BTreeSet<[u8; 32]> = (parts.iter().flat_map(LigninSettled::written))
+        .map(|subtree| subtree.prefix)
+        .collect();
+    // Whether what the group holds for a subtree is removals with a
+    // root key stated for its Merk, and no put: where the subtree is not
+    // entered, they are left out.
+    let rooted = |prefix: &[u8; 32]| {
+        !put.contains(prefix) && !parts.iter().all(|part| part.removes_alone(prefix))
+    };
+    // The prefixes under a removed node that the look found no subtree
+    // under the node for: those that the group holds removals alone
+    // for, with no root key stated, and the others.
+    let mut if_entered = BTreeSet::new();
+    let mut not_under = BTreeSet::new();
     for (path, subtree, keys) in removed {
+        // What is under a node of a subtree that leaves goes with the
+        // drop above, of either look.
+        if look.leaves(subtree, true, true)? {
+            continue;
+        }
         // Nothing is entered under a node of a subtree that is not
-        // entered, and what is under a node of one that leaves goes with
-        // the drop above, of either look.
-        if look.host(subtree)?.is_none() || look.leaves(subtree, true, true)? {
+        // entered. A group in which a batch writes the directory itself
+        // states what the look found, and a node whose removal is left
+        // out stays.
+        if look.host(subtree)?.is_none() && (own || rooted(&subtree)) {
             continue;
         }
         for key in keys {
@@ -232,26 +320,52 @@ pub(super) fn gone(
                     .is_some_and(|at| (&at.subtree, at.key.as_slice()) == (&subtree, key))
             };
             let own_prefix = prefix_under(path, key);
-            let Some(entry) = entered(view, own_prefix)?.filter(under) else {
-                continue;
-            };
-            let mut drop = |prefix: [u8; 32]| {
-                if !moved.contains(&prefix) {
-                    gone.drops.push((part, prefix));
-                    look.dropped.insert(prefix);
+            let primary = entered(view, own_prefix)?.filter(under);
+            let indexed = (primary.as_ref()).is_some_and(|entry| {
+                entry
+                    .tree_type()
+                    .is_ok_and(|tree| tree.is_indexed_primary())
+            });
+            let mut beside = vec![(own_prefix, primary.is_some())];
+            // A secondary is stored under the tag of its axis, and the
+            // big sum axis under that of the sum axis: these are all.
+            // The directory is asked for them where the primary is
+            // entered as one, and for each that the group holds a write
+            // for: what is said of a prefix that the group writes is
+            // what a read of its entry found.
+            for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+                let secondary = secondary_prefix_for(&own_prefix, axis.tag()).value;
+                let asked = indexed || held.contains(&secondary);
+                let found = asked && entered(view, secondary)?.filter(under).is_some();
+                beside.push((secondary, found));
+            }
+            for (prefix, found) in beside {
+                if moved.contains(&prefix) {
+                    continue;
                 }
-            };
-            drop(own_prefix);
-            if (entry.tree_type()).is_ok_and(|tree| tree.is_indexed_primary()) {
-                // A secondary is stored under the tag of its axis, and
-                // the big sum axis under that of the sum axis: these are
-                // all.
-                for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
-                    let secondary = secondary_prefix_for(&own_prefix, axis.tag()).value;
-                    if entered(view, secondary)?.filter(under).is_some() {
-                        drop(secondary);
+                match found {
+                    true => {
+                        look.dropped.insert(prefix);
+                        gone.found.insert(prefix);
                     }
+                    // Of what the look did not find, nothing is stated
+                    // by a group that writes the directory itself.
+                    false if own => continue,
+                    // Removals alone that state no root key are made
+                    // if the prefix is entered once the drop is judged.
+                    false
+                        if held.contains(&prefix) && !put.contains(&prefix) && !rooted(&prefix) =>
+                    {
+                        if_entered.insert(prefix);
+                    }
+                    false => drop(not_under.insert(prefix)),
                 }
+                gone.drops.push(Under {
+                    part,
+                    prefix,
+                    above: subtree,
+                    key: key.to_vec(),
+                });
             }
         }
     }
@@ -282,9 +396,6 @@ pub(super) fn gone(
     let again: BTreeSet<[u8; 32]> = (over.enters.iter())
         .map(|(subtree, _)| subtree.prefix)
         .collect();
-    // The subtrees that some batch of the group puts a node or a record
-    // into.
-    let put: BTreeSet<[u8; 32]> = (parts.iter().flat_map(LigninSettled::put_into)).collect();
     let mut written = BTreeSet::new();
     for subtree in parts.iter().flat_map(LigninSettled::written) {
         let prefix = subtree.prefix;
@@ -295,15 +406,34 @@ pub(super) fn gone(
             gone.left_out.insert(prefix);
             continue;
         }
+        if if_entered.contains(&prefix) {
+            gone.removing.insert(prefix);
+            continue;
+        }
         if again.contains(&prefix) {
             continue;
         }
         let removes = !put.contains(&prefix);
-        let removes_nothing = removes && look.host(prefix)?.is_none();
+        if removes && look.host(prefix)?.is_none() {
+            // Removals alone, for a subtree that is not entered: they
+            // are made if it is entered where the group is laid out. A
+            // change set that states a root key is left out.
+            match rooted(&prefix) {
+                false => drop(gone.removing.insert(prefix)),
+                true => drop(gone.left_out.insert(prefix)),
+            }
+            continue;
+        }
         // Under a drop of the other look a put is that look's to refuse.
-        if removes_nothing || (removes && look.leaves(prefix, false, true)?) {
+        if removes && look.leaves(prefix, false, true)? {
             gone.left_out.insert(prefix);
         }
     }
+    // What the group hands over for a prefix that the look did not find
+    // under its removed node is written as the look found the prefix:
+    // not under that node.
+    let handed = |prefix: &[u8; 32]| written.contains(prefix) && !gone.left_out.contains(prefix);
+    let unfound = not_under.into_iter().chain(if_entered);
+    gone.beside = unfound.filter(handed).collect();
     Ok(gone)
 }
