@@ -144,14 +144,20 @@ struct Found {
     write_back_gave: u64,
     /// The bytes that the cleaner gave back after it.
     cleaner_gave: u64,
+    /// In the order in which the writer comes first: whether the commit
+    /// that it made before write-back's turns was taken.
+    first_taken: Option<bool>,
     /// Whether the session took a commit then.
     resumed: bool,
     /// Whether the session filled its reserve again.
     refilled: bool,
 }
 
-/// One run of a session that keeps a reserve of `reserve` bytes.
-fn run(reserve: u64) -> Found {
+/// One run of a session that keeps a reserve of `reserve` bytes. Where
+/// `writer_first` is set, the session is asked for a commit as soon as
+/// it has released its reserve, before write-back and the cleaner have
+/// had a turn: the order of DF11 is gone through after that.
+fn run(reserve: u64, writer_first: bool) -> Found {
     let mut session = small(41, true, reserve);
     assert!(session.open());
     let room = Reserve::of(session.options.vfs.clone(), Path::new(DIR));
@@ -238,19 +244,29 @@ fn run(reserve: u64) -> Found {
         session.check("with no free byte");
     }
 
+    let first_taken = writer_first.then(|| {
+        let published = session.told.latest;
+        session.write("first", rewrite, false);
+        session.told.latest == published + 1
+    });
+
     // DF11, step 3: write-back's turns. Step 4: the cleaner's turns, each
-    // with the turn of write-back that follows it.
-    let before = used(&session);
+    // with the turn of write-back that follows it. What they give back
+    // is counted without the reserve, which the session can have filled
+    // again by then where its writer came first.
+    let files_now =
+        |session: &Session| used(session) - room.held().expect("the bytes of the reserve");
+    let before = files_now(&session);
     for _ in 0..4 {
         session.ticks("back");
     }
-    let after_write_back = used(&session);
+    let after_write_back = files_now(&session);
     for _ in 0..12 {
         let db = session.db.as_ref().expect("the session goes on");
         cleaner_turn(db, &mut turns);
         session.ticks("cleaned");
     }
-    let after_cleaner = used(&session);
+    let after_cleaner = files_now(&session);
     println!("after the cleaner: {}", sizes(&session));
     // Step 5: the session takes the next commit, if there is room for it.
     let db = session.db.as_ref().expect("the session goes on");
@@ -287,6 +303,7 @@ fn run(reserve: u64) -> Found {
         full: files,
         write_back_gave: before.saturating_sub(after_write_back),
         cleaner_gave: after_write_back.saturating_sub(after_cleaner),
+        first_taken,
         resumed,
         refilled,
     }
@@ -302,7 +319,7 @@ pub(super) const RESERVE: u64 = (96 << 10) + (256 << 10) + (32 << 10);
 fn said(reserve: u64, found: &Found) -> String {
     format!(
         "a reserve of {:5} KiB: the device refused {} after {} commits, with {} KiB of files; \
-         with the room of the reserve write-back gave back {} KiB and the cleaner {} KiB; the \
+         {}with the room of the reserve write-back gave back {} KiB and the cleaner {} KiB; the \
          session {} the next commit, and {} its reserve again",
         reserve >> 10,
         match found.commit_refused {
@@ -311,6 +328,11 @@ fn said(reserve: u64, found: &Found) -> String {
         },
         found.filled_by,
         found.full >> 10,
+        match found.first_taken {
+            None => "",
+            Some(true) => "the writer's commit before their turns was taken; ",
+            Some(false) => "the writer's commit before their turns was refused; ",
+        },
         found.write_back_gave >> 10,
         found.cleaner_gave >> 10,
         match found.resumed {
@@ -326,7 +348,7 @@ fn said(reserve: u64, found: &Found) -> String {
 
 #[test]
 fn a_full_device_gives_room_back_through_the_reserve_and_not_without_it() {
-    let without = run(0);
+    let without = run(0, false);
     println!("{}", said(0, &without));
     assert!(without.filled_by > 2, "{without:?}");
     assert!(
@@ -335,7 +357,7 @@ fn a_full_device_gives_room_back_through_the_reserve_and_not_without_it() {
     );
     assert!(!without.resumed && !without.refilled, "{without:?}");
 
-    let with = run(RESERVE);
+    let with = run(RESERVE, false);
     println!("{}", said(RESERVE, &with));
     assert!(with.resumed && with.refilled, "{with:?}");
     assert!(
@@ -351,7 +373,7 @@ fn a_full_device_gives_room_back_through_the_reserve_and_not_without_it() {
 fn how_much_room_the_engine_needs_to_give_room_back() {
     let mut least = None;
     for reserve in LADDER {
-        let found = run(reserve);
+        let found = run(reserve, false);
         println!("{}", said(reserve, &found));
         if found.resumed && found.refilled {
             least.get_or_insert(reserve);
@@ -364,6 +386,26 @@ fn how_much_room_the_engine_needs_to_give_room_back() {
     let least = least.expect("no reserve of the ladder is enough");
     println!("the least reserve that is enough: {} KiB", least >> 10);
     assert!(least <= RESERVE, "{least} bytes");
+}
+
+/// The order in which the writer comes first (section 5.3): the session
+/// is asked for a commit of 72 KiB as soon as it has released its
+/// reserve, and that commit takes its share of the room before
+/// write-back and the cleaner have had a turn. The reserve that section
+/// 5.3 sizes for this database is enough in this order, and so is every
+/// larger one of the ladder. A smaller one is enough or not by what the
+/// commit leaves: what each came to is printed, and is the same in every
+/// run.
+#[test]
+fn the_reserve_of_a_log_file_and_a_segment_is_enough_where_the_writer_comes_first() {
+    for reserve in LADDER {
+        let found = run(reserve, true);
+        println!("the writer first, {}", said(reserve, &found));
+        if reserve >= RESERVE {
+            assert_eq!(found.first_taken, Some(true), "{found:?}");
+            assert!(found.resumed && found.refilled, "{found:?}");
+        }
+    }
 }
 
 /// The sizes of a reserve that are tried, in bytes.
