@@ -2815,9 +2815,11 @@ from before the savepoint remains, it does not (case B7).
 
 Two kinds of write do not follow GM1, because they do not propagate to the
 root: a state-sync restore, which writes nodes directly in its own
-transaction, and the replacement for `ingest_subtree_sst` (GROVE-09), which
-loads a subtree's records outside any transaction. CF2 applies to them
-through the keys they actually write. `replace_subtree_root`, which follows
+transaction, and the replacement for `ingest_subtree_sst` (GROVE-09,
+`GroveDb::load_subtree`), which writes a subtree's records and not the
+element above them, in the transaction it is given or in one of its own.
+CF2 applies to them through the keys they actually write, and a Merk
+that is loaded whole is a load of LD6. `replace_subtree_root`, which follows
 such a load, is an ordinary tree change: it rewrites the parent element and
 propagates to the root, so GM1 and GM2 hold for it.
 
