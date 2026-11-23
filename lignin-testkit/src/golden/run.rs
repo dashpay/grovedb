@@ -686,8 +686,12 @@ fn root_hash<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
 /// return as well. The message is free text and is not compared.
 ///
 /// A storage error is named in terms that name no engine
-/// ([`storage_error_name`]).
+/// ([`storage_error_name`]), and an error that is an outcome of a commit
+/// by its class, whichever way it came up ([`commit_class`]).
 pub fn error_name(error: &grovedb::Error) -> String {
+    if let Some(class) = commit_class(error) {
+        return class;
+    }
     let wrapped = match error {
         grovedb::Error::MerkError(wrapped) => Some(variant_name(wrapped)),
         grovedb::Error::StorageError(wrapped) => Some(storage_error_name(wrapped)),
@@ -702,28 +706,50 @@ pub fn error_name(error: &grovedb::Error) -> String {
     }
 }
 
-/// The name of a storage error, in terms that name no engine.
+/// The name of an error that the seam classes as an outcome of a commit
+/// (`grovedb::Error::commit_error`), as in `Commit::Conflict`. A conflict
+/// is a `RocksDBError` of kind `Busy` on RocksDB and `Commit(Conflict)` on
+/// LigninDB, and comes up as a storage error or, from a write through a
+/// Merk, as the storage error of a Merk: a caller asks
+/// `is_commit_conflict` of either, so both have the one name.
+#[cfg(grovedb_engine_seam)]
+fn commit_class(error: &grovedb::Error) -> Option<String> {
+    let class = error.commit_error()?;
+    Some(format!("Commit::{}", variant_name(&class)))
+}
+
+/// At the pin there is no such class: an error is named by its variant.
+#[cfg(not(grovedb_engine_seam))]
+fn commit_class(_: &grovedb::Error) -> Option<String> {
+    None
+}
+
+/// The name of a storage error that is no outcome of a commit, in terms
+/// that name no engine.
 ///
 /// An engine reports a failure of its own in its own variant, with its
 /// own words: the RocksDB engine as `RocksDBError` or `StorageError`,
-/// LigninDB as `StorageError`. Both are named `StorageError`. An error
-/// that the seam classes as an outcome of a commit
-/// (`grovedb_storage::Error::commit_error`) is named by its class, as in
-/// `Commit::Conflict`: a conflict is a `RocksDBError` of kind `Busy` on
-/// RocksDB and `Commit(Conflict)` on LigninDB. Every other variant is one
-/// that any engine returns, and keeps its name.
+/// LigninDB as `StorageError`. Both are named `StorageError`: LigninDB's
+/// failure carries words and no kind that RocksDB's could be held
+/// against, and the words of both are in the report of a step. What a
+/// write scope could not do is named with its reason, as in
+/// `WriteScope::Overlap`, which says what the caller has to do next.
+/// Every other variant is one that any engine returns, and keeps its
+/// name.
 ///
 /// The corpus records no storage error of an engine's own (a test of
 /// `tests/golden.rs` holds that), so the names of its traces are what the
 /// engine it is pinned to gave them.
 #[cfg(grovedb_engine_seam)]
 fn storage_error_name(error: &grovedb_storage::Error) -> String {
-    if let Some(class) = error.commit_error() {
-        return format!("Commit::{}", variant_name(&class));
-    }
-    match variant_name(error).as_str() {
-        "RocksDBError" => "StorageError".to_string(),
-        name => name.to_string(),
+    match error {
+        grovedb_storage::Error::WriteScope(reason) => {
+            format!("WriteScope::{}", variant_name(reason))
+        }
+        error => match variant_name(error).as_str() {
+            "RocksDBError" => "StorageError".to_string(),
+            name => name.to_string(),
+        },
     }
 }
 
@@ -864,7 +890,7 @@ mod tests {
 
         let (no_savepoint, conflict, in_its_words) = names::<RocksDbEngine>();
         assert_eq!(no_savepoint, "StorageError::StorageError");
-        assert_eq!(conflict, "StorageError::Commit::Conflict");
+        assert_eq!(conflict, "Commit::Conflict");
         // RocksDB's own variant is what was named so.
         assert_eq!(
             in_its_words.matches("RocksDBError").count(),
@@ -873,7 +899,7 @@ mod tests {
         );
         let (no_savepoint, conflict, in_its_words) = names::<LigninEngine>();
         assert_eq!(no_savepoint, "StorageError::StorageError");
-        assert_eq!(conflict, "StorageError::Commit::Conflict");
+        assert_eq!(conflict, "Commit::Conflict");
         assert!(!in_its_words.contains("RocksDBError"), "{in_its_words}");
 
         // A variant that every engine returns keeps its name, and so does
@@ -887,7 +913,35 @@ mod tests {
         );
         assert_eq!(
             named(grovedb_storage::Error::Commit(CommitError::NotDurable)),
-            "StorageError::Commit::NotDurable"
+            "Commit::NotDurable"
+        );
+        // A conflict that a write through a Merk hands on has the name of
+        // one that the engine returned, and a storage error of a Merk that
+        // is no outcome of a commit keeps the Merk's name.
+        let through_merk = |error| {
+            error_name(&GroveError::MerkError(grovedb_merk::Error::StorageError(
+                error,
+            )))
+        };
+        assert_eq!(
+            through_merk(grovedb_storage::Error::Commit(CommitError::Conflict)),
+            "Commit::Conflict"
+        );
+        assert_eq!(
+            through_merk(grovedb_storage::Error::StorageError("words".to_string())),
+            "MerkError::StorageError"
+        );
+        // What a write scope could not do is named with its reason.
+        use grovedb_storage::error::WriteScopeError;
+        assert_eq!(
+            named(grovedb_storage::Error::WriteScope(WriteScopeError::Overlap)),
+            "StorageError::WriteScope::Overlap"
+        );
+        assert_eq!(
+            named(grovedb_storage::Error::WriteScope(
+                WriteScopeError::RollbackUnsupported
+            )),
+            "StorageError::WriteScope::RollbackUnsupported"
         );
     }
 

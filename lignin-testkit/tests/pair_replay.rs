@@ -13,6 +13,10 @@
 //! it is closed in a debug build, with Merk's hash rules, and panics on a
 //! finding. So a trace that leaves an unsound store fails here although
 //! every answer was RocksDB's.
+//!
+//! The comparison is strict. The pair runner counts the open differences
+//! that the fuzzer passes over (`diff::families`); a trace of the corpus
+//! that came to one would be a trace that differs, and fails here.
 
 // The pair runner compares two engines through the `Engine` seam, which the
 // engine the golden corpus is pinned to does not have (`build.rs`).
@@ -31,12 +35,15 @@ use lignin_testkit::{
         pair::{self, Side, Stored},
     },
     golden::{plan, run::STACK_BYTES},
-    workload::Op,
+    workload::{Op, Write},
 };
 
 /// The traces that may differ on this head, by grove version and name, each
-/// with the unit that removes the difference. A trace that is not listed
-/// has to be the same on both engines to its last step.
+/// with the unit that removes the difference: at a conversion of a tree to
+/// a big sum tree, which is the difference that unit removes, and at no
+/// other operation. A trace that is not listed has to be the same on both
+/// engines to its last step, and a listed one that panics, is cut short or
+/// cannot be run fails as any other does.
 const OPEN: &[(u32, &str, &str)] = &[
     (5, "conversions", "GROVE-04-F1"),
     (5, "suite", "GROVE-04-F1"),
@@ -52,7 +59,12 @@ enum Ended {
         proofs: u64,
         records: u64,
     },
-    /// What happened instead, as text.
+    /// The engines answered a step differently: whether the operation of
+    /// the step is a conversion to a big sum tree, and the difference.
+    Differs { at_a_conversion: bool, what: String },
+    /// What happened instead, as text: a panic, a run that could not be
+    /// made or was cut short, or an open difference of the fuzzer's that
+    /// the trace came to.
     Other(String),
 }
 
@@ -84,23 +96,37 @@ fn replayed(case: &Case, scratch: &std::path::Path) -> Ended {
             Ended::Other(format!("panicked: {message}"))
         }
         Ok(Err(error)) => Ended::Other(format!("could not run: {error:?}")),
-        Ok(Ok(run)) => match (run.divergence, run.cut_short) {
-            (None, None) => Ended::Same {
-                steps: run.tally.steps,
-                proofs: run.tally.proofs,
-                records: run.tally.records,
-            },
-            (Some(divergence), _) => Ended::Other(format!(
-                "differs at step {} of {} in {:?}: {:?}\n  RocksDB:  {}\n  LigninDB: {}",
-                divergence.step,
-                case.ops.len(),
-                divergence.parts,
-                case.ops[divergence.step],
-                divergence.reference.join("\n            "),
-                divergence.candidate.join("\n            "),
-            )),
-            (None, Some(why)) => Ended::Other(format!("cut short {why}")),
-        },
+        Ok(Ok(run)) => {
+            let families = run.tally.families;
+            let passed_over = families.stored != [0, 0] || families.answers != [0, 0];
+            match (run.divergence, run.cut_short) {
+                (Some(divergence), _) => Ended::Differs {
+                    at_a_conversion: matches!(
+                        case.ops[divergence.step],
+                        Op::Write(Write::ConvertToBigSumTree { .. })
+                    ),
+                    what: format!(
+                        "differs at step {} of {} in {:?}: {:?}\n  RocksDB:  {}\n  LigninDB: {}",
+                        divergence.step,
+                        case.ops.len(),
+                        divergence.parts,
+                        case.ops[divergence.step],
+                        divergence.reference.join("\n            "),
+                        divergence.candidate.join("\n            "),
+                    ),
+                },
+                (None, Some(why)) => Ended::Other(format!("cut short {why}")),
+                (None, None) if run.ended_at.is_some() || passed_over => Ended::Other(format!(
+                    "came to an open difference that the fuzzer passes over: {}",
+                    families.lines().join("; ")
+                )),
+                (None, None) => Ended::Same {
+                    steps: run.tally.steps,
+                    proofs: run.tally.proofs,
+                    records: run.tally.records,
+                },
+            }
+        }
     }
 }
 
@@ -170,13 +196,18 @@ fn the_corpus_streams_answer_alike_on_rocksdb_and_on_lignindb() {
                 proofs += p;
                 records += r;
             }
-            Ended::Other(what) => {
+            Ended::Differs {
+                at_a_conversion,
+                what,
+            } => {
                 let line = format!("v{version} {name}: {what}");
-                match OPEN.iter().find(|(v, n, _)| v == version && n == name) {
+                let listed = OPEN.iter().find(|(v, n, _)| v == version && n == name);
+                match listed.filter(|_| at_a_conversion) {
                     Some((_, _, unit)) => open.push(format!("{line}\n  open with {unit}")),
                     None => failed.push(line),
                 }
             }
+            Ended::Other(what) => failed.push(format!("v{version} {name}: {what}")),
         }
     }
     println!(

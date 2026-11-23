@@ -35,8 +35,9 @@
 
 use grovedb_version::version::GroveVersion;
 
+use super::state::Keyspace;
 use super::state::Record;
-use crate::workload::{BatchOp, Db, Op, Path, Read, StreamEngine, TransactionOp, Tx, Write};
+use crate::workload::{BatchOp, Db, Op, Path, Prove, Read, StreamEngine, TransactionOp, Tx, Write};
 
 /// A named open difference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -144,22 +145,20 @@ fn joined(path: &Path, key: &[u8]) -> Path {
     joined
 }
 
-/// The places at which `op` puts an element.
+/// The places at which `op` puts an element whatever is there. An insert
+/// that is made only where the key holds no element, or only where the
+/// element differs, can succeed and write nothing, so it is none: where
+/// such an insert does write over a tree, the place is of no family, and a
+/// difference there ends the run.
 fn puts(op: &Op) -> Vec<Path> {
     let mut puts = Vec::new();
-    if let Op::Write(
-        Write::Insert { path, key, .. }
-        | Write::InsertIfNotExists { path, key, .. }
-        | Write::InsertIfChanged { path, key, .. }
-        | Write::IndexedInsert { path, key, .. },
-    ) = op
+    if let Op::Write(Write::Insert { path, key, .. } | Write::IndexedInsert { path, key, .. }) = op
     {
         puts.push(joined(path, key));
     }
     for batch_op in op.batch_ops() {
         if let BatchOp::InsertOrReplace { path, key, .. }
         | BatchOp::InsertOnly { path, key, .. }
-        | BatchOp::InsertIfNotExists { path, key, .. }
         | BatchOp::Replace { path, key, .. }
         | BatchOp::Patch { path, key, .. } = batch_op
         {
@@ -199,9 +198,21 @@ fn read_places(read: &Read, places: &mut Vec<Path>) {
         | Read::BigSum { query, .. } => places.push(query.path.clone()),
         Read::SumBudget { query, .. } => places.push(query.path.clone()),
         Read::Many { queries } => places.extend(queries.iter().map(|query| query.path.clone())),
-        // A proof is of the whole grove from the root, and an aux record
-        // is under no path: neither names a place.
-        Read::Prove(_) | Read::GetAux { .. } | Read::AuxByPrefix { .. } => {}
+        Read::Prove(
+            Prove::BulkPositionRange { path, key, .. } | Prove::BranchChunk { path, key, .. },
+        ) => {
+            places.push(path.clone());
+            places.push(joined(path, key));
+        }
+        Read::Prove(Prove::TrunkChunk { path, .. } | Prove::Chunk { path, .. }) => {
+            places.push(path.clone());
+        }
+        Read::Prove(Prove::PathQuery(query)) => places.push(query.path.clone()),
+        Read::Prove(Prove::Many(queries)) => {
+            places.extend(queries.iter().map(|query| query.path.clone()));
+        }
+        // An aux record is under no path.
+        Read::GetAux { .. } | Read::AuxByPrefix { .. } => {}
     }
 }
 
@@ -217,6 +228,10 @@ fn query_places(read: &Read) -> Vec<Path> {
         | Read::BigSum { query, .. } => vec![query.path.clone()],
         Read::SumBudget { query, .. } => vec![query.path.clone()],
         Read::Many { queries } => queries.iter().map(|query| query.path.clone()).collect(),
+        Read::Prove(Prove::PathQuery(query)) => vec![query.path.clone()],
+        Read::Prove(Prove::Many(queries)) => {
+            queries.iter().map(|query| query.path.clone()).collect()
+        }
         Read::Get { .. }
         | Read::HasRaw { .. }
         | Read::Fetch { .. }
@@ -282,8 +297,13 @@ fn places(op: &Op) -> Vec<Path> {
             | BatchOp::RefreshReference { path, key, .. }
             | BatchOp::Delete { path, key, .. }
             | BatchOp::DeleteTree { path, key, .. }
-            | BatchOp::Move { path, key, .. }
             | BatchOp::DropFlat { path, key, .. } => places.push(joined(path, key)),
+            BatchOp::Move {
+                path, key, new_key, ..
+            } => {
+                places.push(joined(path, key));
+                places.push(joined(path, new_key));
+            }
             BatchOp::Append { .. } => {}
         }
     }
@@ -389,7 +409,16 @@ impl Known {
         let mut plain = Vec::new();
         let mut of_family = [Vec::new(), Vec::new()];
         for record in listed {
-            match self.family(&record.path) {
+            // The data of a subtree, its aux and its meta records are the
+            // subtree's. The record of a pending drop carries the path of
+            // the tree it frees as a label and is kept in a namespace of
+            // its own, and the root key is the root tree's: they are of
+            // no family, whatever path they name.
+            let of_a_subtree = matches!(
+                record.keyspace,
+                Keyspace::Nodes | Keyspace::Flat | Keyspace::Aux | Keyspace::Meta
+            );
+            match self.family(&record.path).filter(|_| of_a_subtree) {
                 Some(family) => of_family[family.index()].push(record.clone()),
                 None => plain.push(record.clone()),
             }
@@ -436,7 +465,6 @@ mod tests {
     use grovedb::Element;
 
     use super::*;
-    use crate::diff::state::Keyspace;
 
     fn path(segments: &[&[u8]]) -> Path {
         segments.iter().map(|segment| segment.to_vec()).collect()
@@ -535,10 +563,17 @@ mod tests {
         );
         assert_eq!((counts.histories, counts.answers), ([1, 1], [0, 0]));
 
-        // Elsewhere: the dropped tree's own subtree, and a subtree beside.
+        // Elsewhere: the dropped tree's own subtree, a subtree beside, and
+        // the record of a pending drop that names a place of a family.
+        let mut pending = record(&[b"b", b"over"], 2);
+        pending.keyspace = Keyspace::PendingDrop;
+        let mut queued = record(&[b"a", b"dropped", b"child"], 2);
+        queued.keyspace = Keyspace::DropRecord;
         for elsewhere in [
             record(&[b"a", b"dropped"], 2),
             record(&[b"a", b"beside"], 2),
+            pending,
+            queued,
         ] {
             let mut known = self::known();
             let reference = [same.clone(), elsewhere.clone()];
@@ -598,6 +633,40 @@ mod tests {
         assert_eq!(known.family_of_answer(&query(&[b"b", b"other"])), None);
         assert_eq!(known.family_of_answer(&get(&[b"b"], b"other")), None);
         assert_eq!(known.family_of_answer(&delete(&[b"a"], b"dropped")), None);
+        // A proof of a chunk names its subtree, and a move its new key.
+        let trunk = |at: &[&[u8]]| {
+            Op::Read(Read::Prove(Prove::TrunkChunk {
+                path: path(at),
+                max_depth: 2,
+                min_depth: None,
+            }))
+        };
+        assert_eq!(known.family_of_answer(&trunk(&[b"b", b"over"])), over);
+        assert_eq!(known.family_of_answer(&trunk(&[b"b"])), None);
+        let moved = |key: &[u8], new_key: &[u8]| {
+            Op::Batch(vec![BatchOp::Move {
+                path: path(&[b"b"]),
+                key: key.to_vec(),
+                new_key: new_key.to_vec(),
+            }])
+        };
+        assert_eq!(known.family_of_answer(&moved(b"src", b"over")), over);
+        assert_eq!(known.family_of_answer(&moved(b"src", b"other")), None);
+        // An insert that is made only where the key holds none names no
+        // place it puts an element at.
+        let conditional = Op::Write(Write::InsertIfNotExists {
+            path: path(&[]),
+            key: b"t".to_vec(),
+            element: Element::empty_tree(),
+            return_existing: false,
+        });
+        assert!(puts(&conditional).is_empty());
+        let batched = Op::Batch(vec![BatchOp::InsertIfNotExists {
+            path: path(&[]),
+            key: b"t".to_vec(),
+            element: Element::empty_tree(),
+        }]);
+        assert!(puts(&batched).is_empty());
         assert_eq!(known.family_of_answer(&Op::Commit), None);
 
         let mut counts = Counts::default();

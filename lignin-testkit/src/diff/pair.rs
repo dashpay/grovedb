@@ -587,6 +587,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         if !was.step.failed() {
             known.took(op, over);
+            tally.families = known.counts();
         }
         tally.failed += u64::from(was.step.failed());
         tally.proofs += u64::from(was.step.proof.is_some());

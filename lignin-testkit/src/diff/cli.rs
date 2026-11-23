@@ -312,8 +312,16 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
             write_finding(out, finding, reference.name(), candidate.name());
             Ok(Some(finding.after))
         }
-        None => {
+        None if summary.progress.tally.families.answers == [0, 0] => {
             let _ = writeln!(out, "the engines answered the same");
+            Ok(None)
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "the engines answered the same but for the answers of the open differences \
+                 counted above"
+            );
             Ok(None)
         }
     }
@@ -375,7 +383,13 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
         );
     }
     let Some(divergence) = ran.divergence else {
-        let _ = writeln!(out, "the engines answered the same");
+        let _ = match ran.ended_at {
+            None => writeln!(out, "the engines answered the same"),
+            Some(_) => writeln!(
+                out,
+                "the engines answered the same up to that answer, and the case was not run further"
+            ),
+        };
         return Ok(false);
     };
     for line in divergence.report(&case, reference.name(), candidate.name()) {

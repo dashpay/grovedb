@@ -1,8 +1,12 @@
 //! Histories that the registration of the engine for GroveDB's suite owed
 //! (GROVE-10), each written once for any engine and run on LigninDB and on
-//! RocksDB on every grove version, with every answer, every
-//! `OperationCost` and the root hash after every write compared call for
-//! call:
+//! RocksDB on every grove version, with what the history takes in compared
+//! call for call: the answer and the `OperationCost` of each read and each
+//! write, and the root hash after a write. The commit of a transaction is
+//! taken in by how it ended, and a refusal as a conflict by that word,
+//! both with no cost: an engine may refuse at a write what another refuses
+//! at the commit.
+//!
 //!
 //! - a range that is read right to left and ends past the last key of its
 //!   subtree, in every subtree of a grove, the one that is last in prefix
@@ -149,9 +153,16 @@ fn a_range_read_from_past_the_last_key_is_answered_as_on_rocksdb_in_the_last_sub
         let of = |range: &str, left_to_right: bool, tree: &[u8]| {
             answer_of(answers, &stepped_call(range, left_to_right, &[tree])).to_owned()
         };
+        // The three keys of a tree, as an answer shows them, in the order
+        // an answer has them.
+        let in_order = |answer: &str, keys: [&str; 3]| {
+            let at = keys.map(|key| answer.find(key));
+            at[0].is_some() && at[0] < at[1] && at[1] < at[2]
+        };
+        let [k1, k2, k3] = ["[107, 49]", "[107, 50]", "[107, 51]"];
         for range in ["a range", "to", "after to"] {
             let ascending = of(range, true, last);
-            assert!(ascending.starts_with("Ok(([(["), "{range}: {ascending}");
+            assert!(in_order(&ascending, [k1, k2, k3]), "{range}: {ascending}");
             for tree in KEYS {
                 assert_eq!(of(range, true, tree), ascending, "{range}, ascending");
                 let descending = of(range, false, tree);
@@ -159,7 +170,7 @@ fn a_range_read_from_past_the_last_key_is_answered_as_on_rocksdb_in_the_last_sub
                     assert_eq!(descending, "Ok(([], 0))", "{range} of the last subtree");
                 } else {
                     assert!(
-                        descending.starts_with("Ok(([(["),
+                        in_order(&descending, [k3, k2, k1]),
                         "{range} of a subtree that another follows: {descending}"
                     );
                 }
@@ -266,8 +277,10 @@ fn a_conversion_beside_a_transaction_that_wrote_fails_its_commit_as_on_rocksdb()
 /// Takes in a call of a transaction that a commit of another writer may
 /// have met: a refusal as a conflict is taken in by that word, with no
 /// cost, since an engine may refuse at the write what another refuses at
-/// the commit. Gives whether the transaction goes on. A clear is taken in
-/// with no cost: it returns none.
+/// the commit. Gives whether the transaction goes on, which it does not
+/// after a conflict. A call that fails in any other way is no call of
+/// this history, on either engine. A clear is taken in with no cost: it
+/// returns none.
 fn in_a_met_transaction<T: std::fmt::Debug, E: Engine>(
     h: &mut History<'_, E>,
     name: String,
@@ -276,6 +289,9 @@ fn in_a_met_transaction<T: std::fmt::Debug, E: Engine>(
     if answer.value.as_ref().is_err_and(Error::is_commit_conflict) {
         h.plain(name, Ok::<_, Error>("a conflict"));
         return false;
+    }
+    if let Err(error) = &answer.value {
+        panic!("{name}: neither made nor refused as a conflict: {error}");
     }
     h.read(name, answer).is_some()
 }
@@ -387,6 +403,20 @@ fn a_clear_and_a_delete_in_a_transaction_that_a_commit_met_end_as_on_rocksdb() {
             let tree = answer_of(answers, &format!("the tree, met {met}"));
             let late = answer_of(answers, &format!("the item beside, met {met}"));
             assert!(late.starts_with("Ok("), "{met}: {late}");
+            // A clear that was made cleared the tree.
+            let clear = answer_of(answers, &format!("the clear, met {met}"));
+            assert!(
+                clear == "Ok(true)" || clear == "Ok(\"a conflict\")",
+                "{met}: {clear}"
+            );
+            if case == 0 {
+                assert_eq!(clear, "Ok(true)", "{met}");
+                assert_eq!(
+                    answer_of(answers, &format!("the delete, met {met}")),
+                    "Ok(())",
+                    "{met}"
+                );
+            }
             if case == 0 {
                 assert_eq!(ended, "Ok(\"committed\")", "{met}, grove version {number}");
                 assert_eq!(tree, "Ok(false)", "{met}");
@@ -502,6 +532,28 @@ fn a_tree_is_moved_after_a_tree_inside_it_was_deleted_as_on_rocksdb() {
                 if number >= 4 { 2 } else { 0 },
                 "grove version {number}"
             );
+            assert_eq!(answer_of(answers, "the transaction"), "Ok(\"committed\")");
+            if number >= 4 {
+                // Under both trees: the moved tree has its item and not the
+                // deleted tree, the old key holds nothing, and every write
+                // after the move was made.
+                let all = |call: &str, answer: &str| {
+                    let of_call = answers.iter().filter(|(named, ..)| named == call);
+                    let answered: Vec<&str> = of_call.map(|(.., said)| said.as_str()).collect();
+                    assert_eq!(
+                        answered,
+                        [answer, answer],
+                        "{call} on grove version {number}"
+                    );
+                };
+                all("the deleted tree under the new key", "Ok(false)");
+                all("the old key", "Ok(false)");
+                assert_eq!(taken(answers, "the item of the moved tree"), 2);
+                assert_eq!(taken(answers, "a tree under the key of the deleted one"), 2);
+                assert_eq!(taken(answers, "a tree under the old key"), 2);
+                assert_eq!(taken(answers, "an item in it"), 4);
+                assert_eq!(taken(answers, "the trees"), 2);
+            }
         }
     );
 }
@@ -592,9 +644,10 @@ fn dropped_flat_with_a_tree_in_it<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) 
 /// ones; LigninDB's are what it gives today**, an open difference that is
 /// put to the maintainer of GroveDB. The differential fuzzer counts the
 /// cases that come to it (`lignin-testkit::diff::families`).
-#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn a_tree_made_again_below_a_flat_drop_reads_what_rocksdb_kept_and_lignindb_dropped() {
+    // The key `old`, as an answer shows it.
+    let old = "[111, 108, 100]";
     for (number, v) in GROVE_VERSIONS.iter().enumerate().skip(3) {
         let number = number + 1;
         let dir = tempfile::tempdir().expect("a directory");
@@ -605,30 +658,11 @@ fn a_tree_made_again_below_a_flat_drop_reads_what_rocksdb_kept_and_lignindb_drop
             answers
         };
         check(dir.path(), v);
-        let dir = tempfile::tempdir().expect("a directory");
-        let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
-            .expect("a database on RocksDB");
-        let on_rocksdb = dropped_flat_with_a_tree_in_it(&db, v);
-
-        // Alike up to the drop and the read after it.
-        let again = (on_rocksdb.iter())
-            .position(|(call, ..)| call == MADE_AGAIN)
-            .expect("the history makes the tree again");
-        assert_eq!(
-            on_lignin[..again],
-            on_rocksdb[..again],
-            "grove version {number}"
-        );
-        assert_eq!(answer_of(&on_rocksdb, "the dropped tree"), "Ok(false)");
-
-        // Required: RocksDB reads the records it kept.
-        assert_eq!(answer_of(&on_rocksdb, "is it empty"), "Ok(false)");
-        assert_eq!(answer_of(&on_rocksdb, "the old key"), "Ok(true)");
-        assert!(answer_of(&on_rocksdb, "a range of a query").starts_with("Ok(([(["));
-        assert_eq!(
-            answer_of(&on_rocksdb, "an insert only where the key holds none"),
-            "Ok(false)"
-        );
+        let made_again = |answers: &[Answer]| {
+            taken(answers, MADE_AGAIN) == 1 && taken(answers, "the tree in it is made again") == 1
+        };
+        assert!(made_again(&on_lignin), "grove version {number}");
+        assert_eq!(answer_of(&on_lignin, "the dropped tree"), "Ok(false)");
         // What is: LigninDB reads a tree with nothing in it.
         assert_eq!(answer_of(&on_lignin, "is it empty"), "Ok(true)");
         assert_eq!(answer_of(&on_lignin, "the old key"), "Ok(false)");
@@ -637,5 +671,38 @@ fn a_tree_made_again_below_a_flat_drop_reads_what_rocksdb_kept_and_lignindb_drop
             answer_of(&on_lignin, "an insert only where the key holds none"),
             "Ok(true)"
         );
+
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
+                .expect("a database on RocksDB");
+            let on_rocksdb = dropped_flat_with_a_tree_in_it(&db, v);
+            assert!(made_again(&on_rocksdb), "grove version {number}");
+
+            // Alike up to the drop and the read after it.
+            let again = (on_rocksdb.iter())
+                .position(|(call, ..)| call == MADE_AGAIN)
+                .expect("the history makes the tree again");
+            assert_eq!(
+                on_lignin[..again],
+                on_rocksdb[..again],
+                "grove version {number}"
+            );
+
+            // Required: RocksDB reads the records it kept.
+            assert_eq!(answer_of(&on_rocksdb, "is it empty"), "Ok(false)");
+            assert_eq!(answer_of(&on_rocksdb, "the old key"), "Ok(true)");
+            let range = answer_of(&on_rocksdb, "a range of a query");
+            assert!(
+                range.starts_with("Ok(([(") && range.contains(old),
+                "{range}"
+            );
+            assert_eq!(
+                answer_of(&on_rocksdb, "an insert only where the key holds none"),
+                "Ok(false)"
+            );
+        }
+        let _ = old;
     }
 }
