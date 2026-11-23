@@ -23,6 +23,7 @@ mod both_kinds;
 mod cases;
 mod checkpoint;
 mod deletes;
+mod full_pages;
 #[cfg(feature = "unsafe-dump-load")]
 mod hatch;
 mod indexed;
