@@ -23,6 +23,7 @@ use std::{
     path::Path,
 };
 
+use grovedb_costs::OperationCost;
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
     store::lignin::hash::MerkHashRules,
@@ -367,6 +368,9 @@ fn an_insert_below_the_tree_puts_the_hash_of_the_rules() {
 struct Case {
     /// `deleted`, or `panic`.
     outcome: &'static str,
+    /// What the delete was charged, and the root hash of the grove after
+    /// it.
+    charged: Option<(OperationCost, Hash)>,
     /// The paths the grove's own check reports.
     issues: Vec<Vec<Vec<u8>>>,
     /// The stored value hash of `parent`, the one with no aggregate in
@@ -436,19 +440,23 @@ fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Child)
         }
     }
     let deleted = catch_unwind(AssertUnwindSafe(|| {
-        db.delete(AT_PARENT, CHILD, allowed(), None, v).unwrap()
+        db.delete(AT_PARENT, CHILD, allowed(), None, v)
     }));
     match deleted {
         Err(_) => Case {
             outcome: "panic",
+            charged: None,
             issues: Vec::new(),
             hashes: None,
         },
         Ok(deleted) => {
-            deleted.expect("the delete is taken");
+            let cost = deleted.cost.clone();
+            deleted.unwrap().expect("the delete is taken");
+            let root = db.root_hash(None, v).unwrap().expect("a root hash");
             let issues = issues(db, v);
             Case {
                 outcome: "deleted",
+                charged: Some((cost, root)),
                 issues: issues.into_iter().map(|(path, ..)| path).collect(),
                 hashes: Some(hashes_of_parent(db, v)),
             }
@@ -460,7 +468,8 @@ fn family_case<E: Engine>(db: &GroveDb<E>, v: &GroveVersion, p: usize, c: Child)
 /// as `parent`, with every kind, an MMR tree, a bulk append tree and a
 /// dense tree as the tree that is deleted from it.
 ///
-/// On every case the answers of the two engines are the same, and the
+/// On every case the two engines answer the delete alike, with the same
+/// cost and the same root hash after it, and the
 /// value hashes that the checker of LigninDB names as left by a delete
 /// are at the paths that the grove's own check reports on each engine,
 /// no more and no fewer; with the rules that name none, the checker finds
