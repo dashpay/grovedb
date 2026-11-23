@@ -100,9 +100,27 @@
 //!   last batch that puts the element's node is refused with
 //!   `Error::NotSupported`: where that batch moves the root, no node
 //!   would name it. It is taken where the element as the group leaves
-//!   it names no root and the group puts nothing into the Merk: that
-//!   batch empties the Merk, which is cleared with it
-//!   ([`super::over`]).
+//!   it names no root, no batch up to the last one that puts the
+//!   element's node writes nodes of the Merk, that later batch states
+//!   no root for the Merk (`LigninSettled::empties`), and every
+//!   secondary of an indexed tree that is entered under the key is
+//!   without a node once the group is applied, as it is where the
+//!   second part of a batch that writes an empty tree over a filled one
+//!   removes the old records itself: the node of the element is then
+//!   written as one that hosts nothing, so that its cell points at no
+//!   root which that batch removes, and the Merk stays entered with no
+//!   node.
+//! - **In a group of more than one batch, the node of an indexed tree
+//!   hosts nothing where the group empties the tree after writing its
+//!   element**: where the element as the group leaves it names no root,
+//!   of its primary or of an axis, and a batch after the last one that
+//!   puts the node of the element writes nodes of a Merk the element
+//!   hosts. Every Merk the element hosts is without a node then, once
+//!   the group is applied: the last batch that writes nodes of it leaves
+//!   it with none, or no batch does and the directory has no root for
+//!   it. The Merks stay entered, each with no node. A group that leaves
+//!   one of them a node there is refused with `Error::NotSupported`: no
+//!   node would name its root.
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
 //!   node or removes it, which gives the element or none. Otherwise, in
@@ -121,9 +139,12 @@
 //!   one is entered under the element at another place than the element
 //!   names while no batch of the group puts the node of the element.
 //! - **A subtree that is entered under no element takes no named
-//!   write** (D-277): a write through a handle by prefix entered it, and
-//!   no statement gives an entered subtree a host. RocksDB takes the
-//!   write.
+//!   write under a key that holds an element once the group is
+//!   applied** (D-277): a write through a handle by prefix entered it,
+//!   and no statement gives an entered subtree a host. RocksDB takes
+//!   the write. Under a key that holds no element then, the look does
+//!   not refuse on this account: a record written by the path of such
+//!   a key goes into the subtree as it is entered, under no element.
 //!
 //! What this does not do:
 //!
@@ -441,7 +462,9 @@ pub(super) struct Owed {
     /// element, as the two segments of a partial batch do: the first
     /// leaves the root of the Merk for the element's node to name
     /// (`tree-layout.md` T3), and the batch that writes that node has to
-    /// name it.
+    /// name it. And each tree that the group writes as an empty one and
+    /// empties in a batch after the last one that puts the node of its
+    /// element, with no Merk: that node hosts nothing.
     pub(super) apart: Vec<LigninHost>,
     /// The subtrees whose entry the look read and, at its last read of
     /// each, found entered: no enter is stated for them.
@@ -645,26 +668,53 @@ pub(super) fn owed(
                     };
                     let named = parts.iter().rposition(puts);
                     let written = parts.iter().rposition(|part| part.writes_merk(&own));
-                    // A tree that the group writes as an empty one,
-                    // and puts nothing into, is emptied by that batch:
-                    // the look for what is written over clears its Merk
-                    // with it ([`super::over`]), and no root is left to
-                    // name.
-                    let emptied = || {
-                        let stated = match host_of(parts, host) {
-                            Host::Stated(value) => element_of(value),
-                            Host::Removed | Host::Stored => None,
-                        };
-                        let root =
-                            stated.and_then(|element| element.root_key_and_tree_type_owned());
-                        let mut put = parts.iter().flat_map(LigninSettled::put_into);
-                        matches!(root, Some((None, _))) && !put.any(|into| into == own)
+                    let Some(late) = written.filter(|at| named.is_none_or(|named| named < *at))
+                    else {
+                        owed.apart.push(host.clone());
+                        continue;
                     };
-                    if written.is_some_and(|at| named.is_none_or(|named| named < at)) && !emptied()
-                    {
+                    // A tree that the group writes as an empty one, whose
+                    // Merk no batch writes up to the last one that puts
+                    // the element's node, and that batch leaves with no
+                    // node: no root is left to name. The node of the
+                    // element hosts nothing, so that its cell points at
+                    // no root which that batch removes. So it has to be
+                    // with every secondary of an indexed tree that is
+                    // entered under the key: the cell points at none of
+                    // them either.
+                    let stated = match host_of(parts, host) {
+                        Host::Stated(value) => element_of(value),
+                        Host::Removed | Host::Stored => None,
+                    };
+                    let root = stated.and_then(|element| element.root_key_and_tree_type_owned());
+                    let early = |named: usize| {
+                        let mut upto = parts[..=named].iter();
+                        upto.any(|part| part.writes_merk(&own))
+                    };
+                    let mut emptied = matches!(root, Some((None, _)))
+                        && !named.is_some_and(early)
+                        && parts[late].empties(&own);
+                    for axis in [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg] {
+                        let beside = secondary_prefix_for(&own, axis.tag()).value;
+                        let last = parts.iter().rposition(|part| part.writes_merk(&beside));
+                        emptied &= match last {
+                            Some(last) => parts[last].empties(&beside),
+                            None => !self::entered(view, beside)?.is_some_and(|entry| {
+                                let at = entry.host.as_ref();
+                                let under = at.is_some_and(|at| {
+                                    (at.subtree, &at.key) == (host.subtree, &host.key)
+                                });
+                                under && entry.root_key.is_some()
+                            }),
+                        };
+                    }
+                    if !emptied {
                         return Err(unnamed_root(host));
                     }
-                    owed.apart.push(host.clone());
+                    owed.apart.push(LigninHost {
+                        hosted: Vec::new(),
+                        ..host.clone()
+                    });
                 }
             }
             Hosting::Nothing => {
@@ -690,6 +740,36 @@ pub(super) fn owed(
             matches!(node, Some(LigninOutcome::Put(_)))
         };
         let put_by = parts.iter().position(puts);
+        // An element that names no root, where a batch after the last
+        // one that puts its node writes nodes of a Merk it hosts: every
+        // Merk it hosts is without a node once the group is applied, or
+        // the group is refused, and its node hosts nothing, so that the
+        // cell points at no root which a later batch removes.
+        let names_no_root = match host_of(parts, named) {
+            Host::Stated(value) => element_of(value).is_some_and(|element| {
+                let primary = element.root_key_and_tree_type();
+                let axes = indexed_element_axes(&element).unwrap_or_default();
+                primary.is_some_and(|(root, _)| root.is_none())
+                    && axes.iter().all(|(_, root)| root.is_none())
+            }),
+            Host::Removed | Host::Stored => false,
+        };
+        let put_last = parts.iter().rposition(puts);
+        let last = |prefix: &[u8; 32]| parts.iter().rposition(|part| part.writes_merk(prefix));
+        let late = |prefix: &[u8; 32]| last(prefix).is_some_and(|at| put_last < Some(at));
+        let without_a_node = |prefix: &[u8; 32]| match last(prefix) {
+            Some(at) => parts[at].empties(prefix),
+            None => !matches!(seen.get(prefix), Some(Some(entry)) if entry.root_key.is_some()),
+        };
+        if put_last.is_some() && names_no_root && named.hosted.iter().any(late) {
+            if !named.hosted.iter().all(without_a_node) {
+                return Err(unnamed_root(named));
+            }
+            owed.apart.push(LigninHost {
+                hosted: Vec::new(),
+                ..named.clone()
+            });
+        }
         for (prefix, kind) in named.hosted.iter().zip(kinds) {
             if enters_itself(prefix) {
                 continue;

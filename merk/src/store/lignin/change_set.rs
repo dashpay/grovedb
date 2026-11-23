@@ -16,8 +16,8 @@ use lignin_tree::node::NodeHandle;
 use lignindb::{
     batch::{Resolved, StagedBatch, Written as Staged},
     txn::{
-        Batch, Column, HostPut, Hosted, MerkWrite, NodePut, RecordWrite, Subtree, SubtreeWrite,
-        TxnError, Unit, ValuePut,
+        Batch, Column, HostPut, Hosted, MerkWrite, NodePut, RecordWrite, RootPut, Subtree,
+        SubtreeWrite, TxnError, Unit, ValuePut,
     },
 };
 
@@ -1214,9 +1214,6 @@ pub struct LigninSettled {
     /// ([`Self::leave_behind`]): each by the subtree that keeps it, and
     /// its key there.
     left_behind: Vec<(Subtree, Vec<u8>)>,
-    /// The subtrees that whoever applies the batch cleared with it
-    /// ([`Self::clear_subtree`]).
-    clears: Vec<Subtree>,
     /// The subtrees that whoever applies the batch states anew with it
     /// ([`Self::state_anew`]).
     restated: Vec<SubtreeChange>,
@@ -1290,7 +1287,6 @@ impl BatchPart for LigninSettled {
         run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
     ) -> Result<Written, Error> {
         let told = self.drops.is_empty()
-            && self.clears.is_empty()
             && self.left_out.is_empty()
             && self.moved.is_empty()
             && self.left_behind.is_empty();
@@ -1357,12 +1353,10 @@ impl BatchPart for LigninSettled {
                 })
                 .chain(marks)
                 .collect();
-            // What is dropped or cleared with the batch leaves before
-            // anything is moved, entered or written, wherever it stands
-            // among the subtrees, and what is moved goes before anything
-            // is entered.
+            // What is dropped with the batch leaves before anything is
+            // moved, entered or written, wherever it stands among the
+            // subtrees, and what is moved goes before anything is entered.
             let drops = self.drops.iter();
-            let clears = self.clears.iter();
             let moves = self.moved.iter().map(|moved| SubtreeWrite::Move {
                 from: moved.from,
                 to: moved.to,
@@ -1376,7 +1370,6 @@ impl BatchPart for LigninSettled {
             });
             let subtrees: Vec<SubtreeWrite<'_>> = drops
                 .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
-                .chain(clears.map(|subtree| SubtreeWrite::Clear { subtree: *subtree }))
                 .chain(moves)
                 .chain(batch.subtrees.iter().copied())
                 .collect();
@@ -1444,7 +1437,6 @@ impl LigninSettled {
             left_out: BTreeSet::new(),
             kept,
             left_behind: Vec::new(),
-            clears: Vec::new(),
             restated: Vec::new(),
         }
     }
@@ -1499,6 +1491,32 @@ impl LigninSettled {
     /// subtree.
     pub fn writes_merk(&self, prefix: &[u8; 32]) -> bool {
         self.merks.contains_key(prefix)
+    }
+
+    /// Whether the root that the batch states for the Merk `prefix` is
+    /// none: a handle staged nodes of the Merk into the batch, and the
+    /// last operation that did left it with no node. It is of what the
+    /// batch holds, whatever whoever applies it leaves out of it
+    /// ([`Self::leave_out`]).
+    pub fn empties(&self, prefix: &[u8; 32]) -> bool {
+        let subtree = Subtree::new(*prefix);
+        self.resolved.with_batch(|batch| {
+            let mut merks = batch.merks.iter().filter(|merk| merk.subtree == subtree);
+            merks.any(|merk| matches!(merk.root, RootPut::Set(None)))
+        })
+    }
+
+    /// Whether a handle that staged into the batch dropped or cleared
+    /// the subtree `prefix`, where the batch still holds that statement.
+    pub fn leaves(&self, prefix: &[u8; 32]) -> bool {
+        if !self.resolved.leaves() {
+            return false;
+        }
+        let subtree = Subtree::new(*prefix);
+        self.resolved.with_batch(|batch| {
+            let mut leaving = batch.subtrees.iter().filter(|write| write.leaves());
+            leaving.any(|write| write.subtree() == subtree)
+        })
     }
 
     /// The nodes that the batch removes, each by its subtree and its key.
@@ -1562,34 +1580,12 @@ impl LigninSettled {
         self.left_out.insert(Subtree::new(*prefix));
     }
 
-    /// Clears the subtree `prefix` with the batch, in the transaction
-    /// that the batch is applied to: the subtree stays entered, under its
-    /// element and with its tree type, with no node, and the cell of its
-    /// element points at no root of it (`tree-layout.md` D4). What the
-    /// batch writes into the subtree is applied after the clear, unless
-    /// it is left out ([`Self::leave_out`]).
-    ///
-    /// It is for a batch that removes the nodes of a Merk one by one and
-    /// leaves it with no root, where an earlier batch of its group put
-    /// the node of the element that hosts the Merk: that node names the
-    /// root of the Merk, and a batch that removes the root node without
-    /// putting the element's node leaves nothing that could name it
-    /// otherwise.
-    pub fn clear_subtree(&mut self, prefix: &[u8; 32]) {
-        let subtree = Subtree::new(*prefix);
-        if !self.clears.contains(&subtree) {
-            self.clears.push(subtree);
-        }
-    }
-
     /// Takes back every statement of [`Self::drop_subtree`], of
-    /// [`Self::clear_subtree`], of [`Self::leave_out`] and of
-    /// [`Self::leave_behind`]: the batch drops what its handles staged a
-    /// drop of, hands over every write it holds, and is applied with no
-    /// mark.
+    /// [`Self::leave_out`] and of [`Self::leave_behind`]: the batch drops
+    /// what its handles staged a drop of, hands over every write it
+    /// holds, and is applied with no mark.
     pub fn forget_drops(&mut self) {
         self.drops.clear();
-        self.clears.clear();
         self.left_out.clear();
         self.left_behind.clear();
     }
@@ -1716,6 +1712,53 @@ impl LigninSettled {
             .any(|stated| changed(stated) == prefix)
     }
 
+    /// Whether one of the statements of subtrees that were staged into
+    /// the resolved batch, its enters, drops, clears and moves, is as
+    /// `named` says.
+    fn stages(&self, named: impl Fn(&SubtreeWrite<'_>) -> bool) -> bool {
+        let resolved = &self.resolved;
+        let any = !resolved.enters().is_empty() || resolved.leaves() || resolved.moves();
+        any && resolved.with_batch(|batch| batch.subtrees.iter().any(named))
+    }
+
+    /// Whether the batch holds a statement of the subtree `prefix`:
+    /// something that was staged into it says that the subtree is
+    /// entered, dropped, cleared, stated anew or moved away, or that
+    /// another subtree is moved to the prefix. An enter of the subtree
+    /// is not put off to such a batch ([`Self::apply_kept`]); of these
+    /// statements, the transaction refuses an enter beside a move away
+    /// from the prefix or to it. What whoever applies the batch said of
+    /// a subtree since ([`Self::drop_subtree`], [`Self::state_anew`]) is
+    /// none.
+    pub(super) fn states(&self, prefix: &Prefix) -> bool {
+        let subtree = Subtree::new(*prefix);
+        let named = |write: &SubtreeWrite<'_>| {
+            let arrives = write.moving().is_some_and(|moving| moving.to == subtree);
+            write.subtree() == subtree || arrives
+        };
+        self.states_anew(prefix)
+            || (self.moves.iter()).any(|(from, to)| from == prefix || to == prefix)
+            || self.stages(named)
+    }
+
+    /// Whether the batch needs the subtree `prefix` entered where it is
+    /// applied: it holds a write of a key of it ([`Self::written`]), it
+    /// says that the subtree is entered, dropped, cleared, stated anew
+    /// or moved away, or it enters a subtree under an element of it. A
+    /// move of another subtree to the prefix is no need of it: the move
+    /// brings the entry.
+    pub(super) fn needs(&self, prefix: &Prefix) -> bool {
+        let subtree = Subtree::new(*prefix);
+        let named = |write: &SubtreeWrite<'_>| {
+            let host = write.entering().and_then(|entering| entering.host);
+            write.subtree() == subtree || host.is_some_and(|host| host.subtree == subtree)
+        };
+        self.written.contains_key(prefix)
+            || self.states_anew(prefix)
+            || self.moves.iter().any(|(from, _)| from == prefix)
+            || self.stages(named)
+    }
+
     /// Whether handles that staged into the batch named two different
     /// elements as the host of one subtree the batch holds a write for,
     /// or one element with two different first subtrees.
@@ -1755,11 +1798,17 @@ impl LigninSettled {
         &self.pending
     }
 
-    /// Whether the batch writes nothing, and states no subtree anew:
-    /// of what its handles staged. What whoever applies it stated since
-    /// does not count ([`Self::drop_subtree`], [`Self::leave_behind`]).
+    /// Whether the batch holds nothing for the transaction: no write of
+    /// a handle that staged into it, no subtree that such a handle moves
+    /// or states anew, and no drop or statement anew that whoever
+    /// applies it said ([`Self::drop_subtree`], [`Self::state_anew`]).
+    /// What [`Self::leave_out`] takes from a batch does not make it
+    /// empty, and a mark that it is applied with
+    /// ([`Self::leave_behind`]) is nothing that it holds.
     pub fn is_empty(&self) -> bool {
-        self.resolved.is_empty() && self.moves.is_empty() && self.converted.is_empty()
+        let stated = self.converted.is_empty() && self.restated.is_empty();
+        let told = self.drops.is_empty();
+        self.resolved.is_empty() && self.moves.is_empty() && stated && told
     }
 
     /// The subtrees the batch moves, each with the prefix it goes to, in
@@ -1827,8 +1876,13 @@ impl LigninSettled {
     /// entered with them, each with its tree type as the bytes the
     /// directory keeps: those that a part writes into and that neither the
     /// transaction nor a part has entered, a subtree after the one its
-    /// host is in. Each is entered with the first part, or with the part
-    /// that enters the subtree its host is in.
+    /// host is in. Each is entered with the part that enters the subtree
+    /// its host is in; one that no part holds a write for, with the
+    /// first part that puts the node of its host, where that part holds
+    /// no statement of it ([`Self::states`]) and no part before that one
+    /// needs it entered ([`Self::needs`], or a subtree of `enters` under
+    /// an element of it that a part needs); every other with the first
+    /// part.
     ///
     /// Each is entered if it is absent (`SubtreeWrite::EnterIfAbsent`): a
     /// subtree that a commit beside the transaction entered since the
@@ -1878,10 +1932,30 @@ impl LigninSettled {
                 .wrap_with_cost(MODEL.batch_written(pending, false));
         }
         // A subtree is entered by the part that enters the subtree its
-        // host is in, or that the enter of that one goes with, and by the
-        // first part otherwise.
+        // host is in, or that the enter of that one goes with. One that
+        // no part holds a write for is entered for its host alone, by
+        // the first part that puts the node of the host, where that part
+        // holds no statement of it and no part before that one needs it
+        // entered: what that part drops or states anew has left the
+        // place by then. Every other is entered by the first part.
+        //
+        // The first part that needs each of them entered: for itself,
+        // or for a subtree under an element of it, which comes after it.
+        let mut needed: Vec<Option<usize>> = (enters.iter())
+            .map(|(subtree, _)| parts.iter().position(|part| part.needs(&subtree.prefix)))
+            .collect();
+        for at in (0..enters.len()).rev() {
+            let above = enters[at].0.host.as_ref().map(|host| host.subtree);
+            let parent = above.and_then(|above| {
+                let mut before = enters[..at].iter();
+                before.position(|(given, _)| given.prefix == above)
+            });
+            if let (Some(parent), Some(need)) = (parent, needed[at]) {
+                needed[parent] = Some(needed[parent].map_or(need, |known| known.min(need)));
+            }
+        }
         let mut entered_by: Vec<usize> = Vec::with_capacity(enters.len());
-        for (subtree, _) in enters {
+        for (at, (subtree, _)) in enters.iter().enumerate() {
             let above = subtree.host.as_ref().map(|host| host.subtree);
             let part = above.and_then(|above| {
                 let own = parts.iter().position(|part| part.enters(&above));
@@ -1889,7 +1963,21 @@ impl LigninSettled {
                     .find_map(|((given, _), part)| (given.prefix == above).then_some(*part));
                 own.or(given)
             });
-            entered_by.push(part.unwrap_or(0));
+            let for_its_host = || {
+                let host = subtree.host.as_ref()?;
+                let prefix = &subtree.prefix;
+                if parts.iter().any(|part| part.written.contains_key(prefix)) {
+                    return None;
+                }
+                let puts = |part: &Self| {
+                    let node = part.node(&host.subtree, &host.key);
+                    matches!(node, Some(LigninOutcome::Put(_)))
+                };
+                let put = parts.iter().position(puts)?;
+                let earlier = needed[at].is_some_and(|need| need < put);
+                (!earlier && !parts[put].states(prefix)).then_some(put)
+            };
+            entered_by.push(part.or_else(for_its_host).unwrap_or(0));
         }
         let mut entry = None;
         let applied = (enters.iter().zip(entered_by))

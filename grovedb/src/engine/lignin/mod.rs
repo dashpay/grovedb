@@ -44,9 +44,9 @@
 //! entered and that no batch of the group enters itself, states anew
 //! those that are entered under the element otherwise than it names
 //! them, drops a secondary that the element hosts no more, and says to
-//! the store which Merks the element's node names ([`enter`]). A Merk of
-//! an indexed tree that a batch empties after the element was written as
-//! an empty tree is cleared with that batch ([`over`]).
+//! the store which Merks the element's node names ([`enter`]): none,
+//! where a batch empties the Merks of an indexed tree after the batch
+//! that wrote its element as an empty tree.
 //!
 //! # A subtree leaves with its element
 //!
@@ -90,8 +90,8 @@ use grovedb_merk::{
     store::{
         lignin::{
             hash::MerkHashRules, tree_type_bytes, LigninApplied, LigninBatch, LigninCursor,
-            LigninFlatCursor, LigninHost, LigninHosted, LigninKeyspace, LigninNodeStore,
-            LigninSettled, LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
+            LigninFlatCursor, LigninHost, LigninKeyspace, LigninNodeStore, LigninSettled,
+            LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
         },
         NodeStore,
     },
@@ -1081,7 +1081,7 @@ impl Engine for LigninEngine {
             // drop, the first look is made again with that drop.
             let looked = gone::gone(view, &parts, own, &over::Left::default()).and_then(|gone| {
                 let owed = enter::owed(view, &parts, &gone.left_out)?;
-                let left = over::left(view, &parts)?;
+                let left = over::left(view, &parts, &gone.left_out)?;
                 // What the enters were worked out with.
                 let before = gone.left_out.clone();
                 let gone = match left.drops.is_empty() {
@@ -1117,24 +1117,9 @@ impl Engine for LigninEngine {
                 }
             }
             // What is entered under a removed node leaves with the batch
-            // that removes the node. A clear takes what is below the
-            // Merk it clears, and nothing below such a Merk is dropped
-            // by name.
+            // that removes the node.
             for (part, dropped) in &gone.drops {
-                let above = match left.clears.is_empty() {
-                    true => None,
-                    false => match enter::entered(view, *dropped) {
-                        Ok(entry) => entry.and_then(|entry| entry.host),
-                        Err(error) => return Err(error).wrap_with_cost(OperationCost::default()),
-                    },
-                };
-                let cleared = |host: LigninHosted| {
-                    let mut clears = left.clears.iter();
-                    clears.any(|(_, cleared)| *cleared == host.subtree)
-                };
-                if !above.is_some_and(cleared) {
-                    parts[*part].drop_subtree(dropped);
-                }
+                parts[*part].drop_subtree(dropped);
             }
             // A secondary that hangs under an indexed tree whose element
             // hosts it no more leaves with the batch that writes the
@@ -1146,20 +1131,11 @@ impl Engine for LigninEngine {
                     part.leave_out(stray);
                 }
             }
-            // A Merk of an indexed tree that a batch empties after the
-            // element was written as an empty tree is cleared with that
-            // batch, unless it leaves as one that the element hosts no
-            // more.
-            for (part, cleared) in &left.clears {
-                if owed.strays.iter().all(|(_, stray)| stray != cleared) {
-                    parts[*part].clear_subtree(cleared);
-                }
-            }
             // A Merk of an indexed tree that its element names at another
             // place, or as a tree of another type, than it is entered
             // with is stated anew with the batch that puts the element's
             // node.
-            for (part, subtree, tree_type) in &owed.restated {
+            for (part, subtree, tree_type) in owed.restated.iter().chain(&left.restated) {
                 if let Err(error) = parts[*part].state_anew(subtree, tree_type) {
                     return Err(merk_error(error)).wrap_with_cost(OperationCost::default());
                 }

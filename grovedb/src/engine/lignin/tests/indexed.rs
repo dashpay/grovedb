@@ -1583,6 +1583,558 @@ fn a_secondary_that_is_written_without_its_element_is_one_of_those_the_element_h
     engine.rollback_transaction(&tx).expect("a rollback");
 }
 
+/// A group writes the element of an indexed tree in its first batch and
+/// a row of its secondary in its second. Where the element is written
+/// as an empty one, it names no root and the group leaves nodes in Merks
+/// that it hosts, which no node would name: the group is refused as not
+/// supported, and nothing of it is applied. Where the element is written
+/// as it was, with the roots it names, the group is taken, as a batch is
+/// that writes a secondary without its element.
+#[test]
+fn a_group_that_writes_a_secondary_after_the_batch_that_writes_its_empty_element_is_refused() {
+    use grovedb_merk::{
+        element::costs::ElementCostExtensions, store::NodeStore, Merk, Op, TreeFeatureType,
+    };
+    use grovedb_storage::Error as StorageError;
+
+    use crate::operations::indexed_tree::indexed_element_axes;
+
+    let v = GroveVersion::latest();
+    let (_dir, engine) = super::engine();
+    let db = GroveDb::from_engine(engine);
+    let top: &[&[u8]] = &[b"idx"];
+    db.insert(ROOT, b"idx", Sum::empty(), None, None, v)
+        .unwrap()
+        .expect("an indexed tree");
+    Sum::insert(&db, top, b"one", Sum::leaf(1), None, v)
+        .unwrap()
+        .expect("a child");
+    let element = db.get(ROOT, b"idx", None, v).unwrap().expect("the tree");
+    let axes = indexed_element_axes(&element).expect("an indexed tree");
+    let (_, root_key) = axes.into_iter().next().expect("an axis");
+    let cost = Some(&Element::value_defined_cost_for_serialized_value);
+
+    let engine = db.engine();
+    let own = build_prefix(top.into()).value;
+    let beside = secondary_prefix_for(&own, IndexAxis::Sum.tag()).value;
+    for empty in [true, false] {
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let root = engine.subtree(ROOT.into(), Some(&batch), &tx).unwrap();
+        let mut merk = Merk::open_base(root, TreeType::NormalTree, cost, v)
+            .unwrap()
+            .expect("the root Merk");
+        let stated = if empty { Sum::empty() } else { element.clone() };
+        let stated = stated.serialize(v).expect("the bytes of an element");
+        let put = Op::Put(stated, TreeFeatureType::BasicMerkNode);
+        (merk.apply::<_, Vec<u8>>(&[(b"idx".to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the root Merk");
+        drop(merk);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_beside(top.into(), beside, Some(&batch), &tx)
+            .unwrap();
+        let tree_type = TreeType::ProvableCountProvableSumTree;
+        let mut merk =
+            Merk::open_layered_with_root_key(handle, root_key.clone(), tree_type, cost, v)
+                .unwrap()
+                .expect("the secondary");
+        let row = Element::new_item(b"row".to_vec())
+            .serialize(v)
+            .expect("the bytes of an element");
+        let put = Op::Put(row, TreeFeatureType::ProvableCountedSummedMerkNode(1, 0));
+        (merk.apply::<_, Vec<u8>>(&[(b"a row".to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the secondary");
+        drop(merk);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        if empty {
+            let said = match applied.expect_err("a root that no node names") {
+                StorageError::NotSupported(said) => said,
+                other => panic!("{other}"),
+            };
+            assert!(
+                said.contains("in a batch after the last one that writes the tree's element"),
+                "{said}"
+            );
+        } else {
+            applied.expect("a group that writes the secondary after its element");
+        }
+        let written = engine.subtree_by_prefix(beside, None, &tx).unwrap();
+        let row = written.has_node(b"a row").unwrap().expect("a read");
+        assert_eq!(row, !empty);
+        drop(written);
+        engine.rollback_transaction(&tx).expect("a rollback");
+    }
+    (db.get(top, b"one", None, v).unwrap()).expect("the child");
+    assert_eq!(db.get(ROOT, b"idx", None, v).unwrap().ok(), Some(element));
+}
+
+/// A group of two batches at the seam: the first writes a record of the
+/// primary of an indexed tree that nothing was written into, by its
+/// path, and the second puts the element and states the count secondary
+/// anew itself. Both Merks are entered with the first batch, as the
+/// first write into the tree enters them, so the statement of the
+/// second batch finds the secondary entered: the group is applied, and
+/// the store is sound after its commit.
+#[test]
+fn the_merks_of_an_indexed_tree_are_entered_with_the_first_batch_that_writes_into_one() {
+    use grovedb_merk::{
+        element::costs::ElementCostExtensions, store::lignin::tree_type_bytes,
+        tree::hash::NULL_HASH, Merk, Op, TreeFeatureType,
+    };
+
+    use crate::operations::indexed_tree::axis_secondary_tree_type;
+
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        let top: &[&[u8]] = &[b"idx"];
+        db.insert(ROOT, b"idx", Count::empty(), None, None, v)
+            .unwrap()
+            .expect("an indexed tree");
+        let engine = db.engine();
+        let own = build_prefix(top.into()).value;
+        let beside = secondary_prefix_for(&own, IndexAxis::Count.tag()).value;
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree(top.into(), Some(&batch), &tx).unwrap();
+        (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+
+        let batch = <LigninEngine as Engine>::Batch::default();
+        {
+            let cost = Some(&Element::value_defined_cost_for_serialized_value);
+            let root = engine.subtree(ROOT.into(), Some(&batch), &tx).unwrap();
+            let mut merk = Merk::open_base(root, TreeType::NormalTree, cost, v)
+                .unwrap()
+                .expect("the root Merk");
+            // The value hash of an indexed tree with no node in either
+            // of its two Merks, as GroveDB makes it.
+            let stated = Count::empty()
+                .serialize(v)
+                .expect("the bytes of an element");
+            let length = u32::try_from(stated.len()).expect("a short element");
+            let feature = TreeFeatureType::BasicMerkNode;
+            let put =
+                Op::PutLayeredCountIndexedReference(stated, length, NULL_HASH, NULL_HASH, feature);
+            (merk.apply::<_, Vec<u8>>(&[(b"idx".to_vec(), put)], &[], None, v))
+                .unwrap()
+                .expect("a write of the root Merk");
+        }
+        let secondary = LigninSubtree {
+            prefix: beside,
+            host: Some(LigninHost {
+                subtree: [0; 32],
+                key: b"idx".to_vec(),
+                hosted: vec![own, beside],
+            }),
+        };
+        let tree_type = tree_type_bytes(axis_secondary_tree_type(IndexAxis::Count));
+        (batch.convert(&secondary, &tree_type)).expect("a statement anew");
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        applied.map(|_| ()).expect("the group is applied");
+        for prefix in [own, beside] {
+            let handle = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+            assert!(handle.entry().expect("the directory answers").is_some());
+        }
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
+}
+
+/// Three groups at the seam that write a tree as an empty one and would
+/// leave a root under its key which no node names. Each is refused as
+/// not supported, and nothing of it is applied.
+///
+/// - A sum tree is written over a count-indexed tree that has a child,
+///   and the second batch removes the node of the primary and leaves the
+///   row of the count secondary.
+/// - The element of a sum-indexed tree that was emptied is written
+///   again, and the second batch puts a row into its secondary through
+///   a handle by prefix, which names no element.
+/// - The first batch drops the secondary of that tree itself, and the
+///   second enters it again, puts a row into it and writes the element
+///   as an empty one.
+#[test]
+fn a_group_that_leaves_a_root_under_the_key_of_a_tree_it_writes_as_empty_is_refused() {
+    use grovedb_merk::{
+        element::costs::ElementCostExtensions, store::NodeStore, Merk, Op, TreeFeatureType,
+    };
+    use grovedb_storage::Error as StorageError;
+
+    use crate::operations::indexed_tree::indexed_element_axes;
+
+    let v = GroveVersion::latest();
+    let (_dir, engine) = super::engine();
+    let db = GroveDb::from_engine(engine);
+    let cost = Some(&Element::value_defined_cost_for_serialized_value);
+    let engine = db.engine();
+    fn put_in_the_root(
+        engine: &LigninEngine,
+        batch: &<LigninEngine as Engine>::Batch,
+        tx: &<LigninEngine as Engine>::Transaction<'_>,
+        (key, element): (&[u8], Element),
+        v: &GroveVersion,
+    ) {
+        let cost = Some(&Element::value_defined_cost_for_serialized_value);
+        let root = engine.subtree(ROOT.into(), Some(batch), tx).unwrap();
+        let mut merk = Merk::open_base(root, TreeType::NormalTree, cost, v)
+            .unwrap()
+            .expect("the root Merk");
+        let stated = element.serialize(v).expect("the bytes of an element");
+        let put = Op::Put(stated, TreeFeatureType::BasicMerkNode);
+        (merk.apply::<_, Vec<u8>>(&[(key.to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the root Merk");
+    }
+
+    // The primary is emptied, and the secondary keeps its row.
+    let counted: &[&[u8]] = &[b"counted"];
+    db.insert(ROOT, b"counted", Count::empty(), None, None, v)
+        .unwrap()
+        .expect("an indexed tree");
+    Count::insert(&db, counted, b"one", Count::leaf(1), None, v)
+        .unwrap()
+        .expect("a child");
+    let element = db.get(ROOT, b"counted", None, v).unwrap().expect("a tree");
+    let (root_key, tree_type) = element.root_key_and_tree_type().expect("a tree");
+    let root_key = root_key.clone();
+    let own = build_prefix(counted.into()).value;
+    let beside = secondary_prefix_for(&own, IndexAxis::Count.tag()).value;
+    {
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        put_in_the_root(
+            engine,
+            &batch,
+            &tx,
+            (b"counted", Element::empty_sum_tree()),
+            v,
+        );
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree(counted.into(), Some(&batch), &tx).unwrap();
+        let mut merk = Merk::open_layered_with_root_key(handle, root_key, tree_type, cost, v)
+            .unwrap()
+            .expect("the primary");
+        (merk.apply::<_, Vec<u8>>(&[(b"one".to_vec(), Op::Delete)], &[], None, v))
+            .unwrap()
+            .expect("the removal of the primary's node");
+        drop(merk);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let refused = engine.apply_write_group(group, &tx).unwrap();
+        let said = match refused.expect_err("the root of the secondary is named by no node") {
+            StorageError::NotSupported(said) => said,
+            other => panic!("{other}"),
+        };
+        assert!(
+            said.contains("in a batch after the last one that writes the tree's element"),
+            "{said}"
+        );
+        engine.rollback_transaction(&tx).expect("a rollback");
+    }
+    assert_eq!(
+        db.get(ROOT, b"counted", None, v).unwrap().ok(),
+        Some(element)
+    );
+    let rooted = |prefix: [u8; 32]| {
+        let tx = engine.start_read_transaction();
+        let handle = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+        let entry = handle.entry().expect("the directory answers");
+        entry.is_some_and(|entry| entry.root_key.is_some())
+    };
+    assert!(rooted(own) && rooted(beside));
+
+    // A row through a handle by prefix, under an element that names no
+    // root.
+    let summed: &[&[u8]] = &[b"summed"];
+    db.insert(ROOT, b"summed", Sum::empty(), None, None, v)
+        .unwrap()
+        .expect("an indexed tree");
+    Sum::insert(&db, summed, b"one", Sum::leaf(1), None, v)
+        .unwrap()
+        .expect("a child");
+    let emptied = Sum::delete(&db, summed, b"one", None, v).unwrap();
+    assert!(emptied.expect("the delete of the child"));
+    let element = db.get(ROOT, b"summed", None, v).unwrap().expect("a tree");
+    let axes = indexed_element_axes(&element).expect("an indexed tree");
+    assert!(axes.iter().all(|(_, root_key)| root_key.is_none()));
+    let own = build_prefix(summed.into()).value;
+    let beside = secondary_prefix_for(&own, IndexAxis::Sum.tag()).value;
+    {
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        put_in_the_root(engine, &batch, &tx, (b"summed", Sum::empty()), v);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree_by_prefix(beside, Some(&batch), &tx).unwrap();
+        let tree_type = TreeType::ProvableCountProvableSumTree;
+        let mut merk = Merk::open_layered_with_root_key(handle, None, tree_type, cost, v)
+            .unwrap()
+            .expect("the secondary");
+        let row = Element::new_item(b"row".to_vec())
+            .serialize(v)
+            .expect("the bytes of an element");
+        let put = Op::Put(row, TreeFeatureType::ProvableCountedSummedMerkNode(1, 0));
+        (merk.apply::<_, Vec<u8>>(&[(b"a row".to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the secondary");
+        drop(merk);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let refused = engine.apply_write_group(group, &tx).unwrap();
+        let said = match refused.expect_err("the root of the secondary is named by no node") {
+            StorageError::NotSupported(said) => said,
+            other => panic!("{other}"),
+        };
+        assert!(
+            said.contains("leaves a node in a subtree under that key"),
+            "{said}"
+        );
+        let written = engine.subtree_by_prefix(beside, None, &tx).unwrap();
+        assert!(!written.has_node(b"a row").unwrap().expect("a read"));
+        drop(written);
+        engine.rollback_transaction(&tx).expect("a rollback");
+    }
+    assert!(!rooted(own) && !rooted(beside));
+
+    // The secondary is dropped by one batch, and entered again and
+    // given a row by the next, which writes the element as empty.
+    {
+        use grovedb_merk::store::lignin::tree_type_bytes;
+
+        let tree_type = TreeType::ProvableCountProvableSumTree;
+        let secondary = LigninSubtree {
+            prefix: beside,
+            host: Some(LigninHost {
+                subtree: [0; 32],
+                key: b"summed".to_vec(),
+                hosted: vec![own, beside],
+            }),
+        };
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        batch.drop_subtree(&LigninSubtree::alone(beside));
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let batch = <LigninEngine as Engine>::Batch::default();
+        put_in_the_root(engine, &batch, &tx, (b"summed", Sum::empty()), v);
+        (batch.enter(&secondary, &tree_type_bytes(tree_type))).expect("an enter");
+        let handle = engine
+            .subtree_beside(summed.into(), beside, Some(&batch), &tx)
+            .unwrap();
+        let mut merk = Merk::open_layered_with_root_key(handle, None, tree_type, cost, v)
+            .unwrap()
+            .expect("the secondary");
+        let row = Element::new_item(b"row".to_vec())
+            .serialize(v)
+            .expect("the bytes of an element");
+        let put = Op::Put(row, TreeFeatureType::ProvableCountedSummedMerkNode(1, 0));
+        (merk.apply::<_, Vec<u8>>(&[(b"a row".to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the secondary");
+        drop(merk);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let refused = engine.apply_write_group(group, &tx).unwrap();
+        let said = match refused.expect_err("the root of the secondary is named by no node") {
+            StorageError::NotSupported(said) => said,
+            other => panic!("{other}"),
+        };
+        assert!(
+            said.contains("leaves a node in a subtree under that key"),
+            "{said}"
+        );
+        // Nothing of the group is in the transaction: the secondary is
+        // entered as it was, and has no row.
+        let kept = engine.subtree_by_prefix(beside, None, &tx).unwrap();
+        let entry = kept.entry().expect("the directory answers");
+        let host = entry.expect("entered").host.expect("a host");
+        assert_eq!(
+            (host.key.as_slice(), host.position),
+            (b"summed".as_slice(), 1)
+        );
+        assert!(!kept.has_node(b"a row").unwrap().expect("a read"));
+        drop(kept);
+        engine.rollback_transaction(&tx).expect("a rollback");
+    }
+    assert!(!rooted(own) && !rooted(beside));
+}
+
+/// Three groups whose batches drop the Merks of an indexed tree
+/// themselves and write its element as an empty one. Each is applied,
+/// nothing is entered under the key afterwards, and the store is sound
+/// as the groups leave it, and again once each tree took a child.
+///
+/// - An indexed tree that nothing was written into: the first batch puts
+///   a record of the primary, the second drops the primary and the
+///   secondary, and the third puts the element. The Merks are entered
+///   with the first batch, and the drops find them.
+/// - A filled indexed tree: the first batch puts a row into its
+///   secondary, and the second drops both Merks and puts the element.
+///   The row leaves with the drop.
+/// - The same, with the element put by the first batch, beside the row:
+///   its node hosts nothing, so that it points at no Merk which the
+///   second batch drops.
+#[test]
+fn a_group_that_drops_the_merks_of_an_indexed_tree_it_writes_as_empty_is_applied() {
+    use grovedb_merk::{
+        element::costs::ElementCostExtensions, tree::hash::NULL_HASH, Merk, Op, TreeFeatureType,
+    };
+
+    use crate::operations::indexed_tree::indexed_element_axes;
+
+    // The element with the value hash of an indexed tree with no node in
+    // either of its two Merks, as GroveDB makes it.
+    fn put_empty(
+        engine: &LigninEngine,
+        batch: &<LigninEngine as Engine>::Batch,
+        tx: &<LigninEngine as Engine>::Transaction<'_>,
+        key: &[u8],
+        v: &GroveVersion,
+    ) {
+        let cost = Some(&Element::value_defined_cost_for_serialized_value);
+        let root = engine.subtree(ROOT.into(), Some(batch), tx).unwrap();
+        let mut merk = Merk::open_base(root, TreeType::NormalTree, cost, v)
+            .unwrap()
+            .expect("the root Merk");
+        let stated = Count::empty()
+            .serialize(v)
+            .expect("the bytes of an element");
+        let length = u32::try_from(stated.len()).expect("a short element");
+        let feature = TreeFeatureType::BasicMerkNode;
+        let put =
+            Op::PutLayeredCountIndexedReference(stated, length, NULL_HASH, NULL_HASH, feature);
+        (merk.apply::<_, Vec<u8>>(&[(key.to_vec(), put)], &[], None, v))
+            .unwrap()
+            .expect("a write of the root Merk");
+    }
+
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        let engine = db.engine();
+        let cost = Some(&Element::value_defined_cost_for_serialized_value);
+
+        // Nothing was written into the tree.
+        let fresh: &[&[u8]] = &[b"fresh"];
+        db.insert(ROOT, b"fresh", Count::empty(), None, None, v)
+            .unwrap()
+            .expect("an indexed tree");
+        let own = build_prefix(fresh.into()).value;
+        let beside = secondary_prefix_for(&own, IndexAxis::Count.tag()).value;
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree(fresh.into(), Some(&batch), &tx).unwrap();
+        (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let batch = <LigninEngine as Engine>::Batch::default();
+        batch.drop_subtree(&LigninSubtree::alone(own));
+        batch.drop_subtree(&LigninSubtree::alone(beside));
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let batch = <LigninEngine as Engine>::Batch::default();
+        put_empty(engine, &batch, &tx, b"fresh", v);
+        (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        applied.map(|_| ()).expect("the group is applied");
+        for prefix in [own, beside] {
+            let handle = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+            assert!(handle.entry().expect("the directory answers").is_none());
+        }
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+
+        // The tree has a child, and a row for it. The element is put by
+        // the batch that drops the Merks, or by the one before it.
+        for (key, with_the_row) in [(b"filled".as_slice(), false), (b"sooner", true)] {
+            let filled: &[&[u8]] = &[key];
+            db.insert(ROOT, key, Count::empty(), None, None, v)
+                .unwrap()
+                .expect("an indexed tree");
+            Count::insert(&db, filled, b"one", Count::leaf(1), None, v)
+                .unwrap()
+                .expect("a child");
+            let element = db.get(ROOT, key, None, v).unwrap().expect("a tree");
+            let axes = indexed_element_axes(&element).expect("an indexed tree");
+            let (_, root_key) = axes.into_iter().next().expect("an axis");
+            assert!(root_key.is_some());
+            let own = build_prefix(filled.into()).value;
+            let beside = secondary_prefix_for(&own, IndexAxis::Count.tag()).value;
+            let tx = engine.start_transaction();
+            let mut group = <LigninEngine as Engine>::WriteGroup::default();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let handle = engine
+                .subtree_beside(filled.into(), beside, Some(&batch), &tx)
+                .unwrap();
+            let tree_type = TreeType::ProvableCountProvableSumTree;
+            let mut merk = Merk::open_layered_with_root_key(handle, root_key, tree_type, cost, v)
+                .unwrap()
+                .expect("the secondary");
+            let row = Element::new_item(b"row".to_vec())
+                .serialize(v)
+                .expect("the bytes of an element");
+            let put = Op::Put(row, TreeFeatureType::ProvableCountedSummedMerkNode(1, 0));
+            (merk.apply::<_, Vec<u8>>(&[(b"a row".to_vec(), put)], &[], None, v))
+                .unwrap()
+                .expect("a write of the secondary");
+            drop(merk);
+            if with_the_row {
+                put_empty(engine, &batch, &tx, key, v);
+            }
+            (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+            let batch = <LigninEngine as Engine>::Batch::default();
+            batch.drop_subtree(&LigninSubtree::alone(own));
+            batch.drop_subtree(&LigninSubtree::alone(beside));
+            if !with_the_row {
+                put_empty(engine, &batch, &tx, key, v);
+            }
+            (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+            let applied = engine.apply_write_group(group, &tx).unwrap();
+            applied.map(|_| ()).expect("the group is applied");
+            for prefix in [own, beside] {
+                let handle = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+                assert!(handle.entry().expect("the directory answers").is_none());
+            }
+            (engine.commit_transaction(tx).unwrap()).expect("a commit");
+        }
+        db.flush().expect("a flush");
+    }
+    // The store is closed as the groups left it: a later write of a
+    // tree would put the node of its element again.
+    check(dir.path(), v);
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        for key in [b"fresh".as_slice(), b"filled", b"sooner"] {
+            assert_eq!(
+                db.get(ROOT, key, None, v).unwrap().ok(),
+                Some(Count::empty())
+            );
+            Count::insert(&db, &[key], b"two", Count::leaf(2), None, v)
+                .unwrap()
+                .expect("the tree takes a child");
+        }
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
+}
+
 /// A subtree leaves the directory with its element, so an indexed tree
 /// that is made under a key whose earlier tree was deleted finds nothing
 /// entered there and is written, whatever the earlier tree was.
@@ -2704,8 +3256,10 @@ fn written_over<Old: Indexed, New: Indexed, E: Engine>(
 /// element and removes the records of the old tree by the walk of each of
 /// its subtrees: in one batch of its group, or, where it is applied in
 /// parts, the element in one part and the removals in the part after
-/// it. Then the Merks of the old tree are cleared with the part that
-/// empties them. Either way the Merks that the new element hosts stay
+/// it. Then the node of the element is written as one that hosts
+/// nothing, and the part after it leaves each Merk of the old tree that
+/// the new element hosts with no root. Either way the Merks that the
+/// new element hosts stay
 /// entered under it, with no node, each where the element names it and
 /// as a tree of the type it has there, and a secondary of an axis that
 /// the new element has not leaves the directory. Nothing of the old tree
@@ -3010,14 +3564,14 @@ fn new_index<I: Indexed, E: Engine>(h: &mut History<'_, E>, kind: &str) {
 }
 
 /// A tree under the key `idx`, filled or emptied, the batch that writes
-/// `new` over it, whole or in parts, and writes into what the key holds
-/// from then on.
+/// `new` over it, whole or in parts, and, where `on` says so, writes
+/// into what the key holds from then on.
 fn written_over_by_kind<E: Engine>(
     db: &GroveDb<E>,
     v: &GroveVersion,
     (old, emptied): (Held, bool),
     new: Held,
-    in_parts: bool,
+    (in_parts, on): (bool, bool),
 ) -> Vec<Answer> {
     let mut h = History::new(db, v);
     let at: &[&[u8]] = &[b"idx"];
@@ -3080,6 +3634,7 @@ fn written_over_by_kind<E: Engine>(
     };
     h.write("over", written);
     match new {
+        _ if !on => {}
         Held::Item => {}
         Held::Sums => {
             let item = |n: i64| Element::new_sum_item(n);
@@ -3110,6 +3665,104 @@ fn written_over_by_kind<E: Engine>(
     h.answers
 }
 
+/// The history of [`the_callback_of_a_partial_batch_writes_an_indexed_tree_over_a_filled_one`]:
+/// an indexed tree of the kind `Old` with three children and a tree
+/// beside it, a partial batch whose own operation writes into the tree
+/// beside and whose callback writes the empty indexed tree `I` over the
+/// filled one, and writes into the new tree.
+fn over_by_a_callback<Old: Indexed, I: Indexed, E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+) -> Vec<Answer> {
+    use crate::batch::BatchApplyOptions;
+
+    let mut h = History::new(db, v);
+    let at: &[&[u8]] = &[b"idx"];
+    let beside = Element::empty_tree();
+    h.write("made", db.insert(ROOT, b"q", beside, None, None, v));
+    h.write("made", db.insert(ROOT, b"idx", Old::empty(), None, None, v));
+    for n in 0..3usize {
+        let child = Old::insert(db, at, &[n as u8 * 53], Old::leaf(n), None, v);
+        h.write("child", child);
+    }
+    let first = vec![QualifiedGroveDbOp::insert_or_replace_op(
+        vec![b"q".to_vec()],
+        b"x".to_vec(),
+        Element::new_item(b"beside".to_vec()),
+    )];
+    let over = QualifiedGroveDbOp::insert_or_replace_op(vec![], b"idx".to_vec(), I::empty());
+    let paused = Some(BatchApplyOptions {
+        batch_pause_height: Some(1),
+        ..Default::default()
+    });
+    let written = db.apply_partial_batch(
+        first,
+        paused,
+        |_cost, _left_over| Ok(vec![over.clone()]),
+        None,
+        v,
+    );
+    h.write("partial", written);
+    let q: &[&[u8]] = &[b"q"];
+    h.element("beside", db.get(q, b"x", None, v));
+    h.write("filled", I::insert(db, at, b"new", I::leaf(1), None, v));
+    h.write("filled", I::delete(db, at, b"new", None, v));
+    h.write("filled", I::insert(db, at, b"more", I::leaf(2), None, v));
+    h.element("element", db.get(ROOT, b"idx", None, v));
+    h.answers
+}
+
+/// The operations that the callback of a partial batch returns are
+/// applied with the batch's second part. Where the callback writes an
+/// empty indexed tree over a filled one, on the grove versions that
+/// remove the records of the old tree, the element and the removals are
+/// both of that part, after a part that wrote elsewhere. A secondary of
+/// a new axis is entered with the part that puts the element, after
+/// what that part drops and states anew: a secondary of an axis that
+/// the new tree has not, which leaves, and one that the new element
+/// names at a later place. The answers, the costs and the root hashes
+/// are RocksDB's, the store is sound at the close, and GroveDB's check
+/// of the grove finds no issue: over a tree of the count axis for a
+/// tree of the same axis, of another, and of two others; and over a
+/// tree of the sum and the average axis for one of the count axis
+/// before those two.
+#[test]
+#[cfg_attr(not(feature = "rocksdb_storage"), allow(unused_variables))]
+fn the_callback_of_a_partial_batch_writes_an_indexed_tree_over_a_filled_one() {
+    fn on_both<Old: Indexed, I: Indexed>() {
+        for (number, v) in GROVE_VERSIONS.iter().enumerate().skip(3) {
+            let (old, new) = (Old::NAME, I::NAME);
+            let case = format!("{new} over {old} on grove version {}", number + 1);
+            let dir = tempfile::tempdir().expect("a directory");
+            let on_lignin = {
+                let db = Lignin::open_with_engine(dir.path()).expect("a database");
+                let answers = over_by_a_callback::<Old, I, _>(&db, v);
+                let issues = db.verify_grovedb(None, true, false, v);
+                let issues = issues.unwrap_or_else(|error| panic!("{case}: {error}"));
+                assert_eq!(issues.len(), 0, "{case}");
+                db.flush().expect("a flush");
+                answers
+            };
+            check(dir.path(), v);
+            let partial = (on_lignin.iter())
+                .find(|(call, ..)| call == "partial")
+                .expect("the partial batch");
+            assert!(partial.2.starts_with("Ok("), "{case}: {}", partial.2);
+            #[cfg(feature = "rocksdb_storage")]
+            {
+                let dir = tempfile::tempdir().expect("a directory");
+                let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+                let on_rocksdb = over_by_a_callback::<Old, I, _>(&rocksdb.expect("RocksDB"), v);
+                assert_eq!(on_lignin, on_rocksdb, "{case}");
+            }
+        }
+    }
+    on_both::<Count, Count>();
+    on_both::<Count, Sum>();
+    on_both::<Count, SumAndAverage>();
+    on_both::<SumAndAverage, CountSum>();
+}
+
 /// An element written over a tree by a batch, on every grove version: a
 /// filled or an emptied indexed tree of one axis and of three, sum tree
 /// and MMR tree, and over each an item, a sum tree, an MMR tree and an
@@ -3133,8 +3786,9 @@ fn written_over_by_kind<E: Engine>(
 ///   filled indexed tree with which it shares no axis, on versions 1 to
 ///   3. RocksDB keeps the records under the prefix and LigninDB drops
 ///   the subtree. The write of a child under a key that the old tree
-///   had reads the old record on RocksDB: it loads more bytes there, and
-///   is the same in everything else.
+///   had reads the old record on RocksDB: it loads more bytes there, by
+///   a count that the old tree and the grove version give, and is the
+///   same in everything else.
 #[test]
 #[cfg_attr(
     not(feature = "rocksdb_storage"),
@@ -3191,17 +3845,27 @@ fn an_element_is_written_over_a_tree_of_every_kind_on_every_grove_version() {
                 _ => false,
             };
 
-            let dir = tempfile::tempdir().expect("a directory");
-            let on_lignin = {
-                let db = Lignin::open_with_engine(dir.path()).expect("a database");
-                let answers = written_over_by_kind(&db, v, old, new, in_parts);
-                let issues = db.verify_grovedb(None, true, false, v);
-                let issues = issues.unwrap_or_else(|error| panic!("{case}: {error}"));
-                assert_eq!(issues.len(), 0, "{case}");
-                db.flush().expect("a flush");
+            // The store is closed right after the batch, and after the
+            // writes that follow it.
+            let then = |on: bool| {
+                let dir = tempfile::tempdir().expect("a directory");
+                let answers = {
+                    let db = Lignin::open_with_engine(dir.path()).expect("a database");
+                    let answers = written_over_by_kind(&db, v, old, new, (in_parts, on));
+                    let issues = db.verify_grovedb(None, true, false, v);
+                    let issues = issues.unwrap_or_else(|error| panic!("{case}: {error}"));
+                    assert_eq!(issues.len(), 0, "{case}, written on: {on}");
+                    db.flush().expect("a flush");
+                    answers
+                };
+                check(dir.path(), v);
                 answers
             };
-            check(dir.path(), v);
+            let closed_at_once = then(false);
+            let on_lignin = then(true);
+            // The read of the element ends both.
+            let shared = closed_at_once.len() - 1;
+            assert_eq!(closed_at_once[..shared], on_lignin[..shared], "{case}");
             let over = (on_lignin.iter())
                 .position(|(call, ..)| call == "over")
                 .expect("the batch");
@@ -3214,7 +3878,10 @@ fn an_element_is_written_over_a_tree_of_every_kind_on_every_grove_version() {
                 // Nothing of the batch is applied: the root hash is the
                 // one before it, and the key takes writes as the old
                 // tree.
-                assert_eq!(on_lignin[over + 1].2, on_lignin[over - 1].2, "{case}");
+                let before = (on_lignin[..over].iter().rev())
+                    .find(|(call, ..)| call == "root")
+                    .expect("a root hash before the batch");
+                assert_eq!(on_lignin[over + 1].2, before.2, "{case}");
                 refused.push((number, held, new));
             }
             cases += 1;
@@ -3224,7 +3891,7 @@ fn an_element_is_written_over_a_tree_of_every_kind_on_every_grove_version() {
                 let dir = tempfile::tempdir().expect("a directory");
                 let rocksdb = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
                 let rocksdb = rocksdb.expect("RocksDB");
-                let on_rocksdb = written_over_by_kind(&rocksdb, v, old, new, in_parts);
+                let on_rocksdb = written_over_by_kind(&rocksdb, v, old, new, (in_parts, true));
                 assert!(on_rocksdb[over].2.starts_with("Ok("), "{case}");
                 // The grove that RocksDB holds where LigninDB refused
                 // fails GroveDB's own check.
@@ -3237,12 +3904,20 @@ fn an_element_is_written_over_a_tree_of_every_kind_on_every_grove_version() {
                     if step >= upto || lignin == rocks {
                         continue;
                     }
-                    // The read of the record that was left behind.
+                    // The read of the record that was left behind: what
+                    // RocksDB loads of the record that the old tree had
+                    // under the key, as a run counted it.
                     assert!(reads_what_was_left, "{case}: step {step}");
                     assert_eq!(lignin.0, "under a key of the old tree", "{case}");
+                    let more = match (held, number) {
+                        (Held::Sums, 1) => 114,
+                        (Held::Sums, _) => 130,
+                        (Held::Index(_), 1) => 46,
+                        (Held::Index(_), _) => 54,
+                        (Held::Item | Held::Mmr, _) => panic!("{case}"),
+                    };
                     let mut but_loaded = rocks.1.clone();
-                    assert!(lignin.1.storage_loaded_bytes < but_loaded.storage_loaded_bytes);
-                    but_loaded.storage_loaded_bytes = lignin.1.storage_loaded_bytes;
+                    but_loaded.storage_loaded_bytes -= more;
                     assert_eq!((&lignin.1, &lignin.2), (&but_loaded, &rocks.2), "{case}");
                     apart += 1;
                 }

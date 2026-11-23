@@ -692,8 +692,8 @@ fn an_axis_that_an_element_lists_twice_is_one_merk_of_the_cell() {
 
     // The sum axis, the count axis, and the sum axis again: the second
     // listing of the sum axis takes the root at the first one's place.
-    let axes = vec![(2, None), (0, None), (2, None)];
-    let (value, expected) = listed(axes, &[(2, sum), (0, count), (2, sum)]);
+    let axes = vec![(1, None), (0, None), (1, None)];
+    let (value, expected) = listed(axes, &[(1, sum), (0, count), (1, sum)]);
     let hosted = [Some(primary), Some(sum), Some(count)];
     assert_eq!(made(&value, &hosted), Ok(expected));
     assert_eq!(
