@@ -184,6 +184,7 @@ fn a_record_that_no_node_links_is_dumped_and_loaded_as_one() {
         removed: &[],
         root: RootPut::Keep,
         anchored: true,
+        whole: false,
     };
     db.write(
         &Batch {
@@ -485,6 +486,7 @@ fn a_host_written_again_without_the_node_above_it_is_anchored_or_the_store_is_no
                 removed: &[],
                 root: RootPut::Set(sub_root.as_deref()),
                 anchored: false,
+                whole: false,
             },
             MerkWrite {
                 subtree: MID,
@@ -492,6 +494,7 @@ fn a_host_written_again_without_the_node_above_it_is_anchored_or_the_store_is_no
                 removed: &[],
                 root: RootPut::Keep,
                 anchored,
+                whole: false,
             },
         ];
         let batch = Batch {

@@ -291,6 +291,7 @@ fn the_reclaimer_runs_beside_a_writer_and_readers_on_threads() {
                 let outer = Merk::sized(b'k', NODES, 300).hosting(host_key, inner_of(round));
                 let writes = Writes {
                     moves: Vec::new(),
+                    load: false,
                     enter: vec![
                         (outer_of(round), None),
                         (inner_of(round), Some((outer_of(round), host_key.clone()))),

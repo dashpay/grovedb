@@ -269,6 +269,7 @@ impl Merk {
                 false => RootPut::Keep,
             },
             anchored: false,
+            whole: false,
         }
     }
 

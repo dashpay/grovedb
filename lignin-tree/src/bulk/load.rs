@@ -4,7 +4,7 @@ use std::vec::Drain;
 
 use lignin_format::{
     tree_page::{CellContent, CellValue, Hash, HashField, Side, TreeCell, TreeLink, TreePage},
-    value_log::PendingValue,
+    value_log::{PendingValue, ValuePlace},
     CellAddress, PageId, SlotId,
 };
 use lignin_store::load::FRAME_FORMAT;
@@ -138,6 +138,9 @@ struct Open {
     hash: Hash,
     key_len: u8,
     pending: Option<PendingValue>,
+    /// What the cell holds in the place of its value, once its piece goes
+    /// into a page ([`LoadValues::place`]).
+    place: Option<ValuePlace>,
     left: Option<Child>,
     right: Option<Child>,
     hosted: Box<[Option<Child>]>,
@@ -235,6 +238,9 @@ pub struct Loader {
     levels: Vec<Option<Filling>>,
     order: Vec<u32>,
     walk: Vec<u32>,
+    /// The walk of a piece in the order of its keys: each node with
+    /// whether its left subtree was walked.
+    scan: Vec<(u32, bool)>,
     path: Vec<u32>,
     search: Vec<(u32, usize)>,
     roots: Vec<Option<CellAddress>>,
@@ -267,6 +273,7 @@ impl Loader {
             levels: Vec::new(),
             order: Vec::new(),
             walk: Vec::new(),
+            scan: Vec::new(),
             path: Vec::new(),
             search: Vec::new(),
             roots: Vec::new(),
@@ -514,6 +521,7 @@ impl Loader {
             hash,
             key_len: node.key.len() as u8,
             pending,
+            place: None,
             left,
             right,
             hosted: hosted.into(),
@@ -688,11 +696,42 @@ impl Loader {
             filling.cells += 1;
             filling.used += node.size as usize;
             self.counters.cell_bytes += u64::from(node.size);
-            if let Some(pending) = node.pending {
-                values.placed(pending, filling.page);
-                self.counters.values += 1;
-                self.counters.value_bytes += u64::from(pending.value_len());
+        }
+        // The values are given their places in the order a scan reads the
+        // cells of the fragment (`crate::value::scan_order`): a node after
+        // its left subtree, then the Merks it hosts, then its right
+        // subtree. Values that are appended as they are placed so follow
+        // each other in that order, back to back where nothing else is
+        // appended between them and their file does not end.
+        self.scan.clear();
+        self.scan.push((root, false));
+        while let Some((index, left_walked)) = self.scan.pop() {
+            let node = self.nodes[index as usize].as_mut().expect(LIVE);
+            if !left_walked {
+                let open = |child: &Option<Child>| child.and_then(Child::open);
+                self.scan
+                    .extend(open(&node.right).map(|right| (right, false)));
+                let hosted = node.hosted.iter().rev().filter_map(open);
+                self.scan.extend(hosted.map(|hosted| (hosted, false)));
+                self.scan.push((index, true));
+                self.scan.extend(open(&node.left).map(|left| (left, false)));
+                continue;
             }
+            let Some(pending) = node.pending else {
+                continue;
+            };
+            let place = values.place(pending, filling.page);
+            let place = place.map_err(LoadError::Value)?;
+            // The cell was counted with the length of the value it was
+            // given: a place of another length is of another value.
+            let (held, placed) = (pending.value_len(), place.value_len());
+            if held != placed {
+                let other = format!("a value of {held} bytes was given a place of {placed}");
+                return Err(LoadError::Value(other.into()));
+            }
+            node.place = Some(place);
+            self.counters.values += 1;
+            self.counters.value_bytes += u64::from(held);
         }
 
         let (nodes, order, roots) = (&self.nodes, &self.order, &mut self.roots);
@@ -718,7 +757,11 @@ impl Loader {
                     left: link(Side::Left, node.left),
                     right: link(Side::Right, node.right),
                     hosted_roots: roots,
-                    value: cell.value(),
+                    value: match node.place {
+                        Some(ValuePlace::Placed(pointer)) => CellValue::OutOfLine(pointer),
+                        Some(ValuePlace::Pending(pending)) => CellValue::Pending(pending),
+                        None => cell.value(),
+                    },
                     fragment_root: index == root,
                 })?;
                 if handle.address() != node.at {

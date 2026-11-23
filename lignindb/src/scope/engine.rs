@@ -662,14 +662,20 @@ impl<'s> WriteTxn<'s> {
         at: CommitVersion,
         set: &WriteSet,
         scopes: &Scopes,
+        loaded: &mut Loaded,
     ) -> Result<Parked<'s>, TxnError> {
+        // No cell of the frames that are made here holds a value that a
+        // load appended for the frames before.
+        loaded.begin_layout();
         let mut frames = Frames::new(path, guard, at)?;
         frames.tree.behind_keys = (scopes.ever_marked().into_iter())
             .map(|(_, key)| key)
             .collect();
         for op in (0..set.ops()).filter(|op| set.laid(*op)) {
-            set.with_batch(op, |batch, made| frames.apply(path, batch, Some(made)))
-                .map_err(|refused| refused.error)?;
+            set.with_batch(op, |batch, again| {
+                frames.apply(path, batch, Some(again), loaded)
+            })
+            .map_err(|refused| refused.error)?;
         }
         frames.tree.behind_keys.clear();
         for mark in scopes.laid_marks() {
@@ -797,7 +803,10 @@ impl<'s> WriteTxn<'s> {
         if (state.set.newest(unit, key)).is_some_and(|newest| state.set.unlaid(newest)) {
             state.keyed += 1;
             return match state.set.own(unit, key) {
-                Own::Node(id) => Ok(Ok(read(Some(NodeView::record(&state.set, id))))),
+                Own::Node(id) => {
+                    let record = NodeView::record(&state.set, id, self.path.values);
+                    Ok(Ok(read(Some(record))))
+                }
                 Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
                 Own::Deleted | Own::Unwritten => Ok(Ok(read(None))),
             };
@@ -867,7 +876,8 @@ impl<'s> WriteTxn<'s> {
                 None => Ok(()),
                 Some(mut frames) => {
                     let marks = state.scopes.marks_of(id);
-                    let laid = Self::lay_on(&self.path, &mut frames, &state.set, &ops, marks);
+                    let (set, loaded) = (&state.set, &mut state.loaded);
+                    let laid = Self::lay_on(&self.path, &mut frames, set, &ops, marks, loaded);
                     if matches!(laid, Err((_, true))) {
                         // The frames hold a part of the scope's writes.
                         // They are made again from the operations that are
@@ -898,6 +908,7 @@ impl<'s> WriteTxn<'s> {
         set: &WriteSet,
         ops: &[usize],
         marks: &[MarkChange],
+        loaded: &mut Loaded,
     ) -> Result<(), (TxnError, bool)> {
         let mut dirty = false;
         // When each mark was set among the operations is not kept: a host
@@ -908,12 +919,12 @@ impl<'s> WriteTxn<'s> {
             dirty |= cell.is_some_and(|cell| frames.tree.behind.insert(cell));
         }
         for op in ops {
-            set.with_batch(*op, |batch, made| {
+            set.with_batch(*op, |batch, again| {
                 // A host that is behind here may be marked: every mark of
                 // the scope is of a host that was found above.
                 let deleted =
                     behind_deleted(frames, batch, |_| true).map_err(|error| (error, dirty))?;
-                let applied = (frames.apply(path, batch, Some(made)))
+                let applied = (frames.apply(path, batch, Some(again), loaded))
                     .map_err(|refused| (refused.error, dirty || refused.dirty))?;
                 move_behind(frames, &deleted, &applied);
                 Ok(())
@@ -955,6 +966,8 @@ impl<'s> WriteTxn<'s> {
         if removed {
             state.stuck = None;
             state.forget_above();
+            // A look may have seen what the scope wrote.
+            state.looks.clear();
         }
         if closed.laid && (removed || !closed.marks.is_empty()) {
             // The frames show the scope's writes: they are made again from

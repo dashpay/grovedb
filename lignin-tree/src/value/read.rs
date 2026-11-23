@@ -37,7 +37,11 @@ impl ValueBuf {
 
 /// The value at `pointer`, which a cell of the page `owner` holds: one
 /// positional read, checked against the pointer's length and the owner.
-pub(super) fn read_placed<'a>(
+///
+/// It is the read of [`read_value`] for a caller that has the pointer and
+/// the owner and holds no node: a write transaction that keeps, in the
+/// place of a value's bytes, where a bulk load put them.
+pub fn read_placed<'a>(
     store: &ValueStore,
     pointer: ValuePointer,
     owner: PageId,

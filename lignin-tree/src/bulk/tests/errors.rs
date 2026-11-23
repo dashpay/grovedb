@@ -284,3 +284,316 @@ fn every_error_says_what_it_is() {
         said(shape.into(), &format!("shape: {text}"), true);
     }
 }
+
+/// The values of a load that gives each its place when its cell gets its
+/// page ([`LoadValues::place`]): what is out of line goes into `log`, for
+/// the page, and the cell is written with a pointer.
+#[derive(Debug, Default)]
+struct Placed {
+    held: HashMap<[u8; 8], Vec<u8>>,
+    next: u64,
+    /// The values in the order they were placed, each with its page.
+    log: Vec<(PageId, Vec<u8>)>,
+    /// Refuses the value that would be placed at this position.
+    refuse_at: Option<usize>,
+    /// Gives the value that is placed at this position a place that is
+    /// one byte longer than it.
+    longer_at: Option<usize>,
+}
+
+impl Placed {
+    const SPACING: u64 = 4096;
+
+    /// The position in `log` of the value `pointer` names.
+    fn position(pointer: lignin_format::value_log::ValuePointer) -> usize {
+        (pointer.offset() / Self::SPACING) as usize - 1
+    }
+}
+
+impl Values for Placed {
+    fn released(&mut self, _: ValuePlace, _: PageId) {
+        unreachable!("a load releases no value");
+    }
+
+    fn placed(&mut self, _: PendingValue, _: PageId) {
+        unreachable!("a load that places its values leaves none pending");
+    }
+
+    fn carried(&mut self, _: ValuePlace, _: PageId, _: PageId) -> PendingValue {
+        unreachable!("a load carries no cell");
+    }
+}
+
+impl LoadValues for Placed {
+    fn hold(&mut self, value: &[u8]) -> Result<Option<PendingValue>, Refusal> {
+        if value.len() <= THRESHOLD {
+            return Ok(None);
+        }
+        self.next += 1;
+        let id = self.next.to_le_bytes();
+        self.held.insert(id, value.to_vec());
+        let pending = PendingValue::new(id, value.len() as u32).expect("a pending value");
+        Ok(Some(pending))
+    }
+
+    fn place(&mut self, pending: PendingValue, page: PageId) -> Result<ValuePlace, Refusal> {
+        if self.refuse_at == Some(self.log.len()) {
+            return Err("the log takes no value".into());
+        }
+        let value = self
+            .held
+            .remove(&pending.id())
+            .expect("a value that was held");
+        let file = lignin_format::FileId::new(3).expect("not zero");
+        let offset = (self.log.len() as u64 + 1) * Self::SPACING;
+        let longer = u32::from(self.longer_at == Some(self.log.len()));
+        let len = value.len() as u32 + longer;
+        let pointer = lignin_format::value_log::ValuePointer::new(file, offset, len);
+        self.log.push((page, value));
+        Ok(ValuePlace::Placed(pointer.expect("a pointer")))
+    }
+}
+
+/// A chain of `count` nodes, every second one with a value out of line,
+/// handed to `loader` with `values`.
+fn chain(
+    loader: &mut Loader,
+    mem: &mut Mem,
+    values: &mut Placed,
+    count: usize,
+) -> Result<Root, LoadError> {
+    let mut rules = Rules::default();
+    let long = vec![7u8; THRESHOLD + 40];
+    let mut below = None;
+    for index in 0..count {
+        let key = format!("key-{index:04}");
+        let value: &[u8] = if index % 2 == 0 { &long } else { b"short" };
+        let node = NodeLoad {
+            left: below.take().and_then(link),
+            ..plain(key.as_bytes(), value)
+        };
+        below = Some(loader.node(mem, values, &mut rules, &node)?);
+    }
+    loader.root(mem, values, below.expect("a chain with a node"))
+}
+
+#[test]
+fn a_load_that_places_its_values_writes_its_cells_with_their_places() {
+    let layout = Layout::proposed(SIZE);
+    let mut loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
+    let (mut mem, mut values) = (Mem::new(SIZE), Placed::default());
+    chain(&mut loader, &mut mem, &mut values, 300).expect("a load");
+    let report = loader.finish().expect("every subtree has its place");
+    assert_eq!(report.counters.values, 150);
+    assert_eq!(values.log.len(), 150);
+    assert!(
+        values.held.is_empty(),
+        "every value that was held was placed"
+    );
+    assert!(report.pages.len() > 2, "{report:?}");
+
+    // Every cell whose value is out of line holds the pointer that its
+    // value was given, for the page the cell is in, from its first write.
+    let mut seen = vec![false; values.log.len()];
+    for page in &report.pages {
+        let view = mem.view(page.page);
+        for (_, cell) in view.tree_page().cells() {
+            match cell.value() {
+                CellValue::Inline(bytes) => assert_eq!(bytes, b"short"),
+                CellValue::Pending(_) => panic!("a value that was placed is pending"),
+                CellValue::OutOfLine(pointer) => {
+                    let position = Placed::position(pointer);
+                    let (owner, value) = &values.log[position];
+                    assert_eq!(
+                        *owner, page.page,
+                        "the value was placed for the cell's page"
+                    );
+                    assert_eq!(pointer.value_len() as usize, value.len());
+                    assert!(!std::mem::replace(&mut seen[position], true));
+                }
+            }
+        }
+    }
+    assert!(seen.iter().all(|seen| *seen), "a value that no cell holds");
+    mem.check();
+}
+
+/// A balanced Merk of `count` nodes, every second one with a value out
+/// of line, handed to `loader` with `values`: a child before its parent.
+/// Every node whose number is a multiple of `hosting` hosts a Merk of
+/// three nodes with values out of line, which is handed over before it as
+/// a subtree of the load.
+fn balanced(
+    loader: &mut Loader,
+    mem: &mut Mem,
+    values: &mut Placed,
+    (count, hosting): (usize, usize),
+) -> Result<Root, LoadError> {
+    fn below(
+        (loader, mem, values): (&mut Loader, &mut Mem, &mut Placed),
+        (from, to, hosting): (usize, usize, usize),
+    ) -> Result<Option<Loaded>, LoadError> {
+        if from == to {
+            return Ok(None);
+        }
+        let top = from + (to - from) / 2;
+        let left = below((loader, mem, values), (from, top, hosting))?;
+        let right = below((loader, mem, values), (top + 1, to, hosting))?;
+        let key = format!("key-{top:05}");
+        let long = [7u8; THRESHOLD + 40];
+        let mut rules = Rules::default();
+        let mut hosted = Vec::new();
+        if top % hosting == 0 {
+            let leaf = |side: &str| format!("in-{top:05}-{side}");
+            let mut node = |node: &NodeLoad<'_>| loader.node(mem, values, &mut rules, node);
+            let (a, b, c) = (leaf("a"), leaf("b"), leaf("c"));
+            let merk = NodeLoad {
+                left: link(node(&plain(a.as_bytes(), &long))?),
+                right: link(node(&plain(c.as_bytes(), &long))?),
+                ..plain(b.as_bytes(), &long)
+            };
+            hosted.push(HostedLoad::Loaded(node(&merk)?));
+        }
+        let value: &[u8] = if top % 2 == 0 { &long } else { b"short" };
+        let node = NodeLoad {
+            left: left.and_then(link),
+            right: right.and_then(link),
+            hosted: &hosted,
+            ..plain(key.as_bytes(), value)
+        };
+        let taken = loader.node(mem, values, &mut rules, &node);
+        taken.map(Some)
+    }
+    let top = below((loader, mem, values), (0, count, hosting))?;
+    loader.root(mem, values, top.expect("a Merk with a node"))
+}
+
+/// The values of a fragment are given their places in the order a scan
+/// reads its cells: a cell after its left subtree, then the Merks it
+/// hosts in its page, then its right subtree. So values that are appended
+/// as they are placed lie in the value log as a regrouping would leave
+/// them, each fragment's one after the other.
+#[test]
+fn the_values_of_a_fragment_are_placed_in_the_order_of_a_scan() {
+    use crate::value::scan_order;
+
+    /// The cells of the fragment below `slot`, in the order of a scan.
+    fn scan(page: &TreePage<'_>, slot: SlotId, out: &mut Vec<SlotId>) {
+        let cell = page.cell(slot).expect("a cell of the page");
+        let here = |at: CellAddress| (at.page() == page.id()).then(|| at.slot());
+        let child = |side| cell.link(side).and_then(|link| here(link.child));
+        if let Some(left) = child(Side::Left) {
+            scan(page, left, out);
+        }
+        out.push(slot);
+        for hosted in cell.hosted_roots().flatten().filter_map(here) {
+            scan(page, hosted, out);
+        }
+        if let Some(right) = child(Side::Right) {
+            scan(page, right, out);
+        }
+    }
+
+    let layout = Layout::proposed(SIZE);
+    let mut loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
+    let (mut mem, mut values) = (Mem::new(SIZE), Placed::default());
+    balanced(&mut loader, &mut mem, &mut values, (3_000, 40)).expect("a load");
+    let report = loader.finish().expect("every subtree has its place");
+    assert_eq!(report.counters.values, 1_500 + 3 * 75);
+    let (mut fragments, mut followed, mut hosted_inside) = (0, 0, 0);
+    for page in &report.pages {
+        let view = mem.view(page.page);
+        let tree_page = view.tree_page();
+        let mut cells = 0;
+        for root in tree_page.fragment_roots() {
+            let mut order = Vec::new();
+            scan(&tree_page, root, &mut order);
+            cells += order.len();
+            hosted_inside += (order.iter())
+                .filter_map(|slot| tree_page.cell(*slot))
+                .flat_map(|cell| cell.hosted_roots().flatten())
+                .filter(|at| at.page() == page.page)
+                .count();
+            let placed = order
+                .iter()
+                .filter_map(|slot| tree_page.cell(*slot)?.value_pointer());
+            let positions: Vec<usize> = placed.map(Placed::position).collect();
+            assert!(
+                positions.windows(2).all(|pair| pair[1] == pair[0] + 1),
+                "{}: the values of the fragment at {root} were placed as {positions:?}",
+                page.page
+            );
+            fragments += 1;
+            followed += positions.len().saturating_sub(1);
+        }
+        // Every cell of the page is in one fragment, and the order a
+        // scan of the page reads them in has each fragment in one piece,
+        // in the order of this walk.
+        assert_eq!(cells, tree_page.cell_count());
+        let of_the_page = scan_order(&tree_page);
+        assert_eq!(of_the_page.len(), cells);
+        for root in tree_page.fragment_roots() {
+            let mut order = Vec::new();
+            scan(&tree_page, root, &mut order);
+            let from = of_the_page.iter().position(|slot| *slot == order[0]);
+            let from = from.expect("a cell of the page");
+            assert_eq!(of_the_page[from..from + order.len()], order[..]);
+        }
+    }
+    assert!(fragments >= report.pages.len(), "{fragments} fragments");
+    assert!(
+        followed > 1_000,
+        "{followed} values follow another of their fragment"
+    );
+    assert!(
+        hosted_inside > 20,
+        "{hosted_inside} Merks are in the fragments of their hosts"
+    );
+    mem.check();
+}
+
+#[test]
+fn a_value_that_is_refused_its_place_ends_the_load() {
+    let layout = Layout::proposed(SIZE);
+    let mut loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
+    let (mut mem, mut values) = (Mem::new(SIZE), Placed::default());
+    values.refuse_at = Some(3);
+    let refused = chain(&mut loader, &mut mem, &mut values, 300).expect_err("a refusal");
+    assert!(matches!(refused, LoadError::Value(_)), "{refused}");
+    assert_eq!(values.log.len(), 3);
+    let leaf = loader.node(
+        &mut mem,
+        &mut values,
+        &mut Rules::default(),
+        &plain(b"next", b"v"),
+    );
+    assert!(matches!(leaf, Err(LoadError::Failed)));
+}
+
+/// The cell of a value is counted with the length the value has. A place
+/// of another length is a well-formed pointer, which a page would take:
+/// the load refuses it before the cell is written.
+#[test]
+fn a_place_of_another_length_than_its_value_ends_the_load() {
+    let layout = Layout::proposed(SIZE);
+    let mut loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
+    let (mut mem, mut values) = (Mem::new(SIZE), Placed::default());
+    values.longer_at = Some(2);
+    let refused = chain(&mut loader, &mut mem, &mut values, 300).expect_err("a refusal");
+    let LoadError::Value(said) = &refused else {
+        panic!("{refused}");
+    };
+    let (held, placed) = (THRESHOLD + 40, THRESHOLD + 41);
+    assert_eq!(
+        said.to_string(),
+        format!("a value of {held} bytes was given a place of {placed}")
+    );
+    assert_eq!(values.log.len(), 3, "the place was asked for and refused");
+    let leaf = loader.node(
+        &mut mem,
+        &mut values,
+        &mut Rules::default(),
+        &plain(b"next", b"v"),
+    );
+    assert!(matches!(leaf, Err(LoadError::Failed)));
+}

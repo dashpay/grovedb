@@ -129,9 +129,13 @@
 //! against the counts as they were before the change, so that what the
 //! change acquires cannot hide a release the count did not include.
 //!
-//! A commit appends nothing to the value log: its new values travel in its
-//! log group (FL7). So the change of a commit only releases. A new value is
-//! acquired in the page step of write-back that gives its cell the pointer.
+//! A commit other than that of a bulk load appends nothing to the value
+//! log: its new values travel in its log group (FL7). So its change only
+//! releases, and a new value is acquired in the page step of write-back
+//! that gives its cell the pointer. The values of a bulk load are appended
+//! here before its commit, under a hold of its transaction, and that
+//! commit acquires them, once a durable manifest covers them
+//! (`transactions.md` LD2, LD5).
 //!
 //! **The order of the log is the order of the counts.** A change point
 //! takes the store's lock on the counts ([`ValueStore::step`]), writes its
@@ -389,9 +393,10 @@
 //!   counts with its place in the log, and recovers the counts from a
 //!   sample and every change after its place.
 //! - It appends every value under the [`ValueHold`] of the run of background
-//!   work the value is for (write-back, cleaning, regrouping), and drops the
-//!   hold only after the change that counts the value was applied, or when
-//!   the value is given up.
+//!   work the value is for (write-back, cleaning, regrouping), or of the
+//!   transaction whose bulk load it is of, and drops the hold only after
+//!   the change that counts the value was applied, or when the value is
+//!   given up.
 //! - It calls [`ValueStore::mark_durable`] once the changes up to a mark
 //!   will survive a crash. It calls [`ValueStore::retire`] with the oldest
 //!   pinned version, and [`ValueStore::drop_empty`] with what that returned

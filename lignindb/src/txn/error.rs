@@ -173,6 +173,39 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
+    /// A change set that says it is the whole Merk is refused because a
+    /// commit outside the transaction gave the Merk a root, or took its
+    /// subtree out, after the transaction looked at the subtree and found
+    /// it entered with no root: the look is a read of the subtree
+    /// ([`Scope::subtree`](super::Scope::subtree), or the same call on the
+    /// transaction) that the transaction still remembers. When a refusal
+    /// of a load is told so, and when it is told as it is, is in
+    /// `transactions.md` LD6.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]), as
+    /// [`Self::ValueTaken`] is. The batch adds nothing to the write set
+    /// (WT10), and the claims its scope took for it stay with the scope.
+    /// A caller that takes it as a conflict rolls the transaction back
+    /// and makes its reads and its writes again.
+    MerkTaken {
+        /// The Merk's subtree.
+        subtree: Subtree,
+    },
+    /// A batch that hands a Merk over whole ([`MerkWrite::whole`]) also
+    /// drops or clears a subtree, and is given where it is not laid out:
+    /// to a scope that keeps its writes in the write set, or to a
+    /// transaction that serves its records by key (`transactions.md`
+    /// LD6). What leaves with a drop or a clear is the subtree
+    /// directory's to say, which the frames have, so whether the Merk is
+    /// entered and has no root then is not asked by key: the batch is
+    /// not taken, and adds nothing to the write set (WT10). It is no
+    /// conflict.
+    ///
+    /// [`MerkWrite::whole`]: super::MerkWrite::whole
+    LoadBeside {
+        /// The subtree of the first Merk that the batch hands over whole.
+        subtree: Subtree,
+    },
     /// The transaction made the first node of a Merk that was empty, and a
     /// commit outside it has made one since, with no key in common. The
     /// two roots cannot both stand, and the conflict rule did not see it:
@@ -359,6 +392,75 @@ pub enum BatchError {
         /// The length of the tree type.
         len: usize,
     },
+    /// A change set says that it is the whole Merk
+    /// ([`MerkWrite::whole`](super::MerkWrite::whole)) and is not one the
+    /// bulk loader can lay out.
+    NotWhole {
+        /// The Merk's subtree.
+        subtree: Subtree,
+        /// What the change set does that a load does not.
+        fault: WholeFault,
+    },
+}
+
+/// What a change set does that says it is the whole Merk and is refused
+/// ([`BatchError::NotWhole`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WholeFault {
+    /// The Merk has a root once the drops and the clears of the batch are
+    /// made. A load is the whole of a Merk that had none.
+    HasRoot,
+    /// It removes a key. A Merk that had no root has no node to remove.
+    Removes,
+    /// A node keeps its value
+    /// ([`ValuePut::Keep`](super::ValuePut::Keep)). A load states every
+    /// value.
+    KeepsValue,
+    /// A node leaves a hash stale. The cells of a load are written once,
+    /// with every hash in them.
+    StaleHash,
+    /// It does not set the root, or sets it to a key that is not the one
+    /// node of it that no link names.
+    NoRoot,
+    /// A link names a key that no node before its parent in the change
+    /// set has, or one that an earlier link has named: the order is not a
+    /// child before its parent, the child is not in the change set, or it
+    /// is the child of two.
+    ChildLater,
+    /// A node is not below the root: the change set holds more than one
+    /// tree.
+    NotBelowRoot,
+    /// A node hosts a Merk that another change set of the batch writes,
+    /// and that change set is no load.
+    HostsWritten,
+    /// Loads of the batch host each other, in a cycle of one or more.
+    HostsItself,
+    /// A node hosts a Merk that another node of the batch hosts, or hosts
+    /// it twice. A Merk has one host.
+    HostedTwice,
+    /// A node hosts a Merk that was entered with another host, or with
+    /// none: the subtree directory names the host of a Merk
+    /// ([`HostPut`](super::HostPut)), and a node of a load is written
+    /// with the root of no other Merk.
+    NotItsHost,
+}
+
+impl fmt::Display for WholeFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::HasRoot => "the Merk has a root",
+            Self::Removes => "it removes a key",
+            Self::KeepsValue => "a node keeps its value",
+            Self::StaleHash => "a node leaves a hash stale",
+            Self::NoRoot => "its root is not the one node that no link names",
+            Self::ChildLater => "a link names no node that stands before its parent unlinked",
+            Self::NotBelowRoot => "a node is not below the root",
+            Self::HostsWritten => "a node hosts a Merk that the batch writes node by node",
+            Self::HostsItself => "it hosts a Merk that hosts it",
+            Self::HostedTwice => "a node hosts a Merk that has a host in the batch",
+            Self::NotItsHost => "a node hosts a Merk that was entered with another host or none",
+        })
+    }
 }
 
 impl fmt::Display for BatchError {
@@ -399,6 +501,20 @@ impl fmt::Display for BatchError {
                     f,
                     "a node of the Merk {subtree} keeps a value that a commit outside the \
                      transaction took away after the node was read"
+                )
+            }
+            Self::LoadBeside { subtree } => {
+                write!(
+                    f,
+                    "the whole Merk {subtree} is handed over beside a drop or a clear, in a \
+                     batch that is not laid out"
+                )
+            }
+            Self::MerkTaken { subtree } => {
+                write!(
+                    f,
+                    "a commit outside the transaction gave the Merk {subtree} a root, or took \
+                     its subtree out, after the transaction found it entered with no root"
                 )
             }
             Self::RootTaken { subtree } => {
@@ -490,6 +606,12 @@ impl fmt::Display for BatchError {
             Self::TreeTypeTooLong { subtree, len } => {
                 write!(f, "a tree type of {len} bytes for the subtree {subtree}")
             }
+            Self::NotWhole { subtree, fault } => {
+                write!(
+                    f,
+                    "the change set of the Merk {subtree} is no whole Merk: {fault}"
+                )
+            }
         }
     }
 }
@@ -497,11 +619,14 @@ impl fmt::Display for BatchError {
 impl Error for BatchError {}
 
 impl BatchError {
-    /// Whether the refusal is [`Self::ValueTaken`] or
-    /// [`Self::MovedByKey`]: those that a caller answers as it answers a
+    /// Whether the refusal is [`Self::ValueTaken`], [`Self::MovedByKey`]
+    /// or [`Self::MerkTaken`]: those that a caller answers as it answers a
     /// commit that fails with a conflict.
     pub const fn is_conflict(&self) -> bool {
-        matches!(self, Self::ValueTaken { .. } | Self::MovedByKey { .. })
+        matches!(
+            self,
+            Self::ValueTaken { .. } | Self::MovedByKey { .. } | Self::MerkTaken { .. }
+        )
     }
 }
 

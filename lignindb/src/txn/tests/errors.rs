@@ -42,6 +42,7 @@ fn merk<'a>(name: u8, nodes: &'a [NodePut<'a>], root: RootPut<'a>) -> MerkWrite<
         removed: &[],
         root,
         anchored: false,
+        whole: false,
     }
 }
 
@@ -913,7 +914,24 @@ fn every_error_says_what_it_is() {
         BatchError::Entered { subtree },
         BatchError::SubtreeTwice { subtree },
         BatchError::TreeTypeTooLong { subtree, len: 256 },
+        BatchError::MerkTaken { subtree },
+        BatchError::LoadBeside { subtree },
     ];
+    let faults = [
+        WholeFault::HasRoot,
+        WholeFault::Removes,
+        WholeFault::KeepsValue,
+        WholeFault::StaleHash,
+        WholeFault::NoRoot,
+        WholeFault::ChildLater,
+        WholeFault::NotBelowRoot,
+        WholeFault::HostsWritten,
+        WholeFault::HostsItself,
+        WholeFault::HostedTwice,
+        WholeFault::NotItsHost,
+    ];
+    let not_whole = faults.map(|fault| BatchError::NotWhole { subtree, fault });
+    let batch: Vec<BatchError> = batch.into_iter().chain(not_whole).collect();
     let mut texts: BTreeSet<String> = batch.iter().map(BatchError::to_string).collect();
     assert_eq!(texts.len(), batch.len(), "{texts:?}");
     let page = lignin_format::PageId::MIN;

@@ -435,6 +435,7 @@ pub(super) fn open_store(
         cleaner: lignin_store::cleaner::CleanerState::new(options.cleaner.unwrap_or_default()),
         stats: lignin_store::stats::Stats::new(),
         commits: crate::txn::Commits::new(landed),
+        load_files: crate::txn::LoadFiles::new(),
         committing: crate::commit::CommitState::reporting(move |error| {
             told.write_back_failed(error);
         })

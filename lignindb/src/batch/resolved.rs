@@ -301,6 +301,9 @@ impl<C> Resolved<C> {
         }
         let merks: Vec<_> = (nodes.iter())
             .map(|(subtree, nodes, removed)| MerkWrite {
+                // A batch keeps one outcome for each key, and no change
+                // set: none of its Merks is handed over whole.
+                whole: false,
                 subtree: *subtree,
                 nodes,
                 removed,

@@ -5139,3 +5139,264 @@ fn a_tree_and_an_item_change_places() {
     world.check_committed();
     assert_eq!(db.private_ids(), 0);
 }
+
+/// Applies `batch`, whose change set of the Merk 1 is handed over whole,
+/// through a scope of `tx` that merges, and tells the model.
+fn hand_over<'s>(world: &World<'s>, tx: &Tx<'s>, batch: &OwnedBatch) -> Result<Applied, TxnError> {
+    let scope = tx.txn.scope()?;
+    let first_write = world.latest().get();
+    let read = batch.through(&scope);
+    let applied = read.loading(&[sub(1)], |batch| scope.apply(batch));
+    scope.merge();
+    let applied = applied?;
+    world.note(tx, &read, first_write);
+    Ok(applied)
+}
+
+/// A load of a transaction that also moves a subtree (LD1, LD4).
+///
+/// A node of a load names no subtree that a move of its batch brings a
+/// Merk to: here one below the moved subtree, whose host is a node of the
+/// Merk that goes with the move. And a layout that is stopped is not made
+/// again to tell what stopped it (LD4, MV7): the file that the loads fill
+/// ends where it ended when the layout was stopped, however often the
+/// transaction is asked and however often its commit is refused. The
+/// layout that is stopped lays out a load that was taken by key, and
+/// takes a node of it out of its tree with its value kept, which is read
+/// where that layout put it.
+#[test]
+fn a_load_beside_a_move() {
+    use super::{
+        load::{items, whole, Items},
+        store::Rng,
+    };
+    let load = hand_over;
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let merk = items(&mut Rng::new(51), b'l', 200, 2);
+    let hosting = merk.keys().nth(5).expect("a node").clone();
+
+    let tx = world.begin();
+    let mut batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    let mut names = whole(1, &merk);
+    names.hosted.insert(hosting, vec![sub(B_IN)]);
+    batch.merks.push(names);
+    let refused = load(&world, &tx, &batch).expect_err("a node of the moved Merk hosts it");
+    let not_its_host = BatchError::NotWhole {
+        subtree: sub(1),
+        fault: WholeFault::NotItsHost,
+    };
+    assert!(
+        matches!(&refused, TxnError::Batch(error) if *error == not_its_host),
+        "{refused}"
+    );
+    world.check(&tx);
+    assert_eq!(tx.txn.stats().tree_pages, 0, "nothing was laid out");
+
+    // A Merk of one node whose value is out of line is handed over
+    // through a scope that keeps its writes in the write set. The node is
+    // then written out of its tree, with its value kept.
+    let long = lignin_tree::value::InlinePolicy::DEFAULT_THRESHOLD + 50;
+    let single: Items = [(b"one".to_vec(), vec![7; long])].into_iter().collect();
+    let by_key = OwnedBatch {
+        merks: vec![whole(2, &single)],
+        ..OwnedBatch::default()
+    };
+    let first = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope beside it");
+    let first_write = world.latest().get();
+    let applied = by_key.loading(&[sub(2)], |batch| beside.apply(batch));
+    assert!(applied.expect("a load by key").load.is_none());
+    world.note(&tx, &by_key, first_write);
+    first.merge();
+    beside.merge();
+    world.check(&tx);
+    let tree = (tx.model.borrow()).view(&world.model.records, Unit::data(sub(2)));
+    let Some(model::Val::Node(node)) = tree.get(&b"one"[..]) else {
+        panic!("the node of the load");
+    };
+    let out_of_its_tree = OwnedMerk {
+        nodes: vec![(b"one".to_vec(), node.clone(), false)],
+        root: Some(None),
+        ..OwnedMerk::change(sub(2), &tree, &model::Committed::items(&tree))
+    };
+    let batch = OwnedBatch {
+        merks: vec![out_of_its_tree],
+        ..OwnedBatch::default()
+    };
+    let applied = world.apply(&tx, &batch).expect("the node leaves its tree");
+    assert_eq!(applied.unlinked, vec![0]);
+    world.check(&tx);
+
+    // The load, and then the move, which a commit beside them stops from
+    // being made again.
+    let alone = OwnedBatch {
+        merks: vec![whole(1, &merk)],
+        ..OwnedBatch::default()
+    };
+    load(&world, &tx, &alone).expect("a load");
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    let other = world.begin();
+    let entered = subtrees(vec![enter(B)]);
+    world.apply(&other, &entered).expect("a subtree is entered");
+    assert!(committed(world.commit(other, &[&tx])));
+
+    let stops = |error: &TxnError| {
+        matches!(
+            error,
+            TxnError::Batch(BatchError::Entered { subtree }) if *subtree == sub(B)
+        )
+    };
+    // The first call lays the load out again before the move stops the
+    // layout.
+    let before = db.load_files.filled();
+    let refused = get(&tx, aux(B), b"a").expect_err("a refusal");
+    assert!(stops(&refused), "{refused}");
+    let stopped = db.load_files.filled();
+    assert!(stopped > before, "{stopped} bytes after {before}");
+    for _ in 0..3 {
+        let refused = get(&tx, aux(B), b"a").expect_err("a refusal");
+        assert!(stops(&refused), "{refused}");
+        let refused = tx.txn.subtree(sub(B), |_| ()).expect_err("a refusal");
+        assert!(stops(&refused), "{refused}");
+    }
+    assert_eq!(db.load_files.filled(), stopped);
+    // What no move decides is read by key, a value of the load from the
+    // value log among it.
+    let (key, value) = (merk.iter())
+        .max_by_key(|(_, value)| value.len())
+        .expect("a node");
+    let read = (tx.txn).node(sub(1), key, |view| view.map(|view| value_of(&view)));
+    assert_eq!(read.expect("a read").as_ref(), Some(value));
+    // A write that the transaction takes while its layout is stopped is
+    // kept by key, and is no reason to try the layout again.
+    let later = OwnedBatch {
+        records: vec![put(aux(TOP), b"later", b"a record")],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &later).expect("a record by key");
+    assert_eq!(db.load_files.filled(), stopped);
+    // Nor is one that a scope beside another takes and that is laid out
+    // when the scope merges: it comes after the write that stops the
+    // layout.
+    let first = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope beside it");
+    let later = OwnedBatch {
+        records: vec![put(aux(TOP), b"later still", b"a record")],
+        ..OwnedBatch::default()
+    };
+    (world.apply_in(&tx, &beside, &later)).expect("a record by key");
+    beside.merge();
+    first.merge();
+    assert_eq!(db.load_files.filled(), stopped);
+    // A commit is refused with what stopped the layout, and lays nothing
+    // out to say so.
+    for _ in 0..2 {
+        let refused = db.commit(&versions, &tx.txn).expect_err("no layout");
+        assert!(stops(&refused), "{refused}");
+    }
+    assert_eq!(db.load_files.filled(), stopped);
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    world.check(&tx);
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// A batch states a move and hands a Merk over whole. The values of the
+/// load that are out of line are kept by their places among the entries
+/// of the batch's change sets, which stand behind the entry of the move:
+/// frames that are made again find each value by its place.
+#[test]
+fn a_load_in_the_batch_of_a_move_is_laid_out_again() {
+    use super::{
+        load::{items, whole},
+        store::Rng,
+    };
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let merk = items(&mut Rng::new(52), b'l', 200, 2);
+    let tx = world.begin();
+    let mut batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    batch.merks.push(whole(1, &merk));
+    let applied = hand_over(&world, &tx, &batch).expect("a move and a load");
+    assert!(applied.load.is_some());
+    world.check(&tx);
+    // A commit beside them, which meets neither.
+    let landed = world.edit_outside(
+        9,
+        |items| drop(items.insert(b"k".to_vec(), b"v".to_vec())),
+        &[&tx],
+    );
+    assert!(committed(landed));
+    world.check(&tx);
+    let stats = tx.txn.stats();
+    assert_eq!((stats.rebuilds, stats.overlapped), (1, 0));
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// A layout that is stopped is told again from what was kept only while
+/// it would be made of the same writes (LD4). A scope that is open beside
+/// another enters a subtree: the enter is kept in the write set and is
+/// not laid out. The other scope moves a subtree. A commit outside enters
+/// both that subtree and the one the move brings its Merk to. The layout
+/// of the transaction's writes stops at the move, which is the one of the
+/// two that it is made of. When the scopes are merged, the enter is laid
+/// out too: the layout is made again and stops at the enter, which comes
+/// first, and that is what the commit is refused with.
+#[test]
+fn a_stopped_layout_is_made_again_when_a_scope_is_laid_out() {
+    use super::{
+        load::{items, whole},
+        store::Rng,
+    };
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let merk = items(&mut Rng::new(53), b'l', 60, 2);
+
+    let tx = world.begin();
+    let alone = OwnedBatch {
+        merks: vec![whole(1, &merk)],
+        ..OwnedBatch::default()
+    };
+    hand_over(&world, &tx, &alone).expect("a load");
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    let laid = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope beside it");
+    assert!(laid.is_laid_out() && !beside.is_laid_out());
+    let entered = subtrees(vec![enter(FREE)]);
+    (world.apply_in(&tx, &beside, &entered)).expect("an enter that is kept in the write set");
+    let moved = batch.through(&laid);
+    (world.apply_in(&tx, &laid, &moved)).expect("the subtree is moved");
+
+    let other = world.begin();
+    let both = subtrees(vec![enter(FREE), enter(B)]);
+    world
+        .apply(&other, &both)
+        .expect("two subtrees are entered");
+    assert!(committed(world.commit(other, &[&tx])));
+
+    let stops_at = |error: &TxnError, name: u8| {
+        matches!(
+            error,
+            TxnError::Batch(BatchError::Entered { subtree }) if *subtree == sub(name)
+        )
+    };
+    let refused = laid.subtree(sub(B), |_| ()).expect_err("a refusal");
+    assert!(stops_at(&refused, B), "{refused}");
+    beside.merge();
+    laid.merge();
+    let refused = db.commit(&versions, &tx.txn).expect_err("no layout");
+    assert!(stops_at(&refused, FREE), "{refused}");
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    world.check(&tx);
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}

@@ -1237,6 +1237,12 @@ impl OwnedBatch {
 
     /// Calls `run` with the batch.
     pub fn with<R>(&self, run: impl FnOnce(&Batch<'_>) -> R) -> R {
+        self.loading(&[], run)
+    }
+
+    /// Calls `run` with the batch, in which the change sets of the Merks
+    /// `whole` say that they are the whole Merk (`MerkWrite::whole`).
+    pub fn loading<R>(&self, whole: &[Subtree], run: impl FnOnce(&Batch<'_>) -> R) -> R {
         fn link(link: &Option<LinkRec>) -> Option<LinkPut<'_>> {
             link.as_ref().map(|link| LinkPut {
                 key: &link.key,
@@ -1288,6 +1294,7 @@ impl OwnedBatch {
                     Some(root) => RootPut::Set(root.as_deref()),
                 },
                 anchored: merk.anchored,
+                whole: whole.contains(&merk.subtree),
             })
             .collect();
         let records: Vec<RecordWrite<'_>> = (self.records.iter())

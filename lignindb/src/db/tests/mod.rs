@@ -15,6 +15,7 @@ mod full;
 mod guards;
 mod kept;
 mod listed;
+mod load;
 mod moves;
 mod open;
 mod pacing;
@@ -731,6 +732,9 @@ pub(super) struct Writes {
     pub(super) merks: Vec<(Subtree, Merk)>,
     /// Flat records to put.
     pub(super) records: Vec<(Column, Subtree, Vec<u8>, Vec<u8>)>,
+    /// Whether the Merks are handed over as loads (`MerkWrite::whole`): a
+    /// Merk of these tests states its nodes a child before its parent.
+    pub(super) load: bool,
 }
 
 impl Writes {
@@ -771,6 +775,7 @@ impl Writes {
                 removed,
                 root: RootPut::Set(merk.root.as_deref()),
                 anchored: false,
+                whole: self.load,
             })
             .collect();
         fn entering(entered: &Entered, if_absent: bool) -> SubtreeWrite<'_> {

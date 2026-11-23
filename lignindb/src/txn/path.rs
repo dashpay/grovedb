@@ -9,6 +9,7 @@ use lignin_format::{CommitVersion, PageSize};
 use lignin_store::{
     alloc::PageAllocator,
     cache::{BufferPool, OwnerId},
+    flush::WriteBack,
     load::{LoadBuffers, PageLoader},
     stats::Stats,
     values::ValueStore,
@@ -22,7 +23,10 @@ use lignin_tree::{
     value::InlinePolicy,
 };
 
-use super::{commits::Commits, error::TxnError, key::Column, pages::CommittedPages, txn::WriteTxn};
+use super::{
+    commits::Commits, error::TxnError, key::Column, load::LoadFiles, pages::CommittedPages,
+    txn::WriteTxn,
+};
 use crate::snapshot::{Directories, OperationGuard, Versions};
 
 /// The committed flat pages of one version, as one operation reads them:
@@ -120,6 +124,14 @@ pub struct WritePath<'s> {
     /// The keyspace of the pages that drops unlinked and that wait to be
     /// freed (`lignin_tree::drop`).
     pub(crate) flat_drops: FlatDrops,
+    /// The value-log file the loads of the store append to
+    /// (`crate::txn`, "A load").
+    pub(crate) load_files: &'s LoadFiles,
+    /// Write-back's handle on the store, for its manifest behind the lock
+    /// that makes replacements one at a time (LT7 level 3): a load has it
+    /// name the file its values go to, and the commit of a load has it
+    /// cover them.
+    pub(crate) write_back: WriteBack<'s>,
     pub(crate) keyspaces: Keyspaces,
     pub(crate) layout: Layout,
     pub(crate) inline: InlinePolicy,
@@ -147,6 +159,12 @@ pub(crate) struct Store<'s> {
     /// and the configuration of its pages. Its records are entries of the
     /// flat pages of the transaction that drops, so they commit with it.
     pub(crate) flat_drops: FlatDrops,
+    /// The value-log file the loads of the store append to: one for the
+    /// store, made beside its commits.
+    pub(crate) load_files: &'s LoadFiles,
+    /// Write-back's handle on the store, whose manifest the loads replace
+    /// under the lock write-back replaces it under.
+    pub(crate) write_back: WriteBack<'s>,
 }
 
 impl<'s> WritePath<'s> {
@@ -171,6 +189,8 @@ impl<'s> WritePath<'s> {
             directory: store.directory,
             directories: store.directories,
             flat_drops: store.flat_drops,
+            load_files: store.load_files,
+            write_back: store.write_back,
             keyspaces,
             layout,
             inline,

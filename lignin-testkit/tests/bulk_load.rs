@@ -24,8 +24,12 @@
 //!
 //! ```text
 //! BULK_LOAD_DIR=/dev/shm/bulk-load cargo test --release -p lignin-testkit --test bulk_load -- \
-//!     --ignored --nocapture the_reference_workload
+//!     --ignored --nocapture --exact the_reference_workload_loads_within_the_time_and_fill
 //! ```
+//!
+//! The same grove loaded through the engine is the last test of this
+//! file, with a command of its own: the two are not run at once on one
+//! `BULK_LOAD_DIR`, where each builds or opens the grove.
 //!
 //! `BULK_LOAD_STORE` names another directory for the store the load is
 //! written to, to have it on a disk. Two more settings are for measuring
@@ -1018,4 +1022,534 @@ fn the_reference_workload_loads_within_the_time_and_fill() {
         outcome.shape.least_used
     );
     assert!(outcome.seconds <= 50.0, "{:.1} s", outcome.seconds);
+}
+
+// The same grove through the engine (TXN-10): the Merks are handed to
+// write transactions of `lignindb` as whole change sets, which the engine
+// lays out with the loader, and each transaction is committed.
+
+use lignin_tree::{bulk::LoadCounters, hash::Stale};
+use lignindb::{
+    commit::{Committed, NoStaleHashes},
+    snapshot::LatestLease,
+    txn::{
+        Batch, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RootPut, Subtree, SubtreeWrite,
+        ValuePut,
+    },
+    Db,
+};
+
+/// The tree type the Merks are entered with: the engine keeps it and reads
+/// nothing from it.
+const ENTERED_AS: &[u8] = b"merk";
+
+/// How many nodes a batch of whole Merks holds before it is handed over
+/// and committed. A Merk is handed over whole, so a batch can hold more.
+const NODES_IN_A_BATCH: usize = 250_000;
+
+fn subtree_of(path: &[Vec<u8>]) -> Subtree {
+    Subtree::new(RocksDbStorage::build_prefix(SubtreePath::from(path)).unwrap())
+}
+
+/// A link of a node that was read, as it is stated to the engine.
+struct StatedLink {
+    key: Vec<u8>,
+    hash: Hash,
+    heights: (u8, u8),
+    aggregate: Vec<u8>,
+}
+
+impl StatedLink {
+    fn put(link: &Option<Self>) -> Option<LinkPut<'_>> {
+        link.as_ref().map(|link| LinkPut {
+            key: &link.key,
+            hash: &link.hash,
+            heights: link.heights,
+            aggregate: &link.aggregate,
+        })
+    }
+}
+
+/// A node that was read, as it is stated to the engine.
+struct StatedNode {
+    key: Vec<u8>,
+    feature: Vec<u8>,
+    value: Vec<u8>,
+    value_hash: Hash,
+    kv_hash: Hash,
+    left: Option<StatedLink>,
+    right: Option<StatedLink>,
+    hosted: Vec<Subtree>,
+}
+
+/// A Merk that was read: its nodes, a child before its parent.
+struct StatedMerk {
+    subtree: Subtree,
+    /// The subtree of the Merk its host is a node of.
+    host: Option<Subtree>,
+    nodes: Vec<StatedNode>,
+    root: Vec<u8>,
+}
+
+/// The host of a Merk: the subtree of the Merk its node is in, and the
+/// node's key.
+type Host = (Subtree, Vec<u8>);
+
+/// What the loads of the engine came to.
+#[derive(Debug, Default)]
+struct Handed {
+    batches: u64,
+    counters: LoadCounters,
+    acquired: u64,
+    /// The bytes of the groups the commits appended to the log.
+    logged: u64,
+    /// The bytes of value records in those groups.
+    value_bytes: u64,
+    /// The bytes in use in the emptiest page that a loader filled and
+    /// left before its batch ended.
+    least_filled: Option<usize>,
+    loading: Duration,
+    committing: Duration,
+}
+
+/// The walk of a grove that hands every Merk to the engine as a whole
+/// change set: a Merk when its last node was read, which is after the
+/// Merks its nodes host.
+struct EngineWalk<'db, 'e> {
+    source: Source<'db>,
+    /// `None` to read the grove and hand nothing over.
+    db: Option<&'e Db>,
+    /// The subtrees to enter with the next batch, a host before what it
+    /// hosts.
+    enters: Vec<(Subtree, Option<Host>)>,
+    merks: Vec<StatedMerk>,
+    held: usize,
+    nodes: u64,
+    merks_read: u64,
+    /// How many of the Merks have a node and a host: the roots that host
+    /// cells point at.
+    hosted_roots: u64,
+    handed: Handed,
+}
+
+impl<'db> EngineWalk<'db, '_> {
+    fn merk(
+        &mut self,
+        path: &mut Vec<Vec<u8>>,
+        host: Option<Host>,
+        root_key: Option<&[u8]>,
+    ) -> Subtree {
+        let subtree = subtree_of(path);
+        self.merks_read += 1;
+        let hosted_by = host.as_ref().map(|(host, _)| *host);
+        self.enters.push((subtree, host));
+        let Some(root_key) = root_key else {
+            return subtree;
+        };
+        self.hosted_roots += u64::from(hosted_by.is_some());
+        let context = self.source.context(path);
+        let mut nodes = Vec::new();
+        self.node(&context, path, subtree, root_key, &mut nodes);
+        self.held += nodes.len();
+        self.merks.push(StatedMerk {
+            subtree,
+            host: hosted_by,
+            nodes,
+            root: root_key.to_vec(),
+        });
+        if self.held >= NODES_IN_A_BATCH {
+            self.hand_over();
+        }
+        subtree
+    }
+
+    fn node(
+        &mut self,
+        context: &Context<'db>,
+        path: &mut Vec<Vec<u8>>,
+        subtree: Subtree,
+        key: &[u8],
+        out: &mut Vec<StatedNode>,
+    ) {
+        let tree = self.source.tree(context, key);
+        let [left, right] = [true, false].map(|left| {
+            let (key, hash, heights, aggregate) = link_parts(tree.link(left)?);
+            self.node(context, path, subtree, key, out);
+            Some(StatedLink {
+                key: key.to_vec(),
+                hash,
+                heights,
+                aggregate,
+            })
+        });
+        let value = tree.value_as_slice();
+        let element = Element::deserialize(value, self.source.version).expect("an element");
+        let mut hosted = Vec::new();
+        if let Some(root_key) = hosted_root(&element) {
+            path.push(key.to_vec());
+            hosted.push(self.merk(path, Some((subtree, key.to_vec())), root_key.as_deref()));
+            path.pop();
+        }
+        self.nodes += 1;
+        out.push(StatedNode {
+            key: key.to_vec(),
+            feature: feature_bytes(tree.feature_type()),
+            value: value.to_vec(),
+            value_hash: *tree.value_hash(),
+            kv_hash: *tree.kv_hash(),
+            left,
+            right,
+            hosted,
+        });
+    }
+
+    /// Hands the Merks that were read to the engine, each as a whole
+    /// change set, in one batch of one write transaction, and commits it.
+    fn hand_over(&mut self) {
+        let merks = std::mem::take(&mut self.merks);
+        let enters = std::mem::take(&mut self.enters);
+        self.held = 0;
+        let here: std::collections::HashSet<Subtree> =
+            merks.iter().map(|merk| merk.subtree).collect();
+        fn put(node: &StatedNode) -> NodePut<'_> {
+            NodePut {
+                key: &node.key,
+                feature: &node.feature,
+                value_hash: &node.value_hash,
+                kv_hash: &node.kv_hash,
+                left: StatedLink::put(&node.left),
+                right: StatedLink::put(&node.right),
+                hosted: Hosted::Set(&node.hosted),
+                value: ValuePut::Value(&node.value),
+                stale: Stale::NONE,
+                at: None,
+            }
+        }
+        let puts: Vec<Vec<NodePut<'_>>> = (merks.iter())
+            .map(|merk| merk.nodes.iter().map(put).collect())
+            .collect();
+        let writes: Vec<MerkWrite<'_>> = (merks.iter().zip(&puts))
+            .map(|(merk, nodes)| MerkWrite {
+                subtree: merk.subtree,
+                nodes,
+                removed: &[],
+                root: RootPut::Set(Some(&merk.root)),
+                // The element that hosts a Merk is read after the Merk, so
+                // it can be of a later batch: the root waits where it is.
+                anchored: merk.host.is_some_and(|host| !here.contains(&host)),
+                whole: true,
+            })
+            .collect();
+        let subtrees: Vec<SubtreeWrite<'_>> = (enters.iter())
+            .map(|(subtree, host)| SubtreeWrite::Enter {
+                subtree: *subtree,
+                tree_type: ENTERED_AS,
+                host: host.as_ref().map(|(parent, key)| HostPut {
+                    subtree: *parent,
+                    key,
+                    position: 0,
+                }),
+            })
+            .collect();
+        let batch = Batch {
+            records: &[],
+            merks: &writes,
+            subtrees: &subtrees,
+        };
+        let Some(db) = self.db else {
+            return;
+        };
+        let started = Instant::now();
+        let txn = db.begin();
+        let scope = txn.scope().expect("a scope");
+        let applied = scope.apply(&batch).expect("the Merks are loaded");
+        scope.merge();
+        self.handed.loading += started.elapsed();
+        let started = Instant::now();
+        let committed = db.commit(&txn, &mut NoStaleHashes).expect("a commit");
+        self.handed.committing += started.elapsed();
+        let Committed::Published(published) = committed else {
+            panic!("a load commits a version");
+        };
+        let handed = &mut self.handed;
+        handed.batches += 1;
+        if let Some(load) = applied.load {
+            let sum = &mut handed.counters;
+            sum.nodes += load.nodes;
+            sum.fragments += load.fragments;
+            sum.pages += load.pages;
+            sum.cell_bytes += load.cell_bytes;
+            sum.values += load.values;
+            sum.value_bytes += load.value_bytes;
+        }
+        handed.acquired += published.acquired as u64;
+        handed.logged += published.group_len;
+        handed.value_bytes += published.value_bytes;
+        let least = [handed.least_filled, applied.least_filled];
+        handed.least_filled = least.into_iter().flatten().min();
+    }
+
+    /// Reads the node under `key` of the Merk `subtree` back through
+    /// `db`, compares it with the record of the grove, and goes on to its
+    /// children and to the Merk it hosts, which is opened by its own
+    /// entry: that each host points at the root of its Merk is the
+    /// checker's to say. Returns how many nodes it read.
+    fn read_back(&self, db: &Db, path: &mut Vec<Vec<u8>>, root_key: Option<&[u8]>) -> u64 {
+        let subtree = subtree_of(path);
+        let mut lease = LatestLease::new();
+        let operation = db.read(&mut lease);
+        let opened = operation.open(subtree).expect("a lookup");
+        let opened = opened.expect("every Merk of the grove is entered");
+        assert_eq!(opened.root().is_some(), root_key.is_some());
+        let Some(root_key) = root_key else {
+            return 0;
+        };
+        let context = self.source.context(path);
+        let mut count = 0;
+        let mut keys = vec![root_key.to_vec()];
+        let mut value = lignin_tree::value::ValueBuf::new();
+        while let Some(key) = keys.pop() {
+            let tree = self.source.tree(&context, &key);
+            let shown = opened.node(&key, None, |view| {
+                let view = view.expect("a node of the grove is in the store");
+                assert_eq!(view.feature(), feature_bytes(tree.feature_type()));
+                assert_eq!(view.value_hash(), tree.value_hash());
+                assert_eq!(view.kv_hash(), tree.kv_hash());
+                assert_eq!(
+                    view.value(&mut value).expect("a value"),
+                    tree.value_as_slice()
+                );
+                for (left, side) in [(true, Side::Left), (false, Side::Right)] {
+                    let (stored, link) = (tree.link(left), view.link(side));
+                    assert_eq!(stored.is_some(), link.is_some(), "a child on the {side}");
+                    let (Some(stored), Some(link)) = (stored, link) else {
+                        continue;
+                    };
+                    let (key, hash, heights, aggregate) = link_parts(stored);
+                    assert_eq!(link.hash, &hash);
+                    assert_eq!(link.heights, heights);
+                    assert_eq!(usize::from(link.child_key_len), key.len());
+                    assert_eq!(link.aggregate, aggregate);
+                }
+            });
+            shown.expect("a read");
+            count += 1;
+            for left in [true, false] {
+                keys.extend(tree.link(left).map(|link| link_parts(link).0.to_vec()));
+            }
+            let element = Element::deserialize(tree.value_as_slice(), self.source.version);
+            let hosted = hosted_root(&element.expect("an element"));
+            if let Some(below) = hosted {
+                path.push(key);
+                count += self.read_back(db, path, below.as_deref());
+                path.pop();
+            }
+        }
+        count
+    }
+}
+
+/// The most memory the process held, in bytes, as the system counts it.
+fn peak_memory() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib << 10)
+}
+
+/// What [`load_through_the_engine`] came to.
+struct ThroughTheEngine {
+    nodes: u64,
+    merks: u64,
+    /// The fill of the pages the loads started, all taken together.
+    fill: f64,
+    /// The bytes in use in the emptiest page that a loader filled and
+    /// left before its batch ended: the last page of each level of each
+    /// batch, which holds what was left, is not among them.
+    least_filled: Option<usize>,
+    /// The seconds the loads, their commits and the flush after them
+    /// took. Zero where nothing was loaded.
+    seconds: f64,
+}
+
+/// Loads the grove of `workload` through the engine, into a database in
+/// `dir`, and reads it back.
+fn load_through_the_engine(dir: &Path, workload: Documents) -> ThroughTheEngine {
+    let version = GroveVersion::latest();
+    let grove = grove(dir, workload);
+    let transaction = grove.start_transaction();
+    let source = || Source {
+        storage: grove.raw_storage(),
+        transaction: &transaction,
+        version,
+    };
+    let root_key = grove.root_key(Some(&transaction), version).unwrap();
+    let root_key = root_key.expect("the root Merk opens");
+    let only_read = std::env::var_os("BULK_LOAD_ONLY_READ").is_some();
+    let store = std::env::var_os("BULK_LOAD_STORE").map(PathBuf::from);
+    let store = store.unwrap_or_else(|| dir.join("lignindb"));
+    let options = lignindb::Options {
+        page_size: Some(SIZE),
+        ..lignindb::Options::default()
+    };
+    // A run that loads nothing leaves the store of an earlier run alone.
+    let opened = (!only_read).then(|| {
+        if store.exists() {
+            std::fs::remove_dir_all(&store).expect("the store of an earlier run is removed");
+        }
+        Db::open(&store, &options).expect("a new database")
+    });
+    let mut walk = EngineWalk {
+        source: source(),
+        db: opened.as_ref(),
+        enters: Vec::new(),
+        merks: Vec::new(),
+        held: 0,
+        nodes: 0,
+        merks_read: 0,
+        hosted_roots: 0,
+        handed: Handed::default(),
+    };
+    let started = Instant::now();
+    walk.merk(&mut Vec::new(), None, root_key.as_deref());
+    walk.hand_over();
+    let walked = started.elapsed().as_secs_f64();
+    println!(
+        "read {} nodes of {} Merks and handed them over in {walked:.1} s",
+        walk.nodes, walk.merks_read
+    );
+    let outcome = |fill: f64, least_filled: Option<usize>, seconds: f64| ThroughTheEngine {
+        nodes: walk.nodes,
+        merks: walk.merks_read,
+        fill,
+        least_filled,
+        seconds,
+    };
+    let Some(db) = &opened else {
+        return outcome(0.0, None, 0.0);
+    };
+    let started = Instant::now();
+    db.flush().expect("the loads are durable");
+    let flushing = started.elapsed();
+    let handed = &walk.handed;
+    let layout = Layout::proposed(SIZE);
+    let fill = handed.counters.fill_percent(&layout) / 100.0;
+    let seconds = (handed.loading + handed.committing + flushing).as_secs_f64();
+    println!(
+        "{} batches loaded {} nodes into {} pages: {:.1} nodes per page, {:.2}% of what cells can \
+         use, {} fragments; the emptiest page that was filled has {} of {} bytes in use",
+        handed.batches,
+        handed.counters.nodes,
+        handed.counters.pages,
+        handed.counters.nodes as f64 / handed.counters.pages.max(1) as f64,
+        fill * 100.0,
+        handed.counters.fragments,
+        handed.least_filled.unwrap_or(0),
+        layout.capacity(),
+    );
+    println!(
+        "{} values out of line of {} bytes went into the value log before their commits, which \
+         took over {} pointers; the groups are {} bytes, {} of them values",
+        handed.counters.values,
+        handed.counters.value_bytes,
+        handed.acquired,
+        handed.logged,
+        handed.value_bytes,
+    );
+    println!(
+        "the load took {seconds:.2} s: {:.2} s in the scopes, {:.2} s in the commits, {:.2} s in \
+         the flush; the process held at most {} MiB",
+        handed.loading.as_secs_f64(),
+        handed.committing.as_secs_f64(),
+        flushing.as_secs_f64(),
+        peak_memory().map_or(0, |bytes| bytes >> 20),
+    );
+    assert_eq!(handed.counters.nodes, walk.nodes);
+    assert_eq!(handed.acquired, handed.counters.values);
+    assert_eq!(handed.value_bytes, 0, "a load's commit carries no value");
+    let done = outcome(fill, handed.least_filled, seconds);
+    if std::env::var_os("BULK_LOAD_NO_READ_BACK").is_some() {
+        return done;
+    }
+
+    let started = Instant::now();
+    let read = walk.read_back(db, &mut Vec::new(), root_key.as_deref());
+    assert_eq!(read, walk.nodes, "every node is read back");
+    println!(
+        "read back {read} nodes through the engine in {:.1} s",
+        started.elapsed().as_secs_f64()
+    );
+    // The database is closed and then checked as a store that is still.
+    let (nodes, merks, hosted_roots) = (walk.nodes, walk.merks_read, walk.hosted_roots);
+    let values = handed.counters.values;
+    drop(walk);
+    let started = Instant::now();
+    let db = opened.expect("the database that was loaded");
+    let report = db.close_and_verify(Some(&mut CheckRules(version)));
+    let report = report.expect("the database closes");
+    println!(
+        "the physical invariant checker, in {:.1} s: {report}",
+        started.elapsed().as_secs_f64()
+    );
+    assert!(report.is_sound(), "the loaded database is not sound");
+    assert_eq!(report.census.live_cells, nodes);
+    assert_eq!(report.census.hashed_cells, nodes);
+    assert_eq!(report.census.merks, merks);
+    assert_eq!(report.census.hosted_roots, hosted_roots);
+    assert_eq!(report.census.placed_values, values);
+    assert_eq!(report.census.pending_values, 0);
+    done
+}
+
+#[test]
+fn a_grove_of_documents_is_loaded_through_the_engine_as_grovedb_has_it() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let workload = Documents {
+        documents: 3_000,
+        owners: 30,
+        ..Documents::reference()
+    };
+    let loaded = on_a_big_stack(|| load_through_the_engine(dir.path(), workload));
+    assert_eq!(loaded.nodes, 2 * 3_000 + 2 * 30 + 7);
+    assert_eq!(loaded.merks, 2 * 30 + 7);
+    // 45 pages, of which the last of each level is as full as the grove
+    // left it: the fill of the loader is that of the reference workload.
+    assert!(loaded.fill >= 0.75, "fill {:.4}", loaded.fill);
+    assert!(loaded.least_filled.is_some(), "pages that were filled");
+}
+
+/// TXN-10's "done when" for the bulk-load row of the performance table:
+/// the reference workload, one million documents and their references,
+/// handed to the engine as whole Merks and committed, loads within 50
+/// seconds into pages that are at least 90% full: the pages of all
+/// batches taken together, and each page that a loader filled and left
+/// before its batch ended. The last page of each level of a batch holds
+/// what was left, and is held to nothing. The time is that of the
+/// scopes, the commits and the flush that makes them durable: reading the
+/// grove from RocksDB is not in it. It takes the settings of the module
+/// documentation, and is run alone:
+///
+/// ```text
+/// BULK_LOAD_DIR=/dev/shm/bulk-load cargo test --release -p lignin-testkit --test bulk_load -- \
+///     --ignored --nocapture --exact \
+///     the_reference_workload_loads_through_the_engine_within_the_time_and_fill
+/// ```
+#[test]
+#[ignore = "loads one million documents; run it in release mode"]
+fn the_reference_workload_loads_through_the_engine_within_the_time_and_fill() {
+    let kept = std::env::var_os("BULK_LOAD_DIR").map(PathBuf::from);
+    let temporary = tempfile::tempdir().expect("a directory");
+    let dir = kept.as_deref().unwrap_or(temporary.path());
+    std::fs::create_dir_all(dir).expect("the directory of the load");
+    let loaded = on_a_big_stack(|| load_through_the_engine(dir, Documents::reference()));
+    assert_eq!(loaded.nodes, 2_020_007);
+    assert_eq!(loaded.merks, 20_007);
+    if loaded.seconds == 0.0 {
+        return;
+    }
+    assert!(loaded.fill >= 0.90, "fill {:.4}", loaded.fill);
+    let capacity = Layout::proposed(SIZE).capacity();
+    let least = loaded.least_filled.expect("pages that were filled");
+    assert!(least * 10 >= capacity * 9, "a page with {least} bytes used");
+    assert!(loaded.seconds <= 50.0, "{:.1} s", loaded.seconds);
 }

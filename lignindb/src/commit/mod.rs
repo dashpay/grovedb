@@ -45,7 +45,8 @@
 //! The order of the locks is LT7's: the commit lock (level 1), the lock of
 //! the transaction (2), the latches of pages (4), the counts lock (4a). A
 //! commit waits for the commit lock, for the counts lock and, after it has
-//! ended, for write-back's bounds, and for nothing else (CM8): not for a
+//! ended, for write-back's bounds, and for nothing else (CM8) but what
+//! the commit of a load waits for ("The commit of a load"): not for a
 //! reader and not for another open write transaction. The latches it takes
 //! under the counts lock are those of its own private copies, which nobody
 //! else holds: no reader sees a private copy, and no page step changes a
@@ -58,6 +59,7 @@
 //! **The log is the only file a commit writes, and it is appended to
 //! once** (CM7). No value-log file is written, no manifest is replaced:
 //! the values travel in the group (FL7) and write-back places them later.
+//! The commit of a load is the exception ("The commit of a load").
 //! A commit that changes no page appends a group all the same and takes a
 //! version (CV3): a delete of a key that has no record is a write (ST5).
 //!
@@ -77,6 +79,53 @@
 //! published before the sync, and whether the sync succeeds changes
 //! nothing that was installed, because a group that is in the log has
 //! happened either way (CM9 item 2).
+//!
+//! # The commit of a load
+//!
+//! A transaction whose loads put values into the value log
+//! ([`crate::txn`], "A load") holds them there under no count. Its commit
+//! takes them over (`transactions.md` LD5, `log-format.md` LG16). It is a
+//! commit like any other, with this more:
+//!
+//! | Step | What is done | Locks held |
+//! | --- | --- | --- |
+//! | before | The transaction's frames are made over the latest version, and where no durable manifest covers the values its loads appended for them, the file the loads fill is synced and the manifest is replaced. An error here is returned by no one: the same is done again below. | the transaction's own, that of the loads' file, the manifest's |
+//! | 2 to 4 | The same again, after the conflict is decided (CF6) and before the frames are taken. A failure refuses the commit with the transaction as it was ([`CommitError::Refused`]). Nothing is left to do where the first row covered every value and the frames are the ones it covered. The work is done here where the first row failed, and where frames were made since: a commit of another was published, or an operation of the transaction on another thread dropped them or loaded more. | commit lock, and the three above |
+//! | 6 | The group lists as acquired the pointers that cells of the transaction's pages hold to values of its loads, after the released ones. A pointer of its own loads that a cell stopped holding again is not listed as released: no count had it. | as for any commit |
+//! | 7 | The acquired pointers are counted with the released ones, and the hold on the files of the loads ends. | as for any commit |
+//!
+//! So such a commit can sync a value-log file and replace the manifest,
+//! which costs what those cost on the store's disk. In the first row they
+//! are made without the commit lock. In the second row a commit waits for
+//! them under the commit lock, and for what the frames append (CM8), and
+//! the commits behind it wait with it. What either row waits for is in
+//! `transactions.md` LD8. [`Published::acquired`] counts the pointers.
+//!
+//! **A value-log file whose sync failed takes no more values. No
+//! manifest covers what it took after its last sync that succeeded, and
+//! that is read no more**
+//! ([`ValueStoreError::FileFailed`](lignin_store::values::ValueStoreError::FileFailed)).
+//! The commit of a transaction is refused, with the transaction as it
+//! was, for as long as it has the frames that a load appended such a
+//! value for, and each time it has to make its frames from a write set
+//! that names such a value (`transactions.md` LD3, LD5). What the file
+//! took before that sync is as it was.
+//!
+//! **Where the commit ends with its group possibly in the log and the
+//! values not counted**, the store has the hold from then on, until the
+//! session ends: a commit that cannot be settled
+//! ([`CommitError::Unsettled`]) and one whose install is refused
+//! ([`CommitError::Halted`]). A recovery that keeps the group finds cells
+//! that point into those files. The store has the hold as well where the
+//! commit panics after it took the lock on the counts (step 6) and before
+//! it has counted the values (step 7). A commit that fails or panics
+//! after the count leaves no hold: the values are counted then.
+//!
+//! **After a crash the store has all of a load or none of it.** A manifest
+//! that covers every value is durable before the group that names their
+//! pointers is appended. Where recovery keeps the group, each pointer
+//! leads to its value. Where it does not, no cell that it keeps points at
+//! a value of the load, and no count includes one: they are dead space.
 //!
 //! # How a commit ends
 //!
@@ -171,9 +220,10 @@
 //! ([`Commits`](crate::txn::Commits), CF3), so it is exact however much
 //! was committed in between.
 //!
-//! The key set of a commit is the keys of its writes. A commit that stands
-//! for more than it writes says so ([`Committer::commit_covering`], CF5): a
-//! load covers the range it put records into, and a wipe covers every key.
+//! The key set of a commit is the keys of its writes, and for each Merk
+//! it loaded the range of the nodes of that subtree (`transactions.md`
+//! LD6). A commit that stands for more than that says so
+//! ([`Committer::commit_covering`], CF5): a wipe covers every key.
 //!
 //! **A kept value is dated at its read** (CF2a). A node that is written
 //! with its value kept ([`ValuePut::Keep`](crate::txn::ValuePut::Keep))
@@ -221,8 +271,8 @@
 //! and its commit is a commit like any other to them: one that wrote a key
 //! of the batch before fails with a conflict (CF8). The transaction is the
 //! write's own, so whatever the error nothing of the batch is left: a
-//! batch that is refused is [`CommitError::Refused`], and nothing was
-//! written.
+//! batch that is refused is [`CommitError::Refused`], and none of its
+//! writes is committed.
 //!
 //! The transaction of such a write has read nothing, so its batch has no
 //! read of its own to name: a node in it that keeps a committed value and
@@ -275,10 +325,9 @@
 //!   the write path the store's counts
 //!   ([`WritePath::stats`](crate::txn::WritePath::stats)), in which a
 //!   write transaction is open from its first write until its commit or
-//!   its rollback ends it. A bulk load
-//!   that takes value pointers over from loaded files (`log-format.md`
-//!   LG16) is its commit to make: a commit here lists no pointer as taken
-//!   over.
+//!   its rollback ends it. It gives the write path the value-log file
+//!   that loads append to
+//!   ([`LoadFiles`](crate::txn::LoadFiles)) and the manifest's lock.
 //! - **Pending marks** ([`crate::scope`], SC9): a transaction on which one
 //!   stands is not committed ([`CommitError::NotFinalized`], CM1). The
 //!   write that takes the mark off is finalize's (GROVE-11).

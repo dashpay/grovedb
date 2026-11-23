@@ -1,7 +1,7 @@
 //! The write transaction and its scope.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fmt,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
@@ -15,26 +15,27 @@ use lignin_tree::{
     directory::{Directory, DirectoryError, MerkId},
     fragment::FragmentError,
     node::{Lease, NodeError, NodeHandle},
-    value::{read_value, ValueBuf},
+    value::{read_placed, read_value, ValueBuf},
 };
 
 use super::{
     check::check,
     commits::Watch,
-    error::{BatchError, TxnError},
+    error::{BatchError, TxnError, WholeFault},
     frames::{stored_key, Awake, Frames, Parked, Woken},
     key::{Column, KeySet, Subtree, Unit},
+    load::{cover, is_load, spill, Loaded},
     opened::Opened,
     pages::{child_keys, find, follow, CommittedPages, NodePages},
     path::WritePath,
     reads::{Reads, Since},
     unlinked,
     view::{ChildKeys, NodeView, SubtreeView},
-    write::{Applied, Batch, Hosted, Moving, SubtreeWrite, ValuePut},
-    write_set::{EntryId, Mark, Own, OwnSubtree, Restated, Said, WriteSet},
+    write::{Applied, Batch, Hosted, MerkWrite, Moving, SubtreeWrite, ValuePut},
+    write_set::{EntryId, Mark, NodeValue, Own, OwnSubtree, Restated, Said, WriteSet},
 };
 use crate::{
-    scope::table::{Scopes, Who},
+    scope::table::{MarkKey, Scopes, Who},
     snapshot::{OperationGuard, VersionPin},
 };
 
@@ -89,6 +90,11 @@ struct State<'s> {
     base: Option<VersionPin<'s>>,
     /// The private frames, as they are kept between two operations.
     frames: Option<Parked<'s>>,
+    /// The values that the transaction's loads put into the value log,
+    /// with the hold on their files (`super::load`): from the first of
+    /// them until the write set is empty again, or until the commit takes
+    /// them with the frames.
+    loaded: Loaded,
     /// The watch on the key sets of the commits: from the transaction's
     /// first write or the first node it is shown, whichever comes first,
     /// until it has no write and remembers no lease.
@@ -120,6 +126,20 @@ struct State<'s> {
     /// the frames could not be made: the write set names what the
     /// committed state does not hold.
     stuck: Option<(CommitVersion, usize)>,
+    /// The layout that a refusal stopped, where [`Self::stuck`] says that
+    /// the frames could not be made: the refusal is told again from here
+    /// ([`Self::kept_refusal`]), and the frames are not made again to tell
+    /// it.
+    stopped: Option<Stopped>,
+    /// The subtrees the transaction looked at and found entered with no
+    /// root, each with the version of its last such look: what a load
+    /// that is refused is dated with ([`WriteTxn::since_look`]). A look
+    /// that finds anything else forgets the subtree. At most
+    /// [`KEPT_LOOKS`] are kept, none across a write that is taken out of
+    /// the write set, which the look may have seen, and none across a
+    /// write of the transaction that drops, clears or moves a subtree
+    /// ([`forget_looks`]).
+    looks: HashMap<Subtree, CommitVersion>,
     /// The scopes that are open, what each has claimed, and the pending
     /// marks (`crate::scope`).
     scopes: Scopes,
@@ -160,6 +180,19 @@ struct State<'s> {
 }
 
 impl State<'_> {
+    /// The refusal that stopped the layout of the transaction's writes,
+    /// where that layout would be made of what it was made of then
+    /// ([`Laid`]): no scope's writes were laid out since, and no mark
+    /// changed. `None` where no layout was stopped, and where it would
+    /// be another one now.
+    fn kept_refusal(&self) -> Option<TxnError> {
+        self.stuck?;
+        let stopped = self.stopped.as_ref()?;
+        let laid = Laid::of(&self.set, &self.scopes, stopped.laid.ops.len());
+        let same = laid == stopped.laid;
+        same.then(|| refusal_again(&stopped.refusal)).flatten()
+    }
+
     /// Gives up everything a transaction holds beside its write set.
     fn release(&mut self) {
         self.frames = None;
@@ -171,6 +204,9 @@ impl State<'_> {
             self.under.clear();
             self.above.clear();
             self.owed.clear();
+            // No write is left that could name a value of a load: what the
+            // loads put into the value log is dead space from here on.
+            self.loaded = Loaded::default();
         }
     }
 
@@ -219,6 +255,8 @@ impl State<'_> {
         self.savepoints.clear();
         self.scopes.clear_marks();
         self.reads.clear();
+        self.looks.clear();
+        self.stopped = None;
         self.committed = None;
         self.release();
         self.renew_lease();
@@ -248,6 +286,7 @@ impl State<'_> {
         // with the writes after it (WT8). The frames know the cells of the
         // marked elements, so they are made again with them.
         let marks = self.scopes.rewind_marks(mark.pending);
+        self.looks.clear();
         if self.set.rewind(mark) || marks {
             // The frames are made again from what is left, over the latest
             // version of that moment (WT8). The base stays pinned until
@@ -405,6 +444,79 @@ fn is_refusal(error: &TxnError) -> bool {
             DirectoryError::Flat(_) | DirectoryError::Damaged { .. }
         ),
         _ => false,
+    }
+}
+
+/// What a layout is made of beside the version it is made over and the
+/// operations themselves ([`WriteTxn::build`]): which of the operations
+/// are laid out, and the marks of the scopes.
+#[derive(Debug, PartialEq, Eq)]
+struct Laid {
+    /// For each operation, whether it is laid out.
+    ops: Vec<bool>,
+    /// [`Scopes::ever_marked`].
+    ever_marked: BTreeSet<MarkKey>,
+    /// [`Scopes::laid_marks`].
+    marks: BTreeSet<MarkKey>,
+}
+
+impl Laid {
+    /// Of the first `ops` operations of `set`.
+    fn of(set: &WriteSet, scopes: &Scopes, ops: usize) -> Self {
+        Self {
+            ops: (0..ops.min(set.ops())).map(|op| set.laid(op)).collect(),
+            ever_marked: scopes.ever_marked(),
+            marks: scopes.laid_marks(),
+        }
+    }
+}
+
+/// A layout that a refusal stopped ([`State::stopped`]).
+#[derive(Debug)]
+struct Stopped {
+    /// A copy of the refusal ([`refusal_again`]).
+    refusal: TxnError,
+    /// What the layout was made of.
+    laid: Laid,
+}
+
+/// A copy of `error` where it is a refusal ([`is_refusal`]): the one that
+/// stops a layout is kept and told again, to a read or a write that a move
+/// decides and to a commit, without the frames being made again for it.
+fn refusal_again(error: &TxnError) -> Option<TxnError> {
+    use DirectoryError as D;
+    let directory = |refused: &DirectoryError| {
+        Some(match *refused {
+            D::Flat(_) | D::Damaged { .. } => return None,
+            D::Exists { prefix } => D::Exists { prefix },
+            D::NotFound { prefix } => D::NotFound { prefix },
+            D::NoParent { parent } => D::NoParent { parent },
+            D::HostTaken { parent, position } => D::HostTaken { parent, position },
+            D::Inside { prefix } => D::Inside { prefix },
+            D::NoHost { prefix } => D::NoHost { prefix },
+            D::Unnamed { prefix } => D::Unnamed { prefix },
+            D::NotEmpty { prefix } => D::NotEmpty { prefix },
+            D::UnknownRoot { address } => D::UnknownRoot { address },
+            D::RootTaken { address } => D::RootTaken { address },
+            D::Twice { prefix } => D::Twice { prefix },
+            D::TooLong { what, len } => D::TooLong { what, len },
+            D::TooDeep => D::TooDeep,
+            D::IdsExhausted => D::IdsExhausted,
+            D::InUse { prefix } => D::InUse { prefix },
+            D::Nested { id } => D::Nested { id },
+            D::NotDropped { id } => D::NotDropped { id },
+        })
+    };
+    match error {
+        TxnError::Batch(refused) => Some(TxnError::Batch(refused.clone())),
+        TxnError::Fragment(FragmentError::Write(refused)) => {
+            Some(TxnError::Fragment(FragmentError::Write(*refused)))
+        }
+        TxnError::Fragment(FragmentError::NoRoom { page }) => {
+            Some(TxnError::Fragment(FragmentError::NoRoom { page: *page }))
+        }
+        TxnError::Directory(refused) => directory(refused).map(TxnError::Directory),
+        _ => None,
     }
 }
 
@@ -657,6 +769,51 @@ const _: fn() = || {
     moved::<Scope<'static, 'static>>();
 };
 
+/// How many looks at subtrees a transaction remembers
+/// ([`State::looks`]). A transaction that looks at more subtrees with no
+/// root than this forgets the earlier looks: a load that such a look
+/// would have dated is refused as it is with no look.
+const KEPT_LOOKS: usize = 1_024;
+
+/// Notes that the transaction was shown `view` of `subtree` at the
+/// version `at`: a look that a later load into the subtree is dated with
+/// where it shows the subtree entered with no root, and that forgets the
+/// subtree otherwise.
+fn note_look(
+    looks: &mut HashMap<Subtree, CommitVersion>,
+    subtree: Subtree,
+    at: CommitVersion,
+    view: Option<&SubtreeView<'_>>,
+) {
+    if !view.is_some_and(|view| view.root_key.is_none()) {
+        looks.remove(&subtree);
+        return;
+    }
+    if looks.len() >= KEPT_LOOKS && !looks.contains_key(&subtree) {
+        looks.clear();
+    }
+    looks.insert(subtree, at);
+}
+
+/// Forgets every look where `batch`, which the write set has just taken,
+/// drops, clears or moves a subtree: what leaves with such a write is the
+/// directory's to say, so a refusal of a load after it may be the
+/// transaction's own doing, and no look tells it as a conflict (LD6).
+fn forget_looks(looks: &mut HashMap<Subtree, CommitVersion>, batch: &Batch<'_>) {
+    if batch.has_leaves() || batch.moves().next().is_some() {
+        looks.clear();
+    }
+}
+
+/// A subtree that is entered once the subtrees of a batch have left and
+/// are entered ([`WriteTxn::entered_after`]).
+#[derive(Debug, Clone, Copy)]
+struct Entered {
+    /// Whether the batch itself enters it: its Merk has no node then,
+    /// whatever was under its prefix before.
+    by_the_batch: bool,
+}
+
 impl<'s> WriteTxn<'s> {
     pub(crate) fn new(path: WritePath<'s>) -> Self {
         Self {
@@ -665,6 +822,7 @@ impl<'s> WriteTxn<'s> {
                 set: WriteSet::new(),
                 base: None,
                 frames: None,
+                loaded: Loaded::default(),
                 watch: None,
                 reads: Reads::default(),
                 committed: None,
@@ -673,6 +831,8 @@ impl<'s> WriteTxn<'s> {
                 lease_at: None,
                 directory: None,
                 stuck: None,
+                stopped: None,
+                looks: HashMap::new(),
                 scopes: Scopes::default(),
                 under: HashMap::new(),
                 above: Vec::new(),
@@ -940,10 +1100,31 @@ impl<'s> WriteTxn<'s> {
         if writing && state.open.is_none() {
             state.open = Some(path.stats.write_opened());
         }
+        if state.stuck.is_none() {
+            // What a layout that is stopped no more was made of is kept
+            // no longer.
+            state.stopped = None;
+        }
         let mut at = guard.latest();
         loop {
             self.observe(state, &guard, at)?;
             let framed = state.frames.is_some();
+            if let Some((stopped_at, ops)) = state.stuck
+                && stopped_at == at
+            {
+                if state.kept_refusal().is_none() {
+                    // The layout would be made of other writes or marks
+                    // than the one that was stopped: it is made again.
+                    state.stuck = None;
+                } else if ops < state.set.ops() && state.set.has_loads() {
+                    // Writes are laid out in their order, so a layout
+                    // that was stopped at this version is stopped with
+                    // more of them too. Where the transaction holds a
+                    // load, it is not tried again for each write: a try
+                    // lays out again every load that it comes to.
+                    state.stuck = Some((at, state.set.ops()));
+                }
+            }
             let by_key = state.set.met() > 0 || state.stuck == Some((at, state.set.ops()));
             if framed || by_key || (state.set.is_empty() && !writing) {
                 break;
@@ -956,7 +1137,15 @@ impl<'s> WriteTxn<'s> {
                 at = pin.version();
                 continue;
             }
-            match Self::build(path, &guard, at, &state.set, &state.scopes) {
+            let built = Self::build(
+                path,
+                &guard,
+                at,
+                &state.set,
+                &state.scopes,
+                &mut state.loaded,
+            );
+            match built {
                 Ok(frames) => {
                     if !state.set.is_empty() {
                         state.rebuilds += 1;
@@ -976,6 +1165,8 @@ impl<'s> WriteTxn<'s> {
                     self.keep_values(state, &guard, kept)?;
                     state.base = None;
                     state.stuck = Some((at, state.set.ops()));
+                    let laid = Laid::of(&state.set, &state.scopes, state.set.ops());
+                    state.stopped = refusal_again(&error).map(|refusal| Stopped { refusal, laid });
                 }
                 Err(error) => return Err(error),
             }
@@ -1086,10 +1277,12 @@ impl<'s> WriteTxn<'s> {
             },
             false => Vec::new(),
         };
-        match frames.apply(path, batch, None) {
+        match frames.apply(path, batch, None, &mut state.loaded) {
             Ok(applied) => {
+                let stored = frames.take_stored();
                 let (empty, left) = (frames.empty_before(), frames.left_with_moves());
-                let first = state.set.add(batch, op.at, empty, &cut, left);
+                let first = state.set.add(batch, op.at, empty, &cut, left, &stored);
+                forget_looks(&mut state.looks, batch);
                 if !kept.met.is_empty() {
                     for (offset, unit, key) in &kept.met {
                         state.set.meet_kept(first + offset, *unit, key);
@@ -1114,7 +1307,9 @@ impl<'s> WriteTxn<'s> {
                     // again from the write set, which does not (WT10).
                     frames.discard();
                     state.renew_lease();
-                    let frames = Self::build(path, &op.guard, op.at, &state.set, &state.scopes);
+                    let (set, scopes) = (&state.set, &state.scopes);
+                    let frames =
+                        Self::build(path, &op.guard, op.at, set, scopes, &mut state.loaded);
                     if let Ok(frames) = frames {
                         state.frames = Some(frames);
                         state.rebuilds += 1;
@@ -1123,7 +1318,8 @@ impl<'s> WriteTxn<'s> {
                 } else {
                     drop(frames);
                 }
-                Err(self.told(state, op, batch, refused.error))
+                let refused = self.told(state, op, batch, refused.error);
+                Err(self.since_look(state, op, batch, refused))
             }
         }
     }
@@ -1198,7 +1394,15 @@ impl<'s> WriteTxn<'s> {
             return BatchError::MovedByKey { subtree }.into();
         }
         if let Some((at, _)) = state.stuck.filter(|(_, ops)| *ops == state.set.ops()) {
-            let frames = Self::build(&self.path, guard, at, &state.set, &state.scopes);
+            // The refusal that stopped the layout is told again as it was
+            // kept: frames that are made again lay out every load they
+            // come to, and append its values again.
+            if let Some(refused) = state.kept_refusal() {
+                return refused;
+            }
+            let mut loaded = Loaded::default();
+            let (set, scopes) = (&state.set, &state.scopes);
+            let frames = Self::build(&self.path, guard, at, set, scopes, &mut loaded);
             if let Err(refused) = frames {
                 return refused;
             }
@@ -1677,6 +1881,15 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
+        // What a drop or a clear takes with it is the directory's to say,
+        // which the frames have: by key a load is taken beside neither
+        // (LD6).
+        if batch.has_leaves()
+            && let Some(load) = batch.merks.iter().find(|merk| is_load(merk))
+        {
+            let subtree = load.subtree;
+            return Err(BatchError::LoadBeside { subtree }.into());
+        }
         for record in batch.records {
             // The transaction has written no node of the subtree since it
             // last dropped or cleared it, or the write set would not admit
@@ -1697,7 +1910,28 @@ impl<'s> WriteTxn<'s> {
         for merk in batch.merks {
             let subtree = merk.subtree;
             let left = batch.leaves(subtree);
-            empty.push(left || !self.rooted(state, op, &subtree)?);
+            let rootless = left || !self.rooted(state, op, &subtree)?;
+            if is_load(merk) {
+                // A load is the whole of a Merk that is entered and had no
+                // root: both are checked where the write is taken (LD6).
+                let refused = match self.entered_after(state, op, batch, subtree) {
+                    Err(refused) => Some(refused),
+                    Ok(None) => Some(BatchError::NotEntered { subtree }.into()),
+                    Ok(Some(entered)) if !rootless && !entered.by_the_batch => {
+                        let fault = WholeFault::HasRoot;
+                        Some(BatchError::NotWhole { subtree, fault }.into())
+                    }
+                    Ok(Some(_)) => None,
+                };
+                if let Some(refused) = refused {
+                    // Told as where the batch is laid out: by what the
+                    // commits did that the transaction took in (CF10),
+                    // and then by its look (LD6).
+                    let refused = self.told(state, op, batch, refused);
+                    return Err(self.since_look(state, op, batch, refused));
+                }
+            }
+            empty.push(rootless);
             for node in merk.nodes {
                 entry += 1;
                 if node.value != ValuePut::Keep {
@@ -1709,8 +1943,14 @@ impl<'s> WriteTxn<'s> {
                     // its nodes are written, the transaction's own node
                     // with it.
                     _ if left => None,
-                    Own::Node(id) => match state.set.node_value(id).map(<[u8]>::to_vec) {
-                        Some(value) => Some(value),
+                    Own::Node(id) => match state.set.node_value(id) {
+                        Some(NodeValue::Bytes(value)) => Some(value.to_vec()),
+                        // A value that a load put into the value log.
+                        Some(NodeValue::Stored(stored)) => {
+                            let (values, mut buf) = (path.values, ValueBuf::new());
+                            let value = read_placed(values, stored.pointer, stored.owner, &mut buf);
+                            Some(value?.to_vec())
+                        }
                         // The node is one of the frames, which hold its
                         // value: the batch is one that is not laid out.
                         None => self.framed_value(state, op, &subtree, node.key)?,
@@ -1743,13 +1983,19 @@ impl<'s> WriteTxn<'s> {
             entry += merk.removed.len() as EntryId;
         }
         let cut = self.cut(state, op, batch)?;
+        // A load that is taken by key has no page. Its values that are too
+        // long for a cell go into the value log all the same, for no page,
+        // and the write set keeps where they are: when its frames are
+        // made, the load is laid out from there.
+        let stored = spill(path, &mut state.loaded, batch)?;
         if batch.has_leaves() {
             // The cells of a Merk that leaves stay in their pages: every
             // handle that was read before ends (PN8).
             state.renew_lease();
             state.lease_at = Some(op.at);
         }
-        let first = state.set.add(batch, op.at, &empty, &cut, &[]);
+        let first = state.set.add(batch, op.at, &empty, &cut, &[], &stored);
+        forget_looks(&mut state.looks, batch);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
         }
@@ -1983,9 +2229,17 @@ impl<'s> WriteTxn<'s> {
             && let Some(frames) = Woken::wake(&mut state.frames, &op.guard)
         {
             let entry = frames.entry(&subtree)?;
-            return Ok(read(entry.as_ref().map(SubtreeView::of)));
+            let view = entry.as_ref().map(SubtreeView::of);
+            note_look(&mut state.looks, subtree, op.at, view.as_ref());
+            return Ok(read(view));
         }
-        self.said(state, &op, subtree, read)
+        let (rootless, shown) = self.said(state, &op, subtree, |view| {
+            let rootless = view.is_some_and(|view| view.root_key.is_none());
+            (rootless, read(view))
+        })?;
+        let looked = rootless.then_some(SubtreeView::ROOTLESS);
+        note_look(&mut state.looks, subtree, op.at, looked.as_ref());
+        Ok(shown)
     }
 
     /// Shows `read` what the transaction's write set says of `subtree`
@@ -2036,6 +2290,141 @@ impl<'s> WriteTxn<'s> {
         let left = set.left_after(entered);
         let gone = !left.is_empty() && by_key.below(subtree, &left, Some((entered, ops)))?;
         Ok(read(view.filter(|_| !gone)))
+    }
+
+    /// Whether `subtree` is entered once the subtrees of `batch` are
+    /// entered, as a transaction with no frames to ask says it
+    /// ([`ByKey`]), or `None` for one that is not. It is asked for a load
+    /// that is taken by key, whose batch drops and clears nothing
+    /// ([`BatchError::LoadBeside`]) and holds no move
+    /// ([`Self::guard_batch`]): what was entered before the batch
+    /// ([`Self::said`]) is entered then.
+    ///
+    /// - A subtree that the batch enters as a new one
+    ///   ([`SubtreeWrite::Enter`]) is entered, and its Merk has no node
+    ///   then. The enter is refused where the subtree is entered before
+    ///   the batch ([`BatchError::Entered`]);
+    /// - a subtree that the batch enters if it is absent is the one that
+    ///   is entered before the batch, or a new one;
+    /// - an enter that makes a subtree is refused where the host it names
+    ///   is in a subtree that is not entered, by an enter that stands
+    ///   before it or from before the batch
+    ///   ([`BatchError::NotEntered`]);
+    /// - any other subtree is entered where it is entered before the
+    ///   batch.
+    fn entered_after(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'_>,
+        subtree: Subtree,
+    ) -> Result<Option<Entered>, TxnError> {
+        let stays = self.said(state, op, subtree, |view| view.is_some())?;
+        let enters = || batch.subtrees.iter().filter_map(SubtreeWrite::entering);
+        let found = Entered {
+            by_the_batch: false,
+        };
+        let Some((at, enter)) = enters()
+            .enumerate()
+            .find(|(_, enter)| enter.subtree == subtree)
+        else {
+            return Ok(stays.then_some(found));
+        };
+        match (stays, enter.if_absent) {
+            (true, true) => return Ok(Some(found)),
+            (true, false) => return Err(BatchError::Entered { subtree }.into()),
+            (false, _) => {}
+        }
+        if let Some(host) = enter.host {
+            let subtree = host.subtree;
+            let entered_before = enters().take(at).any(|enter| enter.subtree == subtree);
+            if !entered_before && !self.said(state, op, subtree, |view| view.is_some())? {
+                return Err(BatchError::NotEntered { subtree }.into());
+            }
+        }
+        Ok(Some(Entered { by_the_batch: true }))
+    }
+
+    /// The refusal `error` of `batch`, which says so where a commit
+    /// outside the transaction is why a load of the batch was refused
+    /// ([`BatchError::MerkTaken`], `transactions.md` LD6). All of this
+    /// holds then:
+    ///
+    /// - the refusal is that the load's subtree is not entered, or that
+    ///   its Merk has a root;
+    /// - the transaction remembers a look at the subtree that found it
+    ///   entered with no root ([`State::looks`]), at an earlier version
+    ///   than the operation reads;
+    /// - the batch drops, clears and moves no subtree: where it does, it
+    ///   may be why. Nor did a write of the transaction since the look,
+    ///   which forgets every look ([`forget_looks`]);
+    /// - no write of the transaction says anything of the Merk's root, an
+    ///   enter of the subtree if it was absent aside
+    ///   ([`WriteSet::states_root`]);
+    /// - the committed version that the operation reads is why
+    ///   ([`Self::outside`]).
+    ///
+    /// Every other refusal is as it was, and so is this one where a read
+    /// that would tell fails.
+    fn since_look(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'_>,
+        error: TxnError,
+    ) -> TxnError {
+        let (subtree, rooted) = match &error {
+            TxnError::Batch(BatchError::NotWhole {
+                subtree,
+                fault: WholeFault::HasRoot,
+            }) => (*subtree, true),
+            TxnError::Batch(BatchError::NotEntered { subtree }) => (*subtree, false),
+            _ => return error,
+        };
+        let loads = |merk: &MerkWrite<'_>| merk.subtree == subtree && is_load(merk);
+        let looked = state.looks.get(&subtree);
+        if !looked.is_some_and(|looked| *looked < op.at)
+            || !batch.merks.iter().any(loads)
+            || batch.has_leaves()
+            || batch.moves().next().is_some()
+            || state.set.states_root(&subtree).is_some()
+        {
+            return error;
+        }
+        match self.outside(state, op, subtree, rooted).unwrap_or(false) {
+            true => BatchError::MerkTaken { subtree }.into(),
+            false => error,
+        }
+    }
+
+    /// Whether the committed version that `op` reads is why a load into
+    /// `subtree` is refused, and no write of the transaction: with
+    /// `rooted`, that version has the subtree with a root, and otherwise
+    /// it has no subtree there. The write set says nothing that puts
+    /// another subtree in its place or takes it out
+    /// ([`Standing::Committed`]), and no move of the transaction decides
+    /// what is under it ([`Opened::moved`]).
+    fn outside(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        subtree: Subtree,
+        rooted: bool,
+    ) -> Result<bool, TxnError> {
+        let State { directory, set, .. } = state;
+        let mut by_key = ByKey::new(&self.path, &op.guard, op.at, set, directory)?;
+        if by_key.standing(subtree, set.ops())? != Standing::Committed {
+            return Ok(false);
+        }
+        let opened = by_key.opened;
+        if set.has_moves() && opened.moved(&self.path, &op.guard, set, &subtree)? {
+            return Ok(false);
+        }
+        let entered = opened.root(&self.path, &op.guard, &subtree)?;
+        Ok(match rooted {
+            true => entered.flatten().is_some(),
+            false => entered.is_none(),
+        })
     }
 
     /// Those of the subtrees the transaction has written that are below
@@ -2121,7 +2510,10 @@ impl<'s> WriteTxn<'s> {
             state.keyed += 1;
         }
         match own {
-            Own::Node(id) => Ok(Ok(read(Some(NodeView::record(&state.set, id))))),
+            Own::Node(id) => {
+                let record = NodeView::record(&state.set, id, self.path.values);
+                Ok(Ok(read(Some(record))))
+            }
             Own::Deleted => Ok(Ok(read(None))),
             Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
             Own::Unwritten => Ok(Err(read)),
@@ -2413,7 +2805,10 @@ impl<'s> WriteTxn<'s> {
                 found.ok_or(NodeError::NoNode { address })?;
                 match state.set.own(unit, &key) {
                     Own::Unwritten => show_committed(&mut pages, Some(address), read),
-                    Own::Node(id) => Ok(read(Some(NodeView::record(&state.set, id)))),
+                    Own::Node(id) => {
+                        let record = NodeView::record(&state.set, id, self.path.values);
+                        Ok(read(Some(record)))
+                    }
                     Own::Deleted => Ok(read(None)),
                     Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
                 }
@@ -2499,6 +2894,9 @@ impl<'s> WriteTxn<'s> {
         }
         taken?;
         let op = self.begin(state, false)?;
+        // The values of its loads are covered before the frames are taken:
+        // a refusal leaves the transaction as it was.
+        self.cover(state)?;
         let Some(frames) = state.frames.take() else {
             if state.set.met() > 0 {
                 // A commit was published since: the caller does not hold
@@ -2507,15 +2905,25 @@ impl<'s> WriteTxn<'s> {
                 return Ok(Sealed::Conflict);
             }
             // The write set names what the committed state does not hold.
-            return Err(
-                match Self::build(&self.path, &op.guard, op.at, &state.set, &state.scopes) {
-                    Err(error) => error,
-                    Ok(_) => TxnError::Damaged("frames that could not be made are made"),
-                },
-            );
+            // The refusal that stopped the layout is the commit's answer,
+            // as it was kept: no layout is made to tell it again.
+            let stopped =
+                (state.kept_refusal()).filter(|_| state.stuck == Some((op.at, state.set.ops())));
+            if let Some(refused) = stopped {
+                return Err(refused);
+            }
+            let (set, scopes) = (&state.set, &state.scopes);
+            let built = Self::build(&self.path, &op.guard, op.at, set, scopes, &mut state.loaded);
+            return Err(match built {
+                Err(error) => error,
+                Ok(_) => TxnError::Damaged("frames that could not be made are made"),
+            });
         };
         let keys = state.set.key_set();
         let pin = state.base.take();
+        // The hold on the values of its loads goes to the commit, which
+        // counts those that cells hold (`log-format.md` LG16).
+        let loaded = std::mem::take(&mut state.loaded);
         state.end();
         let Frames {
             tree,
@@ -2536,7 +2944,49 @@ impl<'s> WriteTxn<'s> {
             directory,
             dropped,
             keys,
+            loaded,
         })))
+    }
+
+    /// Makes a transaction that holds a load ready for its commit, before
+    /// the commit lock is taken: its frames are made over the latest
+    /// version, which lays its loads out again if a commit of another
+    /// landed since its last operation, and a durable manifest covers the
+    /// values they put into the value log ([`cover`]). A transaction with
+    /// no load is left as it is.
+    ///
+    /// The commit does the same under the commit lock ([`Self::seal`]),
+    /// and finds it done where this covered every value and the frames
+    /// are still the ones it covered. What this comes to is the seal's to
+    /// say, which decides the conflict before anything else (CF6): an
+    /// error here is returned by no one, and the seal does the work that
+    /// this left.
+    pub(crate) fn prepare_loads(&self) {
+        let mut state = self.lock();
+        let state = &mut *state;
+        if !state.set.has_loads() {
+            return;
+        }
+        if self.begin(state, false).is_ok() {
+            let _ = self.cover(state);
+        }
+    }
+
+    /// Has a durable manifest cover the values that the loads of the
+    /// transaction appended for its frames. With no frames nothing is
+    /// covered: the values are appended when the frames are made.
+    fn cover(&self, state: &State<'s>) -> Result<(), TxnError> {
+        if state.frames.is_none() {
+            return Ok(());
+        }
+        Ok(cover(&self.path, &state.loaded)?)
+    }
+
+    /// How many stretches of value-log files hold the values of the
+    /// transaction's loads.
+    #[cfg(all(test, not(loom)))]
+    pub(crate) fn loaded_runs(&self) -> usize {
+        self.lock().loaded.runs()
     }
 }
 
@@ -2622,6 +3072,11 @@ pub(crate) struct Parts<'s> {
     pub(crate) dropped: Vec<lignin_tree::directory::Dropped>,
     /// The key set of the commit (CF1).
     pub(crate) keys: super::key::KeySet,
+    /// The values that the transaction's loads put into the value log,
+    /// with the hold on their files: the commit acquires the pointers that
+    /// cells of the tree pages hold, and gives the hold up when they are
+    /// counted (`super::load`).
+    pub(crate) loaded: Loaded,
 }
 
 /// Shows the cell at `at` in the frames, or no node.
@@ -2819,3 +3274,133 @@ impl<'s> WriteTxn<'s> {
 mod scopes;
 
 pub use scopes::Scope;
+
+#[cfg(test)]
+mod kept {
+    //! What a transaction keeps beside its write set, asked of the two
+    //! functions that keep it: the refusal of a layout that is stopped,
+    //! and the looks at subtrees with no root.
+
+    use lignin_format::{PageId, SlotId};
+    use lignin_tree::fragment::WriteError;
+
+    use super::*;
+
+    /// Every refusal that stops a layout ([`is_refusal`]) is kept as it
+    /// is: the copy says what the refusal says, variant by variant. What
+    /// is no refusal is not kept.
+    #[test]
+    fn a_refusal_that_stops_a_layout_is_kept_as_it_is() {
+        use DirectoryError as D;
+        let prefix = [7; 32];
+        let subtree = Subtree::new(prefix);
+        let page = PageId::new(3).expect("a page id");
+        let address = CellAddress::new(page, SlotId::new(4).expect("a slot"));
+        let id = MerkId::new(9).expect("an id");
+        let position = 1;
+        let directory = [
+            D::Exists { prefix },
+            D::NotFound { prefix },
+            D::NoParent { parent: prefix },
+            D::HostTaken {
+                parent: prefix,
+                position,
+            },
+            D::Inside { prefix },
+            D::NoHost { prefix },
+            D::Unnamed { prefix },
+            D::NotEmpty { prefix },
+            D::UnknownRoot { address },
+            D::RootTaken { address },
+            D::Twice { prefix },
+            D::TooLong {
+                what: "a key",
+                len: 70_000,
+            },
+            D::TooDeep,
+            D::IdsExhausted,
+            D::InUse { prefix },
+            D::Nested { id },
+            D::NotDropped { id },
+        ];
+        let others = [
+            TxnError::Batch(BatchError::NotEntered { subtree }),
+            TxnError::Batch(BatchError::Entered { subtree }),
+            TxnError::Fragment(FragmentError::Write(WriteError::KeyChanged { node: 3 })),
+            TxnError::Fragment(FragmentError::NoRoom { page: None }),
+            TxnError::Fragment(FragmentError::NoRoom { page: Some(page) }),
+        ];
+        let refusals = (directory.into_iter().map(TxnError::Directory)).chain(others);
+        let mut kept = 0;
+        for refused in refusals {
+            assert!(is_refusal(&refused), "{refused}");
+            let again = refusal_again(&refused).expect("a refusal is kept");
+            assert_eq!(format!("{again:?}"), format!("{refused:?}"));
+            assert_eq!(again.to_string(), refused.to_string());
+            kept += 1;
+        }
+        assert_eq!(kept, 22);
+
+        let damaged = D::Damaged {
+            key: vec![1],
+            what: "an entry",
+        };
+        for other in [
+            TxnError::Damaged("a page"),
+            TxnError::ScopeOpen,
+            TxnError::Directory(damaged),
+        ] {
+            assert!(!is_refusal(&other), "{other}");
+            assert!(refusal_again(&other).is_none(), "{other}");
+        }
+    }
+
+    /// A transaction keeps its looks at [`KEPT_LOOKS`] subtrees. A look
+    /// again at one of them keeps the others, and so does a look that
+    /// shows a root or no subtree, which forgets that subtree alone. A
+    /// look at one subtree more forgets the others (LD6).
+    #[test]
+    fn a_look_at_one_subtree_more_than_are_kept_forgets_the_others() {
+        let subtree = |number: usize| {
+            let mut prefix = [0; 32];
+            let number = u64::try_from(number).expect("a count");
+            prefix[..8].copy_from_slice(&number.to_be_bytes());
+            Subtree::new(prefix)
+        };
+        let version = |raw| CommitVersion::new(raw).expect("a version");
+        let (rootless, rooted) = (
+            SubtreeView::ROOTLESS,
+            SubtreeView {
+                root_key: Some(b"root"),
+                ..SubtreeView::ROOTLESS
+            },
+        );
+        let mut looks = HashMap::new();
+        for number in 0..KEPT_LOOKS {
+            note_look(&mut looks, subtree(number), version(5), Some(&rootless));
+        }
+        assert_eq!(looks.len(), KEPT_LOOKS);
+
+        note_look(&mut looks, subtree(3), version(6), Some(&rootless));
+        assert_eq!(looks.len(), KEPT_LOOKS);
+        assert_eq!(looks[&subtree(3)], version(6));
+        assert_eq!(looks[&subtree(2)], version(5));
+
+        note_look(&mut looks, subtree(4), version(6), Some(&rooted));
+        note_look(&mut looks, subtree(5), version(6), None);
+        assert_eq!(looks.len(), KEPT_LOOKS - 2);
+        assert!(!looks.contains_key(&subtree(4)) && !looks.contains_key(&subtree(5)));
+        // A subtree that was not remembered, shown with a root: nothing
+        // is forgotten for it.
+        let unseen = subtree(KEPT_LOOKS + 7);
+        note_look(&mut looks, unseen, version(6), Some(&rooted));
+        assert_eq!(looks.len(), KEPT_LOOKS - 2);
+
+        note_look(&mut looks, subtree(4), version(7), Some(&rootless));
+        note_look(&mut looks, subtree(5), version(7), Some(&rootless));
+        assert_eq!(looks.len(), KEPT_LOOKS);
+        note_look(&mut looks, subtree(KEPT_LOOKS), version(7), Some(&rootless));
+        assert_eq!(looks.len(), 1);
+        assert_eq!(looks[&subtree(KEPT_LOOKS)], version(7));
+    }
+}

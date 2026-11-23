@@ -808,3 +808,61 @@ fn a_merk_with_no_unlinked_record_is_asked_once_whether_it_has_one() {
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
 }
+
+/// A load takes the unlinked records under the keys of its nodes, as any
+/// node that is new to its tree does, and leaves the others beside the
+/// tree (`transactions.md` LD1). The Merk has no root and a record under
+/// every key, and is handed over whole, with nodes under half of those
+/// keys and under keys of its own.
+#[test]
+fn a_load_takes_the_unlinked_records_under_the_keys_of_its_nodes() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let all: BTreeSet<Vec<u8>> = (0..14).map(key).collect();
+    world.edit_outside(
+        MERK,
+        |items| {
+            for n in 0..14 {
+                items.insert(key(n), vec![n; 20 + usize::from(n) * 3]);
+            }
+        },
+        &[],
+    );
+    let tx = world.begin();
+    let before = view(&world, &tx);
+    let kept = |key: &Vec<u8>| (key.clone(), node_of(&before, key), false);
+    let no_root = OwnedMerk {
+        nodes: all.iter().map(kept).collect(),
+        root: Some(None),
+        ..change(&world, &tx, &BTreeSet::new(), |_| ())
+    };
+    (world.apply(&tx, &batch_of(no_root))).expect("the batch is applied");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let mut items: BTreeMap<Vec<u8>, Vec<u8>> = (0..7)
+        .map(|n| (key(n), vec![n + 100; 600 + usize::from(n) * 500]))
+        .collect();
+    items.extend((0..20).map(|n| (vec![b'm', n], vec![n; 30])));
+    let tx = world.begin();
+    let batch = batch_of(super::load::whole(MERK, &items));
+    let scope = tx.txn.scope().expect("a scope");
+    let first_write = world.latest().get();
+    let applied = batch.loading(&[subtree()], |batch| scope.apply(batch));
+    scope.merge();
+    let applied = applied.expect("a load");
+    world.note(&tx, &batch, first_write);
+    assert!(applied.load.is_some());
+    assert!(applied.unlinked.is_empty());
+    assert_eq!(applied.nodes.len(), items.len());
+    world.check(&tx);
+    let names: Vec<&[u8]> = all.iter().map(Vec::as_slice).collect();
+    let unlinked: Vec<Option<bool>> = (0..14).map(|n| Some(n >= 7)).collect();
+    assert_eq!(shown(&tx, &names), unlinked);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let left: BTreeSet<Vec<u8>> = (7..14).map(key).collect();
+    check_committed(&world, &left);
+    let reader = world.begin();
+    assert_eq!(shown(&reader, &names), unlinked);
+    assert_eq!(db.private_ids(), 0);
+}

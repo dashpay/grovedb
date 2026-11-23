@@ -76,8 +76,14 @@ pub struct Published {
     /// The bytes of the value records of the group, of tree cells and of
     /// flat entries.
     pub value_bytes: u64,
-    /// How many value pointers the commit's cells stopped holding (PV6).
+    /// How many value pointers the commit's cells stopped holding, of
+    /// those a count of live values included (PV6). A pointer that a load
+    /// of the same transaction gave a cell is not among them.
     pub released: usize,
+    /// How many value pointers the commit's cells started to hold: the
+    /// values that its loads put into the value log and that its cells
+    /// hold (`log-format.md` LG16). Zero for a commit with no load.
+    pub acquired: usize,
     /// How many nodes had a stale hash that the commit evaluated (CM3
     /// step 5).
     pub evaluated: usize,
@@ -90,8 +96,8 @@ pub struct Published {
     /// from").
     pub directory: Directory,
     /// The first value pointer that the counts of live values could not
-    /// take as the commit released it. The whole change was applied all
-    /// the same, and the commit went on
+    /// take as the commit released or acquired it. The whole change was
+    /// applied all the same, and the commit went on
     /// ([`ValueStore::apply`](lignin_store::values::ValueStore::apply)).
     pub miscounted: Option<ValueStoreError>,
 }

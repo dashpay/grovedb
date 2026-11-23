@@ -6,7 +6,7 @@ use lignin_format::CommitVersion;
 use lignin_tree::hash::Stale;
 
 use crate::txn::{
-    write_set::{Own, WriteSet},
+    write_set::{NodeValue, Own, WriteSet},
     Batch, Column, Hosted, KeySet, MerkWrite, NodePut, RecordWrite, RootPut, Subtree, SubtreeWrite,
     Unit, ValuePut,
 };
@@ -81,6 +81,7 @@ fn add(set: &mut WriteSet, (scope, laid, first_write, op): (u32, bool, u64, Op))
                 removed: &[],
                 root: RootPut::Set(Some(key)),
                 anchored: false,
+                whole: false,
             }];
             batch.merks = &merks;
             empty.push(set.rooted(&subtree(name)) != Some(true));
@@ -101,7 +102,7 @@ fn add(set: &mut WriteSet, (scope, laid, first_write, op): (u32, bool, u64, Op))
             batch.subtrees = &subtrees;
         }
     }
-    set.add(&batch, version(first_write), &empty, &cut, &[]);
+    set.add(&batch, version(first_write), &empty, &cut, &[], &[]);
     set.tag_last(scope, laid);
 }
 
@@ -115,7 +116,10 @@ fn shown(set: &WriteSet) -> Vec<String> {
                 let own = match set.own(unit, key) {
                     Own::Node(id) => {
                         let entry = set.entry(id);
-                        let value = set.node_value(id).map(<[u8]>::to_vec);
+                        let value = set.node_value(id).map(|value| match value {
+                            NodeValue::Bytes(bytes) => bytes.to_vec(),
+                            NodeValue::Stored(_) => unreachable!("no load is in these sets"),
+                        });
                         format!("node {:?} {} {value:?}", entry.first_write, entry.met)
                     }
                     Own::Put(value) => {

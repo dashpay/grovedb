@@ -417,10 +417,16 @@ that causes it, never earlier. A cell that a transaction makes stop holding
 a pointer counts as one fewer in that transaction's commit. A value the
 transaction writes has no pointer at its commit: write-back gives the cell
 the pointer, and the value counts as one more from the checked step that
-does so. A value that the cleaner moves is counted in such a step as well,
-one fewer in the old file and one more in the new. Neither step takes a
-commit version: the pointer and the counts are installed together and are
-recovered with the pages (rules PV6, PV7 and FL7 of `transactions.md`). A
+does so. The exception is a value of a bulk load, which is in the value
+log before the commit: the cell holds its pointer, and it counts as one
+more in that commit (`transactions.md` LD5). A record that a bulk load
+appended before its node had a page names the greatest page id as its
+owner. No cell points at it, so no count has it, and to O4 it is a miss
+(`transactions.md` LD3). A value that the cleaner moves is counted in such
+a step as well, one fewer in the old file and one more in the new. Neither
+step takes a commit version: the pointer and the counts are installed
+together and are recovered with the pages (rules PV6, PV7 and FL7 of
+`transactions.md`). A
 count that ran ahead of the pages could reach zero while a committed cell
 still points into the file. After a crash the count is that of the version
 recovery lands on: it is recovered with the pages, from a sample stored

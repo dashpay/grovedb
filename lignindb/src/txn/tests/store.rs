@@ -206,6 +206,8 @@ pub struct Db {
     pub directories: Directories,
     directory: OnceLock<FlatTree>,
     flat_drops: OnceLock<FlatDrops>,
+    /// The value-log file the loads of the store append to.
+    pub load_files: crate::txn::LoadFiles,
     used: Mutex<BTreeSet<PageId>>,
     /// Whether the store is left out of the check that its drop makes.
     unchecked: AtomicBool,
@@ -352,6 +354,7 @@ impl Db {
             directories: Directories::empty(),
             directory: OnceLock::new(),
             flat_drops: OnceLock::new(),
+            load_files: crate::txn::LoadFiles::new(),
             used: Mutex::new(BTreeSet::new()),
             // A store on files that a test may fail or cut is checked by
             // the test that knows what it did to them.
@@ -429,6 +432,7 @@ impl Db {
             directory: OnceLock::from(made.directory()),
             directories: Directories::empty(),
             flat_drops: OnceLock::from(made.flat_drops()),
+            load_files: crate::txn::LoadFiles::new(),
             used: Mutex::new(used),
             // What recovery opened is checked when it is dropped, as a
             // store in a directory of its own is.
@@ -773,6 +777,8 @@ impl Db {
             directory: self.directory(),
             directories: &self.directories,
             flat_drops: self.flat_drops(),
+            load_files: &self.load_files,
+            write_back: self.write_back(versions),
         };
         WritePath::new(
             store,

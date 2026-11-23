@@ -787,6 +787,7 @@ pub fn load(common: &Common, file: &Path, out: &mut dyn Write) -> Result<Outcome
                     removed: &[],
                     root: RootPut::Set(entered.root.as_deref()),
                     anchored: false,
+                    whole: false,
                 });
             }
             // The host names the Merk's root: it is written again, with the
@@ -808,6 +809,7 @@ pub fn load(common: &Common, file: &Path, out: &mut dyn Write) -> Result<Outcome
                     removed: &[],
                     root: RootPut::Keep,
                     anchored: hosted.contains_key(parent),
+                    whole: false,
                 });
             }
             let writes: Vec<RecordWrite<'_>> = (data.records.iter())
