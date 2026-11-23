@@ -11,8 +11,9 @@
 //! keeps its records, so the answers of the two engines after such a
 //! write are not compared here. These tests hold LigninDB alone: where
 //! the history is taken, the element at the path is one of the new
-//! tree's kind and what was written into the new tree is read back
-//! (`Kind::read_back`), and the check of the database, which the engine
+//! tree's kind, the items and the row that were written into a new
+//! Merk are read back, a new tree that keeps flat records counts its two
+//! values (`Kind::read_back`), and the check of the database, which the engine
 //! gives the tree types that keep flat records, finds nothing when the
 //! database is closed and when it is opened again.
 
@@ -109,12 +110,13 @@ impl Kind {
 }
 
 impl Kind {
-    /// Reads the tree under [`TREE`] back after [`Self::fill`]: its
-    /// element is one of the kind, and holds what was written. For a
-    /// normal tree that is its item, and the item of the tree in it; for
-    /// an indexed tree its row; and for a tree that keeps flat records
-    /// the element itself, which is no longer that of an empty tree: it
-    /// states how many values the tree has.
+    /// Reads the tree under [`TREE`] back after [`Self::fill`]. Its
+    /// element is one of the kind. A normal tree has its item and the
+    /// item of the tree in it, by value, and an indexed tree its row, by
+    /// value. A tree that keeps flat records answers that it has two
+    /// values, and its element is no longer that of an empty tree. The
+    /// values of such a tree are not read, and neither is its keyed
+    /// child.
     fn read_back(self, db: &Lignin, v: &GroveVersion, told: &str) {
         let tree: &[&[u8]] = &[TREE];
         let element = db.get(ROOT, TREE, None, v).unwrap().expect("the tree");
@@ -137,7 +139,18 @@ impl Kind {
                 let read = db.get(tree, b"child", None, v).unwrap();
                 assert_eq!(read.expect("the row"), Sum::leaf(4), "{told}");
             }
-            _ => assert_ne!(element, self.empty(), "{told}"),
+            flat => {
+                let count = match flat {
+                    Self::Mmr => db.mmr_tree_leaf_count(ROOT, TREE, None, v).unwrap(),
+                    Self::Bulk => db.bulk_count(ROOT, TREE, None, v).unwrap(),
+                    Self::Dense => {
+                        (db.dense_tree_count(ROOT, TREE, None, v).unwrap()).map(u64::from)
+                    }
+                    _ => db.commitment_tree_count(ROOT, TREE, None, v).unwrap(),
+                };
+                assert_eq!(count.expect("the count"), 2, "{told}");
+                assert_ne!(element, self.empty(), "{told}");
+            }
         }
     }
 }
