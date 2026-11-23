@@ -776,15 +776,29 @@ impl Known {
     ///   hash of its committed state and gives those rows, path, key and
     ///   bytes.
     ///
-    /// With no `reference`, where the reference panicked, the first and
-    /// the last are asked, of the operation and the candidate alone.
+    /// The first and the last are [`Known::proof_holds`].
     pub fn through_a_proof(
         &self,
         op: &Op,
-        reference: Option<&Step>,
+        reference: &Step,
         candidate: &Step,
         grove_version: &GroveVersion,
     ) -> bool {
+        let proof_alone = reference.cost == candidate.cost
+            && reference.outcome == candidate.outcome
+            && reference.root_hash == candidate.root_hash;
+        proof_alone && self.proof_holds(op, candidate, grove_version)
+    }
+
+    /// What a step of a dropped tree in a proof needs of the operation
+    /// and of the candidate alone, which is all that can be asked where
+    /// the reference panicked ([`Family::DroppedTreeAssertion`]): the
+    /// operation is a raw query of committed state and a proof of it
+    /// binds a tree made again at a dropped path whose record is pending
+    /// ([`Known::trees_a_proof_binds`]), and the candidate returned rows
+    /// and its proof verifies to the root hash of its committed state and
+    /// gives those rows, path, key and bytes.
+    pub fn proof_holds(&self, op: &Op, candidate: &Step, grove_version: &GroveVersion) -> bool {
         let Op::Read(Read::Query(query)) = op else {
             return false;
         };
@@ -792,14 +806,6 @@ impl Known {
             return false;
         }
         let query = query.to_path_query();
-        let proof_alone = |reference: &Step| {
-            reference.cost == candidate.cost
-                && reference.outcome == candidate.outcome
-                && reference.root_hash == candidate.root_hash
-        };
-        if !reference.is_none_or(proof_alone) {
-            return false;
-        }
         let Outcome::Returned(Value::Rows(returned)) = &candidate.outcome else {
             return false;
         };
@@ -1248,10 +1254,10 @@ mod tests {
         known.took(&drop, Vec::new());
         // Dropped, and no record told: not pending, so not made again.
         known.made_again(vec![again.clone()]);
-        assert!(!known.through_a_proof(&asked, Some(&answered), &answered, grove_version));
+        assert!(!known.through_a_proof(&asked, &answered, &answered, grove_version));
         // Pending, and not told that a tree stands there again.
         known.pending(vec![again.clone()]);
-        assert!(!known.through_a_proof(&asked, Some(&answered), &answered, grove_version));
+        assert!(!known.through_a_proof(&asked, &answered, &answered, grove_version));
         // Pending and made again: what `trees_at` reads of the database.
         let block = runner.transactions().block();
         let standing = Known::trees_at(&db, block, known.pending_paths(), grove_version);
@@ -1259,8 +1265,8 @@ mod tests {
         let item = [path(&[b"t", b"item"]), path(&[b"t", b"absent"])];
         assert!(Known::trees_at(&db, block, &item, grove_version).is_empty());
         known.made_again(standing);
-        assert!(known.through_a_proof(&asked, Some(&answered), &answered, grove_version));
-        assert!(known.through_a_proof(&asked, None, &answered, grove_version));
+        assert!(known.through_a_proof(&asked, &answered, &answered, grove_version));
+        assert!(known.proof_holds(&asked, &answered, grove_version));
         assert_eq!(known.trees_a_proof_binds(&asked), vec![again.clone()]);
         // It is of no path: no place is of the kind, and no stored record.
         assert_eq!(known.family(&again), Some(Family::DroppedTree));
@@ -1272,7 +1278,7 @@ mod tests {
         let one = |key: &[u8]| vec![crate::workload::QueryItem::Key(key.to_vec())];
         let selects = Op::Read(Read::Query(query(&[b"t"], one(b"again"), true)));
         let selected = runner.step(&selects).expect("a step").step;
-        assert!(known.through_a_proof(&selects, Some(&selected), &selected, grove_version));
+        assert!(known.through_a_proof(&selects, &selected, &selected, grove_version));
         for other in [
             Op::Read(Read::Query(query(&[b"t"], everything.clone(), false))),
             Op::Read(Read::Query(query(&[b"t"], one(b"item"), true))),
@@ -1283,22 +1289,17 @@ mod tests {
         ] {
             let step = runner.step(&other).expect("a step").step;
             assert!(
-                !known.through_a_proof(&other, Some(&step), &step, grove_version),
+                !known.through_a_proof(&other, &step, &step, grove_version),
                 "{other:?}"
             );
-            assert!(!known.through_a_proof(&other, None, &step, grove_version));
+            assert!(!known.proof_holds(&other, &step, grove_version));
             assert!(known.trees_a_proof_binds(&other).is_empty(), "{other:?}");
         }
         let Op::Read(read) = asked.clone() else {
             unreachable!()
         };
         let through_the_block = Op::Transaction(TransactionOp::BlockRead(read));
-        assert!(!known.through_a_proof(
-            &through_the_block,
-            Some(&answered),
-            &answered,
-            grove_version
-        ));
+        assert!(!known.through_a_proof(&through_the_block, &answered, &answered, grove_version));
 
         // Another answer of the candidate: no rows, a row more or less or
         // another one than its proof gives, a proof that verifies to
@@ -1307,7 +1308,7 @@ mod tests {
         let with = |change: &dyn Fn(&mut Step)| {
             let mut step = answered.clone();
             change(&mut step);
-            known.through_a_proof(&asked, Some(&step), &step, grove_version)
+            known.through_a_proof(&asked, &step, &step, grove_version)
         };
         assert!(with(&|_| {}));
         assert!(!with(
@@ -1375,7 +1376,7 @@ mod tests {
             let mut reference = answered.clone();
             change(&mut reference);
             assert_ne!(reference, answered);
-            known.through_a_proof(&asked, Some(&reference), &answered, grove_version)
+            known.through_a_proof(&asked, &reference, &answered, grove_version)
         };
         assert!(against(&|step| proof_of(step, &|bytes| {
             Proved::Bytes(bytes, Verification::Refused("InvalidProof".to_string()))

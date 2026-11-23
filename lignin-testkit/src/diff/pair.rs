@@ -165,14 +165,21 @@ const PANICKED: &str = "panicked: ";
 /// committed: the files of this directory.
 const ASSERTION_ORIGIN: &str = "/operations/proof/bind_terminal_non_merk_tree/";
 
-/// How that assertion's words end.
-const REFERENCE_ASSERTION: &str = "which does not reproduce the committed value hash";
+/// `text` after a hash of 32 bytes in lowercase hexadecimal digits that it
+/// begins with.
+fn after_a_hash(text: &str) -> Option<&str> {
+    let (hash, rest) = text.split_at_checked(64)?;
+    let digit = |byte: u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte);
+    hash.bytes().all(digit).then_some(rest)
+}
 
 /// Whether `panic`, as [`catching`] hands it on, is that assertion
 /// failing for one of `trees`: in a debug build, a panic at a place of
-/// [`ASSERTION_ORIGIN`] whose words name the key of one of the trees and
-/// end as the assertion's do. A release build has no such assertion, and
-/// no panic is it there.
+/// [`ASSERTION_ORIGIN`] that says, from its first word, what the
+/// assertion says of the key of one of the trees: an equality that
+/// failed, the key, the state root and the committed value hash, each a
+/// hash in its place, and then the two sides. A release build has no
+/// such assertion, and no panic is it there.
 fn is_the_binding_assertion(panic: &str, trees: &[Vec<Vec<u8>>]) -> bool {
     if !cfg!(debug_assertions) {
         return false;
@@ -182,13 +189,16 @@ fn is_the_binding_assertion(panic: &str, trees: &[Vec<Vec<u8>>]) -> bool {
     else {
         return false;
     };
-    let names = |tree: &Vec<Vec<u8>>| {
-        let key = tree.last().map(hex::encode).unwrap_or_default();
-        said.contains(&format!("non-Merk tree at key {key} has state root "))
+    let says = |tree: &Vec<Vec<u8>>| {
+        let key = tree.last().map(hex::encode)?;
+        let begins =
+            format!("assertion `left == right` failed: non-Merk tree at key {key} has state root ");
+        let root = after_a_hash(said.strip_prefix(&begins)?)?;
+        let hash = root.strip_prefix(" which does not reproduce the committed value hash ")?;
+        let sides = after_a_hash(hash)?;
+        sides.trim_start().starts_with("left: ").then_some(())
     };
-    origin.contains(ASSERTION_ORIGIN)
-        && said.contains(REFERENCE_ASSERTION)
-        && trees.iter().any(names)
+    origin.contains(ASSERTION_ORIGIN) && trees.iter().any(|tree| says(tree).is_some())
 }
 
 /// How the line begins that stands for an engine that could not be
@@ -614,11 +624,11 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         // where it proves a query that returns a tree made again at a
         // dropped path before the drain of its drop: the case ends there,
         // counted apart, where the candidate's side of the step is as the
-        // rule of that open difference asks (`Known::through_a_proof`).
+        // rule of that open difference asks (`Known::proof_holds`).
         if let (Seen::Panicked(panic), Seen::Answered(answered)) = (&was, &is) {
             let asserted = is_the_binding_assertion(panic, &known.trees_a_proof_binds(op));
             let candidate = &answered.step;
-            if asserted && known.through_a_proof(op, None, candidate, case.grove_version) {
+            if asserted && known.proof_holds(op, candidate, case.grove_version) {
                 let family = Family::DroppedTreeAssertion;
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
@@ -657,7 +667,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             // else, and the candidate's proof holds: the open difference
             // of a dropped tree, through a proof.
             let through_a_proof = || {
-                let (reference, candidate) = (Some(&was.step), &is.step);
+                let (reference, candidate) = (&was.step, &is.step);
                 let held = known.through_a_proof(op, reference, candidate, case.grove_version);
                 held.then_some(Family::DroppedTreeProof)
             };
@@ -848,27 +858,53 @@ mod tests {
         let tree = vec![b"drops".to_vec(), b"k".to_vec()];
         let other = vec![b"drops".to_vec(), b"other".to_vec()];
         let one = std::slice::from_ref(&tree);
-        let said = "assertion `left == right` failed: non-Merk tree at key 6b has state root 7a0f \
-                    which does not reproduce the committed value hash a281   left: [1]  right: [2]";
+        let (root, hash) = ("7a".repeat(32), "a2".repeat(32));
+        let words = |key: &str, root: &str, hash: &str| {
+            format!(
+                "assertion `left == right` failed: non-Merk tree at key {key} has state root \
+                 {root} which does not reproduce the committed value hash {hash}   left: [1]  \
+                 right: [2]"
+            )
+        };
+        let said = words("6b", &root, &hash);
         let at = "grovedb/src/operations/proof/bind_terminal_non_merk_tree/v1.rs:102:13";
-        let genuine = format!("panicked at {at}: {said}");
+        let from = |at: &str, said: &str| format!("panicked at {at}: {said}");
+        let genuine = from(at, &said);
         let is = super::is_the_binding_assertion;
         assert_eq!(is(&genuine, one), cfg!(debug_assertions));
         assert_eq!(
             is(&genuine, &[other.clone(), tree.clone()]),
             cfg!(debug_assertions)
         );
-        // Another tree's key, no tree, another file, other words, and
-        // the words inside another panic.
+        // Another tree's key, no tree, another file, and the words
+        // inside another panic.
         assert!(!is(&genuine, &[other]));
         assert!(!is(&genuine, &[]));
-        let elsewhere = format!("panicked at grovedb/src/operations/proof/generate.rs:1:1: {said}");
-        assert!(!is(&elsewhere, one));
-        let other_words = format!("panicked at {at}: non-Merk tree at key 6b has state root 7a0f");
-        assert!(!is(&other_words, one));
+        assert!(!is(
+            &from("grovedb/src/operations/proof/generate.rs:1:1", &said),
+            one
+        ));
         let quoted = format!("panicked at storage/src/lib.rs:1:1: an error ({genuine})");
         assert!(!is(&quoted, one));
-        assert!(!is(said, one));
+        assert!(!is(&said, one));
+        // Another panic of the same file: one that carries the two ends
+        // of the assertion's words around other words, one that is no
+        // failed equality, a state root or a value hash that is no hash,
+        // words that stop before the value hash, and words before the
+        // assertion's.
+        let around = "unexpected error: non-Merk tree at key 6b has state root 00; no child was \
+                      found which does not reproduce the committed value hash";
+        assert!(!is(&from(at, around), one));
+        let no_equality = said.replace("assertion `left == right` failed: ", "");
+        assert!(!is(&from(at, &no_equality), one));
+        assert!(!is(&from(at, &words("6b", "7a0f", &hash)), one));
+        assert!(!is(&from(at, &words("6b", &root, "a281")), one));
+        assert!(!is(&from(at, &words("6b", &"7A".repeat(32), &hash)), one));
+        let cut = said.split(" which ").next().expect("the first words");
+        assert!(!is(&from(at, cut), one));
+        assert!(!is(&from(at, &format!("in a batch: {said}")), one));
+        let no_sides = said.split("   left: ").next().expect("the words");
+        assert!(!is(&from(at, no_sides), one));
     }
 
     use grovedb::Element;

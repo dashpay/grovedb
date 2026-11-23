@@ -522,8 +522,19 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
         };
         let origin = "/operations/proof/bind_terminal_non_merk_tree/";
         assert!(panic.starts_with("panicked: panicked at ") && panic.contains(origin));
-        let asserted = format!("non-Merk tree at key {made_again} has state root ");
-        assert!(panic.contains(&asserted), "{panic}");
+        // From its first word: the equality that failed, the key, and a
+        // hash each for the state root and the committed value hash.
+        let begins = format!(
+            ": assertion `left == right` failed: non-Merk tree at key {made_again} has state root "
+        );
+        let (_, said) = panic.split_once(&begins).expect("the assertion's words");
+        let said = said.split("left: ").next().unwrap_or_default().trim_end();
+        let hashes: Vec<&str> = said
+            .split(" which does not reproduce the committed value hash ")
+            .collect();
+        let is_a_hash =
+            |hash: &&str| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+        assert!(hashes.len() == 2 && hashes.iter().all(is_a_hash), "{panic}");
         (Family::DroppedTreeAssertion, 5)
     } else {
         assert_eq!(ended.parts, [Part::Proof]);
