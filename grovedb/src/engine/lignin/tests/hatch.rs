@@ -12,7 +12,7 @@
 use grovedb_commitment_tree::{DashMemo, NoteBytesData, TransmittedNoteCiphertext};
 use grovedb_costs::OperationCost;
 use grovedb_merk::proofs::Query;
-use grovedb_merk::store::NodeStore;
+use grovedb_merk::store::{NodeChangeSet, NodeStore};
 use grovedb_storage::{FlatStore, RawIterator};
 use lignindb::{verify::Census, Db, Options};
 
@@ -397,6 +397,12 @@ fn counted<E: Engine>(db: &GroveDb<E>) {
         });
         (db.apply_batch(ops.collect(), None, None, v).unwrap()).expect("a batch of items");
     }
+    // The record of the root key holds the key of the root node, as the
+    // record that a restore writes for a Merk does.
+    let held = db.get_raw(ROOT, COUNTED, None, v).unwrap();
+    let Element::CountTree(Some(root_key), ..) = held.expect("the count tree") else {
+        panic!("a count tree with a root");
+    };
     let tx = db.start_transaction();
     let batch = E::Batch::default();
     let handle = (db.engine())
@@ -412,6 +418,9 @@ fn counted<E: Engine>(db: &GroveDb<E>) {
         .put(b"a meta key", b"a meta value", None)
         .unwrap())
     .expect("a meta record");
+    let mut change_set = handle.change_set();
+    (change_set.put_root_key(&root_key, None)).expect("a record of the root key");
+    (handle.commit(change_set).unwrap()).expect("a change set");
     drop(handle);
     (db.engine().apply_batch(batch, &tx).unwrap()).expect("the records beside the nodes");
     db.commit_transaction(tx).unwrap().expect("a commit");
@@ -483,8 +492,13 @@ fn dump_and_load_counted<S: Hatched, T: Hatched>() -> (Counted, Option<Census>, 
     let dumped = (source.db)
         .dump_subtree(ROOT, COUNTED, &mut dump, None, v)
         .expect("a dump");
-    let records = [dumped.data_records, dumped.aux_records, dumped.meta_records];
-    assert_eq!(records, [u64::from(ITEMS), 1, 1], "{names}");
+    let records = [
+        dumped.data_records,
+        dumped.aux_records,
+        dumped.root_key_records,
+        dumped.meta_records,
+    ];
+    assert_eq!(records, [u64::from(ITEMS), 1, 1, 1], "{names}");
 
     let target = Grove::<T>::new();
     (target.db)
