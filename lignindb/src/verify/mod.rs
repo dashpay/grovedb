@@ -6,6 +6,9 @@
 //!   A store with no finding is sound ([`Report::is_sound`]).
 //! - [`Unreached`] counts the cells that nothing reaches. They are space
 //!   and no state, and no finding.
+//! - [`OtherHashes`] counts the value hashes that are not the ones the
+//!   rules make and that the rules name as another writer's. They are no
+//!   finding.
 //! - [`Census`] is what the run counted, and [`Phases`] how long it took.
 //!
 //! The checker changes nothing and takes no lock of the store. It reads as
@@ -33,7 +36,7 @@
 //! | Every stored address names the cell it means: a slot with a cell, whose key is in its place in the order of its Merk, has the length its link states, and has the heights its link states. | S1, S3, C2 | [`Rule::DanglingAddress`], [`Rule::KeyOrder`], [`Rule::LinkKeyLength`], [`Rule::LinkHeights`] |
 //! | The fragment-root table equals what the links imply. | F1, F3 | [`Rule::Fragments`] |
 //! | No cell has two stored addresses besides the directory. | C5 | [`Rule::CellNamedTwice`], [`Rule::Fragments`] |
-//! | Every stored hash equals its recomputation, the value hash among them. | `lignin_tree::hash::check` | [`Rule::Hash`], [`Rule::HashUnchecked`] |
+//! | Every stored hash equals its recomputation, the value hash among them, but for a value hash that the rules name as another writer's (below). | `lignin_tree::hash::check` | [`Rule::Hash`], [`Rule::HashUnchecked`] |
 //! | Every value pointer leads to a record of its length that names the page of its cell as the owner, and no two cells hold one pointer. A pending value has its bytes. This holds for every cell and every flat record of the version: in use, left by a dropped Merk or a range delete, or reached by nothing. | `value-log-format.md` O2, O5; X1 | [`Rule::ValueUnreadable`], [`Rule::ValueOwner`], [`Rule::ValueShared`], [`Rule::PendingBytes`] |
 //! | The directory's records agree with each other. | `lignin_tree::directory` | [`Rule::Directory`] |
 //! | Every Merk in use has an entry that agrees with the cells: the entry names the root's cell and key, the host is a node of the Merk it is said to be in, and the host's pointer is the entry's root. No pointer of a host in use is without its entry. | plan, draft 17 | [`Rule::EntryRoot`], [`Rule::EntryHost`], [`Rule::HostPointer`], [`Rule::HostedUnentered`], [`Rule::HostUnnamed`] |
@@ -51,6 +54,20 @@
 //! | Every link of the page table leads to its block, a chain keeps the rules of chains, a run of deltas is no longer than a page, and no block is named twice. | `page-table.md`, `lignin_store::load` | [`Rule::Chain`], [`Rule::Block`], [`Rule::BlockNamedTwice`] |
 //! | No page version that a segment makes durable holds a pending value: no base image, and no page after a run. | `page-delta.md` PD16 | [`Rule::PendingInSegment`] |
 //! | Where a record placed a value, the pointer has the pending value's length. | `page-delta.md`, record 21 | [`Rule::PlacedLength`] |
+//!
+//! # A value hash that the rules name as another writer's
+//!
+//! The rules that are given may name, for the root of a hosted Merk,
+//! another hash that a writer may have taken for it, and the value hash of
+//! the host made with that ([`HashRules::other_node_hash`],
+//! [`HashRules::value_hash_with_other`]). A stored value hash that differs
+//! from its recomputation and is that hash
+//! (`lignin_tree::hash::made_with_other`) is no finding: [`OtherHashes`]
+//! says how many there are and where the first of them are. Which hashes
+//! are such is the rules' to say, and rules that name none, as the
+//! provided methods do, leave every value hash that differs a finding
+//! ([`Rule::Hash`]). The other hashes of such a cell are compared as those
+//! of any cell.
 //!
 //! # Cells that nothing reaches
 //!
@@ -257,7 +274,7 @@ use lignin_tree::{
 
 use finding::Findings;
 pub use finding::{Finding, Place, Rule};
-pub use report::{Census, Phases, Report, SegmentUse, Unreached, ValueUse};
+pub use report::{Census, OtherHash, OtherHashes, Phases, Report, SegmentUse, Unreached, ValueUse};
 
 use self::{
     pages::Seen,
@@ -429,6 +446,7 @@ struct Run<'a, 's, 'c> {
     values: ValueRead<'s>,
     census: Census,
     unreached: Unreached,
+    other_hashes: OtherHashes,
     cut: Cut,
 }
 
@@ -464,6 +482,7 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
             frames,
             census: Census::default(),
             unreached: Unreached::default(),
+            other_hashes: OtherHashes::default(),
             cut: Cut::default(),
         }
     }
@@ -513,6 +532,7 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
             findings: self.found.list,
             more_findings: self.found.dropped,
             unreached: self.unreached,
+            other_hashes: self.other_hashes,
             census: self.census,
             phases,
         }

@@ -64,6 +64,38 @@ pub trait HashRules {
     /// and the heights and aggregates in its links, which are their
     /// writer's to keep.
     fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal>;
+
+    /// Another hash that a writer may have taken for the hash of `node`,
+    /// the root of a tree that a node hosts, when it made the value hash
+    /// of the host: `None` where the rules name none. The provided method
+    /// names none.
+    ///
+    /// It is asked by [`made_with_other`](super::made_with_other) and by
+    /// nothing else: no evaluation makes a hash with it, and
+    /// [`check`](super::check) compares every stored hash with what the
+    /// three rules above make.
+    fn other_node_hash(&mut self, node: NodeRef<'_>) -> Result<Option<Hash>, Refusal> {
+        let _ = node;
+        Ok(None)
+    }
+
+    /// The value hash of `node`, whose value is `value`, as a writer made
+    /// it that took for a hosted root the hash that
+    /// [`other_node_hash`](Self::other_node_hash) names: `None` where the
+    /// rules name no such value hash for the node. The provided method
+    /// names none.
+    ///
+    /// `hosted` is as for [`value_hash`](Self::value_hash), with the other
+    /// hash of each root that has one, and at least one root has.
+    fn value_hash_with_other(
+        &mut self,
+        node: NodeRef<'_>,
+        value: &[u8],
+        hosted: &[Option<Hash>],
+    ) -> Result<Option<Hash>, Refusal> {
+        let _ = (node, value, hosted);
+        Ok(None)
+    }
 }
 
 impl<R: HashRules + ?Sized> HashRules for &mut R {
@@ -82,6 +114,19 @@ impl<R: HashRules + ?Sized> HashRules for &mut R {
 
     fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
         (**self).node_hash(node)
+    }
+
+    fn other_node_hash(&mut self, node: NodeRef<'_>) -> Result<Option<Hash>, Refusal> {
+        (**self).other_node_hash(node)
+    }
+
+    fn value_hash_with_other(
+        &mut self,
+        node: NodeRef<'_>,
+        value: &[u8],
+        hosted: &[Option<Hash>],
+    ) -> Result<Option<Hash>, Refusal> {
+        (**self).value_hash_with_other(node, value, hosted)
     }
 }
 

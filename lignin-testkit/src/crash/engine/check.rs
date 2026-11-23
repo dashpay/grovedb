@@ -1,7 +1,14 @@
 //! One state that a crash left: opened as a node opens its database, and
 //! held to the blocks of the model.
 
-use std::{io, path::PathBuf, sync::Arc};
+use std::{
+    io,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 use grovedb_version::version::GroveVersion;
 use lignin_format::PageSize;
@@ -52,6 +59,35 @@ pub struct Rules<'a> {
     pub grove_version: &'static GroveVersion,
     /// The size of the pages of the run's databases.
     pub page_size: PageSize,
+    /// Where the checks add the value hashes that the engine's checker
+    /// named as left by a delete (`grove::verify`): each check that
+    /// finds the store sound adds what it named, as soon as it has, and
+    /// a check that finds the store unsound adds nothing. Only a run on
+    /// a grove version that leaves such a hash adds any.
+    pub left_hashes: &'a AtomicU64,
+}
+
+impl Rules<'_> {
+    /// The two checks of the engine's checker on the database in `dir`:
+    /// `db` beside its threads, which is then closed, and the store that
+    /// the close left. Returns the version the database opens at again.
+    /// What the first check named is counted before the close, so it
+    /// stays counted where the close or the second check fails.
+    fn verified(
+        &self,
+        db: grove::Grove,
+        state: &SimVfs,
+        dir: &std::path::Path,
+        tuning: &Tuning,
+    ) -> Result<u64, String> {
+        let beside = grove::verify(&db, self.grove_version)?;
+        self.left_hashes.fetch_add(beside, Ordering::Relaxed);
+        drop(db);
+        let (version, closed) =
+            grove::verify_closed(vfs_of(state), dir, tuning, self.grove_version)?;
+        self.left_hashes.fetch_add(closed, Ordering::Relaxed);
+        Ok(version)
+    }
 }
 
 /// What a check found wrong.
@@ -119,7 +155,11 @@ fn has(landing: Landing, point: usize) -> bool {
 /// 4. The engine's physical invariant checker finds it sound, beside the
 ///    threads of the open database and again after a close and a second
 ///    open, with the stored hashes held to Merk's rules for a check
-///    ([`grove::verify`]). The second open is at the same version.
+///    ([`grove::verify`]). The second open is at the same version. In a
+///    run on a grove version whose delete can leave a tree with a value
+///    hash that is not the rules' (`grove::leaves_hashes`), that hash is
+///    counted ([`Rules::left_hashes`]) and is no violation; in every other
+///    run it is one.
 /// 5. Each checkpoint that was made opens as a database of its own, at the
 ///    version and with the root hash and the records of its block, and is
 ///    sound to the checker; one whose creation or deletion a crash can have
@@ -259,9 +299,7 @@ fn check_database(
     if let Some(said) = not_the_block(rules, expect, landing, version, &found) {
         return Err(wrong(Kind::NotCommitted, said));
     }
-    grove::verify(&db).map_err(|error| wrong(Kind::Inconsistent, error))?;
-    drop(db);
-    let again = grove::verify_closed(vfs_of(state), db_dir(), tuning)
+    let again = (rules.verified(db, state, db_dir(), tuning))
         .map_err(|error| wrong(Kind::Inconsistent, error))?;
     if again != version {
         let said = format!(
@@ -388,9 +426,7 @@ fn check_checkpoint(
     if let Some(difference) = found.difference(&block.state) {
         return Err(wrong(Kind::NotCommitted, difference));
     }
-    grove::verify(&db).map_err(|error| wrong(Kind::Inconsistent, error))?;
-    drop(db);
-    let again = grove::verify_closed(vfs_of(state), dir, tuning)
+    let again = (rules.verified(db, state, dir, tuning))
         .map_err(|error| wrong(Kind::Inconsistent, error))?;
     if again != version {
         let said = format!("it was closed and opened at version {again}");
@@ -495,9 +531,7 @@ pub fn check_again(
                 hex::encode(root)
             )));
         }
-        grove::verify(&db).map_err(wrong)?;
-        drop(db);
-        grove::verify_closed(vfs_of(state), dir, &at_rest).map_err(wrong)?;
+        rules.verified(db, state, dir, &at_rest).map_err(wrong)?;
     }
     Ok(())
 }
@@ -569,6 +603,70 @@ mod tests {
         let first = grove::version_of(db) + 1;
         db.commit_transaction(dropped).unwrap().expect("committed");
         history.push(block(db, first, Made::Commit, places));
+    }
+
+    /// The checks of a run on a grove version whose delete can leave a
+    /// tree with a value hash that is not the rules' count that hash, once
+    /// for the open database and once for the closed one, and find the
+    /// database sound. The checks of a run on a later version find the
+    /// same database inconsistent, and count nothing.
+    #[test]
+    fn a_hash_that_a_delete_left_is_counted_by_the_checks_of_its_version() {
+        use grovedb::operations::delete::DeleteOptions;
+        use grovedb_version::version::v3::GROVE_V3;
+
+        let page_size = PageSize::MIN;
+        let tuning = Tuning::at_rest(page_size);
+        let fs = SimVfs::new(SimConfig::new(11));
+        let db = grove::open(vfs_of(&fs), db_dir(), &tuning, true).expect("made");
+        let mut places = Places::new();
+        let history = History::new((*block(&db, 1, Made::Open, &mut places)).clone());
+        let root: &[&[u8]] = &[];
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            let inserted = db.insert(at, key, element, None, None, &GROVE_V3);
+            inserted.unwrap().expect("a write of the grove");
+        };
+        insert(root, b"parent", Element::empty_provable_count_tree());
+        insert(&[b"parent"], b"beside", Element::new_item(vec![1]));
+        insert(&[b"parent"], b"child", Element::empty_tree());
+        insert(&[b"parent", b"child"], b"leaf", Element::new_item(vec![2]));
+        let with_what_it_holds = DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: false,
+            ..Default::default()
+        };
+        let deleted = db.delete(
+            &[b"parent"],
+            b"child",
+            Some(with_what_it_holds),
+            None,
+            &GROVE_V3,
+        );
+        deleted.unwrap().expect("the delete");
+        db.flush().expect("flushed");
+        let at = grove::version_of(&db);
+        drop(db);
+
+        let left_hashes = AtomicU64::new(0);
+        let rules = |grove_version: &'static GroveVersion| Rules {
+            history: &history,
+            places: &places,
+            grove_version,
+            page_size,
+            left_hashes: &left_hashes,
+        };
+        let open = || grove::open(vfs_of(&fs), db_dir(), &tuning, false).expect("opens");
+        let of_its_version = rules(&GROVE_V3).verified(open(), &fs, db_dir(), &tuning);
+        assert_eq!(of_its_version, Ok(at));
+        assert_eq!(left_hashes.load(Ordering::Relaxed), 2);
+
+        let of_a_later = rules(GroveVersion::latest()).verified(open(), &fs, db_dir(), &tuning);
+        let said = of_a_later.expect_err("a hash that differs");
+        assert!(
+            said.contains("a value hash is the hash of its value"),
+            "{said}"
+        );
+        assert_eq!(left_hashes.load(Ordering::Relaxed), 2);
     }
 
     /// A flush of the pending drops commits more than once, and a crash
@@ -651,11 +749,13 @@ mod tests {
         grove::put_item(&db, AGAIN_KEY, 1, None, version).expect("written");
         history.push(block(&db, after.version + 1, Made::Beside, &mut places));
 
+        let left_hashes = AtomicU64::new(0);
         let rules = Rules {
             history: &history,
             places: &places,
             grove_version: version,
             page_size,
+            left_hashes: &left_hashes,
         };
         // Where the states of the flush landed, with how many records of
         // drops each holds.
@@ -755,11 +855,13 @@ mod tests {
                 .expect("a plan of the image")
         };
 
+        let left_hashes = AtomicU64::new(0);
         let rules = Rules {
             history: &history,
             places: &places,
             grove_version: version,
             page_size,
+            left_hashes: &left_hashes,
         };
         let expecting = |dir: &Path, point: usize, standing: Standing| Expect {
             checkpoints: vec![Checkpoint {

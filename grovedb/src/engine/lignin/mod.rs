@@ -139,14 +139,41 @@ impl LigninEngine {
     /// hashes that those rules take as they are stored. Elements are
     /// read as the latest GroveVersion reads them, as the engine reads a
     /// host.
+    ///
+    /// The rules name the value hash that the delete of a tree with
+    /// elements left for the tree it was in on `GROVE_V1` to `GROVE_V3`
+    /// ([`MerkHashRules::naming_left_hashes`]): the engine does not know
+    /// which grove versions wrote its database, and that hash is no damage
+    /// of the store, so the close does not panic on it. A caller that
+    /// knows its grove was written on later versions only gives the
+    /// database the rules that name none
+    /// ([`Self::check_closes_with_no_left_hashes`]), and the close then
+    /// panics on that hash as on any that differs.
     pub fn new(db: Db) -> Result<Self, Error> {
         if cfg!(debug_assertions) {
-            let rules = MerkHashRules::for_check(GroveVersion::latest());
+            let rules = MerkHashRules::for_check(GroveVersion::latest()).naming_left_hashes();
             db.check_hashes_by(Box::new(rules));
         }
         let engine = Self { db };
         engine.enter_hostless()?;
         Ok(engine)
+    }
+
+    /// Has the check that a close of the database makes in a debug build
+    /// take the value hash that a delete on `GROVE_V1` to `GROVE_V3` left
+    /// as any hash that differs: the close panics on it. For a caller
+    /// whose grove no such version wrote, as a test on a later grove
+    /// version or a tool that compares two engines there: nothing that
+    /// such a grove holds is that hash by right. The rules read elements
+    /// as `grove_version` reads them.
+    ///
+    /// It does nothing in a release build, which checks nothing at a
+    /// close.
+    pub fn check_closes_with_no_left_hashes(&self, grove_version: &'static GroveVersion) {
+        if cfg!(debug_assertions) {
+            let rules = MerkHashRules::for_check(grove_version);
+            self.db.check_hashes_by(Box::new(rules));
+        }
     }
 
     /// Opens the database at `path` with `options`.

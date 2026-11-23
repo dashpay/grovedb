@@ -271,16 +271,41 @@ pub fn read_committed(
     read(db, &snapshot, version, places)
 }
 
+/// Whether the delete of a tree that holds elements can leave, on
+/// `grove_version`, the tree it was in with a value hash that is not the
+/// one Merk's rules make: the versions whose delete opens that tree's
+/// Merk as a tree of the deleted tree's type (`GROVE_V1` to `GROVE_V3`;
+/// `grovedb_merk::store::lignin::hash` says which hash it is).
+pub fn leaves_hashes(grove_version: &GroveVersion) -> bool {
+    let delete = &grove_version.grovedb_versions.operations.delete;
+    delete.delete_internal_on_transaction == 0
+}
+
+/// Merk's rules for a check of a grove whose run is on `grove_version`
+/// (`MerkHashRules::for_check`): each stored hash of the nodes of every
+/// Merk is made again and compared, but for the value hashes that those
+/// rules take as they are stored. On a grove version that can leave the
+/// value hash of [`leaves_hashes`] the rules name that hash, so that the
+/// checker counts it and makes no finding of it. On every other version
+/// they name none, and such a hash is a finding.
+fn rules_of(grove_version: &GroveVersion) -> MerkHashRules<'static> {
+    let rules = MerkHashRules::for_check(GroveVersion::latest());
+    match leaves_hashes(grove_version) {
+        true => rules.naming_left_hashes(),
+        false => rules,
+    }
+}
+
 /// Checks `db` with the engine's physical invariant checker as a reader
 /// sees it, beside the three threads of the database (`Db::verify`), with
-/// the stored hashes of the nodes of every Merk held to Merk's rules for
-/// a check (`MerkHashRules::for_check`): each is made again and compared,
-/// but for the value hashes that those rules take as they are stored.
-pub fn verify(db: &Grove) -> Result<(), String> {
-    let mut rules = MerkHashRules::for_check(GroveVersion::latest());
+/// the stored hashes held to Merk's rules for a check of a grove on
+/// `grove_version`. Returns how many value hashes the checker named as
+/// left by a delete, which is none where the version leaves none.
+pub fn verify(db: &Grove, grove_version: &GroveVersion) -> Result<u64, String> {
+    let mut rules = rules_of(grove_version);
     let report = db.engine().database().verify(Some(&mut rules));
     match report.is_sound() {
-        true => Ok(()),
+        true => Ok(report.other_hashes.count),
         false => Err(format!(
             "the checker of the engine, beside its threads: {report}"
         )),
@@ -290,18 +315,24 @@ pub fn verify(db: &Grove) -> Result<(), String> {
 /// Opens the database in `dir` with the engine alone, closes it, and has
 /// the physical invariant checker read the store that the close left
 /// (`Db::close_and_verify`): every rule of the layout, what a store keeps
-/// beside its pages, and the stored hashes by the same rules of Merk's.
-/// Returns the version the database is at.
-pub fn verify_closed(vfs: Arc<dyn Vfs>, dir: &Path, tuning: &Tuning) -> Result<u64, String> {
+/// beside its pages, and the stored hashes by the same rules of Merk's as
+/// [`verify`]. Returns the version the database is at, and how many value
+/// hashes the checker named as left by a delete.
+pub fn verify_closed(
+    vfs: Arc<dyn Vfs>,
+    dir: &Path,
+    tuning: &Tuning,
+    grove_version: &GroveVersion,
+) -> Result<(u64, u64), String> {
     let db = Db::open(dir, &tuning.options(vfs, false))
         .map_err(|error| format!("the database that was closed did not open again: {error}"))?;
     let version = db.version().get();
-    let mut rules = MerkHashRules::for_check(GroveVersion::latest());
+    let mut rules = rules_of(grove_version);
     let report = db
         .close_and_verify(Some(&mut rules))
         .map_err(|error| format!("the close: {error}"))?;
     match report.is_sound() {
-        true => Ok(version),
+        true => Ok((version, report.other_hashes.count)),
         false => Err(format!(
             "the checker of the engine, after a close: {report}"
         )),
@@ -383,7 +414,7 @@ mod tests {
         db.commit_transaction(block).unwrap().expect("committed");
         let (now, _) = read_committed(&db, version, &places).expect("read");
         assert_eq!(now.difference(&ahead), None);
-        verify(&db).expect("sound");
+        assert_eq!(verify(&db, version), Ok(0));
 
         // A checkpoint holds the version it was made at, and is a database
         // of its own.
@@ -404,15 +435,78 @@ mod tests {
         let (held, _) = read_committed(&copy, version, &places).expect("read");
         assert_eq!(held.difference(&now), None);
         drop(copy);
-        assert_eq!(verify_closed(vfs.clone(), &target, &at_rest), Ok(4));
-        assert_eq!(verify_closed(vfs.clone(), db_dir(), &at_rest), Ok(5));
+        let closed = |dir: &Path| verify_closed(vfs.clone(), dir, &at_rest, version);
+        assert_eq!(closed(&target), Ok((4, 0)));
+        assert_eq!(closed(db_dir()), Ok((5, 0)));
         delete_checkpoint(&*vfs, &target).expect("deleted");
         assert_eq!(
             open(vfs.clone(), &target, &at_rest, false).map(|_| ()),
             Err(NotOpened::NoDatabase)
         );
         assert!(delete_checkpoint(&*vfs, &target).is_err());
-        assert!(verify_closed(vfs, &target, &at_rest).is_err());
+        assert!(verify_closed(vfs, &target, &at_rest, version).is_err());
+    }
+
+    /// The delete of a tree that holds elements from a provable count
+    /// tree leaves that tree, on grove versions 1 to 3, with a value hash
+    /// that is not the one of the rules. The checks of a run on such a
+    /// version find the database sound and count the hash; the checks of a
+    /// run on a later version find it. On the later versions the delete
+    /// leaves no such hash, and the checks count none.
+    #[test]
+    fn the_hash_a_delete_left_is_counted_on_the_versions_that_leave_it() {
+        use grovedb::operations::delete::DeleteOptions;
+        use grovedb_version::version::GROVE_VERSIONS;
+
+        let newest = GroveVersion::latest();
+        let at_rest = Tuning::at_rest(PageSize::MIN);
+        for (number, version) in GROVE_VERSIONS.iter().enumerate() {
+            let number = number + 1;
+            let vfs = fs();
+            let db = open(vfs.clone(), db_dir(), &at_rest, true).expect("made");
+            let ok = "a write of the grove";
+            let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+                let inserted = db.insert(at, key, element, None, None, version);
+                inserted.unwrap().expect(ok);
+            };
+            let root: &[&[u8]] = &[];
+            insert(root, b"parent", Element::empty_provable_count_tree());
+            insert(&[b"parent"], b"beside", Element::new_item(vec![1]));
+            insert(&[b"parent"], b"child", Element::empty_tree());
+            insert(&[b"parent", b"child"], b"leaf", Element::new_item(vec![2]));
+            let with_what_it_holds = DeleteOptions {
+                allow_deleting_non_empty_trees: true,
+                deleting_non_empty_trees_returns_error: false,
+                ..Default::default()
+            };
+            let deleted = db.delete(
+                &[b"parent"],
+                b"child",
+                Some(with_what_it_holds),
+                None,
+                version,
+            );
+            deleted.unwrap().expect(ok);
+            db.flush().expect("flushed");
+
+            let leaves = number <= 3;
+            assert_eq!(leaves_hashes(version), leaves, "grove version {number}");
+            let left = u64::from(leaves);
+            assert_eq!(verify(&db, version), Ok(left), "grove version {number}");
+            // The rules of a version that leaves none take it for what it
+            // is there: a hash that differs.
+            let strict = verify(&db, newest);
+            assert_eq!(strict.is_err(), leaves, "grove version {number}");
+            if let Err(said) = &strict {
+                assert!(said.contains("a value hash is the hash of its value"));
+            }
+            let at = version_of(&db);
+            drop(db);
+            let closed = verify_closed(vfs.clone(), db_dir(), &at_rest, version);
+            assert_eq!(closed, Ok((at, left)), "grove version {number}");
+            let strict = verify_closed(vfs, db_dir(), &at_rest, newest);
+            assert_eq!(strict.is_err(), leaves, "grove version {number}");
+        }
     }
 
     #[test]

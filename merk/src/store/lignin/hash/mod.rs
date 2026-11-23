@@ -123,6 +123,43 @@
 //! does not make those hashes, so an evaluation with it would leave a stale
 //! value hash in its cell and take the mark off.
 //!
+//! **The value hash that a delete on `GROVE_V1` to `GROVE_V3` left.** On
+//! those versions the delete of a tree that holds elements opens the Merk
+//! the tree is in again as a tree of the deleted tree's type
+//! (`delete_internal_on_transaction` v0, GroveDB #686, frozen for the
+//! chains built with it), and `Merk::root_hash` goes by the type a Merk
+//! was opened with. Where the nodes of that Merk have a feature whose node
+//! hash takes the aggregate, the deleted tree's type is one whose node
+//! hash takes none, and the Merk keeps a node, the root hash that goes up
+//! is `node_hash` of the root with no aggregate in it, and the element of
+//! the Merk is put with `combine_hash(value_hash(value), that hash)`. No
+//! other hash is touched: `TreeNode::commit` hashes every link by the
+//! feature of its child. The stored hash is RocksDB's,
+//! `GroveDb::verify_grovedb` reports its path, and an insert below the
+//! element puts the hash the rules make.
+//!
+//! [`MerkHashRules::for_check`] reports that value hash as any that
+//! differs. [`MerkHashRules::naming_left_hashes`] makes rules that name
+//! it, for whoever checks a grove that such a version may have written:
+//! [`HashRules::other_node_hash`] answers, for a node whose hash takes its
+//! aggregate, the hash of the same node with no aggregate, and
+//! [`HashRules::value_hash_with_other`] the combined hash of a tree
+//! element whose value hash is made from one Merk, with that hash for the
+//! root. So [`lignin_tree::hash::made_with_other`] says of a stored value
+//! hash that differs whether it is this one, from what is stored, and a
+//! cell does not say under which GroveVersion it was written. The hash
+//! with no aggregate is made from the root's key-value hash and the
+//! hashes of its children. So a hash that a write left behind the root of
+//! its Merk, made from a root the Merk had before, with its aggregate or
+//! without, is neither the hash of the rules nor this one where that root
+//! had another key-value hash or another hash of a child than the root
+//! has now. A root that differs from it in its own aggregate alone has
+//! the same hash with no aggregate, and a host that was left behind such
+//! a root with that hash is named: nothing that is stored tells the two
+//! apart. An indexed tree,
+//! a tree whose data is no Merk, a tree with no root and a tree whose
+//! nodes have no aggregate in their hashes have no such hash.
+//!
 //! # What Merk holds when it writes a node
 //!
 //! A write states for each stored hash whether its writer made it
@@ -329,11 +366,7 @@ fn bare_node(
 /// parent stores, as `TreeNode::commit` makes it.
 fn hash_of(node: &TreeNode, cost: &mut OperationCost) -> Result<CryptoHash, Error> {
     use AggregateData::*;
-    let (kv, left, right) = (
-        node.kv_hash(),
-        node.child_hash(true),
-        node.child_hash(false),
-    );
+    let (kv, left, right) = hashed(node);
     let hash = match node.aggregate_data()? {
         ProvableCount(count) | ProvableCountAndSum(count, _) => {
             node_hash_with_count(kv, left, right, count)
@@ -353,6 +386,37 @@ fn hash_of(node: &TreeNode, cost: &mut OperationCost) -> Result<CryptoHash, Erro
     Ok(hash.unwrap_add_cost(cost))
 }
 
+/// What the hash of `node` is made from, beside its aggregate.
+fn hashed(node: &TreeNode) -> (&CryptoHash, &CryptoHash, &CryptoHash) {
+    (
+        node.kv_hash(),
+        node.child_hash(true),
+        node.child_hash(false),
+    )
+}
+
+/// The hash of `node` with no aggregate in it, where [`hash_of`] takes the
+/// aggregate: what `Merk::root_hash` answers for a root with such a
+/// feature in a Merk that was opened as a tree whose hashes take none.
+fn hash_with_no_aggregate(
+    node: &TreeNode,
+    cost: &mut OperationCost,
+) -> Result<Option<CryptoHash>, Error> {
+    use AggregateData::*;
+    let (kv, left, right) = hashed(node);
+    Ok(match node.aggregate_data()? {
+        ProvableCount(_)
+        | ProvableCountAndSum(..)
+        | ProvableSum(_)
+        | ProvableCountAndProvableSum(..)
+        | ProvableCountAndProvableBigSum(..)
+        | ProvableBigSum(_) => Some(node_hash(kv, left, right).unwrap_add_cost(cost)),
+        NoAggregateData | Sum(_) | BigSum(_) | Count(_) | CountAndSum(..) | CountAndBigSum(..) => {
+            None
+        }
+    })
+}
+
 /// Merk's hash rules, for the hashes the tree layer makes.
 ///
 /// It keeps the cost of the hashes it made, as Merk's hash functions count
@@ -364,6 +428,9 @@ pub struct MerkHashRules<'v> {
     /// Whether a value hash that only its writer can make is answered with
     /// the stored one.
     for_check: bool,
+    /// Whether the rules name the value hash that a delete on `GROVE_V1`
+    /// to `GROVE_V3` left.
+    names_left: bool,
     cost: OperationCost,
 }
 
@@ -375,6 +442,7 @@ impl<'v> MerkHashRules<'v> {
         Self {
             grove_version,
             for_check: false,
+            names_left: false,
             cost: OperationCost::default(),
         }
     }
@@ -388,6 +456,22 @@ impl<'v> MerkHashRules<'v> {
         Self {
             for_check: true,
             ..Self::new(grove_version)
+        }
+    }
+
+    /// These rules, naming the value hash that the delete of a tree with
+    /// elements left for the tree it was in on `GROVE_V1` to `GROVE_V3`
+    /// ([`HashRules::other_node_hash`],
+    /// [`HashRules::value_hash_with_other`]; the module documentation says
+    /// which hash that is). Without it the rules name none, and a check
+    /// reports that hash as any that differs.
+    ///
+    /// It changes no hash the rules make.
+    #[must_use]
+    pub fn naming_left_hashes(self) -> Self {
+        Self {
+            names_left: true,
+            ..self
         }
     }
 
@@ -502,8 +586,8 @@ impl<'v> MerkHashRules<'v> {
             .map_err(|error| HashRefusal::NotAnElement(error.to_string()))
     }
 
-    /// The hash of the node a cell holds.
-    fn cell_hash(&mut self, node: NodeRef<'_>) -> Result<CryptoHash, Error> {
+    /// The node a cell holds, with what its hash is made from.
+    fn cell_node(node: NodeRef<'_>) -> Result<TreeNode, Error> {
         let feature = decode_feature(node.feature())?;
         let mut links = [None, None];
         for (side, link) in Side::BOTH.into_iter().zip(&mut links) {
@@ -511,7 +595,12 @@ impl<'v> MerkHashRules<'v> {
                 *link = Some((*stored.hash, decode_aggregate(stored.aggregate)?));
             }
         }
-        hash_of(&bare_node(feature, *node.kv_hash(), links), &mut self.cost)
+        Ok(bare_node(feature, *node.kv_hash(), links))
+    }
+
+    /// The hash of the node a cell holds.
+    fn cell_hash(&mut self, node: NodeRef<'_>) -> Result<CryptoHash, Error> {
+        hash_of(&Self::cell_node(node)?, &mut self.cost)
     }
 }
 
@@ -543,6 +632,35 @@ impl HashRules for MerkHashRules<'_> {
         Ok(self
             .cell_hash(node)
             .map_err(|error| HashRefusal::Node(error.to_string()))?)
+    }
+
+    fn other_node_hash(&mut self, node: NodeRef<'_>) -> Result<Option<Hash>, Refusal> {
+        if !self.names_left {
+            return Ok(None);
+        }
+        let other = Self::cell_node(node)
+            .and_then(|node| hash_with_no_aggregate(&node, &mut self.cost))
+            .map_err(|error| HashRefusal::Node(error.to_string()))?;
+        Ok(other)
+    }
+
+    fn value_hash_with_other(
+        &mut self,
+        _: NodeRef<'_>,
+        value: &[u8],
+        hosted: &[Option<Hash>],
+    ) -> Result<Option<Hash>, Refusal> {
+        let one_merk = matches!(
+            ValueHash::of(value),
+            Ok(ValueHash::Tree | ValueHash::TreeInsertedPlain)
+        );
+        let (true, true, [Some(root)]) = (self.names_left, one_merk, hosted) else {
+            return Ok(None);
+        };
+        let own = value_hash(value).unwrap_add_cost(&mut self.cost);
+        Ok(Some(
+            combine_hash(&own, root).unwrap_add_cost(&mut self.cost),
+        ))
     }
 }
 

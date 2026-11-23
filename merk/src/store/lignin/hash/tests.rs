@@ -1684,3 +1684,395 @@ fn the_check_of_a_dropped_store_recomputes_the_hashes_of_its_merks() {
         }
     }
 }
+
+/// The tree types whose node hash takes the node's aggregate.
+fn hashes_its_aggregate(tree_type: TreeType) -> bool {
+    use TreeType::*;
+    matches!(
+        tree_type,
+        ProvableCountTree
+            | ProvableCountSumTree
+            | ProvableSumTree
+            | ProvableBigSumTree
+            | ProvableCountProvableSumTree
+            | ProvableCountProvableBigSumTree
+            | ProvableSumIndexedTree
+            | ProvableBigSumIndexedTree
+            | ProvableCountIndexedTree
+            | ProvableCountProvableSumIndexedTree
+            | ProvableCountProvableBigSumIndexedTree
+    )
+}
+
+#[test]
+fn the_hash_of_a_root_with_no_aggregate_is_named_for_the_nodes_whose_hash_takes_one() {
+    let mut named = 0;
+    for tree_type in TREE_TYPES {
+        let node = hashed(modified(0..5, tree_type).unwrap());
+        // What `Merk::root_hash` answers for this root in a Merk that was
+        // opened as a tree whose hashes take no aggregate.
+        let labelled_plain = node.hash_for_link(TreeType::NormalTree).unwrap();
+        let rules_hash = with_cell(&node, &[], |cell| {
+            MerkHashRules::for_check(version()).node_hash(cell).unwrap()
+        });
+        assert_eq!(rules_hash, node.hash_for_link(tree_type).unwrap());
+
+        // The rules of a check name no other hash unless they are asked
+        // to, and neither do the rules of an evaluation.
+        for mut silent in [
+            MerkHashRules::for_check(version()),
+            MerkHashRules::new(version()),
+        ] {
+            let other = with_cell(&node, &[], |cell| silent.other_node_hash(cell));
+            assert_eq!(other.unwrap(), None, "{tree_type:?}");
+        }
+        let mut naming = MerkHashRules::for_check(version()).naming_left_hashes();
+        let other = with_cell(&node, &[], |cell| naming.other_node_hash(cell)).unwrap();
+        match hashes_its_aggregate(tree_type) {
+            true => {
+                assert_eq!(other, Some(labelled_plain), "{tree_type:?}");
+                assert_ne!(labelled_plain, rules_hash, "{tree_type:?}");
+                named += 1;
+            }
+            false => {
+                assert_eq!(other, None, "{tree_type:?}");
+                assert_eq!(labelled_plain, rules_hash, "{tree_type:?}");
+            }
+        }
+        // Naming changes no hash the rules make.
+        let made = with_cell(&node, &[], |cell| naming.node_hash(cell).unwrap());
+        assert_eq!(made, rules_hash);
+    }
+    assert_eq!(named, 11);
+}
+
+#[test]
+fn the_value_hash_a_delete_left_is_named_for_a_tree_of_one_merk_with_a_root() {
+    let root = [0x3c; 32];
+    let wrapped = |element: Element| Element::new_non_counted(element).unwrap();
+    let of_one_merk = [
+        Element::empty_tree(),
+        Element::empty_sum_tree(),
+        Element::empty_big_sum_tree(),
+        Element::empty_count_tree(),
+        Element::empty_count_sum_tree(),
+        Element::empty_count_big_sum_tree(),
+        Element::empty_provable_count_tree(),
+        Element::empty_provable_count_sum_tree(),
+        Element::empty_provable_sum_tree(),
+        Element::empty_provable_big_sum_tree(),
+        Element::empty_provable_count_provable_sum_tree(),
+        Element::empty_provable_count_provable_big_sum_tree(),
+        wrapped(Element::empty_provable_count_tree()),
+    ];
+    let others = [
+        Element::new_item(vec![1, 2, 3]),
+        Element::new_sum_item(7),
+        Element::new_reference(path()),
+        Element::empty_mmr_tree(),
+        Element::empty_bulk_append_tree(5).unwrap(),
+        Element::empty_provable_count_indexed_tree(),
+        Element::empty_provable_sum_indexed_tree(),
+        Element::empty_provable_big_sum_indexed_tree(),
+    ];
+    let with_other =
+        |rules: &mut MerkHashRules<'_>, value: &[u8], hosted: &[Option<CryptoHash>]| {
+            let answered = with_leaf(b"key", value, [1; 32], |cell| {
+                rules.value_hash_with_other(cell, value, hosted)
+            });
+            answered.expect("the rules answer")
+        };
+    let naming = || MerkHashRules::for_check(version()).naming_left_hashes();
+    for element in &of_one_merk {
+        let value = bytes(element);
+        let combined = combine_hash(&value_hash(&value).unwrap(), &root).unwrap();
+        assert_eq!(
+            with_other(&mut naming(), &value, &[Some(root)]),
+            Some(combined),
+            "{element:?}"
+        );
+        // It is the hash the rule makes of that root, so the rule and
+        // this differ by the root's hash alone.
+        assert_eq!(made(&value, &[Some(root)]), Ok(combined));
+        // A tree with no root, a cell that hosts none and one that hosts
+        // two have no such hash.
+        let none: [&[Option<CryptoHash>]; 4] =
+            [&[], &[None], &[Some(root), None], &[Some(root), Some(root)]];
+        for hosted in none {
+            assert_eq!(with_other(&mut naming(), &value, hosted), None);
+        }
+        // Rules that were not asked to name it do not.
+        let mut silent = MerkHashRules::for_check(version());
+        assert_eq!(with_other(&mut silent, &value, &[Some(root)]), None);
+    }
+    for element in &others {
+        let value = bytes(element);
+        for hosted in [&[][..], &[Some(root)][..], &[Some(root), Some(root)][..]] {
+            assert_eq!(
+                with_other(&mut naming(), &value, hosted),
+                None,
+                "{element:?}"
+            );
+        }
+    }
+    // Bytes that are no element have none.
+    assert_eq!(with_other(&mut naming(), &[0xff, 1], &[Some(root)]), None);
+}
+
+/// The value hash that the host of the lower Merk of [`provable_grove`]
+/// is given.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Host {
+    /// The hash the rules make.
+    Rule,
+    /// The hash with the root of the Merk hashed with no aggregate: what
+    /// the delete of a tree with elements left on `GROVE_V1` to
+    /// `GROVE_V3`.
+    Left,
+    /// The hash the rules made of the root the Merk had before its last
+    /// write: what a write that does not reach the host leaves.
+    Behind,
+    /// The hash with the root the Merk had before its last write hashed
+    /// with no aggregate.
+    LeftBehind,
+    /// The hash with one link of the root changed, and no aggregate.
+    LeftOfAnotherLink,
+    /// The hash with no aggregate over other bytes than the element's.
+    LeftOfOtherBytes,
+    /// A hash that nothing makes.
+    Wrong,
+}
+
+/// Commits a grove of two Merks: five items, a reference and a provable
+/// count tree, and the Merk of that tree with five items, whose node
+/// hashes take their counts. The tree's element has the value hash that
+/// `host` names.
+fn provable_grove(host: Host) -> Lignin {
+    let lignin = Lignin::new();
+    {
+        let write_path = lignin.path();
+        let transaction = write_path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let staged = LigninBatch::new();
+        let basic = TreeFeatureType::BasicMerkNode;
+        let counted = TreeFeatureType::ProvableCountedMerkNode(1);
+        let puts = |keys: std::ops::Range<u64>, feature| -> Vec<(Vec<u8>, Op)> {
+            keys.map(|n| (key(n), Op::Put(item(n), feature))).collect()
+        };
+
+        let below = LigninSubtree {
+            prefix: BELOW,
+            host: Some(LigninHost {
+                subtree: SUBTREE,
+                key: key(5),
+                hosted: vec![BELOW],
+            }),
+        };
+        let provable = TreeType::ProvableCountTree;
+        let lower = LigninNodeStore::deferred(&writer, below, Some(&staged));
+        lower.enter(provable).unwrap();
+        let lower = Merk::open_layered_with_root_key(lower, None, provable, NO_COST, version());
+        let mut lower = lower.unwrap().expect("the Merk opens");
+        // The root hash as the rules make it, and as a Merk answers it
+        // that was opened as a tree whose hashes take no aggregate.
+        fn both<'db, S: NodeStore<'db>>(lower: &mut Merk<S>) -> (CryptoHash, CryptoHash) {
+            let own = lower.tree_type;
+            let rule = lower.root_hash().unwrap();
+            lower.tree_type = TreeType::NormalTree;
+            let left = lower.root_hash().unwrap();
+            lower.tree_type = own;
+            assert_ne!(rule, left);
+            (rule, left)
+        }
+        let applied = lower.apply::<_, Vec<u8>>(&puts(0..4, counted), &[], None, version());
+        applied.unwrap().expect("the batch applies");
+        let before = both(&mut lower);
+        let applied = lower.apply::<_, Vec<u8>>(&puts(4..5, counted), &[], None, version());
+        applied.unwrap().expect("the batch applies");
+        let now = both(&mut lower);
+        assert_ne!(before, now);
+        let another_link = lower.use_tree(|tree| {
+            let tree = tree.expect("a root");
+            crate::tree::node_hash(tree.kv_hash(), &WRONG, tree.child_hash(false)).unwrap()
+        });
+        let tree = bytes(&Element::new_provable_count_tree(lower.root_key()));
+        drop(lower);
+
+        let upper = LigninSubtree::alone(SUBTREE);
+        let upper = LigninNodeStore::deferred(&writer, upper, Some(&staged));
+        let upper = Merk::open_base(upper, TreeType::NormalTree, NO_COST, version());
+        let mut upper = upper.unwrap().expect("the Merk opens");
+        let mut batch = puts(0..7, basic);
+        let reference = bytes(&Element::new_reference(path()));
+        batch[1].1 = Op::PutCombinedReference(reference, WRONG, basic);
+        let own = value_hash(&tree).unwrap();
+        let other_bytes = bytes(&Element::new_provable_count_tree(Some(key(9))));
+        let combined = |own: &CryptoHash, root: &CryptoHash| combine_hash(own, root).unwrap();
+        let stated = match host {
+            Host::Rule => combined(&own, &now.0),
+            Host::Left => combined(&own, &now.1),
+            Host::Behind => combined(&own, &before.0),
+            Host::LeftBehind => combined(&own, &before.1),
+            Host::LeftOfAnotherLink => combined(&own, &another_link),
+            Host::LeftOfOtherBytes => combined(&value_hash(&other_bytes).unwrap(), &now.1),
+            Host::Wrong => WRONG,
+        };
+        batch[5].1 = Op::PutWithProvidedValueHash(tree, stated, None, basic);
+        let applied = upper.apply::<_, Vec<u8>>(&batch, &[], None, version());
+        applied.unwrap().expect("the batch applies");
+        drop(upper);
+        staged
+            .apply(&writer)
+            .unwrap()
+            .expect("the batch is applied");
+        writer.into_scope().merge();
+        assert_eq!(lignin.commit(&transaction, &mut NoStaleHashes), 0);
+    }
+    lignin
+}
+
+#[test]
+fn the_value_hash_a_delete_left_is_counted_apart_and_a_hash_left_behind_is_found() {
+    use lignindb::verify::OtherHash;
+
+    let strict = || MerkHashRules::for_check(version());
+    let naming = || MerkHashRules::for_check(version()).naming_left_hashes();
+    let found = |report: &Report| -> Vec<_> {
+        let found = |finding: &Finding| (finding.rule, finding.place);
+        report.findings.iter().map(found).collect()
+    };
+    let hosts = [
+        Host::Rule,
+        Host::Left,
+        Host::Behind,
+        Host::LeftBehind,
+        Host::LeftOfAnotherLink,
+        Host::LeftOfOtherBytes,
+        Host::Wrong,
+    ];
+    for host in hosts {
+        let lignin = provable_grove(host);
+        let cell = cell_of(&lignin, &key(5));
+        let finding = vec![(Rule::Hash(HashField::Value), Place::Cell(cell))];
+        let left = vec![OtherHash {
+            cell,
+            subtree: Some(SUBTREE),
+            key: key(5),
+        }];
+
+        // The rules that name no other hash find every hash but the
+        // rules' own, the one a delete left among them.
+        let report = lignin.db.verify(Some(&mut strict()));
+        match host {
+            Host::Rule => assert!(report.is_sound(), "{host:?}: {report}"),
+            _ => assert_eq!(found(&report), finding, "{host:?}: {report}"),
+        }
+        assert!(report.other_hashes.is_empty(), "{host:?}");
+        assert_eq!(report.census.hashed_cells, 12);
+
+        // The rules that name it count that one apart, and find every
+        // other: the hash of a root the Merk had before, with or without
+        // its aggregate, among them.
+        let check = |report: &Report| match host {
+            Host::Rule => {
+                assert!(report.is_sound(), "{host:?}: {report}");
+                assert!(report.other_hashes.is_empty(), "{host:?}");
+            }
+            Host::Left => {
+                assert!(report.is_sound(), "{host:?}: {report}");
+                assert_eq!(report.other_hashes.count, 1, "{host:?}");
+                assert_eq!(report.other_hashes.first, left, "{host:?}");
+                let text = report.to_string();
+                assert!(text.starts_with("sound: every rule holds\n"), "{text}");
+                let told = format!(
+                    "value hashes that are not the ones the rules make, and that the rules name \
+                     as made with another hash of a hosted root: 1\n  cell {cell}, key \
+                     0000000000000005\n"
+                );
+                assert!(text.contains(&told), "{text}");
+            }
+            _ => {
+                assert_eq!(found(report), finding, "{host:?}: {report}");
+                assert!(report.other_hashes.is_empty(), "{host:?}");
+                assert!(!report.to_string().contains("another hash"), "{host:?}");
+            }
+        };
+        check(&lignin.db.verify(Some(&mut naming())));
+        let closed = lignin.db.close_and_verify(Some(&mut naming()));
+        check(&closed.expect("the database is closed"));
+
+        // The close of a debug build goes by the rules it was given: with
+        // those that name the hash a delete left it takes that hash, and
+        // with those that name none it fails on it. It fails on every
+        // other hash with both.
+        if cfg!(debug_assertions) {
+            for names in [true, false] {
+                let lignin = provable_grove(host);
+                if names {
+                    lignin.db.check_hashes_by(Box::new(naming()));
+                }
+                let dropped = catch_unwind(AssertUnwindSafe(move || drop(lignin)));
+                let passes = host == Host::Rule || (host == Host::Left && names);
+                match dropped {
+                    Ok(()) => assert!(passes, "{host:?}, {names}"),
+                    Err(failure) => {
+                        assert!(!passes, "{host:?}, {names}");
+                        let failure = failure.downcast_ref::<String>().expect("a message");
+                        let rule = Rule::Hash(HashField::Value).text();
+                        assert!(failure.contains(rule), "{host:?}: {failure}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_key_value_hash_that_does_not_follow_the_hash_a_delete_left_is_found() {
+    let lignin = provable_grove(Host::Left);
+    let host = key(5);
+    {
+        let write_path = lignin.path();
+        let transaction = write_path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let store = store(&writer);
+        let node = store.get_node(&host, NO_COST, version()).unwrap();
+        let node = node.unwrap().expect("the host is stored");
+        let kv = KV::from_fields(
+            host.clone(),
+            node.value_as_slice().to_vec(),
+            WRONG,
+            *node.value_hash(),
+            TreeFeatureType::BasicMerkNode,
+        );
+        let wrong = TreeNode::new_with_tree_inner(TreeNodeInner {
+            marks: Default::default(),
+            left: node.link(true).cloned(),
+            right: node.link(false).cloned(),
+            kv,
+        });
+        let written = store.write_node(&wrong, NodeChange::HashOnly);
+        written.unwrap().expect("the node is written");
+        writer.into_scope().merge();
+        assert_eq!(lignin.commit(&transaction, &mut NoStaleHashes), 0);
+    }
+    let cell = cell_of(&lignin, &host);
+    let mut rules = MerkHashRules::for_check(version()).naming_left_hashes();
+    let report = lignin.db.close_and_verify(Some(&mut rules));
+    let report = report.expect("the database is closed");
+    // The value hash is counted apart. The key-value hash is found where
+    // it is stored, and so is the hash of the node above, which was made
+    // of the key-value hash before.
+    assert_eq!(report.other_hashes.count, 1, "{report}");
+    let found: Vec<_> = (report.findings.iter())
+        .map(|finding| (finding.rule, finding.place))
+        .collect();
+    let kv = (Rule::Hash(HashField::KeyValue), Place::Cell(cell));
+    assert!(found.contains(&kv), "{report}");
+    assert!(
+        found
+            .iter()
+            .all(|(rule, _)| !matches!(rule, Rule::Hash(HashField::Value))),
+        "{report}"
+    );
+}

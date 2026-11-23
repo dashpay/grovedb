@@ -9,6 +9,17 @@
 //! It prints the report and exits with 0 for a sound store and 3 for one
 //! in which a rule does not hold.
 //!
+//! **The value hash that a delete on grove versions 1 to 3 left.** On
+//! those versions the delete of a tree that holds elements can leave the
+//! tree it was in with a value hash that is not the one the rules make
+//! (GroveDB #686; `grovedb_merk::store::lignin::hash` says which hash it
+//! is). RocksDB holds that hash after such a delete, and
+//! `GroveDb::verify_grovedb` reports its path on either engine. `verify`
+//! does not call a store unsound for it: it checks with the rules that
+//! name it (`MerkHashRules::naming_left_hashes`), says after the report
+//! how many there are and in which cells, and the status is the one the
+//! rest of the check gives.
+//!
 //! **Where it runs.** By default the database is opened and closed, and
 //! the store is checked after the close
 //! ([`Db::close_and_verify`](lignindb::Db::close_and_verify)): still, with
@@ -104,7 +115,31 @@ fn beside_background(db: &Db, hashes: bool) -> Result<Verdict, ToolError> {
 }
 
 fn rules(hashes: bool) -> Option<MerkHashRules<'static>> {
-    hashes.then(|| MerkHashRules::for_check(GroveVersion::latest()))
+    hashes.then(|| MerkHashRules::for_check(GroveVersion::latest()).naming_left_hashes())
+}
+
+/// What `verify` says of the value hashes that a delete on grove versions
+/// 1 to 3 left, if the check came to any.
+fn left_hashes(report: &Report) -> Option<String> {
+    let left = &report.other_hashes;
+    let said = match left.count {
+        0 => return None,
+        1 => "1 value hash of a tree is the one grove versions 1 to 3 left after a delete below \
+              it (GroveDB #686), not the one the rules make"
+            .to_owned(),
+        count => format!(
+            "{count} value hashes of trees are the ones grove versions 1 to 3 left after a \
+             delete below them (GroveDB #686), not the ones the rules make"
+        ),
+    };
+    let cells: Vec<String> = (left.first.iter())
+        .map(|hash| format!("cell {}", hash.cell))
+        .collect();
+    let more = match left.count - left.first.len() as u64 {
+        0 => String::new(),
+        more => format!(" and {more} more"),
+    };
+    Some(format!("{said}: {}{more}", cells.join(", ")))
 }
 
 /// Checks the database in `common.dir` and writes the report to `out`.
@@ -150,5 +185,8 @@ pub fn run(
     };
     writeln!(out, "checked {scope}, {hashed}")?;
     write!(out, "{}", verdict.report)?;
+    if let Some(left) = left_hashes(&verdict.report) {
+        write!(out, "\n{left}")?;
+    }
     Ok(verdict.outcome())
 }

@@ -1,15 +1,32 @@
 //! The subcommands that look at a database.
 
-use std::fs;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
+use grovedb_element::Element;
+use grovedb_merk::{
+    store::lignin::tree_type_bytes,
+    tree::{
+        combine_hash, kv_digest_to_kv_hash, node_hash, node_hash_with_count, value_hash, NULL_HASH,
+    },
+    TreeType,
+};
+use grovedb_version::version::GroveVersion;
+use lignin_format::tree_page::Hash;
 use lignin_store::cleaner::CleanerConfig;
+use lignin_tree::hash::Stale;
 use lignindb::{
     commit::NoStaleHashes,
-    txn::{Batch, Column, RecordWrite},
+    txn::{
+        Batch, Column, HostPut, Hosted, MerkWrite, NodePut, RecordWrite, RootPut, Subtree,
+        SubtreeWrite, ValuePut,
+    },
     Db, Options,
 };
 
-use super::{contains, fixture, ran, run, small, temp, DOCS, FLAT, LONG_BYTE};
+use super::{contains, fixture, ran, run, small, temp, DOCS, FEATURE, FLAT, LONG_BYTE, TREE};
 use crate::{hex, verify::ROOT, Outcome, ToolError};
 
 #[test]
@@ -408,4 +425,210 @@ fn compact_moves_what_is_live_and_leaves_a_sound_store() {
     ));
     let error = result.expect_err("too long");
     assert!(matches!(error, ToolError::Usage(_)), "{error:?}");
+}
+
+/// The Merk of one node that the provable count tree of
+/// [`counted_grove`] hosts.
+const COUNTED: Subtree = Subtree::new([5; 32]);
+
+/// How [`counted_grove`] makes the value hash of its provable count tree.
+#[derive(Clone, Copy, PartialEq)]
+enum HostHash {
+    /// As Merk's rules do: with the root's hash, which takes its count.
+    OfTheRules,
+    /// With the root's hash made with no count: what the delete of a tree
+    /// with elements left on grove versions 1 to 3.
+    Left,
+}
+
+/// The one node of [`COUNTED`] with the item `value`: its change set, and
+/// the hash of the node with its count and without.
+fn counted_node(value: &[u8], write: impl FnOnce(MerkWrite<'_>)) -> (Hash, Hash) {
+    // A provable counted node that counts one (`tree-page.md` TP12).
+    let mut feature = vec![5];
+    feature.extend(1u64.to_le_bytes());
+    let value = Element::new_item(value.to_vec())
+        .serialize(GroveVersion::latest())
+        .expect("serialized");
+    let own = value_hash(&value).unwrap();
+    let kv_hash = kv_digest_to_kv_hash(b"k", &own).unwrap();
+    let nodes = [NodePut {
+        key: b"k",
+        feature: &feature,
+        value_hash: &own,
+        kv_hash: &kv_hash,
+        left: None,
+        right: None,
+        hosted: Hosted::Set(&[]),
+        value: ValuePut::Value(&value),
+        stale: Stale::NONE,
+        at: None,
+    }];
+    write(MerkWrite {
+        subtree: COUNTED,
+        nodes: &nodes,
+        removed: &[],
+        root: RootPut::Set(Some(b"k")),
+        anchored: true,
+        whole: false,
+    });
+    (
+        node_hash_with_count(&kv_hash, &NULL_HASH, &NULL_HASH, 1).unwrap(),
+        node_hash(&kv_hash, &NULL_HASH, &NULL_HASH).unwrap(),
+    )
+}
+
+/// A database in `dir` whose root Merk holds one element, a provable
+/// count tree, with the Merk of one counted item that the tree hosts.
+/// Closed, with no check at the close: `verify` makes the check.
+fn counted_grove(dir: &Path, host: HostHash) -> PathBuf {
+    let path = dir.join("db");
+    let db = Db::open(&path, &small()).expect("a new database");
+    let (with_count, with_no_count) = counted_node(b"first", |_| ());
+    let tree = Element::new_provable_count_tree(Some(b"k".to_vec()))
+        .serialize(GroveVersion::latest())
+        .expect("serialized");
+    let root = match host {
+        HostHash::OfTheRules => with_count,
+        HostHash::Left => with_no_count,
+    };
+    let host_hash = combine_hash(&value_hash(&tree).unwrap(), &root).unwrap();
+    let kv_hash = kv_digest_to_kv_hash(b"p", &host_hash).unwrap();
+    let hosted = [COUNTED];
+    let host_nodes = [NodePut {
+        key: b"p",
+        feature: FEATURE,
+        value_hash: &host_hash,
+        kv_hash: &kv_hash,
+        left: None,
+        right: None,
+        hosted: Hosted::Set(&hosted),
+        value: ValuePut::Value(&tree),
+        stale: Stale::NONE,
+        at: None,
+    }];
+    let tree_type = tree_type_bytes(TreeType::ProvableCountTree);
+    let enters = [
+        SubtreeWrite::Enter {
+            subtree: ROOT,
+            tree_type: TREE,
+            host: None,
+        },
+        SubtreeWrite::Enter {
+            subtree: COUNTED,
+            tree_type: &tree_type,
+            host: Some(HostPut {
+                subtree: ROOT,
+                key: b"p",
+                position: 0,
+            }),
+        },
+    ];
+    counted_node(b"first", |counted| {
+        let merks = [
+            MerkWrite {
+                subtree: ROOT,
+                nodes: &host_nodes,
+                removed: &[],
+                root: RootPut::Set(Some(b"p")),
+                anchored: false,
+                whole: false,
+            },
+            MerkWrite {
+                anchored: false,
+                ..counted
+            },
+        ];
+        let batch = Batch {
+            records: &[],
+            merks: &merks,
+            subtrees: &enters,
+        };
+        db.write(&batch, &mut NoStaleHashes)
+            .expect("the grove is written");
+    });
+    db.unchecked_at_close();
+    db.close().expect("a close");
+    path
+}
+
+/// The line `verify` adds for the value hash that a delete on grove
+/// versions 1 to 3 left, up to the cell.
+const LEFT_LINE: &str = "1 value hash of a tree is the one grove versions 1 to 3 left after a \
+                         delete below it (GroveDB #686), not the one the rules make: cell ";
+
+/// A database that holds the value hash which the delete of a tree with
+/// elements left on grove versions 1 to 3 is no damaged store: `verify`
+/// finds it sound, says how many such hashes there are and in which
+/// cells, and ends with the status of a sound store. A write below the
+/// tree that leaves the hash of its host behind is found, whichever hash
+/// the host had.
+#[test]
+fn verify_tells_the_hash_a_delete_left_from_a_hash_that_was_left_behind() {
+    for host in [HostHash::OfTheRules, HostHash::Left] {
+        let dir = temp();
+        let path = counted_grove(dir.path(), host);
+        let shown = path.display();
+        for flags in ["", " --beside-background"] {
+            let report = ran(&format!("verify {shown}{flags}"), Outcome::Done);
+            contains(
+                &report,
+                &["every hash made again", "sound: every rule holds"],
+            );
+            assert!(!report.contains("NOT SOUND"), "{report}");
+            assert!(!report.to_lowercase().contains("damage"), "{report}");
+            match host {
+                HostHash::OfTheRules => {
+                    assert!(!report.contains("grove versions 1 to 3"), "{report}");
+                    assert!(!report.contains("another hash"), "{report}");
+                }
+                HostHash::Left => {
+                    let line = report.lines().last().expect("a last line");
+                    let cell = line.strip_prefix(LEFT_LINE);
+                    let cell = cell.unwrap_or_else(|| panic!("{report}"));
+                    // The cell is the one the report names, by its key.
+                    contains(
+                        &report,
+                        &[
+                            "as made with another hash of a hosted root: 1\n",
+                            &format!("  cell {cell}, key 70\n"),
+                        ],
+                    );
+                }
+            }
+        }
+        // With no hash made again nothing is said of a hash.
+        let report = ran(&format!("verify {shown} --no-hashes"), Outcome::Done);
+        assert!(!report.contains("grove versions 1 to 3"), "{report}");
+
+        // The item below the tree is written again, and nothing above it:
+        // the value hash of the tree is behind the root of its Merk.
+        let db = Db::open(&path, &small()).expect("the database");
+        counted_node(b"second", |counted| {
+            let batch = Batch {
+                records: &[],
+                merks: &[counted],
+                subtrees: &[],
+            };
+            db.write(&batch, &mut NoStaleHashes)
+                .expect("the write is taken");
+        });
+        db.unchecked_at_close();
+        db.close().expect("a close");
+        for flags in ["", " --beside-background"] {
+            let report = ran(&format!("verify {shown}{flags}"), Outcome::NotSound);
+            contains(
+                &report,
+                &[
+                    "NOT SOUND: 1 findings",
+                    "the stored hash differs from its recomputation (a value hash is the hash \
+                     of its value)",
+                ],
+            );
+            assert!(!report.contains("grove versions 1 to 3"), "{report}");
+            assert!(!report.contains("another hash"), "{report}");
+        }
+        // The other rules of the store hold: it is the hash alone.
+        ran(&format!("verify {shown} --no-hashes"), Outcome::Done);
+    }
 }

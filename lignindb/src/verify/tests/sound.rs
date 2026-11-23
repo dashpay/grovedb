@@ -2,7 +2,10 @@
 
 use std::sync::atomic::AtomicU64;
 
-use lignin_format::{tree_page::Side, CommitVersion, PageId};
+use lignin_format::{
+    tree_page::{HashField, Side},
+    CommitVersion, PageId,
+};
 use lignin_store::table::{Link, LinkKind};
 use lignin_tree::{
     drop::{Column as FlatColumn, FlatDrops, FlatReclaimed, Progress},
@@ -16,7 +19,7 @@ use crate::{
     txn::{
         tests::{
             model, put,
-            store::{Db, Rules, ENTERED, SIZE},
+            store::{hash_of, Db, Rules, ENTERED, SIZE},
             World,
         },
         Column,
@@ -549,6 +552,99 @@ fn the_hashes_are_recomputed_by_the_rules_that_are_given() {
         .verify(store.latest(), Scope::Still, Some(&mut Refusing));
     assert_eq!(refused.rules(), [Rule::HashUnchecked], "{refused}");
     assert_eq!(refused.findings.len() as u64, refused.census.live_cells);
+}
+
+/// A value hash that differs and that the rules name as made with another
+/// hash of a hosted root is counted apart and is no finding. One that the
+/// rules do not name, or name with another hash, is a finding as before.
+#[test]
+fn a_value_hash_that_the_rules_name_as_another_writers_is_counted_apart() {
+    /// The rules of the store, but for the value hash of a host, which
+    /// they make otherwise than the store holds it.
+    struct Naming {
+        /// Whether a hosted root has another hash.
+        names: bool,
+        /// What the value hash made with it is.
+        with_other: fn(&[u8]) -> [u8; 32],
+        calls: AtomicU64,
+    }
+    const OTHER: [u8; 32] = [7; 32];
+    impl HashRules for Naming {
+        fn value_hash(
+            &mut self,
+            node: NodeRef<'_>,
+            value: &[u8],
+            hosted: &[Option<[u8; 32]>],
+        ) -> Result<[u8; 32], Refusal> {
+            match hosted.is_empty() {
+                true => Rules(&self.calls).value_hash(node, value, hosted),
+                false => Ok(hash_of(&[value, b"and its roots"])),
+            }
+        }
+
+        fn kv_hash(&mut self, key: &[u8], value_hash: &[u8; 32]) -> Result<[u8; 32], Refusal> {
+            Rules(&self.calls).kv_hash(key, value_hash)
+        }
+
+        fn node_hash(&mut self, node: NodeRef<'_>) -> Result<[u8; 32], Refusal> {
+            Rules(&self.calls).node_hash(node)
+        }
+
+        fn other_node_hash(&mut self, _: NodeRef<'_>) -> Result<Option<[u8; 32]>, Refusal> {
+            Ok(self.names.then_some(OTHER))
+        }
+
+        fn value_hash_with_other(
+            &mut self,
+            _: NodeRef<'_>,
+            value: &[u8],
+            hosted: &[Option<[u8; 32]>],
+        ) -> Result<Option<[u8; 32]>, Refusal> {
+            assert_eq!(hosted, [Some(OTHER)]);
+            Ok(Some((self.with_other)(value)))
+        }
+    }
+    let rules = |names: bool, with_other: fn(&[u8]) -> [u8; 32]| Naming {
+        names,
+        with_other,
+        calls: AtomicU64::new(0),
+    };
+    let as_stored: fn(&[u8]) -> [u8; 32] = |value| hash_of(&[value]);
+    let otherwise: fn(&[u8]) -> [u8; 32] = |value| hash_of(&[value, b"otherwise"]);
+
+    let store = plant();
+    let at = store.latest();
+    // The store has one host in use, and its value hash is not the one
+    // these rules make.
+    let found = |report: &Report| -> Vec<Rule> {
+        let rules = report.findings.iter().map(|finding| finding.rule);
+        rules.collect()
+    };
+    let value = [Rule::Hash(HashField::Value)];
+    for mut unnamed in [rules(false, as_stored), rules(true, otherwise)] {
+        let report = store.db.verify(at, Scope::Still, Some(&mut unnamed));
+        assert_eq!(found(&report), value, "{report}");
+        assert!(report.other_hashes.is_empty(), "{report}");
+        assert!(!report.to_string().contains("another hash"), "{report}");
+    }
+
+    let mut named = rules(true, as_stored);
+    let report = store.db.verify(at, Scope::Still, Some(&mut named));
+    assert!(report.is_sound(), "{report}");
+    let other = &report.other_hashes;
+    assert_eq!((other.count, other.first.len()), (1, 1), "{report}");
+    let host = &other.first[0];
+    assert_eq!(host.subtree, Some(prefix(OUTER)));
+    assert_eq!(host.key, b"host");
+    let text = report.to_string();
+    let told = format!(
+        "sound: every rule holds\nvalue hashes that are not the ones the rules make, and that \
+         the rules name as made with another hash of a hosted root: 1\n  cell {}, key \
+         686f7374\n",
+        host.cell
+    );
+    assert!(text.starts_with(&told), "{text}");
+    assert_eq!(report.census.hashed_cells, report.census.live_cells);
 }
 
 /// A run keeps its findings up to the limit it is given and counts the

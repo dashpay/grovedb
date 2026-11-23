@@ -591,6 +591,13 @@ pub const WIPE_EARLIER: &str =
 /// See [`WIPE_UNCHANGED`].
 pub const WIPE_EMPTY: &str = "crash plans of a crash during a wipe that leave the database empty";
 
+/// The count of the value hashes that the engine's checker named as left
+/// by a delete, in the checks of a run on a grove version that leaves
+/// them (`grove::leaves_hashes`): one for each check that finds a
+/// database sound and names one in it, so a hash that stays is counted
+/// in every state it is recovered in. They are no violations.
+pub const LEFT_HASHES: &str = "value hashes a delete left, as the checks named them";
+
 /// The most violations a run reports: one defect shows in many states.
 const MAX_VIOLATIONS: usize = 4;
 
@@ -2352,11 +2359,13 @@ impl Run {
         self.tally.count("crash plans", 1);
         let state = (taken.image.recover(&plan)).expect("a plan of the image fits it");
         let fingerprint = state.fingerprint();
+        let left_hashes = AtomicU64::new(0);
         let rules = Rules {
             history: &lineage.history,
             places: &lineage.places,
             grove_version: self.plan.grove_version,
             page_size: self.page_size,
+            left_hashes: &left_hashes,
         };
         // A state that was recovered before is not opened again: what it
         // held is held to what is expected now. One that was walked when
@@ -2388,6 +2397,8 @@ impl Run {
         let checked = no_panic("the recovery of a crash state", || {
             Ok(check_state(&state, rules, expect, turn))
         });
+        self.tally
+            .count(LEFT_HASHES, left_hashes.swap(0, Ordering::Relaxed));
         let recovered = match checked.map_err(Wrong::from).and_then(|checked| checked) {
             Ok(recovered) => recovered,
             Err(wrong) => {
@@ -2422,6 +2433,8 @@ impl Run {
             let went_on = no_panic("a recovered database that goes on", || {
                 check_again(&other, rules, expect, &recovered, turn)
             });
+            self.tally
+                .count(LEFT_HASHES, left_hashes.swap(0, Ordering::Relaxed));
             if let Err(violation) = went_on {
                 self.found(lineage, violation, Some((taken, &plan)));
             }
@@ -3304,11 +3317,13 @@ mod tests {
     fn a_state_that_is_left_again_is_held_to_what_is_expected_then() {
         let history = History::new(block(2, 1));
         let places = Places::new();
+        let left_hashes = AtomicU64::new(0);
         let rules = Rules {
             history: &history,
             places: &places,
             grove_version: GroveVersion::latest(),
             page_size: PageSize::MIN,
+            left_hashes: &left_hashes,
         };
         // A state at version 3, which held the block of root 7.
         let seen = Seen {

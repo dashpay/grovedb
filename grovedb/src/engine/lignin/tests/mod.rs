@@ -28,6 +28,7 @@ mod hatch;
 mod indexed;
 mod inspection;
 mod left_behind;
+mod legacy;
 mod moves;
 mod nested;
 mod over;
