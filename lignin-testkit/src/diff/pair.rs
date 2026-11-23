@@ -173,13 +173,28 @@ fn after_a_hash(text: &str) -> Option<&str> {
     hash.bytes().all(digit).then_some(rest)
 }
 
+/// The bytes of a side of a failed equality of two hashes, as a panic
+/// prints it after `name`, and what follows it in `text`.
+fn side<'text>(text: &'text str, name: &str) -> Option<(Vec<u8>, &'text str)> {
+    let listed = text.trim_start().strip_prefix(name)?.strip_prefix(": [")?;
+    let (bytes, rest) = listed.split_once(']')?;
+    let bytes: Option<Vec<u8>> = bytes.split(", ").map(|byte| byte.parse().ok()).collect();
+    bytes
+        .filter(|bytes| bytes.len() == 32)
+        .map(|bytes| (bytes, rest))
+}
+
 /// Whether `panic`, as [`catching`] hands it on, is that assertion
 /// failing for one of `trees`: in a debug build, a panic at a place of
-/// [`ASSERTION_ORIGIN`] that says, from its first word, what the
-/// assertion says of the key of one of the trees: an equality that
-/// failed, the key, the state root and the committed value hash, each a
-/// hash in its place, and then the two sides. A release build has no
-/// such assertion, and no panic is it there.
+/// [`ASSERTION_ORIGIN`] that is, from its first word to its last, what
+/// the assertion prints for the key of one of the trees: an equality
+/// that failed, the key, the state root and the committed value hash,
+/// each a hash in its place, and then the two sides, two hashes that
+/// differ, of which the right one is the committed value hash. The
+/// assertion names the key alone, so the caller hands trees of which no
+/// two have the same key among what the query returns
+/// (`Known::trees_a_plain_proof_binds`). A release build has no such
+/// assertion, and no panic is it there.
 fn is_the_binding_assertion(panic: &str, trees: &[Vec<Vec<u8>>]) -> bool {
     if !cfg!(debug_assertions) {
         return false;
@@ -196,7 +211,11 @@ fn is_the_binding_assertion(panic: &str, trees: &[Vec<Vec<u8>>]) -> bool {
         let root = after_a_hash(said.strip_prefix(&begins)?)?;
         let hash = root.strip_prefix(" which does not reproduce the committed value hash ")?;
         let sides = after_a_hash(hash)?;
-        sides.trim_start().starts_with("left: ").then_some(())
+        let committed = &hash[..64];
+        let (left, rest) = side(sides, "left")?;
+        let (right, rest) = side(rest, "right")?;
+        let whole = rest.trim().is_empty() && left != right && hex::encode(right) == committed;
+        whole.then_some(())
     };
     origin.contains(ASSERTION_ORIGIN) && trees.iter().any(|tree| says(tree).is_some())
 }
@@ -626,7 +645,8 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         // counted apart, where the candidate's side of the step is as the
         // rule of that open difference asks (`Known::proof_holds`).
         if let (Seen::Panicked(panic), Seen::Answered(answered)) = (&was, &is) {
-            let asserted = is_the_binding_assertion(panic, &known.trees_a_proof_binds(op));
+            let trees = known.trees_a_plain_proof_binds(op);
+            let asserted = is_the_binding_assertion(panic, &trees);
             let candidate = &answered.step;
             if asserted && known.proof_holds(op, candidate, case.grove_version) {
                 let family = Family::DroppedTreeAssertion;
@@ -859,14 +879,15 @@ mod tests {
         let other = vec![b"drops".to_vec(), b"other".to_vec()];
         let one = std::slice::from_ref(&tree);
         let (root, hash) = ("7a".repeat(32), "a2".repeat(32));
-        let words = |key: &str, root: &str, hash: &str| {
+        let bytes = |byte: u8| format!("{:?}", [byte; 32]);
+        let sides = format!("  left: {} right: {}", bytes(0x3c), bytes(0xa2));
+        let words = |key: &str, root: &str, hash: &str, sides: &str| {
             format!(
                 "assertion `left == right` failed: non-Merk tree at key {key} has state root \
-                 {root} which does not reproduce the committed value hash {hash}   left: [1]  \
-                 right: [2]"
+                 {root} which does not reproduce the committed value hash {hash} {sides}"
             )
         };
-        let said = words("6b", &root, &hash);
+        let said = words("6b", &root, &hash, &sides);
         let at = "grovedb/src/operations/proof/bind_terminal_non_merk_tree/v1.rs:102:13";
         let from = |at: &str, said: &str| format!("panicked at {at}: {said}");
         let genuine = from(at, &said);
@@ -897,14 +918,30 @@ mod tests {
         assert!(!is(&from(at, around), one));
         let no_equality = said.replace("assertion `left == right` failed: ", "");
         assert!(!is(&from(at, &no_equality), one));
-        assert!(!is(&from(at, &words("6b", "7a0f", &hash)), one));
-        assert!(!is(&from(at, &words("6b", &root, "a281")), one));
-        assert!(!is(&from(at, &words("6b", &"7A".repeat(32), &hash)), one));
+        assert!(!is(&from(at, &words("6b", "7a0f", &hash, &sides)), one));
+        assert!(!is(&from(at, &words("6b", &root, "a281", &sides)), one));
+        assert!(!is(
+            &from(at, &words("6b", &"7A".repeat(32), &hash, &sides)),
+            one
+        ));
         let cut = said.split(" which ").next().expect("the first words");
         assert!(!is(&from(at, cut), one));
         assert!(!is(&from(at, &format!("in a batch: {said}")), one));
-        let no_sides = said.split("   left: ").next().expect("the words");
-        assert!(!is(&from(at, no_sides), one));
+        // The sides: none, a left one that is no hash, no right one, a
+        // right one that is not the committed value hash, two that are
+        // equal, a side of another length, and words after them.
+        let with = |sides: &str| from(at, &words("6b", &root, &hash, sides));
+        assert_eq!(is(&with(&sides), one), cfg!(debug_assertions));
+        assert!(!is(&with(""), one));
+        assert!(!is(&with("  left: unavailable"), one));
+        assert!(!is(&with(&format!("  left: {}", bytes(0x3c))), one));
+        let other_right = format!("  left: {} right: {}", bytes(0x3c), bytes(0xa3));
+        assert!(!is(&with(&other_right), one));
+        let equal = format!("  left: {} right: {}", bytes(0xa2), bytes(0xa2));
+        assert!(!is(&with(&equal), one));
+        let short = format!("  left: {:?} right: {}", [0x3c_u8; 31], bytes(0xa2));
+        assert!(!is(&with(&short), one));
+        assert!(!is(&with(&format!("{sides} and more")), one));
     }
 
     use grovedb::Element;

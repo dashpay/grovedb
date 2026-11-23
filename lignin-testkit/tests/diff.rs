@@ -522,19 +522,30 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
         };
         let origin = "/operations/proof/bind_terminal_non_merk_tree/";
         assert!(panic.starts_with("panicked: panicked at ") && panic.contains(origin));
-        // From its first word: the equality that failed, the key, and a
-        // hash each for the state root and the committed value hash.
+        // From its first word to its last: the equality that failed, the
+        // key, a hash each for the state root and the committed value
+        // hash, and the two sides, of which the right one is that hash.
         let begins = format!(
             ": assertion `left == right` failed: non-Merk tree at key {made_again} has state root "
         );
         let (_, said) = panic.split_once(&begins).expect("the assertion's words");
-        let said = said.split("left: ").next().unwrap_or_default().trim_end();
-        let hashes: Vec<&str> = said
-            .split(" which does not reproduce the committed value hash ")
-            .collect();
+        let (root, said) = said
+            .split_once(" which does not reproduce the committed value hash ")
+            .expect("the assertion's words");
+        let (hash, said) = said.split_once("left: [").expect("the left side");
+        let (left, right) = said.split_once("right: [").expect("the right side");
         let is_a_hash =
-            |hash: &&str| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
-        assert!(hashes.len() == 2 && hashes.iter().all(is_a_hash), "{panic}");
+            |hash: &str| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+        assert!(is_a_hash(root) && is_a_hash(hash.trim_end()), "{panic}");
+        let listed = |side: &str| -> Option<String> {
+            let side = side.trim_end().strip_suffix(']')?;
+            let bytes: Option<Vec<u8>> = side.split(", ").map(|byte| byte.parse().ok()).collect();
+            bytes.map(|bytes| bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+        };
+        let (left, right) = (listed(left), listed(right));
+        assert!(left.as_deref().is_some_and(is_a_hash), "{panic}");
+        assert_eq!(right.as_deref(), Some(hash.trim_end()), "{panic}");
+        assert_ne!(left, right, "{panic}");
         (Family::DroppedTreeAssertion, 5)
     } else {
         assert_eq!(ended.parts, [Part::Proof]);

@@ -46,10 +46,12 @@
 //!   returned.
 //! - [`Family::DroppedTreeAssertion`]: in a debug build GroveDB's own
 //!   assertion fails there on RocksDB, and the reference panics. A case
-//!   ends there, counted, in a debug build alone, where the panic is that
-//!   assertion's by the file it comes from and by its words, names the
-//!   key of such a tree, and everything above holds that can be asked of
-//!   the operation and the candidate alone.
+//!   ends there, counted, in a debug build alone, where the query has no
+//!   subquery, so that a key names one tree it returns, the panic is
+//!   that assertion's by the file it comes from and by every word and
+//!   both sides of it, names the key of such a tree, and everything
+//!   above holds that can be asked of the operation and the candidate
+//!   alone.
 //!
 //! The fourth has no place, and is of an answer alone:
 //!
@@ -762,6 +764,23 @@ impl Known {
         self.remade.iter().filter(bound).cloned().collect()
     }
 
+    /// The trees of [`Known::trees_a_proof_binds`] where `op` is a query
+    /// with no subquery and no subquery path, and none otherwise. Such a
+    /// query returns elements of its own subtree alone, so each of these
+    /// trees is the one element it can return under that tree's key: a
+    /// diagnostic that names a key names one tree.
+    pub fn trees_a_plain_proof_binds(&self, op: &Op) -> Vec<Path> {
+        let plain = matches!(
+            op,
+            Op::Read(Read::Query(query)) if query.subquery_path.is_none() && !query.subquery_all
+        );
+        if plain {
+            self.trees_a_proof_binds(op)
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Whether `op`, which the reference answered with `reference` and
     /// the candidate with `candidate`, is a step of
     /// [`Family::DroppedTreeProof`] (the owner's ruling D-348):
@@ -1268,6 +1287,23 @@ mod tests {
         assert!(known.through_a_proof(&asked, &answered, &answered, grove_version));
         assert!(known.proof_holds(&asked, &answered, grove_version));
         assert_eq!(known.trees_a_proof_binds(&asked), vec![again.clone()]);
+        assert_eq!(known.trees_a_plain_proof_binds(&asked), vec![again.clone()]);
+        // A query that goes down by a subquery can return an element of
+        // another subtree under the same key: it is no plain one, though
+        // a proof of it binds the tree.
+        let Op::Read(Read::Query(mut down)) = asked.clone() else {
+            unreachable!()
+        };
+        down.subquery_all = true;
+        let down = Op::Read(Read::Query(down));
+        assert_eq!(known.trees_a_proof_binds(&down), vec![again.clone()]);
+        assert!(known.trees_a_plain_proof_binds(&down).is_empty());
+        let Op::Read(Read::Query(mut along)) = asked.clone() else {
+            unreachable!()
+        };
+        along.subquery_path = Some(path(&[b"k"]));
+        let along = Op::Read(Read::Query(along));
+        assert!(known.trees_a_plain_proof_binds(&along).is_empty());
         // It is of no path: no place is of the kind, and no stored record.
         assert_eq!(known.family(&again), Some(Family::DroppedTree));
         assert_eq!(known.family(&path(&[b"t"])), None);
