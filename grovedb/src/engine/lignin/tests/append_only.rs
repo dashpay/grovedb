@@ -1530,15 +1530,13 @@ fn keyed_child_on_both<T: Appended>(
 ///   `TXN-03-F5`): every step before the first append is RocksDB's, and
 ///   the append is refused, because the transaction takes no flat data
 ///   record beside the nodes of a Merk.
-/// - **A defect, with the child after the appends** (D-283,
-///   `TXN-03-F5`): the batch is taken, and every step before the delete
-///   of the tree is RocksDB's but the query of every key under the tree,
-///   which fails on both engines with different errors. The delete is
-///   refused: its walk of the nodes meets a flat record.
+/// - **With the child after the appends** (D-283) every answer, cost
+///   and root hash is RocksDB's: the query of every key under the tree
+///   fails on both engines alike, and the delete of the tree is taken.
 ///
 /// The store is sound at the close of each
 /// ([`a_keyed_child_under_a_tree_of_flat_records_leaves_a_sound_store`]).
-/// The last two turn with the change of the transaction: this test
+/// The second turns with the change of the transaction: this test
 /// fails then, and is to hold LigninDB to RocksDB's answers in all
 /// three.
 #[cfg(feature = "rocksdb_storage")]
@@ -1589,17 +1587,12 @@ fn a_keyed_child_under<T: Appended>() {
                     assert!(sound, "{case}");
                 }
                 Keyed::AfterAppends => {
-                    let delete = step(&on_rocksdb, "delete");
-                    same(0..delete, "query all");
+                    // The query of everything under the tree fails on
+                    // both engines alike, on the record that it reads as
+                    // a node, and the delete of the tree is taken.
+                    same(0..on_rocksdb.len(), "");
                     let all = step(&on_rocksdb, "query all");
-                    for answers in [&on_rocksdb, &on_lignin] {
-                        assert!(answers[all].2.starts_with("Err("), "{case}");
-                    }
-                    let refused = &on_lignin[delete].2;
-                    assert!(
-                        refused.contains("a flat record among the nodes of a Merk"),
-                        "{case}: {refused}"
-                    );
+                    assert!(on_rocksdb[all].2.starts_with("Err("), "{case}");
                     assert!(sound, "{case}");
                 }
             }
