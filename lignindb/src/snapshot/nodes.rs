@@ -32,7 +32,7 @@ use super::{
     records::{Opened, ReadError, RecordWalk},
     versions::OperationGuard,
 };
-use crate::txn::{unlinked, ChildKeys, Column, NodeView};
+use crate::txn::{unlinked, ChildKeys, Column, FlatKinds, NodeView};
 
 /// Reads the key of each child of `node` from the child's cell
 /// (`tree-page.md` TP10).
@@ -70,8 +70,18 @@ fn show<R>(
     ))
 }
 
-/// The unlinked record under `key`, whose bytes are `record`, as a node.
-fn unlinked_node<'a>(key: &'a [u8], record: &'a [u8]) -> Result<NodeView<'a>, ReadError> {
+/// The flat record under `key` of the data column, whose bytes are
+/// `record`: as it is stored where `raw` says that its subtree is of a
+/// tree that keeps its data as flat records, and otherwise the unlinked
+/// record it is, as a node.
+fn flat_or_unlinked<'a>(
+    key: &'a [u8],
+    record: &'a [u8],
+    raw: bool,
+) -> Result<NodeView<'a>, ReadError> {
+    if raw {
+        return Ok(NodeView::flat(key, record));
+    }
     let record = unlinked::decode(key, record).map_err(|_| ReadError::NotUnlinked)?;
     Ok(NodeView::unlinked(record))
 }
@@ -91,6 +101,31 @@ impl Opened<'_, '_> {
         children: Option<&mut ChildKeys>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, ReadError> {
+        self.node_of(key, children, false, read)
+    }
+
+    /// As [`Self::node`], for a caller whose subtrees can be of trees
+    /// that keep their data as flat records and no Merk: where `flat`
+    /// says so of the tree type in the subtree's entry, a flat record
+    /// under `key` is shown as it is stored
+    /// ([`NodeView::flat_record`]), and not as an unlinked record.
+    pub fn node_by_kind<R>(
+        &self,
+        key: &[u8],
+        children: Option<&mut ChildKeys>,
+        flat: FlatKinds,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, ReadError> {
+        self.node_of(key, children, flat(self.entry().tree_type()), read)
+    }
+
+    fn node_of<R>(
+        &self,
+        key: &[u8],
+        children: Option<&mut ChildKeys>,
+        raw: bool,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, ReadError> {
         let reader = self.operation.nodes();
         let mut buffers = LoadBuffers::new();
         let mut cursor = Cursor::open(&reader, self.root());
@@ -102,7 +137,7 @@ impl Opened<'_, '_> {
                 if let Some(children) = children {
                     children.clear();
                 }
-                return Ok(read(Some(unlinked_node(key, &record)?)));
+                return Ok(read(Some(flat_or_unlinked(key, &record, raw)?)));
             }
         }
         show(
@@ -121,6 +156,18 @@ impl Opened<'_, '_> {
     /// holds unlinked records under the subtree is looked up here, if no
     /// read has asked yet.
     pub fn walk(&self) -> Result<NodeWalk, ReadError> {
+        self.walk_of(false)
+    }
+
+    /// As [`Self::walk`], for a caller whose subtrees can be of trees
+    /// that keep their data as flat records and no Merk
+    /// ([`Self::node_by_kind`]): the walk shows the flat records of such
+    /// a subtree as they are stored.
+    pub fn walk_by_kind(&self, flat: FlatKinds) -> Result<NodeWalk, ReadError> {
+        self.walk_of(flat(self.entry().tree_type()))
+    }
+
+    fn walk_of(&self, raw: bool) -> Result<NodeWalk, ReadError> {
         let unlinked = self.has_unlinked()?.then(|| Unlinked {
             records: self.record_walk(Column::Data),
             back: false,
@@ -130,6 +177,7 @@ impl Opened<'_, '_> {
             cursor: Cursor::open(&self.operation.nodes(), self.root()),
             buffers: LoadBuffers::new(),
             unlinked,
+            raw,
         })
     }
 }
@@ -166,6 +214,10 @@ pub struct NodeWalk {
     cursor: Cursor,
     buffers: LoadBuffers,
     unlinked: Option<Unlinked>,
+    /// Whether the subtree is of a tree that keeps its data as flat
+    /// records, for a walk that was told which are
+    /// ([`Opened::walk_by_kind`]).
+    raw: bool,
 }
 
 impl fmt::Debug for NodeWalk {
@@ -362,7 +414,7 @@ impl NodeWalk {
             children.clear();
             let mut record = Vec::new();
             return match unlinked.records.value(operation, &mut record)? {
-                true => Ok(read(Some(unlinked_node(key, &record)?))),
+                true => Ok(read(Some(flat_or_unlinked(key, &record, self.raw)?))),
                 false => Ok(read(None)),
             };
         }

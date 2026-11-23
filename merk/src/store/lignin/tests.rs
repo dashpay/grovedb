@@ -46,6 +46,7 @@ use crate::{
 mod chunk;
 mod cursor;
 mod differences;
+mod edges;
 mod large;
 mod proof;
 mod unlinked;

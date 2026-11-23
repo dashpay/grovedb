@@ -8,7 +8,9 @@ use grovedb_storage::Error as StorageError;
 
 use super::{
     access::{Access, Failure, Prefix, Seek, StoredNode, Walk},
-    hash, node_inner, MODEL,
+    hash, node_inner,
+    place::Place,
+    MODEL,
 };
 use crate::{store::NodeCursor, Error};
 
@@ -32,6 +34,11 @@ use crate::{store::NodeCursor, Error};
 ///   writer's handle it takes the writer's lock for that long.
 /// - **It is charged as a cursor of a storage context** (`cost-model.md`
 ///   C1 to C3), with the sizes Merk's record has.
+/// - **A move that leaves the Merk's keys leaves it where a cursor of
+///   RocksDB stands then**: on a record of another subtree, which it does
+///   not show, or nowhere. A step goes on from there, back onto the last
+///   key or the first if it came from a record beside the Merk
+///   ([`Place`], `node-store.md`, "Cursor").
 /// - **A move the transaction refuses leaves it on no key.** A read of a
 ///   record that fails leaves the cursor on its key, with no value, and so
 ///   does a node with a hash that is not made yet, which has no record.
@@ -40,9 +47,8 @@ use crate::{store::NodeCursor, Error};
 ///   `status` says so.
 pub struct LigninCursor<'db> {
     walk: Option<RefCell<Box<dyn Walk + 'db>>>,
-    /// The key the cursor stands on, where it stands on one.
-    key: Vec<u8>,
-    on_key: bool,
+    /// The key the cursor stands on, or where beside its Merk it stands.
+    place: Place,
     /// The record under the key, once it was asked for.
     record: OnceCell<Option<Vec<u8>>>,
     failure: RefCell<Option<Failure>>,
@@ -51,7 +57,7 @@ pub struct LigninCursor<'db> {
 impl std::fmt::Debug for LigninCursor<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LigninCursor")
-            .field("key", &self.on_key.then_some(&self.key))
+            .field("key", &self.place.key())
             .field("failure", &self.failure.borrow())
             .finish_non_exhaustive()
     }
@@ -60,7 +66,12 @@ impl std::fmt::Debug for LigninCursor<'_> {
 /// The record Merk encodes of `node`. A node with a stale hash has none:
 /// the bytes its cell stores there are no hash, and a record would give
 /// them out as one (`node-store.md`, "Hashes").
-fn record(node: StoredNode) -> Result<Vec<u8>, Error> {
+fn record(mut node: StoredNode) -> Result<Vec<u8>, Error> {
+    // A flat record of a tree that keeps its data so is shown as it is
+    // stored.
+    if let Some(record) = node.record.take() {
+        return Ok(record);
+    }
     hash::refuse_stale(node.stale)?;
     // A record does not hold the key of its own node.
     let inner = node_inner(Vec::new(), node)?;
@@ -75,8 +86,7 @@ impl<'db> LigninCursor<'db> {
         };
         Self {
             walk,
-            key: Vec::new(),
-            on_key: false,
+            place: Place::default(),
             record: OnceCell::new(),
             failure: RefCell::new(failure),
         }
@@ -93,8 +103,7 @@ impl<'db> LigninCursor<'db> {
     /// A cursor that could not be pointed there stands on no node from
     /// then on, whatever it is asked, and [`NodeCursor::status`] says why.
     pub fn retarget(mut self, prefix: &Prefix) -> Self {
-        self.key.clear();
-        self.on_key = false;
+        self.place.leave();
         self.record = OnceCell::new();
         if let Some(walk) = self.walk.as_mut() {
             match walk.get_mut().retarget(prefix) {
@@ -109,22 +118,15 @@ impl<'db> LigninCursor<'db> {
     }
 
     /// Moves the cursor. A seek starts again after a failure, and a step
-    /// from no key goes nowhere.
+    /// from nowhere goes nowhere.
     fn go(&mut self, to: Seek<'_>) -> CostContext<()> {
         let seeks = !matches!(to, Seek::Next | Seek::Prev);
         self.record = OnceCell::new();
-        if let Some(walk) = self.walk.as_mut().filter(|_| seeks || self.on_key) {
-            match walk.get_mut().go(to, &mut self.key) {
-                Ok(on_key) => {
-                    self.on_key = on_key;
-                    if seeks {
-                        *self.failure.get_mut() = None;
-                    }
-                }
-                Err(error) => {
-                    self.on_key = false;
-                    *self.failure.get_mut() = Some(error.into());
-                }
+        if let Some(walk) = self.walk.as_mut() {
+            match self.place.go(&mut **walk.get_mut(), to) {
+                Ok(()) if seeks => *self.failure.get_mut() = None,
+                Ok(()) => {}
+                Err(error) => *self.failure.get_mut() = Some(error.into()),
             }
         }
         ().wrap_with_cost(MODEL.cursor_move())
@@ -132,7 +134,8 @@ impl<'db> LigninCursor<'db> {
 
     /// The length of the stored key the cursor stands on.
     fn stored_key_len(&self) -> Option<usize> {
-        (self.on_key).then(|| MODEL.stored_key_len(self.key.len()))
+        let key = self.place.key();
+        key.map(|key| MODEL.stored_key_len(key.len()))
     }
 
     /// Builds the record under the cursor's key.
@@ -183,12 +186,13 @@ impl NodeCursor for LigninCursor<'_> {
     }
 
     fn key(&self) -> CostContext<Option<&[u8]>> {
-        let key = self.on_key.then_some(self.key.as_slice());
+        let key = self.place.key();
         key.wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
     }
 
     fn valid(&self) -> CostContext<bool> {
-        (self.on_key).wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
+        let valid = self.place.key().is_some();
+        valid.wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
     }
 
     fn status(&self) -> Result<(), StorageError> {

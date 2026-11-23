@@ -34,6 +34,7 @@ use lignindb::txn::{Cursor, Subtree, Unit, WriteTxn};
 
 use super::{
     access::{column, fault, Failure, Prefix, Seek},
+    place::Place,
     LigninChangeSet, LigninNodeStore, LigninWriter, Mode, MODEL,
 };
 use crate::{
@@ -48,6 +49,14 @@ pub(super) trait FlatWalk {
     /// Moves the cursor. `key` is emptied and takes the key the cursor then
     /// stands on, and the answer is whether it stands on one.
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error>;
+
+    /// How many records the cursor's column holds in the subtrees after
+    /// the cursor's own in the order of their prefixes, or with `back` in
+    /// those before it, as a cursor of each subtree shows them: counted
+    /// from the nearest subtree on and up to `limit`. In the data column
+    /// the nodes of a Merk count as the flat records do. A step from no
+    /// key asks this, and no other move ([`Place`](super::place::Place)).
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error>;
 
     /// Appends the value under the key the cursor stands on to `out`, and
     /// says whether there is one.
@@ -83,6 +92,10 @@ impl FlatWalk for TxnRecords<'_, '_> {
         .map_err(fault)?;
         key.extend_from_slice(cursor.key().unwrap_or_default());
         Ok(cursor.valid())
+    }
+
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        self.0.beside(back, limit).map_err(fault)
     }
 
     fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, Error> {
@@ -151,6 +164,15 @@ impl FlatWalk for WriterRecords<'_, '_, '_> {
         Ok(self.at.is_some())
     }
 
+    /// Asked of a cursor of the scope that is opened for the question, as
+    /// one is for each move: at the committed state of this moment, with
+    /// the writes the scope sees.
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        let scope = self.writer.scope();
+        let mut cursor = scope.cursor(self.unit);
+        cursor.beside(back, limit).map_err(fault)
+    }
+
     fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, Error> {
         if let Some((_, value)) = &self.at {
             out.extend_from_slice(value);
@@ -181,10 +203,13 @@ impl FlatAccess for LigninWriter<'_, '_> {
 /// storage context (`cost-model.md` C1 to C3). A move that the view
 /// refuses leaves it on no key, and [`RawIterator::status`] gives the
 /// error until the cursor is sought again.
+///
+/// A move that leaves the subtree's keys leaves the cursor where a cursor
+/// of RocksDB stands then, and a step goes on from there
+/// ([`Place`], `flat-store.md` rule 6).
 pub struct LigninFlatCursor<'db> {
     walk: Option<RefCell<Box<dyn FlatWalk + 'db>>>,
-    key: Vec<u8>,
-    on_key: bool,
+    place: Place,
     /// The value under the key, once it was asked for.
     value: OnceCell<Option<Vec<u8>>>,
     failure: RefCell<Option<Failure>>,
@@ -193,7 +218,7 @@ pub struct LigninFlatCursor<'db> {
 impl std::fmt::Debug for LigninFlatCursor<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LigninFlatCursor")
-            .field("key", &self.on_key.then_some(&self.key))
+            .field("key", &self.place.key())
             .field("failure", &self.failure.borrow())
             .finish_non_exhaustive()
     }
@@ -207,8 +232,7 @@ impl<'db> LigninFlatCursor<'db> {
         };
         Self {
             walk,
-            key: Vec::new(),
-            on_key: false,
+            place: Place::default(),
             value: OnceCell::new(),
             failure: RefCell::new(failure),
         }
@@ -217,25 +241,19 @@ impl<'db> LigninFlatCursor<'db> {
     fn go(&mut self, to: Seek<'_>) -> CostContext<()> {
         let seeks = !matches!(to, Seek::Next | Seek::Prev);
         self.value = OnceCell::new();
-        if let Some(walk) = self.walk.as_mut().filter(|_| seeks || self.on_key) {
-            match walk.get_mut().go(to, &mut self.key) {
-                Ok(on_key) => {
-                    self.on_key = on_key;
-                    if seeks {
-                        *self.failure.get_mut() = None;
-                    }
-                }
-                Err(error) => {
-                    self.on_key = false;
-                    *self.failure.get_mut() = Some(error.into());
-                }
+        if let Some(walk) = self.walk.as_mut() {
+            match self.place.go(&mut **walk.get_mut(), to) {
+                Ok(()) if seeks => *self.failure.get_mut() = None,
+                Ok(()) => {}
+                Err(error) => *self.failure.get_mut() = Some(error.into()),
             }
         }
         ().wrap_with_cost(MODEL.cursor_move())
     }
 
     fn stored_key_len(&self) -> Option<usize> {
-        (self.on_key).then(|| MODEL.stored_key_len(self.key.len()))
+        let key = self.place.key();
+        key.map(|key| MODEL.stored_key_len(key.len()))
     }
 
     fn read(&self) -> Option<Vec<u8>> {
@@ -288,12 +306,13 @@ impl RawIterator for LigninFlatCursor<'_> {
     }
 
     fn key(&self) -> CostContext<Option<&[u8]>> {
-        let key = self.on_key.then_some(self.key.as_slice());
+        let key = self.place.key();
         key.wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
     }
 
     fn valid(&self) -> CostContext<bool> {
-        (self.on_key).wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
+        let valid = self.place.key().is_some();
+        valid.wrap_with_cost(MODEL.cursor_key(self.stored_key_len()))
     }
 
     fn status(&self) -> Result<(), StorageError> {

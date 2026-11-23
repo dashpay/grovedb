@@ -18,13 +18,8 @@
 //!
 //! What is not read here, and why:
 //!
-//! - **A descending range that excludes its end, where the end is past the
-//!   last key of its subtree** (`QueryItem::Range`, `RangeTo` and
-//!   `RangeAfterTo` read right to left). The cursor seeks to the end and
-//!   steps back from past the last record, where RocksDB's answer depends
-//!   on what follows the subtree in its column family. Every such range
-//!   here ends at or below the last key of the subtrees it is read in.
-//! - **A walk over the records of a tree that keeps its data flat.**
+//! - **A walk over the records of a tree that keeps its data flat**, which
+//!   `append_only.rs` and `deletes.rs` make.
 //! - **An indexed tree**, whose reads have a history of their own
 //!   (`axes.rs`).
 
@@ -202,8 +197,12 @@ fn one(item: QueryItem, left_to_right: bool) -> Query {
     Query::new_single_query_item_with_direction(item, left_to_right)
 }
 
-/// The query items of this module, over the keys of a group. No range
-/// that excludes its end ends past `to row 03`, the last key of a group.
+/// The query items of this module, over the keys of a group. The last
+/// three are ranges that exclude their end and end past the last key of
+/// every subtree they are read in: read right to left, the cursor seeks
+/// to the end and steps back from past the last record, where RocksDB's
+/// answer depends on what follows the subtree in its column family
+/// (`flat-store.md`, "A step from no key").
 fn items() -> Vec<(&'static str, QueryItem)> {
     vec![
         ("a key", QueryItem::Key(row(3))),
@@ -226,6 +225,15 @@ fn items() -> Vec<(&'static str, QueryItem)> {
         ),
         ("below the first", QueryItem::RangeTo(..b"a".to_vec())),
         ("above the last", QueryItem::RangeFrom(b"zz".to_vec()..)),
+        (
+            "a range past the last",
+            QueryItem::Range(row(5)..b"zz".to_vec()),
+        ),
+        ("to past the last", QueryItem::RangeTo(..b"zz".to_vec())),
+        (
+            "after to past the last",
+            QueryItem::RangeAfterTo(row(1)..b"zz".to_vec()),
+        ),
     ]
 }
 

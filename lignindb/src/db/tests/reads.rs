@@ -5,7 +5,10 @@
 use lignin_tree::cursor::CursorError;
 
 use super::*;
-use crate::{snapshot::ReadError, txn::ChildKeys};
+use crate::{
+    snapshot::ReadError,
+    txn::{ChildKeys, FlatKinds, NodeView},
+};
 
 fn key(lead: u8, number: u32) -> Vec<u8> {
     let mut key = vec![lead];
@@ -407,6 +410,7 @@ fn a_reader_reads_the_unlinked_records_of_a_merk() {
     let mut as_unlinked = Vec::new();
     crate::txn::unlinked::encode(&mut as_unlinked, &stated, b"a value").expect("a record");
     assert!(crate::txn::unlinked::decode(&long[..255], &as_unlinked).is_ok());
+    let stored_long = as_unlinked.clone();
     Writes {
         enter: vec![(subtree(3), None)],
         records: vec![
@@ -425,6 +429,28 @@ fn a_reader_reads_the_unlinked_records_of_a_merk() {
     let refused = opened.node(b"flat", None, |_| ()).expect_err("no node");
     assert!(matches!(refused, ReadError::NotUnlinked), "{refused}");
     assert!(refused.to_string().contains("no unlinked record"));
+    // A read that is told that the subtree's tree type keeps flat records
+    // shows each record as it is stored, by key and under a walk, and one
+    // that is told it does not refuses as above.
+    let bytes =
+        |view: Option<NodeView<'_>>| view.and_then(|view| view.flat_record().map(<[u8]>::to_vec));
+    let (every, none): (FlatKinds, FlatKinds) = (|_| true, |_| false);
+    let shown = opened.node_by_kind(b"flat", None, every, bytes);
+    assert_eq!(shown.expect("a read"), Some(vec![9; 12]));
+    let shown = opened.node_by_kind(&long, None, every, bytes);
+    assert_eq!(shown.expect("a read"), Some(stored_long.clone()));
+    let shown = opened.node_by_kind(b"absent", None, every, bytes);
+    assert_eq!(shown.expect("a read"), None);
+    let told_none = opened.node_by_kind(b"flat", None, none, bytes);
+    assert!(matches!(told_none, Err(ReadError::NotUnlinked)));
+    let mut by_kind = opened.walk_by_kind(every).expect("a lookup");
+    by_kind.seek_to_first(&operation).expect("a move");
+    for stored in [vec![9; 12], stored_long.clone()] {
+        let shown = by_kind.node_with_children(&operation, &mut ChildKeys::new(), bytes);
+        assert_eq!(shown.expect("a read"), Some(stored));
+        by_kind.next(&operation).expect("a move");
+    }
+    assert_eq!(by_kind.key(), None);
     assert!(std::error::Error::source(&refused).is_none());
     let mut walk = opened.walk().expect("a lookup");
     walk.seek_to_first(&operation).expect("a move");

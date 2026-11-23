@@ -120,6 +120,11 @@ pub struct NodeMarks {
     /// has read it. Such a node is of a walk that only reads
     /// ([`RefWalker::values_on_demand`]) and is never in the tree of a Merk.
     pub(crate) value_absent: bool,
+    /// The LigninDB store decoded the node from a flat record of a tree
+    /// that keeps its data as flat records, and not from a cell of a
+    /// Merk's tree: no cell keeps a value for it
+    /// ([`TreeNode::from_flat_record`]).
+    pub(crate) from_flat_record: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -300,6 +305,28 @@ impl TreeNode {
     #[inline]
     pub fn value_absent(&self) -> bool {
         self.inner.marks.value_absent
+    }
+
+    /// Whether the LigninDB store decoded the node from a flat record of
+    /// a tree that keeps its data as flat records (`node-store.md`,
+    /// "Reads" of that store). No cell keeps the value of such a node: a
+    /// write of it through that store states its value, whatever change
+    /// it is handed with. The mark is the node's and is copied with it.
+    /// Like every mark it is not kept where the node is decoded anew in
+    /// place ([`Self::decode_into`]): the node is then that of the bytes
+    /// it was handed, as one that is built from fields is. Whoever writes
+    /// such a node and cannot tell that a cell holds its value writes it
+    /// with `NodeChange::ValueWritten`.
+    #[inline]
+    pub fn from_flat_record(&self) -> bool {
+        self.inner.marks.from_flat_record
+    }
+
+    /// Marks the node as one that was decoded from a flat record
+    /// ([`Self::from_flat_record`]).
+    #[cfg(any(feature = "lignin_storage", test))]
+    pub(crate) fn mark_from_flat_record(&mut self) {
+        self.inner.marks.from_flat_record = true;
     }
 
     /// Gives a node that was read without its value the value that was

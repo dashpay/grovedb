@@ -30,7 +30,7 @@ use super::{
     path::WritePath,
     reads::{Reads, Since},
     unlinked,
-    view::{ChildKeys, NodeView, SubtreeView},
+    view::{ChildKeys, FlatKinds, NodeView, SubtreeView},
     write::{Applied, Batch, Hosted, MerkWrite, Moving, SubtreeWrite, ValuePut},
     write_set::{EntryId, Mark, NodeValue, Own, OwnSubtree, Restated, Said, WriteSet},
 };
@@ -420,6 +420,11 @@ pub(crate) struct Pinned<'a, 's> {
     /// nodes of its own version.
     pub(crate) lease: Option<Lease>,
 }
+
+/// Says whether the subtree of a read is of a tree that keeps its data as
+/// flat records ([`WriteTxn::keeps_flat`]), where the read comes to a flat
+/// record under its key.
+type Kind<'k, 's> = &'k mut dyn FnMut(&WriteTxn<'s>, &mut State<'s>) -> Result<bool, TxnError>;
 
 /// What a cursor has as its committed side
 /// ([`WriteTxn::committed_side`]).
@@ -2259,8 +2264,22 @@ impl<'s> WriteTxn<'s> {
         read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
         let State { directory, set, .. } = state;
-        let (set, ops) = (&*set, set.ops());
-        let mut by_key = ByKey::new(&self.path, &op.guard, op.at, set, directory)?;
+        self.said_over(set, directory, &op.guard, op.at, subtree, read)
+    }
+
+    /// [`Self::said`] of the write set `set` over the committed version
+    /// `at`, whose directory is kept in `slot`.
+    fn said_over<R>(
+        &self,
+        set: &WriteSet,
+        slot: &mut Option<Opened>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+        subtree: Subtree,
+        read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        let ops = set.ops();
+        let mut by_key = ByKey::new(&self.path, guard, at, set, slot)?;
         let Said { base, if_absent } = set.subtree(&subtree, ops);
         let entered = match by_key.standing(subtree, ops)? {
             Standing::Gone => return Ok(read(None)),
@@ -2270,7 +2289,7 @@ impl<'s> WriteTxn<'s> {
                     OwnSubtree::Entered { .. } | OwnSubtree::Gone => (None, Restated::default()),
                 };
                 let opened = by_key.opened;
-                let entry = opened.seen_entry(&self.path, &op.guard, set, &subtree)?;
+                let entry = opened.seen_entry(&self.path, guard, set, &subtree)?;
                 return Ok(read(entry.map(|entry| {
                     let view = SubtreeView::of(entry);
                     stated.of(SubtreeView {
@@ -2427,6 +2446,38 @@ impl<'s> WriteTxn<'s> {
         })
     }
 
+    /// Whether `subtree` is of a tree that keeps its data as flat records,
+    /// by `flat`, as the transaction has the subtree over the committed
+    /// version `at`: the tree type of its own enter or statement, and
+    /// otherwise of the entry that version has. With no `flat` it is not.
+    ///
+    /// The directory of the version is the transaction's own, or `pinned`
+    /// for a cursor, which keeps the one of the version it pinned. Frames
+    /// that are laid out over `at` show the same, and are asked first.
+    fn keeps_flat(
+        &self,
+        state: &mut State<'s>,
+        pinned: Option<&mut Option<Opened>>,
+        (guard, at): (&OperationGuard<'s>, CommitVersion),
+        (who, subtree): (Who, Subtree),
+        flat: Option<FlatKinds>,
+    ) -> Result<bool, TxnError> {
+        let Some(flat) = flat else {
+            return Ok(false);
+        };
+        let read = |view: Option<SubtreeView<'_>>| view.is_some_and(|view| flat(view.tree_type));
+        if who.id().is_none_or(|id| state.scopes.laid(id))
+            && let Some(frames) =
+                Woken::wake(&mut state.frames, guard).filter(|frames| frames.base() == at)
+        {
+            let entry = frames.entry(&subtree)?;
+            return Ok(read(entry.as_ref().map(SubtreeView::of)));
+        }
+        let State { directory, set, .. } = state;
+        let slot = pinned.unwrap_or(directory);
+        self.said_over(set, slot, guard, at, subtree, read)
+    }
+
     /// Those of the subtrees the transaction has written that are below
     /// one that `batch` drops or clears, where the transaction has no
     /// frames to ask ([`ByKey::below`]).
@@ -2459,9 +2510,9 @@ impl<'s> WriteTxn<'s> {
         &self,
         state: &mut State<'s>,
         op: &Op<'s>,
-        subtree: Subtree,
-        key: &[u8],
+        (subtree, key): (Subtree, &[u8]),
         beside: Beside<'_>,
+        kind: Kind<'_, 's>,
         read: F,
     ) -> Result<Result<R, F>, TxnError>
     where
@@ -2471,7 +2522,12 @@ impl<'s> WriteTxn<'s> {
             Beside::Hint(hint) => (hint, None),
             Beside::Children(children) => (None, children),
         };
-        if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
+        // A flat record that the frames have under the key, where no node
+        // of the tree is there.
+        let record = 'framed: {
+            let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
+                break 'framed None;
+            };
             // The frames show the transaction's view (WT3): the node is
             // where a good handle says, or where its key leads to.
             let followed = hint.and_then(|handle| frames.follow(handle, key));
@@ -2490,8 +2546,7 @@ impl<'s> WriteTxn<'s> {
                         // hold an unlinked record.
                         let mut record = Vec::new();
                         if frames.unlinked(&self.path, &subtree, key, &mut record)? {
-                            let node = unlinked::decode(key, &record)?;
-                            return Ok(Ok(read(Some(NodeView::unlinked(node)))));
+                            break 'framed Some(record);
                         }
                     }
                     found
@@ -2504,6 +2559,17 @@ impl<'s> WriteTxn<'s> {
                 child_keys(&mut frames.tree, at, children)?;
             }
             return show_framed(&mut frames, at, read).map(Ok);
+        };
+        if let Some(record) = record {
+            // The frames are let go: what kind of tree the subtree is of
+            // is asked of the state. A node that the transaction itself
+            // left unlinked is its node, under whatever tree.
+            let own = state.set.own(Unit::data(subtree), key);
+            if !matches!(own, Own::Node(_)) && kind(self, state)? {
+                return Ok(Ok(read(Some(NodeView::flat(key, &record)))));
+            }
+            let node = unlinked::decode(key, &record)?;
+            return Ok(Ok(read(Some(NodeView::unlinked(node)))));
         }
         let own = state.set.own(Unit::data(subtree), key);
         if own != Own::Unwritten {
@@ -2515,8 +2581,34 @@ impl<'s> WriteTxn<'s> {
                 Ok(Ok(read(Some(record))))
             }
             Own::Deleted => Ok(Ok(read(None))),
-            Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
+            Own::Put(_) => self.own_flat(state, subtree, key, kind, read).map(Ok),
             Own::Unwritten => Ok(Err(read)),
+        }
+    }
+
+    /// Shows `read` the flat record that the transaction has put under
+    /// `key` in the data column of `subtree`, where `kind` says that the
+    /// subtree is of a tree that keeps its data as flat records, and
+    /// under any other subtree the unlinked record that it is, as the
+    /// frames show it.
+    fn own_flat<R>(
+        &self,
+        state: &mut State<'s>,
+        subtree: Subtree,
+        key: &[u8],
+        kind: Kind<'_, 's>,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        let raw = kind(self, state)?;
+        let Own::Put(value) = state.set.own(Unit::data(subtree), key) else {
+            return Err(TxnError::Damaged("a flat record is read as a Merk node"));
+        };
+        match raw {
+            true => Ok(read(Some(NodeView::flat(key, value)))),
+            false => {
+                let node = unlinked::decode(key, value)?;
+                Ok(read(Some(NodeView::unlinked(node))))
+            }
         }
     }
 
@@ -2526,16 +2618,21 @@ impl<'s> WriteTxn<'s> {
         subtree: Subtree,
         key: &[u8],
         hint: Option<NodeHandle>,
+        flat: Option<FlatKinds>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
         let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin_shown(state, who, Unit::data(subtree), true)?;
-        let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
+        // What kind of tree the subtree is of, as this operation reads it.
+        let kind: Kind<'_, 's> =
+            &mut |txn, state| txn.keeps_flat(state, None, (&op.guard, op.at), (who, subtree), flat);
+        let read = match self.unlaid_node(state, &op, who, (subtree, key), kind, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
         };
-        let read = match self.own_node(state, &op, subtree, key, Beside::Hint(hint), read)? {
+        let beside = Beside::Hint(hint);
+        let read = match self.own_node(state, &op, (subtree, key), beside, kind, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
         };
@@ -2565,6 +2662,9 @@ impl<'s> WriteTxn<'s> {
             let (guard, mut record) = (&op.guard, Vec::new());
             let held = seen.is_some()
                 && self.committed_unlinked(state, guard, op.at, &subtree, key, &mut record)?;
+            if held && kind(self, state)? {
+                return Ok(read(Some(NodeView::flat(key, &record))));
+            }
             let node = held.then(|| unlinked::decode(key, &record)).transpose()?;
             return Ok(read(node.map(NodeView::unlinked)));
         }
@@ -2602,10 +2702,10 @@ impl<'s> WriteTxn<'s> {
     pub(crate) fn cursor_node<R, F>(
         &self,
         who: Who,
-        subtree: Subtree,
-        key: &[u8],
+        (subtree, key): (Subtree, &[u8]),
         children: Option<&mut ChildKeys>,
         pinned: Pinned<'_, 's>,
+        flat: Option<FlatKinds>,
         read: F,
     ) -> Result<Result<R, (F, Sided)>, TxnError>
     where
@@ -2628,7 +2728,12 @@ impl<'s> WriteTxn<'s> {
             let op = self.begin(state, false)?;
             self.refuse_moved(state, opened, guard, at, who, subtree)?;
             self.claim_read(state, &op.guard, op.at, who, unit)?;
-            let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
+            // What kind of tree the subtree is of, as the transaction has
+            // it over the version the cursor keeps.
+            let kind: Kind<'_, 's> = &mut |txn, state| {
+                txn.keeps_flat(state, Some(&mut *opened), (guard, at), (who, subtree), flat)
+            };
+            let read = match self.unlaid_node(state, &op, who, (subtree, key), kind, read)? {
                 Ok(shown) => return Ok(Ok(shown)),
                 Err(read) => read,
             };
@@ -2636,7 +2741,7 @@ impl<'s> WriteTxn<'s> {
                 true => read,
                 false => {
                     let beside = Beside::Children(children);
-                    match self.own_node(state, &op, subtree, key, beside, read)? {
+                    match self.own_node(state, &op, (subtree, key), beside, kind, read)? {
                         Ok(shown) => return Ok(Ok(shown)),
                         Err(read) => read,
                     }
@@ -2701,6 +2806,7 @@ impl<'s> WriteTxn<'s> {
         who: Who,
         subtree: Subtree,
         key: &[u8],
+        flat: Option<FlatKinds>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
         let mut state = self.lock();
@@ -2728,6 +2834,15 @@ impl<'s> WriteTxn<'s> {
             // a delete with no cost is charged from it as from a node.
             let (guard, mut record) = (&op.guard, Vec::new());
             let held = self.committed_unlinked(state, guard, op.at, &subtree, key, &mut record)?;
+            if held && let Some(flat) = flat {
+                // The committed record is read by the tree type that the
+                // same committed version has the subtree entered with.
+                let opened = Opened::at(&mut state.directory, &self.path, guard, op.at)?;
+                let entered = opened.tree_type(&self.path, guard, &subtree)?;
+                if entered.is_some_and(flat) {
+                    return Ok(read(Some(NodeView::flat(key, &record))));
+                }
+            }
             let node = held.then(|| unlinked::decode(key, &record)).transpose()?;
             return Ok(read(node.map(NodeView::unlinked)));
         }
@@ -2816,6 +2931,11 @@ impl<'s> WriteTxn<'s> {
         };
         state.key = key;
         shown.map(Some)
+    }
+
+    /// [`WriteSet::written_beside`], of the write set as it is now.
+    pub(crate) fn written_beside(&self, from: &Subtree, back: bool) -> Option<Subtree> {
+        self.lock().set.written_beside(from, back)
     }
 
     /// Whether the transaction's newest write of the record key hides or
@@ -3153,7 +3273,30 @@ macro_rules! reads {
             key: &[u8],
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<R, TxnError> {
-            self.txn().node_in(self.who(), subtree, key, None, read)
+            self.txn()
+                .node_in(self.who(), subtree, key, None, None, read)
+        }
+
+        /// As [`Self::node`], or through `hint` as [`Self::follow`], for
+        /// a caller whose subtrees can be of trees that keep their data
+        /// as flat records and no Merk. Where no node of the Merk's tree
+        /// is under `key` and the data column holds a flat record there,
+        /// and `flat` says of the subtree's tree type that such a tree
+        /// keeps flat records, `read` is shown that record as it is
+        /// stored ([`NodeView::flat_record`]), and not as an unlinked
+        /// record. The tree type is the one this operation reads the
+        /// subtree with: the record and what says how to read it are of
+        /// one state.
+        pub fn node_by_kind<R>(
+            &self,
+            subtree: Subtree,
+            key: &[u8],
+            hint: Option<NodeHandle>,
+            flat: FlatKinds,
+            read: impl FnOnce(Option<NodeView<'_>>) -> R,
+        ) -> Result<R, TxnError> {
+            self.txn()
+                .node_in(self.who(), subtree, key, hint, Some(flat), read)
         }
 
         /// As [`Self::node`], through `handle` while that is still good
@@ -3172,7 +3315,7 @@ macro_rules! reads {
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<R, TxnError> {
             self.txn()
-                .node_in(self.who(), subtree, key, Some(handle), read)
+                .node_in(self.who(), subtree, key, Some(handle), None, read)
         }
 
         /// Shows `read` the child on `side` of the node `parent` names, as
@@ -3208,7 +3351,24 @@ macro_rules! reads {
             key: &[u8],
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<R, TxnError> {
-            self.txn().committed_node_in(self.who(), subtree, key, read)
+            self.txn()
+                .committed_node_in(self.who(), subtree, key, None, read)
+        }
+
+        /// As [`Self::committed_node`], for a caller whose subtrees can be
+        /// of trees that keep their data as flat records and no Merk
+        /// ([`Self::node_by_kind`]): a committed flat record under `key`
+        /// is shown as it is stored where `flat` says so of the tree type
+        /// that the same committed version has the subtree entered with.
+        pub fn committed_node_by_kind<R>(
+            &self,
+            subtree: Subtree,
+            key: &[u8],
+            flat: FlatKinds,
+            read: impl FnOnce(Option<NodeView<'_>>) -> R,
+        ) -> Result<R, TxnError> {
+            self.txn()
+                .committed_node_in(self.who(), subtree, key, Some(flat), read)
         }
 
         /// Shows `read` what the subtree directory holds of `subtree`
@@ -3257,7 +3417,23 @@ macro_rules! reads {
             &self,
             subtree: Subtree,
         ) -> Result<$crate::txn::MerkCursor<'_, 's>, TxnError> {
-            $crate::txn::Cursor::merk(self.txn(), self.who(), subtree)
+            $crate::txn::Cursor::merk(self.txn(), self.who(), subtree, None)
+        }
+
+        /// As [`Self::merk_cursor`], for a caller whose subtrees can be
+        /// of trees that keep their data as flat records and no Merk
+        /// ([`Self::node_by_kind`]). The cursor shows a flat record of
+        /// such a subtree as it is stored
+        /// ([`NodeView::flat_record`]): a record of its version by the
+        /// tree type that version has the subtree entered with, and a
+        /// record the transaction has put by the subtree as the
+        /// transaction has it over that version.
+        pub fn merk_cursor_by_kind(
+            &self,
+            subtree: Subtree,
+            flat: FlatKinds,
+        ) -> Result<$crate::txn::MerkCursor<'_, 's>, TxnError> {
+            $crate::txn::Cursor::merk(self.txn(), self.who(), subtree, Some(flat))
         }
     };
 }

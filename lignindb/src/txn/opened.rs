@@ -87,6 +87,18 @@ impl Opened {
         Ok(entry.map(|entry| entry.root().map(|root| root.address)))
     }
 
+    /// The tree type that this version has `subtree` entered with, if the
+    /// subtree is entered.
+    pub(crate) fn tree_type<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+    ) -> Result<Option<&[u8]>, TxnError> {
+        self.open(path, guard, subtree)?;
+        Ok(self.entries[subtree].as_ref().map(Entry::tree_type))
+    }
+
     /// The id of the Merk that this version has under `subtree`, if the
     /// subtree is entered (`lignin_tree::directory`, "Ids").
     pub(crate) fn id<'s>(
@@ -257,6 +269,24 @@ impl Opened {
             return Ok(false);
         }
         self.below_one_of(path, guard, &set.moved_from(), subtree)
+    }
+
+    /// The nearest subtree after `from` in the order of the prefixes, or
+    /// with `back` the nearest before it, whose Merk has a node at this
+    /// version, looked for no further than `until`
+    /// ([`Directory::rooted_beside`](lignin_tree::directory::Directory::rooted_beside)).
+    pub(crate) fn rooted_beside<'s>(
+        &self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        from: &Subtree,
+        until: Option<&Subtree>,
+        back: bool,
+    ) -> Result<Option<Subtree>, TxnError> {
+        let pages = path.committed(guard, self.at);
+        let (from, until) = (from.as_bytes(), until.map(Subtree::as_bytes));
+        let found = (self.directory).rooted_beside(&pages, from, until, back)?;
+        Ok(found.map(Subtree::new))
     }
 
     /// The ids of the Merks that `subtree` is below at this version, from

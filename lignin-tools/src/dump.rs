@@ -385,8 +385,11 @@ fn write_data<W: Write>(
     let opened = opened.ok_or_else(|| dump_error("a subtree went while it was dumped"))?;
     let (mut nodes, mut records) = (0, 0);
     // The walk of a Merk shows its nodes and, among them, the records of
-    // its data column that no node links. A subtree with no root has no
-    // node: the records of its data column are written below.
+    // its data column that no node links. A flat record there that is
+    // not in the form of such a record is refused by the walk
+    // (`ReadError::NotUnlinked`), and the dump fails at it. A subtree
+    // with no root has no node: the records of its data column are
+    // written below, as they are stored, whatever tree keeps them.
     if entered.root.is_some() {
         let mut walk = opened.walk()?;
         walk.seek_to_first(operation)?;

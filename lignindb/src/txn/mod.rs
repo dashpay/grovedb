@@ -766,7 +766,7 @@ pub(crate) use path::Store;
 pub use path::{FlatReader, FlatWriter, Keyspaces, WritePath};
 pub(crate) use txn::Held;
 pub use txn::{Scope, TxnStats, WriteTxn};
-pub use view::{ChildKeys, LinkView, NodeView, SubtreeView};
+pub use view::{ChildKeys, FlatKinds, LinkView, NodeView, SubtreeView};
 pub use write::{
     Applied, Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut,
     SubtreeWrite, ValuePut,

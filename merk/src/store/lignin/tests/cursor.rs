@@ -86,8 +86,8 @@ thread_local! {
 
 /// Moves a cursor of `store` to places the numbers of `seed` choose, and
 /// says what it showed after each move. A cursor that stands on no record
-/// is sought again and not stepped: RocksDB does not say where a step from
-/// there leads.
+/// is sought again and not stepped: where a step from there leads depends
+/// on the subtrees beside this one, and `edges.rs` has those walks.
 fn wander<'db, S: NodeStore<'db>>(store: &S, seed: u64, cost: &mut OperationCost) -> Vec<Seen> {
     let mut random = Random(seed | 1);
     let mut cursor = store.cursor();
@@ -1122,6 +1122,10 @@ impl Walk for FailingWalk<'_> {
         }
     }
 
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        self.under.beside(back, limit)
+    }
+
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
         match self.reads {
             true => self.under.node(),
@@ -1381,6 +1385,7 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
 
     // A link whose child's key was not read with the node is no record.
     let mut unread = StoredNode {
+        record: None,
         feature: BASIC,
         value_hash: [1; 32],
         kv_hash: [2; 32],

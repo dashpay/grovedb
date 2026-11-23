@@ -708,6 +708,196 @@ fn a_cursor_that_is_pointed_at_another_merk_shows_the_unlinked_records_of_that_m
     assert_eq!(lookups(), asked + 2, "the cursor keeps what it found");
 }
 
+/// What a read by kind shows under `key`: the bytes of a flat record, or
+/// whether a node is shown.
+fn by_kind(tx: &Tx<'_>, name: u8, key: &[u8], flat: FlatKinds) -> Result<Option<Vec<u8>>, String> {
+    let shown = (tx.txn).node_by_kind(model::subtree(name), key, None, flat, |view| {
+        view.map(|view| view.flat_record().map(<[u8]>::to_vec))
+    });
+    match shown {
+        Ok(Some(Some(bytes))) => Ok(Some(bytes)),
+        Ok(Some(None)) => Err("a node".to_owned()),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The bytes of a flat record under a cursor, or why it shows none.
+type FlatRead = Result<Vec<u8>, String>;
+
+/// What a cursor that was opened by kind shows from its first key on:
+/// each key with the bytes of a flat record, or the refusal of the read.
+fn walked_by_kind(cursor: &mut MerkCursor<'_, '_>) -> Vec<(Vec<u8>, FlatRead)> {
+    let mut shown = Vec::new();
+    cursor.seek_to_first().expect("a seek");
+    while let Some(key) = cursor.key().map(<[u8]>::to_vec) {
+        let read = cursor.node(|view| view.and_then(|view| view.flat_record().map(<[u8]>::to_vec)));
+        let read = match read {
+            Ok(Some(bytes)) => Ok(bytes),
+            Ok(None) => Err("no flat record".to_owned()),
+            Err(error) => Err(error.to_string()),
+        };
+        shown.push((key, read));
+        cursor.next().expect("a step");
+    }
+    shown
+}
+
+/// A read of a node that is told which tree types keep their data as
+/// flat records (`FlatKinds`) shows a flat record of such a subtree as it
+/// is stored, by key and under a cursor: a committed record, one the
+/// transaction has put, and none where it has deleted the record. A read
+/// that is told of no such tree type refuses a record that is no
+/// unlinked record, as a read that is told nothing does. A node of a
+/// Merk's tree is a node to each.
+#[test]
+fn a_read_by_kind_shows_a_flat_record_of_a_tree_that_keeps_flat_records() {
+    const FLAT: u8 = 7;
+    let every: FlatKinds = |_| true;
+    let none: FlatKinds = |_| false;
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let data = model::unit(Column::Data, FLAT);
+    let tx = world.begin();
+    let records = vec![put(data, b"a", b"first"), put(data, b"b", &[9; 600])];
+    world.write(&tx, records);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.edit_outside(MERK, |items| drop(items.insert(key(0), vec![1; 30])), &[]);
+
+    let tx = world.begin();
+    assert_eq!(by_kind(&tx, FLAT, b"a", every), Ok(Some(b"first".to_vec())));
+    assert_eq!(by_kind(&tx, FLAT, b"b", every), Ok(Some(vec![9; 600])));
+    assert_eq!(by_kind(&tx, FLAT, b"c", every), Ok(None));
+    let refused = by_kind(&tx, FLAT, b"a", none).expect_err("no unlinked record");
+    assert!(refused.contains("no unlinked record"), "{refused}");
+    let untold = (tx.txn).node(model::subtree(FLAT), b"a", |view| view.is_some());
+    assert!(untold.is_err());
+    assert_eq!(by_kind(&tx, MERK, &key(0), every), Err("a node".to_owned()));
+
+    let both = vec![
+        (b"a".to_vec(), Ok(b"first".to_vec())),
+        (b"b".to_vec(), Ok(vec![9; 600])),
+    ];
+    let at = model::subtree(FLAT);
+    let mut cursor = (tx.txn.merk_cursor_by_kind(at, every)).expect("a cursor");
+    assert_eq!(walked_by_kind(&mut cursor), both);
+    let mut untold = (tx.txn.merk_cursor_by_kind(at, none)).expect("a cursor");
+    let refused = walked_by_kind(&mut untold);
+    let keys: Vec<&[u8]> = refused.iter().map(|(key, _)| key.as_slice()).collect();
+    assert_eq!(keys, [b"a", b"b"]);
+    for (_, read) in &refused {
+        let said = read.as_ref().expect_err("no unlinked record");
+        assert!(said.contains("no unlinked record"), "{said}");
+    }
+
+    // The transaction's own writes.
+    world.write(&tx, vec![put(data, b"b", b"own"), put(data, b"c", b"new")]);
+    world.write(&tx, vec![delete(data, b"a")]);
+    assert_eq!(by_kind(&tx, FLAT, b"a", every), Ok(None));
+    assert_eq!(by_kind(&tx, FLAT, b"b", every), Ok(Some(b"own".to_vec())));
+    assert_eq!(by_kind(&tx, FLAT, b"c", every), Ok(Some(b"new".to_vec())));
+    assert!(by_kind(&tx, FLAT, b"b", none).is_err());
+    let own = vec![
+        (b"b".to_vec(), Ok(b"own".to_vec())),
+        (b"c".to_vec(), Ok(b"new".to_vec())),
+    ];
+    assert_eq!(walked_by_kind(&mut cursor), own);
+    // A node of a Merk's tree is a node under the cursor too.
+    cursor.retarget(subtree()).expect("a retarget");
+    let nodes = walked_by_kind(&mut cursor);
+    assert_eq!(nodes, vec![(key(0), Err("no flat record".to_owned()))]);
+}
+
+/// A flat record that a scope has put and not laid out is read by kind as
+/// it is read once it is laid out: with its bytes under a tree that keeps
+/// flat records, and under any other as the unlinked record that its
+/// bytes are, or refused where they are none.
+#[test]
+fn a_flat_record_of_a_scope_that_is_not_laid_out_is_read_by_kind_as_when_it_is() {
+    const PLACE: u8 = 9;
+    let (every, none): (FlatKinds, FlatKinds) = (|_| true, |_| false);
+    let (db, versions) = Db::new(128);
+    let world = World::new(&db, &versions);
+    let data = model::unit(Column::Data, PLACE);
+    let stated = NodePut {
+        key: b"k",
+        feature: &[0],
+        value_hash: &[7; 32],
+        kv_hash: &[8; 32],
+        left: None,
+        right: None,
+        hosted: Hosted::Keep,
+        value: ValuePut::Keep,
+        stale: lignin_tree::hash::Stale::NONE,
+        at: None,
+    };
+    let mut as_unlinked = Vec::new();
+    crate::txn::unlinked::encode(&mut as_unlinked, &stated, b"a value").expect("a record");
+
+    let tx = world.begin();
+    let first = tx.txn.scope().expect("a scope");
+    let second = tx.txn.scope().expect("a second scope");
+    let records = OwnedBatch {
+        records: vec![put(data, b"k", &as_unlinked), put(data, b"m", b"no node")],
+        ..OwnedBatch::default()
+    };
+    (records.with(|batch| second.apply(batch))).expect("the records are put");
+    let read = |key: &[u8], flat: FlatKinds| {
+        let shown = second.node_by_kind(model::subtree(PLACE), key, None, flat, |view| {
+            let view = view.expect("a record");
+            let bytes = view.flat_record().map(<[u8]>::to_vec);
+            (bytes, view.is_unlinked(), value_of(&view))
+        });
+        shown.map_err(|error| error.to_string())
+    };
+    let shown = || {
+        let node = read(b"k", none).expect("an unlinked record");
+        assert_eq!(node, (None, true, b"a value".to_vec()));
+        let refused = read(b"m", none).expect_err("no unlinked record");
+        assert!(refused.contains("no unlinked record"), "{refused}");
+        let raw = read(b"k", every).expect("a flat record");
+        assert_eq!(raw.0, Some(as_unlinked.clone()));
+        let raw = read(b"m", every).expect("a flat record");
+        assert_eq!(raw.0, Some(b"no node".to_vec()));
+    };
+    shown();
+    second.lay_out().expect("its writes are laid out");
+    shown();
+    drop((second, first));
+}
+
+/// A cursor reads a flat record by the tree type that its own version has
+/// the subtree entered with: a commit beside the cursor that drops the
+/// subtree changes neither the record it shows nor how it is read.
+#[test]
+fn a_cursor_by_kind_reads_the_subtree_as_its_version_has_it() {
+    const FLAT: u8 = 7;
+    let every: FlatKinds = |_| true;
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let data = model::unit(Column::Data, FLAT);
+    let tx = world.begin();
+    world.write(&tx, vec![put(data, b"a", b"first")]);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let reader = world.begin();
+    let mut cursor = (reader.txn)
+        .merk_cursor_by_kind(model::subtree(FLAT), every)
+        .expect("a cursor");
+    cursor.seek_to_first().expect("a seek");
+    assert_eq!(cursor.key(), Some(b"a".as_slice()));
+    let dropped = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Drop(model::subtree(FLAT))],
+        ..OwnedBatch::default()
+    };
+    let outcome = world.write_outside(&dropped, &[&reader]);
+    assert!(matches!(outcome, Outcome::Committed(_)));
+    let shown = cursor.node(|view| view.and_then(|view| view.flat_record().map(<[u8]>::to_vec)));
+    assert_eq!(shown.expect("a read"), Some(b"first".to_vec()));
+    // By key the transaction reads the latest committed state.
+    assert_eq!(by_kind(&reader, FLAT, b"a", every), Ok(None));
+}
+
 /// A Merk that holds no unlinked record is asked once whether it holds
 /// any, for the frames of a transaction and for each committed version it
 /// reads beside them, and only by a read that finds no node, a cursor, or

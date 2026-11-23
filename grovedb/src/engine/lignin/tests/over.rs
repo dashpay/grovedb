@@ -1109,13 +1109,13 @@ fn a_subtree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batc
 
 /// A tree that keeps its data flat, entered so. The cursor was made for
 /// the nodes of a Merk, since the subtree was not entered. It shows the
-/// key of the record that the other writer's commit put there and refuses
-/// its value, until it shows the record's bytes (`MERK-05-F1` part 2): the
-/// walk fails at that record, and the batch is told nothing of the move.
-/// A tree that nothing was appended to, with no writer beside the mover,
-/// is told to the batch as a walk that found none.
+/// record that the other writer's commit put there, with its bytes, as
+/// RocksDB's cursor over the keyspace does: the walk comes to its end and
+/// the batch is told of the move. A tree that nothing was appended to,
+/// with no writer beside the mover, is told to the batch as a walk that
+/// found none.
 #[test]
-fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_fails_the_walk() {
+fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batch() {
     let v = version();
     let (_dir, db) = grove(false);
     let root: &[&[u8]] = &[];
@@ -1128,15 +1128,11 @@ fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_fails_the_walk() {
             .unwrap()
             .expect("the first leaf");
     });
-    let (walked, [moves, none], _) = walked_beside(&db, &[b"m"], other);
+    let (walked, [moves, none], asked) = moved_beside(&db, &[b"m"], other);
     assert!(done.get());
-    let failed = walked.expect_err("the walk comes to a flat record");
-    let no_value = "a raw iterator at a record returned no key or value";
-    assert!(
-        matches!(&failed, crate::Error::CorruptedData(said) if said == no_value),
-        "{failed:?}"
-    );
-    assert_eq!((moves, none), (vec![], vec![]));
+    // The records of the tree with its one leaf.
+    assert!(!walked.is_empty(), "the walk shows the flat records");
+    assert_eq!((moves, none), (vec![asked], vec![]));
     // With no writer beside it, the tree nothing was appended to is no
     // move of its batch: the batch is told that the walk found none.
     (db.insert(root, b"n", Element::empty_mmr_tree(), None, None, v))

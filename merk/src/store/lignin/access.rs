@@ -22,6 +22,7 @@ use lignindb::txn::{
 
 use super::{
     change_set::node_put,
+    directory::keeps_flat_records,
     feature::{decode_aggregate, decode_feature, Tp12},
     refused, LigninEntry, LigninHosted,
 };
@@ -74,6 +75,30 @@ pub(super) struct StoredNode {
     /// Whether the node is an unlinked record, which no cell keeps a
     /// value for.
     pub(super) unlinked: bool,
+    /// The bytes of a flat record, where the read came to one under a
+    /// tree that keeps its data as flat records (D-197). It is then no
+    /// node: the read answers with these bytes, as RocksDB's does, and
+    /// nothing else here says anything.
+    pub(super) record: Option<Vec<u8>>,
+}
+
+impl StoredNode {
+    /// What a read shows of a flat record with the bytes `record`.
+    fn flat(record: Vec<u8>) -> Self {
+        Self {
+            feature: TreeFeatureType::BasicMerkNode,
+            value_hash: CryptoHash::default(),
+            kv_hash: CryptoHash::default(),
+            value_len: record.len() as u32,
+            value: None,
+            left: None,
+            right: None,
+            stale: Stale::NONE,
+            location: None,
+            unlinked: false,
+            record: Some(record),
+        }
+    }
 }
 
 /// What following a link from a parent's cell found.
@@ -248,6 +273,14 @@ pub(super) trait Walk: Send {
     /// Moves the cursor. `key` is emptied and takes the key the cursor then
     /// stands on, and the answer is whether it stands on one.
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error>;
+
+    /// How many records the data of the subtrees after the cursor's own
+    /// holds, in the order of their prefixes, or with `back` the data of
+    /// those before it: nodes and flat records, as a cursor of each
+    /// subtree shows them, counted from the nearest subtree on and up to
+    /// `limit`. A step from no key asks this, and no other move
+    /// ([`Place`](super::place::Place)).
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error>;
 
     /// The node under the key the cursor stands on, with its value and
     /// with the key of each child in its link. `None` if the transaction
@@ -462,6 +495,9 @@ fn stored_link(link: LinkView<'_>) -> Result<StoredLink, Error> {
 }
 
 pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Error> {
+    if let Some(record) = view.flat_record() {
+        return Ok(StoredNode::flat(record.to_vec()));
+    }
     let value = match with_value {
         false => None,
         true => Some(view.value(&mut ValueBuf::new()).map_err(fault)?.to_vec()),
@@ -477,6 +513,7 @@ pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<Store
         stale: view.stale(),
         location: view.handle().map(Location),
         unlinked: view.is_unlinked(),
+        record: None,
     })
 }
 
@@ -547,6 +584,10 @@ impl Walk for TxnWalk<'_, '_> {
         go(&mut self.0, to, key)
     }
 
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        self.0.beside(back, limit).map_err(fault)
+    }
+
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
         node_under(&mut self.0)
     }
@@ -580,6 +621,10 @@ impl<'s> ScopeWalk<'_, '_, 's> {
 impl Walk for ScopeWalk<'_, '_, '_> {
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
         self.resumed(|cursor| go_resumed(cursor, to, key))
+    }
+
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        self.resumed(|cursor| cursor.beside(back, limit).map_err(fault))
     }
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
@@ -642,10 +687,7 @@ macro_rules! reads {
                 hint: Option<NodeHandle>,
                 read: impl FnOnce(Option<NodeView<'_>>) -> R,
             ) -> Result<R, TxnError> {
-                match hint {
-                    Some(handle) => self.follow(subtree, handle, key, read),
-                    None => self.node(subtree, key, read),
-                }
+                self.node_by_kind(subtree, key, hint, keeps_flat_records, read)
             }
 
             fn committed_node<R>(
@@ -654,7 +696,7 @@ macro_rules! reads {
                 key: &[u8],
                 read: impl FnOnce(Option<NodeView<'_>>) -> R,
             ) -> Result<R, TxnError> {
-                self.committed_node(subtree, key, read)
+                self.committed_node_by_kind(subtree, key, keeps_flat_records, read)
             }
 
             fn child<R>(
@@ -803,7 +845,10 @@ fn held(scope: &Scope<'_, '_>, subtree: Subtree, node: &NodePut<'_>) -> Result<H
         let value = match stated {
             // No cell holds the value of an unlinked record: a value
             // that is stated over one is written, with no comparison.
-            Some(_) if view.is_unlinked() => false,
+            // Nor does one hold a value where the key has a flat record
+            // of a tree that keeps flat records, whose bytes are no
+            // node's value.
+            Some(_) if view.is_unlinked() || view.flat_record().is_some() => false,
             // A value of another length is not read to be compared.
             Some(stated) if view.value_len() as usize == stated.len() => {
                 view.value(&mut ValueBuf::new())? == stated
@@ -1261,7 +1306,8 @@ impl<'t, 's> Reader for LigninWriter<'t, 's> {
     }
 
     fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError> {
-        let parked = self.scope().parked_merk_cursor(subtree)?;
+        let scope = self.scope();
+        let parked = scope.parked_merk_cursor_by_kind(subtree, keeps_flat_records)?;
         Ok(Box::new(ScopeWalk {
             writer: self,
             parked,
@@ -1301,7 +1347,8 @@ impl Reader for WriteTxn<'_> {
     }
 
     fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError> {
-        Ok(Box::new(TxnWalk(self.merk_cursor(subtree)?)))
+        let cursor = self.merk_cursor_by_kind(subtree, keeps_flat_records)?;
+        Ok(Box::new(TxnWalk(cursor)))
     }
 }
 

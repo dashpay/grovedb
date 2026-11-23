@@ -238,6 +238,62 @@ impl<'o> Operation<'o> {
         })
     }
 
+    /// How many records `column` holds in the subtrees after `subtree` in
+    /// the order of their prefixes, or with `back` in those before it, at
+    /// the version the operation reads: counted from the nearest subtree
+    /// on and up to `limit`. The nodes of a Merk and the flat records of
+    /// the data column are both records of that column
+    /// (`transactions.md` ST1).
+    ///
+    /// It is what tells where a step from past the end of a subtree leads
+    /// on an engine that keeps the records of every subtree of a column
+    /// in one keyspace (`flat-store.md`, rule 6).
+    ///
+    /// For each subtree it comes to, the call seeks once in the column's
+    /// tree, which finds the nearest subtree the version stores a record
+    /// under. For the data column it also walks the entries of the
+    /// subtree directory to the nearest Merk with a node, and no further
+    /// than the subtree the seek found ([`Directory::rooted_beside`]). It
+    /// then opens the nearer of the two and steps over its records until
+    /// it has counted `limit`. A subtree whose records are what a drop
+    /// left is not opened, and is passed.
+    pub fn beside(
+        &self,
+        column: Column,
+        subtree: Subtree,
+        back: bool,
+        limit: usize,
+    ) -> Result<usize, ReadError> {
+        let records = self.records.ok_or(ReadError::NoRecords)?;
+        let pages = self.flat_pages(&records);
+        let (mut from, mut found) = (subtree, 0);
+        while found < limit {
+            let stored = (records.keyspaces).stored_beside(&pages, column, &from, back)?;
+            let rooted = match column {
+                Column::Data => {
+                    let until = stored.as_ref().map(Subtree::as_bytes);
+                    let directory = self.directory(&records)?;
+                    let rooted = directory.rooted_beside(&pages, from.as_bytes(), until, back)?;
+                    rooted.map(Subtree::new)
+                }
+                Column::Aux | Column::Roots | Column::Meta => None,
+            };
+            let beside = [stored, rooted].into_iter().flatten();
+            let next = match back {
+                false => beside.min(),
+                true => beside.max(),
+            };
+            let Some(next) = next else {
+                break;
+            };
+            if let Some(opened) = self.open(next)? {
+                found += opened.count(column, limit - found)?;
+            }
+            from = next;
+        }
+        Ok(found)
+    }
+
     /// Opens a subtree that an earlier operation kept ([`Opened::keep`]).
     /// At the version of the database it was kept at, the entry is the one
     /// that version has, and nothing is read: a subtree leaves with a
@@ -426,6 +482,35 @@ impl<'a, 'o> Opened<'a, 'o> {
         let any = unlinked::any(&data, &pages, &self.subtree)?;
         *known = Some(any);
         Ok(any)
+    }
+}
+
+impl Opened<'_, '_> {
+    /// How many records `column` holds under the subtree, up to `limit`:
+    /// for the data column the nodes of its Merk and the flat records
+    /// among them, as a walk over the Merk shows them.
+    fn count(&self, column: Column, limit: usize) -> Result<usize, ReadError> {
+        let mut found = 0;
+        if column == Column::Data {
+            let mut nodes = self.walk()?;
+            nodes.seek_to_first(self.operation)?;
+            while nodes.key().is_some() && found < limit {
+                found += 1;
+                if found < limit {
+                    nodes.next(self.operation)?;
+                }
+            }
+        } else {
+            let mut flat = self.cursor(column);
+            flat.seek_to_first()?;
+            while flat.key().is_some() && found < limit {
+                found += 1;
+                if found < limit {
+                    flat.next()?;
+                }
+            }
+        }
+        Ok(found)
     }
 }
 

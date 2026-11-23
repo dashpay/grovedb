@@ -17,14 +17,19 @@ use lignin_store::{
 use lignin_tree::{
     directory::Directory,
     drop::{self, FlatDrops},
-    flat::{Committed, FlatTree, Private},
+    flat::{Committed, FlatError, FlatPages, FlatTree, Private},
     fragment::Layout,
     node::Lease,
     value::InlinePolicy,
 };
 
 use super::{
-    commits::Commits, error::TxnError, key::Column, load::LoadFiles, pages::CommittedPages,
+    commits::Commits,
+    error::TxnError,
+    frames::subtree_end,
+    key::{Column, Subtree},
+    load::LoadFiles,
+    pages::CommittedPages,
     txn::WriteTxn,
 };
 use crate::snapshot::{Directories, OperationGuard, Versions};
@@ -93,6 +98,36 @@ impl Keyspaces {
             Column::Roots => self.roots,
             Column::Meta => self.meta,
         }
+    }
+
+    /// The nearest subtree after `from` in the order of the prefixes, or
+    /// with `back` the nearest before it, under which the tree of `column`
+    /// stores a record in `pages`: one seek in that tree.
+    ///
+    /// What is stored there may be what a drop left, which is a record of
+    /// no state (`transactions.md` CV9): whoever asks opens the subtree to
+    /// know.
+    pub(crate) fn stored_beside<P: FlatPages + ?Sized>(
+        &self,
+        pages: &P,
+        column: Column,
+        from: &Subtree,
+        back: bool,
+    ) -> Result<Option<Subtree>, FlatError> {
+        let mut cursor = self.of(column).cursor();
+        match (back, subtree_end(from)) {
+            (false, Some(end)) => cursor.seek(pages, &end)?,
+            (false, None) => return Ok(None),
+            (true, _) => {
+                cursor.seek_for_prev(pages, from.as_bytes())?;
+                // The record under the empty key of `from` itself.
+                if cursor.key() == Some(&from.as_bytes()[..]) {
+                    cursor.prev(pages)?;
+                }
+            }
+        }
+        let prefix = cursor.key().and_then(|key| key.first_chunk());
+        Ok(prefix.map(|prefix| Subtree::new(*prefix)))
     }
 }
 

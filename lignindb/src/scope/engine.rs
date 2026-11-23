@@ -103,7 +103,19 @@ impl<'t, 's> Scope<'t, 's> {
         &self,
         subtree: Subtree,
     ) -> Result<ParkedCursor<'t, 's, MerkSide<'s>>, TxnError> {
-        let cursor = crate::txn::Cursor::merk(self.txn, self.who(), subtree)?;
+        let cursor = crate::txn::Cursor::merk(self.txn, self.who(), subtree, None)?;
+        Ok(ParkedCursor::new(cursor))
+    }
+
+    /// As [`Self::parked_merk_cursor`], for a caller whose subtrees can
+    /// be of trees that keep their data as flat records
+    /// ([`Self::merk_cursor_by_kind`]).
+    pub fn parked_merk_cursor_by_kind(
+        &self,
+        subtree: Subtree,
+        flat: FlatKinds,
+    ) -> Result<ParkedCursor<'t, 's, MerkSide<'s>>, TxnError> {
+        let cursor = crate::txn::Cursor::merk(self.txn, self.who(), subtree, Some(flat))?;
         Ok(ParkedCursor::new(cursor))
     }
 
@@ -789,8 +801,8 @@ impl<'s> WriteTxn<'s> {
         state: &mut State<'s>,
         op: &Op<'s>,
         who: Who,
-        subtree: Subtree,
-        key: &[u8],
+        (subtree, key): (Subtree, &[u8]),
+        kind: Kind<'_, 's>,
         read: F,
     ) -> Result<Result<R, F>, TxnError>
     where
@@ -807,7 +819,7 @@ impl<'s> WriteTxn<'s> {
                     let record = NodeView::record(&state.set, id, self.path.values);
                     Ok(Ok(read(Some(record))))
                 }
-                Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
+                Own::Put(_) => self.own_flat(state, subtree, key, kind, read).map(Ok),
                 Own::Deleted | Own::Unwritten => Ok(Ok(read(None))),
             };
         }

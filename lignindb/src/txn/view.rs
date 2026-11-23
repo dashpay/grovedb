@@ -166,7 +166,21 @@ enum Source<'a> {
         store: &'a ValueStore,
     },
     Unlinked(Unlinked<'a>),
+    Flat {
+        key: &'a [u8],
+        bytes: &'a [u8],
+    },
 }
+
+/// Says of a tree type, the bytes a subtree was entered with, whether a
+/// tree of it keeps its data as flat records of the data column and no
+/// Merk. A read of a node that is given one ([`NodeView::flat_record`])
+/// shows a flat record of such a subtree with the bytes it is stored
+/// with, where it would read it as an unlinked record otherwise.
+pub type FlatKinds = fn(&[u8]) -> bool;
+
+/// The hashes of what has none.
+static NO_HASH: Hash = [0; 32];
 
 /// One node as an operation of a write transaction reads it
 /// (`transactions.md` RD3, RD5): the cell of the node in the transaction's
@@ -174,6 +188,11 @@ enum Source<'a> {
 /// records by key (WT7b), the record it wrote. A key that no node of the
 /// Merk's tree is under can hold an unlinked record, which is shown as the
 /// node its writer stated ([`Self::is_unlinked`]).
+///
+/// A read that was told which tree types keep their data as flat records
+/// ([`FlatKinds`]) shows a flat record of such a subtree as it is stored
+/// ([`Self::flat_record`]): it is no node, and nothing but its key and
+/// its bytes is told of it.
 ///
 /// It borrows the frame or the write set, which do not change while the
 /// operation runs (LT2), or the bytes of the record that was read.
@@ -246,6 +265,24 @@ impl<'a> NodeView<'a> {
         }
     }
 
+    /// A flat record under `key`, with the bytes it is stored with.
+    pub(crate) const fn flat(key: &'a [u8], bytes: &'a [u8]) -> Self {
+        Self {
+            source: Source::Flat { key, bytes },
+        }
+    }
+
+    /// The bytes of the flat record that the read came to, under a tree
+    /// that keeps its data as flat records, or `None` for a node. Of such
+    /// a record the view has the key, and these bytes as its value: it
+    /// has no feature, no link and no handle, and its hashes are zeroes.
+    pub fn flat_record(&self) -> Option<&'a [u8]> {
+        match self.source {
+            Source::Flat { bytes, .. } => Some(bytes),
+            _ => None,
+        }
+    }
+
     fn entry(set: &'a WriteSet, id: EntryId) -> NodeEntry {
         match set.entry(id).kind {
             Kind::Node(node) => node,
@@ -259,6 +296,7 @@ impl<'a> NodeView<'a> {
             Source::Cell { node, .. } => node.key(),
             Source::Record { set, id, .. } => set.key(id),
             Source::Unlinked(record) => record.key,
+            Source::Flat { key, .. } => key,
         }
     }
 
@@ -268,6 +306,7 @@ impl<'a> NodeView<'a> {
             Source::Cell { node, .. } => node.feature(),
             Source::Record { set, id, .. } => set.bytes_at(Self::entry(set, id).feature),
             Source::Unlinked(record) => record.feature,
+            Source::Flat { .. } => &[],
         }
     }
 
@@ -279,6 +318,7 @@ impl<'a> NodeView<'a> {
                 hash_of(set.bytes_at(Self::entry(set, id).value_hash))
             }
             Source::Unlinked(record) => record.value_hash,
+            Source::Flat { .. } => &NO_HASH,
         }
     }
 
@@ -288,6 +328,7 @@ impl<'a> NodeView<'a> {
             Source::Cell { node, .. } => node.kv_hash(),
             Source::Record { set, id, .. } => hash_of(set.bytes_at(Self::entry(set, id).kv_hash)),
             Source::Unlinked(record) => record.kv_hash,
+            Source::Flat { .. } => &NO_HASH,
         }
     }
 
@@ -323,6 +364,7 @@ impl<'a> NodeView<'a> {
                 }
             },
             Source::Unlinked(record) => Ok(record.value),
+            Source::Flat { bytes, .. } => Ok(bytes),
         }
     }
 
@@ -332,6 +374,7 @@ impl<'a> NodeView<'a> {
             Source::Cell { node, .. } => node.value_len(),
             Source::Record { set, id, .. } => set.node_value(id).map_or(0, |value| value.len()),
             Source::Unlinked(record) => record.value.len() as u32,
+            Source::Flat { bytes, .. } => bytes.len() as u32,
         }
     }
 
@@ -343,7 +386,7 @@ impl<'a> NodeView<'a> {
             Source::Cell { stale, .. } => stale,
             Source::Record { set, id, .. } => Self::entry(set, id).stale,
             // An unlinked record is in no hash: nothing of it is evaluated.
-            Source::Unlinked(_) => Stale::NONE,
+            Source::Unlinked(_) | Source::Flat { .. } => Stale::NONE,
         }
     }
 
@@ -378,6 +421,7 @@ impl<'a> NodeView<'a> {
                 aggregate: link.aggregate,
                 key: Some(link.key),
             }),
+            Source::Flat { .. } => None,
         }
     }
 
@@ -388,7 +432,7 @@ impl<'a> NodeView<'a> {
     pub fn handle(&self) -> Option<NodeHandle> {
         match self.source {
             Source::Cell { node, .. } => Some(node.handle()),
-            Source::Record { .. } | Source::Unlinked(_) => None,
+            Source::Record { .. } | Source::Unlinked(_) | Source::Flat { .. } => None,
         }
     }
 
