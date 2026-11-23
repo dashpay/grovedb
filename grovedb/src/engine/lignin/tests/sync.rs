@@ -105,6 +105,7 @@ impl Side for LigninEngine {
         use grovedb_merk::store::lignin::hash::MerkHashRules;
         use lignindb::{Db, Options};
         let db = Db::open(dir, &Options::default()).expect("the database opens again");
+        db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
         let mut rules = MerkHashRules::for_check(v);
         let report = db.close_and_verify(Some(&mut rules)).expect("a close");
         let rules: BTreeSet<String> = (report.findings.iter())
@@ -2282,6 +2283,7 @@ fn a_merk_that_was_handed_over_is_named_in_its_host() {
         }
 
         let db = Db::open(dir.path(), &Options::default()).expect("the database opens again");
+        db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
         let mut rules = MerkHashRules::for_check(v);
         let report = db.close_and_verify(Some(&mut rules)).expect("a close");
         assert_eq!(report.is_sound(), named, "{:#?}", report.findings);

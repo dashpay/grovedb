@@ -309,6 +309,7 @@ pub(super) fn verify(db: &Db, scope: Scope, at: CommitVersion) -> Report {
         grove: Grove::Directory {
             tree: catalog.directory,
             columns: &columns,
+            data: None,
         },
         flat_drops: Some(catalog.flat_drops),
         flat: &other,

@@ -514,7 +514,9 @@
 //! was removed, a failed checkpoint); and for a handle that was taken out
 //! ([`Db::unchecked_at_close`]). No stored hash is recomputed unless the
 //! caller gave the rules that make them ([`Db::check_hashes_by`]): the
-//! engine knows no Merk rule.
+//! engine knows no Merk rule. The data column of a subtree is held to
+//! the tree type of its entry only where the caller said which tree
+//! types keep flat records ([`Db::check_kinds_by`]), for the same reason.
 //!
 //! In any build, [`Db::verify`] checks the latest version as a reader
 //! sees it, beside writers, at a version it pins under the commit lock
@@ -613,7 +615,7 @@ use crate::{
     commit::{CommitError, CommitStats, Committed, Committer, NoStaleHashes, Published},
     options::Options,
     snapshot::{LatestLease, Operation, Snapshot},
-    txn::{Batch, KeySet, Keyspaces, Subtree, SubtreeWrite, TxnError, WriteTxn},
+    txn::{Batch, Column, FlatKinds, KeySet, Keyspaces, Subtree, SubtreeWrite, TxnError, WriteTxn},
     verify,
 };
 
@@ -879,6 +881,9 @@ pub struct Db {
     /// The rules that the check of a close recomputes the hashes by, if
     /// the caller gave some.
     hash_rules: Mutex<Option<Box<dyn HashRules + Send>>>,
+    /// The tree types that keep flat records, by which a check holds the
+    /// data column to the entries, if the caller gave them.
+    flat_kinds: Mutex<Option<FlatKinds>>,
     /// The lock of the directory. It is the last field, so that it is
     /// released when everything else of the handle is gone.
     guard: Box<dyn VfsLock>,
@@ -1020,6 +1025,7 @@ impl Db {
             opening,
             unchecked: AtomicBool::new(false),
             hash_rules: Mutex::new(None),
+            flat_kinds: Mutex::new(None),
             guard: opened.lock,
         })
     }
@@ -1289,6 +1295,18 @@ impl Db {
         *lock(&self.hash_rules) = Some(rules);
     }
 
+    /// Gives the checks of this handle the tree types that keep flat
+    /// records, as the entries of the subtree directory state them: what
+    /// the writers of the database give their batches
+    /// ([`Scope::apply_by_kind`](crate::txn::Scope::apply_by_kind)). The
+    /// check that a close makes in a debug build, [`Self::verify`] and
+    /// [`Self::close_and_verify`] then hold the data column of every
+    /// subtree to the tree type of its entry ([`verify::DataColumn`]).
+    /// With none given they do not: the engine knows no tree type.
+    pub fn check_kinds_by(&self, keeps_flat_records: FlatKinds) {
+        *lock(&self.flat_kinds) = Some(keeps_flat_records);
+    }
+
     /// The structures of this store as the checker reads them, checked at
     /// the version `at`.
     fn check(
@@ -1304,6 +1322,10 @@ impl Db {
         // The catalog is the one flat keyspace that holds no record of a
         // subtree.
         let beside = [FlatTree::open(open::CATALOG_PAGE, store.config())];
+        let data = Column::ALL
+            .iter()
+            .position(|column| *column == Column::Data);
+        let kinds = *lock(&self.flat_kinds);
         let view = verify::Store {
             loader: store.loader(),
             table: &store.table,
@@ -1314,6 +1336,12 @@ impl Db {
             grove: verify::Grove::Directory {
                 tree: catalog.directory,
                 columns: &columns,
+                data: data
+                    .zip(kinds)
+                    .map(|(column, keeps_flat_records)| verify::DataColumn {
+                        column,
+                        keeps_flat_records,
+                    }),
             },
             flat_drops: Some(catalog.flat_drops),
             flat: &beside,

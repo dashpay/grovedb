@@ -274,13 +274,13 @@ fn a_store_with_no_directory_is_checked_from_its_roots() {
     assert_eq!(fewer.unreached.cells, 43 + 5);
 }
 
-struct Guard;
+pub(super) struct Guard;
 
 impl lignin_tree::OperationGuard for Guard {}
 
 /// The parts of the store `db` as its own check names them, with the
 /// columns `columns`.
-fn parts<'a>(db: &'a Db, columns: &'a [FlatColumn<'a>]) -> Store<'a, 'a> {
+pub(super) fn parts<'a>(db: &'a Db, columns: &'a [FlatColumn<'a>]) -> Store<'a, 'a> {
     Store {
         loader: db.loader(),
         table: &db.table,
@@ -291,6 +291,7 @@ fn parts<'a>(db: &'a Db, columns: &'a [FlatColumn<'a>]) -> Store<'a, 'a> {
         grove: Grove::Directory {
             tree: db.directory(),
             columns,
+            data: None,
         },
         flat_drops: Some(db.flat_drops()),
         flat: &[],

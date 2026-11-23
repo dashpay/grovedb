@@ -426,6 +426,7 @@ pub(super) fn open<E: Engine>(dir: &Path) -> GroveDb<E> {
 /// stored.
 pub(super) fn check(dir: &Path, version: &GroveVersion) {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
+    db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
     let mut rules = MerkHashRules::for_check(version);
     let report = db.close_and_verify(Some(&mut rules)).expect("a close");
     assert!(report.is_sound(), "{:#?}", report.findings);

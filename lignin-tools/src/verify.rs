@@ -20,6 +20,13 @@
 //! how many there are and in which cells, and the status is the one the
 //! rest of the check gives.
 //!
+//! **The data column by the tree type of the entry.** The check is given
+//! the tree types that keep their data as flat records
+//! (`grovedb_merk::store::lignin::keeps_flat_records`), with and without
+//! `--no-hashes`, and holds the data column of every subtree to the tree
+//! type of its entry (`lignindb::verify`, "The data column by the tree
+//! type of the entry").
+//!
 //! **Where it runs.** By default the database is opened and closed, and
 //! the store is checked after the close
 //! ([`Db::close_and_verify`](lignindb::Db::close_and_verify)): still, with
@@ -47,7 +54,7 @@
 
 use std::io::Write;
 
-use grovedb_merk::store::lignin::hash::MerkHashRules;
+use grovedb_merk::store::lignin::{hash::MerkHashRules, keeps_flat_records};
 use grovedb_version::version::GroveVersion;
 use lignin_tree::hash::HashRules;
 use lignindb::{
@@ -150,6 +157,7 @@ pub fn run(
     out: &mut dyn Write,
 ) -> Result<Outcome, ToolError> {
     let db = open(common)?;
+    db.check_kinds_by(keeps_flat_records);
     let verdict = match beside {
         true => {
             let verdict = beside_background(&db, hashes)?;

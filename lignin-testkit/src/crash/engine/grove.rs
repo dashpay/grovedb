@@ -15,7 +15,7 @@ use std::{
 };
 
 use grovedb::{engine::lignin::LigninEngine, Element, GroveDb, Transaction};
-use grovedb_merk::store::lignin::hash::MerkHashRules;
+use grovedb_merk::store::lignin::{hash::MerkHashRules, keeps_flat_records};
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 use lignin_format::PageSize;
@@ -327,6 +327,7 @@ pub fn verify_closed(
     let db = Db::open(dir, &tuning.options(vfs, false))
         .map_err(|error| format!("the database that was closed did not open again: {error}"))?;
     let version = db.version().get();
+    db.check_kinds_by(keeps_flat_records);
     let mut rules = rules_of(grove_version);
     let report = db
         .close_and_verify(Some(&mut rules))

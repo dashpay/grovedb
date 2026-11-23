@@ -26,7 +26,9 @@ use lignindb::{
     Db, Options,
 };
 
-use super::{contains, fixture, ran, run, small, temp, DOCS, FEATURE, FLAT, LONG_BYTE, TREE};
+use super::{
+    contains, fixture, ran, run, small, temp, DOCS, FEATURE, FLAT, FLAT_TREE, LONG_BYTE, TREE,
+};
 use crate::{hex, verify::ROOT, Outcome, ToolError};
 
 #[test]
@@ -266,7 +268,7 @@ fn the_directory_lists_every_entry_with_its_host() {
         "{docs}"
     );
     assert!(
-        line(FLAT).contains(&format!(" type {} empty", hex(b"flat"))),
+        line(FLAT).contains(&format!(" type {} empty", hex(FLAT_TREE))),
         "{report}"
     );
     contains(
@@ -338,6 +340,50 @@ fn verify_makes_every_hash_again_and_finds_a_value_that_changed() {
     for flags in ["", " --beside-background"] {
         let report = ran(&format!("verify {shown}{flags}"), Outcome::NotSound);
         contains(&report, &["NOT SOUND: "]);
+    }
+}
+
+/// `verify` holds the data of a subtree to the tree type of its entry.
+/// The fixture's subtree of flat records is entered as an MMR tree and is
+/// sound. A flat record in the data of a subtree that is entered as a
+/// normal tree is found: after the close and beside the background work,
+/// with the hashes made again and without.
+#[test]
+fn verify_holds_the_data_of_a_subtree_to_the_tree_type_of_its_entry() {
+    let dir = temp();
+    let path = fixture(dir.path(), 20);
+    let shown = path.display();
+    ran(&format!("verify {shown}"), Outcome::Done);
+
+    let plain = Subtree::new([5; 32]);
+    let db = Db::open(&path, &small()).expect("the database");
+    let enter = [SubtreeWrite::Enter {
+        subtree: plain,
+        tree_type: TREE,
+        host: None,
+    }];
+    let records = [RecordWrite::put(
+        Column::Data,
+        plain,
+        b"a record",
+        b"any bytes",
+    )];
+    let batch = Batch {
+        records: &records,
+        merks: &[],
+        subtrees: &enter,
+    };
+    (db.write(&batch, &mut NoStaleHashes)).expect("the record is written");
+    db.close().expect("a close");
+    for flags in ["", " --beside-background", " --no-hashes"] {
+        let report = ran(&format!("verify {shown}{flags}"), Outcome::NotSound);
+        contains(
+            &report,
+            &[
+                "NOT SOUND: 1 findings",
+                "a flat record in the data of a Merk's subtree is a node that no node links",
+            ],
+        );
     }
 }
 

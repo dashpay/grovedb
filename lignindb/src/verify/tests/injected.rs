@@ -217,7 +217,11 @@ impl Planted {
 
     /// Writes the leaf `page` again, with the entries that `change` leaves:
     /// each a key, its value's bytes, and whether those are a place.
-    fn rebuild_leaf(&self, page: PageId, change: impl FnOnce(&mut Vec<(Vec<u8>, Vec<u8>, bool)>)) {
+    pub(super) fn rebuild_leaf(
+        &self,
+        page: PageId,
+        change: impl FnOnce(&mut Vec<(Vec<u8>, Vec<u8>, bool)>),
+    ) {
         self.step(page, |bytes| {
             let leaf = FlatPage::decode(bytes, FRAME_FORMAT).expect("a flat page");
             let leaf = leaf.leaf().expect("a leaf");
@@ -247,7 +251,7 @@ impl Planted {
     }
 
     /// The leaf that holds an entry `wanted` takes.
-    fn leaf_with(&self, wanted: impl Fn(&[u8], &FlatValue<'_>) -> bool) -> PageId {
+    pub(super) fn leaf_with(&self, wanted: impl Fn(&[u8], &FlatValue<'_>) -> bool) -> PageId {
         let found = self.flat(|page| {
             (page.leaf()).is_some_and(|leaf| {
                 leaf.iter()
@@ -1458,7 +1462,7 @@ fn every_corruption_of_what_is_left_is_found() {
 }
 
 /// The lists name every rule but those that need a store of another kind,
-/// which `sound.rs` and the tests below have.
+/// which `sound.rs`, `kinds.rs` and the tests below have.
 #[test]
 fn the_lists_cover_the_rules() {
     let lists = [

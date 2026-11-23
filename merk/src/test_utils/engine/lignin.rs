@@ -191,6 +191,7 @@ impl TestEngine for LigninTestEngine {
         let db = Db::open(path, &Options::default()).expect("cannot open a lignindb database");
         let rules = MerkHashRules::for_check(GroveVersion::latest());
         db.check_hashes_by(Box::new(CheckedHashes(rules)));
+        db.check_kinds_by(crate::store::lignin::keeps_flat_records);
         LigninTestEngine { db }
     }
 

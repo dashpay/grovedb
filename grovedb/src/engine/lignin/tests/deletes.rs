@@ -1399,6 +1399,17 @@ fn a_range_delete_of_a_prefix_drops_what_is_entered_under_it() {
         // Entered again, the prefix holds what is written then.
         write();
         assert_eq!(read(), (true, 3));
+        // The check of the database holds the data of a subtree to the
+        // tree type of its entry, and the entry of a subtree that no
+        // element leads to states none. It is held as one whose data is a
+        // Merk, where a record is a node that no node links: the data
+        // record of this test is none, and is the one finding. No
+        // operation of GroveDB writes such a record there.
+        let report = engine.database().verify(None);
+        let found: Vec<_> = report.findings.iter().map(|found| found.rule).collect();
+        assert_eq!(found, [lignindb::verify::Rule::RecordKind], "{report}");
+        (engine.delete_prefix_ranges(&[left])).expect("a third range delete");
+        assert_eq!(read(), (false, 0));
         db.flush().expect("a flush");
     }
     check(dir.path(), v);

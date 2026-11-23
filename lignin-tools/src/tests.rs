@@ -43,6 +43,9 @@ const SUB: Subtree = Subtree::new([8; 32]);
 const DOCS_KEY: &[u8] = b"docs";
 /// The tree type GroveDB enters a normal tree with.
 const TREE: &[u8] = &[0];
+/// The tree type GroveDB enters an MMR tree with, which keeps its data as
+/// flat records (`grovedb_merk::store::lignin::tree_type_bytes`).
+const FLAT_TREE: &[u8] = &[8];
 /// A value long enough to be stored out of line.
 const LONG: usize = 3_000;
 /// The byte the long values are made of.
@@ -282,7 +285,7 @@ fn write_grove(db: &Db, documents: u32, round: Option<u8>) {
         },
         SubtreeWrite::Enter {
             subtree: FLAT,
-            tree_type: b"flat",
+            tree_type: FLAT_TREE,
             host: None,
         },
     ];

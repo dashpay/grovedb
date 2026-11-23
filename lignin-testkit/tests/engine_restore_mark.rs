@@ -363,6 +363,7 @@ impl<'s, 'db> Restore<'s, 'db> {
 fn findings(files: Arc<dyn Vfs>, v: &GroveVersion) -> BTreeSet<String> {
     let options = tuning(SyncPolicy::Never).options(files, false);
     let db = Db::open(db_dir(), &options).expect("the database opens again");
+    db.check_kinds_by(grovedb_merk::store::lignin::keeps_flat_records);
     let mut rules = MerkHashRules::for_check(v);
     let report = db.close_and_verify(Some(&mut rules)).expect("a close");
     assert_eq!(report.more_findings, 0, "{:?}", report.findings);

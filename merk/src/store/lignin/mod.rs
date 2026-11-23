@@ -190,7 +190,9 @@ pub use self::{
         LigninSettled, PreparedNode,
     },
     cursor::LigninCursor,
-    directory::{tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted},
+    directory::{
+        keeps_flat_records, tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted,
+    },
     flat::{LigninFlatCursor, LigninKeyspace},
     left::left_behind_key,
     view::{LigninSnapshot, LigninView},

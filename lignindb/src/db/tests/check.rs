@@ -433,3 +433,50 @@ fn a_session_that_the_store_ended_is_checked_on_demand_as_its_readers_read_it() 
     assert!(report.is_sound(), "{report}");
     assert_eq!(report.census.live_cells, before.census.live_cells);
 }
+
+/// The checks of a database hold the data column of a subtree to the tree
+/// type of its entry once they are given the tree types that keep flat
+/// records, and not before: the check on demand and the check of a close
+/// that is asked for its report. A handle of the next session was given
+/// none, and holds the column to nothing.
+#[test]
+fn the_checks_hold_the_data_column_to_the_tree_types_they_are_given() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    // A Merk with a node that no node links, and a subtree with no node
+    // and a flat record that is no such node.
+    let merk = Merk::sized(b'k', 9, 30).with_unlinked(b"unlinked", b"a value");
+    Writes {
+        enter: vec![(subtree(1), None), (subtree(2), None)],
+        merks: vec![(subtree(1), merk)],
+        records: vec![(
+            Column::Data,
+            subtree(2),
+            b"a record".to_vec(),
+            b"any bytes".to_vec(),
+        )],
+        ..Writes::default()
+    }
+    .commit(&db);
+    let rules = |report: &crate::verify::Report| -> Vec<Rule> {
+        report.findings.iter().map(|found| found.rule).collect()
+    };
+    assert!(db.verify(None).is_sound());
+    // Where every tree type keeps flat records, no record has a form to
+    // keep.
+    db.check_kinds_by(|_| true);
+    let report = db.verify(None);
+    assert!(report.is_sound(), "{report}");
+    // Where the tree type of the two subtrees keeps a Merk, the flat
+    // record is the one finding.
+    db.check_kinds_by(|tree_type| tree_type != TREE_TYPE);
+    let report = db.verify(None);
+    assert_eq!(rules(&report), [Rule::RecordKind], "{report}");
+    let report = db.close_and_verify(None).expect("a close");
+    assert_eq!(rules(&report), [Rule::RecordKind], "{report}");
+
+    let db = Db::open(dir.path(), &options()).expect("the database again");
+    assert!(db.verify(None).is_sound());
+    let report = db.close_and_verify(None).expect("a close");
+    assert!(report.is_sound(), "{report}");
+}
