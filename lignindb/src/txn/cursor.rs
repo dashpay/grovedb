@@ -1145,8 +1145,10 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// the caller names the keys that stand for records that way. They
     /// are counted after the records of the subtrees, up to `limit` with
     /// them, and are the keys that a cursor of the unit shows which is
-    /// opened at this cursor's version, as the subtrees are read: one
-    /// seek in the unit's column, and a step for each key counted.
+    /// opened at this cursor's version, as the subtrees are read. The
+    /// unit is not read where the subtrees fill the limit. Where they do
+    /// not, it is one seek in the unit's column, and steps over its keys
+    /// until the limit is reached or the range ends.
     pub fn beside_with(
         &mut self,
         back: bool,

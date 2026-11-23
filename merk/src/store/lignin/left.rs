@@ -96,15 +96,17 @@ mod tests {
     #[test]
     fn the_marks_beside_a_prefix_are_those_of_its_keyspace_under_another_prefix() {
         let prefix = |byte: u8| [byte; 32];
-        let own = prefix(5);
         let marks: Vec<(Keyspace, [u8; 32])> = [Keyspace::Data, Keyspace::Aux, Keyspace::Meta]
             .into_iter()
             .flat_map(|keyspace| [0, 4, 5, 6, 0xFF].map(|byte| (keyspace, prefix(byte))))
             .collect();
-        assert_eq!(left_behind_key(Keyspace::Roots, &own), None);
-        assert!(Left::of(Some(prefix(9)), Keyspace::Roots, &own).is_none());
-        assert!(Left::of(None, Keyspace::Data, &own).is_none());
-        for keyspace in [Keyspace::Data, Keyspace::Aux, Keyspace::Meta] {
+        assert_eq!(left_behind_key(Keyspace::Roots, &prefix(5)), None);
+        assert!(Left::of(Some(prefix(9)), Keyspace::Roots, &prefix(5)).is_none());
+        assert!(Left::of(None, Keyspace::Data, &prefix(5)).is_none());
+        let cursors = [Keyspace::Data, Keyspace::Aux, Keyspace::Meta]
+            .into_iter()
+            .flat_map(|keyspace| [0, 5, 0xFF].map(|own| (keyspace, prefix(own))));
+        for (keyspace, own) in cursors {
             let left = Left::of(Some(prefix(9)), keyspace, &prefix(1)).unwrap();
             let left = left.of_subtree(&own);
             for back in [false, true] {
@@ -130,8 +132,17 @@ mod tests {
                     })
                     .copied()
                     .collect();
-                assert_eq!(within, expected, "{keyspace:?}, back {back}");
-                assert_eq!(within.len(), 2);
+                assert_eq!(within, expected, "{keyspace:?}, {}, back {back}", own[0]);
+                // Every mark of the keyspace but the cursor's own is on
+                // one side: four of them beside the first prefix and
+                // beside the last.
+                let other_way = match own[0] {
+                    5 => 2,
+                    0 if back => 4,
+                    0xFF if !back => 4,
+                    _ => 0,
+                };
+                assert_eq!(within.len(), 4 - other_way, "{}, back {back}", own[0]);
             }
         }
     }

@@ -342,7 +342,7 @@ fn marks(db: &Lignin) -> Vec<Vec<u8>> {
 }
 
 /// The marks of a flat drop are those of the prefixes that held a
-/// record, are in the dropping transaction and in no other until it
+/// record, are shown to no other transaction before the dropping one
 /// commits, leave with a rollback, stay over a drain that skips the
 /// record of a path that is live, and are gone after the drain that
 /// reclaims it.
@@ -432,6 +432,9 @@ fn the_marks_of_a_flat_drop_stay_until_the_drain_that_reclaims_its_record() {
 /// flat. The cursors of the three keyspaces of the tree before it are
 /// each sought past their last key and stepped back: before the drop,
 /// in the dropping transaction, after the commit and after the drain.
+/// And, after the drain, in a snapshot that was taken before the drop
+/// and in one that was taken between the commit and the drain: each
+/// reads what was there when it was taken.
 fn lines<E: Engine>(dir: &Path) -> Vec<String> {
     let v = GroveVersion::latest();
     let db = GroveDb::<E>::open_with_engine(dir).expect("a database");
@@ -497,6 +500,7 @@ fn lines<E: Engine>(dir: &Path) -> Vec<String> {
         log.push(stepped_back!("at once, by prefix", cursor));
     };
     look("made", &engine.start_read_transaction());
+    let before = engine.start_snapshot_read_transaction();
     let tx = db.start_transaction();
     (db.drop_flat_subtree(ROOT, &h, BackwardsReferences::DontCheck, Some(&tx), v)
         .unwrap())
@@ -504,9 +508,21 @@ fn lines<E: Engine>(dir: &Path) -> Vec<String> {
     look("dropped", &tx);
     (db.commit_transaction(tx).unwrap()).expect("a commit");
     look("committed", &engine.start_read_transaction());
+    let between = engine.start_snapshot_read_transaction();
     let report = db.flush_pending_prefix_drops(v).expect("a drain");
     assert_eq!(report.reclaimed_records, 1);
     look("drained", &engine.start_read_transaction());
+    drop(look);
+    for (phase, snapshot) in [("before the drop", &before), ("between", &between)] {
+        let handle = engine.subtree_by_prefix(prefix_of(&s), None, snapshot);
+        let handle = handle.unwrap();
+        log.push(format!("a snapshot of {phase}"));
+        let cursor = crate::engine::NodeStore::cursor(&handle);
+        log.push(stepped_back!("data", cursor));
+        let (aux, meta) = (handle.aux(), handle.meta());
+        log.push(stepped_back!("aux", aux.cursor()));
+        log.push(stepped_back!("meta", meta.cursor()));
+    }
     log
 }
 
@@ -518,9 +534,9 @@ fn the_cursors_of_each_keyspace_beside_a_flat_drop_step_as_on_rocksdb() {
     // Each cursor comes back onto the last key until the drain, and
     // stays on no key after it.
     let back = |line: &&String| line.contains("back on Some(");
-    assert_eq!(on_lignin.iter().filter(back).count(), 21, "{on_lignin:#?}");
-    assert_eq!(on_lignin.len(), 32);
-    let drained = &on_lignin[25..];
+    assert_eq!(on_lignin.iter().filter(back).count(), 27, "{on_lignin:#?}");
+    assert_eq!(on_lignin.len(), 40);
+    let drained = &on_lignin[25..32];
     assert!(drained.iter().all(|line| line.contains("back on None")));
     #[cfg(feature = "rocksdb_storage")]
     {

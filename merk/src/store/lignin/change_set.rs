@@ -1544,9 +1544,10 @@ impl LigninSettled {
         self.left_out.insert(Subtree::new(*prefix));
     }
 
-    /// Takes back every statement of [`Self::drop_subtree`] and of
-    /// [`Self::leave_out`]: the batch drops what its handles staged a
-    /// drop of, and hands over every write it holds.
+    /// Takes back every statement of [`Self::drop_subtree`], of
+    /// [`Self::leave_out`] and of [`Self::leave_behind`]: the batch drops
+    /// what its handles staged a drop of, hands over every write it
+    /// holds, and is applied with no mark.
     pub fn forget_drops(&mut self) {
         self.drops.clear();
         self.left_out.clear();
@@ -1676,7 +1677,9 @@ impl LigninSettled {
         &self.pending
     }
 
-    /// Whether the batch writes nothing, and states no subtree anew.
+    /// Whether the batch writes nothing, and states no subtree anew:
+    /// of what its handles staged. What whoever applies it stated since
+    /// does not count ([`Self::drop_subtree`], [`Self::leave_behind`]).
     pub fn is_empty(&self) -> bool {
         self.resolved.is_empty() && self.moves.is_empty() && self.converted.is_empty()
     }

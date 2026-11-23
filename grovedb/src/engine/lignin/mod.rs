@@ -617,7 +617,10 @@ impl PendingPrefixDrops for LigninEngine {
     /// prefixes, unless a write that no element leads to entered a
     /// subtree under one of them since. What it does find is the root-key
     /// record of each of those prefixes that has one, and the marks of
-    /// those that held a record.
+    /// those that held a record. GroveDB drains a pending-drop record
+    /// once the path of the dropped tree leads to no element. The call
+    /// itself looks at none of this: a prefix that is entered is dropped,
+    /// whatever leads to it.
     ///
     /// The namespace that keeps those records is not dropped where its
     /// own prefix is given, which the record of no flat drop of GroveDB
