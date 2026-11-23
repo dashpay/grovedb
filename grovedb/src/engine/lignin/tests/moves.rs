@@ -1153,8 +1153,13 @@ fn a_tree_changes_places_with_an_emptied_indexed_tree() {
             let (under_idx, absent) = match filled_tree {
                 Filled::Tree => (vec![idx], vec![of(IndexAxis::Count, idx)]),
                 Filled::Indexed => (
-                    vec![idx, of(IndexAxis::Count, idx), of(IndexAxis::Sum, idx)],
-                    vec![of(IndexAxis::Sum, full)],
+                    vec![
+                        idx,
+                        of(IndexAxis::Count, idx),
+                        of(IndexAxis::Sum, idx),
+                        of(IndexAxis::Avg, idx),
+                    ],
+                    vec![of(IndexAxis::Sum, full), of(IndexAxis::Avg, full)],
                 ),
             };
             let under_full = vec![full, of(IndexAxis::Count, full)];

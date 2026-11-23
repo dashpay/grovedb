@@ -1077,9 +1077,10 @@ fn written_again<E: Engine>(
         && over(&mut h, b"mmr over an index", mmr);
     keep(b"mmr over an index", Again::Mmr, taken);
     // GroveDB sweeps the old tree from grove version 4 on. Before it,
-    // the records of the old tree stay under its prefixes on both
-    // engines, and no engine serves the primary of such a tree to a
-    // session: the source refuses the chunk.
+    // RocksDB keeps the records of the old tree under its prefixes, and
+    // its source refuses the chunk of the primary to a session; LigninDB
+    // drops the old tree's subtrees, and refuses the batch where the new
+    // tree shares an axis with the old one (D-292).
     if v.grovedb_versions
         .apply_batch
         .overwrite_indexed_cleanup_inspection
