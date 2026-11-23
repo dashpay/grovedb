@@ -119,9 +119,10 @@ fn grove<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Shape {
 /// The writes a grove takes after it was synced, with the root hash they
 /// leave: at the start, the middle and the end of [`MANY`], the one item
 /// of a tree deleted, which leaves the tree with nothing, and then a
-/// write into two trees of every shape, that tree and a tree that
-/// nothing was written into among them; a tree made under [`MANY`]; and
-/// one batch that writes into two hundred of the trees.
+/// write into two trees of every shape, that tree among them, and at the
+/// start and in the middle a tree that nothing was written into; a tree
+/// made under [`MANY`]; and one batch that writes into two hundred of
+/// the trees.
 fn written<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> [u8; 32] {
     let put = |at: &[&[u8]], key: &[u8], element: Element| {
         let inserted = db.insert(at, key, element, None, None, v);

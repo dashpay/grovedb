@@ -513,11 +513,12 @@ fn reads(op: &Op) -> bool {
 /// compares them after every step. `interrupted` is asked before each
 /// operation and ends the run when it says so.
 ///
-/// A run that found no divergence ends with the candidate's own check of
-/// its store ([`super::close`]), wherever it ended: at the last operation
-/// of the case, at a named open difference, cut short, interrupted, or
-/// with no operation at all. What the check finds is a divergence at the
-/// last step that was compared, or at step 0 where none was.
+/// Where the candidate is LigninDB's engine, a run that found no
+/// divergence ends with the candidate's own check of its store
+/// ([`super::close`]), wherever it ended: at the last operation of the
+/// case, at a named open difference, cut short, interrupted, or with no
+/// operation at all. What the check finds is a divergence at the last
+/// step that was compared, or at step 0 where none was.
 ///
 /// Call it on a thread with a stack of
 /// [`STACK_BYTES`](crate::golden::run::STACK_BYTES).
