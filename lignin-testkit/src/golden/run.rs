@@ -841,7 +841,6 @@ mod tests {
                     transaction,
                     grove_version,
                 )
-                .unwrap()
             };
 
             let transaction = db.start_transaction();
@@ -852,8 +851,8 @@ mod tests {
             drop(transaction);
 
             let transaction = db.start_transaction();
-            put(b"k", Some(&transaction)).expect("a write of the transaction");
-            put(b"k", None).expect("a commit beside it");
+            (put(b"k", Some(&transaction)).unwrap()).expect("a write of the transaction");
+            put(b"k", None).unwrap().expect("a commit beside it");
             let conflict = db
                 .commit_transaction(transaction)
                 .unwrap()

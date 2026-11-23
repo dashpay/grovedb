@@ -109,7 +109,7 @@ fn the_corpus_streams_answer_alike_on_rocksdb_and_on_lignindb() {
     let scratch = tempfile::tempdir().expect("a directory");
     let cases: Vec<(u32, String, Case)> = GROVE_VERSIONS
         .iter()
-        .flat_map(|version| plan::standard(version))
+        .flat_map(plan::standard)
         .map(|planned| {
             let spec = planned.spec;
             let ops: Vec<Op> = (spec.segments.iter())

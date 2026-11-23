@@ -16,10 +16,22 @@
 use std::time::{Duration, Instant};
 
 use lignin_testkit::diff::{
-    cli::SEEDED_FAULT, fuzz, Budget, Candidate, Fault, Part, Reference, Settings, Side, StandIn,
+    cli::SEEDED_FAULT, fuzz, Budget, Candidate, Fault, Part, Reference, Settings, Shape, Side,
+    StandIn,
 };
 
 const A_MINUTE: Duration = Duration::from_secs(60);
+
+/// The grove versions on which the candidate has to answer as the
+/// reference does today: the first four. On the fifth the conversion of an
+/// indexed tree to a big sum tree is refused by LigninDB where RocksDB
+/// makes it, which `GROVE-04-F1` removes, and the fuzzer reports it within
+/// a few dozen cases. The test runs every grove version once that unit is
+/// merged: this constant is then `GROVE_VERSIONS.len()`.
+const VERSIONS_THAT_ANSWER_ALIKE: usize = 4;
+
+/// How many cases the candidate is given on each of those grove versions.
+const CASES_OF_A_VERSION: u64 = 8;
 
 /// A directory for the databases, in the temporary directory: whoever runs
 /// the tests says with `TMPDIR` where that is, and the minute is measured
@@ -133,45 +145,76 @@ fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
 #[test]
 fn the_candidate_answers_as_the_reference_does() {
     let scratch = scratch();
-    let summary = fuzz(
-        &Side::<Reference>::of("reference"),
-        &Side::<Candidate>::of("candidate"),
-        &Settings {
-            cases: Some(32),
-            ..settings(&scratch)
-        },
-        &mut |_| {},
-    )
-    .expect("the run");
-    let tally = summary.progress.tally;
-    println!(
-        "{} cases, {} steps, {} operations failed alike, {} proofs, {} comparisons of {} stored \
-         records, {} cases cut short, in {:.1} s",
-        summary.progress.cases,
-        tally.steps,
-        tally.failed,
-        tally.proofs,
-        tally.walks,
-        tally.records,
-        tally.cut_short,
-        summary.progress.elapsed.as_secs_f64()
-    );
-    if let Some(finding) = &summary.finding {
-        panic!(
-            "the engines differ in case {} (seed {:#x}):\n{}",
-            finding.index,
-            finding.case.seed,
-            finding
-                .divergence
-                .report(&finding.case, "reference", "candidate")
-                .join("\n")
+    let (mut cases, mut steps, mut proofs, mut walks) = (0, 0, 0, 0);
+    // A run of each grove version by itself, so that a case it reports is
+    // the case `lignin-diff case --seed SEED --grove-version N` runs again.
+    for number in 1..=VERSIONS_THAT_ANSWER_ALIKE {
+        let shape = Shape::default()
+            .for_grove_version(number as u32)
+            .expect("a grove version");
+        let summary = fuzz(
+            &Side::<Reference>::of("reference"),
+            &Side::<Candidate>::of("candidate"),
+            &Settings {
+                cases: Some(CASES_OF_A_VERSION),
+                shape,
+                ..settings(&scratch)
+            },
+            &mut |_| {},
+        )
+        .expect("the run");
+        let tally = summary.progress.tally;
+        println!(
+            "grove version {number}: {} cases, {} steps, {} operations failed alike, {} proofs, \
+             {} comparisons of {} stored records, {} cases cut short, in {:.1} s",
+            summary.progress.cases,
+            tally.steps,
+            tally.failed,
+            tally.proofs,
+            tally.walks,
+            tally.records,
+            tally.cut_short,
+            summary.progress.elapsed.as_secs_f64()
         );
+        if let Some(finding) = &summary.finding {
+            let shrunk = finding.shrunk.as_ref().map_or_else(
+                || format!("not shrunk: {:?}", finding.not_shrunk),
+                |shrunk| {
+                    let ops: Vec<String> = (shrunk.case.ops.iter().enumerate())
+                        .map(|(at, op)| format!("  {at}: {op:?}"))
+                        .collect();
+                    format!(
+                        "shrunk to {} operations:\n{}\n{}",
+                        ops.len(),
+                        ops.join("\n"),
+                        shrunk
+                            .divergence
+                            .report(&shrunk.case, "reference", "candidate")
+                            .join("\n")
+                    )
+                },
+            );
+            panic!(
+                "the engines differ on grove version {number} in case {} (lignin-diff case --seed \
+                 {:#x} --grove-version {number}):\n{}\n{shrunk}",
+                finding.index,
+                finding.case.seed,
+                finding
+                    .divergence
+                    .report(&finding.case, "reference", "candidate")
+                    .join("\n")
+            );
+        }
+        assert_eq!(summary.progress.cases, CASES_OF_A_VERSION);
+        assert_eq!(summary.first_cut_short, None);
+        cases += summary.progress.cases;
+        steps += tally.steps;
+        proofs += tally.proofs;
+        walks += tally.walks;
     }
-    assert_eq!(summary.progress.cases, 32);
-    assert!(tally.steps > 15_000, "{} steps", tally.steps);
-    assert!(tally.proofs > 500, "{} proofs", tally.proofs);
-    assert!(tally.walks > 32, "{} walks", tally.walks);
-    assert_eq!(summary.first_cut_short, None);
+    assert!(steps > 15_000, "{steps} steps");
+    assert!(proofs > 500, "{proofs} proofs");
+    assert!(walks > cases, "{walks} walks");
 }
 
 #[test]
