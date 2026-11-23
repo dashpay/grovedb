@@ -14,7 +14,7 @@ use super::{
     error::BatchError,
     key::{in_range, ranges_meet, Column, KeyRange, KeySet, Subtree, Unit, UnitKeys},
     load::StoredValue,
-    view::SubtreeView,
+    view::{FlatKinds, SubtreeView},
     write::{
         Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, Moving, NodePut, RecordWrite,
         RootPut, SubtreeWrite, ValuePut,
@@ -334,6 +334,15 @@ struct Op {
     first_write: CommitVersion,
     /// The place of the arena before the operation's bytes.
     arena: ArenaMark,
+    /// The tree types that keep flat records, as the operation's batch
+    /// was given them: it is judged by them wherever it is laid out.
+    kinds: Option<FlatKinds>,
+    /// Whether the pages took the operation by the tree type of a
+    /// subtree when it was added ([`Frames::both`](super::frames::Frames)):
+    /// while the set holds such an operation, [`WriteSet::admits`] looks
+    /// for both kinds among all that the transaction wrote. It is told
+    /// when the operation is added to pages and by no layout after that.
+    both: bool,
 }
 
 /// What the data column of a subtree holds in a write set (ST1).
@@ -822,6 +831,8 @@ impl WriteSet {
             laid: true,
             first_write,
             arena: self.arena.mark(),
+            kinds: None,
+            both: false,
         });
         for write in batch.subtrees {
             let entry = match *write {
@@ -1173,6 +1184,7 @@ impl WriteSet {
             });
             let added = kept.ops.last_mut().expect("it was added");
             (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
+            (added.kinds, added.both) = (was.kinds, was.both);
             let (from, to, ..) = self.op_bounds(op);
             for (id, was) in (start..).zip(&self.entries[from..to]) {
                 kept.entries[id].met = was.met;
@@ -1342,12 +1354,17 @@ impl WriteSet {
     }
 
     /// What the transaction has written in `unit` since it last dropped or
-    /// cleared the unit's subtree: Merk nodes, flat records, or nothing. It
-    /// is never both ([`Self::admits`]).
+    /// cleared the unit's subtree: whether Merk nodes or removals of
+    /// them, and whether flat records, their deletes among them. With
+    /// `all` both are looked for, among every write and not the newest
+    /// under each key alone. Without it the first kind that is found
+    /// among the newest is the answer, which is all there is where no
+    /// operation was taken by the tree type of a subtree
+    /// ([`Self::admits`]).
     ///
     /// What it wrote under the prefix a move took the subtree from, before
     /// the move, is the subtree's still ([`Self::stretches`]).
-    fn held(&self, unit: Unit) -> Option<Held> {
+    fn held(&self, unit: Unit, all: bool) -> (bool, bool) {
         let kind = |id: EntryId| match self.entry(id).kind {
             Kind::Node(_) | Kind::Remove => Some(Held::Nodes),
             Kind::Put(_) | Kind::Delete | Kind::Range { .. } => Some(Held::Flat),
@@ -1361,6 +1378,7 @@ impl WriteSet {
             }],
             false => self.stretches(unit.subtree, None).0,
         };
+        let (mut nodes, mut flat) = (false, false);
         for stretch in &stretches {
             let Some(index) = self.units.get(&Unit::new(unit.column, stretch.subtree)) else {
                 continue;
@@ -1373,14 +1391,33 @@ impl WriteSet {
             let later = |id: &EntryId| since.is_none_or(|since| *id > since);
             let ranges = (index.ranges.iter().copied()).filter(|id| stretch.holds(*id));
             let points = (index.keys.keys()).filter_map(|key| self.point_in(index, key, stretch));
-            if let Some(held) = ranges.chain(points).filter(later).find_map(kind) {
-                return Some(held);
+            for newest in ranges.chain(points).filter(later) {
+                let mut entry = Some(newest);
+                while let Some(id) = entry {
+                    match kind(id) {
+                        Some(Held::Nodes) => nodes = true,
+                        Some(Held::Flat) => flat = true,
+                        None => {}
+                    }
+                    if (nodes || flat) && (!all || (nodes && flat)) {
+                        return (nodes, flat);
+                    }
+                    // With `all`, what was written under the key before
+                    // was written too: a read takes the newest, and this
+                    // asks for every one.
+                    entry = match all {
+                        true => {
+                            (self.entry(id).prev).filter(|prev| stretch.holds(*prev) && later(prev))
+                        }
+                        false => None,
+                    };
+                }
             }
             if since.is_some() {
-                return None;
+                break;
             }
         }
-        None
+        (nodes, flat)
     }
 
     /// Whether an operation of the set moves a subtree.
@@ -1665,27 +1702,55 @@ impl WriteSet {
         ops.flat_map(|op| self.op_subtrees(op)).any(enters)
     }
 
-    /// Checks `batch` against what the transaction has written: the data
-    /// column of a subtree holds the nodes of a Merk or flat records, and
-    /// not both (ST1).
+    /// Checks `batch` against what the transaction has written, as a
+    /// batch that is given no tree types is held to it: no change set of
+    /// a subtree in whose data column the transaction wrote a flat
+    /// record, and no flat record in the data column of one it wrote a
+    /// node of (ST1).
     ///
     /// A subtree that the batch drops or clears holds nothing when its
     /// change sets and records are applied.
     pub(crate) fn admits(&self, batch: &Batch<'_>) -> Result<(), BatchError> {
+        // Once the pages took an operation by the tree type of a subtree,
+        // a data column can hold both kinds: each is looked for among all
+        // that the transaction wrote there.
+        let all = self.ops.iter().any(|op| op.both);
         for merk in batch.merks {
             let subtree = merk.subtree;
-            if !batch.leaves(subtree) && self.held(Unit::data(subtree)) == Some(Held::Flat) {
+            let (_, flat) = self.held(Unit::data(subtree), all);
+            if flat && !batch.leaves(subtree) {
                 return Err(BatchError::NotMerk { subtree });
             }
         }
         for record in batch.records {
             let unit = record.unit();
-            let nodes = unit.column == Column::Data && self.held(unit) == Some(Held::Nodes);
+            let nodes = unit.column == Column::Data && self.held(unit, all).0;
             if nodes && !batch.leaves(unit.subtree) {
                 return Err(BatchError::NotFlat { unit });
             }
         }
         Ok(())
+    }
+
+    /// Says that the operation that was added last was given `kinds`.
+    pub(crate) fn tell_kinds(&mut self, kinds: Option<FlatKinds>) {
+        if let Some(op) = self.ops.last_mut() {
+            op.kinds = kinds;
+        }
+    }
+
+    /// Says whether the pages took the operation that was added last by
+    /// the tree type of a subtree ([`Op::both`]).
+    pub(crate) fn tell_both(&mut self, both: bool) {
+        if let Some(op) = self.ops.last_mut() {
+            op.both = both;
+        }
+    }
+
+    /// The tree types that keep flat records, as the batch of the
+    /// operation `op` was given them.
+    pub(crate) fn kinds(&self, op: usize) -> Option<FlatKinds> {
+        self.ops[op].kinds
     }
 
     /// Whether an operation of the transaction entered `subtree` if it

@@ -346,6 +346,9 @@
 //!   where the batch, the write set or the state the transaction reads
 //!   has nodes is refused ([`BatchError::NotFlat`]), and so is a change
 //!   set where the write set has flat records ([`BatchError::NotMerk`]).
+//!   One batch is not refused so, by the rule of ST1: one that is given
+//!   the tree types which keep their data as flat records
+//!   ([`Scope::apply_by_kind`]).
 //! - **A root with no node.** A change set that sets its root writes or
 //!   deletes a node ([`BatchError::RootAlone`]).
 //! - **A host that keeps its pointers beside the Merk it hosts.** The
