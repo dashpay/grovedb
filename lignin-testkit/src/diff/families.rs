@@ -27,9 +27,10 @@
 //!   operation that names a place of a family, the case ends there, is
 //!   counted for the family, and is no divergence of the run. They differ
 //!   there because the read takes the records under a prefix as they are.
-//!   A query names the subtree it is of and, since it can go down by its
-//!   subqueries, every place of a family below that subtree. A difference
-//!   at any other operation ends the run, as it always did.
+//!   A query names the subtree it is of and, where it has a subquery to
+//!   go down by, every place of a family below that subtree. A difference
+//!   at any other operation ends the run, as it always did: so does a
+//!   read of the subtree of a dropped tree itself, which is of no family.
 //!
 //! The counts are in the [`Tally`](super::pair::Tally) of a run
 //! ([`Counts`]): the cases that made a place of a family, those with a
@@ -221,23 +222,32 @@ fn read_places(read: &Read, places: &mut Vec<Path>) {
     }
 }
 
-/// The subtrees the queries of `read` are of.
+/// The subtrees of the queries of `read` that go down by a subquery. A
+/// query with none reads its own subtree alone.
 fn query_places(read: &Read) -> Vec<Path> {
+    let goes_down = |query: &&grovedb::PathQuery| query.query.query.has_subquery();
+    let of = |query: &grovedb::PathQuery| query.path.clone();
     match read {
-        Read::Query(query) => vec![query.path.clone()],
+        Read::Query(query) if query.subquery_path.is_some() || query.subquery_all => {
+            vec![query.path.clone()]
+        }
         Read::PathQuery { query, .. }
         | Read::Rows { query, .. }
         | Read::KeysOptional { query, .. }
         | Read::ItemValues { query, .. }
         | Read::SumValues { query }
-        | Read::BigSum { query, .. } => vec![query.path.clone()],
-        Read::SumBudget { query, .. } => vec![query.path.clone()],
-        Read::Many { queries } => queries.iter().map(|query| query.path.clone()).collect(),
-        Read::Prove(Prove::PathQuery(query)) => vec![query.path.clone()],
-        Read::Prove(Prove::Many(queries)) => {
-            queries.iter().map(|query| query.path.clone()).collect()
+        | Read::BigSum { query, .. }
+        | Read::Prove(Prove::PathQuery(query)) => Some(&**query)
+            .filter(goes_down)
+            .map(of)
+            .into_iter()
+            .collect(),
+        Read::Many { queries } | Read::Prove(Prove::Many(queries)) => {
+            queries.iter().filter(goes_down).map(of).collect()
         }
-        Read::Get { .. }
+        Read::Query(_)
+        | Read::SumBudget { .. }
+        | Read::Get { .. }
         | Read::HasRaw { .. }
         | Read::Fetch { .. }
         | Read::IsEmptyTree { .. }
@@ -391,8 +401,8 @@ impl Known {
     }
 
     /// The family an answer to `op` is of: that of the first place the
-    /// operation names that is of one, and for a query, which goes down
-    /// by its subqueries, also that of a place below its subtree.
+    /// operation names that is of one, and for a query that goes down by
+    /// a subquery also that of a place below its subtree.
     pub fn family_of_answer(&self, op: &Op) -> Option<Family> {
         let named = places(op).iter().find_map(|place| self.family(place));
         let read = match op {
@@ -636,6 +646,23 @@ mod tests {
         );
         assert_eq!(known.family_of_answer(&query(&[b"c"])), None);
         assert_eq!(known.family_of_answer(&query(&[b"b", b"other"])), None);
+        // With no subquery a query reads its own subtree alone: the one
+        // above a place is of no family, and neither is the one of the
+        // dropped tree's own subtree.
+        let alone = |at: &[&[u8]]| {
+            let Op::Read(Read::Query(mut query)) = query(at) else {
+                unreachable!()
+            };
+            query.subquery_all = false;
+            Op::Read(Read::Query(query))
+        };
+        assert_eq!(known.family_of_answer(&alone(&[b"b"])), None);
+        assert_eq!(known.family_of_answer(&alone(&[b"a", b"dropped"])), None);
+        assert_eq!(known.family_of_answer(&alone(&[b"b", b"over"])), over);
+        assert_eq!(
+            known.family_of_answer(&query(&[b"a", b"dropped"])),
+            Some(Family::BelowFlatDrop)
+        );
         assert_eq!(known.family_of_answer(&get(&[b"b"], b"other")), None);
         assert_eq!(known.family_of_answer(&delete(&[b"a"], b"dropped")), None);
         // A proof of a chunk names its subtree, and a move its new key.
