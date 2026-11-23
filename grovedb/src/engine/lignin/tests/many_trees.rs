@@ -117,17 +117,26 @@ fn grove<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Shape {
 }
 
 /// The writes a grove takes after it was synced, with the root hash they
-/// leave: at the start, the middle and the end of [`MANY`], a write into
-/// two trees of every shape, the first write into a tree that nothing
-/// was written into among them, and the one item of a tree deleted; a
-/// tree made under [`MANY`]; and one batch that writes into two hundred
-/// of the trees.
+/// leave: at the start, the middle and the end of [`MANY`], the one item
+/// of a tree deleted, which leaves the tree with nothing, and then a
+/// write into two trees of every shape, that tree and a tree that
+/// nothing was written into among them; a tree made under [`MANY`]; and
+/// one batch that writes into two hundred of the trees.
 fn written<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> [u8; 32] {
     let put = |at: &[&[u8]], key: &[u8], element: Element| {
         let inserted = db.insert(at, key, element, None, None, v);
         inserted.unwrap().expect("the element is taken");
     };
     for start in [0, TREES / 2, TREES - 2 * SHAPES] {
+        let emptied = key(start + 1);
+        let at: &[&[u8]] = &[MANY, emptied.as_slice()];
+        let deleted = db.delete(at, b"k", None, None, v);
+        deleted.unwrap().expect("the item is deleted");
+        let emptied = db
+            .is_empty_tree(at, None, v)
+            .unwrap()
+            .expect("the tree is read");
+        assert!(emptied, "the tree {} holds nothing", start + 1);
         for n in start..start + 2 * SHAPES {
             let name = key(n);
             let at: &[&[u8]] = &[MANY, name.as_slice()];
@@ -138,10 +147,6 @@ fn written<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> [u8; 32] {
                 _ => put(at, b"more", Element::new_item(vec![5; 8])),
             }
         }
-        let emptied = key(start + 1);
-        let at: &[&[u8]] = &[MANY, emptied.as_slice()];
-        let deleted = db.delete(at, b"k", None, None, v);
-        deleted.unwrap().expect("the item is deleted");
     }
     put(&[MANY], b"a tree made after", Element::empty_tree());
     put(
@@ -174,9 +179,11 @@ struct Synced {
 
 /// Syncs a new database on `T` from `source` and commits the session:
 /// the synced grove has the root hash of its source and its own
-/// verification finds no issue; it is checked as it is closed, takes the
-/// writes of [`written`] and is checked as it is closed again. With how
-/// many times the session committed before its end.
+/// verification finds no issue, before the writes of [`written`] and
+/// after them. Before those writes and after them the database is closed
+/// and [`Side::check`] is called: on LigninDB the physical checker reads
+/// the closed database, and of a RocksDB database it checks nothing.
+/// With how many times the session committed before its end.
 fn synced<S: Engine, T: Side>(
     source: &GroveDb<S>,
     shape: &Shape,
