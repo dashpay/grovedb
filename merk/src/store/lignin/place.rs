@@ -19,6 +19,7 @@
 use super::{
     access::{Seek, Walk},
     flat::FlatWalk,
+    left::Left,
 };
 use crate::Error;
 
@@ -34,23 +35,38 @@ pub(super) trait Line {
     fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error>;
 }
 
-impl Line for dyn Walk + '_ {
+/// A cursor of the engine as a line, with what its own cursor knows of
+/// the marks of flat drops ([`Left`]): each mark of the cursor's keyspace
+/// under a prefix on the side that is asked counts as one record beside
+/// the subtree.
+pub(super) struct Marked<'a, W: ?Sized> {
+    pub(super) walk: &'a mut W,
+    pub(super) left: Option<Left>,
+}
+
+impl Line for Marked<'_, dyn Walk + '_> {
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
-        Walk::go(self, to, key)
+        self.walk.go(to, key)
     }
 
     fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
-        Walk::beside(self, back, limit)
+        match self.left {
+            Some(left) => left.beside(back, |marks| self.walk.beside(back, limit, Some(marks))),
+            None => self.walk.beside(back, limit, None),
+        }
     }
 }
 
-impl Line for dyn FlatWalk + '_ {
+impl Line for Marked<'_, dyn FlatWalk + '_> {
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
-        FlatWalk::go(self, to, key)
+        self.walk.go(to, key)
     }
 
     fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
-        FlatWalk::beside(self, back, limit)
+        match self.left {
+            Some(left) => left.beside(back, |marks| self.walk.beside(back, limit, Some(marks))),
+            None => self.walk.beside(back, limit, None),
+        }
     }
 }
 

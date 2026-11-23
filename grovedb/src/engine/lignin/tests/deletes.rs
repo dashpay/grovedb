@@ -25,8 +25,8 @@
 //! - [`flat_drops`]: flat drops and the drain of their records, with the
 //!   report of each drain.
 //!
-//! One read is in none of them: a neighbour's step from no key between a
-//! flat drop and its drain (`transactions.md` 14.5 D3, `MERK-05-F2`).
+//! A neighbour's step from no key between a flat drop and its drain is
+//! in the histories of `left_behind.rs`.
 
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval, CostResult};
 use grovedb_merk::store::lignin::hash::MerkHashRules;

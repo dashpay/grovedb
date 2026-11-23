@@ -17,7 +17,7 @@ use lignin_tree::{
 };
 
 use super::{kept::Directories, read::Operation, versions::OperationGuard};
-use crate::txn::{unlinked, Column, Keyspaces, Subtree};
+use crate::txn::{unlinked, Column, Keyspaces, StandIns, Subtree};
 
 /// Where the records of one store are: its value log, the flat keyspace of
 /// each column, and the handles on its subtree directory that the engine
@@ -264,6 +264,28 @@ impl<'o> Operation<'o> {
         back: bool,
         limit: usize,
     ) -> Result<usize, ReadError> {
+        self.beside_with(column, subtree, back, limit, None)
+    }
+
+    /// As [`Self::beside`], for an engine that keeps, as keys of one unit,
+    /// what stands for records of other subtrees (`stand_ins`), as
+    /// [`Cursor::beside_with`](crate::txn::Cursor::beside_with) is: where
+    /// the unit is of `column`, its subtree is passed as one that holds
+    /// no record, and each key of the unit from [`StandIns::low`] on and
+    /// below [`StandIns::high`] is counted as one record beside
+    /// `subtree`, after the records of the subtrees and up to `limit`
+    /// with them, at the version the operation reads.
+    pub fn beside_with(
+        &self,
+        column: Column,
+        subtree: Subtree,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, ReadError> {
+        let apart = stand_ins
+            .filter(|stand_ins| stand_ins.unit.column == column)
+            .map(|stand_ins| stand_ins.unit.subtree);
         let records = self.records.ok_or(ReadError::NoRecords)?;
         let pages = self.flat_pages(&records);
         let (mut from, mut found) = (subtree, 0);
@@ -286,10 +308,18 @@ impl<'o> Operation<'o> {
             let Some(next) = next else {
                 break;
             };
-            if let Some(opened) = self.open(next)? {
-                found += opened.count(column, limit - found)?;
+            if Some(next) != apart
+                && let Some(opened) = self.open(next)?
+            {
+                found += opened.count(column, None, limit - found)?;
             }
             from = next;
+        }
+        if let Some(stand_ins) = stand_ins.filter(|_| found < limit)
+            && let Some(opened) = self.open(stand_ins.unit.subtree)?
+        {
+            let range = Some((stand_ins.low, stand_ins.high));
+            found += opened.count(stand_ins.unit.column, range, limit - found)?;
         }
         Ok(found)
     }
@@ -488,13 +518,27 @@ impl<'a, 'o> Opened<'a, 'o> {
 impl Opened<'_, '_> {
     /// How many records `column` holds under the subtree, up to `limit`:
     /// for the data column the nodes of its Merk and the flat records
-    /// among them, as a walk over the Merk shows them.
-    fn count(&self, column: Column, limit: usize) -> Result<usize, ReadError> {
+    /// among them, as a walk over the Merk shows them. With `range`,
+    /// those whose key is at or after its first key and below its second.
+    fn count(
+        &self,
+        column: Column,
+        range: Option<(&[u8], &[u8])>,
+        limit: usize,
+    ) -> Result<usize, ReadError> {
+        let within = |key: Option<&[u8]>| match (key, range) {
+            (Some(key), Some((_, high))) => key < high,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
         let mut found = 0;
         if column == Column::Data {
             let mut nodes = self.walk()?;
-            nodes.seek_to_first(self.operation)?;
-            while nodes.key().is_some() && found < limit {
+            match range {
+                Some((low, _)) => nodes.seek(self.operation, low)?,
+                None => nodes.seek_to_first(self.operation)?,
+            }
+            while within(nodes.key()) && found < limit {
                 found += 1;
                 if found < limit {
                     nodes.next(self.operation)?;
@@ -502,8 +546,11 @@ impl Opened<'_, '_> {
             }
         } else {
             let mut flat = self.cursor(column);
-            flat.seek_to_first()?;
-            while flat.key().is_some() && found < limit {
+            match range {
+                Some((low, _)) => flat.seek(low)?,
+                None => flat.seek_to_first()?,
+            }
+            while within(flat.key()) && found < limit {
                 found += 1;
                 if found < limit {
                     flat.next()?;

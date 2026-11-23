@@ -1122,8 +1122,13 @@ impl Walk for FailingWalk<'_> {
         }
     }
 
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
-        self.under.beside(back, limit)
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<lignindb::txn::StandIns<'_>>,
+    ) -> Result<usize, Error> {
+        self.under.beside(back, limit, stand_ins)
     }
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {

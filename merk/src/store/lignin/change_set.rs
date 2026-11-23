@@ -1210,6 +1210,10 @@ pub struct LigninSettled {
     /// The records of the batch that a handle keeps outside its subtree:
     /// by the subtree each is kept under, the key it has there.
     kept: BTreeMap<Prefix, BTreeSet<Vec<u8>>>,
+    /// The marks that the batch is applied with
+    /// ([`Self::leave_behind`]): each by the subtree that keeps it, and
+    /// its key there.
+    left_behind: Vec<(Subtree, Vec<u8>)>,
 }
 
 /// Whether the outcome under `key` in `unit` is a record that its handle
@@ -1276,6 +1280,7 @@ impl BatchPart for LigninSettled {
             && self.drops.is_empty()
             && self.left_out.is_empty()
             && self.moved.is_empty()
+            && self.left_behind.is_empty()
         {
             return self.resolved.with_batch(run);
         }
@@ -1325,6 +1330,10 @@ impl BatchPart for LigninSettled {
                 .collect();
             // A record that its handle keeps outside its subtree is a
             // write into no subtree, and is left out with none.
+            // A mark is a write of whoever applies the batch, and is
+            // handed over whatever the batch leaves out.
+            let marks = (self.left_behind.iter())
+                .map(|(home, key)| RecordWrite::put(Column::Aux, *home, key, &[]));
             let records: Vec<_> = (batch.records.iter().copied())
                 .filter(|record| match record {
                     RecordWrite::Put { unit, key, .. } | RecordWrite::Delete { unit, key } => {
@@ -1333,6 +1342,7 @@ impl BatchPart for LigninSettled {
                     }
                     RecordWrite::DeleteRange { unit, .. } => !self.left_out.contains(&unit.subtree),
                 })
+                .chain(marks)
                 .collect();
             // What is dropped with the batch leaves before anything is
             // moved, entered or written, wherever it stands among the
@@ -1417,6 +1427,7 @@ impl LigninSettled {
             drops: Vec::new(),
             left_out: BTreeSet::new(),
             kept,
+            left_behind: Vec::new(),
         }
     }
 
@@ -1533,12 +1544,63 @@ impl LigninSettled {
         self.left_out.insert(Subtree::new(*prefix));
     }
 
-    /// Takes back every statement of [`Self::drop_subtree`] and of
-    /// [`Self::leave_out`]: the batch drops what its handles staged a
-    /// drop of, and hands over every write it holds.
+    /// Takes back every statement of [`Self::drop_subtree`], of
+    /// [`Self::leave_out`] and of [`Self::leave_behind`]: the batch drops
+    /// what its handles staged a drop of, hands over every write it
+    /// holds, and is applied with no mark.
     pub fn forget_drops(&mut self) {
         self.drops.clear();
         self.left_out.clear();
+        self.left_behind.clear();
+    }
+
+    /// States that what the batch is applied with leaves a record of
+    /// `keyspace` behind under `prefix` on an engine that drops a subtree
+    /// when its drop is drained: a subtree that is dropped flat with the
+    /// batch ([`Self::drop_subtree`]) held one there. The batch is then
+    /// applied with the mark of the prefix and the keyspace
+    /// ([`left_behind_key`](super::left_behind_key)): one record with no
+    /// value, in the aux keyspace of the subtree `home`, which has to be
+    /// entered, put after the writes of the batch. The mark is charged
+    /// nothing, is a write into no subtree for the batch
+    /// ([`Self::written`], [`Self::put_into`]), and is handed over
+    /// whatever the batch leaves out ([`Self::leave_out`]). A cursor of a
+    /// handle that was told `home` counts it as one record beside its
+    /// subtree
+    /// ([`LigninNodeStore::left_behind_in`](super::LigninNodeStore::left_behind_in)),
+    /// from this batch on in the transaction that takes it.
+    ///
+    /// Nothing is stated for the roots keyspace, which has no marks.
+    /// [`Self::forget_drops`] takes the statements back.
+    pub fn leave_behind(&mut self, home: &[u8; 32], keyspace: Keyspace, prefix: &[u8; 32]) {
+        let Some(key) = super::left_behind_key(keyspace, prefix) else {
+            return;
+        };
+        let mark = (Subtree::new(*home), key);
+        if !self.left_behind.contains(&mark) {
+            self.left_behind.push(mark);
+        }
+    }
+
+    /// What the batch holds for the records of `keyspace` of the subtree
+    /// `prefix`, each by its key: a put, of a record with its value and
+    /// of a node with the value it states, or a removal. In the data
+    /// keyspace the nodes and the flat records.
+    pub fn held(
+        &self,
+        keyspace: Keyspace,
+        prefix: &[u8; 32],
+    ) -> impl Iterator<Item = (&[u8], LigninOutcome<'_>)> {
+        let unit = Unit::new(column(keyspace), Subtree::new(*prefix));
+        let held = (self.resolved.outcomes()).filter(move |outcome| outcome.unit == unit);
+        held.map(|outcome| {
+            let write = match outcome.write {
+                Staged::Record(value) => LigninOutcome::Put(Some(value)),
+                Staged::Node(node) => LigninOutcome::Put(node.value.as_deref()),
+                Staged::Removed | Staged::NodeRemoved => LigninOutcome::Removed,
+            };
+            (outcome.key, write)
+        })
     }
 
     /// States a move that the batch was told of
@@ -1615,7 +1677,9 @@ impl LigninSettled {
         &self.pending
     }
 
-    /// Whether the batch writes nothing, and states no subtree anew.
+    /// Whether the batch writes nothing, and states no subtree anew:
+    /// of what its handles staged. What whoever applies it stated since
+    /// does not count ([`Self::drop_subtree`], [`Self::leave_behind`]).
     pub fn is_empty(&self) -> bool {
         self.resolved.is_empty() && self.moves.is_empty() && self.converted.is_empty()
     }

@@ -30,11 +30,12 @@ use grovedb_costs::{
     OperationCost,
 };
 use grovedb_storage::{Error as StorageError, FlatStore, RawIterator};
-use lignindb::txn::{Cursor, Subtree, Unit, WriteTxn};
+use lignindb::txn::{Cursor, StandIns, Subtree, Unit, WriteTxn};
 
 use super::{
     access::{column, fault, Failure, Prefix, Seek},
-    place::Place,
+    left::Left,
+    place::{Marked, Place},
     LigninChangeSet, LigninNodeStore, LigninWriter, Mode, MODEL,
 };
 use crate::{
@@ -56,7 +57,14 @@ pub(super) trait FlatWalk {
     /// from the nearest subtree on and up to `limit`. In the data column
     /// the nodes of a Merk count as the flat records do. A step from no
     /// key asks this, and no other move ([`Place`](super::place::Place)).
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error>;
+    /// With `stand_ins`, as
+    /// [`Cursor::beside_with`](lignindb::txn::Cursor::beside_with) counts.
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error>;
 
     /// Appends the value under the key the cursor stands on to `out`, and
     /// says whether there is one.
@@ -94,8 +102,13 @@ impl FlatWalk for TxnRecords<'_, '_> {
         Ok(cursor.valid())
     }
 
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
-        self.0.beside(back, limit).map_err(fault)
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error> {
+        (self.0.beside_with(back, limit, stand_ins)).map_err(fault)
     }
 
     fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, Error> {
@@ -167,10 +180,15 @@ impl FlatWalk for WriterRecords<'_, '_, '_> {
     /// Asked of a cursor of the scope that is opened for the question, as
     /// one is for each move: at the committed state of this moment, with
     /// the writes the scope sees.
-    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+    fn beside(
+        &mut self,
+        back: bool,
+        limit: usize,
+        stand_ins: Option<StandIns<'_>>,
+    ) -> Result<usize, Error> {
         let scope = self.writer.scope();
         let mut cursor = scope.cursor(self.unit);
-        cursor.beside(back, limit).map_err(fault)
+        (cursor.beside_with(back, limit, stand_ins)).map_err(fault)
     }
 
     fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, Error> {
@@ -210,6 +228,9 @@ impl FlatAccess for LigninWriter<'_, '_> {
 pub struct LigninFlatCursor<'db> {
     walk: Option<RefCell<Box<dyn FlatWalk + 'db>>>,
     place: Place,
+    /// What the cursor knows of the marks of flat drops, if its handle
+    /// was told where they are kept.
+    left: Option<Left>,
     /// The value under the key, once it was asked for.
     value: OnceCell<Option<Vec<u8>>>,
     failure: RefCell<Option<Failure>>,
@@ -225,7 +246,7 @@ impl std::fmt::Debug for LigninFlatCursor<'_> {
 }
 
 impl<'db> LigninFlatCursor<'db> {
-    fn open(walk: Result<Box<dyn FlatWalk + 'db>, Error>) -> Self {
+    fn open(walk: Result<Box<dyn FlatWalk + 'db>, Error>, left: Option<Left>) -> Self {
         let (walk, failure) = match walk {
             Ok(walk) => (Some(RefCell::new(walk)), None),
             Err(error) => (None, Some(error.into())),
@@ -233,6 +254,7 @@ impl<'db> LigninFlatCursor<'db> {
         Self {
             walk,
             place: Place::default(),
+            left,
             value: OnceCell::new(),
             failure: RefCell::new(failure),
         }
@@ -242,7 +264,11 @@ impl<'db> LigninFlatCursor<'db> {
         let seeks = !matches!(to, Seek::Next | Seek::Prev);
         self.value = OnceCell::new();
         if let Some(walk) = self.walk.as_mut() {
-            match self.place.go(&mut **walk.get_mut(), to) {
+            let mut line = Marked {
+                walk: &mut **walk.get_mut(),
+                left: self.left,
+            };
+            match self.place.go(&mut line, to) {
                 Ok(()) if seeks => *self.failure.get_mut() = None,
                 Ok(()) => {}
                 Err(error) => *self.failure.get_mut() = Some(error.into()),
@@ -412,7 +438,9 @@ impl<'db> FlatStore for LigninKeyspace<'_, 'db> {
 
     fn cursor(&self) -> Self::Cursor<'_> {
         let store = self.store;
-        LigninFlatCursor::open(store.access.records(self.keyspace, &store.subtree.prefix))
+        let own = &store.subtree.prefix;
+        let left = Left::of(store.left_behind, self.keyspace, own);
+        LigninFlatCursor::open(store.access.records(self.keyspace, own), left)
     }
 
     /// Removes every record of the keyspace: the walk of the trait, at its
@@ -462,7 +490,9 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
     }
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        LigninFlatCursor::open(self.access.records(Keyspace::Data, &self.subtree.prefix))
+        let own = &self.subtree.prefix;
+        let left = Left::of(self.left_behind, Keyspace::Data, own);
+        LigninFlatCursor::open(self.access.records(Keyspace::Data, own), left)
     }
 
     /// Removes every record of the subtree's data, in one of two ways:
