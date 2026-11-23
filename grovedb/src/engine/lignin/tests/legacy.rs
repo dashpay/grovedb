@@ -476,10 +476,10 @@ fn the_hashes_the_checker_names_are_the_paths_the_groves_check_reports() {
         let number = number + 1;
         let made = made_by(v);
         let mut classes: BTreeMap<&str, usize> = BTreeMap::new();
-        for p in 0..made {
+        for (p, parent) in KINDS.iter().enumerate().take(made) {
             let flat = [Child::Mmr, Child::Bulk, Child::Dense];
             for c in (0..made).map(Child::Kind).chain(flat) {
-                let told = format!("grove version {number}, {} in {}", c.name(), KINDS[p].name);
+                let told = format!("grove version {number}, {} in {}", c.name(), parent.name);
                 let dir = tempfile::tempdir().expect("a directory");
                 let on_lignin = {
                     let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
@@ -846,9 +846,9 @@ fn synced_from<S: sync::Side>(v: &GroveVersion, written_below: bool) -> Vec<Stri
         true => deleted_and_written_below(&source, v),
         false => deleted_under_a_provable_count_tree(&source, v),
     };
-    let mut said = vec![synced::<S, LigninEngine>(&source, v)];
+    let said = vec![synced::<S, LigninEngine>(&source, v)];
     #[cfg(feature = "rocksdb_storage")]
-    said.push(synced::<S, crate::RocksDbEngine>(&source, v));
+    let said = [said, vec![synced::<S, crate::RocksDbEngine>(&source, v)]].concat();
     source.flush().expect("a flush");
     said
 }
@@ -870,9 +870,9 @@ fn state_sync_refuses_a_grove_with_the_hash_a_delete_left_alike_on_both_engines(
     for (number, v) in GROVE_VERSIONS.iter().enumerate() {
         let number = number + 1;
         let directions = |written_below: bool| {
-            let mut said = synced_from::<LigninEngine>(v, written_below);
+            let said = synced_from::<LigninEngine>(v, written_below);
             #[cfg(feature = "rocksdb_storage")]
-            said.extend(synced_from::<crate::RocksDbEngine>(v, written_below));
+            let said = [said, synced_from::<crate::RocksDbEngine>(v, written_below)].concat();
             said
         };
         let committed = |said: &[String]| {
