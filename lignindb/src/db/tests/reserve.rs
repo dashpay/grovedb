@@ -1762,8 +1762,10 @@ impl Seen {
 }
 
 /// What `writer` does once the session has released its reserve, until
-/// the session has filled its reserve again and the cleaner has dropped
-/// a file of the value log since the release.
+/// the session has made a fill of its reserve, and the cleaner has
+/// dropped a file of the value log, that `before` does not count:
+/// `before` is what the session had counted when none of its threads
+/// could have done either yet.
 ///
 /// **The writer commits when the session needs a commit.** A fill waits
 /// for both of the session's marks to move on after the last refusal for
@@ -1784,9 +1786,8 @@ impl Seen {
 /// How often the writer commits, and whether somebody has to make room,
 /// is the schedule's to say. What the run asserts is what holds in every
 /// schedule: it ends, within a minute, with the two counts moved.
-fn goes_on(writer: &mut dyn Writer, context: &str) -> Came {
+fn goes_on(writer: &mut dyn Writer, context: &str, before: &DbStats) -> Came {
     let began = Instant::now();
-    let released = writer.db().stats();
     let mut came = Came {
         helped: 0,
         taken: 0,
@@ -1806,8 +1807,8 @@ fn goes_on(writer: &mut dyn Writer, context: &str) -> Came {
             came.taken,
             came.refused
         );
-        let filled = stats.reserve.fills > released.reserve.fills;
-        let out = stats.cleaner.value_files_dropped > released.cleaner.value_files_dropped;
+        let filled = stats.reserve.fills > before.reserve.fills;
+        let out = stats.cleaner.value_files_dropped > before.cleaner.value_files_dropped;
         if filled && out {
             return came;
         }
@@ -1877,7 +1878,8 @@ fn holds_its_reserve_at_rest(writer: &mut dyn Writer, context: &str) {
 /// [`holds_its_reserve_at_rest`] by itself: a session at rest with the
 /// small files of the two runs, which released its reserve at a commit
 /// that the device refused once, holds it again after the turns that
-/// are made there.
+/// are made there. The device refuses the first commit that is made
+/// there as well: the next round makes another.
 #[test]
 fn a_session_at_rest_that_released_its_reserve_fills_it_by_its_turns() {
     let (fs, options) = {
@@ -1893,6 +1895,7 @@ fn a_session_at_rest_that_released_its_reserve_fills_it_by_its_turns() {
     assert!(out_of_space(&error), "{error}");
     assert_eq!(held(&fs), 0);
     ticks(&db);
+    fs.add_rule(Mode::Once.rule(0).torn_append(false));
     let mut writer = BesideTheLoops {
         db: &db,
         state: &mut state,
@@ -1902,7 +1905,11 @@ fn a_session_at_rest_that_released_its_reserve_fills_it_by_its_turns() {
     holds_its_reserve_at_rest(&mut writer, "at rest");
     assert_eq!(held(&fs), KEPT);
     let stats = db.stats().reserve;
-    assert_eq!((stats.releases, stats.fills), (1, 2), "{stats:?}");
+    assert_eq!(
+        (stats.refusals, stats.releases, stats.fills),
+        (2, 1, 2),
+        "{stats:?}"
+    );
     check_reads(&db, &state, "with the reserve filled again");
 }
 
@@ -1937,19 +1944,25 @@ impl Writer for OnItsDevice<'_> {
 }
 
 /// A database that is opened with its three threads fills its device
-/// with values that are live, until the device refuses it something for
-/// room: a commit, or the turn of write-back after one. The session
-/// releases its reserve there, by the thread that met the refusal. The
-/// workload goes on as [`goes_on`] says: its first commit takes those
-/// values out again, and its later ones rewrite others. It comes
-/// through with the room that the session has, which is its reserve and
-/// what the refusal left free, or once somebody has made room: the
-/// threads were in their turns when the reserve was released, so what
-/// the session is told after it, and with that the commits of the
-/// writer, is the schedule's to say.
+/// with values that are live, until its writer sees that the device has
+/// refused the session something for room: its own commit is refused,
+/// or the session has released its reserve, which a thread of the
+/// background work does where it is the one that is refused. The writer
+/// looks after each commit, so one more commit of the filling can be
+/// taken after the release. The run waits for the release. Then the
+/// workload goes on as [`goes_on`] says: its first commit from there
+/// takes those values out again, and its later ones rewrite others. It
+/// comes through with the room that the session has, or once somebody
+/// has made room: the threads were in their turns when the reserve was
+/// released, so what the session is told after it, and with that the
+/// commits of the writer, is the schedule's to say.
 fn fills_its_device(seed: u64, reserve: u64) -> Filled {
     let context = format!("a reserve of {reserve} bytes");
     let mut session = threaded(seed, reserve);
+    // The device has had room for everything: the fill of the open is
+    // the only one.
+    let opened = stats(&session);
+    assert_eq!(opened.reserve.fills, 1, "{context}");
     let capacity = session.fs.used_bytes() + HEADROOM;
     session.fs.set_capacity(Some(capacity));
     let released = |session: &Session| stats(session).reserve.releases > 0;
@@ -1975,9 +1988,9 @@ fn fills_its_device(seed: u64, reserve: u64) -> Filled {
             break;
         }
     }
-    // The session met its first refusal for room at that commit, or in a
-    // turn of its background work, and the thread that met it releases
-    // the reserve. A commit can be answered before a thread of the
+    // The session met a refusal for room at that commit, or in a turn
+    // of its background work, and the thread that met it releases the
+    // reserve. A commit can be answered before a thread of the
     // background work that met one has told the session (DF4).
     until("the session releases its reserve", || released(&session));
     let db = session.db.as_ref().expect("the session goes on");
@@ -1989,11 +2002,13 @@ fn fills_its_device(seed: u64, reserve: u64) -> Filled {
             session: &mut session,
             capacity,
         };
-        goes_on(&mut writer, &context)
+        goes_on(&mut writer, &context, &opened)
     };
     let db = session.db.as_ref().expect("the session goes on");
     assert_eq!(db.reopen(), None, "{context}");
-    // The threads end, each after the turn that it is in.
+    // The threads end, each after the turn that it is in. A thread can
+    // tell the session of an earlier refusal only then, and release the
+    // reserve once more: the session at rest fills it by its turns.
     session.rest();
     {
         let mut writer = OnItsDevice {
@@ -2021,10 +2036,13 @@ fn fills_its_device(seed: u64, reserve: u64) -> Filled {
 
 /// The acceptance of the reserve (DF11, DF13), at every size of the
 /// ladder: on a device that fills while a workload runs through a
-/// database with its three threads, the session releases its reserve at
-/// the first refusal for room, the cleaner gives room back, commits go
-/// on, and the session holds its reserve when its threads have ended:
-/// with the room that it had, or once somebody had made room.
+/// database with its three threads, the session releases its reserve
+/// once the device has refused it something for room; it comes to a
+/// fill of its reserve, and its cleaner to a dropped file of the value
+/// log, within a minute, with the room that it had or once somebody had
+/// made room; and with its threads ended it holds its reserve, after
+/// the turns of a session at rest where a thread had released the
+/// reserve once more at its end.
 #[test]
 fn a_device_that_fills_under_a_database_with_its_threads_gets_its_room_back() {
     for (seed, reserve) in (90..).zip(LADDER) {
@@ -2154,6 +2172,8 @@ fn gives_room_back(seed: u64, reserve: u64) -> Gave {
     other.fill(free - reserve).expect("the rest of the device");
 
     let shared = &*db.shared;
+    // No loop runs yet.
+    let at_rest = db.stats();
     let came = thread::scope(|scope| {
         scope.spawn(|| crate::db::write_back(shared));
         scope.spawn(|| shared.reclaim_loop(IDLE));
@@ -2165,7 +2185,7 @@ fn gives_room_back(seed: u64, reserve: u64) -> Gave {
             fs: &fs,
             capacity,
         };
-        goes_on(&mut writer, &context)
+        goes_on(&mut writer, &context, &at_rest)
     });
     // The loops have ended, each after the turn that it was in.
     {
@@ -2198,13 +2218,15 @@ fn gives_room_back(seed: u64, reserve: u64) -> Gave {
 
 /// DF11 and DF13 with the loops of a database running, at every size of
 /// the ladder: the reserve was released at the first refusal for room,
-/// the cleaner gives room back, the session takes commits again and
-/// fills its reserve again, and it holds its reserve when its loops have
-/// ended. Whether it comes there with the room of the reserve alone is
-/// the schedule's to say, since the commits of the workload take the
-/// room of the reserve as write-back and the cleaner do: what each size
-/// came to is printed. `db::tests::room` has the two orders of turns
-/// that bound it, with a session at rest.
+/// with the session at rest. With its loops running the session comes to
+/// a fill of its reserve, and its cleaner to a dropped file of the value
+/// log, within a minute; and with its loops ended it holds its reserve,
+/// after the turns of a session at rest where a loop had released the
+/// reserve once more at its end. Whether it comes there with the room of
+/// the reserve alone is the schedule's to say, since the commits of the
+/// workload take the room of the reserve as write-back and the cleaner
+/// do: what each size came to is printed. `db::tests::room` measures two
+/// fixed orders of turns, with a session at rest.
 #[test]
 fn a_session_whose_loops_run_gives_room_back_and_fills_its_reserve_again() {
     for (seed, reserve) in (70..).zip(LADDER) {
@@ -2222,6 +2244,5 @@ fn a_session_whose_loops_run_gives_room_back_and_fills_its_reserve_again() {
             gave.releases,
             gave.fills_failed
         );
-        assert!(gave.after < gave.full, "nothing came back");
     }
 }
