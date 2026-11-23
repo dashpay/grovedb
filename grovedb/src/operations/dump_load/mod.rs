@@ -7,8 +7,8 @@
 //! whatever engine each is on. `docs/lignindb/engine.md`, "Dump and load",
 //! has the contract and what a dump does not carry.
 //!
-//! The flow is three calls on the grove that takes the subtree, inside one
-//! transaction:
+//! An apply is three calls on the grove that takes the subtree, which a
+//! caller makes in one transaction:
 //!
 //! 1. [`GroveDb::load_subtree`] writes the records of the dump into the
 //!    subtree under an element whose subtree holds nothing.
@@ -59,7 +59,8 @@ pub enum DumpLoadError {
     #[error("i/o: {0}")]
     Io(#[from] std::io::Error),
     /// The stream is not a dump that this version reads whole: its magic,
-    /// its version, its records, their order, their count or its checksum.
+    /// its version, the element it names, its records, their order, their
+    /// count or its checksum, or the nodes of its Merk are not one tree.
     #[error("malformed dump: {0}")]
     Malformed(&'static str),
     /// The subtree cannot be dumped, or cannot take the dump.
@@ -106,7 +107,7 @@ impl DumpedSubtree {
 }
 
 fn storage(error: grovedb_storage::Error) -> DumpLoadError {
-    Error::StorageError(error).into()
+    Error::from(error).into()
 }
 
 fn merk(error: grovedb_merk::Error) -> DumpLoadError {
@@ -302,9 +303,11 @@ impl<E: Engine> GroveDb<E> {
     /// record of its root key and its meta records, with the element that
     /// hosts it and the root its records give.
     ///
-    /// The dump reads one state: `transaction`, or a read transaction of
-    /// its own. It makes many small writes, so `out` should be buffered.
-    /// It is flushed at the end.
+    /// With no transaction the dump reads through a snapshot read
+    /// transaction of its own: the state that was committed when it began.
+    /// Through `transaction` it reads as that transaction does. It makes
+    /// many small writes, so `out` should be buffered. It is flushed at
+    /// the end.
     ///
     /// What is under the subtree is not carried: the subtrees of the
     /// trees that its Merk holds, and the secondary Merks of an indexed
@@ -323,17 +326,21 @@ impl<E: Engine> GroveDb<E> {
         W: Write,
     {
         let path: SubtreePath<B> = path.into();
-        let tx = TxRef::for_read(&self.db, transaction);
-        let element = self.dumped_element(path.clone(), key, tx.as_ref(), grove_version)?;
+        let pinned;
+        let tx = match transaction {
+            Some(transaction) => transaction,
+            None => {
+                pinned = self.db.start_snapshot_read_transaction();
+                &pinned
+            }
+        };
+        let element = self.dumped_element(path.clone(), key, tx, grove_version)?;
         let subtree = path.derive_owned_with_child(key);
-        let root = self.root_as((&subtree).into(), &element, tx.as_ref(), grove_version)?;
+        let root = self.root_as((&subtree).into(), &element, tx, grove_version)?;
         let stated = element.serialize(grove_version).map_err(Error::from)?;
         let mut out = DumpWriter::new(out, &stated, &root)?;
 
-        let handle = self
-            .db
-            .subtree((&subtree).into(), None, tx.as_ref())
-            .unwrap();
+        let handle = self.db.subtree((&subtree).into(), None, tx).unwrap();
         if element.uses_non_merk_data_storage() {
             dump_keyspace(FlatStore::cursor(&handle), Keyspace::Data, &mut out)?;
         } else {
@@ -360,14 +367,15 @@ impl<E: Engine> GroveDb<E> {
     ///
     /// The load is a write of `transaction`, as an insert is: it is seen
     /// through that transaction alone until the transaction commits, and
-    /// it leaves with a rollback. With no transaction it is a commit of
-    /// its own, and a load that returns an error has committed nothing. A
-    /// load into a transaction of the caller's makes up to two writes, the
-    /// nodes of a Merk and then every other record, and an error of the
-    /// engine at the second leaves the first in the transaction: the
-    /// caller rolls the transaction back, or back to a savepoint it set
-    /// before the load. A Merk is handed to the engine whole, in one
-    /// change set. The element is not written:
+    /// it leaves with a rollback. With no transaction it is a transaction
+    /// of its own, which the load commits at its end: an error before that
+    /// commit leaves nothing in the grove, and an error of the commit is
+    /// what the engine says of a commit. A load writes in steps, the nodes
+    /// of a Merk and then every other record, and in a transaction of the
+    /// caller's an error of the engine at a later step leaves the earlier
+    /// ones in the transaction: the caller rolls the transaction back, or
+    /// back to a savepoint it set before the load. A Merk is handed to the
+    /// engine whole, in one change set. The element is not written:
     /// [`GroveDb::replace_subtree_root`] is the caller's next step, with
     /// the root [`GroveDb::subtree_root_as`] gives.
     ///

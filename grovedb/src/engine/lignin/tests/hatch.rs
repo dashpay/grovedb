@@ -630,8 +630,8 @@ fn a_load_is_a_write_of_its_transaction_on_rocksdb() {
 
 /// A transaction writes an item into a tree that holds none, and a load
 /// with no transaction fills the tree beside it and commits. Gives how
-/// the transaction's commit ended.
-fn a_load_beside_a_writer_of_its_subtree<E: Hatched>() -> Result<(), crate::Error> {
+/// the transaction's commit ended, and the nodes the tree holds after it.
+fn a_load_beside_a_writer_of_its_subtree<E: Hatched>() -> (Result<(), crate::Error>, u64) {
     let v = version();
     let dump = small_dump::<E>(&[b"a", b"b", b"c"]);
     let target = Grove::<E>::new();
@@ -649,8 +649,9 @@ fn a_load_beside_a_writer_of_its_subtree<E: Hatched>() -> Result<(), crate::Erro
         .load_subtree(ROOT, COUNTED, &dump[..], None, v)
         .expect("a load beside the transaction");
     let committed = target.db.commit_transaction(tx).unwrap();
+    let nodes = records_of(&target.db, None);
     drop(target);
-    committed
+    (committed, nodes)
 }
 
 /// The difference that `engine.md` records ("Dump and load"): on LigninDB
@@ -659,9 +660,10 @@ fn a_load_beside_a_writer_of_its_subtree<E: Hatched>() -> Result<(), crate::Erro
 /// there does not commit.
 #[test]
 fn a_transaction_that_wrote_into_a_loaded_subtree_conflicts_on_lignindb() {
-    let committed = a_load_beside_a_writer_of_its_subtree::<super::LigninEngine>();
+    let (committed, nodes) = a_load_beside_a_writer_of_its_subtree::<super::LigninEngine>();
     let error = committed.expect_err("a conflict");
     assert!(error.is_commit_conflict(), "{error:?}");
+    assert_eq!(nodes, 3, "the nodes of the load");
 }
 
 /// On RocksDB the two meet by the keys they wrote, and here they wrote
@@ -670,7 +672,12 @@ fn a_transaction_that_wrote_into_a_loaded_subtree_conflicts_on_lignindb() {
 #[cfg(feature = "rocksdb_storage")]
 #[test]
 fn a_transaction_that_wrote_into_a_loaded_subtree_commits_on_rocksdb() {
-    a_load_beside_a_writer_of_its_subtree::<crate::RocksDbEngine>().expect("a commit");
+    let (committed, nodes) = a_load_beside_a_writer_of_its_subtree::<crate::RocksDbEngine>();
+    committed.expect("a commit");
+    assert_eq!(
+        nodes, 4,
+        "the nodes of the load and the one of the transaction"
+    );
 }
 
 /// The resident memory of this process and the most it was since the mark
