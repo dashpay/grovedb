@@ -161,7 +161,13 @@
 //!   every Merk in use held to Merk's rules for a check
 //!   (`MerkHashRules::for_check`): each is made again and compared, but
 //!   for the value hashes that those rules take as they are stored. The
-//!   second open is at the same version.
+//!   second open is at the same version. In a run on a grove version
+//!   whose delete of a tree with elements can leave the tree it was in
+//!   with a value hash that is not the rules' (`GROVE_V1` to `GROVE_V3`),
+//!   the rules name that hash (`MerkHashRules::naming_left_hashes`): it
+//!   is no violation, and the run counts each check that named one
+//!   ([`campaign::LEFT_HASHES`]). In a run on a later version such a hash
+//!   is a violation.
 //! - **Its checkpoints are whole.** A checkpoint whose creation returned
 //!   `Ok` opens as a database of its own at the version of the block it was
 //!   made at, holds that block's root hash and records, and is sound to the
