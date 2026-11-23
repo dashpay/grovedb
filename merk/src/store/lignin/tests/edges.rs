@@ -997,6 +997,47 @@ fn node_reads<'db, S: NodeStore<'db>>(store: &S, key: &[u8]) -> Vec<(String, Ope
     vec![got, for_read, has]
 }
 
+/// The store hands every batch to its transaction with the tree types
+/// that keep flat records, and with no other (`keeps_flat_records`). A
+/// flat record goes beside the nodes of a Merk under such a tree, where
+/// grove versions 1 to 3 put the level of a keyed child, and under every
+/// other tree type it is refused as it was.
+#[test]
+fn a_flat_record_goes_beside_the_nodes_of_a_merk_only_under_a_tree_that_keeps_flat_records() {
+    for (tree_type, taken) in [
+        (TreeType::MmrTree, true),
+        (TreeType::BulkAppendTree(3), true),
+        (TreeType::DenseAppendOnlyFixedSizeTree(3), true),
+        (TreeType::CommitmentTree(3), true),
+        (TreeType::NormalTree, false),
+        (TreeType::SumTree, false),
+    ] {
+        let facade = &Facade::new();
+        let transaction = facade.db.begin();
+        let subtree = || LigninSubtree::alone(P2);
+        let handle = LigninNodeStore::immediate(&transaction, subtree());
+        (handle.enter(tree_type)).expect("the subtree is entered");
+        let mut merk = open(handle, TreeType::NormalTree);
+        apply(&mut merk, &[basic(1, b"a keyed child")]);
+        drop(merk);
+        let handle = LigninNodeStore::immediate(&transaction, subtree());
+        let put = FlatStore::put(&handle, b"a record", b"its bytes", None).unwrap();
+        match taken {
+            true => {
+                put.unwrap_or_else(|refused| panic!("{tree_type:?}: {refused}"));
+                let read = FlatStore::get(&handle, b"a record").unwrap();
+                assert_eq!(read.expect("a read"), Some(b"its bytes".to_vec()));
+            }
+            false => {
+                let refused = put.expect_err("a flat record among the nodes of a Merk");
+                let refused = refused.to_string();
+                let said = refused.contains("a flat record is written among the Merk nodes");
+                assert!(said, "{tree_type:?}: {refused}");
+            }
+        }
+    }
+}
+
 /// D-197: a subtree of a tree that keeps its data as flat records holds
 /// no Merk, and RocksDB reads a node there all the same, by its key and
 /// under a cursor: the flat record, with its bytes. The store answers the

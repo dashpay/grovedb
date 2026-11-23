@@ -478,6 +478,14 @@ pub(super) fn fault(error: TxnError) -> Error {
         TxnError::Directory(DirectoryError::TooDeep) => {
             Error::NotSupported(format!("lignindb: {error}"))
         }
+        // A tree that keeps flat records has a keyed child under the key
+        // of the record that is written (grove versions 1 to 3): the
+        // engine keeps one record under a key, and does not take the
+        // write (`engine.md`, "What differs on grove versions 1 to 3
+        // under a tree that keeps flat records").
+        TxnError::Batch(BatchError::RecordUnderNode { .. }) => {
+            Error::NotSupported(format!("lignindb: {error}"))
+        }
         // A claim of another open scope is what stood in the way, and
         // is named so through every seam (`engine.md`, "Write scopes").
         TxnError::ScopeOverlap { .. } => {
@@ -1048,11 +1056,15 @@ pub(super) fn apply_batch(
     let merks: Vec<MerkWrite<'_>> = (batch.merks.iter().zip(&nodes))
         .map(|(merk, nodes)| MerkWrite { nodes, ..*merk })
         .collect();
+    // The tree types that keep flat records go with every batch: under
+    // one of them a subtree takes flat records beside the nodes of the
+    // Merk of its keyed children (grove versions 1 to 3).
+    let stated = Batch {
+        merks: &merks,
+        ..*batch
+    };
     let applied = scope
-        .apply(&Batch {
-            merks: &merks,
-            ..*batch
-        })
+        .apply_by_kind(&stated, keeps_flat_records)
         .map_err(|error| {
             *entry = entry_refused(&error);
             fault(error)
