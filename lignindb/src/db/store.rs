@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak,
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak,
     },
     thread::{self, Thread},
     time::{Duration, Instant},
@@ -80,6 +80,15 @@ pub(super) struct Signal {
     /// Whether the session has made room on the device and no wait of
     /// the thread has used that call up ([`Self::room_made`]).
     room: AtomicBool,
+    /// Whether the session was asked for a commit
+    /// ([`Self::commit_asked`]).
+    asked: AtomicBool,
+    /// What the threads that wait for the first commit wait on
+    /// ([`Self::wait_for_a_commit`]). The marks `stop` and `asked` are
+    /// each set before its lock is taken to tell them, and read under it
+    /// before a wait. `room` is no mark of this wait.
+    gate: Mutex<()>,
+    told: Condvar,
     /// How often the thread was woken, how many rounds it has begun, and
     /// after how many of them it took its idle wait: what a test of its
     /// pace counts.
@@ -89,6 +98,9 @@ pub(super) struct Signal {
     pub(super) rounds: AtomicU64,
     #[cfg(test)]
     pub(super) idled: AtomicU64,
+    /// How many threads have come to wait for the first commit.
+    #[cfg(test)]
+    pub(super) waited: AtomicU64,
 }
 
 impl Signal {
@@ -109,6 +121,8 @@ impl Signal {
 
     pub(super) fn stop(&self) {
         self.stop.store(true, Ordering::Release);
+        drop(lock(&self.gate));
+        self.told.notify_all();
         self.wake();
     }
 
@@ -121,6 +135,53 @@ impl Signal {
     pub(super) fn room_made(&self) {
         self.room.store(true, Ordering::Release);
         self.wake();
+    }
+
+    /// Notes that a caller of the facade asks the session for a commit,
+    /// before anything of the commit is looked at: whatever it is
+    /// answered, the session is no longer one that is only read. The
+    /// first such call lets the cleaner's thread and the reclaimer's
+    /// begin their turns ([`Self::wait_for_a_commit`]).
+    pub(super) fn commit_asked(&self) {
+        if !self.asked.swap(true, Ordering::AcqRel) {
+            drop(lock(&self.gate));
+            self.told.notify_all();
+        }
+    }
+
+    /// Waits until the session is asked for a commit
+    /// ([`Self::commit_asked`]) or the background work is told to end
+    /// ([`Self::stop`]), and returns whether it was a commit: `false`
+    /// says that the thread is to end with no turn made.
+    ///
+    /// The cleaner's thread and the reclaimer's wait here before their
+    /// first turn (D-301). A checkpoint that is opened to be served is
+    /// asked for no commit, and its caller may remove its directory under
+    /// the handle (P-18). What an earlier session left to clean and to
+    /// reclaim is space and no state, and a turn of these threads that
+    /// takes it can make and remove files in that directory. A commit
+    /// that is refused counts as one that is published does: on a device
+    /// that is full, the cleaner is what gives room back. The wait is of
+    /// the two threads only: `Db::clean` and `Db::reclaim` do the same
+    /// work on their caller's thread whether a commit was asked or not.
+    ///
+    /// A call that room was made ([`Self::room_made`], and the cleaner's
+    /// own mark of it) does not end this wait: it ends waits of a loop
+    /// that runs, and the release of a reserve in a session that was
+    /// asked for no commit starts neither thread.
+    pub(super) fn wait_for_a_commit(&self) -> bool {
+        let mut held = lock(&self.gate);
+        #[cfg(test)]
+        self.waited.fetch_add(1, Ordering::Relaxed);
+        loop {
+            if self.stopping() {
+                return false;
+            }
+            if self.was_asked() {
+                return true;
+            }
+            held = (self.told.wait(held)).unwrap_or_else(PoisonError::into_inner);
+        }
     }
 
     /// Has the calling thread, which is the one that is woken, sleep for
@@ -151,6 +212,13 @@ impl Signal {
 
     pub(super) fn stopping(&self) -> bool {
         self.stop.load(Ordering::Acquire)
+    }
+
+    /// Whether a commit was asked of the session ([`Self::commit_asked`]):
+    /// what the wait for the first commit looks at, and nothing else
+    /// ends that wait but the end of the background work.
+    pub(super) fn was_asked(&self) -> bool {
+        self.asked.load(Ordering::Acquire)
     }
 }
 
@@ -630,8 +698,12 @@ impl Shared {
     }
 
     /// Tells the three loops of the background work that the session has
-    /// released its reserve: each takes its next turn at once, also
-    /// where it is in the wait after a turn that failed (DF12). The
+    /// released its reserve: the wait between two turns that a loop is
+    /// in, or comes to next, ends at once, also where it is the wait
+    /// after a turn that failed (DF12). The cleaner's thread and the
+    /// reclaimer's make no turn for it while they wait for the first
+    /// commit that is asked of the session (`Signal::wait_for_a_commit`):
+    /// only a commit that is asked ends that wait. The
     /// thread that released the reserve calls this
     /// ([`Troubles::refused`]). It takes the lock on the wake of
     /// write-back's loop and then the one on the cleaner's, each for the

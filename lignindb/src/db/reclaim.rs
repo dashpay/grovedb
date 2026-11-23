@@ -438,6 +438,10 @@ impl Shared {
     pub(super) fn reclaim_loop(&self, idle: std::time::Duration) {
         let store = &*self.store;
         store.signal.attach(thread::current());
+        // No round is made in a session that is asked for no commit.
+        if !store.signal.wait_for_a_commit() {
+            return;
+        }
         // The rounds in a row, up to the last one, in which a call failed.
         let mut failed_rounds = 0_u32;
         while !store.signal.stopping() {

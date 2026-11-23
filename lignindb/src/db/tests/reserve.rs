@@ -43,10 +43,10 @@ use crate::{
     txn::tests::model::{self, OwnedBatch, OwnedSubtree},
 };
 
-const DIR: &str = "/db";
+pub(super) const DIR: &str = "/db";
 
 /// The reserve that the sessions at rest keep.
-const KEPT: u64 = 48 << 10;
+pub(super) const KEPT: u64 = 48 << 10;
 
 /// The idle time of the three loops where they run.
 const IDLE: Duration = Duration::from_millis(5);
@@ -57,7 +57,7 @@ const WINDOW: Duration = Duration::from_millis(400);
 
 /// A simulated device whose operations are recorded, and the options of a
 /// database on it that keeps a reserve of `reserve` bytes.
-fn device(seed: u64, reserve: u64) -> (SimVfs, Options) {
+pub(super) fn device(seed: u64, reserve: u64) -> (SimVfs, Options) {
     let fs = SimVfs::new(SimConfig {
         trace_ops: true,
         ..SimConfig::new(seed)
@@ -108,7 +108,7 @@ fn kept_with(seed: u64, adjust: impl FnOnce(&mut Options)) -> (SimVfs, Options, 
 }
 
 /// The bytes of the reserve in the directory of the database.
-fn held(fs: &SimVfs) -> u64 {
+pub(super) fn held(fs: &SimVfs) -> u64 {
     let reserve = Reserve::of(Arc::new(fs.clone()), Path::new(DIR));
     reserve.held().expect("the reserve")
 }

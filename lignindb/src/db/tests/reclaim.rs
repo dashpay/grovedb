@@ -26,8 +26,10 @@ fn drop_of(subtrees: &[Subtree]) -> Writes {
 
 /// A reader's pin that its holder leaked borrows the handle no more, so
 /// the handle can be closed with the pin still counted. The close waits
-/// for no pin: it ends, and what the pin held back is reclaimed by the
-/// next session.
+/// for no pin: it ends, and what the pin held back is the next session's
+/// to reclaim. That session is asked for no commit here, so its
+/// reclaimer's thread makes no round, and the test asks for them
+/// (`Db::reclaim`).
 #[test]
 fn a_close_waits_for_no_pin_that_was_leaked() {
     let dir = temp();
@@ -42,9 +44,8 @@ fn a_close_waits_for_no_pin_that_was_leaked() {
     db.close().expect("the session ends");
 
     let db = Db::open(dir.path(), &options()).expect("the database is opened again");
-    wait_for("the dropped Merk is reclaimed", || {
-        db.stats().reclaimed.merks == 1
-    });
+    while db.reclaim().more {}
+    assert_eq!(db.stats().reclaimed.merks, 1, "the dropped Merk");
     let snapshot = db.snapshot();
     assert_eq!(seen(&snapshot.operation(), subtree(1), b"k"), None);
     assert_eq!(

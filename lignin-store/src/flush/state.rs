@@ -405,6 +405,16 @@ impl FlushState {
         self.counters.snapshot()
     }
 
+    /// The number of the turn that ended last ([`WriteBack::tick`]), as
+    /// turns are counted when they begin: those of the background loop
+    /// and those that a caller made. Zero before the first has ended.
+    /// While one thread makes the turns it is how many have ended.
+    ///
+    /// [`WriteBack::tick`]: super::WriteBack::tick
+    pub fn turns(&self) -> u64 {
+        lock(&self.turns).ended
+    }
+
     /// The blocks of each segment that a trim took out of every chain:
     /// after write-back had put a newer base image in front of them, or
     /// when whoever cleans segments had the chains trimmed
