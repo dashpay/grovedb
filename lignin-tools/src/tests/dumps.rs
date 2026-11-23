@@ -7,11 +7,17 @@ use lignin_format::tree_page::Side;
 use lignin_tree::{hash::Stale, value::ValueBuf};
 use lignindb::{
     commit::NoStaleHashes,
-    txn::{Batch, Hosted, LinkPut, MerkWrite, NodePut, RootPut, ValuePut},
+    txn::{
+        Batch, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RootPut, Subtree, SubtreeWrite,
+        ValuePut,
+    },
     Db,
 };
 
-use super::{contains, fixture, grove, ran, run, small, temp, Item, AGGREGATE, DOCS, FEATURE};
+use super::{
+    contains, fixture, grove, merk, puts, ran, run, small, temp, Item, AGGREGATE, DOCS, FEATURE,
+    ROOT, TREE,
+};
 use crate::{hex, Outcome, ToolError};
 
 /// A database in `dir` with nothing in it.
@@ -523,5 +529,162 @@ fn a_host_written_again_without_the_node_above_it_is_anchored_or_the_store_is_no
                 "{report}"
             );
         }
+    }
+}
+
+/// The Merk of the tree that holds the trees of [`many_trees`].
+const PARENT: Subtree = Subtree::new([0xa0; 32]);
+
+/// The Merk of the tree `number` of [`many_trees`], and with `lower` the
+/// Merk of the tree in it.
+fn of_tree(number: u16, lower: bool) -> Subtree {
+    let mut prefix = [0xb0 + u8::from(lower); 32];
+    prefix[1..3].copy_from_slice(&number.to_be_bytes());
+    Subtree::new(prefix)
+}
+
+/// Writes a grove of GroveDB's shape into `db`, in one commit: a root
+/// Merk whose one element hosts the Merk [`PARENT`] of `trees` trees, each
+/// of which holds one item, or with `two_down` one tree that holds the
+/// item, so that the element of that tree is the root of its Merk.
+fn many_trees(db: &Db, trees: u16, two_down: bool) {
+    let item = Item::element(b"k", Element::new_item(vec![1; 8]));
+    let (leaf_nodes, leaf_root, leaf_hash) = merk(&[item]);
+    // The Merk of each tree: the item, or the tree that holds it.
+    let inner: Vec<_> = (0..trees)
+        .filter(|_| two_down)
+        .map(|number| {
+            let mut host = Item::element(b"in", Element::new_tree(leaf_root.clone()));
+            host.hosts = Some((of_tree(number, true), leaf_hash));
+            merk(&[host])
+        })
+        .collect();
+    // What the element of each tree commits to: the root of its Merk,
+    // which is the same in every tree.
+    let (inner_root, inner_hash) = match inner.first() {
+        Some((_, root, hash)) => (root.clone(), *hash),
+        None => (leaf_root.clone(), leaf_hash),
+    };
+    let keys: Vec<[u8; 2]> = (0..trees).map(u16::to_be_bytes).collect();
+    let hosts: Vec<Item> = (0..trees)
+        .zip(&keys)
+        .map(|(number, key)| {
+            let mut host = Item::element(key, Element::new_tree(inner_root.clone()));
+            host.hosts = Some((of_tree(number, false), inner_hash));
+            host
+        })
+        .collect();
+    let (parent_nodes, parent_root, parent_hash) = merk(&hosts);
+    let mut top = Item::element(b"p", Element::new_tree(parent_root.clone()));
+    top.hosts = Some((PARENT, parent_hash));
+    let (root_nodes, root_root, _) = merk(&[top]);
+
+    let (root_puts, parent_puts, leaf_puts) =
+        (puts(&root_nodes), puts(&parent_nodes), puts(&leaf_nodes));
+    let inner_puts: Vec<Vec<NodePut<'_>>> = (inner.iter()).map(|(nodes, ..)| puts(nodes)).collect();
+    fn written<'a>(
+        subtree: Subtree,
+        nodes: &'a [NodePut<'a>],
+        root: &'a Option<Vec<u8>>,
+    ) -> MerkWrite<'a> {
+        MerkWrite {
+            subtree,
+            nodes,
+            removed: &[],
+            root: RootPut::Set(root.as_deref()),
+            anchored: false,
+            whole: false,
+        }
+    }
+    fn entered(subtree: Subtree, host: Option<HostPut<'_>>) -> SubtreeWrite<'_> {
+        SubtreeWrite::Enter {
+            subtree,
+            tree_type: TREE,
+            host,
+        }
+    }
+    fn under(subtree: Subtree, key: &[u8]) -> Option<HostPut<'_>> {
+        Some(HostPut {
+            subtree,
+            key,
+            position: 0,
+        })
+    }
+    let mut merks = vec![
+        written(ROOT, &root_puts, &root_root),
+        written(PARENT, &parent_puts, &parent_root),
+    ];
+    let mut enters = vec![entered(ROOT, None), entered(PARENT, under(ROOT, b"p"))];
+    for (number, key) in (0..trees).zip(&keys) {
+        let (tree, lower) = (of_tree(number, false), of_tree(number, true));
+        enters.push(entered(tree, under(PARENT, key)));
+        match inner_puts.get(usize::from(number)) {
+            None => merks.push(written(tree, &leaf_puts, &leaf_root)),
+            Some(puts) => {
+                merks.push(written(tree, puts, &inner_root));
+                merks.push(written(lower, &leaf_puts, &leaf_root));
+                enters.push(entered(lower, under(tree, b"in")));
+            }
+        }
+    }
+    let batch = Batch {
+        records: &[],
+        merks: &merks,
+        subtrees: &enters,
+    };
+    db.write(&batch, &mut NoStaleHashes)
+        .expect("the grove is written");
+}
+
+/// A tree that holds many trees is loaded as it was dumped: 1,500 and
+/// 4,000 trees with one item each, and 1,500 trees with a tree in each,
+/// whose element is the root of its Merk (D-340).
+///
+/// A load puts each host with the Merks it hosts stated from its first
+/// put, so the host's cell has the place of each pointer before the Merk
+/// has a root, and the write that brings the Merk does not grow the
+/// cell: the load is refused for no host of a parent that holds 1,500
+/// or 4,000 of them.
+#[test]
+fn a_tree_of_many_trees_is_dumped_and_loaded_as_it_was() {
+    for (trees, two_down) in [(1500, false), (4000, false), (1500, true)] {
+        let what = format!("{trees} trees, two down: {two_down}");
+        let dir = temp();
+        let source = dir.path().join("db");
+        let db = Db::open(&source, &small()).expect("a new database");
+        many_trees(&db, trees, two_down);
+        db.close().expect("a close");
+        let target = empty(dir.path(), "target");
+        let (first, second) = (
+            dir.path().join("first.dump"),
+            dir.path().join("second.dump"),
+        );
+        let levels = 1 + usize::from(two_down);
+        let subtrees = 2 + levels * usize::from(trees);
+        let nodes = 1 + (levels + 1) * usize::from(trees);
+        let dumped = ran(
+            &format!("dump {} --all {}", source.display(), first.display()),
+            Outcome::Done,
+        );
+        let counts = format!(": {subtrees} subtrees, {nodes} nodes, 0 records, ");
+        contains(&dumped, &[&counts]);
+        let loaded = ran(
+            &format!("load {} {}", target.display(), first.display()),
+            Outcome::Done,
+        );
+        let counts = format!("loaded {subtrees} subtrees, {nodes} nodes, 0 records from ");
+        contains(&loaded, &[&counts, "committed version "]);
+
+        ran(
+            &format!("dump {} --all {}", target.display(), second.display()),
+            Outcome::Done,
+        );
+        assert!(
+            fs::read(&first).unwrap() == fs::read(&second).unwrap(),
+            "the two dumps differ: {what}"
+        );
+        assert_eq!(entries(&source), entries(&target), "{what}");
+        let verified = ran(&format!("verify {}", target.display()), Outcome::Done);
+        contains(&verified, &["sound: every rule holds"]);
     }
 }

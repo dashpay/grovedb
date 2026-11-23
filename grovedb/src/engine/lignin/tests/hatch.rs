@@ -1193,6 +1193,122 @@ fn a_transaction_that_wrote_into_a_loaded_subtree_commits_on_rocksdb() {
     );
 }
 
+/// The root Merk holds an item at its root and an empty count tree on one
+/// side of it. A transaction writes an item on the other side of the
+/// root, so it writes the node above the tree's element and no key of the
+/// tree. A load with no transaction fills the tree beside it and commits,
+/// with no replacement. Gives how the transaction's commit ended.
+fn a_load_beside_a_writer_of_the_node_above<E: Hatched>() -> Result<(), crate::Error> {
+    let v = version();
+    let dump = small_dump::<E>(&[b"a", b"b", b"c"]);
+    let target = Grove::<E>::new();
+    let above = Element::new_item(b"above".to_vec());
+    (target.db.insert(ROOT, b"m", above, None, None, v).unwrap()).expect("an item");
+    (target.db)
+        .insert(ROOT, COUNTED, Element::empty_count_tree(), None, None, v)
+        .unwrap()
+        .expect("a count tree");
+    let tx = target.db.start_transaction();
+    let other = Element::new_item(b"of the transaction".to_vec());
+    (target.db)
+        .insert(ROOT, b"z", other, None, Some(&tx), v)
+        .unwrap()
+        .expect("an insert in the transaction");
+    let loaded = (target.db)
+        .load_subtree(ROOT, COUNTED, &dump[..], None, v)
+        .expect("a load beside the transaction");
+    let committed = target.db.commit_transaction(tx).unwrap();
+    assert_eq!(records_of(&target.db, None), 3, "the nodes of the load");
+    finish(&target.db, loaded);
+    target.close();
+    committed
+}
+
+/// The difference that `engine.md` records ("Dump and load"): on LigninDB
+/// the write that names a loaded Merk in its element puts the node above
+/// the element again, as its transaction holds it (D-340), and a
+/// transaction that wrote that node does not commit.
+#[test]
+fn a_transaction_that_wrote_the_node_above_a_loaded_tree_conflicts_on_lignindb() {
+    let committed = a_load_beside_a_writer_of_the_node_above::<super::LigninEngine>();
+    let error = committed.expect_err("a conflict");
+    assert!(error.is_commit_conflict(), "{error:?}");
+}
+
+/// On RocksDB a load writes the records of its subtree and no node of the
+/// Merk above it: the transaction commits.
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_transaction_that_wrote_the_node_above_a_loaded_tree_commits_on_rocksdb() {
+    let committed = a_load_beside_a_writer_of_the_node_above::<crate::RocksDbEngine>();
+    committed.expect("a commit");
+}
+
+/// The key of a second count tree of the root Merk, whose node hangs under
+/// the node of [`COUNTED`].
+const BESIDE: &[u8] = b"other";
+
+/// Two empty count trees in the root Merk, the node of the first above the
+/// node of the second. Two transactions each load a dump, one into each
+/// tree, with no replacement, and commit one after the other: the one that
+/// loaded into the tree above first. Gives how the second commit ended.
+fn two_loads_into_two_trees_of_one_merk<E: Hatched>() -> Result<(), crate::Error> {
+    let v = version();
+    let dump = small_dump::<E>(&[b"a", b"b", b"c"]);
+    let target = Grove::<E>::new();
+    for key in [COUNTED, BESIDE] {
+        (target.db)
+            .insert(ROOT, key, Element::empty_count_tree(), None, None, v)
+            .unwrap()
+            .expect("a count tree");
+    }
+    let first = target.db.start_transaction();
+    let second = target.db.start_transaction();
+    let above = (target.db)
+        .load_subtree(ROOT, COUNTED, &dump[..], Some(&first), v)
+        .expect("a load");
+    let below = (target.db)
+        .load_subtree(ROOT, BESIDE, &dump[..], Some(&second), v)
+        .expect("a load beside it");
+    (target.db.commit_transaction(first).unwrap()).expect("the first commit");
+    let committed = target.db.commit_transaction(second).unwrap();
+    // The element of each tree that holds a load takes the root of its
+    // Merk, so that the grove verifies.
+    let mut loaded = vec![(COUNTED, above)];
+    if committed.is_ok() {
+        loaded.push((BESIDE, below));
+    }
+    for (key, loaded) in loaded {
+        (target.db)
+            .replace_subtree_root(ROOT, key, loaded.element, loaded.root, None, v)
+            .unwrap()
+            .expect("the element");
+    }
+    let issues = target.db.verify_grovedb(None, true, false, v);
+    assert!(issues.expect("a verification").is_empty());
+    target.close();
+    committed
+}
+
+/// The same difference between two loads (D-344): on LigninDB the load
+/// into the tree below puts the node above its element again, which is
+/// the element of the other tree, and the load into that tree wrote it.
+#[test]
+fn the_second_of_two_loads_into_two_trees_of_one_merk_conflicts_on_lignindb() {
+    let committed = two_loads_into_two_trees_of_one_merk::<super::LigninEngine>();
+    let error = committed.expect_err("a conflict");
+    assert!(error.is_commit_conflict(), "{error:?}");
+}
+
+/// On RocksDB each load writes the records of its own subtree, and both
+/// commit.
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn two_loads_into_two_trees_of_one_merk_both_commit_on_rocksdb() {
+    let committed = two_loads_into_two_trees_of_one_merk::<crate::RocksDbEngine>();
+    committed.expect("a commit");
+}
+
 /// The resident memory of this process and the most it was since the mark
 /// was last cleared, in bytes.
 #[cfg(target_os = "linux")]

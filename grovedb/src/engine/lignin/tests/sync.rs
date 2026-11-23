@@ -2182,8 +2182,8 @@ fn a_refused_read_fails_the_call_and_enters_nothing() {
 
 /// Restores the Merk at `at` of `target`, in the transaction, from the
 /// chunks of the Merk at `at` of `source`, through an immediate handle:
-/// the root Merk for the empty path, and otherwise the Merk of a tree
-/// under the root.
+/// the root Merk for the empty path, and otherwise the Merk of the tree
+/// at that path.
 fn handed_over(
     source: &GroveDb<LigninEngine>,
     target: &GroveDb<LigninEngine>,
@@ -2196,13 +2196,13 @@ fn handed_over(
     let from = source.engine().subtree(at.into(), None, &reading).unwrap();
     let into = target.engine().immediate_subtree(at.into(), transaction);
     let into = into.unwrap();
-    let (from, into) = match at.first() {
+    let (from, into) = match at.split_last() {
         None => (
             Merk::open_base(from, TreeType::NormalTree, cost, v),
             Merk::open_base(into, TreeType::NormalTree, cost, v),
         ),
-        Some(key) => {
-            let element = source.get(super::ROOT, key, None, v);
+        Some((key, above)) => {
+            let element = source.get(above, key, None, v);
             let element = element.unwrap().expect("the tree");
             let (root_key, tree_type) = element.root_key_and_tree_type_owned().expect("a tree");
             (
@@ -2294,6 +2294,57 @@ fn a_merk_that_was_handed_over_is_named_in_its_host() {
     }
 }
 
+/// What the call after a hand-over writes (D-340): the node of the
+/// element and the node above it in its Merk, and for an element that is
+/// the root of its Merk, the element of that Merk with the node above
+/// that one. The root Merk holds an item at its root and a tree under it;
+/// the tree holds one tree, the root of its Merk, which holds rows. The
+/// naming of the tree's Merk is two writes of the transaction, and the
+/// naming of the Merk of the tree in it is three. The restored grove has
+/// the root hash of its source and is sound at its close.
+#[test]
+fn a_merk_is_named_by_a_write_that_holds_its_element() {
+    let v = GroveVersion::latest();
+    let source_dir = tempfile::tempdir().expect("a directory");
+    let source = open::<LigninEngine>(source_dir.path());
+    must_put(&source, &[], b"m", Element::new_item(vec![1; 5]), v);
+    must_put(&source, &[], b"tree", Element::empty_tree(), v);
+    must_put(&source, &path(&[b"tree"]), b"in", Element::empty_tree(), v);
+    for n in 0..40 {
+        let item = Element::new_item(vec![2; 5]);
+        must_put(&source, &path(&[b"tree", b"in"]), &row(n), item, v);
+    }
+    let source_root = source.root_hash(None, v).unwrap().expect("a root");
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let target = open::<LigninEngine>(dir.path());
+    let engine = target.engine();
+    let transaction = target.start_transaction();
+    let writes = || {
+        let write = transaction.write_transaction();
+        write.expect("a write transaction").stats().writes
+    };
+    handed_over(&source, &target, &transaction, &[], v);
+    let (tree, inner): (&[&[u8]], &[&[u8]]) = (&[b"tree"], &[b"tree", b"in"]);
+    let mut put = Vec::new();
+    for at in [tree, inner] {
+        let entered = engine.adopt_restored_subtrees(at.into(), &transaction);
+        entered.expect("the subtree is entered");
+        handed_over(&source, &target, &transaction, at, v);
+        let before = writes();
+        let named = engine.adopt_restored_subtrees(at.into(), &transaction);
+        named.expect("the Merk is named in its host");
+        put.push(writes() - before);
+    }
+    assert_eq!(put, [2, 3]);
+    let committed = target.commit_transaction(transaction);
+    committed.unwrap().expect("a commit");
+    let root = target.root_hash(None, v).unwrap().expect("a root");
+    assert_eq!(root, source_root);
+    drop(target);
+    append_only::check(dir.path(), v);
+}
+
 /// The store puts the node of a host again through an immediate handle,
 /// and for a key that holds a node: a handle that does not write at once
 /// and a key with no node are refused, and neither changes what a read
@@ -2311,13 +2362,13 @@ fn the_store_refuses_to_name_the_merks_of_a_host_it_cannot_put() {
     let hosted = [prefix_of(&[b"tree"])];
 
     let reading = LigninNodeStore::read_only(transaction.view(), root());
-    let refused = reading.name_hosted(b"tree", &hosted);
+    let refused = reading.name_hosted(b"tree", &hosted, &[]);
     let refused = format!("{:?}", refused.expect_err("a handle that reads"));
     assert!(refused.contains("does not write at once"), "{refused}");
     drop(reading);
 
     let writing = LigninNodeStore::immediate(transaction.view(), root());
-    let refused = writing.name_hosted(b"no element", &hosted);
+    let refused = writing.name_hosted(b"no element", &hosted, &[]);
     let refused = format!("{:?}", refused.expect_err("a key with no node"));
     assert!(refused.contains("no node of its Merk"), "{refused}");
     drop(writing);

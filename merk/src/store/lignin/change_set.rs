@@ -250,22 +250,6 @@ impl LigninChangeSet {
         Ok(change_set)
     }
 
-    /// A change set of one node that is put again as the transaction
-    /// holds it, with its value kept, and that names the Merks its element
-    /// hosts, by position ([`LigninNodeStore::name_hosted`]). The root of
-    /// the node's Merk is the node it was.
-    pub(super) fn of_host(
-        subtree: LigninSubtree,
-        node: &TreeNode,
-        hosted: &[[u8; 32]],
-    ) -> Result<Self, Error> {
-        let mut change_set = Self::of_node(subtree, node, NodeChange::HashOnly)?;
-        for (node, _) in &mut change_set.nodes {
-            node.hosted = Some(hosted.to_vec());
-        }
-        Ok(change_set)
-    }
-
     /// A change set of one record that is no node, written or removed
     /// with the writer's cost, if it gave one.
     pub(super) fn of_record(
@@ -1391,6 +1375,26 @@ impl BatchPart for LigninSettled {
             }
             Ok(written)
         })
+    }
+
+    /// The element that was said to host the Merk since the batch was
+    /// settled ([`LigninSettled::host`]), and with none said, the one
+    /// that the handle of the Merk named ([`LigninSubtree::host`]), if
+    /// nothing was said of that element since.
+    fn host_of(&self, merk: Subtree) -> Option<LigninHost> {
+        let mut said = self.hosts.iter();
+        if let Some((subtree, key, hosted)) = said.find(|(.., hosted)| hosted.contains(&merk)) {
+            return Some(LigninHost {
+                subtree: *subtree.as_bytes(),
+                key: key.clone(),
+                hosted: hosted.iter().map(|hosted| *hosted.as_bytes()).collect(),
+            });
+        }
+        let named = self.written.get(merk.as_bytes())?.host.clone()?;
+        let mut said = self.hosts.iter();
+        let since =
+            said.any(|(subtree, key, _)| *subtree.as_bytes() == named.subtree && *key == named.key);
+        (!since).then_some(named)
     }
 }
 

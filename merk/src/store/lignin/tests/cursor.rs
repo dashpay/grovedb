@@ -1209,6 +1209,10 @@ impl Access for Failing<'_> {
     ) -> Result<Vec<Written>, Error> {
         self.under.apply_parts(parts, enters, entry)
     }
+
+    fn name_hosted(&self, hosts: &[LigninHost]) -> Result<(), Error> {
+        self.under.name_hosted(hosts)
+    }
 }
 
 impl FlatAccess for Failing<'_> {

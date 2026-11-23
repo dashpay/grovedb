@@ -2029,8 +2029,12 @@ element does not claim the parent's Merk, so scopes writing two children of
 one parent do not overlap. Marks are undone with the scope or savepoint that
 added them.
 
-On existing GroveVersions every write propagates to the root before it
-returns, and no mark is ever set. From iteration two, a write that stops at a
+On existing GroveVersions no mark is ever set: every operation of GroveDB
+that writes a Merk under an element propagates to the root before it
+returns, but for the hand-over of a restored or a loaded Merk, which is a
+write of the Merk alone. A partial batch, whose first segment stops below
+the elements of the Merks at its pause height, writes those elements with
+its second segment, in the same application (`tree-layout.md` T3). From iteration two, a write that stops at a
 stop point marks its parent element, and finalize removes the mark when it
 has updated that element (GROVE-11).
 

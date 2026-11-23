@@ -47,6 +47,7 @@ mod chunk;
 mod cursor;
 mod differences;
 mod edges;
+mod held;
 mod large;
 mod proof;
 mod unlinked;
@@ -1801,6 +1802,10 @@ impl Access for Unsteady<'_> {
         entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error> {
         self.under.apply_parts(parts, enters, entry)
+    }
+
+    fn name_hosted(&self, hosts: &[LigninHost]) -> Result<(), Error> {
+        self.under.name_hosted(hosts)
     }
 }
 

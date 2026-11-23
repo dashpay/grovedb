@@ -216,6 +216,124 @@ fn a_tree_that_a_commit_writes_into_after_the_look_keeps_its_merks_under_an_empt
     }
 }
 
+/// The residual of that race for a partial batch (GROVE-03-F2, D-350).
+/// The race of the test above leaves the primary Merk of `t` and its
+/// count secondary with roots, entered at their places under an element
+/// that names none. The element of `t` is the root of its Merk at the
+/// race. A tree `u` and an item `v` are inserted beside `t` afterwards,
+/// which turns the root Merk: the element of `u` is its root then, and
+/// the node above the element of `t`. A partial batch that pauses below
+/// `t` then puts a child into `t` and writes an item over `u`, whose
+/// subtree leaves with its first batch. The node above is left out of
+/// what that batch puts again, and the store holds the element of `t`
+/// alone: it takes a Merk that is entered under the element at its
+/// place with a root for one that the cell names, and here the cell
+/// names none and grows by two pointers with nothing in the write to
+/// carry it. In this history the page has room, and the batch is taken;
+/// RocksDB takes the same calls in the order they took effect. In a
+/// page with no room for the pointers and with nothing below the
+/// element, the tree pages refuse that first batch and nothing is
+/// written, where RocksDB takes it (`engine.md`, "An element written
+/// over a tree").
+///
+/// `GROVE-03-F3` turns it: with a read of how many Merks a cell names,
+/// the element is not held alone here.
+#[test]
+fn a_partial_batch_under_an_element_that_the_race_left_naming_none_of_its_merks() {
+    use grovedb_element::indexed::IndexAxis;
+    use grovedb_storage::prefix::secondary_prefix_for;
+
+    use super::indexed::{entry, Count, CountSum, Indexed};
+    use crate::batch::BatchApplyOptions;
+
+    let v = version();
+    let u: &[&[u8]] = &[b"u"];
+    fn trees<E: Engine>(db: &crate::GroveDb<E>, v: &GroveVersion) {
+        (db.insert(ROOT, b"t", CountSum::empty(), None, None, v))
+            .unwrap()
+            .expect("an indexed tree");
+        (CountSum::insert(db, T, b"x", CountSum::leaf(1), None, v).unwrap()).expect("a child");
+        (CountSum::delete(db, T, b"x", None, v).unwrap()).expect("the child is deleted");
+    }
+    fn child<E: Engine>(db: &crate::GroveDb<E>, v: &GroveVersion) {
+        (CountSum::insert(db, T, b"y", CountSum::leaf(2), None, v).unwrap()).expect("a child");
+    }
+    // The keys `t`, `u` and `v` in that order: the Merk turns with the
+    // third, and the element of `u` is its root, above the one of `t`.
+    fn above<E: Engine>(db: &crate::GroveDb<E>, v: &GroveVersion) {
+        let u: &[&[u8]] = &[b"u"];
+        (db.insert(ROOT, b"u", Element::empty_tree(), None, None, v))
+            .unwrap()
+            .expect("a tree");
+        (db.insert(u, b"k", item(1), None, None, v))
+            .unwrap()
+            .expect("an element of it");
+        (db.insert(ROOT, b"v", item(2), None, None, v))
+            .unwrap()
+            .expect("an item");
+    }
+    // The partial batch, which pauses below `t`, and what is read after
+    // it: the child, and the item that is written over `u`.
+    fn partial<E: Engine>(db: &crate::GroveDb<E>, v: &GroveVersion) -> (Element, Element) {
+        let ops = vec![insert(T, b"z", Count::leaf(3)), insert(&[], b"u", item(7))];
+        let paused = Some(BatchApplyOptions {
+            batch_pause_height: Some(1),
+            ..Default::default()
+        });
+        let written = db.apply_partial_batch(ops, paused, |_cost, _left| Ok(vec![]), None, v);
+        written.unwrap().expect("the partial batch is taken");
+        let z = (db.get(T, b"z", None, v).unwrap()).expect("the child");
+        let over = (db.get(ROOT, b"u", None, v).unwrap()).expect("the item");
+        (z, over)
+    }
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+    trees(&*db, v);
+    let (other, done) = beside(&db, move |db| child(db, v));
+    REFUSED.take();
+    AFTER_A_LOOK.set([apart(other)].into());
+    let applied = db.apply_batch(vec![insert(&[], b"t", Count::empty())], None, None, v);
+    assert!(AFTER_A_LOOK.take().is_empty(), "the group looked");
+    assert!(done.get());
+    applied.unwrap().expect("the batch is applied");
+    assert_eq!(REFUSED.take().len(), 0);
+    // The two Merks that the new element hosts have roots, each entered
+    // at its place under the element, whose node names none.
+    let primary = build_prefix(T.into()).value;
+    let secondary = secondary_prefix_for(&primary, IndexAxis::Count.tag()).value;
+    for (place, prefix) in [primary, secondary].into_iter().enumerate() {
+        let entered = entry(&db, prefix).expect("the Merk is entered");
+        assert!(entered.root_key.is_some(), "{place}");
+        let host = entered.host.expect("a host");
+        assert_eq!((host.subtree, host.key.as_slice()), ([0; 32], &b"t"[..]));
+        assert_eq!(usize::from(host.position), place);
+    }
+    above(&*db, v);
+    assert_eq!(
+        entry(&db, build_prefix(u.into()).value).map(|_| ()),
+        Some(())
+    );
+    let on_lignin = partial(&*db, v);
+    assert_eq!(on_lignin, (Count::leaf(3), item(7)));
+    assert_eq!(entry(&db, build_prefix(u.into()).value), None);
+    db.engine().database().unchecked_at_close();
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+
+    #[cfg(feature = "rocksdb_storage")]
+    {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = crate::GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path());
+        let db = db.expect("a database on RocksDB");
+        trees(&db, v);
+        child(&db, v);
+        let over = db.apply_batch(vec![insert(&[], b"t", Count::empty())], None, None, v);
+        over.unwrap().expect("the batch is applied");
+        above(&db, v);
+        assert_eq!(partial(&db, v), on_lignin);
+    }
+}
+
 /// A group writes another tree over a tree that nothing was written
 /// into, with an element in it. The look for what the group enters finds
 /// no subtree, and before the look for what it drops another writer's

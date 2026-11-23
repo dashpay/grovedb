@@ -25,7 +25,7 @@ use super::{
     },
     directory::keeps_flat_records,
     flat::{FlatAccess, FlatWalk},
-    refused, LigninEntry, LigninHosted, LigninWriter,
+    refused, LigninEntry, LigninHost, LigninHosted, LigninWriter,
 };
 use crate::{cost_model::Keyspace, Error};
 
@@ -373,5 +373,9 @@ impl Access for LigninSnapshot<'_> {
         _entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error> {
         Err(read_only("the application of a batch"))
+    }
+
+    fn name_hosted(&self, _hosts: &[LigninHost]) -> Result<(), Error> {
+        Err(read_only("the naming of a Merk in its host"))
     }
 }

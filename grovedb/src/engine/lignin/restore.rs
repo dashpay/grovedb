@@ -19,7 +19,12 @@
 //!   holds a root for one of those subtrees: the node is put again with
 //!   the value, the feature, the hashes and the links it has, and with
 //!   every subtree its element hosts, by position
-//!   (`LigninNodeStore::name_hosted`).
+//!   (`LigninNodeStore::name_hosted`). The cell of the node grows by
+//!   what it comes to name, so the write holds it: the node above it in
+//!   its Merk is put again as it is, too. Where the node is the root of
+//!   its Merk, the element of that Merk is named again in the same
+//!   write, with the node above that one, and so on up
+//!   ([`elements_above`]).
 //!
 //! Both are writes of the transaction the restore writes through, and go
 //! with it when it is rolled back. Neither is a write of a record for the
@@ -37,6 +42,46 @@ use super::{
     named,
 };
 
+/// The elements of the Merk at `merk` and of the Merks above it,
+/// innermost first, each with every Merk it hosts, for as long as the
+/// node below is the root of its Merk: first the node under `key` of the
+/// Merk at `merk`, then the node of each element that is taken in. A
+/// write that names a Merk in such a node holds the element above it
+/// (`LigninNodeStore::name_hosted`). The way up ends at the root Merk,
+/// and at an element that is not read as a tree.
+fn elements_above<'b, B: AsRef<[u8]> + 'b>(
+    view: LigninView<'_>,
+    mut merk: SubtreePath<'b, B>,
+    key: &[u8],
+) -> Result<Vec<LigninHost>, Error> {
+    let mut above = Vec::new();
+    let mut key = key.to_vec();
+    loop {
+        let own = build_prefix(merk.clone()).value;
+        let entry = LigninNodeStore::read_only(view, LigninSubtree::alone(own)).entry();
+        let root = entry.map_err(merk_error)?.and_then(|entry| entry.root_key);
+        let is_root = root.as_deref() == Some(key.as_slice());
+        let Some((upper, upper_key)) = merk.derive_parent().filter(|_| is_root) else {
+            return Ok(above);
+        };
+        let element = LigninHost {
+            subtree: build_prefix(upper.clone()).value,
+            key: upper_key.to_vec(),
+            hosted: vec![own],
+        };
+        let hosted = match element_read(view, &element)? {
+            Some(Some(read)) => match hosting(&read, own)? {
+                Hosting::One(Some(_)) => vec![own],
+                Hosting::Many(hosted) => hosted.into_iter().map(|(prefix, _)| prefix).collect(),
+                Hosting::One(None) | Hosting::Nothing => return Ok(above),
+            },
+            Some(None) | None => return Ok(above),
+        };
+        above.push(LigninHost { hosted, ..element });
+        (merk, key) = (upper, upper_key.to_vec());
+    }
+}
+
 /// Enters the subtrees of the element at `path` that are not entered, and
 /// names in the element's node the roots the directory holds for them. The
 /// empty path has no element, and nothing is done for it: the engine
@@ -50,7 +95,7 @@ pub(super) fn adopt<'b, B: AsRef<[u8]> + 'b>(
     };
     // The prefixes are derived for the directory and charged nothing.
     let own = build_prefix(path).value;
-    let above = named(parent, true).value;
+    let above = named(parent.clone(), true).value;
     let element = LigninHost {
         subtree: above.prefix,
         key: key.to_vec(),
@@ -108,8 +153,9 @@ pub(super) fn adopt<'b, B: AsRef<[u8]> + 'b>(
         handle.enter(tree_type).map_err(merk_error)?;
     }
     if rooted {
+        let elements = elements_above(view, parent, key)?;
         let handle = LigninNodeStore::immediate(view, above);
-        (handle.name_hosted(&host.key, &host.hosted)).map_err(merk_error)?;
+        (handle.name_hosted(&host.key, &host.hosted, &elements)).map_err(merk_error)?;
     }
     Ok(())
 }

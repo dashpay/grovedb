@@ -648,9 +648,41 @@ in. Two things follow.
    bounded: inside an open transaction of iteration two, in a host that is
    marked pending.
 
-On existing GroveVersions every write propagates to the root in one
-operation. The host is in the write, no mark is ever set, and neither case
-arises.
+On existing GroveVersions no mark is ever set, and every operation of
+GroveDB that writes a Merk under a host propagates to the root, but for the
+hand-over of a restored or a loaded Merk (below). Such an operation that is
+applied as one write holds the host, and neither case arises for it. One is
+applied as two writes: a partial batch, whose first segment stops below the
+hosts of the Merks at its pause height and whose second writes those hosts,
+with nothing else of the transaction between the two. Both cases arise for
+that first write. The Merk store has it hold the host of each Merk that it
+puts or removes a node of, where it can: it puts the host again as it is,
+with the node above it in the host's Merk where it puts that node again
+too, and names the root in the host ([`node-store.md`](node-store.md), "A
+batch that stops below an element"). The root is then carried like any
+other cell. A host whose cell would grow, by a Merk that it comes to name,
+is held only where the write can carry the host's cell as well. Where the
+store does not hold the host, a root that the Merk had stays in its page,
+a first root is placed where there is room, and the pointer in the host is
+behind, or has no place in the host's cell yet, until the second write.
+
+A write of a Merk alone is in the position of that first write, and nothing
+holds the host for it: a batch that holds the nodes of one Merk and nothing
+above it, which a caller of the engine's seam can stage and apply by itself,
+and a write through a handle that writes at once and names a host. The Merk
+is handed over anchored, both cases arise, and the tree pages refuse the
+write where the root's cell grows in a page with no room for it and with
+nothing below the root. No operation of GroveDB writes so but the hand-over
+below; the tests of the first segment make such a write to find a page with
+no room (`alone` in the engine's `tests/full_pages.rs`).
+
+A restore and a load of a subtree are no operations that propagate to the
+root: they hand a Merk over by itself, and the write after it names the
+Merk in its host. That write grows the host's cell by the pointer and
+writes nothing below the host, so the store has it hold the host with the
+node above it, and a host that is the root of its Merk with the host of
+that Merk, which the engine gives (`node-store.md`, "A Merk under an
+element").
 
 **T4. The layout rules are a function of the pages and the change set.**
 They use no clock, no thread identity and no state outside the pages a

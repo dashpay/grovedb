@@ -308,8 +308,17 @@ pub struct MerkWrite<'a> {
     pub root: RootPut<'a>,
     /// Whether the Merk has a host that this operation does not write, so
     /// that the root stays in its page until a later write names it in the
-    /// host (`tree-layout.md` T3). Never on existing GroveVersions, where
-    /// every write holds the path up to the root of the grove.
+    /// host (`tree-layout.md` T3). On existing GroveVersions an operation
+    /// of GroveDB that propagates to the root and is applied as one write
+    /// holds the path up to the root of the grove, and none of its Merks
+    /// is anchored. The first of the two writes of a partial batch stops
+    /// below the hosts of the Merks at its pause height, a restore and a
+    /// load hand a Merk over by itself, and a caller of the batch can
+    /// hand it the nodes of a Merk and nothing above them: a Merk of
+    /// those writes that has a host is anchored, unless the writer holds
+    /// the host with it, as the node store of Merk does for the batches
+    /// of a group (`node-store.md`, "A batch that stops below an
+    /// element").
     pub anchored: bool,
     /// Whether the change set is the whole Merk, handed over in the order
     /// of the bulk loader: a **load** (`crate::txn`, "A load").

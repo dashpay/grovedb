@@ -270,7 +270,10 @@
 //!   below its host and found no room
 //!   ([`FragmentError::NoRoom`](lignin_tree::fragment::FragmentError)): the
 //!   error is the caller's, at the write for a scope that is alone and
-//!   when the writes are laid out for one that is not (GROVE-11).
+//!   when the writes are laid out for one that is not (GROVE-11). A
+//!   caller that knows the host before it writes holds it from the
+//!   start, as the node store of Merk does for the batches of a partial
+//!   batch (`node-store.md`, "A batch that stops below an element").
 
 pub(crate) mod table;
 

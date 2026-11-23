@@ -157,12 +157,19 @@
 //! and more where the write of a host carries cells. Nothing here can see
 //! that it was left out.
 //!
-//! On existing GroveVersions every write holds the whole path up to the
-//! root of the grove, and the root is named by a root pointer, so no node
-//! is in that position. From iteration two a write can stop below the host
+//! On existing GroveVersions an operation of GroveDB that propagates to
+//! the root and is applied as one write holds the whole path up to the root
+//! of the grove, and the root is named by a root pointer, so no node is in
+//! that position. A write of a Merk alone, as the hand-over of a restored
+//! Merk is, holds no host, the first of the two writes of a partial batch
+//! stops below the hosts of the Merks at its pause height, and from
+//! iteration two any write can stop below the host
 //! of its Merk. If the root of that Merk then grows in a page that is full
 //! of cells the write does not hold, no rule can make room, and the write
-//! is refused with [`FragmentError::NoRoom`].
+//! is refused with [`FragmentError::NoRoom`]. A caller that is not to be
+//! refused holds the host: its write states the host's cell too, with the
+//! root named in it, and the cell that points at the host, up to a cell
+//! that does not grow.
 //!
 //! # What the callers do
 //!

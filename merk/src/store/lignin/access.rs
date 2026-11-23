@@ -6,7 +6,10 @@
 //! in Merk's terms ([`StoredNode`], [`Write`]) and reaches a transaction
 //! through [`Access`].
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::{
+    collections::VecDeque,
+    sync::{Mutex, MutexGuard, PoisonError},
+};
 
 use grovedb_storage::{
     error::{CommitError, WriteScopeError},
@@ -23,8 +26,8 @@ use lignindb::txn::{
 use super::{
     change_set::node_put,
     directory::keeps_flat_records,
-    feature::{decode_aggregate, decode_feature, Tp12},
-    refused, LigninEntry, LigninHosted,
+    feature::{decode_aggregate, decode_feature, encode_aggregate, encode_feature, Tp12},
+    refused, LigninEntry, LigninHost, LigninHosted, READ_ATTEMPTS,
 };
 use crate::{cost_model::Keyspace, tree::AggregateData, CryptoHash, Error, TreeFeatureType};
 
@@ -413,6 +416,16 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
         enters: &[(usize, SubtreeChange)],
         entry: &mut Option<LigninEntryRefused>,
     ) -> Result<Vec<Written>, Error>;
+
+    /// Names in the node of the first element of `hosts` the Merks that
+    /// the element hosts, as one operation of the transaction: the node
+    /// is put again as the transaction holds it, with the node above it,
+    /// so that the tree pages may carry it where it grows. The elements
+    /// after the first are those of the Merks above, each of which is
+    /// named in the same way where the element below it is the root of
+    /// its Merk. An element whose node is not found, or whose first Merk
+    /// is not entered under it, is refused.
+    fn name_hosted(&self, hosts: &[LigninHost]) -> Result<(), Error>;
 }
 
 /// The entry of a subtree as a transaction found it, where it refused a
@@ -458,6 +471,12 @@ pub(super) trait BatchPart {
         &self,
         run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
     ) -> Result<Written, Error>;
+
+    /// The element that the batch says hosts the Merk `merk`, with every
+    /// Merk it hosts, by position: what the node of that element names
+    /// where the batch puts it. `None` for a Merk that nothing was said
+    /// of.
+    fn host_of(&self, merk: Subtree) -> Option<LigninHost>;
 }
 
 /// A read or a write the transaction did not perform. Every failure of the
@@ -1208,8 +1227,651 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
     )
 }
 
+/// A node that a write puts again as the transaction holds it
+/// ([`held_elements`]).
+struct PutAgain {
+    subtree: Subtree,
+    node: NodeWrite,
+    /// The Merks the node's element hosts, by position, where the write
+    /// names them in the node: the node is that of an element that is
+    /// held.
+    hosted: Option<Vec<Subtree>>,
+}
+
+/// What a write holds above the Merks that it writes below their
+/// elements ([`held_elements`]).
+#[derive(Default)]
+struct HeldElements {
+    again: Vec<PutAgain>,
+    /// The Merks of the batch that a node put again names, by their
+    /// place in the batch: none of them is anchored.
+    named: Vec<usize>,
+    /// The subtrees of nodes put again that the batch holds no change
+    /// set for, each with whether its Merk is handed over as anchored:
+    /// it has a host, which is not held.
+    added: Vec<(Subtree, bool)>,
+    /// The elements that were looked at, by subtree and key.
+    looked: Vec<(Subtree, Vec<u8>)>,
+}
+
+/// The longest way from the root of a Merk to a node that is followed:
+/// a Merk is an AVL tree, whose height stays under one and a half times
+/// the binary logarithm of its nodes.
+const LONGEST_WAY: usize = 96;
+
+/// Whether `batch` takes `subtree` out or moves it: by a drop, a clear
+/// or a move that names it, or by one that may take it with a subtree
+/// above it, which is one beside an enter of `subtree`. What the
+/// transaction holds under such a subtree before the batch is not what
+/// the batch leaves there.
+fn taken(batch: &Batch<'_>, subtree: Subtree) -> bool {
+    let named = |write: &SubtreeWrite<'_>| match write.moving() {
+        Some(moving) => {
+            let moved = (moving.from, moving.to);
+            let mut pairs = std::iter::once(&moved).chain(moving.below);
+            pairs.any(|(from, to)| *from == subtree || *to == subtree)
+        }
+        None => write.leaves() && write.subtree() == subtree,
+    };
+    let takes = |write: &SubtreeWrite<'_>| write.leaves() || write.moving().is_some();
+    let entered = |write: &SubtreeWrite<'_>| write.enters() && write.subtree() == subtree;
+    let mut writes = batch.subtrees.iter();
+    writes.clone().any(named) || (writes.clone().any(takes) && writes.any(entered))
+}
+
+/// A node of the tree of a Merk as the transaction holds it, with the
+/// key of its left and of its right child, each where it was asked for
+/// and the node has one.
+type Linked = (StoredNode, [Option<Vec<u8>>; 2]);
+
+/// The node under `key` of `subtree` as the transaction holds it, if it
+/// is a node of the tree: no unlinked record and no flat record. With
+/// the key of its child on the left and on the right, where `sides` asks
+/// for it: as the link states it, or read from the child's cell.
+///
+/// The node and its children are read in operations of their own, and a
+/// commit can land between two of them. The transaction then says that
+/// the node's location is no longer good, and the node is read again, as
+/// a handle reads it (`LigninNodeStore::load`). A link that leads to no
+/// node is refused there too.
+fn linked(
+    reads: &impl Reads,
+    subtree: Subtree,
+    key: &[u8],
+    sides: [bool; 2],
+) -> Result<Option<Linked>, Error> {
+    'node: for _ in 0..READ_ATTEMPTS {
+        let stored = read_node(reads, subtree.as_bytes(), key, None, false)?;
+        let Some(stored) = stored.filter(|stored| !stored.unlinked && stored.record.is_none())
+        else {
+            return Ok(None);
+        };
+        let mut children = [None, None];
+        for (side, left) in [(0, true), (1, false)] {
+            let link = match left {
+                true => &stored.left,
+                false => &stored.right,
+            };
+            let Some(link) = link.as_ref().filter(|_| sides[side]) else {
+                continue;
+            };
+            let child = match (&link.key, stored.location) {
+                (Some(key), _) => key.clone(),
+                (None, Some(location)) => {
+                    match read_child(reads, subtree.as_bytes(), location, left)? {
+                        Child::Found { key, .. } => key,
+                        Child::Stale => continue 'node,
+                        Child::Missing => return Err(refused("a link leads to no node")),
+                    }
+                }
+                (None, None) => {
+                    return Err(Error::CorruptedState("a cell was read with no location"))
+                }
+            };
+            children[side] = Some(child);
+        }
+        return Ok(Some((stored, children)));
+    }
+    Err(refused("a node changed under every read of it"))
+}
+
+/// The node under `key` of `subtree` as the transaction holds it, to be
+/// put again as it is: its value kept, by the read that is made here,
+/// and its feature, its hashes and its links stated as they were read.
+/// `None` for a key that holds no such node: no node of the tree, or a
+/// node with a hash that is stale.
+fn as_it_is(reads: &impl Reads, subtree: Subtree, key: &[u8]) -> Result<Option<NodeWrite>, Error> {
+    let Some((stored, children)) = linked(reads, subtree, key, [true, true])? else {
+        return Ok(None);
+    };
+    if !stored.stale.is_empty() {
+        return Ok(None);
+    }
+    let [on_the_left, on_the_right] = children;
+    let link = |link: &Option<StoredLink>, child: Option<Vec<u8>>| match (link, child) {
+        (Some(link), Some(key)) => Ok(Some(LinkWrite {
+            key,
+            hash: link.hash,
+            heights: link.heights,
+            aggregate: encode_aggregate(&link.aggregate),
+        })),
+        (None, _) => Ok(None),
+        (Some(_), None) => Err(Error::CorruptedState("a link was read with no child")),
+    };
+    let left = link(&stored.left, on_the_left)?;
+    let right = link(&stored.right, on_the_right)?;
+    Ok(Some(NodeWrite {
+        key: key.to_vec(),
+        feature: encode_feature(&stored.feature),
+        value_hash: stored.value_hash,
+        kv_hash: stored.kv_hash,
+        left,
+        right,
+        value: ValueWrite::Kept,
+        stale: Stale::NONE,
+        hint: stored.location,
+        read: stored.location,
+        hosted: None,
+    }))
+}
+
+/// What [`way_to`] finds for one element.
+enum Sought {
+    /// The element is held, with this put again.
+    Held(Way),
+    /// The element is not held.
+    No,
+    /// The element is the root of a Merk that has a host, and its cell
+    /// could grow: it is held only where the element of that Merk is
+    /// held, which it is not yet.
+    Above,
+}
+
+/// What is put again for one element ([`way_to`]).
+struct Way {
+    /// The node above the node of the element, where neither the batch
+    /// nor an element that is held already puts it, and then the node of
+    /// the element, where no element that is held already puts it.
+    nodes: Vec<NodeWrite>,
+    /// Whether the node of the element is the root of its Merk.
+    is_root: bool,
+    /// Whether that Merk has a host itself.
+    hosted: bool,
+}
+
+/// What is put again so that a write holds the element `host`: the node
+/// of the element and the node above it in its Merk, each as the
+/// transaction holds it ([`as_it_is`]). The way from the root of that
+/// Merk to the element is the one `batch` leaves: through a node that
+/// the batch puts, or that `again` holds, it follows the links stated
+/// there, and through every other node the links the transaction holds.
+/// The element is looked for on account of the Merk `below`, which it
+/// hosts. `touched` is `None` for the naming of a Merk that was handed
+/// over, and for a batch of a group what the group touched: the node
+/// above is left out where it is one of those. See [`held_elements`] for
+/// where the element is not held.
+fn way_to(
+    reads: &impl Reads,
+    batch: &Batch<'_>,
+    host: &LigninHost,
+    below: Subtree,
+    again: &[PutAgain],
+    touched: Option<&[(Subtree, Vec<u8>)]>,
+) -> Result<Sought, Error> {
+    let above = Subtree::new(host.subtree);
+    // Whether the cell of the node names every Merk that the element is
+    // said to host already: each is entered under the element at its
+    // place before the batch and has a root. A cell that is put again
+    // with those Merks named keeps its length.
+    let mut names_already = true;
+    // Every Merk of the batch that the element hosts, and the Merk it
+    // is looked for on account of, is one that the node can name: left
+    // where it is, and entered under the element at its place in the
+    // list, or entered so with the batch. One of the batch is anchored
+    // and no load.
+    for (position, hosted) in host.hosted.iter().enumerate() {
+        let hosted = Subtree::new(*hosted);
+        let merk = batch.merks.iter().find(|merk| merk.subtree == hosted);
+        let entered = read_subtree(reads, hosted.as_bytes())?;
+        names_already &= entered.as_ref().is_some_and(|entry| {
+            let here = |at: &LigninHosted| {
+                at.subtree == host.subtree
+                    && at.key == host.key
+                    && usize::from(at.position) == position
+            };
+            entry.root_key.is_some() && entry.host.as_ref().is_some_and(here)
+        });
+        if merk.is_none() && hosted != below {
+            continue;
+        }
+        if merk.is_some_and(|merk| !merk.anchored || merk.whole) || taken(batch, hosted) {
+            return Ok(Sought::No);
+        }
+        let entered = entered.map(|entry| {
+            (entry.host).map(|at| (Subtree::new(at.subtree), at.key, usize::from(at.position)))
+        });
+        let stated = |write: &SubtreeWrite<'_>| {
+            let enter = write.entering().filter(|enter| enter.subtree == hosted)?;
+            Some((enter.host).map(|at| (at.subtree, at.key.to_vec(), usize::from(at.position))))
+        };
+        let under = match entered {
+            Some(under) => under,
+            None => batch.subtrees.iter().find_map(stated).flatten(),
+        };
+        if under != Some((above, host.key.clone(), position)) {
+            return Ok(Sought::No);
+        }
+    }
+    if !host.hosted.contains(below.as_bytes()) || taken(batch, above) {
+        return Ok(Sought::No);
+    }
+    let own = batch.merks.iter().find(|merk| merk.subtree == above);
+    let Some(entry) = read_subtree(reads, above.as_bytes())? else {
+        return Ok(Sought::No);
+    };
+    let root = match own.map(|merk| merk.root) {
+        Some(RootPut::Set(root)) => root.map(<[u8]>::to_vec),
+        Some(RootPut::Keep) | None => entry.root_key,
+    };
+    let Some(mut at) = root else {
+        return Ok(Sought::No);
+    };
+    let is_root = at == host.key;
+    // The node above the one the way has come to, with whether the
+    // write puts it without this.
+    let mut parent: Option<(Vec<u8>, bool)> = None;
+    for _ in 0..LONGEST_WAY {
+        let put = own.and_then(|merk| merk.nodes.iter().find(|node| node.key == at));
+        let held = (again.iter())
+            .find(|held| held.subtree == above && held.node.key == at)
+            .map(|held| &held.node);
+        let left = match host.key.as_slice().cmp(&at) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            // A batch that puts the node of the element names the Merks
+            // in it itself.
+            std::cmp::Ordering::Equal if put.is_some() => return Ok(Sought::No),
+            std::cmp::Ordering::Equal => {
+                // The node above, where the write does not put it without
+                // this. One that hosts a subtree which was touched is not
+                // put again, and the element is held without it.
+                let topmost = parent.is_none();
+                let unheld = parent.filter(|(_, put)| !put).map(|(key, _)| key);
+                let left_out = (unheld.iter()).any(|key| {
+                    touched.is_some_and(|touched| touched.contains(&(above, key.clone())))
+                });
+                // In a batch of a group, a cell that could grow is held
+                // only where the write can carry it: with the node above
+                // it, or as the root of a Merk that no element hosts, or
+                // whose element is held. A naming is there to grow the
+                // cell of its element.
+                if touched.is_some() && !names_already {
+                    let named = |held: &PutAgain| {
+                        let hosted = held.hosted.as_ref();
+                        hosted.is_some_and(|hosted| hosted.contains(&above))
+                    };
+                    match topmost {
+                        false if left_out => return Ok(Sought::No),
+                        true if entry.host.is_some() && !again.iter().any(named) => {
+                            return Ok(Sought::Above)
+                        }
+                        _ => {}
+                    }
+                }
+                let unheld = unheld.filter(|_| !left_out);
+                let mut nodes = Vec::with_capacity(2);
+                let own = held.is_none().then_some(at);
+                for key in unheld.into_iter().chain(own) {
+                    let Some(node) = as_it_is(reads, above, &key)? else {
+                        return Ok(Sought::No);
+                    };
+                    nodes.push(node);
+                }
+                return Ok(Sought::Held(Way {
+                    nodes,
+                    is_root,
+                    hosted: entry.host.is_some(),
+                }));
+            }
+        };
+        let next = match (put, held) {
+            (Some(put), _) => {
+                let link = if left { put.left } else { put.right };
+                link.map(|link| link.key.to_vec())
+            }
+            (None, Some(held)) => {
+                let link = if left { &held.left } else { &held.right };
+                link.as_ref().map(|link| link.key.clone())
+            }
+            (None, None) => match linked(reads, above, &at, [left, !left])? {
+                Some((_, [on_the_left, on_the_right])) => match left {
+                    true => on_the_left,
+                    false => on_the_right,
+                },
+                None => None,
+            },
+        };
+        let Some(next) = next else {
+            return Ok(Sought::No);
+        };
+        parent = Some((at, put.is_some() || held.is_some()));
+        at = next;
+    }
+    Ok(Sought::No)
+}
+
+/// What a write puts again so that it holds the element of each Merk of
+/// `first`, as `host_of` names it, and what that takes above it.
+///
+/// A write that puts nodes of a Merk and not the node of the element
+/// that hosts it hands the Merk over anchored: its root stays in its
+/// page (`tree-layout.md` T3), and where the root's cell grows in a page
+/// that has no room for it and holds nothing below the root, the tree
+/// pages refuse the write
+/// (`lignin_tree::fragment::FragmentError::NoRoom`). A write of the node
+/// of an element alone is in the same place, where the node grows by a
+/// Merk that it comes to name: the tree pages carry a cell only for a
+/// write that holds the cell which points at it (F4). So for each Merk
+/// of `first` the write puts again, as the transaction holds them, the
+/// node of the element that hosts the Merk and the node above it in its
+/// Merk, but for one that the write puts already, and names in the
+/// element's node the Merks the element hosts. A node above that hosts a
+/// subtree which the batch touches is not put again either, and the
+/// element is held without it: see below. No value is written and
+/// no hash is made: each node keeps its value and states the feature,
+/// the hashes and the links that were read. The Merks of `batch` that
+/// the element hosts are then anchored no more, and every cell of the
+/// write that can grow is one the tree pages may carry: what tops the
+/// nodes that are put again is the node above the element as it is,
+/// which does not grow. An element whose node is the root of its Merk
+/// has no node above it: where that Merk has a host, the element of that
+/// Merk is held as well, in the same way, if `host_of` names it.
+///
+/// The node above an element is put again as a node that is only above:
+/// it keeps the Merks it hosts as its cell has them, and the tree pages
+/// refuse a cell that keeps a root which the same write takes away
+/// (`lignin_tree::fragment::WriteError::Removed`). Such a node is held
+/// as an element itself where a batch of a group puts or removes a node
+/// of the Merk it hosts ([`held_by_a_part`]), and then names what it
+/// hosts. Where it is not, and it is one of `touched`, the nodes that
+/// host a subtree which the batch or an earlier batch of its group
+/// touches ([`hosts_of_touched`]), it is left out. The element below it
+/// is then held without it where its cell is taken to keep its length,
+/// and not held where it is not (below): held so, the Merks of that
+/// element are anchored no more, and the cell of the element stays in
+/// its page.
+///
+/// A cell that stays in its page must not grow, as a cell does, by the
+/// place of a pointer, where its node comes to name a Merk that it does
+/// not name yet. So in a batch of a group, where `touched` is given, an
+/// element whose cell could grow is held only where the write can carry
+/// the cell: with the node above it, or as the root of a Merk that no
+/// element hosts, or whose element is held, which is looked for first
+/// then. The naming of a Merk that was handed over is there to grow the
+/// cell of its element, and holds the element whatever its cell does:
+/// `touched` is `None` for it. The cell is taken to keep its length
+/// where every Merk that the element is said to host is entered under
+/// it at its place before the batch and has a root there. A cell names
+/// such a Merk in a grove that one writer's operations of GroveDB made,
+/// each of which names a Merk that has a root in the node of its
+/// element before it ends, a restore and a load by the naming after the
+/// hand-over. A Merk that is entered with no node can be one that the
+/// node of its element does not name. And two writers can leave a root
+/// that no cell names: a commit that writes into a tree after the look
+/// of a group which writes an empty tree over it gives the Merks of
+/// that tree roots under an element that names none (`engine.md`, "An
+/// element written over a tree"). The checker reports such a store, and
+/// an element of it that is held without the node above it can grow.
+///
+/// An element is held only where all of this is so, and its Merks stay
+/// anchored otherwise:
+///
+/// - each Merk of the batch that the element hosts is anchored and no
+///   load, and it and the Merk the element is held for are entered
+///   under the element at their places among the Merks the element
+///   hosts, or are entered so with the batch, and the batch neither
+///   drops, clears nor moves them
+/// - the Merk that holds the element is entered, has a root as the
+///   batch leaves it, and the batch neither drops, clears nor moves it
+/// - the way from that root to the element's key, by the links the
+///   batch states for the nodes it puts and by the links the
+///   transaction holds for the others, comes to a node under that key
+///   which the batch does not put, and that node and the node above it
+///   are nodes of the tree with no stale hash. A node that the batch
+///   removes is on no such way
+/// - in a batch of a group, the write can carry the cell of the
+///   element, or every Merk that the element is said to host is entered
+///   under it at its place before the batch and has a root
+fn held_elements(
+    reads: &impl Reads,
+    batch: &Batch<'_>,
+    first: impl IntoIterator<Item = Subtree>,
+    host_of: &dyn Fn(Subtree) -> Option<LigninHost>,
+    touched: Option<&[(Subtree, Vec<u8>)]>,
+) -> Result<HeldElements, Error> {
+    let mut held = HeldElements::default();
+    // The Merks whose elements are looked for: the first ones, and then
+    // each Merk whose root is the node of an element that is held.
+    let mut merks: VecDeque<Subtree> = first.into_iter().collect();
+    // The elements that waited once for the element above them.
+    let mut waited: Vec<(Subtree, Vec<u8>)> = Vec::new();
+    while let Some(merk) = merks.pop_front() {
+        let Some(host) = host_of(merk) else {
+            continue;
+        };
+        let above = Subtree::new(host.subtree);
+        let element = (above, host.key.clone());
+        if held.looked.contains(&element) {
+            continue;
+        }
+        let sought = way_to(reads, batch, &host, merk, &held.again, touched)?;
+        // The root of a Merk that has a host, whose cell could grow: the
+        // element of that Merk is looked for first, and then this one
+        // once more.
+        if matches!(sought, Sought::Above) && !waited.contains(&element) {
+            waited.push(element);
+            merks.push_front(merk);
+            merks.push_front(above);
+            continue;
+        }
+        held.looked.push(element);
+        let Sought::Held(way) = sought else {
+            continue;
+        };
+        let again = way.nodes.into_iter().map(|node| PutAgain {
+            subtree: above,
+            node,
+            hosted: None,
+        });
+        held.again.extend(again);
+        let hosted: Vec<Subtree> = host.hosted.iter().copied().map(Subtree::new).collect();
+        let places = (0..batch.merks.len()).filter(|at| hosted.contains(&batch.merks[*at].subtree));
+        held.named.extend(places);
+        for (added, anchored) in &mut held.added {
+            *anchored &= !hosted.contains(added);
+        }
+        let node = (held.again.iter_mut())
+            .find(|again| again.subtree == above && again.node.key == host.key)
+            .ok_or_else(|| refused("the node of a held element was not read"))?;
+        node.hosted = Some(hosted);
+        let written = batch.merks.iter().any(|merk| merk.subtree == above);
+        if !written && !held.added.iter().any(|(added, _)| *added == above) {
+            // Anchored where it has a host that is not held.
+            let named = |held: &PutAgain| {
+                let hosted = held.hosted.as_ref();
+                hosted.is_some_and(|hosted| hosted.contains(&above))
+            };
+            held.added
+                .push((above, way.hosted && !held.again.iter().any(named)));
+        }
+        if way.is_root && way.hosted {
+            merks.push_back(above);
+        }
+    }
+    Ok(held)
+}
+
+/// The nodes that host a subtree which `batch` touches: one that it has
+/// a change set of, or that it enters, drops, clears, states anew or
+/// moves, with the subtrees a move takes along. By the entry that the
+/// transaction holds of the subtree before the batch is applied, and by
+/// the host that an enter or a move of the batch states.
+fn hosts_of_touched(
+    reads: &impl Reads,
+    batch: &Batch<'_>,
+) -> Result<Vec<(Subtree, Vec<u8>)>, Error> {
+    let mut subtrees: Vec<Subtree> = batch.merks.iter().map(|merk| merk.subtree).collect();
+    let mut hosts = Vec::new();
+    for write in batch.subtrees {
+        match write.moving() {
+            Some(moving) => {
+                let moved = (moving.from, moving.to);
+                for (from, to) in std::iter::once(&moved).chain(moving.below) {
+                    subtrees.extend([*from, *to]);
+                }
+                hosts.push((moving.host.subtree, moving.host.key.to_vec()));
+            }
+            None => subtrees.push(write.subtree()),
+        }
+        if let Some(host) = write.entering().and_then(|enter| enter.host) {
+            hosts.push((host.subtree, host.key.to_vec()));
+        }
+    }
+    for subtree in subtrees {
+        let entry = read_subtree(reads, subtree.as_bytes())?;
+        if let Some(host) = entry.and_then(|entry| entry.host) {
+            hosts.push((Subtree::new(host.subtree), host.key));
+        }
+    }
+    Ok(hosts)
+}
+
+impl HeldElements {
+    /// Calls `run` with `batch` and the nodes that are put again: those
+    /// of a Merk that the batch writes after the nodes the batch puts
+    /// there, and the Merks that the batch does not write after its
+    /// Merks, each with its root kept. What `run` reports is cut back to
+    /// what is of the batch alone.
+    fn with_batch(
+        &self,
+        batch: &Batch<'_>,
+        run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
+    ) -> Result<Written, Error> {
+        if self.again.is_empty() {
+            return run(batch);
+        }
+        let puts: Vec<(Subtree, NodePut<'_>)> = (self.again.iter())
+            .map(|again| {
+                let put = NodePut {
+                    hosted: match &again.hosted {
+                        Some(hosted) => Hosted::Set(hosted),
+                        None => Hosted::Keep,
+                    },
+                    ..node_put(&again.node)
+                };
+                (again.subtree, put)
+            })
+            .collect();
+        let of = |subtree: Subtree| {
+            let of = puts.iter().filter(move |(of, _)| *of == subtree);
+            of.map(|(_, put)| *put)
+        };
+        let nodes: Vec<Vec<NodePut<'_>>> = (batch.merks.iter())
+            .map(|merk| merk.nodes.iter().copied().chain(of(merk.subtree)).collect())
+            .collect();
+        let added: Vec<Vec<NodePut<'_>>> = (self.added.iter())
+            .map(|(subtree, _)| of(*subtree).collect())
+            .collect();
+        let own =
+            (batch.merks.iter().zip(&nodes).enumerate()).map(|(place, (merk, nodes))| MerkWrite {
+                nodes,
+                anchored: merk.anchored && !self.named.contains(&place),
+                ..*merk
+            });
+        let above = (self.added.iter().zip(&added)).map(|((subtree, anchored), nodes)| MerkWrite {
+            subtree: *subtree,
+            nodes,
+            removed: &[],
+            root: RootPut::Keep,
+            anchored: *anchored,
+            whole: false,
+        });
+        let merks: Vec<MerkWrite<'_>> = own.chain(above).collect();
+        let holding = Batch {
+            merks: &merks,
+            ..*batch
+        };
+        let mut written = run(&holding)?;
+        written.locations.truncate(batch.merks.len());
+        for (locations, merk) in written.locations.iter_mut().zip(batch.merks) {
+            locations.truncate(merk.nodes.len());
+        }
+        Ok(written)
+    }
+}
+
+/// What `part` holds as one batch of a group of several
+/// ([`held_elements`]): the element of each Merk of `batch` that is
+/// anchored and no load, and that the batch puts or removes a node of,
+/// as the part names it ([`BatchPart::host_of`]). A Merk that the batch
+/// only removes nodes of can get another root or none, which the node of
+/// its element then names with the same write; and its element can be
+/// the node above another element that is held. `touched` is what the
+/// batches of the group touch up to this one, with it
+/// ([`hosts_of_touched`]).
+fn held_by_a_part(
+    reads: &impl Reads,
+    batch: &Batch<'_>,
+    part: &dyn BatchPart,
+    touched: &[(Subtree, Vec<u8>)],
+) -> Result<HeldElements, Error> {
+    let written = |merk: &&MerkWrite<'_>| {
+        merk.anchored && !merk.whole && !(merk.nodes.is_empty() && merk.removed.is_empty())
+    };
+    let first = batch.merks.iter().filter(written).map(|merk| merk.subtree);
+    held_elements(
+        reads,
+        batch,
+        first,
+        &|merk| part.host_of(merk),
+        Some(touched),
+    )
+}
+
+/// Names in the node of the first element of `hosts` the Merks that the
+/// element hosts, through `scope`, as a write that holds the element
+/// ([`held_elements`]): the node is put again as the transaction holds
+/// it, with the node above it. The elements after the first are those of
+/// the Merks above, each named where the element below it is the root of
+/// its Merk. An element that is not held is refused, and nothing is
+/// written.
+fn name_hosted(scope: &Scope<'_, '_>, hosts: &[LigninHost]) -> Result<(), Error> {
+    let unheld = || {
+        refused("a host that is no node of its Merk, or whose first Merk is not entered under it")
+    };
+    let element = hosts.first().ok_or_else(unheld)?;
+    let below = element.hosted.first().ok_or_else(unheld)?;
+    let host_of = |merk: Subtree| {
+        let mut hosts = hosts.iter();
+        hosts
+            .find(|host| host.hosted.contains(merk.as_bytes()))
+            .cloned()
+    };
+    let batch = Batch::default();
+    let held = held_elements(scope, &batch, [Subtree::new(*below)], &host_of, None)?;
+    if held.again.is_empty() {
+        return Err(unheld());
+    }
+    let named = held.with_batch(&batch, &mut |batch| {
+        apply_batch(scope, batch, &[], &mut None)
+    });
+    named.map(|_| ())
+}
+
 /// Applies the batches of `parts` through `scope`, in their order, each
 /// with the subtrees of `enters` that are entered or stated anew with it.
+/// In a group of more than one batch, each batch holds the element of
+/// each Merk whose root can grow where it is ([`held_by_a_part`]).
 fn apply_parts(
     scope: &Scope<'_, '_>,
     parts: &[&dyn BatchPart],
@@ -1219,6 +1881,9 @@ fn apply_parts(
     if enters.iter().any(|(part, _)| *part >= parts.len()) {
         return Err(refused("subtrees were to be entered with no batch"));
     }
+    let several = parts.len() > 1;
+    // The nodes that host a subtree which a batch of the group touched.
+    let mut touched = Vec::new();
     let mut written = Vec::with_capacity(parts.len());
     for (at, part) in parts.iter().enumerate() {
         let enters: Vec<SubtreeWrite<'_>> = (enters.iter())
@@ -1226,22 +1891,44 @@ fn apply_parts(
             .map(|(_, change)| subtree_write(change))
             .collect();
         written.push(part.with_batch(&mut |batch| {
-            if enters.is_empty() {
-                return apply_batch(scope, batch, &[], entry);
-            }
-            let subtrees = with_enters(batch.subtrees, &enters);
-            apply_batch(
-                scope,
-                &Batch {
-                    subtrees: &subtrees,
-                    ..*batch
-                },
-                &[],
-                entry,
-            )
+            let subtrees = match enters.is_empty() {
+                true => batch.subtrees.to_vec(),
+                false => with_enters(batch.subtrees, &enters),
+            };
+            let batch = Batch {
+                subtrees: &subtrees,
+                ..*batch
+            };
+            let held = match several {
+                true => {
+                    touched.extend(hosts_of_touched(scope, &batch)?);
+                    held_by_a_part(scope, &batch, *part, &touched)?
+                }
+                false => HeldElements::default(),
+            };
+            held.with_batch(&batch, &mut |batch| apply_batch(scope, batch, &[], entry))
         })?);
     }
     Ok(written)
+}
+
+/// Shows `run` what `part` hands a transaction as one batch of a group of
+/// several, with what it puts again ([`held_by_a_part`]) as `reader`
+/// reads it, and returns what `run` reports as the part is told it.
+/// Nothing is applied.
+#[cfg(test)]
+pub(super) fn shown_in_a_group<R: Reader>(
+    reader: &R,
+    part: &dyn BatchPart,
+    run: &mut dyn FnMut(&Batch<'_>) -> Written,
+) -> Result<Written, Error> {
+    reader.reading(|reads| {
+        part.with_batch(&mut |batch| {
+            let touched = hosts_of_touched(reads, batch)?;
+            let held = held_by_a_part(reads, batch, part, &touched)?;
+            held.with_batch(batch, &mut |batch| Ok(run(batch)))
+        })
+    })
 }
 
 /// The subtree writes of a batch with `enters` among them: what leaves
@@ -1463,5 +2150,9 @@ impl<A: Reader + super::flat::FlatAccess> Access for A {
         self.writing(parts.len(), |scope| {
             apply_parts(scope, parts, enters, entry)
         })
+    }
+
+    fn name_hosted(&self, hosts: &[LigninHost]) -> Result<(), Error> {
+        self.writing(1, |scope| name_hosted(scope, hosts))
     }
 }
