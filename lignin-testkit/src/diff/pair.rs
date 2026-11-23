@@ -562,11 +562,13 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         }
         // Asked of the reference before the operation: a read of its
         // block's state, which changes nothing.
-        let (over, over_indexed) = catching(|| {
+        let (over, over_indexed, under_an_insert_only) = catching(|| {
+            let (db, version) = (&reference_db, case.grove_version);
             let block = reference_runner.transactions().block();
             (
-                Known::trees_under(&reference_db, block, op, case.grove_version),
-                Known::indexed_under(&reference_db, block, op, case.grove_version),
+                Known::trees_under(db, block, op, version),
+                Known::indexed_under(db, block, op, version),
+                Known::indexed_under_an_insert_only(db, block, op, version),
             )
         })
         .unwrap_or_default();
@@ -575,6 +577,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         // took is counted, whatever the candidate did.
         if matches!(&was, Seen::Answered(observed) if !observed.step.failed()) {
             known.came_to_indexed_over_indexed(&over_indexed);
+            known.came_to_insert_only_over_indexed(&under_an_insert_only);
             tally.families = known.counts();
         }
         let is = observe(&mut candidate_runner, op);
@@ -592,6 +595,10 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             // case, and is none of the run's.
             let (reference, candidate) = (&was.step.outcome, &is.step.outcome);
             let refusal = Known::family_of_refusal(&over_indexed, reference, candidate);
+            let refusal = refusal.or_else(|| {
+                let over = &under_an_insert_only;
+                Known::family_of_insert_only_refusal(over, reference, candidate, &is.remarks)
+            });
             let taken = !was.step.failed();
             // The engines differ in the proof of a query and in nothing
             // else, and the candidate's proof holds: the open difference

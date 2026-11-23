@@ -365,7 +365,7 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     assert_eq!(rows(&ended.reference)[1..], kept);
     assert_eq!(rows(&ended.candidate), [again]);
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 1, 0, 0]);
+    assert_eq!(families.answers, [0, 0, 1, 0, 0, 0]);
     assert_eq!(families.answer_seed[2], Some(case.seed));
 }
 
@@ -524,7 +524,7 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
         let panicked = |line: &String| line.contains(origin) && line.contains(&asserted);
         assert!(divergence.reference.iter().any(panicked), "{divergence:?}");
         assert_eq!(ran.ended_at, None);
-        assert_eq!(ran.tally.families.answers, [0; 5]);
+        assert_eq!(ran.tally.families.answers, [0; 6]);
 
         // With the contract kept, the case of the seed has no divergence.
         let mut keeping = shape.clone();
@@ -566,6 +566,89 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
     assert_eq!(rows(&ended.reference), rows(&ended.candidate));
     assert_eq!(ran.ended_at, Some(Family::DroppedTreeProof));
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 0, 0, 1]);
+    assert_eq!(families.answers, [0, 0, 0, 0, 1, 0]);
     assert_eq!(families.answer_seed[4], Some(case.seed));
+}
+
+/// A case the fuzzer reported on grove version 4: a batch of inserts that
+/// their caller knows not to replace, repeated by the fuzzer, puts an
+/// empty indexed tree at a key where an indexed tree with rows stands.
+/// GroveDB reads no old element for such an insert and removes no row,
+/// so RocksDB takes the batch, and LigninDB refuses it as not supported.
+/// It is the open difference of an indexed tree over an indexed tree by
+/// an insert known not to replace: the case ends at that answer, counted
+/// apart, and is no divergence (D-354).
+#[test]
+fn an_insert_known_not_to_replace_over_an_indexed_tree_ends_the_case_counted_apart() {
+    use lignin_testkit::{
+        diff::{run, Case, Family, Part, Stored},
+        golden::run::STACK_BYTES,
+        workload::{BatchOp, Op},
+    };
+
+    let scratch = scratch();
+    let shape = Shape::default()
+        .for_grove_version(4)
+        .expect("a grove version");
+    let seed = 0xb444_9622_848f_067e;
+    let case = Case::generate(seed, &shape);
+    let ran = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn_scoped(scope, || {
+                run(
+                    &case,
+                    &Side::<Reference>::of("RocksDB"),
+                    &Side::<Candidate>::of("LigninDB"),
+                    scratch.path(),
+                    Stored::Every(32),
+                    &|| false,
+                )
+            })
+            .expect("a thread")
+            .join()
+            .expect("the case runs")
+    })
+    .expect("the run");
+    if let Some(divergence) = &ran.divergence {
+        panic!(
+            "{}",
+            divergence.report(&case, "RocksDB", "LigninDB").join("\n")
+        );
+    }
+    assert_eq!(ran.ended_at, Some(Family::InsertOnlyOverIndexed));
+    let ended = ran.ended_with.as_ref().expect("the answers it ended with");
+    assert_eq!(ended.step, 628, "{ended:?}");
+    // The batch lists an insert known not to replace of an indexed tree
+    // under the key `tag`.
+    let Op::Batch(ops) = &case.ops[ended.step] else {
+        panic!("the case ended at {:?}", case.ops[ended.step]);
+    };
+    let puts_the_tree = |op: &BatchOp| {
+        matches!(op, BatchOp::InsertOnly { key, element, .. }
+            if key.as_slice() == b"tag" && element.is_indexed_tree())
+    };
+    assert!(ops.iter().any(puts_the_tree), "{ops:?}");
+    // RocksDB took the batch, and LigninDB refused it in the words of
+    // that refusal for that key.
+    assert!(ended.parts.contains(&Part::Error), "{ended:?}");
+    let failed = |lines: &[String]| {
+        let mut failed = lines.iter().filter(|line| line.starts_with("failed "));
+        failed.next().cloned()
+    };
+    assert_eq!(failed(&ended.reference), None, "{ended:?}");
+    assert!(ended.reference.iter().any(|line| line.starts_with("root ")));
+    let refused = Some("failed NotSupported".to_string());
+    assert_eq!(failed(&ended.candidate), refused, "{ended:?}");
+    let words = "# failed: not supported: lignindb: an empty indexed tree written under the key \
+                 746167 over an indexed tree, a secondary of which holds rows that the batch does \
+                 not remove";
+    assert!(
+        ended.candidate.iter().any(|line| line == words),
+        "{ended:?}"
+    );
+    let families = ran.tally.families;
+    assert_eq!(families.answers, [0, 0, 0, 0, 0, 1]);
+    assert_eq!(families.histories[5], 1);
+    assert_eq!(families.answer_seed[5], Some(seed));
 }
