@@ -99,8 +99,17 @@
 //! the node, so it is said only of nodes that were read. For that, a run
 //! keeps the key and the place of every record of the column under an
 //! entry in use that names a root, in memory, to its end. A record whose
-//! value is not read has the finding of its value, and is asked no form.
-//! With no [`DataColumn`], none of this is checked.
+//! value is not read has the finding of its value, once, and is asked no
+//! form.
+//!
+//! Where several columns share one keyspace and the lead of one is the
+//! beginning of another's, a key can read as a record of two columns. It
+//! is held as a record of the data column wherever it reads as one under
+//! a prefix that the directory has an entry for, also where it reads as
+//! a record of another column as well: nothing in the key says which it
+//! is. A store that keeps its columns in keyspaces of their own, or
+//! under leads of which none is the beginning of another, has no such
+//! key. With no [`DataColumn`], none of this is checked.
 //!
 //! # Cells that nothing reaches
 //!
@@ -282,7 +291,7 @@ mod still;
 mod tests;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     time::Instant,
 };
 
@@ -505,6 +514,9 @@ struct Run<'a, 's, 'c> {
     /// record's key in its subtree, and where the record is
     /// ([`DataColumn`]).
     records: HashMap<usize, HashMap<Vec<u8>, Place>>,
+    /// The cells and the flat records whose value out of line a read of
+    /// the run did not read.
+    unread: HashSet<Place>,
     cut: Cut,
 }
 
@@ -542,6 +554,7 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
             unreached: Unreached::default(),
             other_hashes: OtherHashes::default(),
             records: HashMap::new(),
+            unread: HashSet::new(),
             cut: Cut::default(),
         }
     }

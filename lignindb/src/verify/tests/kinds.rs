@@ -4,7 +4,11 @@
 use std::sync::atomic::AtomicU64;
 
 use lignin_format::value_log::ValuePointer;
-use lignin_tree::{directory::Host, drop::Column as FlatColumn, flat::FlatTree};
+use lignin_tree::{
+    directory::{Host, Prefix},
+    drop::Column as FlatColumn,
+    flat::FlatTree,
+};
 
 use super::{
     key, plant, prefix,
@@ -115,7 +119,7 @@ fn a_store_whose_data_columns_follow_their_tree_types_is_sound() {
     assert_eq!(report.census.left_over_entries, 1, "{report}");
 
     // With no tree type that keeps flat records, the records under the
-    // tree are held to the form of a node: two of the four have it not.
+    // tree are held to the form of a node: three of the four have it not.
     store.db.check_kinds_by(|_| false);
     let report = store.check();
     assert_eq!(report.rules(), [Rule::RecordKind], "{report}");
@@ -284,8 +288,69 @@ fn a_record_whose_value_is_not_read_is_asked_no_form() {
         place.1 = moved.expect("a pointer").encode().to_vec();
     });
     let report = store.check();
-    assert!(report.has(Rule::ValueUnreadable), "{report}");
     assert!(!report.has(Rule::RecordKind), "{report}");
+    // The value is read by the census of its page and again where the
+    // record is held to its form: that it is not read is said once.
+    assert_eq!(of(&report, Rule::ValueUnreadable).len(), 1, "{report}");
+}
+
+/// Where the lead of one column is the beginning of another's, a key can
+/// read as a record of both, each under a prefix that is entered. It is
+/// held as a record of the data column, whichever of the two that is.
+#[test]
+fn a_key_that_reads_as_a_record_of_two_columns_is_held_as_the_data_columns() {
+    let store = plant();
+    // The store's own check knows no keyspace but its own.
+    store.db.unchecked();
+    // Under the lead `a` the key below is of this prefix, and under the
+    // lead `ab` of the big Merk's.
+    let other: Prefix = {
+        let mut other = prefix(BIG);
+        other[0] = b'b';
+        other
+    };
+    let mut made = None;
+    store.write_flat(|pages| {
+        let directory = store.directory(pages);
+        (directory.add(pages, &other, TREE_TYPE, None)).expect("it is entered");
+        let tree = FlatTree::create(pages, store.db.config()).expect("a keyspace");
+        let key = [&b"ab"[..], &prefix(BIG)[..], b"k"].concat();
+        assert_eq!(
+            key,
+            [&b"a"[..], &other[..], &prefix(BIG)[31..], b"k"].concat()
+        );
+        tree.put(pages, &key, b"any bytes").expect("a put");
+        made = Some(tree);
+    });
+    let shared = made.expect("the keyspace was made");
+    let mut columns = store.db.keyspaces().columns().to_vec();
+    let first = columns.len();
+    for lead in [&b"a"[..], b"ab"] {
+        columns.push(FlatColumn { tree: shared, lead });
+    }
+    let check = |column: Option<usize>| {
+        let calls = AtomicU64::new(0);
+        let data = column.map(|column| DataColumn {
+            column,
+            keeps_flat_records: kinds(),
+        });
+        let parts = Store {
+            grove: Grove::Directory {
+                tree: store.db.directory(),
+                columns: &columns,
+                data,
+            },
+            ..parts(&store.db, &columns)
+        };
+        let options = Options::new(store.latest(), Scope::Still);
+        verify::check(&parts, &Guard, options, Some(&mut Rules(&calls)))
+    };
+    assert!(check(None).is_sound());
+    for column in [first, first + 1] {
+        let report = check(Some(column));
+        assert_eq!(report.rules(), [Rule::RecordKind], "{report}");
+        assert_eq!(report.findings.len(), 1, "{report}");
+    }
 }
 
 /// Where several columns share one keyspace, the data column is the one

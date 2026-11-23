@@ -15,7 +15,7 @@ use lignin_store::{
     load::{LoadError, FRAME_FORMAT},
 };
 
-use super::{Place, Rule, Run};
+use super::{read::ValueFault, Place, Rule, Run};
 
 /// One bit for each slot of a page.
 #[derive(Debug, Clone, Default)]
@@ -284,7 +284,19 @@ impl Run<'_, '_, '_> {
     /// the page `page`, holds out of line, and reports what keeps it from
     /// being read.
     pub(super) fn check_value(&mut self, value: ValuePlace, page: PageId, holder: Place) {
-        if let Err(fault) = self.values.fetch(value, page)
+        if let Err(fault) = self.values.fetch(value, page) {
+            self.unread.insert(holder);
+            if let Some(rule) = fault.rule() {
+                self.add(rule, holder, || fault.to_string());
+            }
+        }
+    }
+
+    /// Reports that a later read of the value that `holder` holds out of
+    /// line failed with `fault`, unless a read before it failed too and
+    /// was reported ([`Self::check_value`]).
+    pub(super) fn value_fault(&mut self, fault: &ValueFault, holder: Place) {
+        if self.unread.insert(holder)
             && let Some(rule) = fault.rule()
         {
             self.add(rule, holder, || fault.to_string());

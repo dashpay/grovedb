@@ -459,8 +459,7 @@ impl Run<'_, '_, '_> {
                             } = records
                             {
                                 let full = [&visit.outer[..], &key[..]].concat();
-                                let found = record_prefix(&full, leads, &entries.by_prefix);
-                                let prefix = found.map(|(prefix, _)| prefix);
+                                let prefix = record_prefix(&full, leads, &entries.by_prefix);
                                 let known = match prefix {
                                     Some(prefix) if entered == Some(prefix) => true,
                                     Some(prefix) => entries.by_prefix.contains_key(&prefix),
@@ -468,19 +467,6 @@ impl Run<'_, '_, '_> {
                                 };
                                 if known {
                                     entered = prefix;
-                                    if let (Some((prefix, lead)), Some((data, keeps_flat))) =
-                                        (found, data)
-                                        && lead == data
-                                    {
-                                        let record = Record {
-                                            prefix,
-                                            key: &full[leads[lead].len() + PREFIX_LEN..],
-                                            value,
-                                            page,
-                                            place,
-                                        };
-                                        self.check_kind(entries, &record, keeps_flat);
-                                    }
                                 } else {
                                     self.add(
                                         Rule::FlatRecordWithoutEntry,
@@ -494,6 +480,25 @@ impl Run<'_, '_, '_> {
                                             None => "the record's key holds no prefix".to_owned(),
                                         },
                                     );
+                                }
+                                // A key that reads as a record of the data
+                                // column, under a prefix with an entry, is
+                                // held as one, whatever other column of the
+                                // keyspace it reads as a record of.
+                                if let Some((lead, keeps_flat)) = data
+                                    && let Some(rest) = full.strip_prefix(leads[lead])
+                                    && let Some((prefix, within)) =
+                                        rest.split_first_chunk::<PREFIX_LEN>()
+                                    && entries.by_prefix.contains_key(prefix)
+                                {
+                                    let record = Record {
+                                        prefix: *prefix,
+                                        key: within,
+                                        value,
+                                        page,
+                                        place,
+                                    };
+                                    self.check_kind(entries, &record, keeps_flat);
                                 }
                             }
                         }
@@ -523,14 +528,27 @@ impl Run<'_, '_, '_> {
             return;
         }
         if !keeps_flat(&merk.tree_type) {
-            // A value that is not read was reported where its page was
-            // read, and nothing is said of its form.
+            // Nothing is said of the form of a value that is not read.
+            // That it is not read is reported here unless the read of
+            // its page reported it.
+            let form = |bytes| unlinked::decode(record.key, bytes).err();
+            let mut unread = None;
             let refused = match record.value {
-                FlatValue::Inline(bytes) => unlinked::decode(record.key, bytes).err(),
-                FlatValue::OutOfLine(_) => out_of_line(record.value)
-                    .and_then(|value| self.values.fetch(value, record.page).ok())
-                    .and_then(|bytes| unlinked::decode(record.key, bytes).err()),
+                FlatValue::Inline(bytes) => form(bytes),
+                FlatValue::OutOfLine(_) => match out_of_line(record.value) {
+                    Some(value) => match self.values.fetch(value, record.page) {
+                        Ok(bytes) => form(bytes),
+                        Err(fault) => {
+                            unread = Some(fault);
+                            None
+                        }
+                    },
+                    None => None,
+                },
             };
+            if let Some(fault) = unread {
+                self.value_fault(&fault, record.place);
+            }
             if let Some(refused) = refused {
                 let prefix = record.prefix;
                 self.add(Rule::RecordKind, record.place, || {
@@ -585,25 +603,19 @@ fn bucket_root(key: &[u8], key_limit: usize, value: FlatValue<'_>) -> Option<Pag
 }
 
 /// The prefix of the subtree that the record under `key` is of, in a
-/// keyspace whose columns begin their keys with `leads`, and which of the
-/// leads it stands under: the one whose prefix `prefixes` has, where one
-/// lead is the beginning of another.
-fn record_prefix(
-    key: &[u8],
-    leads: &[&[u8]],
-    prefixes: &HashMap<Prefix, usize>,
-) -> Option<(Prefix, usize)> {
-    let under = |(index, lead): (usize, &&[u8])| {
+/// keyspace whose columns begin their keys with `leads`: the one that
+/// `prefixes` has, where one lead is the beginning of another.
+fn record_prefix(key: &[u8], leads: &[&[u8]], prefixes: &HashMap<Prefix, usize>) -> Option<Prefix> {
+    let under = |lead: &&[u8]| {
         let rest = key.strip_prefix(*lead)?;
-        let prefix = rest.first_chunk::<PREFIX_LEN>()?;
-        Some((*prefix, index))
+        rest.first_chunk::<PREFIX_LEN>().copied()
     };
-    let mut found = leads.iter().enumerate().filter_map(under);
+    let mut found = leads.iter().filter_map(under);
     let first = found.next()?;
-    match prefixes.contains_key(&first.0) {
+    match prefixes.contains_key(&first) {
         true => Some(first),
         false => found
-            .find(|(prefix, _)| prefixes.contains_key(prefix))
+            .find(|prefix| prefixes.contains_key(prefix))
             .or(Some(first)),
     }
 }
