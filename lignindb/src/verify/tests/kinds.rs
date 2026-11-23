@@ -3,12 +3,13 @@
 
 use std::sync::atomic::AtomicU64;
 
+use lignin_format::value_log::ValuePointer;
 use lignin_tree::{directory::Host, drop::Column as FlatColumn, flat::FlatTree};
 
 use super::{
     key, plant, prefix,
     sound::{parts, Guard},
-    Planted, BELOW, BIG, INNER, NEVER, OUTER,
+    write_back, Planted, BELOW, BIG, INNER, NEVER, OUTER,
 };
 use crate::{
     txn::{
@@ -259,6 +260,32 @@ fn a_finding_of_the_data_column_names_the_cell_and_the_record() {
     let named = format!("{}", Place::Merk(prefix(BIG)));
     assert!(wrong[0].detail.contains(&named), "{report}");
     assert_eq!(report.findings.len(), 2, "{report}");
+}
+
+/// A record whose value is not read has the finding of its value, and
+/// is asked no form: what its bytes are is not known.
+#[test]
+fn a_record_whose_value_is_not_read_is_asked_no_form() {
+    let store = planted();
+    store.db.unchecked();
+    // A node that no node links, whose value write-back places in the
+    // value log.
+    store.put_data(BIG, b"beside", &unlinked(&[9; 3000]));
+    write_back(&store.db, &store.versions);
+    assert!(store.check().is_sound());
+    let key = [&prefix(BIG)[..], b"beside"].concat();
+    let leaf = store.leaf_with(|at, value| at == key && !value.is_inline());
+    store.rebuild_leaf(leaf, |entries| {
+        let place = entries.iter_mut().find(|entry| entry.0 == key);
+        let place = place.expect("the record");
+        let pointer = ValuePointer::decode(place.1[..].try_into().expect("16 bytes"));
+        let pointer = pointer.expect("a pointer");
+        let moved = ValuePointer::new(pointer.file(), pointer.offset() + 3, pointer.value_len());
+        place.1 = moved.expect("a pointer").encode().to_vec();
+    });
+    let report = store.check();
+    assert!(report.has(Rule::ValueUnreadable), "{report}");
+    assert!(!report.has(Rule::RecordKind), "{report}");
 }
 
 /// Where several columns share one keyspace, the data column is the one
