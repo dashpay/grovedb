@@ -304,6 +304,9 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
     for line in summary.progress.tally.families.lines() {
         let _ = writeln!(out, "  {line}");
     }
+    if let Some(line) = summary.progress.tally.closes.line() {
+        let _ = writeln!(out, "  {line}");
+    }
     for (family, seed, step) in &summary.apart {
         let _ = writeln!(out, "  {}: seed {seed:#x}, step {step}", family.name());
     }
@@ -386,6 +389,9 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
         let _ = writeln!(out, "  cut short {why}");
     }
     for line in tally.families.lines() {
+        let _ = writeln!(out, "  {line}");
+    }
+    if let Some(line) = tally.closes.line() {
         let _ = writeln!(out, "  {line}");
     }
     if let Some(family) = ran.ended_at {
@@ -796,6 +802,7 @@ mod tests {
                 records: 8,
                 cut_short: 9,
                 families: crate::diff::Counts::default(),
+                closes: crate::diff::close::Closes::default(),
             },
             scratch_bytes: 0,
         });

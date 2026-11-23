@@ -97,6 +97,7 @@
 
 pub mod case;
 pub mod cli;
+pub mod close;
 pub mod engines;
 pub mod families;
 pub mod fuzz;
