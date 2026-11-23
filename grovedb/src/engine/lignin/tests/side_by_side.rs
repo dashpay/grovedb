@@ -505,3 +505,133 @@ fn a_tree_is_moved_after_a_tree_inside_it_was_deleted_as_on_rocksdb() {
         }
     );
 }
+
+const FLAT_AT: &[&[u8]] = &[b"p", b"s", b"e"];
+const DROPPED: &[&[u8]] = &[b"p", b"s", b"e", b"t"];
+const BELOW: &[&[u8]] = &[b"p", b"s", b"e", b"t", b"00"];
+
+/// Where the history of [`dropped_flat_with_a_tree_in_it`] makes the
+/// dropped tree again.
+const MADE_AGAIN: &str = "the dropped tree is made again";
+
+/// Trees `p`, `s` and `e`, one inside the other. One batch makes a tree
+/// `t` in `e`, a tree `00` in `t` and an item `old` in `00`, and `t` is
+/// dropped flat, against the caller's word that it holds no tree. Then `t`
+/// and `00` are made again at their paths, and `00` is read as it stands:
+/// whether it is empty, what a range of a query finds in it, and an insert
+/// of the key `old` only where it holds no element.
+fn dropped_flat_with_a_tree_in_it<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let made = [(ROOT, &b"p"[..]), (&[b"p"], b"s"), (&[b"p", b"s"], b"e")];
+    for (at, key) in made {
+        h.write(
+            "made",
+            db.insert(at, key, Element::empty_tree(), None, None, v),
+        )
+        .expect("the trees above");
+    }
+    let insert_only = |at: &[&[u8]], key: &[u8], element: Element| {
+        QualifiedGroveDbOp::insert_only_op(owned(at), key.to_vec(), element)
+    };
+    let batch = vec![
+        insert_only(FLAT_AT, b"t", Element::empty_tree()),
+        insert_only(DROPPED, b"00", Element::empty_tree()),
+        insert_only(BELOW, b"old", item(1)),
+    ];
+    h.write("the batch", db.apply_batch(batch, None, None, v))
+        .expect("the tree with a tree in it");
+    h.write(
+        "the flat drop",
+        db.drop_flat_subtree(FLAT_AT, b"t", BackwardsReferences::DontCheck, None, v),
+    )
+    .expect("the flat drop is taken");
+    h.read("the dropped tree", db.has_raw(FLAT_AT, b"t", None, v));
+    verified(&mut h);
+
+    h.write(
+        MADE_AGAIN,
+        db.insert(FLAT_AT, b"t", Element::empty_tree(), None, None, v),
+    );
+    h.write(
+        "the tree in it is made again",
+        db.insert(DROPPED, b"00", Element::empty_tree(), None, None, v),
+    );
+    h.read("is it empty", db.is_empty_tree(BELOW, None, v));
+    let everything = PathQuery::new_unsized(owned(BELOW), Query::new_range_full());
+    let pairs = QueryResultType::QueryKeyElementPairResultType;
+    h.elements(
+        "a range of a query",
+        db.query_raw(&everything, true, true, true, pairs, None, v),
+    );
+    h.read("the old key", db.has_raw(BELOW, b"old", None, v));
+    h.write(
+        "an insert only where the key holds none",
+        db.insert_if_not_exists(BELOW, b"old", item(2), None, v),
+    );
+    h.element(
+        "the element under the old key",
+        db.get_raw(BELOW.into(), b"old", None, v),
+    );
+    h.answers
+}
+
+/// A flat drop of a tree that holds a tree, and the dropped path made
+/// again before anything else (D-324; `transactions.md` 14.5, row D3).
+///
+/// A flat drop is its caller's word that the tree holds no tree. Where it
+/// holds one, RocksDB keeps the records of that tree under their prefix,
+/// which the drain of the drop does not name, and LigninDB drops them with
+/// the drop. Up to the drop, and for the read of the dropped tree after
+/// it, the two engines answer and are charged alike. A caller that makes
+/// the trees again at the dropped path then reads the old records on
+/// RocksDB and none on LigninDB. **RocksDB's answers are the required
+/// ones; LigninDB's are what it gives today**, an open difference that is
+/// put to the maintainer of GroveDB. The differential fuzzer counts the
+/// cases that come to it (`lignin-testkit::diff::families`).
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn a_tree_made_again_below_a_flat_drop_reads_what_rocksdb_kept_and_lignindb_dropped() {
+    for (number, v) in GROVE_VERSIONS.iter().enumerate().skip(3) {
+        let number = number + 1;
+        let dir = tempfile::tempdir().expect("a directory");
+        let on_lignin = {
+            let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
+            let answers = dropped_flat_with_a_tree_in_it(&db, v);
+            db.flush().expect("a flush");
+            answers
+        };
+        check(dir.path(), v);
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
+            .expect("a database on RocksDB");
+        let on_rocksdb = dropped_flat_with_a_tree_in_it(&db, v);
+
+        // Alike up to the drop and the read after it.
+        let again = (on_rocksdb.iter())
+            .position(|(call, ..)| call == MADE_AGAIN)
+            .expect("the history makes the tree again");
+        assert_eq!(
+            on_lignin[..again],
+            on_rocksdb[..again],
+            "grove version {number}"
+        );
+        assert_eq!(answer_of(&on_rocksdb, "the dropped tree"), "Ok(false)");
+
+        // Required: RocksDB reads the records it kept.
+        assert_eq!(answer_of(&on_rocksdb, "is it empty"), "Ok(false)");
+        assert_eq!(answer_of(&on_rocksdb, "the old key"), "Ok(true)");
+        assert!(answer_of(&on_rocksdb, "a range of a query").starts_with("Ok(([(["));
+        assert_eq!(
+            answer_of(&on_rocksdb, "an insert only where the key holds none"),
+            "Ok(false)"
+        );
+        // What is: LigninDB reads a tree with nothing in it.
+        assert_eq!(answer_of(&on_lignin, "is it empty"), "Ok(true)");
+        assert_eq!(answer_of(&on_lignin, "the old key"), "Ok(false)");
+        assert_eq!(answer_of(&on_lignin, "a range of a query"), "Ok(([], 0))");
+        assert_eq!(
+            answer_of(&on_lignin, "an insert only where the key holds none"),
+            "Ok(true)"
+        );
+    }
+}
