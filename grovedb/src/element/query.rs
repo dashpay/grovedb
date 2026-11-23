@@ -1053,13 +1053,11 @@ pub(crate) fn get_path_query_internal<'db, E: Engine>(
 #[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use grovedb_element::Element;
-    use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, proofs::Query};
-    use grovedb_storage::StorageBatch;
+    use grovedb_merk::proofs::Query;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
         element::query::{ElementQueryExtensions, QueryOptions},
-        engine::Engine,
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
             QueryResultType::{
@@ -1349,43 +1347,50 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
-        let batch = StorageBatch::new();
         let storage = &db.db;
-        let transaction = db.start_transaction();
-
-        let mut merk = db
-            .open_transactional_merk_at_path(
-                [TEST_LEAF].as_ref().into(),
-                &transaction,
-                Some(&batch),
-                grove_version,
-            )
-            .unwrap()
-            .expect("cannot open Merk"); // TODO implement costs
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-
-        storage
-            .apply_batch(batch, &transaction)
-            .unwrap()
-            .expect("expected successful batch commit");
-
-        transaction.commit().unwrap();
+        // Through GroveDB, which tells the element of the tree its root: a
+        // Merk written by hand under an element that names no root is no
+        // state of a grove, and an engine that checks its store says so.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
 
         // Test range inclusive query
         let mut query = Query::new();
@@ -1465,44 +1470,50 @@ mod tests {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
 
-        let batch = StorageBatch::new();
-
         let storage = &db.db;
-        let transaction = db.start_transaction();
-
-        let mut merk = db
-            .open_transactional_merk_at_path(
-                [TEST_LEAF].as_ref().into(),
-                &transaction,
-                Some(&batch),
-                grove_version,
-            )
-            .unwrap()
-            .expect("cannot open Merk");
-
-        Element::new_item(b"ayyd".to_vec())
-            .insert(&mut merk, b"d", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyc".to_vec())
-            .insert(&mut merk, b"c", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayya".to_vec())
-            .insert(&mut merk, b"a", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-        Element::new_item(b"ayyb".to_vec())
-            .insert(&mut merk, b"b", None, grove_version)
-            .unwrap()
-            .expect("expected successful insertion");
-
-        storage
-            .apply_batch(batch, &transaction)
-            .unwrap()
-            .expect("expected successful batch commit");
-
-        transaction.commit().unwrap();
+        // Through GroveDB, which tells the element of the tree its root: a
+        // Merk written by hand under an element that names no root is no
+        // state of a grove, and an engine that checks its store says so.
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"d",
+            Element::new_item(b"ayyd".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"c",
+            Element::new_item(b"ayyc".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"a",
+            Element::new_item(b"ayya".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
+        db.insert(
+            [TEST_LEAF].as_ref(),
+            b"b",
+            Element::new_item(b"ayyb".to_vec()),
+            None,
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("expected successful insertion");
 
         // Test range inclusive query
         let mut query = Query::new_with_direction(true);
