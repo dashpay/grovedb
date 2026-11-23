@@ -400,14 +400,15 @@
 //!   ([`crate::space::out_of_space`]), and a turn of write-back, a pass of
 //!   the cleaner or a call of the reclaimer that failed with such an
 //!   error, in their threads or on the thread of a caller. A session that
-//!   holds no reserve then makes no operation on a file for it. A release
-//!   has each of the three loops take its next turn at once.
+//!   has nothing of its reserve on the device then makes no operation on
+//!   a file for it. The thread that released the reserve has each of the
+//!   three loops take its next turn at once.
 //! - **The session fills it again from the cleaner's thread**, at the end
 //!   of a turn of its loop in which the cleaner was at rest, once a
 //!   commit was published and a table checkpoint was installed since the
-//!   first turn of that loop that ended after the device last refused the
-//!   session something for room. A fill that fails is tried again by the
-//!   same rule, counted from the fill.
+//!   session was last told of a refusal for room. A fill that fails is
+//!   tried again by the same rule, counted from the fill, and what it
+//!   left on the device goes at the next refusal for room.
 //!
 //! [`DbStats::reserve`] says what the session holds and what it did. An
 //! open that is refused for room does not release a reserve: whoever
@@ -917,13 +918,16 @@ impl Db {
             .map_err(OpenError::catalog("what earlier drops left"))?;
         opening.recovery = recovery;
         opening.keyspaces = began.elapsed() - opening.directory - recovery;
+        let shared = Arc::new(shared);
+        let store = &shared.store;
+        store.troubles.of(&shared);
         // The reserve last: what the open itself needs of the device
         // comes first (DF9).
         let filling = Instant::now();
-        shared.store.troubles.reserve.fill_at_open();
+        store.troubles.reserve.fill_at_open(|| store.marks());
         opening.reserve = filling.elapsed();
         Ok(Self {
-            shared: Arc::new(shared),
+            shared,
             threads: Mutex::new(None),
             created: opened.created,
             opening,
@@ -1732,14 +1736,12 @@ impl Db {
 
     /// Passes on what a call of the facade answers. Where that is an
     /// error which a full device caused, the session releases its reserve
-    /// first, if it holds one (DF13). The caller holds no lock.
+    /// first, if it has one on the device (DF13). The caller holds no
+    /// lock.
     fn answered<T, E: std::error::Error + 'static>(&self, answer: Result<T, E>) -> Result<T, E> {
         if let Err(error) = &answer {
-            self.shared.store.troubles.reserve.refused(error);
+            self.shared.store.troubles.refused(error);
         }
-        // Also where the call was answered no error: a turn of write-back
-        // that its thread made for the call can have released the reserve.
-        self.shared.room_made();
         answer
     }
 
@@ -1834,10 +1836,7 @@ fn with_page_values<R>(shared: &Shared, work: impl FnOnce(WriteBack<'_>) -> R) -
 fn write_back(shared: &Shared) {
     let troubles = &shared.store.troubles;
     with_page_values(shared, |write_back| {
-        write_back.run(|error| {
-            troubles.write_back_failed(&error);
-            shared.room_made();
-        });
+        write_back.run(|error| troubles.write_back_failed(&error));
     });
 }
 
@@ -1872,10 +1871,7 @@ fn clean(shared: &Shared) {
         let mut turns = CleanerTurns::begun(store);
         cleaner.run(
             |cleaner| end_turn(store, cleaner, owners, &mut turns),
-            |error| {
-                store.troubles.cleaner_loop_failed(error);
-                shared.room_made();
-            },
+            |error| store.troubles.cleaner_loop_failed(error),
         );
     });
 }

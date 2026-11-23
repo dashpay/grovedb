@@ -28,14 +28,19 @@ pub struct ReserveStats {
     /// Whether the session holds its reserve: a fill of it returned with
     /// the reserve whole, and the session has not released it since.
     pub held: bool,
-    /// How often the session released its reserve.
+    /// How often the session released its reserve: one that it held, or
+    /// what a fill that failed can have left of one.
     pub releases: u64,
     /// The bytes those releases gave back.
     pub bytes_released: u64,
     /// Fills that returned with the reserve whole and durable: the open's,
     /// and those after a release.
     pub fills: u64,
-    /// Fills that failed. Such a fill leaves no reserve.
+    /// Fills that failed. The session does not hold its reserve after
+    /// one, whatever the fill left on the device. That can be the whole
+    /// reserve under its name, where the device refused no more than to
+    /// make the name durable: the next refusal for room releases it as it
+    /// releases a reserve that is held.
     pub fills_failed: u64,
     /// What the last fill or release that failed said.
     pub last_error: Option<String>,
@@ -43,7 +48,7 @@ pub struct ReserveStats {
 
 /// How far a session has come, by two of its counts: what a fill of the
 /// reserve after a release waits for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Marks {
     /// Table checkpoints that were installed.
     pub(super) checkpoints: u64,
@@ -51,18 +56,21 @@ pub(super) struct Marks {
     pub(super) published: u64,
 }
 
-/// Whether the session holds its reserve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Hold {
-    /// A fill returned with the reserve whole, and it was not released
-    /// since.
-    Held,
-    /// The reserve is to be filled: it was released, or a fill failed.
-    /// The marks are those of the first turn of the cleaner's loop that
-    /// ended since the device last refused the session something for
-    /// room, or those of the fill that failed if that came later. A fill
-    /// is tried once both have moved on.
-    Owed(Option<Marks>),
+/// What the session knows of its reserve.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Hold {
+    /// Whether a fill returned with the reserve whole, and it was not
+    /// released since.
+    held: bool,
+    /// Whether a file of the reserve can be on the device by this
+    /// session's doing: it began a fill, and no release of its has
+    /// returned since. That is so while the reserve is held, and after a
+    /// fill or a release that failed.
+    on_device: bool,
+    /// How far the session had come when it was last told of a refusal
+    /// for room, or when a fill of its last failed if that was later. A
+    /// fill is tried once both counts have moved on from here.
+    since: Marks,
 }
 
 #[derive(Debug, Default)]
@@ -82,11 +90,10 @@ struct Kept {
     reserve: Reserve,
     len: u64,
     /// Every call of the reserve is made under this lock: its calls are
-    /// for one caller at a time ([`Reserve`]).
+    /// for one caller at a time ([`Reserve`]). The marks of the session
+    /// are read under it as well, so a refusal and the end of a turn of
+    /// the cleaner's loop come one after the other.
     hold: Mutex<Hold>,
-    /// Whether the reserve was released and the loops of the background
-    /// work were not told of it yet.
-    untold: AtomicBool,
     counts: Counts,
 }
 
@@ -96,14 +103,14 @@ struct Kept {
 pub(super) struct SessionReserve(Option<Kept>);
 
 impl SessionReserve {
-    /// The reserve of `len` bytes of the database in `dir`, which is not
-    /// filled yet, or none with a `len` of 0. Nothing is read or made.
+    /// The reserve of `len` bytes of the database in `dir`, which this
+    /// session has not filled yet, or none with a `len` of 0. Nothing is
+    /// read or made.
     pub(super) fn new(vfs: Arc<dyn Vfs>, dir: &Path, len: u64) -> Self {
         Self((len > 0).then(|| Kept {
             reserve: Reserve::of(vfs, dir),
             len,
-            hold: Mutex::new(Hold::Owed(None)),
-            untold: AtomicBool::new(false),
+            hold: Mutex::default(),
             counts: Counts::default(),
         }))
     }
@@ -114,71 +121,74 @@ impl SessionReserve {
     }
 
     /// The fill of an open. One that fails leaves the reserve to be
-    /// filled as after a release.
-    pub(super) fn fill_at_open(&self) {
+    /// filled as after a release. `marks` says how far the session has
+    /// come.
+    pub(super) fn fill_at_open(&self, marks: impl FnOnce() -> Marks) {
         if let Some(kept) = &self.0 {
-            kept.fill(&mut lock(&kept.hold), None);
+            kept.fill(&mut lock(&kept.hold), marks);
         }
     }
 
     /// What the session does with an error it was given: if a device that
-    /// is full caused it, a reserve that is held is released, and a fill
-    /// of one that is owed waits for what follows this refusal. The second
-    /// makes no operation on a file.
-    pub(super) fn refused(&self, error: &(dyn Error + 'static)) {
-        let Some(kept) = &self.0 else { return };
+    /// is full caused it, the session gives back what it can have of its
+    /// reserve on the device, and a fill waits for what follows this
+    /// refusal. `marks` says how far the session has come, and is called
+    /// under the lock of the reserve.
+    ///
+    /// Returns whether files of the reserve were taken off the device:
+    /// the loops of the background work are told of that
+    /// ([`Troubles::refused`](super::store::Troubles::refused)). With
+    /// nothing of the reserve on the device the call makes no operation
+    /// on a file.
+    pub(super) fn refused(
+        &self,
+        error: &(dyn Error + 'static),
+        marks: impl FnOnce() -> Marks,
+    ) -> bool {
+        let Some(kept) = &self.0 else { return false };
         if !out_of_space(error) {
-            return;
+            return false;
         }
         let mut hold = lock(&kept.hold);
-        if *hold != Hold::Held {
-            kept.set(&mut hold, Hold::Owed(None));
-            return;
+        hold.since = marks();
+        if !hold.on_device {
+            return false;
         }
         match kept.reserve.release() {
             Ok(bytes) => {
                 kept.counts.releases.fetch_add(1, Ordering::Relaxed);
                 (kept.counts.bytes_released).fetch_add(bytes, Ordering::Relaxed);
-                kept.set(&mut hold, Hold::Owed(None));
-                kept.untold.store(true, Ordering::Release);
+                hold.on_device = false;
+                kept.set(&mut hold, false);
+                true
             }
-            // The reserve is held still, and the next refusal for room
-            // releases it.
-            Err(error) => kept.failed("the release", &error),
+            // What the session knows of its reserve is as it was, and
+            // the next refusal for room tries the release again.
+            Err(error) => {
+                kept.failed("the release", &error);
+                false
+            }
         }
     }
 
-    /// Whether the reserve was released since this was last asked: the
-    /// loops of the background work are told of a release once
-    /// ([`Shared::room_made`](super::store::Shared::room_made)).
-    pub(super) fn take_release(&self) -> bool {
-        let Some(kept) = &self.0 else { return false };
-        kept.untold.swap(false, Ordering::AcqRel)
-    }
-
-    /// What follows a turn of the cleaner's loop, for a reserve that is to
-    /// be filled. `at_rest` says whether the cleaner was at rest in the
-    /// turn, and `marks` how far the session has come.
+    /// What follows a turn of the cleaner's loop, for a reserve that is
+    /// to be filled. `at_rest` says whether the cleaner was at rest in the
+    /// turn, and `marks` how far the session has come: it is called under
+    /// the lock of the reserve.
     ///
-    /// The first turn that ends after a refusal for room notes the marks.
-    /// A fill is tried at the end of a later turn in which the cleaner was
-    /// at rest, once a commit was published and a table checkpoint was
-    /// installed since the marks were noted, or since the last fill that
-    /// failed.
-    pub(super) fn turn_ended(&self, at_rest: bool, marks: Marks) {
+    /// A fill is tried at the end of a turn in which the cleaner was at
+    /// rest, once a commit was published and a table checkpoint was
+    /// installed since the session was last told of a refusal for room,
+    /// and since its last fill that failed.
+    pub(super) fn turn_ended(&self, at_rest: bool, marks: impl Fn() -> Marks) {
         let Some(kept) = &self.0 else { return };
         let mut hold = lock(&kept.hold);
-        let since = match *hold {
-            Hold::Held => return,
-            Hold::Owed(None) => {
-                kept.set(&mut hold, Hold::Owed(Some(marks)));
-                return;
-            }
-            Hold::Owed(Some(since)) => since,
-        };
-        let moved_on = marks.checkpoints > since.checkpoints && marks.published > since.published;
-        if at_rest && moved_on {
-            kept.fill(&mut hold, Some(marks));
+        if hold.held || !at_rest {
+            return;
+        }
+        let now = marks();
+        if now.checkpoints > hold.since.checkpoints && now.published > hold.since.published {
+            kept.fill(&mut hold, marks);
         }
     }
 
@@ -201,25 +211,29 @@ impl SessionReserve {
 }
 
 impl Kept {
-    /// Fills the reserve, under the lock on what the session holds. After
-    /// a fill that failed the reserve is owed from `marks` on.
-    fn fill(&self, hold: &mut MutexGuard<'_, Hold>, marks: Option<Marks>) {
+    /// Fills the reserve, under the lock on what the session knows of it.
+    /// After a fill that failed the reserve is to be filled from the
+    /// marks on that are read then, and what the fill left on the device
+    /// goes at the next refusal for room.
+    fn fill(&self, hold: &mut MutexGuard<'_, Hold>, marks: impl FnOnce() -> Marks) {
+        hold.on_device = true;
         match self.reserve.fill(self.len) {
             Ok(_) => {
                 self.counts.fills.fetch_add(1, Ordering::Relaxed);
-                self.set(hold, Hold::Held);
+                self.set(hold, true);
             }
             Err(error) => {
                 self.counts.fills_failed.fetch_add(1, Ordering::Relaxed);
                 self.failed("the fill", &error);
-                self.set(hold, Hold::Owed(marks));
+                self.set(hold, false);
+                hold.since = marks();
             }
         }
     }
 
-    fn set(&self, hold: &mut MutexGuard<'_, Hold>, to: Hold) {
-        **hold = to;
-        (self.counts.held).store(to == Hold::Held, Ordering::Relaxed);
+    fn set(&self, hold: &mut MutexGuard<'_, Hold>, held: bool) {
+        hold.held = held;
+        self.counts.held.store(held, Ordering::Relaxed);
     }
 
     fn failed(&self, what: &str, error: &std::io::Error) {
@@ -271,6 +285,6 @@ impl CleanerTurns {
         let counted = store.cleaner.stats();
         let at_rest = work(&counted) == work(&self.counted);
         self.counted = counted;
-        reserve.turn_ended(at_rest, store.marks());
+        reserve.turn_ended(at_rest, || store.marks());
     }
 }

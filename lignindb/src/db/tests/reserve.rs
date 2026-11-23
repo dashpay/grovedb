@@ -681,8 +681,8 @@ fn released(seed: u64) -> (SimVfs, Db, State, CleanerTurns) {
 }
 
 /// The fill after a release waits for a commit and for a table
-/// checkpoint, both after the first turn of the cleaner that followed the
-/// refusal: neither is enough alone, in either order.
+/// checkpoint, both after the refusal: neither is enough alone, in
+/// either order.
 #[test]
 fn the_reserve_is_filled_again_once_a_commit_and_a_table_checkpoint_have_followed() {
     for commit_first in [true, false] {
@@ -740,6 +740,87 @@ fn a_refusal_for_room_puts_the_fill_off() {
     assert_eq!(db.stats().reserve.releases, 1);
 }
 
+/// What counts is counted from the refusal, and not from a turn of the
+/// cleaner's loop after it: with a commit and a table checkpoint since
+/// the refusal, the first turn that the cleaner's loop ends at rest fills
+/// the reserve, also where it is the first turn after the refusal.
+#[test]
+fn the_first_turn_at_rest_after_a_commit_and_a_checkpoint_fills_the_reserve() {
+    let (fs, db, mut state, mut turns) = released(37);
+    write(&db, &mut state, note).expect("a commit with room");
+    checkpoint(&db);
+    assert!(turn(&db, &mut turns), "the reserve is not filled again");
+    assert_eq!(held(&fs), KEPT);
+    let stats = db.stats().reserve;
+    assert_eq!((stats.releases, stats.fills), (1, 2), "{stats:?}");
+}
+
+/// The same where a pass of the cleaner over the value log met the
+/// refusal: the session is told of it after the turn has ended, and the
+/// commit and the table checkpoint that follow count all the same.
+#[test]
+fn a_refusal_in_the_cleaners_pass_over_the_values_is_what_the_fill_counts_from() {
+    let mut session = with_dead_values(38);
+    let mut turns = {
+        let db = session.db.as_ref().expect("the database is open");
+        CleanerTurns::begun(&db.shared.store)
+    };
+    {
+        let db = session.db.as_ref().expect("the database is open");
+        let shared = &*db.shared;
+        let store = &*shared.store;
+        let mut tried = 0;
+        crate::db::with_cleaner(shared, |cleaner, owners| loop {
+            cleaner.pass().expect("a pass over the segments");
+            // The device refuses every append while the pass over the
+            // value log is made, and at no other time.
+            let refused = FaultRule::new(Fault::Enospc).on(OpKind::Append);
+            session.fs.add_rule(refused.torn_append(false).forever());
+            let values = crate::db::end_turn(store, cleaner, owners, &mut turns);
+            session.fs.clear_rules();
+            if let Err(error) = values {
+                assert!(out_of_space(&error), "{error}");
+                // The turn has ended, and the session is told now.
+                assert!(db.stats().reserve.held);
+                store.troubles.cleaner_failed(&error);
+                break;
+            }
+            tried += 1;
+            assert!(tried < 40, "the pass over the value log writes nothing");
+        });
+        let stats = db.stats().reserve;
+        assert_eq!((stats.held, stats.releases), (false, 1), "{stats:?}");
+    }
+    // Write-back cuts an append that failed off the log.
+    session.ticks("cut");
+    let latest = session.told.latest;
+    session.write("with room", rewrite, false);
+    assert_eq!(session.told.latest, latest + 1);
+    let db = session.db.as_ref().expect("the database is open");
+    let store = &db.shared.store;
+    checkpoint(db);
+    let mut worked = 0;
+    loop {
+        let before = work(store);
+        assert!(
+            !cleaner_turn(db, &mut turns),
+            "a pass of the cleaner failed"
+        );
+        let at_work = work(store) != before;
+        assert_eq!(
+            db.stats().reserve.held,
+            !at_work,
+            "after {worked} turns in which the cleaner worked"
+        );
+        if !at_work {
+            break;
+        }
+        worked += 1;
+        assert!(worked < 40, "the cleaner does not come to rest");
+    }
+    assert_eq!(held(&session.fs), KEPT);
+}
+
 /// The fill waits for a turn in which the cleaner was at rest: while a
 /// turn moves one of the cleaner's counts of work, nothing is filled, and
 /// the first turn that moves none fills the reserve.
@@ -761,13 +842,6 @@ fn the_reserve_is_filled_again_in_a_turn_in_which_the_cleaner_was_at_rest() {
     // Write-back cuts the failed append off the log, which takes the
     // records of the cleaner's page steps again.
     session.ticks("cut");
-    {
-        // The first turn notes how far the session has come, whatever
-        // the cleaner does in it.
-        let db = session.db.as_ref().expect("the database is open");
-        cleaner_turn(db, &mut turns);
-        assert!(!db.stats().reserve.held);
-    }
     session.write("with room", rewrite, false);
     assert_eq!(session.told.latest, latest + 1);
     let db = session.db.as_ref().expect("the database is open");
@@ -792,6 +866,83 @@ fn the_reserve_is_filled_again_in_a_turn_in_which_the_cleaner_was_at_rest() {
     }
     assert!(worked > 0, "the cleaner had nothing to do");
     assert_eq!(held(&session.fs), KEPT);
+}
+
+/// A fill can fail and leave the whole reserve on the device. An open
+/// finds the reserve of the session before, at its length, and has only
+/// its name to make durable, which the device refuses. The session does
+/// not hold its reserve, and the file is there: the next refusal for room
+/// takes it off the device, as it takes a reserve that is held.
+#[test]
+fn what_a_fill_that_failed_left_on_the_device_goes_at_the_next_refusal_for_room() {
+    let (fs, options, db, mut state) = kept(36);
+    drop(db);
+    let syncs_of_the_directory = |after: u64| {
+        let synced = |event: &Event| matches!(event, Event::Op(op) if op.op > after && op.kind == OpKind::SyncDir);
+        fs.trace().iter().filter(|event| synced(event)).count() as u64
+    };
+    // An open that has nothing to recover, and the syncs of the directory
+    // that the next such open makes: the fill's is the last of them.
+    drop(open_at_rest(DIR, &options).expect("the database opens"));
+    let ops = fs.stats().ops;
+    let db = open_at_rest(DIR, &options).expect("the database opens");
+    let made = syncs_of_the_directory(ops);
+    assert!(made > 0, "an open syncs its directory");
+    assert_eq!(db.stats().reserve.fills, 1);
+    drop(db);
+
+    let failing = FaultRule::new(Fault::Eio).on(OpKind::SyncDir);
+    fs.add_rule(failing.skip(made - 1));
+    let db = open_at_rest(DIR, &options).expect("an open whose fill fails");
+    let stats = db.stats().reserve;
+    assert_eq!(
+        (stats.held, stats.fills, stats.fills_failed, stats.releases),
+        (false, 0, 1, 0),
+        "{stats:?}"
+    );
+    assert_eq!(held(&fs), KEPT, "the fill left the reserve under its name");
+
+    fs.add_rule(Mode::Once.rule(0).torn_append(false));
+    let error = write(&db, &mut state, note).expect_err("a commit that the device refuses");
+    assert!(out_of_space(&error), "{error}");
+    assert_eq!(held(&fs), 0);
+    let stats = db.stats().reserve;
+    assert_eq!(
+        (stats.held, stats.releases, stats.bytes_released),
+        (false, 1, KEPT),
+        "{stats:?}"
+    );
+    check_reads(&db, &state, "after the release");
+}
+
+/// A release that the file layer refuses leaves the reserve as it is:
+/// the session holds it still, says what the release said, and the next
+/// refusal for room tries the release again.
+#[test]
+fn a_release_that_fails_is_tried_again_at_the_next_refusal_for_room() {
+    let (fs, _, db, mut state) = kept(39);
+    let file = Path::new(DIR).join(Reserve::FILE_NAME);
+    let failing = FaultRule::new(Fault::Eio).on(OpKind::RemoveFile);
+    fs.add_rule(failing.at(file));
+    fs.add_rule(Mode::Once.rule(0).torn_append(false));
+    let error = write(&db, &mut state, note).expect_err("a commit that the device refuses");
+    assert!(out_of_space(&error), "{error}");
+    assert_eq!(held(&fs), KEPT, "the release was refused");
+    let stats = db.stats().reserve;
+    assert_eq!((stats.held, stats.releases), (true, 0), "{stats:?}");
+    let said = stats.last_error.expect("what the release said");
+    assert!(said.starts_with("the release of the reserve: "), "{said}");
+
+    fs.add_rule(Mode::Once.rule(0).torn_append(false));
+    let error = write(&db, &mut state, note).expect_err("a commit that the device refuses");
+    assert!(out_of_space(&error), "{error}");
+    assert_eq!(held(&fs), 0);
+    let stats = db.stats().reserve;
+    assert_eq!(
+        (stats.held, stats.releases, stats.bytes_released),
+        (false, 1, KEPT),
+        "{stats:?}"
+    );
 }
 
 /// A fill that the device refuses leaves no reserve, and the next is
@@ -1079,6 +1230,65 @@ fn a_call_that_releases_the_reserve_has_the_cleaners_loop_take_its_next_turn() {
     assert_eq!(db.stats().background.cleaner_errors, 0);
 }
 
+/// The loops are told by whoever tells the session of the refusal, and
+/// by no call of the facade after it: a turn of write-back that a
+/// committer makes for its commit is told to the session where the
+/// committer stands, and it may wait for write-back's loop next. Here a
+/// turn of write-back that the device refuses for room is told to the
+/// session as the commit path tells it, with the cleaner's loop in an
+/// idle wait of an hour: the loop comes to its next turn by itself.
+#[test]
+fn a_refusal_that_the_commit_path_tells_the_session_has_the_loops_take_their_next_turn() {
+    let (fs, _, db, mut state) = kept_with(48, waits_of_an_hour);
+    let shared = &*db.shared;
+    let store = &*shared.store;
+    let passes = || store.cleaner.stats().passes;
+    thread::scope(|scope| {
+        scope.spawn(|| crate::db::clean(shared));
+        let _halt = Halt(shared);
+        until("the cleaner's loop makes a turn", || passes() >= 1);
+        write(&db, &mut state, rewrite).expect("a commit");
+        fs.add_rule(Mode::FullButSyncs.rule(0));
+        let error = tick(&db).expect_err("a turn on a full device");
+        assert!(out_of_space(&error), "{error}");
+        fs.clear_rules();
+        assert_eq!(
+            passes(),
+            1,
+            "the cleaner's loop was woken by something else"
+        );
+        store.troubles.write_back_failed(&error);
+        assert_eq!(db.stats().reserve.releases, 1);
+        until("the cleaner's loop takes its next turn", || passes() >= 2);
+    });
+    assert_eq!(db.stats().background.cleaner_errors, 0);
+}
+
+/// A call that room was made which comes before the reclaimer's thread
+/// can be woken is not lost: the idle wait that the thread comes to
+/// first ends at once. A thread whose wait goes on is let go.
+#[test]
+fn a_call_that_room_was_made_before_the_reclaimers_thread_can_be_woken_ends_its_idle_wait() {
+    let signal = Signal::default();
+    let ended = std::sync::atomic::AtomicBool::new(false);
+    signal.room_made();
+    let in_time = thread::scope(|scope| {
+        scope.spawn(|| {
+            signal.attach(thread::current());
+            signal.idle(HOUR);
+            ended.store(true, Ordering::Release);
+        });
+        let began = Instant::now();
+        while !ended.load(Ordering::Acquire) && began.elapsed() < Duration::from_secs(30) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let in_time = ended.load(Ordering::Acquire);
+        signal.wake();
+        in_time
+    });
+    assert!(in_time, "the idle wait went on");
+}
+
 /// What the reclaimer's thread does with a wait of an hour where it is
 /// told that room was made, before the wait if `before` and during it
 /// otherwise: whether the wait ended within a minute, and how long the
@@ -1210,6 +1420,12 @@ fn on_a_device_that_stays_full_the_reserve_is_released_once_and_the_turns_wait()
             session.told.latest, latest,
             "{context}: a commit on a full device"
         );
+        // The thread that met the refusal releases the reserve. A commit
+        // can be answered before a thread of the background work that met
+        // one has told the session (DF4).
+        until("the session releases its reserve", || {
+            stats(&session).reserve.releases >= 1
+        });
         let released = |session: &Session| {
             let reserve = stats(session).reserve;
             (
@@ -1311,26 +1527,73 @@ struct Filled {
     fills_failed: u64,
 }
 
+/// What a workload came to that waited for the background work of a
+/// session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Came {
+    /// The three threads are at rest.
+    ToRest,
+    /// A turn of one of them failed.
+    ToARefusal,
+}
+
+/// Waits for the background work of a session, as a workload does that
+/// leaves it the device between two commits: until the three threads are
+/// at rest, or until a turn of one of them has failed since the call
+/// began.
+///
+/// The threads are at rest when nothing waits for write-back, and when
+/// no count of write-back, none of the cleaner's work and none of the
+/// reserve moved while the cleaner's loop ended two turns. What is
+/// waited for is counts that only go up: how long the threads take for
+/// it is not asked.
+fn waits_for_the_background(db: &Db) -> Came {
+    use crate::db::reserve::work;
+
+    let store = &db.shared.store;
+    let failed = |stats: &DbStats| {
+        let background = &stats.background;
+        background.write_back_errors + background.cleaner_errors + background.reclaim_errors
+    };
+    let began = failed(&db.stats());
+    loop {
+        let (before, written) = (db.stats(), store.flush.stats());
+        let turns = before.cleaner.value_passes + 2;
+        until("the cleaner's loop ends two turns, or a turn fails", || {
+            let now = db.stats();
+            failed(&now) != began || now.cleaner.value_passes >= turns
+        });
+        let (after, written_after) = (db.stats(), store.flush.stats());
+        if failed(&after) != began {
+            return Came::ToARefusal;
+        }
+        let watch = &after.store.watch;
+        let nothing_waits = watch.unwritten == 0 && watch.pending_value_bytes == 0;
+        let nothing_moved = written_after == written
+            && work(&after.cleaner) == work(&before.cleaner)
+            && after.reserve == before.reserve;
+        if nothing_waits && nothing_moved {
+            return Came::ToRest;
+        }
+    }
+}
+
 /// A database that is opened with its three threads fills its device
 /// with values that are live, until the device refuses it something for
-/// room: a commit, or the turn of write-back after one. The session has
-/// released its reserve there, whichever thread met the refusal. The
+/// room: a commit, or the turn of write-back after one. The session
+/// releases its reserve there, by the thread that met the refusal. The
 /// workload goes on: its next commit takes those values out again, and
-/// the commits after it rewrite others, with [`PAUSE`] after a commit
-/// that was refused and [`BETWEEN`] after one that was taken. It goes on
-/// until the values are out, the cleaner has dropped a file of the value
-/// log, and the session holds its reserve.
+/// the commits after it rewrite others. Between two commits it leaves
+/// the device to the background work ([`waits_for_the_background`]), and
+/// it waits [`PAUSE`] more where that was refused something. It goes on
+/// until, with the background work at rest, the values are out, the
+/// cleaner has dropped a file of the value log since the release, and
+/// the session holds its reserve.
 ///
 /// Where `must` says so, the session has to come there with the room
 /// that it has: its reserve, and what the refusal left free. Else
 /// somebody makes room once [`IN_VAIN`] commits in a row were refused:
 /// the device is given [`RESERVE`] bytes more.
-///
-/// What is counted is what the threads leave no choice in. The reserve
-/// can be full again before the workload has made a commit of its own,
-/// where the last commit of the filling was published after the refusal
-/// that released it: so the releases and the fills are counted, which
-/// only go up, and not what the session holds at a moment in between.
 fn fills_its_device(seed: u64, reserve: u64, must: bool) -> Filled {
     let context = format!("a reserve of {reserve} bytes");
     let mut session = threaded(seed, reserve);
@@ -1360,24 +1623,19 @@ fn fills_its_device(seed: u64, reserve: u64, must: bool) -> Filled {
         }
     }
     // The session met its first refusal for room at that commit, or in a
-    // turn of its background work, and released its reserve there.
-    assert!(
-        released(&session),
-        "{context}: {:?}",
-        stats(&session).reserve
-    );
+    // turn of its background work, and the thread that met it releases
+    // the reserve. A commit can be answered before a thread of the
+    // background work that met one has told the session (DF4).
+    until("the session releases its reserve", || released(&session));
     let db = session.db.as_ref().expect("the session goes on");
     assert_eq!(db.reopen(), None, "{context}");
     session.check(&context);
 
     let began = Instant::now();
+    let dropped_before = stats(&session).cleaner.value_files_dropped;
     let (mut taken, mut refused, mut in_a_row) = (0, 0, 0);
     let mut by_itself = true;
-    let done = |session: &Session, taken: u64| {
-        let stats = stats(session);
-        taken > 0 && stats.reserve.held && stats.cleaner.value_files_dropped > 0
-    };
-    while !done(&session, taken) {
+    loop {
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "{context}: the session does not come to hold its reserve with the values out, with \
@@ -1389,40 +1647,46 @@ fn fills_its_device(seed: u64, reserve: u64, must: bool) -> Filled {
             0 => session.write("out", take_out, false),
             _ => session.write("on", rewrite, false),
         }
-        if session.told.latest == latest + 1 {
-            taken += 1;
-            in_a_row = 0;
-            let waiting = Instant::now();
-            while !done(&session, taken) && waiting.elapsed() < BETWEEN {
-                thread::sleep(Duration::from_millis(1));
+        match session.told.latest == latest + 1 {
+            true => {
+                taken += 1;
+                in_a_row = 0;
             }
-            continue;
+            false => {
+                refused += 1;
+                in_a_row += 1;
+            }
         }
-        refused += 1;
-        in_a_row += 1;
         if !must && by_itself && in_a_row == IN_VAIN {
             // The device stays full: somebody makes room.
             session.fs.set_capacity(Some(capacity + RESERVE));
             by_itself = false;
         }
-        thread::sleep(PAUSE);
+        let db = session.db.as_ref().expect("the session goes on");
+        match waits_for_the_background(db) {
+            Came::ToRest => {
+                let stats = db.stats();
+                let out = taken > 0 && stats.cleaner.value_files_dropped > dropped_before;
+                if out && stats.reserve.held {
+                    break;
+                }
+            }
+            Came::ToARefusal => thread::sleep(PAUSE),
+        }
     }
     let db = session.db.as_ref().expect("the session goes on");
     assert_eq!(db.reopen(), None, "{context}");
     session.check(&context);
-    // The threads come to rest, and nothing takes a commit any more:
-    // what the session holds then is what it has on its device.
+    // The background work was at rest with the reserve held, and no
+    // commit has followed: the threads end, and the session holds what
+    // it held.
     session.rest();
     let end = stats(&session).reserve;
-    assert!(end.releases >= 1 && end.fills >= 2, "{context}: {end:?}");
-    assert_eq!(
-        held(&session.fs),
-        match end.held {
-            true => reserve,
-            false => 0,
-        },
+    assert!(
+        end.held && end.releases >= 1 && end.fills >= 2,
         "{context}: {end:?}"
     );
+    assert_eq!(held(&session.fs), reserve, "{context}: {end:?}");
     session.check(&context);
     assert!(session.close(), "{context}: a close with room");
     Filled {
@@ -1440,11 +1704,11 @@ fn fills_its_device(seed: u64, reserve: u64, must: bool) -> Filled {
 /// ladder: on a device that fills while a workload runs through a
 /// database with its three threads, the session releases its reserve at
 /// the first refusal for room, the cleaner gives room back, commits go
-/// on, and the reserve is full again: it was filled once more at least
-/// than the open filled it. From [`ENOUGH`] bytes up the
-/// session comes there with the room that it has. Below, that room is
-/// the reserve and what the refusal left free, which is less than a
-/// commit's 72 KiB: it is enough, or somebody makes room.
+/// on, and the reserve is full again when the background work has come
+/// to rest. From [`ENOUGH`] bytes up the session comes there with the
+/// room that it has. Below, that room is the reserve and what the
+/// refusal left free, which is less than a commit's 72 KiB: it is
+/// enough, or somebody makes room.
 #[test]
 fn a_device_that_fills_under_a_database_with_its_threads_gets_its_room_back() {
     for (seed, reserve) in (90..).zip(LADDER) {
@@ -1509,24 +1773,21 @@ struct Gave {
 /// where the session need not get by with its reserve.
 const IN_VAIN: u64 = 40;
 
-/// How long such a workload waits after a commit that was refused. While
-/// a commit is being made its transaction holds a copy of a page, which
-/// write-back does not write and takes no table checkpoint over.
+/// How long such a workload waits, beside its wait for the background
+/// work, after a turn of that work was refused.
 const PAUSE: Duration = Duration::from_millis(10);
-
-/// How long such a workload waits after a commit that was taken, unless
-/// the session holds its reserve before: it commits four times a second.
-const BETWEEN: Duration = Duration::from_millis(250);
 
 /// A session that keeps a reserve of `reserve` bytes fills its device
 /// with a cleaner that is behind, as in `db::tests::room`: the session
 /// is at rest, and its cleaner makes no turn. It has released its
 /// reserve at the first refusal, and the reserve is all the room there
 /// is. From then on the three loops of the session run, as the threads
-/// of a database run them, and the workload goes on beside them until
-/// the session holds its reserve again: it commits, waits [`PAUSE`]
-/// after a commit that was refused and [`BETWEEN`] after one that was
-/// taken.
+/// of a database run them, and the workload goes on beside them: it
+/// commits, and between two commits it leaves the device to the
+/// background work ([`waits_for_the_background`]), with [`PAUSE`] more
+/// where that was refused something. It goes on until, with the
+/// background work at rest, the cleaner has dropped a file of the value
+/// log since the release and the session holds its reserve.
 ///
 /// Where `must` says so, the session has to come there with the room of
 /// its reserve alone. Else somebody makes room once [`IN_VAIN`] commits
@@ -1554,12 +1815,14 @@ fn gives_room_back(seed: u64, reserve: u64, must: bool) -> Gave {
         }
         assert!(commits < 400, "{context}: the device does not fill");
     }
-    let full = db.stats().reserve;
+    let full = db.stats();
     assert_eq!(
-        (full.held, full.releases),
+        (full.reserve.held, full.reserve.releases),
         (false, 1),
-        "{context}: {full:?}"
+        "{context}: {:?}",
+        full.reserve
     );
+    let dropped_before = full.cleaner.value_files_dropped;
     // What is free beyond the bytes of the reserve is somebody else's.
     let free = capacity - fs.used_bytes();
     let files = fs.used_bytes();
@@ -1573,61 +1836,56 @@ fn gives_room_back(seed: u64, reserve: u64, must: bool) -> Gave {
         scope.spawn(|| crate::db::clean(shared));
         let _halt = Halt(shared);
         let began = Instant::now();
-        // The session holds its reserve again, and the cleaner has
-        // dropped a file of the dead values.
-        let held = || {
-            let stats = db.stats();
-            stats.reserve.held && stats.cleaner.value_files_dropped > 0
-        };
         let (mut taken, mut refused, mut in_a_row) = (0, 0, 0);
         let mut by_the_reserve = true;
-        while !held() {
+        loop {
             assert!(
                 began.elapsed() < Duration::from_secs(60),
                 "{context}: the session does not fill its reserve again, with {taken} commits \
                  taken and {refused} refused: {}",
                 db.stats()
             );
-            if write(&db, &mut state, rewrite).is_ok() {
-                taken += 1;
-                in_a_row = 0;
-                let waiting = Instant::now();
-                while !held() && waiting.elapsed() < BETWEEN {
-                    thread::sleep(Duration::from_millis(1));
+            match write(&db, &mut state, rewrite) {
+                Ok(_) => {
+                    taken += 1;
+                    in_a_row = 0;
                 }
-                continue;
+                Err(_) => {
+                    refused += 1;
+                    in_a_row += 1;
+                }
             }
-            refused += 1;
-            in_a_row += 1;
             if !must && by_the_reserve && in_a_row == IN_VAIN {
                 // The device stays full: somebody makes room.
                 fs.set_capacity(Some(capacity + RESERVE));
                 by_the_reserve = false;
             }
-            thread::sleep(PAUSE);
+            match waits_for_the_background(&db) {
+                Came::ToRest => {
+                    let stats = db.stats();
+                    let out = stats.cleaner.value_files_dropped > dropped_before;
+                    if taken > 0 && out && stats.reserve.held {
+                        break;
+                    }
+                }
+                Came::ToARefusal => thread::sleep(PAUSE),
+            }
         }
         (taken, refused, by_the_reserve)
     });
-    // The loops have ended, and the session is at rest again. The fill
-    // waited for a commit, and the loops ran beside none but the
-    // workload's. A turn of a loop can have released the reserve again
-    // since the workload saw it held: what the session says it holds is
-    // what its directory has.
+    // The background work was at rest with the reserve held, and no
+    // commit has followed: the loops have ended, and the session holds
+    // what it held.
     let end = db.stats();
-    assert!(taken > 0, "{context}: a fill with no commit before it");
     assert!(
-        end.reserve.releases >= 1 && end.reserve.fills >= 2,
+        end.reserve.held && end.reserve.releases >= 1 && end.reserve.fills >= 2,
         "{context}: {end}"
     );
-    let on_the_device = match end.reserve.held {
-        true => reserve,
-        false => 0,
-    };
-    assert_eq!(held(&fs), on_the_device, "{context}");
+    assert_eq!(held(&fs), reserve, "{context}");
     assert_eq!(db.reopen(), None, "{context}");
     check_reads(&db, &state, &context);
     sound(&db, &context);
-    let after = fs.used_bytes() - on_the_device - other.held().expect("their file");
+    let after = fs.used_bytes() - reserve - other.held().expect("their file");
     Gave {
         by_the_reserve,
         taken,
@@ -1640,19 +1898,17 @@ fn gives_room_back(seed: u64, reserve: u64, must: bool) -> Gave {
 }
 
 /// The reserve with which the session of [`gives_room_back`] has to get
-/// by, whatever the order in which its loops and its workload take their
-/// turns: the one that section 5.3 of the document sizes for this
-/// database, a log file and a segment at their configured lengths and a
-/// little beside them. It is six times the least reserve that was enough
-/// in the one order of `db::tests::room`.
+/// by: the one that section 5.3 of the document sizes for this database,
+/// a log file and a segment at their configured lengths and a little
+/// beside them. It is six times the least reserve that was enough in the
+/// one order of `db::tests::room`.
 ///
 /// What has to be written before the room of the dead values comes back
 /// is 160 KiB at most: the values and pages that wait for write-back
 /// (40 KiB), and the copies of everything that is live in the value log
-/// (109 KiB) and in the segments (15 KiB). The workload takes 72 KiB of
-/// the room for each commit that it makes meanwhile, and it makes one in
-/// each [`BETWEEN`], in which each loop has made a turn: its waits after
-/// failed turns are [`MOST`] at most.
+/// (109 KiB) and in the segments (15 KiB). The workload makes its next
+/// commit when the background work has come to rest or was refused
+/// something, so one commit of its 72 KiB is written beside that.
 const ENOUGH: u64 = RESERVE;
 
 /// DF11 and DF13 with the loops of a database running, at every size of
@@ -1661,9 +1917,8 @@ const ENOUGH: u64 = RESERVE;
 /// back, the session takes commits again and fills its reserve again,
 /// with nobody who makes room. With a smaller one either that happens,
 /// or the device stays full until somebody makes room, and then the
-/// same follows: which of the two is the schedule's to say, since the
-/// commits of the workload take the room of the reserve as write-back
-/// and the cleaner do.
+/// same follows: the commits of the workload take the room of the
+/// reserve as write-back and the cleaner do.
 #[test]
 fn a_session_whose_loops_run_gives_room_back_and_fills_its_reserve_again() {
     for (seed, reserve) in (70..).zip(LADDER) {

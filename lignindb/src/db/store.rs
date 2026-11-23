@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError, Weak,
     },
     thread::{self, Thread},
     time::{Duration, Instant},
@@ -114,8 +114,10 @@ impl Signal {
 
     /// Tells the thread that the session has made room on the device,
     /// and wakes it: the wait that it is in, or the first one that it
-    /// comes to, ends at once, also where it is the wait after a round
-    /// that failed ([`Self::sleep`]). No later one is ended by it.
+    /// comes to if it is in none, ends at once, also where it is the wait
+    /// after a round that failed ([`Self::sleep`]). The call ends no
+    /// other wait after a round that failed. The wake that comes with it
+    /// can end one idle wait besides, as any wake does ([`Self::idle`]).
     pub(super) fn room_made(&self) {
         self.room.store(true, Ordering::Release);
         self.wake();
@@ -138,9 +140,12 @@ impl Signal {
     /// Has the calling thread, which is the one that is woken, wait until
     /// it is woken, and `idle` at most: its wait after a round in which
     /// nothing failed. A call that room was made ends it as any wake
-    /// does, and is used up by it.
+    /// does, and is used up by it, also where the call came before the
+    /// wait began or before the thread could be woken ([`Self::attach`]).
     pub(super) fn idle(&self, idle: Duration) {
-        thread::park_timeout(idle);
+        if !self.room.load(Ordering::Acquire) {
+            thread::park_timeout(idle);
+        }
         self.room.store(false, Ordering::Release);
     }
 
@@ -155,7 +160,7 @@ impl Signal {
 /// Each of them is told here, by the thread that met it, with no lock
 /// held that the release of a reserve could wait behind: a failure that a
 /// full device caused releases the reserve of the session
-/// ([`SessionReserve::refused`]).
+/// ([`Self::refused`]).
 #[derive(Debug, Default)]
 pub(super) struct Troubles {
     /// Turns of write-back that failed, in its loop or in a committer's
@@ -177,6 +182,10 @@ pub(super) struct Troubles {
     /// The first error of a pass of the cleaner's loop that left the
     /// cleaner's segment not durable, until a close answers with it.
     segment_lost: Mutex<Option<CleanerError>>,
+    /// The session whose troubles these are, once its parts are made
+    /// ([`Self::of`]): its marks are read at a refusal for room, and its
+    /// loops are told of a release.
+    session: OnceLock<Weak<Shared>>,
 }
 
 impl Troubles {
@@ -188,16 +197,47 @@ impl Troubles {
         }
     }
 
+    /// Names the session whose troubles these are. Before this is
+    /// called a refusal for room releases nothing: the open fills the
+    /// reserve after it.
+    pub(super) fn of(&self, session: &Arc<Shared>) {
+        let _ = self.session.set(Arc::downgrade(session));
+    }
+
+    /// The session was given `error`: a call of it answers with it, or
+    /// its background work met it. If a device that is full caused it,
+    /// the session gives back what it has of its reserve, and where that
+    /// took files off the device, the three loops of the background work
+    /// are told at once, by this thread and before it does anything else
+    /// (DF13, [`Shared::room_made`]). A fill of the reserve waits for
+    /// what follows this refusal.
+    ///
+    /// The caller can hold the commit lock or the lock of the
+    /// reclaiming. Beside the lock of the reserve this takes the lock on
+    /// each loop's wake in turn, and nothing is waited for under any of
+    /// them but an unlink.
+    pub(super) fn refused(&self, error: &(dyn Error + 'static)) {
+        if !self.reserve.kept() {
+            return;
+        }
+        let Some(session) = self.session.get().and_then(Weak::upgrade) else {
+            return;
+        };
+        if self.reserve.refused(error, || session.store.marks()) {
+            session.room_made();
+        }
+    }
+
     pub(super) fn write_back_failed(&self, error: &FlushError) {
         self.write_back.fetch_add(1, Ordering::Relaxed);
         *lock(&self.last) = Some(format!("write-back: {error}"));
-        self.reserve.refused(error);
+        self.refused(error);
     }
 
     pub(super) fn cleaner_failed(&self, error: &CleanerError) {
         self.cleaner.fetch_add(1, Ordering::Relaxed);
         *lock(&self.last) = Some(format!("the cleaner: {error}"));
-        self.reserve.refused(error);
+        self.refused(error);
     }
 
     /// A pass of the cleaner's loop failed. Nobody is answered its
@@ -218,7 +258,7 @@ impl Troubles {
 
     pub(super) fn reclaim_failed(&self, error: &(dyn Error + 'static)) {
         self.reclaim_held_back(error);
-        self.reserve.refused(error);
+        self.refused(error);
     }
 
     /// A round of the reclaimer that could not go on, for what is no
@@ -587,16 +627,16 @@ impl Shared {
     }
 
     /// Tells the three loops of the background work that the session has
-    /// released its reserve, if it has and they were not told yet: each
-    /// takes its next turn at once, also where it is in the wait after a
-    /// turn that failed (DF12). Whoever may have been given an error that
-    /// released the reserve calls this, with no lock held.
+    /// released its reserve: each takes its next turn at once, also
+    /// where it is in the wait after a turn that failed (DF12). The
+    /// thread that released the reserve calls this
+    /// ([`Troubles::refused`]). It takes the lock on the wake of
+    /// write-back's loop and then the one on the cleaner's, each for the
+    /// setting of a mark, and nothing else is taken under either.
     pub(super) fn room_made(&self) {
-        if self.store.troubles.reserve.take_release() {
-            self.write_back().room_made();
-            self.cleaner().room_made();
-            self.store.signal.room_made();
-        }
+        self.write_back().room_made();
+        self.cleaner().room_made();
+        self.store.signal.room_made();
     }
 
     /// Tells the three background threads to end after the turn each is
