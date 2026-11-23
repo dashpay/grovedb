@@ -551,7 +551,7 @@ use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
     alloc::Census,
-    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats, ValuePass},
+    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats, Pass, ValuePass},
     flush::{FlushError, Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
@@ -1722,6 +1722,26 @@ impl Db {
     /// nothing else has to.
     pub fn reclaim(&self) -> Round {
         self.shared.reclaim_round(false)
+    }
+
+    /// One turn of the cleaning that the background thread makes, on the
+    /// calling thread: a pass over the segments and then one over the
+    /// value log, each made whatever became of the other. A pass that
+    /// fails is counted and told as a pass of the thread that failed
+    /// ([`Background::cleaner_errors`]), and the first such error is
+    /// returned. A tool that has to see the space back in a session that
+    /// it asks for no commit, and a test, call it; nothing else has to.
+    pub fn clean(&self) -> Result<(Pass, ValuePass), CleanerError> {
+        let troubles = &self.shared.store.troubles;
+        with_cleaner(&self.shared, |cleaner, owners| {
+            let segments = cleaner.pass();
+            let values = cleaner.pass_values(owners);
+            let errors = [segments.as_ref().err(), values.as_ref().err()];
+            for error in errors.into_iter().flatten() {
+                troubles.cleaner_failed(error);
+            }
+            Ok((segments?, values?))
+        })
     }
 
     /// The entries of the database directory that are not the engine's,
