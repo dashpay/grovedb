@@ -331,6 +331,10 @@ features)
         refuse 'rocksdb' "RocksDB is among the crates of GroveDB on LigninDB"
     cargo check -p grovedb --no-default-features --features lignin_storage
     cargo check -p grovedb --no-default-features --features lignin_storage --lib --tests
+    # No other job lints this feature set: the workspace lint has every
+    # feature on, where a line that is compiled for LigninDB alone is left
+    # out.
+    cargo clippy -p grovedb --no-default-features --features lignin_storage --all-targets -- -D warnings
 
     say "GroveDB on RocksDB alone: no LigninDB among its crates"
     build_of normal,build grovedb --no-default-features --features rocksdb_storage |
