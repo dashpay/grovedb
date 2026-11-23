@@ -1852,11 +1852,7 @@ fn a_fetch_is_one_seek_and_the_record_length_however_it_is_served() {
 
     // A node that has to be read again, because its location went stale
     // between the read of its cell and of a child's, is one fetch still.
-    let unsteady = Unsteady {
-        under: &writer,
-        stale: AtomicUsize::new(5),
-        missing: AtomicUsize::new(0),
-    };
+    let unsteady = Unsteady::over(&writer).stale(1);
     let store = LigninNodeStore::new(&unsteady, ROOT, Mode::Deferred(None));
     let before = engine_reads();
     let again = store.get_node(&root, NO_VALUE_DEFINED_COST, version());
@@ -1867,12 +1863,8 @@ fn a_fetch_is_one_seek_and_the_record_length_however_it_is_served() {
     assert!(engine_reads() - before > 3);
     assert_eq!(again.cost, read.cost);
 
-    // A read that gives up is charged as a lookup that found nothing.
-    let unsteady = Unsteady {
-        under: &writer,
-        stale: AtomicUsize::new(usize::MAX),
-        missing: AtomicUsize::new(0),
-    };
+    // A read that fails is charged as a lookup that found nothing.
+    let unsteady = Unsteady::over(&writer).missing(1);
     let store = LigninNodeStore::new(&unsteady, ROOT, Mode::Deferred(None));
     let given_up = store.get_node(&root, NO_VALUE_DEFINED_COST, version());
     assert!(matches!(given_up.value, Err(Error::StorageError(_))));

@@ -37,7 +37,11 @@
 //! children by address and holds the length of each child's key but not
 //! the key (`tree-page.md` TP10), so a read fills each link's key from the
 //! child's cell. It keeps where that cell is: the handle follows a link to
-//! the child there, and names the node there when it writes it. Where a
+//! the child there, and names the node there when it writes it. On a write
+//! transaction the child's cell is reached through the location of its
+//! parent's, in an operation after the one that read the parent, and that
+//! location can have ended by then: the node is then read again (`load`).
+//! Where a
 //! written node is comes back from the application of its write
 //! (`tree-layout.md` P5): at once on an immediate handle, and from
 //! [`LigninBatch::apply`] for a handle that stays open
@@ -211,10 +215,6 @@ use crate::{
 /// The version of the storage cost rules this store charges by: the one
 /// every handle charges by, since a handle is opened with no grove version.
 const MODEL: StorageCostModel = cost_model::HANDLE_COST_MODEL;
-
-/// How many times a node is read again because a commit landed between the
-/// read of its cell and the read of a child's.
-const READ_ATTEMPTS: usize = 8;
 
 /// The element that hosts a Merk: where the Merk hangs in the grove.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -568,14 +568,29 @@ impl<'db> LigninNodeStore<'db> {
     /// The node under `key` with the key of each child in its link, and
     /// with its value where `with_value` asks for it.
     ///
-    /// The node and its children are read in operations of their own, and
-    /// a commit can land between two of them. The transaction then says
-    /// that the node's location is no longer good, and the node is read
-    /// again.
+    /// The node and its children are read in operations of their own, the
+    /// children through the location of the node's cell, and that
+    /// location can end between two of them: at a commit, where a cell
+    /// leaves the cell's page, and by what the reader's own transaction
+    /// does. The transaction then says that the location is no longer
+    /// good, and the node is read again. There is no count of tries, and
+    /// locations are not compared.
+    ///
+    /// One reader gets that answer whatever the location: a write scope
+    /// that reads the Merk's nodes by their keys. So the store asks,
+    /// after that answer, whether the reader reads by key, and refuses
+    /// the read if it does then ([`Child::ByKey`],
+    /// [`access::read_by_key`]). It reads the node again if it does not.
+    /// For that, what the reader sees changed since the read of the
+    /// cell, or a read of the cell's page failed at the read of the
+    /// child, or the reader read by key at the read of the child and no
+    /// longer at the question: a further try takes a further such event.
+    /// A page error that lasts fails the next read of the node, if that
+    /// read still needs the page.
     fn load(&self, key: &[u8], with_value: bool) -> Result<Option<StoredNode>, Error> {
         let prefix = &self.subtree.prefix;
         let mut hint = self.hint(key);
-        'node: for _ in 0..READ_ATTEMPTS {
+        'node: loop {
             let Some(mut node) = self.access.node(prefix, key, hint, with_value)? else {
                 self.loose.set(key, false);
                 return Ok(None);
@@ -600,6 +615,7 @@ impl<'db> LigninNodeStore<'db> {
                     .ok_or(Error::CorruptedState("a cell was read with no location"))?;
                 match self.access.child(prefix, parent, left)? {
                     Child::Stale => continue 'node,
+                    Child::ByKey => return Err(access::read_by_key()),
                     Child::Missing => return Err(refused("a link leads to no node")),
                     Child::Found { key, location } => {
                         found.extend(location.map(|location| (key.clone(), location)));
@@ -619,7 +635,6 @@ impl<'db> LigninNodeStore<'db> {
             self.note_tree(key, node.value.as_deref());
             return Ok(Some(node));
         }
-        Err(refused("a node changed under every read of it"))
     }
 
     /// Whether a change set of nodes that this handle stages is of a Merk
