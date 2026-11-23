@@ -338,23 +338,27 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     assert_eq!(ended.step, 113, "{ended:?}");
     let remade: [&[u8]; 2] = [b"drops", b"round-1:provable-count-provable-sum"];
     assert_eq!(query.path, remade);
-    // The keys of the rows an engine returned: the element of the new
-    // tree, and on RocksDB the three of the old one after it.
-    let keys = |lines: &[String]| -> Vec<String> {
+    // The rows an engine returned, each with its path, its key and the
+    // bytes of its element: the element of the new tree, and on RocksDB
+    // the three of the old one after it.
+    let rows = |lines: &[String]| -> Vec<String> {
         let rows = lines.iter().filter(|line| line.starts_with("row "));
-        rows.filter_map(|row| row.split(' ').nth(2).map(str::to_string))
-            .collect()
+        rows.cloned().collect()
     };
-    let key = |key: &[u8]| {
-        key.iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
+    let hex = |bytes: &[u8]| -> String { bytes.iter().map(|byte| format!("{byte:02x}")).collect() };
+    let row = |key: &[u8], element: &str| {
+        let (above, tree) = (hex(remade[0]), hex(remade[1]));
+        format!("row {above}/{tree} {} {element}", hex(key))
     };
-    assert_eq!(
-        keys(&ended.reference),
-        [key(b"again"), key(b"r0"), key(b"r1"), key(b"r2")]
-    );
-    assert_eq!(keys(&ended.candidate), [key(b"again")]);
+    let again = row(b"again", "0008f9de85776181375e00");
+    let kept = [
+        row(b"r0", "03fc000e9f0900"),
+        row(b"r1", "03fc00093b0000"),
+        row(b"r2", "03fc000d44a400"),
+    ];
+    assert_eq!(rows(&ended.reference)[0], again);
+    assert_eq!(rows(&ended.reference)[1..], kept);
+    assert_eq!(rows(&ended.candidate), [again]);
     let families = ran.tally.families;
     assert_eq!(families.answers, [0, 0, 1, 0]);
     assert_eq!(families.answer_seed, [None, None, Some(case.seed), None]);

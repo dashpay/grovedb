@@ -571,6 +571,12 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         })
         .unwrap_or_default();
         let was = observe(&mut reference_runner, op);
+        // A put of an indexed tree over an indexed tree that the reference
+        // took is counted, whatever the candidate did.
+        if matches!(&was, Seen::Answered(observed) if !observed.step.failed()) {
+            known.came_to_indexed_over_indexed(&over_indexed);
+            tally.families = known.counts();
+        }
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
         let (was, is) = match both(was, is, |observed| lines(&observed)) {
@@ -578,12 +584,6 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             Both::Alike(why) => return cut_short(tally, step, why),
             Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
         };
-        // A put of an indexed tree over an indexed tree that the reference
-        // took is counted, whatever the candidate answered.
-        if !was.step.failed() {
-            known.came_to_indexed_over_indexed(&over_indexed);
-            tally.families = known.counts();
-        }
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
             // An answer that differs at an operation which names a place

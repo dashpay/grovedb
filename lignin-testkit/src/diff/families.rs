@@ -40,7 +40,11 @@
 //!   stored record is passed over for it.
 //!
 //! A case keeps the paths it made so ([`Known`]), from the operations both
-//! engines took, and nothing else is of a family:
+//! engines took. Of a batch it counts the operations by a rule about its
+//! lists and not by what GroveDB applied: those the caller of a partial
+//! batch adds last only where the batch has an operation of its own and
+//! the reference took it, and no put or flat drop at a key that two
+//! operations of the batch name. Nothing else is of a family:
 //!
 //! - **What is stored.** The records of a subtree of a family are not
 //!   compared. Where the two engines hold different records there, the
@@ -236,13 +240,15 @@ fn puts(op: &Op) -> Vec<Path> {
     places.collect()
 }
 
-/// The operations of the batch `op` that an engine comes to, where
-/// `taken` says whether it took the operation. The caller of a partial
-/// batch is asked for the operations it adds last once the batch's own
-/// were applied: they are none of a batch with no operation of its own,
-/// which is answered before, and none of one the engine did not take,
-/// which may have failed before.
-fn applied(op: &Op, taken: bool) -> impl Iterator<Item = &BatchOp> {
+/// The operations of the batch `op` that the families count, where
+/// `taken` says whether the reference took the operation: every one a
+/// batch lists, and of a partial batch its own, with those its caller
+/// adds last only where the batch has an operation of its own and the
+/// reference took it. This is a rule about the lists, and no trace of
+/// what GroveDB applied: it does not ask for the added operations of a
+/// batch with none of its own, and whether a batch that the reference
+/// did not take came to them, or to each of its own, is not looked at.
+fn counted(op: &Op, taken: bool) -> impl Iterator<Item = &BatchOp> {
     let own = match op {
         Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) => Some(batch.ops.len()),
         _ => None,
@@ -255,8 +261,37 @@ fn applied(op: &Op, taken: bool) -> impl Iterator<Item = &BatchOp> {
     op.batch_ops().take(reached)
 }
 
-/// The places of [`puts`], each with the element that is put there, as an
-/// engine that takes the operation comes to them.
+/// The places with a key that `batch_op` names.
+fn keyed(batch_op: &BatchOp) -> Vec<Path> {
+    match batch_op {
+        BatchOp::InsertOrReplace { path, key, .. }
+        | BatchOp::InsertOnly { path, key, .. }
+        | BatchOp::InsertIfNotExists { path, key, .. }
+        | BatchOp::Replace { path, key, .. }
+        | BatchOp::Patch { path, key, .. }
+        | BatchOp::RefreshReference { path, key, .. }
+        | BatchOp::Delete { path, key, .. }
+        | BatchOp::DeleteTree { path, key, .. }
+        | BatchOp::DropFlat { path, key, .. } => vec![joined(path, key)],
+        BatchOp::Move {
+            path, key, new_key, ..
+        } => vec![joined(path, key), joined(path, new_key)],
+        BatchOp::Append { .. } => Vec::new(),
+    }
+}
+
+/// Whether one operation at most of the batch `op`, those its caller adds
+/// last among them, names `place`. Where two do, one can take the place
+/// of the other, and which of them the batch applies is not looked at: a
+/// put or a flat drop there is not counted.
+fn named_once(op: &Op, place: &Path) -> bool {
+    let named = op.batch_ops().flat_map(keyed);
+    named.filter(|named| named == place).count() <= 1
+}
+
+/// The places of [`puts`], each with the element that is put there, as
+/// the families count them for an operation the reference takes
+/// ([`counted`], [`named_once`]).
 fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     let mut puts = Vec::new();
     if let Op::Write(
@@ -268,7 +303,7 @@ fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
     {
         puts.push((joined(path, key), element));
     }
-    for batch_op in applied(op, true) {
+    for batch_op in counted(op, true) {
         if let BatchOp::InsertOrReplace {
             path, key, element, ..
         }
@@ -285,20 +320,23 @@ fn put_elements(op: &Op) -> Vec<(Path, &Element)> {
             puts.push((joined(path, key), element));
         }
     }
+    puts.retain(|(place, _)| named_once(op, place));
     puts
 }
 
-/// The trees `op` drops flat where an engine takes it.
+/// The trees `op` drops flat, as the families count them for an operation
+/// the reference takes ([`counted`], [`named_once`]).
 fn flat_drops(op: &Op) -> Vec<Path> {
     let mut drops = Vec::new();
     if let Op::Write(Write::DropFlat { path, key }) = op {
         drops.push(joined(path, key));
     }
-    for batch_op in applied(op, true) {
+    for batch_op in counted(op, true) {
         if let BatchOp::DropFlat { path, key, .. } = batch_op {
             drops.push(joined(path, key));
         }
     }
+    drops.retain(|place| named_once(op, place));
     drops
 }
 
@@ -431,8 +469,9 @@ fn reads(query: &grovedb::Query, below: &[Vec<u8>]) -> Option<bool> {
 }
 
 /// The places `op` names: the subtree it reads or writes in, and with a
-/// key the place under that key. Of a batch, those of the operations an
-/// engine comes to that took it or not, as `taken` says ([`applied`]).
+/// key the place under that key. Of a batch, those of the operations
+/// the families count for it, where `taken` says whether the reference
+/// took it ([`counted`]).
 fn places(op: &Op, taken: bool) -> Vec<Path> {
     let mut places = Vec::new();
     match op {
@@ -474,26 +513,9 @@ fn places(op: &Op, taken: bool) -> Vec<Path> {
         | Op::FlagsPartialBatch(_)
         | Op::FlagsHandoverBatch(_) => {}
     }
-    for batch_op in applied(op, taken) {
+    for batch_op in counted(op, taken) {
         places.push(batch_op.path().clone());
-        match batch_op {
-            BatchOp::InsertOrReplace { path, key, .. }
-            | BatchOp::InsertOnly { path, key, .. }
-            | BatchOp::InsertIfNotExists { path, key, .. }
-            | BatchOp::Replace { path, key, .. }
-            | BatchOp::Patch { path, key, .. }
-            | BatchOp::RefreshReference { path, key, .. }
-            | BatchOp::Delete { path, key, .. }
-            | BatchOp::DeleteTree { path, key, .. }
-            | BatchOp::DropFlat { path, key, .. } => places.push(joined(path, key)),
-            BatchOp::Move {
-                path, key, new_key, ..
-            } => {
-                places.push(joined(path, key));
-                places.push(joined(path, new_key));
-            }
-            BatchOp::Append { .. } => {}
-        }
+        places.extend(keyed(batch_op));
     }
     places
 }
@@ -870,7 +892,7 @@ mod tests {
             );
         }
         // Where the reference did not take the operation, a refusal of
-        // the candidate is of no family.
+        // the candidate is not of this family.
         for failed in ["InvalidInput", "NotSupported"] {
             let failed = Outcome::Failed(failed.to_string());
             assert_eq!(Known::family_of_refusal(&over, &failed, &refused), None);
@@ -1348,6 +1370,60 @@ mod tests {
             key: b"over".to_vec(),
         }]);
         assert_eq!(known.family_of_answer(&own_over, false), over);
+        // A put or a flat drop at a key that another operation of the
+        // batch names as well is not counted: one can take the place of
+        // the other. The operations still name the place.
+        let twice = |second: BatchOp| {
+            let put = BatchOp::InsertOrReplace {
+                path: path(&[b"c"]),
+                key: b"t".to_vec(),
+                element: Element::new_item(vec![1]),
+            };
+            let drop = BatchOp::DropFlat {
+                path: path(&[b"c"]),
+                key: b"d".to_vec(),
+                tree_type: grovedb::TreeType::NormalTree,
+            };
+            Op::PartialBatch(PartialBatch {
+                ops: vec![put, drop],
+                add_on: vec![second],
+                pause_height: None,
+            })
+        };
+        let elsewhere = twice(BatchOp::Delete {
+            path: path(&[b"c"]),
+            key: b"other".to_vec(),
+        });
+        assert_eq!(puts(&elsewhere), vec![path(&[b"c", b"t"])]);
+        assert_eq!(flat_drops(&elsewhere), vec![path(&[b"c", b"d"])]);
+        let over_the_put = twice(BatchOp::InsertIfNotExists {
+            path: path(&[b"c"]),
+            key: b"t".to_vec(),
+            element: Element::new_item(vec![2]),
+        });
+        assert!(puts(&over_the_put).is_empty());
+        assert_eq!(flat_drops(&over_the_put), vec![path(&[b"c", b"d"])]);
+        assert!(places(&over_the_put, true).contains(&path(&[b"c", b"t"])));
+        let over_the_drop = twice(BatchOp::Move {
+            path: path(&[b"c"]),
+            key: b"src".to_vec(),
+            new_key: b"d".to_vec(),
+        });
+        assert_eq!(puts(&over_the_drop), vec![path(&[b"c", b"t"])]);
+        assert!(flat_drops(&over_the_drop).is_empty());
+        let both_puts = Op::Batch(vec![
+            BatchOp::InsertOrReplace {
+                path: path(&[b"c"]),
+                key: b"t".to_vec(),
+                element: Element::empty_tree(),
+            },
+            BatchOp::Replace {
+                path: path(&[b"c"]),
+                key: b"t".to_vec(),
+                element: Element::new_item(vec![3]),
+            },
+        ]);
+        assert!(puts(&both_puts).is_empty());
 
         let mut counts = Counts::default();
         let mut one = self::known();
