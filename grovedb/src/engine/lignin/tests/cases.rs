@@ -45,8 +45,8 @@ enum Space {
 
 /// An engine with nothing in it, for one raw case.
 struct Raw<E: Engine> {
-    _dir: tempfile::TempDir,
     engine: E,
+    _dir: tempfile::TempDir,
 }
 
 impl<E: Engine> Raw<E> {
@@ -379,8 +379,8 @@ pub(super) const B: &[u8] = b"B";
 
 /// A GroveDB on the engine `E` with the two empty trees of section 16.4.
 pub(super) struct Grove<E: Engine> {
-    pub(super) dir: tempfile::TempDir,
     pub(super) db: GroveDb<E>,
+    pub(super) dir: tempfile::TempDir,
 }
 
 impl<E: Engine> Grove<E> {

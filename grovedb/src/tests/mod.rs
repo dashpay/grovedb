@@ -277,9 +277,13 @@ pub const ANOTHER_TEST_LEAF: &[u8] = b"test_leaf2";
 const DEEP_LEAF: &[u8] = b"deep_leaf";
 
 /// GroveDB wrapper to keep temp directory alive
+///
+/// The database is the first field, so it is closed before its directory
+/// is removed. An engine that checks its store at a close (LigninDB, in a
+/// debug build) makes no check of a database whose directory is gone.
 pub struct TempGroveDb {
-    _tmp_dir: TempDir,
     grove_db: GroveDb,
+    _tmp_dir: TempDir,
 }
 
 impl DerefMut for TempGroveDb {
@@ -1296,7 +1300,7 @@ mod general_tests {
     #[test]
     fn test_init() {
         let tmp_dir = TempDir::new().unwrap();
-        GroveDb::open(tmp_dir).expect("empty tree is ok");
+        GroveDb::open(tmp_dir.path()).expect("empty tree is ok");
     }
 
     #[test]
@@ -1906,7 +1910,7 @@ mod general_tests {
             db.root_hash(None, grove_version).unwrap().unwrap()
         };
         // Open a persisted GroveDB
-        let db = GroveDb::open(tmp_dir).unwrap();
+        let db = GroveDb::open(tmp_dir.path()).unwrap();
         assert_eq!(
             db.get(
                 [TEST_LEAF, b"key1", b"key2"].as_ref(),
