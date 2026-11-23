@@ -44,6 +44,16 @@
 //! Merk is a top, which nothing points at. The transaction does not check
 //! that mark: a batch that leaves it out where it belongs is taken, and
 //! the store it commits is not sound.
+//! The host's cell does not grow by that write. A host is put with every
+//! Merk it hosts stated ([`Hosted::Set`]) from its first put, which is in
+//! the write of its own Merk, and a cell has the place of a pointer for
+//! each Merk that its node states, also for one that has no root yet.
+//! The write that brings a Merk puts the host again with the same Merks
+//! stated, and the pointer to the new root goes into the place the cell
+//! has for it. So a load is not refused for a host in a page with no
+//! room, as a write can be that names a Merk in a host for the first
+//! time, where nothing hangs below the host in that page
+//! (`tree-layout.md` T3).
 //!
 //! **A load is one commit.** It is one write transaction, applied a Merk
 //! at a time and committed at its end, so after any crash the target has
