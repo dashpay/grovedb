@@ -226,9 +226,10 @@ fn pool_answers<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
         let value = answered(&mut answers, "value", value);
         assert_eq!(value.is_some(), position <= last, "the note at {position}");
     }
-    for (start, limit) in [(0, 20), (60, 30), (0, u16::MAX)] {
+    for (start, limit, held) in [(0, 20, 20), (60, 30, 17), (0, u16::MAX, NOTE_COUNT)] {
         let page = db.commitment_tree_get_range(&POOL, NOTES, start, limit, None, v);
-        answered(&mut answers, "range", page);
+        let page = answered(&mut answers, "range", page);
+        assert_eq!(page.entries.len(), held, "the notes from {start}");
     }
     let element = db.get_raw((&POOL).into(), NOTES, None, v);
     let bytes = element.map_ok(|element| element.serialize(v).expect("the bytes of an element"));
@@ -252,7 +253,9 @@ fn pool_answers<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
         ("proof of the notes", fetch),
     ] {
         let proof = answered(&mut answers, name, db.prove_query(&query, None, v));
-        assert!(proof.len() > 500, "{name}: {} bytes", proof.len());
+        let (proved, _) = GroveDb::verify_query(&proof, &query, v)
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+        assert_eq!(proved, root(db), "{name}");
     }
     answers
 }
@@ -426,7 +429,11 @@ fn counted_answers<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
     }
     // An item that is not there is not found, at the same cost.
     let absent = db.get([COUNTED].as_ref(), &item_key(ITEMS), None, v);
-    assert!(absent.value.is_err(), "{:?}", absent.value);
+    assert!(
+        matches!(absent.value, Err(crate::Error::PathKeyNotFound(_))),
+        "{:?}",
+        absent.value
+    );
     answers.push((
         "no item".to_owned(),
         format!("{:?}", absent.value),
@@ -450,7 +457,8 @@ fn counted_answers<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
         "proof of the range",
         db.prove_query(&query, None, v),
     );
-    assert!(proof.len() > 10_000, "{} bytes", proof.len());
+    let (proved, rows) = GroveDb::verify_query(&proof, &query, v).expect("a proof that verifies");
+    assert_eq!((proved, rows.len()), (root(db), 300));
     answers
 }
 
@@ -904,8 +912,10 @@ fn two_loads_into_one_subtree<E: Hatched>() -> (Result<(), crate::Error>, u64) {
 }
 
 /// Replaces the element of the tree under `COUNTED` after a load that was
-/// committed without it, and has the grove verified: a grove is left
-/// between a load and its replacement by no test.
+/// committed without it, and has the grove verified. The two tests that
+/// commit a load alone call it where the other writer lost, which is on
+/// LigninDB: the physical checker of a close passes no grove that is left
+/// between a load of nodes and its replacement.
 fn finish<E: Engine>(db: &GroveDb<E>, loaded: DumpedSubtree) {
     let v = version();
     db.replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, None, v)
@@ -916,9 +926,9 @@ fn finish<E: Engine>(db: &GroveDb<E>, loaded: DumpedSubtree) {
 }
 
 /// Two transactions each apply a dump to one empty tree, the load and the
-/// replacement of the element together, and commit one after the other.
-/// The second commit is a conflict on every engine: both wrote the node
-/// of the element.
+/// replacement of the element, both before either commits, and commit one
+/// after the other. The second commit is a conflict on both engines: both
+/// wrote the node of the element while both were open.
 fn the_second_of_two_applies_conflicts<E: Hatched>() {
     let v = version();
     let one = small_dump::<E>(&[b"a", b"b", b"c"]);
@@ -946,6 +956,65 @@ fn the_second_of_two_applies_conflicts<E: Hatched>() {
     let issues = target.db.verify_grovedb(None, true, false, v);
     assert!(issues.expect("a verification").is_empty(), "{}", E::NAME);
     target.close();
+}
+
+/// Two transactions each load a dump into one empty tree. The first
+/// replaces the element and commits, and only then does the second
+/// replace the element, and commit. Gives how the second commit ended,
+/// and the nodes the tree holds after it.
+fn an_apply_whose_replacement_follows_the_commit_of_another<E: Hatched>(
+) -> (Result<(), crate::Error>, u64) {
+    let v = version();
+    let one = small_dump::<E>(&[b"a", b"b", b"c"]);
+    let other = small_dump::<E>(&[b"x", b"y"]);
+    let target = Grove::<E>::new();
+    (target.db)
+        .insert(ROOT, COUNTED, Element::empty_count_tree(), None, None, v)
+        .unwrap()
+        .expect("a count tree");
+    let first = target.db.start_transaction();
+    let second = target.db.start_transaction();
+    let loaded = (target.db)
+        .load_subtree(ROOT, COUNTED, &one[..], Some(&first), v)
+        .expect("a load");
+    let beside = (target.db)
+        .load_subtree(ROOT, COUNTED, &other[..], Some(&second), v)
+        .expect("a load beside it");
+    (target.db)
+        .replace_subtree_root(ROOT, COUNTED, loaded.element, loaded.root, Some(&first), v)
+        .unwrap()
+        .expect("the element");
+    (target.db.commit_transaction(first).unwrap()).expect("the first commit");
+    (target.db)
+        .replace_subtree_root(ROOT, COUNTED, beside.element, beside.root, Some(&second), v)
+        .unwrap()
+        .expect("the element, after the commit of the other");
+    let committed = target.db.commit_transaction(second).unwrap();
+    let nodes = records_of(&target.db, None);
+    target.close();
+    (committed, nodes)
+}
+
+/// On LigninDB the second apply does not commit, whenever it replaces.
+#[test]
+fn an_apply_whose_replacement_follows_another_commit_conflicts_on_lignindb() {
+    let (committed, nodes) =
+        an_apply_whose_replacement_follows_the_commit_of_another::<super::LigninEngine>();
+    let error = committed.expect_err("a conflict");
+    assert!(error.is_commit_conflict(), "{error:?}");
+    assert_eq!(nodes, 3, "the nodes of the first apply");
+}
+
+/// On RocksDB it commits: it wrote the node of the element after the other
+/// commit, and no key of its load is a key of the other. The tree holds
+/// the nodes of both under the element of the second.
+#[cfg(feature = "rocksdb_storage")]
+#[test]
+fn an_apply_whose_replacement_follows_another_commit_commits_on_rocksdb() {
+    let (committed, nodes) =
+        an_apply_whose_replacement_follows_the_commit_of_another::<crate::RocksDbEngine>();
+    committed.expect("a commit");
+    assert_eq!(nodes, 5, "the nodes of both applies");
 }
 
 #[test]

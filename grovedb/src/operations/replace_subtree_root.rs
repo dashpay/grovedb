@@ -16,8 +16,8 @@
 //!    out-of-band, with `RocksDbStorage::ingest_subtree_sst`.)
 //! 2. Compute the post-load combined root with
 //!    [`GroveDb::subtree_root_as`], which reads the subtree as the typed
-//!    tree of the element given (a Merk, or CommitmentTree / Mmr /
-//!    BulkAppend / Dense).
+//!    tree of the element given (a Merk, or an append-only tree:
+//!    CommitmentTree / Mmr / BulkAppend / Dense / PrivateDocumentStore).
 //! 3. Call [`GroveDb::replace_subtree_root`] with the verified hash and a
 //!    correctly-constructed [`Element`] (e.g. `Element::new_commitment_tree`).
 //!

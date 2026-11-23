@@ -390,10 +390,23 @@ fn node_records_that_are_not_one_tree_are_not_loaded() {
     let x_to_y = x_above[0].2.clone();
     let y_to_x = y_above[1].2.clone();
 
-    let cases: [(&str, Vec<Record>); 6] = [
+    // `d` with `c` under it.
+    let (_, d_above) = node_records(&[b"d", b"c"]);
+    let d_to_c = d_above[1].2.clone();
+
+    let cases: [(&str, Vec<Record>); 7] = [
         (
             "a record of the data keyspace is no node",
             vec![node(b"a", b"no node".to_vec())],
+        ),
+        (
+            "two links name one node",
+            vec![
+                node(b"a", record(b"a")),
+                node(b"b", record(b"b")),
+                node(b"c", record(b"c")),
+                node(b"d", d_to_c),
+            ],
         ),
         (
             "a link names no node of the dump",

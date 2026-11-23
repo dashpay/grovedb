@@ -22,12 +22,12 @@
 //!
 //! A load makes no hash of a node and does not ask whether the keys of a
 //! Merk stand as the keys of a search tree do: it writes the records the
-//! stream holds. Between the load and the replacement the element in the
-//! parent does not commit to what its subtree holds, and a LigninDB
-//! database whose loaded Merk has nodes does not pass the engine's
-//! physical check in that state. A caller that gives the three calls one
-//! transaction commits no such state. Gated behind the `unsafe-dump-load`
-//! Cargo feature.
+//! stream holds. After a load that wrote nodes or flat records, and until
+//! the replacement, the element in the parent commits to what it
+//! committed to before the load, and a LigninDB database whose loaded
+//! Merk has nodes does not pass the engine's physical check in that
+//! state. A caller that gives the three calls one transaction commits no
+//! such state. Gated behind the `unsafe-dump-load` Cargo feature.
 
 mod format;
 #[cfg(all(test, grovedb_test_engine))]
@@ -132,8 +132,9 @@ fn carried(element: &Element) -> Result<(), DumpLoadError> {
 }
 
 /// The key of the root node that the element of a tree of nodes names.
-fn root_key_of(element: &Element) -> Option<Vec<u8>> {
-    (element.clone().root_key_and_tree_type_owned()).and_then(|(root_key, _)| root_key)
+fn root_key_of(element: &Element) -> Option<&[u8]> {
+    let (root_key, _) = element.root_key_and_tree_type()?;
+    root_key.as_deref()
 }
 
 /// Whether the keyspace of `cursor` holds a record.
@@ -262,14 +263,15 @@ impl<E: Engine> GroveDb<E> {
     /// that `element` names the root key and the tree type of, or the
     /// state root of the append-only tree that `element` is, as
     /// `verify_grovedb` makes it. The element that the grove holds under
-    /// `key` is not read. Where the element names a root key that no node
-    /// has, or the root node is not a node of a tree of that type, the
-    /// call is an error.
+    /// `key` is not read. The call is an error where the element names a
+    /// root key that no node has, and where Merk does not hash the root
+    /// node under that tree type, as it does not hash a node that carries
+    /// no count under a tree type with a provable count.
     ///
     /// It is what [`GroveDb::replace_subtree_root`] takes as the root of a
     /// subtree that was loaded, and what a caller compares with the root a
-    /// dump states. It reads the records the root is made from, which are
-    /// not all the records of the subtree: the root node of a Merk, the
+    /// dump states. It reads the records the root is made from, which need
+    /// not be all the records of the subtree: the root node of a Merk, the
     /// stored peaks of an MMR and not the leaves under them. It is no
     /// check of every record.
     pub fn subtree_root_as<'db, 'b, B, P>(
@@ -342,11 +344,14 @@ impl<E: Engine> GroveDb<E> {
     ///
     /// What is under the subtree is not carried: the subtrees of the
     /// trees that its Merk holds, and the secondary Merks of an indexed
-    /// tree, which is refused. A subtree whose element does not name what
-    /// it holds is refused as well: a tree of nodes whose element names
-    /// no root key or the key of no node, and an append-only tree that
-    /// holds records under an element that counts none. That is a subtree
-    /// between its load and the replacement of its element.
+    /// tree, which is refused. So is a tree of nodes that holds a node
+    /// under an element that names no root key, or whose element names a
+    /// key that holds no node, and an append-only tree that holds records
+    /// under an element that counts none: a subtree that a load wrote
+    /// nodes or flat records into under the element of an empty tree,
+    /// before the replacement of that element, is one of these. That the
+    /// named key is the root of every node is not asked here: a load asks
+    /// it of the stream.
     pub fn dump_subtree<'db, 'b, B, P, W>(
         &'db self,
         path: P,
@@ -377,7 +382,7 @@ impl<E: Engine> GroveDb<E> {
                 || !holds_a_record(FlatStore::cursor(&handle))?
         } else {
             match root_key_of(&element) {
-                Some(root_key) => handle.has_node(&root_key).unwrap().map_err(merk)?,
+                Some(root_key) => handle.has_node(root_key).unwrap().map_err(merk)?,
                 None => !holds_a_record(NodeStore::cursor(&handle))?,
             }
         };
@@ -414,11 +419,10 @@ impl<E: Engine> GroveDb<E> {
     /// written before the dump is read to its end, its checksum holds and
     /// those refusals are past.
     ///
-    /// On the RocksDB engine a load writes no key outside its subtree, and
-    /// nothing makes two writers of one subtree meet but a key that both
-    /// wrote: a caller that commits a load apart from the replacement lets
-    /// no other writer into the subtree until the replacement is
-    /// committed.
+    /// The look at the subtree is no lock. On the RocksDB engine a caller
+    /// lets no other writer into the subtree from the load until the
+    /// replacement is committed: two transactions meet there only by a key
+    /// that both wrote while both were open.
     ///
     /// The load is a write of `transaction`, as an insert is: it is seen
     /// through that transaction alone until the transaction commits, and
@@ -470,7 +474,7 @@ impl<E: Engine> GroveDb<E> {
             let root = merk_nodes
                 .as_ref()
                 .map(|(nodes, root, _)| nodes[*root].key());
-            root_key_of(&element).as_deref() == root
+            root_key_of(&element) == root
         };
         if !named {
             return Err(DumpLoadError::Malformed(
