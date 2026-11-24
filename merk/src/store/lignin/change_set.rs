@@ -2052,6 +2052,20 @@ impl LigninSettled {
         })
     }
 
+    /// The nodes that the batch puts with a stated value, in every Merk:
+    /// each by its subtree and its key, with that value. Those of one
+    /// Merk come in the order of [`Self::stated`]. Whoever needs the
+    /// nodes of many Merks reads the batch once by this.
+    pub fn stated_nodes(&self) -> impl Iterator<Item = ([u8; 32], &[u8], &[u8])> {
+        (self.resolved.outcomes()).filter_map(|outcome| match outcome.write {
+            Staged::Node(node) => {
+                let subtree = *outcome.unit.subtree.as_bytes();
+                Some((subtree, outcome.key, node.value.as_deref()?))
+            }
+            _ => None,
+        })
+    }
+
     /// The subtrees the batch holds a write for, in any column, each as
     /// the handle that staged the write named it: with the element that
     /// hosts it, and only the subtrees of which a write is left: one

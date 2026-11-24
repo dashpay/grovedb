@@ -331,6 +331,27 @@ thread_local! {
     /// A test's word that the next read of the mark of a restore that did
     /// not finish fails, on this thread.
     static MARK_READ_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The steps that the looks of a group made on this thread, for a
+    /// test that bounds them ([`look_step`]).
+    static LOOK_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts a step of a look, for a test: a pair, a node or a named element
+/// that the look comes to, by an index or on a walk. A look that comes to
+/// each a bounded number of times makes as many steps as its group is
+/// large, times that bound; one that looks through the group for each
+/// makes as many as the group is large, squared.
+#[inline]
+fn look_step() {
+    #[cfg(test)]
+    LOOK_STEPS.set(LOOK_STEPS.get() + 1);
+}
+
+/// The steps that the looks made on this thread since they were last
+/// asked for.
+#[cfg(test)]
+fn look_steps_taken() -> u64 {
+    LOOK_STEPS.replace(0)
 }
 
 /// Has `happens` happen beside a group. A group that it applies itself
