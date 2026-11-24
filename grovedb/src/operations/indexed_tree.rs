@@ -730,9 +730,74 @@ impl<E: Engine> GroveDb<E> {
         // `GroveOp::InsertOrReplace` does not sweep them, and the batch path's
         // overwrite hook classifies only INDEXED existing children, so the
         // sweep runs here against the same transaction.
-        if let Some(existing) = existing_child.as_ref()
-            && existing.tree_type().is_some()
-        {
+        let swept_child = existing_child
+            .as_ref()
+            .filter(|existing| existing.tree_type().is_some());
+
+        // The sweep and the put are two writes of the transaction, and the
+        // put can be refused after the sweep was applied. In a transaction
+        // of the caller, which outlives this call, an engine that rolls a
+        // write scope back is given the two in one scope, which is rolled
+        // back with the refusal: the child is then as it was. On an engine
+        // that rolls no scope back none is opened, and the sweep stays in
+        // the transaction, as do the writes of a call whose engine opened
+        // no scope for it.
+        let written = {
+            let scoped =
+                swept_child.is_some() && !tx.is_owned() && self.db.rolls_back_write_scopes();
+            let scope = match scoped {
+                true => self.db.open_write_scope(tx.as_ref()).ok(),
+                false => None,
+            };
+            match scope {
+                Some(scope) => {
+                    let written = self
+                        .sweep_and_put_dedicated_indexed_child(
+                            path,
+                            item_key,
+                            item,
+                            swept_child,
+                            E::scope_transaction(&scope),
+                            grove_version,
+                        )
+                        .unwrap_add_cost(&mut cost);
+                    let closed = match written {
+                        Ok(()) => self.db.merge_write_scope(scope),
+                        Err(_) => self.db.rollback_write_scope(scope),
+                    };
+                    cost_return_on_error_no_add!(cost, closed.map_err(Into::into));
+                    written
+                }
+                None => self
+                    .sweep_and_put_dedicated_indexed_child(
+                        path,
+                        item_key,
+                        item,
+                        swept_child,
+                        tx.as_ref(),
+                        grove_version,
+                    )
+                    .unwrap_add_cost(&mut cost),
+            }
+        };
+        cost_return_on_error_no_add!(cost, written);
+        tx.commit_local().wrap_with_cost(cost)
+    }
+
+    /// The two writes of a dedicated insert, made through `transaction`: the
+    /// sweep of the storage of `swept_child`, the tree that the insert
+    /// writes over, where there is one, and the put of `item`.
+    fn sweep_and_put_dedicated_indexed_child<'a, 'db: 'a, 'b, B: AsRef<[u8]>>(
+        &'db self,
+        path: SubtreePath<'b, B>,
+        item_key: &[u8],
+        item: Element,
+        swept_child: Option<&Element>,
+        transaction: &'a Transaction<'db, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+        if let Some(existing) = swept_child {
             let cleanup_batch = E::Batch::default();
             let entry_path_owned = path.derive_owned_with_child(item_key);
             cost_return_on_error!(
@@ -740,7 +805,7 @@ impl<E: Engine> GroveDb<E> {
                 self.cleanup_dedicated_indexed_child_storage(
                     existing,
                     SubtreePath::from(&entry_path_owned),
-                    tx.as_ref(),
+                    transaction,
                     &cleanup_batch,
                     grove_version,
                 )
@@ -748,7 +813,7 @@ impl<E: Engine> GroveDb<E> {
             cost_return_on_error!(
                 &mut cost,
                 self.db
-                    .apply_batch(cleanup_batch, tx.as_ref())
+                    .apply_batch(cleanup_batch, transaction)
                     .map_err(Into::into)
             );
         }
@@ -758,11 +823,8 @@ impl<E: Engine> GroveDb<E> {
             item_key.to_vec(),
             item,
         );
-        cost_return_on_error!(
-            &mut cost,
-            self.apply_batch(vec![op], None, Some(tx.as_ref()), grove_version)
-        );
-        tx.commit_local().wrap_with_cost(cost)
+        self.apply_batch(vec![op], None, Some(transaction), grove_version)
+            .add_cost(cost)
     }
 
     /// Validate that `path` names an indexed primary of the expected variant,
