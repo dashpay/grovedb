@@ -9,7 +9,8 @@
 //! | --- | --- |
 //! | a node of the Merk of a subtree that an element leads to | carried, with its Merk handed over whole |
 //! | a node record under such a prefix that the Merk's tree does not link | carried as an unlinked record |
-//! | a flat record of a tree that keeps flat records | carried as it is; a node of a keyed child (grove versions 1 to 3) among them is such a record |
+//! | a flat record of a tree that keeps flat records | carried as it is |
+//! | the node of a keyed child among the flat records of such a tree (grove versions 1 to 3) | **not carried: the source is refused**. The engine keeps such a child as a node of a Merk under the prefix of the tree, which the tree's element hosts, and what a child that is a tree holds lies under a prefix of its own (`engine.md`, "What differs on grove versions 1 to 3 under a tree that keeps flat records"). Those versions hold the key of a child to nothing, so which records of the prefix are such nodes is not always told by the bytes RocksDB holds |
 //! | an aux or a meta record of such a subtree | carried |
 //! | the record of a root key, under any prefix | carried, where the engine keeps it: also under a prefix with no tree |
 //! | a pending-drop record | carried, with a mark for each keyspace of each prefix it names in which the source still holds a record |
@@ -21,8 +22,11 @@
 //! or encodes otherwise, an element that names a root while no record is
 //! under the prefix of its subtree, a record of the roots keyspace that is
 //! no record of a root key, a record under the prefix of the pending-drop
-//! records that is none, and an aux record of the root under the key of
-//! the migrator's journal.
+//! records that is none, an aux record of the root under the key of the
+//! migrator's journal, the mark of a state-sync restore that did not
+//! finish (a database with that mark is to be discarded, on either
+//! engine), and a grove that is deeper than the walk follows
+//! (`walk::DEEPEST`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -44,7 +48,7 @@ use super::{
         named, short_key, Chunk, Found, Frame, MerkHeld, Place, Side, Visit, Walk, ROOT, ROOT_KEY,
     },
 };
-use crate::{args::Unreachable, hex, ToolError};
+use crate::{args::Unreachable, hex, verify::INCOMPLETE_RESTORE_KEY, ToolError};
 
 /// How many prefixes that nothing leads to a report describes.
 const DESCRIBED: usize = 1000;
@@ -216,7 +220,17 @@ impl Visit for Counting<'_> {
         if found.trees > survey.widest.0 {
             survey.widest = (found.trees, place.named());
         }
-        if found.nodes > 0 && found.held >= survey.largest.held {
+        if found.keyed_children > 0 && survey.faults.len() < 100 {
+            survey.faults.push(format!(
+                "{}: {} of the records of this tree of flat records are nodes of a Merk: keyed \
+                 children (grove versions 1 to 3), which this command does not carry",
+                place.named(),
+                found.keyed_children
+            ));
+        }
+        // Every record of a Merk is in memory when it is handed over, also
+        // where no tree links it.
+        if found.held > 0 && found.held >= survey.largest.held {
             survey.largest = Largest {
                 nodes: found.nodes + found.unlinked.records,
                 held: found.held,
@@ -531,6 +545,16 @@ pub(crate) fn survey(source: &Source, side: &Side, paths: bool) -> Result<Survey
         paths,
         ..Survey::default()
     };
+    if source
+        .get(Keyspace::Aux, &ROOT, INCOMPLETE_RESTORE_KEY)?
+        .is_some()
+    {
+        survey.faults.push(
+            "the root holds the mark of a state-sync restore that did not finish: the database \
+             is to be discarded, not migrated"
+                .to_owned(),
+        );
+    }
     if source.get(Keyspace::Aux, &ROOT, JOURNAL_KEY)?.is_some() {
         survey.faults.push(format!(
             "the root holds an aux record under the key {:?}, which the migrator keeps its \

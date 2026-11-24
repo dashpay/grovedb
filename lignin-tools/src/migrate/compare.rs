@@ -15,11 +15,15 @@
 //!
 //! - **every record of a root key**, under every prefix of the source,
 //!   is what a handle of that prefix reads (`NodeStore::root_key`), and the
-//!   target keeps no other;
+//!   target keeps no other: the roots keyspace of the root Merk holds its
+//!   own record and nothing else, that of the namespace of the
+//!   pending-drop records holds the others, and that of every other
+//!   subtree holds nothing;
 //! - **the pending-drop records** are the source's, and **the marks** are
-//!   those that the source's records leave: one for each keyspace of a
-//!   dropped prefix that no element leads to and that the source still
-//!   holds a record under;
+//!   those that the source's records leave, each with no value: one for
+//!   each keyspace of a dropped prefix that no element leads to and that
+//!   the source still holds a record under. The namespace holds no data
+//!   record;
 //! - **what the source holds beside its grove** ([`super::beside`]): the
 //!   target has the records of such a prefix, all of them, under a subtree
 //!   with no host and no root, or it has no subtree there. How many
@@ -43,7 +47,7 @@ use grovedb_merk::{
         lignin::{tree_type_bytes, LigninNodeStore},
         NodeStore,
     },
-    CryptoHash,
+    CryptoHash, TreeType,
 };
 use grovedb_storage::{
     flat::{pending_prefix_drops_namespace, PendingPrefixDrops},
@@ -53,7 +57,7 @@ use grovedb_version::version::GroveVersion;
 use lignindb::txn::{Column, Subtree};
 
 use super::{
-    beside::{beside, doomed},
+    beside::{beside, doomed, nodes},
     journal::JOURNAL_KEY,
     load::pending_drops,
     source::{Keyspace, Prefix, Source},
@@ -270,26 +274,29 @@ impl Visit for Comparing<'_, '_> {
     }
 }
 
-/// The keys of every record of `column` of `subtree` in the latest version
-/// of the database of `engine`.
-fn keys_of(
+/// Every record of `column` of `subtree` in the latest version of the
+/// database of `engine`, as the store holds it: its key and its value.
+/// `None` where the directory has no entry for the subtree.
+fn records_of(
     engine: &LigninEngine,
     subtree: Subtree,
     column: Column,
-) -> Result<Vec<Vec<u8>>, ToolError> {
+) -> Result<Option<Chunk>, ToolError> {
     let snapshot = engine.database().snapshot();
     let operation = snapshot.operation();
     let Some(opened) = operation.open(subtree)? else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    let mut keys = Vec::new();
+    let mut records = Vec::new();
     let mut cursor = opened.cursor(column);
     cursor.seek_to_first()?;
     while let Some(key) = cursor.key() {
-        keys.push(key.to_vec());
+        let mut value = Vec::new();
+        opened.get(column, key, &mut value)?;
+        records.push((key.to_vec(), value));
         cursor.next()?;
     }
-    Ok(keys)
+    Ok(Some(records))
 }
 
 /// Compares the grove `target` with `source`, whose root hash is
@@ -316,6 +323,7 @@ pub(crate) fn compare(
     // has no subtree there.
     let doomed = doomed(source)?;
     let places = std::mem::take(&mut comparing.places);
+    let mut carried = Vec::new();
     let held = beside(source, side, |prefix| Ok(places.contains(prefix)))?;
     for prefix in held.into_keys().filter(|prefix| !doomed.contains(prefix)) {
         let named = format!("the prefix {}, which nothing leads to", hex(&prefix));
@@ -326,14 +334,46 @@ pub(crate) fn compare(
             continue;
         };
         comparing.compared.unreachable_carried += 1;
-        if entry.host.is_some() || entry.root_key.is_some() {
+        carried.push(prefix);
+        // The tree type the load gave the entry: the one the nodes name.
+        let stated = nodes(source, &prefix)?
+            .ok()
+            .map(|(tree_type, _)| tree_type_bytes(tree_type.unwrap_or(TreeType::NormalTree)));
+        if entry.host.is_some() || entry.root_key.is_some() || Some(entry.tree_type) != stated {
             comparing.compared.differs(format!(
-                "{named}: the directory has its subtree under a host, or with a root"
+                "{named}: the directory has its subtree under a host, with a root, or of \
+                 another tree type than its records are of"
             ));
         }
         comparing.keyspaces(prefix, &named, false)?;
     }
     let mut compared = comparing.compared;
+
+    // The roots keyspaces: the root Merk keeps the record of its own root
+    // key, and no other subtree of the grove keeps a record there.
+    {
+        let snapshot = engine.database().snapshot();
+        let operation = snapshot.operation();
+        for prefix in places.iter().chain(&carried) {
+            let Some(opened) = operation.open(Subtree::new(*prefix))? else {
+                continue;
+            };
+            let mut cursor = opened.cursor(Column::Roots);
+            cursor.seek_to_first()?;
+            while let Some(key) = cursor.key() {
+                if *prefix != ROOT || key != ROOT_KEY {
+                    compared.differs(format!(
+                        "the roots keyspace of the subtree {} holds the key {}, where the \
+                         engine keeps no record",
+                        hex(prefix),
+                        hex(key)
+                    ));
+                    break;
+                }
+                cursor.next()?;
+            }
+        }
+    }
 
     // The records of root keys, under every prefix.
     let mut records = source.records(Keyspace::Roots);
@@ -357,8 +397,24 @@ pub(crate) fn compare(
         records.next();
     }
     let namespace = Subtree::new(*pending_prefix_drops_namespace());
-    let kept = keys_of(engine, namespace, Column::Roots)?.len()
-        + keys_of(engine, Subtree::new(ROOT), Column::Roots)?.len();
+    let held = |column| -> Result<Chunk, ToolError> {
+        Ok(records_of(engine, namespace, column)?.unwrap_or_default())
+    };
+    if records_of(engine, namespace, Column::Data)?.is_none() {
+        compared.differs(
+            "the directory of the target has no entry for the namespace of the pending-drop \
+             records"
+                .to_owned(),
+        );
+    }
+    if let Some((key, _)) = held(Column::Data)?.first() {
+        compared.differs(format!(
+            "the namespace of the pending-drop records holds a data record under the key {}",
+            hex(key)
+        ));
+    }
+    let own = records_of(engine, Subtree::new(ROOT), Column::Roots)?;
+    let kept = held(Column::Roots)?.len() + own.map_or(0, |own| own.len());
     if kept as u64 != compared.roots {
         compared.differs(format!(
             "the target keeps {kept} records of root keys, and the source has {}",
@@ -385,20 +441,26 @@ pub(crate) fn compare(
         let value = value.map_err(|error| target_error("a pending-drop record", error))?;
         read_back.push((record.primary_prefix.to_vec(), value));
     }
-    if read_back != dropped {
-        compared.differs(format!(
+    match read_back == dropped {
+        true => compared.meta += dropped.len() as u64,
+        false => compared.differs(format!(
             "the target has {} pending-drop records and the source {}, or they differ",
             read_back.len(),
             dropped.len()
-        ));
+        )),
     }
-    let marks: BTreeSet<Vec<u8>> = (keys_of(engine, namespace, Column::Aux)?.into_iter()).collect();
+    // A mark is its key: it has no value.
+    let marks = held(Column::Aux)?;
     compared.marks = marks.len() as u64;
-    if marks != expected_marks {
+    let expected: Chunk = (expected_marks.into_iter())
+        .map(|mark| (mark, Vec::new()))
+        .collect();
+    if marks != expected {
         compared.differs(format!(
-            "the target has {} marks of what flat drops left, and the source's records leave {}",
+            "the target has {} marks of what flat drops left, and the source's records leave \
+             {}, or a mark has a value",
             marks.len(),
-            expected_marks.len()
+            expected.len()
         ));
     }
 

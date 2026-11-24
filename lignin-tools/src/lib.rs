@@ -41,10 +41,10 @@
 //! | `pages`, `directory`, `stats`, `verify`, `dump` | yes ([`lignindb::Db::open`]) | what any open writes: the recovery starts the session's log file and replaces the manifest, and the close writes back and takes a table checkpoint |
 //! | `compact` | yes, with a cleaner that leaves no dead byte it can move | the cleaner's copies, then what a close writes |
 //! | `load` | yes | the subtrees of the dump, in one commit |
-//! | `migrate` | no database at its target: it makes one beside it | the source: nothing. The target: a new database in `TARGET.migrating`, which is given the name `TARGET` at the end |
+//! | `migrate` | no database at its target: it makes one beside it | the source: nothing. The target: a new database in the directory `TARGET.migrating`, which is given the name `TARGET` at the end |
 //!
-//! **A database that a process has open is not opened again**: the open
-//! takes the directory's lock and fails with
+//! **A LigninDB database that a process has open is not opened again**: the
+//! open takes the directory's lock and fails with
 //! [`OpenError::Locked`](lignindb::db::OpenError::Locked). The tool is run
 //! on a database whose node is stopped, or on a checkpoint of a live one
 //! (`lignindb::checkpoint`): a checkpoint is a database of its own,
@@ -59,9 +59,14 @@
 //! database being removed): each refuses it before it reads anything,
 //! and says what the operator can do.
 //!
-//! No subcommand makes a database: an open of a directory that holds none
-//! fails ([`OpenError::NoDatabase`](lignindb::db::OpenError::NoDatabase)),
-//! `load` included.
+//! No subcommand but `migrate` makes a database: an open of a directory
+//! that holds none fails
+//! ([`OpenError::NoDatabase`](lignindb::db::OpenError::NoDatabase)), `load`
+//! included. `migrate` makes one in a directory of its own beside its
+//! target, and refuses a target whose name ends in `.creating`. Its source
+//! is a RocksDB database, which it reads through RocksDB's read-only open
+//! behind a probe of that database's lock, and never writes: the module
+//! `migrate` says how.
 //!
 //! # Exit status
 //!
@@ -71,7 +76,7 @@
 //! | 1 | the subcommand failed: the error is printed |
 //! | 2 | the arguments are not a subcommand |
 //! | 3 | `verify`: a rule of the store does not hold. `migrate`: the migrated store differs from its source, or a rule of it does not hold |
-//! | 4 | `verify`: the database holds the mark of a state-sync restore that did not finish ([`verify`]). `migrate`: it stopped before its end, in a state that the same command goes on from |
+//! | 4 | `verify`: the database holds the mark of a state-sync restore that did not finish ([`verify`]). `migrate`: the device of its target is full, and the same command goes on once there is room |
 //!
 //! # Choices made here that the plan left open
 //!
@@ -119,8 +124,8 @@ pub enum Outcome {
     NotSound,
     /// `verify` found the mark of a restore that did not finish.
     IncompleteRestore,
-    /// `migrate` stopped before its end, in a state that the same command
-    /// goes on from.
+    /// `migrate` met a full device, in a state that the same command goes
+    /// on from once there is room.
     IncompleteMigration,
 }
 

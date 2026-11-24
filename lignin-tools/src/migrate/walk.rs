@@ -41,6 +41,10 @@
 //! a subtree is handed over after the Merks below it, and each of its
 //! nodes can name the roots of the Merks it hosts.
 //!
+//! The walk goes one call deeper for each tree on a path, so a grove that
+//! is more than [`DEEPEST`] trees deep is refused, in words, where the
+//! stack of the process would end otherwise.
+//!
 //! [`Frame`] is one subtree that is entered and not left, with the last
 //! subtree below it that was left. The frames from the root down are the
 //! place of the walk: a walk that is given the frames of an earlier one
@@ -183,6 +187,9 @@ pub(crate) struct Found {
     /// Why the subtree is not carried, if it is not: each in words.
     pub(crate) faults: Vec<String>,
 }
+
+/// How many trees deep a grove can be for the walk to follow it.
+pub(crate) const DEEPEST: usize = 256;
 
 /// The Merk of a subtree, as it is handed over.
 #[derive(Debug, Default)]
@@ -393,6 +400,14 @@ impl<'s, V: Visit> Walk<'s, V> {
 
     fn subtree(&mut self, place: &Place, resuming: bool) -> Result<(), ToolError> {
         let depth = self.frames.len();
+        if depth > DEEPEST {
+            return Err(ToolError::Migrate(format!(
+                "the source {}: the grove is more than {DEEPEST} trees deep at {}: this \
+                 command does not walk it",
+                self.source.dir().display(),
+                place.named()
+            )));
+        }
         let (key, position) = match &place.host {
             Some(host) => (host.key.clone(), host.position),
             None => (Vec::new(), 0),

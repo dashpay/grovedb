@@ -72,7 +72,8 @@ impl Phase {
 /// What a load has carried so far.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Carried {
-    /// The subtrees that were entered.
+    /// The subtrees that were entered: under an element, and with no
+    /// host ([`Self::unreachable`]).
     pub(crate) subtrees: u64,
     /// The Merks that were handed over whole.
     pub(crate) merks: u64,
@@ -313,7 +314,9 @@ impl Journal {
             }
             None => return Err(refused("is cut short")),
         }
-        let journal = Self::read(&mut record).ok_or_else(|| refused("is cut short"))?;
+        let journal = Self::read(&mut record).ok_or_else(|| {
+            refused("is cut short, or holds a value that no journal of this build has")
+        })?;
         match record.0.is_empty() {
             true => Ok(journal),
             false => Err(refused("has bytes after its end")),

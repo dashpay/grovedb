@@ -9,14 +9,31 @@
 //! them, the open of a checkpoint among them, is an open for writing, which
 //! recovers the log into new files and replaces the manifest.
 //!
-//! **A source that a process has open is refused.** RocksDB holds a lock on
-//! the file `LOCK` of a database that is open for writing. Before the open,
-//! the migrator asks for a shared lock on that file, which it is refused
-//! while such a process lives ([`Source::open`]), and keeps it until the
-//! migration ends, so that no node starts on the source meanwhile. A
-//! directory with no `LOCK` file was never opened for writing since it was
-//! made, which a checkpoint is until something opens it: nothing holds it,
-//! and nothing is there to lock.
+//! **A source that a process has open for writing is refused.** RocksDB
+//! holds a lock on the file `LOCK` of a database that is open for writing.
+//! Before the open, the migrator asks for a shared lock on that file,
+//! which it is refused while such a process lives ([`Source::open`]), and
+//! keeps it until the migration ends, so that no node starts on the source
+//! meanwhile. The lock is shared: two migrations can read one source.
+//!
+//! A directory with no `LOCK` file was never opened for writing since it
+//! was made, which a checkpoint is until something opens it: nothing holds
+//! it, and nothing is there to lock. Where such a file is there once the
+//! source is open, a process came to write between the two looks, and the
+//! source is refused; one that comes later is found by the check that
+//! nothing changed.
+//!
+//! **The lock is the process's, not the handle's.** The system gives a
+//! process one lock on a file, whichever descriptor asked for it, and
+//! takes it away when any descriptor of the file is closed. So a process
+//! that has the source open for writing itself, and one that reads it
+//! through a second [`Source`], must not get to the `LOCK` file here: the
+//! probe would turn the writer's lock into a shared one and its end would
+//! release it. On Linux the system lists the locks a process holds
+//! (`/proc/locks`), and a source this process holds a lock on is refused
+//! before its `LOCK` file is opened. On a system with no such list, a
+//! caller of the library that has the source open in its own process is
+//! not told apart, and must not call this.
 //!
 //! **A write-ahead log that was not flushed.** A node that was killed, and
 //! one that was stopped, can leave its last commits in the log alone. The
@@ -129,17 +146,60 @@ fn listing(dir: &Path) -> io::Result<Vec<Listed>> {
     Ok(listed)
 }
 
-/// The prefix after `prefix` in the order of the keys, or `None` for the
-/// last one.
-pub(crate) fn after(prefix: &Prefix) -> Option<Prefix> {
-    let mut next = *prefix;
-    for byte in next.iter_mut().rev() {
-        *byte = byte.wrapping_add(1);
-        if *byte != 0 {
-            return Some(next);
-        }
+/// The least key that is greater than every key which begins with
+/// `prefix`, or `None` where no key is: `prefix` up to its last byte that
+/// is not `0xff`, with that byte one more. It is as short as it can be,
+/// so that no stored key lies between the keys of the prefix and it, also
+/// not one that is shorter than a prefix.
+pub(crate) fn after(prefix: &Prefix) -> Option<Vec<u8>> {
+    let last = prefix.iter().rposition(|byte| *byte != 0xff)?;
+    let mut bound = prefix[..=last].to_vec();
+    bound[last] += 1;
+    Some(bound)
+}
+
+/// Whether this process holds a lock on the file `lock`, by the system's
+/// list of the locks of files, or `None` where the system has no such
+/// list or it cannot be read.
+fn held_by_this_process(lock: &Path) -> Option<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let inode = std::fs::metadata(lock).ok()?.ino();
+        let listed = std::fs::read_to_string("/proc/locks").ok()?;
+        let own = std::process::id().to_string();
+        // A line: its number, the class of the lock, whether it is
+        // advisory, its kind, the process, the file as
+        // `major:minor:inode`, and the range.
+        let holds = listed.lines().any(|line| {
+            let mut words = line.split_whitespace().filter(|word| *word != "->");
+            let class = words.nth(1);
+            let process = words.nth(2);
+            let file = words.next().and_then(|file| file.rsplit(':').next());
+            class == Some("POSIX")
+                && process == Some(own.as_str())
+                && file.and_then(|inode| inode.parse::<u64>().ok()) == Some(inode)
+        });
+        Some(holds)
     }
-    None
+    #[cfg(not(unix))]
+    {
+        let _ = lock;
+        None
+    }
+}
+
+/// Fails where `dir` has a `LOCK` file though the open found none to
+/// lock: a process came to write the directory since.
+fn no_writer_came(dir: &Path, lock: &Option<File>) -> Result<(), ToolError> {
+    match lock.is_none() && dir.join("LOCK").exists() {
+        false => Ok(()),
+        true => Err(source_error(
+            dir,
+            "a process opened it for writing while this command began to read it. A migration \
+             is made offline: stop the node, or migrate a checkpoint that nothing opens",
+        )),
+    }
 }
 
 /// What identifies the state of a source: the identity RocksDB gave the
@@ -209,6 +269,7 @@ impl Source {
         options.set_max_open_files(256);
         let db = DB::open_cf_for_read_only(&options, dir, expected, false)
             .map_err(|error| source_error(dir, error))?;
+        no_writer_came(dir, &lock)?;
         Ok(Self {
             db,
             dir: dir.to_path_buf(),
@@ -221,6 +282,15 @@ impl Source {
     /// that has the database open for writing holds exclusively, and keeps
     /// it. `None` where the directory has no such file.
     fn probe(dir: &Path) -> Result<Option<File>, ToolError> {
+        // Before the file is opened: the end of a descriptor of it gives
+        // up the lock this process has on it.
+        if held_by_this_process(&dir.join("LOCK")) == Some(true) {
+            return Err(source_error(
+                dir,
+                "this process has it open. A migration is made of a database that nothing has \
+                 open: close it, or migrate a checkpoint of it",
+            ));
+        }
         let file = match File::open(dir.join("LOCK")) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -312,14 +382,18 @@ impl Source {
         found.map_err(|error| self.failed(keyspace, error))
     }
 
-    /// A cursor over `keyspace`, for a walk in the order of the keys.
-    fn cursor(&self, keyspace: Keyspace, upper: Option<Prefix>) -> DBRawIterator<'_> {
+    /// A cursor over `keyspace`, for a walk in the order of the keys: of
+    /// the keys below `upper`, or of the whole keyspace.
+    fn cursor(&self, keyspace: Keyspace, upper: Option<Vec<u8>>) -> DBRawIterator<'_> {
         let mut options = ReadOptions::default();
         // A walk reads each block once: it is not kept for a second read.
         options.fill_cache(false);
-        options.set_readahead_size(2 << 20);
-        if let Some(upper) = upper {
-            options.set_iterate_upper_bound(upper.to_vec());
+        match upper {
+            // The records of one subtree: RocksDB reads ahead by itself
+            // once a cursor has gone on for a few blocks, which a subtree
+            // of two nodes never does.
+            Some(upper) => options.set_iterate_upper_bound(upper),
+            None => options.set_readahead_size(2 << 20),
         }
         self.db.raw_iterator_cf_opt(self.family(keyspace), options)
     }
@@ -600,12 +674,92 @@ mod tests {
     }
 
     #[test]
-    fn the_prefix_after_a_prefix() {
-        assert_eq!(after(&[0; 32]).unwrap()[31], 1);
+    fn the_bound_after_the_keys_of_a_prefix() {
+        let bound = after(&[0; 32]).unwrap();
+        assert_eq!((bound.len(), bound[31]), (32, 1));
         let mut carried = [0xff; 32];
         carried[0] = 7;
-        let next = after(&carried).unwrap();
-        assert_eq!((next[0], next[1], next[31]), (8, 0, 0));
+        assert_eq!(after(&carried), Some(vec![8]));
         assert_eq!(after(&[0xff; 32]), None);
+        // No key lies between the keys of a prefix and the bound: one that
+        // is shorter than a prefix and follows them is at the bound or
+        // after it.
+        let mut prefix = [0; 32];
+        prefix[31] = 0xff;
+        let bound = after(&prefix).unwrap();
+        let mut short = vec![0; 31];
+        short[30] = 1;
+        assert_eq!(bound, short);
+        assert!(prefix.as_slice() < short.as_slice());
+    }
+
+    /// A key of the data keyspace that is shorter than a prefix is met by
+    /// a walk that goes from prefix to prefix, wherever it lies.
+    #[test]
+    fn a_walk_from_prefix_to_prefix_meets_a_key_that_is_shorter_than_one() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let dir = dir.path().join("rocksdb");
+        let mut prefix = [0; 32];
+        prefix[31] = 0xff;
+        let mut short = vec![0; 31];
+        short[30] = 1;
+        {
+            let db = open_for_writing(&dir).expect("a database");
+            db.put([prefix.as_slice(), b"k"].concat(), b"a record")
+                .expect("a put");
+            db.put(&short, b"a record under a short key")
+                .expect("a put");
+        }
+        let source = Source::open(&dir).expect("the source opens");
+        let mut records = source.records(Keyspace::Data);
+        let (first, _) = records.current().unwrap().expect("the first record");
+        assert!(first.starts_with(&prefix));
+        records.seek(&after(&prefix).unwrap());
+        let (met, _) = records
+            .current()
+            .unwrap()
+            .expect("the record after the prefix");
+        assert_eq!(met, short.as_slice());
+    }
+
+    /// A process that has the source open for writing itself is refused
+    /// before the lock file is touched: its lock is still its own, and
+    /// keeps every other process out. So is a second reader in the
+    /// process, whose end would give up the lock of the first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_source_that_this_process_has_open_is_refused_with_its_lock_kept() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let dir = dir.path().join("rocksdb");
+        let message = |dir: &Path| match Source::open(dir) {
+            Err(ToolError::Migrate(message)) => message,
+            Ok(_) => panic!("{} opened", dir.display()),
+            Err(other) => panic!("{other:?}"),
+        };
+        let writer = open_for_writing(&dir).expect("a database");
+        assert!(message(&dir).contains("this process has it open"));
+        let said = another_process_opens(&dir);
+        assert!(said.contains(REFUSED), "the writer's lock holds: {said}");
+        drop(writer);
+
+        let first = Source::open(&dir).expect("the source opens");
+        assert!(message(&dir).contains("this process has it open"));
+        let said = another_process_opens(&dir);
+        assert!(said.contains(REFUSED), "the reader's lock holds: {said}");
+        drop(first);
+        drop(Source::open(&dir).expect("the source opens again"));
+    }
+
+    /// A lock file that is there once a source with none was opened says
+    /// that a process came to write it.
+    #[test]
+    fn a_lock_file_that_appears_refuses_the_source() {
+        let dir = tempfile::tempdir().expect("a directory");
+        no_writer_came(dir.path(), &None).expect("no lock file is there");
+        std::fs::write(dir.path().join("LOCK"), b"").expect("a lock file");
+        let refused = no_writer_came(dir.path(), &None).expect_err("a writer came");
+        assert!(refused.to_string().contains("opened it for writing while"));
+        let lock = File::open(dir.path().join("LOCK")).expect("the lock file");
+        no_writer_came(dir.path(), &Some(lock)).expect("the lock that was taken is the file");
     }
 }

@@ -51,12 +51,13 @@
 //! The records of root keys are carried next, under every prefix of the
 //! source, with the stored key of the last one in the journal. Then, where
 //! the migration carries what the source holds beside its grove
-//! ([`super::beside`]), each such prefix in one commit, whole: a prefix
-//! that is entered was carried by a run before. The last commit holds the
-//! pending-drop records with their marks, and removes the journal.
+//! ([`super::beside`]), each such prefix whole in one commit, which can
+//! hold several of them: a prefix that is entered was carried by a run
+//! before. The last commit holds the pending-drop records with their
+//! marks, each mark once, and removes the journal.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     io::Write,
     time::{Duration, Instant},
 };
@@ -478,6 +479,7 @@ impl<'t> Load<'t> {
         let held = nodes.iter();
         let bytes: usize = held.map(|node| node.key.len() + node.value.len()).sum();
         let carried = &mut self.journal.carried;
+        carried.subtrees += 1;
         carried.unreachable += 1;
         carried.unlinked += nodes.len() as u64;
         carried.bytes += bytes as u64;
@@ -538,13 +540,16 @@ impl<'t> Load<'t> {
                 self.commit_if_due()?;
             }
         }
-        for (key, value, marks) in pending_drops(source, |prefix| is_entered(db, prefix))? {
+        // Two records can name one prefix: its mark is one record.
+        let mut marks = BTreeSet::new();
+        for (key, value, left) in pending_drops(source, |prefix| is_entered(db, prefix))? {
             self.journal.carried.meta += 1;
             self.record(Column::Meta, namespace, key, value);
-            for mark in marks {
-                self.journal.carried.marks += 1;
-                self.record(Column::Aux, namespace, mark, Vec::new());
-            }
+            marks.extend(left);
+        }
+        for mark in marks {
+            self.journal.carried.marks += 1;
+            self.record(Column::Aux, namespace, mark, Vec::new());
         }
         self.commit(true)
     }

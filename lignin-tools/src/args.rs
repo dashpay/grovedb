@@ -31,10 +31,10 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
   migrate   SOURCE TARGET [--batch MIB] [--progress SECS] [--unreachable refuse|leave|carry]
                                      a RocksDB GroveDB in SOURCE (the directory of a stopped node,
                                      or a checkpoint) into a new LigninDB database at TARGET. The
-                                     source is read and never written. The work is done in
-                                     TARGET.migrating, which becomes TARGET once every record was
-                                     compared and the store verified; run again to go on after a
-                                     stop. --batch is about how much one commit of the load
+                                     source is read and never written. The work is done in the
+                                     directory TARGET.migrating, whose database is given the name
+                                     TARGET once every record was compared and the store verified;
+                                     run again to go on after a stop. --batch is about how much one commit of the load
                                      holds in memory (64 MiB unless given: the keys and values
                                      it carries, and a page for each Merk), and --progress how
                                      often a line says where the load stands (5 s unless
@@ -55,10 +55,13 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
 
 Every subcommand that opens DIR takes --cache MIB, the buffer pool (64 MiB unless given).
 A SUBTREE is its 32 bytes in hex, as `lignin directory` prints them.
-Nothing opens a directory that a process has open: run on a stopped node or on a checkpoint.
-migrate is in a build with the Cargo feature `migrate`. Its exit status: 0 migrated and verified,
-1 failed or refused, 3 the migrated store differs from the source or is not sound, 4 stopped
-before the end in a state that the same command goes on from.
+No subcommand opens a database that a process has open for writing: run on a stopped node or on a
+checkpoint. migrate reads its SOURCE beside other readers, and where SOURCE has a LOCK file it
+keeps a node from starting on it while it runs.
+migrate is in a build with the Cargo feature `migrate`. Its exit status: 0 migrated and verified
+(with --survey: SOURCE can be migrated), 1 failed or refused, 2 the arguments are not a
+subcommand, 3 the migrated store differs from the source or is not sound, 4 the device of TARGET
+is full: the same command goes on once there is room.
 ";
 
 /// The buffer pool of an open unless `--cache` says another size.

@@ -593,6 +593,8 @@ fn the_arguments_of_migrate() {
             "migrate   SOURCE --survey",
             "is made again at such a path is refused by the engine as",
             "left without stopping is migrated as the state that node",
+            "2 the arguments are not a",
+            "keeps a node from starting on it while it runs",
         ],
     );
 }
