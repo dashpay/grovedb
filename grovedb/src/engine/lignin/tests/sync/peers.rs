@@ -889,9 +889,10 @@ enum End {
     /// against the source asks for.
     Endless,
     /// The session had asked for nothing more and was not completed. This
-    /// is an allowed end: `is_sync_completed` is false, so the caller does
-    /// not commit, and the oracle holds the database to what it was before
-    /// the session (nothing that lasts was applied).
+    /// is an allowed end: `is_sync_completed` is false, so the caller makes
+    /// no final commit. With no intermediate commit the database matches its
+    /// prior root and records; otherwise the incomplete-restore marker must
+    /// survive a reopen (the oracle checks whichever of the two holds).
     Stopped,
     /// Every request was answered and the commit was refused.
     CommitRefused,

@@ -156,8 +156,10 @@ committed, or carrying the incomplete-restore marker where the accepted
 retry had taken an intermediate commit. The test establishes that the
 honest retry is accepted and that the drop leaves one of those two states;
 it does not drive such a session on to a finished restore. A session that
-asked for nothing more without completing (stopped) is an allowed end, with
-nothing committed. The two engines answer each case alike — the same requests
+asked for nothing more without completing (stopped) is an allowed end: it
+makes no final commit, so where it took no intermediate commit the database
+matches its prior root and records, and where it did the incomplete-restore
+marker survives a reopen. The two engines answer each case alike — the same requests
 after the altered one, the same end, the same number of intermediate
 commits. On the standard run the cases end as a mix of a committed restore
 (an alteration that is an equivalent encoding, which rebuilds the source's
