@@ -46,6 +46,9 @@ options:
                       flat before the drain of its drop: for a debug build
                       on grove versions 4 and 5, where GroveDB asserts what
                       such a history breaks
+  --no-scenes         no case takes the stream of a scene beside its
+                      workloads: the cases as their seeds gave them before
+                      there were scenes
   --stored-every N    compare the records the engines store after every N
                       operations that are not reads, and after the last
                       (default: 32; 0 for after the last only)
@@ -57,8 +60,9 @@ options:
                       on may take (default: 300)
   --no-shrink         leave a stream the engines differ on as it is
 
-A case is a function of its seed and of --grove-version, --max-ops and
---keep-the-drop-contract, so `case` takes the three as the run had them. fuzz and case exit with 1 when the
+A case is a function of its seed and of --grove-version, --max-ops,
+--keep-the-drop-contract and --no-scenes, so `case` takes the four as the
+run had them. fuzz and case exit with 1 when the
 engines differ at a step or in a stored record that is of no named open
 difference, and with 0 when the run was made and found no such difference:
 also where a case ended at an answer of a named open difference, which the
@@ -122,6 +126,7 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
             "--grove-version" => grove_version = Some(number(value()?)?),
             "--max-ops" => settings.shape.max_ops_per_stream = number(value()?)?.max(1) as usize,
             "--keep-the-drop-contract" => settings.shape.keeps_the_drop_contract = true,
+            "--no-scenes" => settings.shape.scenes = 0,
             "--stored-every" => {
                 settings.stored = match number(value()?)? {
                     0 => Stored::AtTheEnd,
@@ -264,7 +269,7 @@ fn write_finding(out: &mut dyn Write, finding: &Finding, reference: &str, candid
     let _ = writeln!(
         out,
         "to run the case again: lignin-diff case --seed {:#x} (with the --grove-version, \
-         --max-ops, --keep-the-drop-contract, --stored-every and --fault of this run)",
+         --max-ops, --keep-the-drop-contract, --no-scenes, --stored-every and --fault of this run)",
         finding.case.seed
     );
 }
@@ -757,7 +762,7 @@ mod tests {
         assert!(text.contains("\nthe stream was not shrunk: no database any more\n"));
         assert!(text.ends_with(
             "to run the case again: lignin-diff case --seed 0x9 (with the --grove-version, \
-             --max-ops, --keep-the-drop-contract, --stored-every and --fault of this run)\n"
+             --max-ops, --keep-the-drop-contract, --no-scenes, --stored-every and --fault of this run)\n"
         ));
 
         // The case command: a candidate that opens once, for the run that

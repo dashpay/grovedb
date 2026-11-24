@@ -457,6 +457,64 @@ pub fn a_secondary_holds_a_row<'db, E: StreamEngine>(
     Ok(rows.next().is_some())
 }
 
+/// Whether a record is stored under the path `path` as `transaction`
+/// sees `db`, whether or not an element leads to it: a node, an aux
+/// record or a meta record under the prefix of the subtree at that path.
+pub fn a_record_is_under<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+) -> Result<bool, String> {
+    let place = Place {
+        path: path.to_vec(),
+        secondary: None,
+        data: Keyspace::Nodes,
+    };
+    let mut records = Vec::new();
+    list(db.engine(), transaction, &place, true, &mut records)?;
+    Ok(!records.is_empty())
+}
+
+/// A node record by the path of its subtree and its key.
+pub type NodeKey = (Vec<Vec<u8>>, Vec<u8>);
+
+/// The node records at and below `path` as `transaction` sees `db`,
+/// whether or not an element leads to them, each by the path of its
+/// subtree and its key: those under the prefix of the subtree at `path`,
+/// and those under the path of every key among them, and so on down.
+/// None where there are more than `most`.
+pub fn node_keys_below<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+    most: usize,
+) -> Result<Option<BTreeSet<NodeKey>>, String> {
+    let mut found = BTreeSet::new();
+    let mut queue = vec![path.to_vec()];
+    while let Some(path) = queue.pop() {
+        let place = Place {
+            path: path.clone(),
+            secondary: None,
+            data: Keyspace::Nodes,
+        };
+        let mut records = Vec::new();
+        list(db.engine(), transaction, &place, true, &mut records)?;
+        for record in records {
+            if record.keyspace != Keyspace::Nodes {
+                continue;
+            }
+            let mut below = path.clone();
+            below.push(record.key.clone());
+            queue.push(below);
+            found.insert((path.clone(), record.key));
+            if found.len() > most {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(found))
+}
+
 /// The paths of the trees whose flat drops have a pending record as
 /// `transaction` sees `db`, the records it staged itself among them. A
 /// record that does not decode names no path.

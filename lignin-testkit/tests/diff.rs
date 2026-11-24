@@ -303,9 +303,10 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     };
 
     let scratch = scratch();
-    let shape = Shape::default()
+    let mut shape = Shape::default()
         .for_grove_version(4)
         .expect("a grove version");
+    shape.scenes = 0;
     let case = Case::generate(0x9c66_50fd_c2d8_568e, &shape);
     let ran = std::thread::scope(|scope| {
         std::thread::Builder::new()
@@ -365,7 +366,7 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     assert_eq!(rows(&ended.reference)[1..], kept);
     assert_eq!(rows(&ended.candidate), [again]);
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 1, 0, 0, 0]);
+    assert_eq!(families.answers, [0, 0, 1, 0, 0, 0, 0, 0, 0]);
     assert_eq!(families.answer_seed[2], Some(case.seed));
 }
 
@@ -524,7 +525,7 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
         let panicked = |line: &String| line.contains(origin) && line.contains(&asserted);
         assert!(divergence.reference.iter().any(panicked), "{divergence:?}");
         assert_eq!(ran.ended_at, None);
-        assert_eq!(ran.tally.families.answers, [0; 6]);
+        assert_eq!(ran.tally.families.answers, [0; 9]);
 
         // With the contract kept, the case of the seed has no divergence.
         let mut keeping = shape.clone();
@@ -566,7 +567,7 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
     assert_eq!(rows(&ended.reference), rows(&ended.candidate));
     assert_eq!(ran.ended_at, Some(Family::DroppedTreeProof));
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 0, 0, 1, 0]);
+    assert_eq!(families.answers, [0, 0, 0, 0, 1, 0, 0, 0, 0]);
     assert_eq!(families.answer_seed[4], Some(case.seed));
 }
 
@@ -648,7 +649,437 @@ fn an_insert_known_not_to_replace_over_an_indexed_tree_ends_the_case_counted_apa
         "{ended:?}"
     );
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 0, 0, 0, 1]);
+    assert_eq!(families.answers, [0, 0, 0, 0, 0, 1, 0, 0, 0]);
     assert_eq!(families.histories[5], 1);
     assert_eq!(families.answer_seed[5], Some(seed));
+}
+
+/// Runs `case` on RocksDB and on LigninDB, with what they store compared
+/// after every write.
+fn ran(case: &lignin_testkit::diff::Case) -> lignin_testkit::diff::Run {
+    use lignin_testkit::{
+        diff::{run, Stored},
+        golden::run::STACK_BYTES,
+    };
+
+    let scratch = scratch();
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn_scoped(scope, || {
+                run(
+                    case,
+                    &Side::<Reference>::of("RocksDB"),
+                    &Side::<Candidate>::of("LigninDB"),
+                    scratch.path(),
+                    Stored::Every(1),
+                    &|| false,
+                )
+            })
+            .expect("a thread")
+            .join()
+            .expect("the case runs")
+    })
+    .expect("the run")
+}
+
+/// A tree that holds an element is removed by a batch's plain delete,
+/// which RocksDB keeps the records of and LigninDB does not.
+///
+/// The records that differ are passed over and counted, and so is a
+/// read of the old key under the tree's path, which ends no case. The
+/// delete, the tree made again at the key and the element put under the
+/// old key are answered alike, with their root hashes and the proofs of
+/// the reads after them, and so is every read once the new tree has
+/// written the key. A batch that deletes what the tree holds before the
+/// tree makes no place of the family.
+#[test]
+fn a_read_below_a_plain_delete_of_a_tree_with_an_element_is_counted_and_the_case_goes_on() {
+    use lignin_testkit::{
+        diff::{Case, Family},
+        workload::{BatchOp, Op, Query, QueryItem, Read, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let put = |at: &[&[u8]], key: &[u8], element: grovedb::Element| BatchOp::InsertOrReplace {
+        path: path(at),
+        key: key.to_vec(),
+        element,
+    };
+    let delete = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+        path: path(at),
+        key: key.to_vec(),
+    };
+    let has = |at: &[&[u8]], key: &[u8]| {
+        Op::Read(Read::HasRaw {
+            path: path(at),
+            key: key.to_vec(),
+        })
+    };
+    let range = |at: &[&[u8]]| {
+        Op::Read(Read::Query(Query {
+            path: path(at),
+            items: vec![QueryItem::RangeFull],
+            subquery_path: None,
+            subquery_all: false,
+            limit: None,
+            left_to_right: true,
+            raw: true,
+        }))
+    };
+    let tree = grovedb::Element::empty_tree;
+    let held = grovedb::Element::empty_sum_tree;
+    let made = || {
+        vec![
+            Op::Write(Write::Insert {
+                path: Vec::new(),
+                key: b"p".to_vec(),
+                element: tree(),
+            }),
+            Op::Batch(vec![
+                put(&[b"p"], b"t", tree()),
+                put(&[b"p", b"t"], &[1], held()),
+            ]),
+            Op::Commit,
+            range(&[b"p", b"t"]),
+        ]
+    };
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        // The plain delete alone, and the old key read under the path:
+        // the read is passed over, and the tree is made again after it.
+        let mut ops = made();
+        ops.extend([
+            Op::Batch(vec![delete(&[b"p"], b"t")]),
+            Op::Commit,
+            range(&[b"p"]),
+            has(&[b"p", b"t"], &[1]),
+            Op::Batch(vec![
+                put(&[b"p"], b"t", tree()),
+                put(&[b"p", b"t"], &[1], held()),
+            ]),
+            Op::Commit,
+            has(&[b"p", b"t"], &[1]),
+            range(&[b"p", b"t"]),
+        ]);
+        let case = Case::of(7, grove_version, ops);
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(run.ended_at, None, "{number}");
+        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
+        assert!(!Family::BelowPlainDelete.ends_a_case());
+        let families = run.tally.families;
+        assert_eq!(families.histories, [0, 0, 0, 0, 0, 0, 1, 0, 0], "{number}");
+        assert_eq!(families.stored, [0, 0, 0, 0, 0, 0, 1, 0, 0], "{number}");
+        assert_eq!(families.answers, [0, 0, 0, 0, 0, 0, 1, 0, 0], "{number}");
+        assert_eq!(run.tally.closes.checked, 1, "{number}");
+
+        // The tree made again and its key written: every answer alike.
+        let mut ops = made();
+        ops.extend([
+            Op::Batch(vec![delete(&[b"p"], b"t")]),
+            Op::Commit,
+            range(&[b"p"]),
+            Op::Batch(vec![put(&[b"p"], b"t", tree())]),
+            Op::Commit,
+            range(&[b"p"]),
+            Op::Batch(vec![put(&[b"p", b"t"], &[1], held())]),
+            Op::Commit,
+            has(&[b"p", b"t"], &[1]),
+            range(&[b"p", b"t"]),
+            range(&[b"p"]),
+        ]);
+        let case = Case::of(8, grove_version, ops);
+        let run = ran(&case);
+        assert_eq!(run.divergence, None, "grove version {number}");
+        assert_eq!(run.ended_at, None, "grove version {number}");
+        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        let families = run.tally.families;
+        assert_eq!(families.histories, [0, 0, 0, 0, 0, 0, 1, 0, 0], "{number}");
+        assert_eq!(families.stored, [0, 0, 0, 0, 0, 0, 1, 0, 0], "{number}");
+        assert_eq!(families.answers, [0; 9], "{number}");
+        assert!(run.tally.proofs >= 5, "{:?}", run.tally);
+
+        // What the tree holds deleted by the same batch: no place.
+        let mut ops = made();
+        ops.extend([
+            Op::Batch(vec![delete(&[b"p", b"t"], &[1]), delete(&[b"p"], b"t")]),
+            Op::Commit,
+            has(&[b"p", b"t"], &[1]),
+            range(&[b"p"]),
+        ]);
+        let case = Case::of(9, grove_version, ops);
+        let run = ran(&case);
+        assert_eq!(run.divergence, None, "grove version {number}");
+        assert_eq!(run.ended_at, None, "grove version {number}");
+        assert!(!run.failed_steps.contains(&made().len()), "{number}");
+        assert_eq!(run.tally.families.histories, [0; 9], "{number}");
+    }
+}
+
+/// On grove versions 1 to 3 the delete of a tree that holds an element
+/// at the root path leaves the root-key record behind where it changes
+/// the root of the root Merk. RocksDB takes the next write there and
+/// LigninDB refuses it: the case ends at that answer, counted apart,
+/// with LigninDB's store checked. A delete that leaves the root where it
+/// was is counted as a history and ends no case, and on grove versions
+/// 4 and 5 the engines answer alike to the end.
+#[test]
+fn a_write_after_a_root_key_record_was_left_behind_ends_the_case_counted_apart() {
+    use lignin_testkit::{
+        diff::{Case, Family},
+        workload::{Op, Read, Write},
+    };
+
+    let insert = |at: &[&[u8]], key: &[u8], element: grovedb::Element| {
+        Op::Write(Write::Insert {
+            path: at.iter().map(|segment| segment.to_vec()).collect(),
+            key: key.to_vec(),
+            element,
+        })
+    };
+    let item = || grovedb::Element::new_item(vec![7]);
+    let delete = |key: &[u8]| {
+        Op::Write(Write::Delete {
+            path: Vec::new(),
+            key: key.to_vec(),
+        })
+    };
+    let get = |key: &[u8]| {
+        Op::Read(Read::Get {
+            path: Vec::new(),
+            key: key.to_vec(),
+        })
+    };
+    // Three trees: `b` is the root of the root Merk, `a` and `c` are
+    // its children.
+    let made = || {
+        let mut ops = Vec::new();
+        for key in [b"b", b"a", b"c"] {
+            ops.push(insert(&[], key, grovedb::Element::empty_tree()));
+            ops.push(insert(&[key], b"held", item()));
+        }
+        ops.push(Op::Commit);
+        ops
+    };
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        // The delete of a leaf leaves the root, and the write is taken.
+        // The delete of the root changes it: the record names a node
+        // that is gone, both engines open the root Merk with no node,
+        // and a tree put at the root path is a write of a node there.
+        let mut ops = made();
+        ops.extend([
+            delete(b"c"),
+            Op::Commit,
+            get(b"c"),
+            insert(&[b"a"], b"more", item()),
+            Op::Commit,
+            delete(b"b"),
+            Op::Commit,
+            get(b"b"),
+            get(b"a"),
+            insert(&[], b"n", grovedb::Element::empty_tree()),
+            Op::Commit,
+            get(b"n"),
+        ]);
+        let case = Case::of(11, grove_version, ops);
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        let families = run.tally.families;
+        assert_eq!(run.tally.closes.checked, 1, "{number}");
+        if number > 3 {
+            assert_eq!(run.ended_at, None, "grove version {number}");
+            assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+            assert_eq!(families.histories, [0; 9], "{number}");
+            continue;
+        }
+        assert_eq!(run.ended_at, Some(Family::RootKeyLeftBehind), "{number}");
+        let ended = run.ended_with.as_ref().expect("the answers it ended with");
+        assert_eq!(ended.step, case.ops.len() - 3, "{ended:?}");
+        assert!(ended.parts.contains(&Part::Error), "{ended:?}");
+        let failed = |lines: &[String]| lines.iter().any(|line| line.starts_with("failed "));
+        assert!(!failed(&ended.reference), "{ended:?}");
+        assert!(
+            ended
+                .candidate
+                .iter()
+                .any(|line| line == "failed NotSupported"),
+            "{ended:?}"
+        );
+        assert_eq!(families.histories, [0, 0, 0, 0, 0, 0, 0, 1, 0], "{number}");
+        assert_eq!(families.answers, [0, 0, 0, 0, 0, 0, 0, 1, 0], "{number}");
+        assert_eq!(families.answer_seed[7], Some(11));
+    }
+}
+
+/// The streams of the two scenes, each alone on every grove version it
+/// is for, from sixteen seeds: no divergence, the store of LigninDB
+/// sound after every one, and the cases counted for their families. A
+/// plain delete leaves a record in most streams, which run to their
+/// end with the reads that differ passed over, and on grove versions 4
+/// and 5 with the cost of a removal of a tree made again; a delete at the root
+/// path leaves the root-key record behind where it changes the root,
+/// and the next write that RocksDB takes ends the case.
+#[test]
+fn the_streams_of_the_scenes_run_alike_but_for_their_families() {
+    use lignin_testkit::diff::{Case, Family, Scene};
+
+    const SEEDS: u64 = 16;
+    let mut ended = [0u64; 2];
+    let mut to_the_end = [0u64; 2];
+    let mut made = [0u64; 2];
+    let mut passed = 0;
+    let mut passed_costs = [0u64; 5];
+    for (at, scene) in Scene::ALL.into_iter().enumerate() {
+        let family = match scene {
+            Scene::PlainDelete => Family::BelowPlainDelete,
+            Scene::RootDelete => Family::RootKeyLeftBehind,
+        };
+        let of_the_family = Family::ALL
+            .iter()
+            .position(|other| *other == family)
+            .expect("a family");
+        let versions = GROVE_VERSIONS
+            .iter()
+            .filter(|version| scene.is_for(version));
+        for (number, grove_version) in versions.enumerate() {
+            let number = number + 1;
+            for seed in 0..SEEDS {
+                let case = Case::of(seed, grove_version, scene.stream(seed));
+                let run = ran(&case);
+                if let Some(divergence) = &run.divergence {
+                    let report = divergence.report(&case, "RocksDB", "LigninDB");
+                    panic!("{scene:?} {seed} on {number}:\n{}", report.join("\n"));
+                }
+                assert_eq!(run.cut_short, None, "{scene:?} {seed} on {number}");
+                assert_eq!(run.tally.closes.checked, 1, "{scene:?} {seed}");
+                let families = run.tally.families;
+                made[at] += families.histories[of_the_family];
+                if scene == Scene::PlainDelete {
+                    // A read that differs ends no case of this family.
+                    assert_eq!(run.ended_at, None, "{seed} on {number}");
+                    passed += families.answers[of_the_family];
+                    // The cost of a removal of a tree made again is
+                    // passed over on grove versions 4 and 5 alone.
+                    assert_eq!(families.answers[8], families.histories[8]);
+                    assert_eq!(families.answers[8] == 1, !run.passed_cost_steps.is_empty());
+                    passed_costs[number - 1] += families.answers[8];
+                }
+                match run.ended_at {
+                    Some(at_family) => {
+                        assert_eq!(at_family, family, "{scene:?} {seed} on {number}");
+                        ended[at] += 1;
+                    }
+                    None => {
+                        assert_eq!(run.tally.steps as usize, case.ops.len());
+                        to_the_end[at] += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(ended[0] + to_the_end[0], 5 * SEEDS);
+    assert_eq!(ended[1] + to_the_end[1], 3 * SEEDS);
+    // A stream of plain deletes that empties every tree first makes no
+    // place of the family; every stream of deletes at the root path has
+    // a tree with an element deleted.
+    assert!(made[0] > 3 * SEEDS && made[0] <= 5 * SEEDS, "{made:?}");
+    assert_eq!(made[1], 3 * SEEDS);
+    assert_eq!(to_the_end[0], 5 * SEEDS);
+    assert_eq!(passed_costs[..3], [0, 0, 0]);
+    assert!(
+        passed_costs[3] > 0 && passed_costs[4] > 0,
+        "{passed_costs:?}"
+    );
+    assert!(passed > 0, "{passed}");
+    assert!(ended[1] > 0, "{ended:?} {to_the_end:?}");
+}
+
+/// On grove versions 4 and 5 a batch looks through a tree that a plain
+/// delete removes for elements that take part in backward references,
+/// and RocksDB reads there a record it kept of a tree that an earlier
+/// plain delete removed. The batch is charged a seek and the bytes of
+/// that record more on RocksDB and differs in nothing else: the step is
+/// counted apart and passed over, and the case runs to its end. On
+/// grove versions 1 to 3 the batch costs the same on both engines.
+#[test]
+fn the_cost_of_a_plain_delete_of_a_tree_made_again_is_counted_apart_on_versions_4_and_5() {
+    use lignin_testkit::{
+        diff::{Case, Family},
+        workload::{BatchOp, Op, Read, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let put = |at: &[&[u8]], key: &[u8], element: grovedb::Element| {
+        Op::Batch(vec![BatchOp::InsertOrReplace {
+            path: path(at),
+            key: key.to_vec(),
+            element,
+        }])
+    };
+    let delete = |at: &[&[u8]], key: &[u8]| {
+        Op::Batch(vec![BatchOp::Delete {
+            path: path(at),
+            key: key.to_vec(),
+        }])
+    };
+    let ops = vec![
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"p".to_vec(),
+            element: grovedb::Element::empty_tree(),
+        }),
+        put(&[b"p"], b"t", grovedb::Element::empty_tree()),
+        put(&[b"p", b"t"], &[0], grovedb::Element::new_item(vec![7; 12])),
+        Op::Commit,
+        delete(&[b"p"], b"t"),
+        Op::Commit,
+        put(&[b"p"], b"t", grovedb::Element::empty_tree()),
+        put(&[b"p", b"t"], &[1], grovedb::Element::empty_sum_tree()),
+        Op::Commit,
+        delete(&[b"p"], b"t"),
+        Op::Commit,
+        Op::Read(Read::HasRaw {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+        }),
+    ];
+    const SECOND_DELETE: usize = 9;
+    assert_eq!(ops[SECOND_DELETE], delete(&[b"p"], b"t"));
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let case = Case::of(13, grove_version, ops.clone());
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(run.ended_at, None, "grove version {number}");
+        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
+        assert_eq!(run.tally.closes.checked, 1, "{number}");
+        let families = run.tally.families;
+        assert_eq!(families.histories[6], 1, "grove version {number}");
+        let (passed, at): (u64, &[usize]) = match number {
+            4 | 5 => (1, &[SECOND_DELETE]),
+            _ => (0, &[]),
+        };
+        assert_eq!(run.passed_cost_steps, at, "grove version {number}");
+        assert_eq!(families.histories[8], passed, "grove version {number}");
+        assert_eq!(families.answers[8], passed, "grove version {number}");
+        assert_eq!(families.answer_seed[8], (passed == 1).then_some(13));
+        assert!(!Family::PlainDeleteCost.ends_a_case());
+    }
 }

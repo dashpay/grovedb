@@ -315,6 +315,10 @@ pub struct Run {
     pub ended_with: Option<Divergence>,
     /// The steps that both engines answered alike with an error.
     pub failed_steps: Vec<usize>,
+    /// The steps at which the engines differed in the cost of a batch
+    /// that removes a tree made again below a plain delete, which was
+    /// passed over ([`Family::PlainDeleteCost`]).
+    pub passed_cost_steps: Vec<usize>,
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -599,6 +603,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
     // The places of the named open differences that the case has made.
     let mut known = Known::default();
     let failed_steps = std::cell::RefCell::new(Vec::new());
+    let passed_cost_steps = std::cell::RefCell::new(Vec::new());
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
             tally,
@@ -608,6 +613,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             ended_at: None,
             ended_with: None,
             failed_steps: failed_steps.take(),
+            passed_cost_steps: passed_cost_steps.take(),
         })
     };
     let diverged = |tally, step, parts, reference, candidate| {
@@ -630,16 +636,26 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         }
         // Asked of the reference before the operation: a read of its
         // block's state, which changes nothing.
-        let (over, over_indexed, under_an_insert_only) = catching(|| {
-            let (db, version) = (reference_db, case.grove_version);
-            let block = reference_runner.transactions().block();
-            (
-                Known::trees_under(db, block, op, version),
-                Known::indexed_under(db, block, op, version),
-                Known::indexed_under_an_insert_only(db, block, op, version),
-            )
-        })
-        .unwrap_or_default();
+        let (over, over_indexed, under_an_insert_only, plain_deletes, root_delete, kept) =
+            catching(|| {
+                let (db, version) = (reference_db, case.grove_version);
+                let block = reference_runner.transactions().block();
+                let kept = known.kept_below_a_tree_made_again(
+                    (db, block),
+                    (candidate_db, candidate_runner.transactions().block()),
+                    op,
+                    version,
+                );
+                (
+                    Known::trees_under(db, block, op, version),
+                    Known::indexed_under(db, block, op, version),
+                    Known::indexed_under_an_insert_only(db, block, op, version),
+                    Known::trees_under_a_plain_delete(db, block, op, version),
+                    Known::trees_under_a_root_delete(db, block, op, version),
+                    kept,
+                )
+            })
+            .unwrap_or_default();
         let was = observe(&mut reference_runner, op);
         // A put of an indexed tree over an indexed tree that the reference
         // took is counted, whatever the candidate did.
@@ -676,10 +692,21 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 let held = known.through_a_proof(op, reference, candidate, case.grove_version);
                 held.then_some(Family::DroppedTreeProof)
             };
+            // The candidate refuses a write of the root Merk whose
+            // root-key record a delete of the case left behind.
+            let root_key = || known.family_of_root_key_refusal(reference, candidate, &is.remarks);
+            // The reference was charged for reading the records it kept
+            // below a tree that the batch removes.
+            let cost = || Known::family_of_cost(&kept, &was.step, &is.step, &parts);
             let family = refusal
-                .or_else(|| known.family_of_answer(op, taken))
+                .or_else(root_key)
+                .or_else(cost)
+                .or_else(|| known.family_of_answer(op, taken, &parts))
                 .or_else(through_a_proof);
-            if let Some(family) = family {
+            let Some(family) = family else {
+                return diverged(tally, step, parts, lines(&was), lines(&is));
+            };
+            if family.ends_a_case() {
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
                 let ended_with = Divergence {
@@ -696,12 +723,27 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                     ended_at: Some(family),
                     ended_with: Some(ended_with),
                     failed_steps: failed_steps.take(),
+                    passed_cost_steps: passed_cost_steps.take(),
                 });
             }
-            return diverged(tally, step, parts, lines(&was), lines(&is));
+            // A read below a plain delete, or a batch that differs in
+            // what it was charged for reading there: neither left the
+            // engines in different states, so it is counted and the case
+            // goes on, as after an operation both answered alike.
+            known.passed_an_answer(family, case.seed);
+            if family == Family::PlainDeleteCost {
+                passed_cost_steps.borrow_mut().push(step);
+            }
+            tally.families = known.counts();
         }
         if !was.step.failed() {
-            known.took(op, over);
+            // The trees a plain delete of the batch removed of which the
+            // reference still holds a record, as its block sees it now.
+            let left = catching(|| {
+                let block = reference_runner.transactions().block();
+                Known::left_a_record(reference_db, block, plain_deletes)
+            });
+            known.took(op, over, left.unwrap_or_default(), root_delete);
         }
         // The trees whose flat drop has a pending record now, as the
         // reference's block sees it: the places of the family of a

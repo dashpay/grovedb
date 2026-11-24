@@ -22,6 +22,10 @@
 //!   fail them the same way: with the same error, the same cost and the
 //!   same state afterwards.
 //!
+//! - **A scene.** Some cases take, beside their workloads, the stream of
+//!   a history that no workload makes ([`Scene`]), first, last, or with
+//!   its blocks dealt among theirs.
+//!
 //! A generator steers around what its grove version refuses, so a stream
 //! as generated applies without a failed operation. A mutated one does not.
 
@@ -29,6 +33,7 @@ use std::fmt;
 
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
+use super::scenes::{Placing, Scene};
 use crate::workload::{
     BatchOp, Features, Op, Path, Rng, StreamDigest, TransactionOp, Workload, Write,
 };
@@ -63,6 +68,12 @@ pub struct Shape {
     /// what such a history breaks, so a debug run on a grove version with
     /// flat drops sets it; a release run does not.
     pub keeps_the_drop_contract: bool,
+    /// Out of this many cases of a grove version that has a scene,
+    /// [`Shape::scenes`] take one.
+    pub scenes_out_of: u64,
+    /// See [`Shape::scenes_out_of`]. With none, a case is the case its
+    /// seed gave before there were scenes.
+    pub scenes: u64,
 }
 
 impl Default for Shape {
@@ -75,6 +86,8 @@ impl Default for Shape {
             mutated: 1,
             max_mutations: 6,
             keeps_the_drop_contract: false,
+            scenes_out_of: 4,
+            scenes: 1,
         }
     }
 }
@@ -299,6 +312,9 @@ pub struct Case {
     pub arrangement: Arrangement,
     /// What was done to damage the stream, in order.
     pub mutations: Vec<Mutation>,
+    /// The scene the case took, and where its stream went. It is the
+    /// last of [`Case::sources`].
+    pub scene: Option<(Scene, Placing)>,
 }
 
 impl Case {
@@ -325,10 +341,30 @@ impl Case {
             });
             streams.push(ops);
         }
-        let mut ops = match arrangement {
+        let scene = Scene::draw(seed, grove_version, shape.scenes, shape.scenes_out_of);
+        let (mut first, mut last) = (Vec::new(), Vec::new());
+        let mut arrangement = arrangement;
+        if let Some((scene, placing, scene_seed)) = scene {
+            let ops = scene.stream(scene_seed);
+            sources.push(Source {
+                workload: scene.name(),
+                seed: scene_seed,
+                ops: ops.len(),
+            });
+            match placing {
+                Placing::First => first = ops,
+                Placing::Last => last = ops,
+                Placing::Dealt => {
+                    streams.push(ops);
+                    arrangement = Arrangement::Interleaved;
+                }
+            }
+        }
+        let dealt: Vec<Op> = match arrangement {
             Arrangement::Sequential => streams.into_iter().flatten().collect(),
             Arrangement::Interleaved => interleave(streams, &mut rng),
         };
+        let mut ops: Vec<Op> = first.into_iter().chain(dealt).chain(last).collect();
         ops.retain(|op| depth(op) <= MAX_DEPTH);
         let mut mutations = Vec::new();
         for _ in 0..tries {
@@ -344,6 +380,7 @@ impl Case {
             sources,
             arrangement,
             mutations,
+            scene: scene.map(|(scene, placing, _)| (scene, placing)),
         }
     }
 
@@ -357,6 +394,7 @@ impl Case {
             sources: Vec::new(),
             arrangement: Arrangement::Sequential,
             mutations: Vec::new(),
+            scene: None,
         }
     }
 
@@ -369,6 +407,7 @@ impl Case {
             sources: self.sources.clone(),
             arrangement: self.arrangement,
             mutations: self.mutations.clone(),
+            scene: self.scene,
         }
     }
 
@@ -398,7 +437,9 @@ impl Case {
                 source.workload, source.seed, source.ops
             ));
         }
-        if self.sources.len() > 1 {
+        let workloads = self.sources.len() - usize::from(self.scene.is_some());
+        let dealt = matches!(self.scene, Some((_, Placing::Dealt)));
+        if workloads > 1 || dealt {
             lines.push(
                 match self.arrangement {
                     Arrangement::Sequential => "the streams follow one another",
@@ -406,6 +447,15 @@ impl Case {
                 }
                 .to_string(),
             );
+        }
+        match self.scene {
+            Some((scene, Placing::First)) => {
+                lines.push(format!("the stream of {} comes first", scene.name()));
+            }
+            Some((scene, Placing::Last)) => {
+                lines.push(format!("the stream of {} comes last", scene.name()));
+            }
+            Some((_, Placing::Dealt)) | None => {}
         }
         lines.extend(self.mutations.iter().map(Mutation::to_string));
         lines
@@ -777,6 +827,53 @@ mod tests {
         assert_eq!(mutated + plain, SEEDS);
     }
 
+    /// A case takes the stream of a scene by its seed, as its last
+    /// source, and a shape with no scenes gives every seed the case it
+    /// gave before there were scenes: the same stream where the seed
+    /// draws no scene, and one with no scene where it draws one.
+    #[test]
+    fn a_shape_with_no_scenes_gives_the_cases_of_the_workloads_alone() {
+        let with = Shape {
+            max_ops_per_stream: 40,
+            ..Shape::default()
+        };
+        let without = Shape {
+            scenes: 0,
+            ..with.clone()
+        };
+        let mut placings = std::collections::BTreeSet::new();
+        for seed in 0..200 {
+            let (taken, plain) = (Case::generate(seed, &with), Case::generate(seed, &without));
+            assert_eq!(plain.scene, None);
+            let Some((scene, placing)) = taken.scene else {
+                assert_eq!(taken.digest(), plain.digest(), "seed {seed}");
+                continue;
+            };
+            assert!(scene.is_for(taken.grove_version), "seed {seed}");
+            placings.insert(format!("{placing:?}"));
+            let last = taken.sources.last().expect("the scene's source");
+            assert_eq!(last.workload, scene.name());
+            assert_eq!(taken.sources.len(), plain.sources.len() + 1);
+            assert_eq!(taken.sources[..plain.sources.len()], plain.sources[..]);
+            let said = taken.recipe().join("\n");
+            assert!(said.contains(scene.name()), "{said}");
+            // Unmutated, the stream of a scene that comes first or last
+            // is where the recipe says it is.
+            if !taken.mutations.is_empty() {
+                continue;
+            }
+            let stream = scene.stream(last.seed);
+            match placing {
+                Placing::First => assert_eq!(taken.ops[..stream.len()], stream[..]),
+                Placing::Last => {
+                    assert_eq!(taken.ops[taken.ops.len() - stream.len()..], stream[..]);
+                }
+                Placing::Dealt => assert_eq!(taken.arrangement, Arrangement::Interleaved),
+            }
+        }
+        assert_eq!(placings.len(), 3, "{placings:?}");
+    }
+
     /// The cases of the latest grove version in which each workload of the
     /// suite turns up first hold, between them, everything the generators
     /// produce, and every kind of mutation.
@@ -805,11 +902,24 @@ mod tests {
             }
             let case = Case::generate(seed, &shape);
             assert_eq!(case.grove_version.protocol_version, latest);
+            // The stream of a scene is the last source, after those of
+            // the workloads, and its blocks may be dealt among theirs.
+            let of_workloads = case.sources.len() - usize::from(case.scene.is_some());
             assert_eq!(
-                case.sources.iter().map(|s| s.workload).collect::<Vec<_>>(),
+                (case.sources[..of_workloads].iter())
+                    .map(|s| s.workload)
+                    .collect::<Vec<_>>(),
                 names
             );
-            assert_eq!(case.arrangement, plan.arrangement);
+            match case.scene {
+                Some((scene, placing)) => {
+                    assert_eq!(case.sources[of_workloads].workload, scene.name());
+                    let dealt = placing == Placing::Dealt;
+                    assert!(dealt || case.arrangement == plan.arrangement);
+                    assert!(!dealt || case.arrangement == Arrangement::Interleaved);
+                }
+                None => assert_eq!(case.arrangement, plan.arrangement),
+            }
             assert!(case.mutations.len() as u64 <= plan.mutations);
             assert!(case.depth() <= MAX_DEPTH);
             for name in names {

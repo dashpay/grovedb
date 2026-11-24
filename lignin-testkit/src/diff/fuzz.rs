@@ -132,9 +132,11 @@ pub struct Summary {
     /// engines panicked, or neither could be observed.
     pub first_cut_short: Option<String>,
     /// The cases that ended at a step that is counted apart
-    /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`]):
-    /// the family, the seed of the case and the step, in the order of the
-    /// seeds.
+    /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`],
+    /// [`Family::RootKeyLeftBehind`]), and those that passed over a cost
+    /// that is ([`Family::PlainDeleteCost`], by the first such step of
+    /// the case): the family, the seed of the case and the step, in the
+    /// order of the seeds.
     pub apart: Vec<(Family, u64, usize)>,
 }
 
@@ -212,12 +214,20 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
             )?;
             tally.lock().expect("no worker panics").add(&run.tally);
             if let (
-                Some(family @ (Family::DroppedTreeProof | Family::InsertOnlyOverIndexed)),
+                Some(
+                    family @ (Family::DroppedTreeProof
+                    | Family::InsertOnlyOverIndexed
+                    | Family::RootKeyLeftBehind),
+                ),
                 Some(ended),
             ) = (run.ended_at, &run.ended_with)
             {
                 let mut apart = apart.lock().expect("no worker panics");
                 apart.push((family, case.seed, ended.step));
+            }
+            if let Some(step) = run.passed_cost_steps.first() {
+                let mut apart = apart.lock().expect("no worker panics");
+                apart.push((Family::PlainDeleteCost, case.seed, *step));
             }
             // An interrupted run is no case of the run's, but for what
             // the check of the candidate's store found at its end.
