@@ -13,7 +13,7 @@ use std::{
 use lignin_format::{
     manifest::Manifest, wal::GroupWriter, CommitVersion, FormatError, PageId, PageSize,
 };
-use lignin_io::{Vfs, VfsLock};
+use lignin_io::{EntryKind, Vfs, VfsLock};
 use lignin_store::{
     recovery::recover,
     segment::{read_manifest, FileNames, ManifestStore, SegmentStoreError},
@@ -109,6 +109,18 @@ fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
     }
     if let Some(entry) = entries.iter().find(|entry| is_rocksdb(&entry.name)) {
         return Err(foreign("RocksDB", &entry.name));
+    }
+    // A store subdirectory that the directory lists as something other than
+    // a directory of its own — a symbolic link is listed but not followed —
+    // is refused before any store opens it: listing or removing within it
+    // would reach the files of the directory a link leads to (P-02).
+    if let Some(entry) =
+        (entries.iter()).find(|entry| is_own_dir(&entry.name) && entry.kind != EntryKind::Dir)
+    {
+        return Err(OpenError::StoreDirNotADirectory {
+            dir: dir.to_path_buf(),
+            entry: entry.name.clone(),
+        });
     }
     match read_manifest(vfs, dir) {
         Ok(manifest) => Ok(Found::Database(Box::new(manifest))),

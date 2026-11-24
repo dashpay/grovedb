@@ -56,6 +56,17 @@ pub enum OpenError {
         /// One of the entries that are a database's.
         entry: OsString,
     },
+    /// A store subdirectory (`seg`, `wal`, `val` or `table`) is listed in
+    /// the database directory as something other than a directory of its
+    /// own, such as a symbolic link, which is not followed. No store opens
+    /// it or removes within it: a link would reach the files of the
+    /// directory it leads to (P-02).
+    StoreDirNotADirectory {
+        /// The directory.
+        dir: PathBuf,
+        /// The subdirectory entry that is not a directory.
+        entry: OsString,
+    },
     /// The database has pages of another size than the one that was asked
     /// for (`segment-manifest.md` M17).
     PageSize {
@@ -262,6 +273,7 @@ impl OpenError {
                 | Self::OtherEngine { .. }
                 | Self::FormatVersion { .. }
                 | Self::NoManifest { .. }
+                | Self::StoreDirNotADirectory { .. }
                 | Self::NoLockFile { .. }
                 | Self::Deleting { .. }
                 | Self::Creating { .. }
@@ -290,6 +302,12 @@ impl fmt::Display for OpenError {
             Self::NoManifest { dir, entry } => write!(
                 f,
                 "{} has files of a database ({}) and no manifest",
+                dir.display(),
+                Path::new(entry).display()
+            ),
+            Self::StoreDirNotADirectory { dir, entry } => write!(
+                f,
+                "{} lists {} as something other than a directory of its own (a symbolic link                  is not followed): no database is opened or made beside it",
                 dir.display(),
                 Path::new(entry).display()
             ),
@@ -372,6 +390,7 @@ impl Error for OpenError {
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }
             | Self::NoManifest { .. }
+            | Self::StoreDirNotADirectory { .. }
             | Self::PageSize { .. }
             | Self::Locked { .. } => None,
         }

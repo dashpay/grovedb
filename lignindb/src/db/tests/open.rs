@@ -1469,3 +1469,46 @@ fn a_path_with_the_suffix_reserved_for_checkpoint_creation_is_not_opened_and_get
         assert!(db.created(), "{name}");
     }
 }
+
+/// A store subdirectory (`seg`, `wal`, `val` or `table`) that the database
+/// directory lists as a symbolic link is refused at the open and not
+/// followed, so the directory the link leads to is as it was, with a file
+/// in it that bears a name of the store's and that no manifest names. A
+/// store that opened through the link would list that directory and remove
+/// such a file.
+#[test]
+fn a_store_subdirectory_that_is_a_link_is_refused_and_not_followed() {
+    use lignin_store::segment::FileNames;
+
+    for names in [
+        FileNames::SEGMENT,
+        FileNames::WAL,
+        FileNames::VALUE_LOG,
+        FileNames::PAGE_TABLE,
+    ] {
+        let place = temp();
+        let dir = place.path().join("db");
+        let db = Db::open(&dir, &options()).expect("a new database");
+        db.close().expect("the session ends");
+
+        // The subdirectory goes outside the database directory, where it
+        // gains a file, and a link to it takes its place.
+        let subdir = names.dir(&dir);
+        let name = subdir.file_name().expect("a name").to_os_string();
+        let outside = place.path().join("outside");
+        fs::rename(&subdir, &outside).expect("the subdirectory moves");
+        let theirs = names.file_name(lignin_format::FileId::MAX);
+        fs::write(outside.join(theirs), b"x").expect("a file");
+        std::os::unix::fs::symlink(&outside, &subdir).expect("a link");
+        let held = image(&outside);
+
+        let error = Db::open(&dir, &options()).expect_err("the link is not followed");
+        assert!(
+            matches!(&error, OpenError::StoreDirNotADirectory { entry, .. } if *entry == name),
+            "{name:?}: {error:?}"
+        );
+        assert!(error.left_untouched(), "{name:?}");
+        assert!(error.to_string().contains("is not followed"), "{error}");
+        assert_eq!(image(&outside), held, "{name:?}: the directory was written");
+    }
+}
