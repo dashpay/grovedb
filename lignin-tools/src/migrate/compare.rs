@@ -335,7 +335,7 @@ pub(crate) fn compare(
         // The tree type the load gave the entry: the one the nodes name.
         let stated = nodes(source, &prefix, false)?
             .ok()
-            .map(|(tree_type, _)| tree_type_bytes(tree_type.unwrap_or(TreeType::NormalTree)));
+            .map(|(tree_type, ..)| tree_type_bytes(tree_type.unwrap_or(TreeType::NormalTree)));
         if entry.host.is_some() || entry.root_key.is_some() || Some(entry.tree_type) != stated {
             comparing.compared.differs(format!(
                 "{named}: the directory has its subtree under a host, with a root, or of \

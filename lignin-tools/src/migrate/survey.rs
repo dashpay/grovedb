@@ -74,6 +74,12 @@ const AXIS_TAGS: [u8; 3] = [0, 1, 2];
 /// what the load or the engine holds for a node changes the figure.
 pub(crate) const PEAK_A_NODE: u64 = 1_300;
 
+/// How many times the bytes of an aux or a meta record are counted where
+/// a load reads the records of a prefix whole: the loader's copy, the
+/// transaction's and the log's. It is an allowance: no measurement of
+/// such records backs it.
+pub(crate) const COPIES_OF_A_RECORD: u64 = 3;
+
 /// A Merk of a source that a load reads whole and hands over, with what
 /// it weighs. The heaviest decides the most memory a migration holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,6 +89,10 @@ pub(crate) struct Largest {
     /// The bytes of the keys and values of its nodes, and
     /// [`HELD_A_NODE`] for each.
     pub(crate) held: u64,
+    /// The aux and the meta records that are read whole with it and
+    /// committed with it, which is so for a prefix that nothing leads to
+    /// and for no subtree of the grove.
+    pub(crate) beside: Count,
     /// Where it is.
     pub(crate) at: String,
 }
@@ -90,13 +100,40 @@ pub(crate) struct Largest {
 impl Largest {
     /// The bytes of the keys and values of its nodes.
     pub(crate) fn keys_and_values(&self) -> u64 {
-        self.held.saturating_sub(HELD_A_NODE * self.nodes)
+        (self.held).saturating_sub(HELD_A_NODE.saturating_mul(self.nodes))
     }
 
     /// About the bytes the process holds for it while it is handed over:
-    /// [`PEAK_A_NODE`] for each node, and its keys and values.
+    /// [`PEAK_A_NODE`] for each node, and its keys and values; and for
+    /// each record that is read whole with it the same, with the bytes of
+    /// the record [`COPIES_OF_A_RECORD`] times. It does not wrap: what no
+    /// number of this width holds is the largest number.
     pub(crate) fn peak(&self) -> u64 {
-        PEAK_A_NODE * self.nodes + self.keys_and_values()
+        let counted = (self.nodes).saturating_add(self.beside.records);
+        PEAK_A_NODE
+            .saturating_mul(counted)
+            .saturating_add(self.keys_and_values())
+            .saturating_add(COPIES_OF_A_RECORD.saturating_mul(self.beside.bytes))
+    }
+
+    /// What it is, in words.
+    pub(crate) fn named(&self) -> String {
+        let at = match self.at.is_empty() {
+            true => "(none)",
+            false => &self.at,
+        };
+        let beside = match self.beside.records {
+            0 => String::new(),
+            records => format!(
+                ", and {records} aux and meta records of {} MiB that are read whole with it",
+                self.beside.bytes.div_ceil(1 << 20)
+            ),
+        };
+        format!(
+            "{} nodes with {} MiB of keys and values{beside}, at {at}",
+            self.nodes,
+            self.keys_and_values().div_ceil(1 << 20)
+        )
     }
 }
 
@@ -161,9 +198,9 @@ pub(crate) struct Survey {
     pub(crate) stale_roots: Vec<String>,
     /// The heaviest Merk of the subtrees that are entered.
     pub(crate) largest: Largest,
-    /// The heaviest of the prefixes that nothing leads to whose records
-    /// are the nodes of a Merk: a load that carries them reads each
-    /// whole.
+    /// The heaviest of the prefixes that nothing leads to and that a
+    /// migration which carries them takes: a load that carries them reads
+    /// each whole, its nodes with its aux and meta records.
     pub(crate) largest_unreachable: Largest,
     /// The Merk with the most elements that lead to subtrees: how many,
     /// and where it is.
@@ -274,6 +311,7 @@ impl Visit for Counting<'_> {
         let merk = Largest {
             nodes: found.nodes + found.unlinked.records,
             held: found.held,
+            beside: Count::default(),
             at: String::new(),
         };
         if found.held > 0 && merk.peak() >= survey.largest.peak() {
@@ -420,18 +458,25 @@ fn beside_the_walk(source: &Source, side: &Side, survey: &mut Survey) -> Result<
             path: None,
             tree_stands: None,
             around: (before, places.len() as u64 - before),
+            weighs: 0,
         };
         inspect(source, &mut orphan)?;
-        // Where the data records under the prefix are the nodes of a
-        // Merk, a load that carries them reads them whole.
-        let data = orphan.counts.of(Keyspace::Data);
+        // A load that carries the prefix reads all of it into one commit:
+        // its nodes, where its data records are those of a Merk, by the
+        // bytes a walk counts for a node, and its aux and meta records.
+        let nodes = match orphan.held {
+            Held::Nodes(_) => orphan.counts.of(Keyspace::Data).records,
+            _ => 0,
+        };
+        let mut beside = orphan.counts.of(Keyspace::Aux);
+        beside.merge(orphan.counts.of(Keyspace::Meta));
         let merk = Largest {
-            nodes: data.records,
-            held: data.bytes + HELD_A_NODE * data.records,
+            nodes,
+            held: orphan.weighs + HELD_A_NODE * nodes,
+            beside,
             at: String::new(),
         };
-        let is_merk = matches!(orphan.held, Held::Nodes(_));
-        if is_merk && merk.peak() >= survey.largest_unreachable.peak() {
+        if orphan.is_carried() && merk.peak() >= survey.largest_unreachable.peak() {
             survey.largest_unreachable = Largest {
                 at: format!("the prefix {}, which nothing leads to", hex(&prefix)),
                 ..merk
@@ -655,15 +700,8 @@ impl Survey {
             format!("subtrees entered: {}", self.subtrees),
             format!("Merk nodes: {}", self.nodes),
             format!(
-                "largest Merk that is handed over: {} nodes with {} MiB of keys and values, at {}",
-                self.heaviest(unreachable).nodes,
-                self.heaviest(unreachable)
-                    .keys_and_values()
-                    .div_ceil(1 << 20),
-                match self.heaviest(unreachable).at.is_empty() {
-                    true => "(none)",
-                    false => &self.heaviest(unreachable).at,
-                }
+                "largest Merk that is handed over: {}",
+                self.heaviest(unreachable).named()
             ),
             format!(
                 "widest Merk: {} of its elements lead to subtrees, at {}",
@@ -847,5 +885,47 @@ impl Survey {
                 .sum::<u64>(),
             self.faults.len(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a Merk projects: for each node the measured figure with its key
+    /// and its value; for each record that is read whole with it the same,
+    /// with its bytes three times; and no sum of it wraps.
+    #[test]
+    fn what_a_merk_projects_counts_what_is_read_with_it_and_does_not_wrap() {
+        let merk = Largest {
+            nodes: 10,
+            held: 10 * HELD_A_NODE + 330,
+            beside: Count::default(),
+            at: String::new(),
+        };
+        assert_eq!(merk.keys_and_values(), 330);
+        assert_eq!(merk.peak(), 10 * PEAK_A_NODE + 330);
+        assert!(merk.named().starts_with("10 nodes with 1 MiB"));
+        let with = Largest {
+            beside: Count {
+                records: 2,
+                bytes: 1_000,
+            },
+            ..merk.clone()
+        };
+        let read_with_it = 2 * PEAK_A_NODE + COPIES_OF_A_RECORD * 1_000;
+        assert_eq!(with.peak(), merk.peak() + read_with_it);
+        assert!(with.named().contains("2 aux and meta records"));
+        let most = Largest {
+            nodes: u64::MAX,
+            held: u64::MAX,
+            beside: Count {
+                records: u64::MAX,
+                bytes: u64::MAX,
+            },
+            at: String::new(),
+        };
+        assert_eq!(most.keys_and_values(), 0);
+        assert_eq!(most.peak(), u64::MAX);
     }
 }

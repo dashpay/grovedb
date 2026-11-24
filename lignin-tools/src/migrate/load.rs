@@ -21,11 +21,17 @@
 //! No commit drops or clears a subtree: by key a batch with a load beside
 //! one is refused (`BatchError::LoadBeside`).
 //!
-//! **How much a commit takes** is counted as what the transaction holds
-//! until it commits: the keys and values it carries, and for each Merk a
-//! page of the store, since the loads of a batch are laid out in pages of
-//! their own. So a grove of many small Merks is committed after a few
-//! thousand of them, and one of large values after as many bytes.
+//! **How much a commit takes** is counted as what the process holds
+//! until it commits: the keys and values it carries; for each node of a
+//! Merk what a node is measured to take beside them
+//! (`survey::PEAK_A_NODE`), since the migrator's nodes, the transaction's
+//! and the encoded changes of their pages are all held until then; and
+//! for each Merk a page of the store, since the loads of a batch are laid
+//! out in pages of their own. So a grove of many small Merks is committed
+//! after a few thousand of them, one of many nodes after some tens of
+//! thousands of nodes, and one of large values after as many bytes. A
+//! commit ends after the Merk that fills it, and a prefix that nothing
+//! leads to is carried in one commit whatever it holds.
 //!
 //! **A Merk is handed over after the Merks its nodes host.** So each node
 //! is written once, with the place of every pointer it has: the cell of a
@@ -84,6 +90,7 @@ use super::{
     grove::{Link, Node},
     journal::{Carried, Journal, Phase, JOURNAL_KEY},
     source::{Keyspace, Prefix, Source},
+    survey::PEAK_A_NODE,
     walk::{short_key, Chunk, Found, Frame, MerkHeld, Place, Side, Visit, ROOT, ROOT_KEY},
 };
 use crate::{args::Unreachable, hex, ToolError};
@@ -514,7 +521,7 @@ impl<'t> Load<'t> {
     /// records are records that no tree links, and its aux and meta
     /// records are as they are.
     fn unreachable(&mut self, source: &Source, prefix: Prefix) -> Result<(), ToolError> {
-        let (tree_type, nodes) = nodes(source, &prefix, true)?.map_err(|other| {
+        let (tree_type, nodes, _) = nodes(source, &prefix, true)?.map_err(|other| {
             ToolError::Migrate(format!(
                 "the source {}: the records under the prefix {}, which nothing leads to, are \
                  not carried: {other}",
@@ -530,7 +537,7 @@ impl<'t> Load<'t> {
         carried.unreachable += 1;
         carried.unlinked += nodes.len() as u64;
         carried.bytes += bytes as u64;
-        self.pending.bytes += bytes + 96;
+        self.pending.bytes += bytes + nodes.len() * PEAK_A_NODE as usize + 96;
         self.pending.enters.push(Entered {
             subtree,
             tree_type: tree_type_bytes(tree_type.unwrap_or(TreeType::NormalTree)),
@@ -663,7 +670,10 @@ impl Visit for Load<'_> {
         let held = merk.nodes.iter().chain(&merk.unlinked);
         let bytes: usize = held.map(|node| node.key.len() + node.value.len()).sum();
         carried.bytes += bytes as u64;
-        self.pending.bytes += bytes + self.db.page_size().get();
+        // What the nodes take until the commit is made, beside their keys
+        // and values, and the page a Merk's load begins.
+        let nodes = merk.nodes.len() + merk.unlinked.len();
+        self.pending.bytes += bytes + nodes * PEAK_A_NODE as usize + self.db.page_size().get();
         self.pending.merks.push(Handed {
             subtree: Subtree::new(place.prefix),
             host: place.host.as_ref().map(|host| Subtree::new(host.parent)),

@@ -39,8 +39,9 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      directory that TARGET is to be in has to be there, and
                                      nothing else is to open TARGET.migrating meanwhile.
                                      --batch is about how much one commit of the load
-                                     holds in memory (64 MiB unless given: the keys and values
-                                     it carries, and a page for each Merk), and --progress how
+                                     holds in memory (64 MiB unless given: about 1.3 KB with
+                                     its key and value for each node, the keys and values of
+                                     other records, and a page for each Merk), and --progress how
                                      often a line says where the load stands (5 s unless
                                      given; 0 is after every commit). A source that a node
                                      left without stopping is migrated as the state that node
@@ -62,9 +63,12 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      A Merk is handed over whole, so the largest decides how
                                      much memory a run holds: the run says what peak it
                                      projects, and refuses a SOURCE that projects more than
-                                     --memory-limit before it writes anything (half of the
-                                     machine's memory unless given). Such a source needs the
-                                     load of one Merk in parts, which is not built
+                                     --memory-limit before it writes anything. Unless it is
+                                     given, the limit is half of the machine's memory as
+                                     /proc/meminfo states it (in a container that can be the
+                                     host's), and none where the system has no such file. A
+                                     source whose largest Merk is above the limit needs the
+                                     memory: the load of one Merk in parts is not built
   migrate   SOURCE --survey [--unreachable refuse|leave|carry] [--memory-limit MIB]
                                      what SOURCE holds and whether it can be migrated; writes
                                      nothing
@@ -89,8 +93,10 @@ sound, 4 the device of TARGET is full: the same command goes on once there is ro
 /// The buffer pool of an open unless `--cache` says another size.
 pub const DEFAULT_CACHE: usize = 64 << 20;
 
-/// About how much one commit of `migrate` holds unless `--batch` says: the
-/// keys and values it carries, and a page of the store for each Merk.
+/// About how much one commit of `migrate` holds unless `--batch` says:
+/// what a node is measured to take with its key and value for each node,
+/// the keys and values of other records, and a page of the store for each
+/// Merk.
 pub const DEFAULT_MIGRATE_BATCH: usize = 64 << 20;
 
 /// How often a load of `migrate` says where it stands, unless `--progress`
@@ -206,7 +212,8 @@ pub enum Command {
         /// to.
         unreachable: Unreachable,
         /// The most memory the run may project to hold at its peak, in
-        /// bytes: `None` for half of the machine's.
+        /// bytes: `None` for half of the machine's where `/proc/meminfo`
+        /// states it, and for no limit elsewhere.
         memory_limit: Option<u64>,
     },
 }

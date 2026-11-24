@@ -69,9 +69,9 @@
 //! | `TARGET.migrating` | What the next run does, after its survey |
 //! | --- | --- |
 //! | is not there, or is a directory with nothing in it | makes it its own, and begins the load |
-//! | is a directory that holds nothing but a file `MIGRATION.new`, whatever is in it | takes it for its own file, which a stop left before it had its name: removes it, makes the file again, and begins the load |
-//! | is anything else that is not the command's: no directory, a directory with an entry that is neither the file `MIGRATION` nor the directory `database`, or one whose `MIGRATION` holds other bytes than the command writes | refuses, and changes nothing there |
-//! | is the command's, with no database or one that holds no record | begins the load. A source that holds no record at all leaves such a database also once its load is complete: the load is then made again, and writes no record |
+//! | is a directory that holds nothing but a file `MIGRATION.new` which a stop of the command can have left: no longer than the command's file, and each byte of it as the command writes it or zero, as a byte reads that was never written | takes it for its own file, which a stop left before it had its name: removes it, makes the file again, and begins the load |
+//! | is anything else that is not the command's: no directory, a directory with an entry that is neither the file `MIGRATION` nor the directory `database`, one whose `MIGRATION` holds other bytes than the command writes, or one whose lone `MIGRATION.new` no stop of the command leaves | refuses, and changes nothing there |
+//! | is the command's, with no database or one that holds no record | begins the load. A complete load that carried no record leaves such a database too (a source that holds none, or one whose records are all left behind): the load is then made again, and the database holds no record again once it is complete |
 //! | is the command's, with a database that has a journal of this source | goes on with the load from the last commit: a Merk that was handed over is not handed over again |
 //! | is the command's, with a database that has a journal of another source, of another state of this one, or of a load that was told otherwise what becomes of the records nothing leads to | refuses: the directory is to be removed, or the run is told what the first was |
 //! | is the command's, with a database that holds a record and no journal | the load is complete: compares, verifies and renames. A run that was stopped between the last commit of the load and the rename leaves this, and so does one whose comparison or verification failed |
@@ -82,17 +82,20 @@
 //!
 //! | A stop in step 6 | leaves | and the next run |
 //! | --- | --- | --- |
-//! | before the rename | the complete load in `TARGET.migrating`: the last row above, or for a source that holds no record the row of a database that holds none | does as that row says |
+//! | before the rename | the complete load in `TARGET.migrating`: the last row above, or the row of a database that holds no record where the migration carried none | does as that row says |
 //! | after the rename and before both syncs: a kill, or a sync that failed, which the run says and ends on with status 1 | the database at `TARGET` under a name that a power cut can still take back, and the work directory with its file | makes the syncs, removes the work directory where it can, and refuses the target as one that is there: a database that a migration left there is whole |
 //! | the same, and a power cut after it | the database at `TARGET`, or in `TARGET.migrating` again, as the device kept the name | does as the row above, or as the row before it |
 //! | after the syncs | the database at `TARGET`, and of the work directory its file, or nothing, or no directory | removes what is left of the work directory where it can, and refuses the target as one that is there |
 //!
-//! A run that finds a target that is there, and beside it a work
-//! directory of its own with no database, cannot tell whether a run gave
-//! the target its name or something else was put there after a run had
-//! made its work directory: it makes the two syncs in either case, which
-//! change nothing but what a power cut can take back, and says of the
-//! target only that it is there.
+//! A run that finds a directory at the target that is not empty, and
+//! beside it a work directory of its own with no database, cannot tell
+//! whether a run gave the target its name or something else was put
+//! there after a run had made its work directory: it makes the two syncs
+//! in either case, which change nothing but what a power cut can take
+//! back, and says of the target only that it is there. A target that is
+//! a file or a link is refused with nothing synced and nothing removed.
+//! A directory at the target with nothing in it is no target that is
+//! there: the load begins.
 //!
 //! Once the syncs are made the run ends with status 0, whatever becomes
 //! of the removal of the work directory and of the last lines of its
@@ -133,20 +136,29 @@
 //! source is in memory at once, with what the engine holds of it until
 //! its commit is made (`transactions.md` LD7). The records under a prefix
 //! that nothing leads to are read whole too by a load that carries them,
-//! which puts each such prefix into one commit. Beside it the migrator
-//! holds what one commit takes (`--batch`: the keys and values it
-//! carries, and a page of the store for each Merk it hands over; a commit
-//! ends after the Merk that fills it), and the buffer pool of the target
-//! (`--cache`).
+//! which puts each such prefix into one commit, its nodes with its aux
+//! and meta records. Beside it the migrator holds what one commit takes
+//! (`--batch`: for each node about 1.3 KB with its key and value, the
+//! keys and values of the other records, and a page of the store for
+//! each Merk it hands over; a commit ends after the Merk that fills it),
+//! and the buffer pool of the target (`--cache`).
 //!
 //! **The run says what peak it projects, before it writes anything**: a
 //! floor (256 MiB, `--batch` and `--cache`), and for each node of the
 //! heaviest Merk it hands over about 1.3 KB with the node's key and
-//! value. The figure a node is a measurement of this command as it is at
-//! this commit. **A source whose projection is above `--memory-limit` is
-//! refused**, and nothing is written: unless the option is given, the
-//! limit is half of the machine's memory, which the run states. Such a
-//! source needs the load of one Merk in parts, which is not built.
+//! value. An aux or a meta record that is read whole with a carried
+//! prefix is counted as a node, with three times its bytes. The figure a
+//! node is a measurement of this command as it is at this commit; the
+//! projection is an estimate from it, and no cap that the process is
+//! held to. **A source whose projection is above `--memory-limit` is
+//! refused**, and nothing is written. Unless the option is given, the
+//! limit is half of the machine's memory as `/proc/meminfo` states it,
+//! which the run says; where the system has no such file no limit is
+//! held, which the run says too, and in a container that file can state
+//! the memory of the host. A refusal says whether the floor alone is
+//! above the limit, which a smaller `--batch` or `--cache` answers, or
+//! the heaviest Merk, which needs the memory: the load of one Merk in
+//! parts is not built.
 //!
 //! # Exit status
 //!
@@ -203,13 +215,16 @@ pub const WORK_DATABASE: &str = "database";
 
 /// The name of the file that says a directory is the work of a migration.
 /// The command makes it before anything else there, with the bytes
-/// [`MARK_TEXT`], and takes no directory that holds something and not
-/// this file.
+/// [`MARK_TEXT`]. It takes no directory that holds something and neither
+/// this file nor, alone, what a stop left of its making
+/// ([`WORK_MARK_NEW`]).
 pub const WORK_MARK: &str = "MIGRATION";
 
 /// The name under which the file [`WORK_MARK`] is written and made
-/// durable, before it is given its name: a file of that name is never a
-/// part of one.
+/// durable before it is given its own, so that a file named
+/// [`WORK_MARK`] always holds all of its bytes. A directory that holds
+/// nothing but a file of this name which a stop of the one write can
+/// have left is taken, and the file is made again.
 pub const WORK_MARK_NEW: &str = "MIGRATION.new";
 
 /// What the file [`WORK_MARK`] holds, to the byte.
@@ -228,8 +243,10 @@ pub struct Migration {
     /// How the database of the target is opened. A database is made where
     /// there is none, whatever `create_if_missing` says.
     pub options: Options,
-    /// About how many bytes one commit takes: the keys and values it
-    /// carries, and a page of the store for each Merk it hands over.
+    /// About how many bytes one commit takes: for each node what a node
+    /// is measured to take with its key and value, the keys and values of
+    /// the other records, and a page of the store for each Merk it hands
+    /// over.
     pub batch_bytes: usize,
     /// How often the load says where it stands, at the commit it has come
     /// to: with no time, after every commit.
@@ -239,7 +256,9 @@ pub struct Migration {
     pub unreachable: Unreachable,
     /// The most memory, in bytes, that the migration may project to hold
     /// at its peak: a source that projects more is refused before
-    /// anything is written. `None` is half of the machine's memory.
+    /// anything is written. `None` is half of the machine's memory as
+    /// `/proc/meminfo` states it, and no limit where the system has no
+    /// such file.
     pub memory_limit: Option<u64>,
 }
 
@@ -247,13 +266,14 @@ pub struct Migration {
 /// heaviest Merk it hands over: the floor of what it projects.
 const PEAK_FLOOR: u64 = 256 << 20;
 
-/// The memory of the machine, in bytes, as the system counts it: `None`
-/// where the system does not say.
+/// The memory of the machine, in bytes, as `/proc/meminfo` states it:
+/// `None` where the system has no such file. In a container the file can
+/// state the memory of the host.
 fn machine_memory() -> Option<u64> {
     let info = std::fs::read_to_string("/proc/meminfo").ok()?;
     let line = info.lines().find(|line| line.starts_with("MemTotal:"))?;
     let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
-    Some(kib * 1024)
+    Some(kib.saturating_mul(1024))
 }
 
 fn refused(what: impl Into<String>) -> ToolError {
@@ -416,9 +436,9 @@ enum Work {
     Absent,
     /// A directory with nothing in it.
     Empty,
-    /// A directory that holds nothing but a file [`WORK_MARK_NEW`]: the
-    /// command's file before it had its name, which a stop left before
-    /// anything else was made. What it holds is not looked at.
+    /// A directory that holds nothing but a file [`WORK_MARK_NEW`] that a
+    /// stop of the command can have left before anything else was made:
+    /// no longer than [`MARK_TEXT`], each byte as it is there or zero.
     CutShort,
     /// The command's: its file is there, and its database or not yet.
     Ours {
@@ -444,7 +464,22 @@ impl Work {
             [entry] if entry.name == WORK_MARK_NEW && entry.kind == EntryKind::File
         );
         if alone {
-            return Ok(Self::CutShort);
+            // What a stop leaves of the one append that writes the file: as
+            // many bytes as the file was given or fewer, each as it was
+            // written or, where it never was, zero.
+            let file = vfs.open(&work.join(WORK_MARK_NEW), OpenMode::Read)?;
+            let len = file.len()?;
+            let mut left = vec![0; len.min(MARK_TEXT.len() as u64) as usize];
+            file.read_exact_at(&mut left, 0)?;
+            let of_a_stop = len <= MARK_TEXT.len() as u64
+                && (left.iter().zip(MARK_TEXT))
+                    .all(|(byte, written)| byte == written || *byte == 0);
+            return Ok(match of_a_stop {
+                true => Self::CutShort,
+                false => Self::Foreign(format!(
+                    "its file {WORK_MARK_NEW} is not what a stop of a migration leaves"
+                )),
+            });
         }
         let (mut marked, mut database) = (false, false);
         for entry in &entries {
@@ -570,7 +605,10 @@ fn placed(source: &Path, target: &Path) -> Result<PathBuf, ToolError> {
     // in.
     let of_source = directories_in(source);
     let around_source = identities(source);
-    for made in [target, work.as_path()] {
+    // The database is made in a directory of the work directory, which
+    // can be there already and be another directory than its name says.
+    let database = work.join(WORK_DATABASE);
+    for made in [target, work.as_path(), database.as_path()] {
         let named = resolved(made);
         let by_name = named.starts_with(&read) || read.starts_with(&named);
         // And by what the directories are: one that `made` is in is the
@@ -594,7 +632,7 @@ fn placed(source: &Path, target: &Path) -> Result<PathBuf, ToolError> {
         (Ok(target), Ok(made)) => file_identity(&target) == file_identity(&made),
         _ => false,
     };
-    if one(&work) || one(&work.join(WORK_DATABASE)) {
+    if one(&work) || one(&database) {
         return Err(refused(format!(
             "the target {} and {}, where its database is made, are one directory",
             target.display(),
@@ -1177,9 +1215,13 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         )?;
     }
     // What the run holds at its peak is known before it writes anything.
+    // No sum of it wraps: what no number of this width holds is above
+    // every limit.
     let heaviest = survey.heaviest(migration.unreachable);
-    let floor = PEAK_FLOOR + migration.batch_bytes as u64 + migration.options.cache_size as u64;
-    let projected = floor + heaviest.peak();
+    let floor = PEAK_FLOOR
+        .saturating_add(migration.batch_bytes as u64)
+        .saturating_add(migration.options.cache_size as u64);
+    let projected = floor.saturating_add(heaviest.peak());
     let (limit, whose) = match (migration.memory_limit, machine_memory()) {
         (Some(limit), _) => (Some(limit), "as --memory-limit says".to_owned()),
         (None, Some(machine)) => (
@@ -1195,14 +1237,14 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         out,
         "the migration projects a peak of about {} MiB of memory: {} MiB for a commit and the \
          buffer pool, and about {PEAK_A_NODE} bytes with its key and its value for each node \
-         of the largest Merk it hands over, which it holds whole ({} nodes). {}",
+         of the largest Merk it hands over, which it holds whole ({}). {}",
         projected.div_ceil(1 << 20),
         floor >> 20,
-        heaviest.nodes,
+        heaviest.named(),
         match limit {
             Some(limit) => format!("The limit is {} MiB: {whose}", limit >> 20),
-            None => "The system does not say how much memory the machine has, and no \
-                     --memory-limit is given: no limit is held"
+            None => "This system has no /proc/meminfo to say how much memory the machine \
+                     has, and no --memory-limit is given: no limit is held"
                 .to_owned(),
         }
     )?;
@@ -1212,17 +1254,28 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         limit.map_or("none".to_owned(), |limit| limit.to_string())
     )?;
     if let Some(limit) = limit.filter(|limit| projected > *limit) {
+        // What is above the limit: the floor alone, which the run's own
+        // settings make, or the largest of what the load holds whole.
+        let cause = match floor > limit {
+            true => format!(
+                "what a run holds beside any Merk is {} MiB already (256 MiB, --batch and \
+                 --cache). A smaller --batch or --cache takes it, or a larger --memory-limit \
+                 where the machine has that memory",
+                floor.div_ceil(1 << 20)
+            ),
+            false => format!(
+                "the largest of what it holds whole is {}. A larger --memory-limit takes it \
+                 where the machine has that memory. The load of one Merk in parts, which \
+                 such a source needs otherwise, is not built",
+                heaviest.named()
+            ),
+        };
         return Err(refused(format!(
             "the source {} projects a peak of about {} MiB of memory, above the limit of {} \
-             MiB ({whose}): its largest Merk has {} nodes, at {}, and a Merk is handed over \
-             whole. Nothing was written by this run. A machine with more memory takes it, \
-             and so does a larger --memory-limit where the machine has that memory. The \
-             load of one Merk in parts, which such a source needs otherwise, is not built",
+             MiB ({whose}). Nothing was written by this run: {cause}",
             source.dir().display(),
             projected.div_ceil(1 << 20),
-            limit >> 20,
-            heaviest.nodes,
-            heaviest.at
+            limit >> 20
         )));
     }
     let (Some(target), Some(work)) = (&migration.target, &work) else {

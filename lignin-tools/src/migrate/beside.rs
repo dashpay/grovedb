@@ -104,6 +104,10 @@ pub(crate) struct Orphan {
     /// How many prefixes of the grove's subtrees come before this one in
     /// the order of the prefixes, and how many after it.
     pub(crate) around: (u64, u64),
+    /// The bytes of the keys and values of its nodes, where its data
+    /// records are those of a Merk: what a walk counts for a node of a
+    /// Merk it comes to.
+    pub(crate) weighs: u64,
 }
 
 impl Orphan {
@@ -202,6 +206,7 @@ pub(crate) fn nodes(source: &Source, prefix: &Prefix, keep: bool) -> Result<Node
     let mut nodes = Vec::new();
     let mut tree_type = None;
     let mut other = None;
+    let mut weighs = 0;
     source.subtree(Keyspace::Data, prefix, |key, record| {
         if other.is_some() {
             return Ok(());
@@ -233,6 +238,7 @@ pub(crate) fn nodes(source: &Source, prefix: &Prefix, keep: bool) -> Result<Node
             return Ok(());
         }
         tree_type = Some(of);
+        weighs += (key.len() + decoded.value_as_slice().len()) as u64;
         if keep {
             nodes.push(Node::of(&decoded, Vec::new()));
         }
@@ -240,23 +246,24 @@ pub(crate) fn nodes(source: &Source, prefix: &Prefix, keep: bool) -> Result<Node
     })?;
     Ok(match other {
         Some(other) => Err(other),
-        None => Ok((tree_type, nodes)),
+        None => Ok((tree_type, nodes, weighs)),
     })
 }
 
-/// The tree type that the nodes under a prefix name, with the nodes, or
-/// why the records there are not the nodes of one tree type.
-pub(crate) type NodesOf = Result<(Option<TreeType>, Vec<Node>), String>;
+/// The tree type that the nodes under a prefix name, with the nodes and
+/// the bytes of their keys and values, or why the records there are not
+/// the nodes of one tree type.
+pub(crate) type NodesOf = Result<(Option<TreeType>, Vec<Node>, u64), String>;
 
 /// Looks at the records under the prefix of `orphan`: what its data
 /// records are, the first of them in words, and the key that its record
 /// of a root key names.
 pub(crate) fn inspect(source: &Source, orphan: &mut Orphan) -> Result<(), ToolError> {
     orphan.root_key = source.get(Keyspace::Roots, &orphan.prefix, ROOT_KEY)?;
-    orphan.held = match nodes(source, &orphan.prefix, false)? {
-        Ok((None, _)) => Held::NoData,
-        Ok((Some(tree_type), _)) => Held::Nodes(tree_type),
-        Err(other) => Held::Other(other),
+    (orphan.held, orphan.weighs) = match nodes(source, &orphan.prefix, false)? {
+        Ok((None, ..)) => (Held::NoData, 0),
+        Ok((Some(tree_type), _, weighs)) => (Held::Nodes(tree_type), weighs),
+        Err(other) => (Held::Other(other), 0),
     };
     let mut described = Vec::new();
     source.subtree(Keyspace::Data, &orphan.prefix, |key, record| {
