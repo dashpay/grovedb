@@ -60,6 +60,7 @@ fn small(scratch: std::path::PathBuf) -> Settings {
         perf,
         scratch,
         keep: false,
+        engine: Default::default(),
     }
 }
 
@@ -99,11 +100,23 @@ const MEASURED_ROWS: [&str; 6] = [
 fn kind_of(id: &str) -> RowKind {
     if TIME_ROWS.contains(&id) {
         RowKind::Time
-    } else if MEASURED_ROWS.contains(&id) {
+    } else if MEASURED_ROWS.contains(&id) || is_detail(id) {
         RowKind::Measured
     } else {
         RowKind::Count
     }
+}
+
+/// Whether `id` is the row of a detail of LigninDB's background work.
+#[cfg(grovedb_engine_seam)]
+fn is_detail(id: &str) -> bool {
+    id.strip_suffix("_per_transition")
+        .is_some_and(|detail| lignin_testkit::bench::lignindb::DETAIL_IDS.contains(&detail))
+}
+
+#[cfg(not(grovedb_engine_seam))]
+fn is_detail(_id: &str) -> bool {
+    false
 }
 
 /// The id and phase of every count row of `report`.
@@ -548,4 +561,84 @@ fn batches_of_ten_thousand_operations_on_both_engines() {
             }
         }
     }
+}
+
+/// A run of LigninDB with settings: the report names them, the details of
+/// the background work are rows that add up to the rows they split, and
+/// with the blocks paced every block's pages are written back by
+/// themselves.
+#[cfg(grovedb_engine_seam)]
+#[test]
+fn a_run_of_lignindb_with_settings_splits_its_bytes() {
+    let scratch = tempfile::tempdir().unwrap();
+    let mut options = options(scratch.path().join("set"));
+    options.engines = vec![EngineChoice::LigninDb];
+    for pair in ["pace=block", "chain_deltas=4"] {
+        options.settings.engine.set(pair).unwrap();
+    }
+    let report = run(&options).unwrap();
+    assert_eq!(
+        report.method.engine_settings,
+        ["pace=block", "chain_deltas=4"]
+    );
+    let engine = &report.engines[0];
+    let value = |id: &str, phase: &str| {
+        engine
+            .row(id, phase)
+            .unwrap_or_else(|| panic!("no row {id} in {phase}"))
+            .value
+    };
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    for phase in ["load", "create", "update", "delete"] {
+        let split = |rows: &[&str]| rows.iter().map(|id| value(id, phase)).sum::<f64>();
+        let logged = split(&[
+            "log_group_bytes_per_transition",
+            "log_page_step_bytes_per_transition",
+            "log_mark_bytes_per_transition",
+        ]);
+        assert!(
+            close(logged, value("bytes_logged_per_transition", phase)),
+            "the log in {phase}"
+        );
+        let flushed = split(&[
+            "segment_bytes_per_transition",
+            "value_log_bytes_per_transition",
+            "regroup_bytes_per_transition",
+            "table_checkpoint_bytes_per_transition",
+        ]);
+        assert!(
+            close(flushed, value("flush_bytes_per_transition", phase)),
+            "write-back in {phase}"
+        );
+        let cleaned = split(&[
+            "cleaner_block_bytes_per_transition",
+            "cleaner_value_bytes_per_transition",
+        ]);
+        assert!(
+            close(cleaned, value("compaction_bytes_per_transition", phase)),
+            "the cleaner in {phase}"
+        );
+        let physical = split(&[
+            "bytes_logged_per_transition",
+            "flush_bytes_per_transition",
+            "compaction_bytes_per_transition",
+        ]);
+        assert!(close(
+            physical,
+            value("physical_bytes_per_transition", phase)
+        ));
+    }
+    assert!(value("segment_bytes_per_transition", "load") > 0.0);
+    assert!(value("base_blocks_per_transition", "load") > 0.0);
+    for row in &engine.rows {
+        assert_eq!(row.kind, kind_of(&row.id), "{} in {}", row.id, row.phase);
+        assert_eq!(row.ratio_to_rocksdb, None, "RocksDB is not in the run");
+    }
+
+    let table = cli::table(&report);
+    assert!(
+        table.contains("\nsettings: pace=block chain_deltas=4\n"),
+        "{table}"
+    );
+    assert!(table.contains("\nlignindb  load     segment_bytes_per_transition"));
 }

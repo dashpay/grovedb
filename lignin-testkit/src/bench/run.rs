@@ -33,7 +33,7 @@ use grovedb_costs::OperationCost;
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    engine::{timed, Block, Engine},
+    engine::{timed, Block, Detail, Engine, EngineSettings},
     machine::{self, ColdMethod, Perf},
     report::{
         ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
@@ -81,6 +81,8 @@ pub struct Settings {
     pub scratch: PathBuf,
     /// Keep the databases.
     pub keep: bool,
+    /// What the engines are asked beyond their defaults.
+    pub engine: EngineSettings,
 }
 
 impl Settings {
@@ -104,6 +106,7 @@ impl Settings {
             perf: false,
             scratch,
             keep: false,
+            engine: EngineSettings::default(),
         }
     }
 
@@ -147,6 +150,7 @@ impl Settings {
             cold_method,
             perf_instructions,
             thread_cpu_time: machine::thread_cpu_ns().is_some(),
+            engine_settings: self.engine.list(),
         }
     }
 
@@ -415,6 +419,25 @@ struct PhaseRun {
     commit_ms: Vec<f64>,
     apply_meter: (Option<u64>, Option<u64>),
     commit_meter: (Option<u64>, Option<u64>),
+    /// The engine's details over the phase.
+    details: Vec<Detail>,
+}
+
+/// What `now` counts more than `then`, detail by detail.
+fn details_since(now: Vec<Detail>, then: &[Detail]) -> Result<Vec<Detail>, BenchError> {
+    if now.len() != then.len() || now.iter().zip(then).any(|(now, then)| now.id != then.id) {
+        return Err(BenchError::Check(
+            "an engine's details differ between two readings".to_string(),
+        ));
+    }
+    Ok(now
+        .into_iter()
+        .zip(then)
+        .map(|(now, then)| Detail {
+            total: now.total.saturating_sub(then.total),
+            ..now
+        })
+        .collect())
 }
 
 /// The next block of `stream`, its commit last. Empty at the end.
@@ -449,6 +472,7 @@ fn write_phase<E: Engine>(
     let mut apply_meter = Meter::new(settings, &format!("{phase}-apply"));
     let mut commit_meter = Meter::new(settings, &format!("{phase}-commit"));
     let counters_before = engine.counters()?;
+    let details_before = engine.details()?;
     let anatomy_before = engine.node_anatomy();
     let written_before = machine::process_io("write_bytes");
     while totals.transitions < transitions {
@@ -496,6 +520,7 @@ fn write_phase<E: Engine>(
     // Flushes and compactions the phase set off are counted in it.
     engine.wait_for_background()?;
     totals.counters = engine.counters()?.since(&counters_before);
+    let details = details_since(engine.details()?, &details_before)?;
     totals.node_anatomy = engine
         .node_anatomy()
         .zip(anatomy_before)
@@ -510,6 +535,7 @@ fn write_phase<E: Engine>(
         commit_ms,
         apply_meter: apply_meter.finish(),
         commit_meter: commit_meter.finish(),
+        details,
     })
 }
 
@@ -679,6 +705,16 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             written as f64,
             n,
             "/proc/self/io write_bytes of the whole process: a cross-check of physical bytes",
+        ));
+    }
+    for detail in &run.details {
+        rows.push(measured_row(
+            &format!("{}_per_transition", detail.id),
+            phase,
+            detail.unit,
+            detail.total as f64,
+            n,
+            detail.source,
         ));
     }
     rows
@@ -995,7 +1031,7 @@ fn measure<E: Engine>(
 ) -> Result<EngineReport, BenchError> {
     let mut reads = Reads::new(settings)?;
     let mut stream = settings.workload().stream(settings.seed);
-    let mut engine = E::open(dir)?;
+    let mut engine = E::open_with(dir, &settings.engine)?;
     engine.settle()?;
     let mut rows = Vec::new();
     let mut phases = Vec::new();
@@ -1159,7 +1195,7 @@ fn measure<E: Engine>(
     for _ in 0..settings.reopens {
         drop(engine);
         let mark = reopen_meter.start();
-        let (opened, elapsed) = timed(|| E::open(dir));
+        let (opened, elapsed) = timed(|| E::open_with(dir, &settings.engine));
         reopen_meter.stop(mark);
         engine = opened?;
         engine.settle()?;
@@ -1193,7 +1229,7 @@ fn measure<E: Engine>(
                 ));
             }
             let mark = cold_open_meter.start();
-            let (opened, elapsed) = timed(|| E::open(dir));
+            let (opened, elapsed) = timed(|| E::open_with(dir, &settings.engine));
             cold_open_meter.stop(mark);
             engine = opened?;
             engine.settle()?;
@@ -1333,8 +1369,23 @@ mod tests {
             commit_ms: Vec::new(),
             apply_meter: (None, None),
             commit_meter: (None, None),
+            details: vec![Detail {
+                id: "segment_bytes",
+                unit: "B",
+                total: 900,
+                source: "lignindb engine counters: write-back",
+            }],
         };
         let rows = count_rows(&run, "lignindb");
+        let detail = rows
+            .iter()
+            .find(|row| row.id == "segment_bytes_per_transition")
+            .expect("the detail's row");
+        assert_eq!(
+            (detail.value, detail.unit.as_str(), detail.kind),
+            (450.0, "B", RowKind::Measured)
+        );
+        assert_eq!(detail.source, "lignindb engine counters: write-back");
         let value = |id: &str| {
             let row = rows
                 .iter()
@@ -1376,6 +1427,44 @@ mod tests {
         assert!(!rows
             .iter()
             .any(|row| row.id == "engine_hashes_per_transition"));
+    }
+
+    /// The details of a phase are what the engine counted more at its end
+    /// than at its beginning, and two readings that do not name the same
+    /// details are refused.
+    #[test]
+    fn the_details_of_a_phase_are_differences() {
+        let reading = |segments, values| {
+            vec![
+                Detail {
+                    id: "segment_bytes",
+                    unit: "B",
+                    total: segments,
+                    source: "write-back",
+                },
+                Detail {
+                    id: "values_appended",
+                    unit: "values",
+                    total: values,
+                    source: "write-back",
+                },
+            ]
+        };
+        let since = details_since(reading(700, 9), &reading(200, 4)).unwrap();
+        assert_eq!(since, reading(500, 5));
+        assert_eq!(
+            details_since(reading(1, 1), &reading(2, 2)).unwrap(),
+            reading(0, 0)
+        );
+        assert_eq!(details_since(Vec::new(), &[]).unwrap(), Vec::new());
+        let mut other = reading(1, 1);
+        other.swap(0, 1);
+        for then in [&other[..], &reading(1, 1)[..1]] {
+            assert_eq!(
+                details_since(reading(1, 1), then).unwrap_err().to_string(),
+                "an engine's details differ between two readings"
+            );
+        }
     }
 
     /// Reports written before the engine counted lookups and hashes still
