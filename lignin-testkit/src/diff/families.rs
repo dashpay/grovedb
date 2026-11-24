@@ -835,6 +835,11 @@ pub struct Known {
     /// The dropped trees whose pending record a drain reclaimed after
     /// the open block wrote into their subtree ([`Known::drained`]).
     drained_beside: Vec<Path>,
+    /// Whether an operation that commits by itself
+    /// ([`Op::commits_by_itself`]) came since the block began,
+    /// whatever it was answered: a write beside the block that is no
+    /// drain.
+    committed_beside: bool,
     stored: [bool; FAMILIES],
     counts: Counts,
 }
@@ -2037,8 +2042,14 @@ impl Known {
     ///   are answered, return the case to the committed state: the
     ///   records are again those of the last commit that the reference
     ///   took, and none where it took none. What the block added, a
-    ///   delete of the block left; what it forgot, it wrote in a block
-    ///   that is gone.
+    ///   delete of the block left; what it forgot for a write of the
+    ///   block, it wrote in a block that is gone.
+    /// - An operation that commits by itself (a conversion in a
+    ///   transaction of its own, [`Op::commits_by_itself`]) is no write
+    ///   of the block: it writes into the committed state beside it,
+    ///   and carries its new hash up through a node of every tree above
+    ///   the one it writes. Whatever it is answered, it forgets every
+    ///   record, also those of the last commit.
     /// - A rollback to a savepoint, which can undo the delete itself,
     ///   forgets every record, whatever it was answered; a later
     ///   rollback of the block still returns those of the last commit.
@@ -2081,6 +2092,11 @@ impl Known {
             if let BatchOp::DropFlat { path, key, .. } = batch_op {
                 self.asked_to_drop_flat.push(joined(path, key));
             }
+        }
+        if op.commits_by_itself() {
+            self.left_records.clear();
+            self.left_at_commit.clear();
+            return;
         }
         match op {
             Op::Commit if taken => self.left_at_commit = self.left_records.clone(),
@@ -2153,9 +2169,14 @@ impl Known {
     ///   it writes into ([`written_subtrees`]), and says that the block
     ///   dropped a tree flat where it is a flat drop or a batch that
     ///   lists one, also one at a key the batch names twice.
+    /// - An operation that commits by itself, whatever it is answered,
+    ///   says that something other than a drain wrote beside the block,
+    ///   until the block ends.
     pub fn in_the_block(&mut self, op: &Op, taken: bool) {
+        self.committed_beside |= op.commits_by_itself();
         match op {
             Op::Commit | Op::Transaction(TransactionOp::Rollback | TransactionOp::Abandon) => {
+                self.committed_beside = false;
                 self.written_in_block.clear();
                 self.drained_beside.clear();
                 self.dropped_in_block = false;
@@ -2209,6 +2230,9 @@ impl Known {
     /// - No operation that the reference took in the block drops a tree
     ///   flat: such a block writes a pending record itself, under a key
     ///   that a drain may remove, which is a conflict on both engines.
+    /// - No operation that commits by itself came since the block
+    ///   began: it writes beside the block as a drain does, and a
+    ///   conflict after it is held to no family.
     ///
     /// The drain reads committed state, where the path of the dropped
     /// tree leads to no element while the block that made the tree
@@ -2223,7 +2247,8 @@ impl Known {
     ) -> Option<Family> {
         let conflict = matches!(reference, Outcome::Failed(error) if error == "Commit::Conflict");
         let taken = matches!(candidate, Outcome::Returned(_));
-        let beside = !self.drained_beside.is_empty() && !self.dropped_in_block;
+        let beside =
+            !self.drained_beside.is_empty() && !self.dropped_in_block && !self.committed_beside;
         (matches!(op, Op::Commit) && conflict && taken && beside).then_some(Family::DroppedTree)
     }
 
@@ -3081,7 +3106,8 @@ mod tests {
     /// operation, where the block put the tree's element alone, wrote
     /// beside the tree or below it, or had its write refused, where the
     /// write came after the drain or no drain was called, where the
-    /// block drops a tree flat, where it was rolled back to a savepoint
+    /// block drops a tree flat, where an operation committed by itself
+    /// beside the block, where it was rolled back to a savepoint
     /// since the write, where the block ended before the commit, where
     /// the drain left the record, and where the record left at another
     /// operation than a drain.
@@ -3169,7 +3195,12 @@ mod tests {
         let below = into(&path(&[b"a", b"dropped", b"below"]));
         let rollback = Op::Transaction(TransactionOp::Rollback);
         let abandon = Op::Transaction(TransactionOp::Abandon);
-        let blocks: [(&str, Vec<(&Op, bool)>); 15] = [
+        let by_itself = Op::Write(Write::ConvertToBigSumTree {
+            path: path(&[b"q"]),
+            key: b"elsewhere".to_vec(),
+            own_transaction: true,
+        });
+        let blocks: [(&str, Vec<(&Op, bool)>); 18] = [
             ("the element alone", vec![(&remake, true), (&drain, true)]),
             (
                 "a write beside the tree",
@@ -3269,6 +3300,33 @@ mod tests {
                     (&abandon, true),
                 ],
             ),
+            (
+                "an operation that commits by itself before the write",
+                vec![
+                    (&by_itself, true),
+                    (&remake, true),
+                    (&write, true),
+                    (&drain, true),
+                ],
+            ),
+            (
+                "an operation that commits by itself after the drain",
+                vec![
+                    (&remake, true),
+                    (&write, true),
+                    (&drain, true),
+                    (&by_itself, true),
+                ],
+            ),
+            (
+                "an operation that commits by itself and was refused",
+                vec![
+                    (&remake, true),
+                    (&write, true),
+                    (&by_itself, false),
+                    (&drain, true),
+                ],
+            ),
         ];
         for (what, block) in &blocks {
             assert_eq!(
@@ -3277,6 +3335,16 @@ mod tests {
                 "{what}"
             );
         }
+        // One that committed by itself in the block before is none of
+        // this block's.
+        let before = [
+            (&by_itself, true),
+            (&Op::Commit, true),
+            (&remake, true),
+            (&write, true),
+            (&drain, true),
+        ];
+        assert_eq!(family(&before, &Op::Commit, (&conflict, &took)), tree);
         // A flat drop that the reference refused is none of the block's.
         let refused_drop = [
             (&drop_another, false),
@@ -5484,6 +5552,35 @@ mod tests {
             assert!(left(&then_committed).is_empty(), "{end:?}");
             known.forgets(end, taken, false);
             assert_eq!(left(&known), alone, "{end:?}");
+        }
+
+        // An operation that commits by itself forgets every record,
+        // also for a rollback after it, whatever it was answered.
+        let by_itself = |own_transaction: bool| {
+            Op::Write(Write::ConvertToBigSumTree {
+                path: path(&[b"q"]),
+                key: b"elsewhere".to_vec(),
+                own_transaction,
+            })
+        };
+        for (taken, root_changed) in [(true, true), (true, false), (false, false)] {
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&by_itself(true), taken, root_changed);
+            assert!(left(&known).is_empty());
+            for end in [&rollback, &abandon, &Op::Commit] {
+                let mut ended = known.clone();
+                ended.forgets(end, true, false);
+                assert!(left(&ended).is_empty(), "{end:?}");
+            }
+            // The same conversion in the block's transaction is a write
+            // of the block, and forgets what is at or below its subtree.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&by_itself(false), taken, root_changed);
+            assert_eq!(left(&known), both);
+            known.forgets(&rollback, true, false);
+            assert_eq!(left(&known), alone);
         }
 
         // A drain forgets the records at or below a path at which the

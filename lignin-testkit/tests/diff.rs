@@ -1743,7 +1743,7 @@ fn a_batch_refused_at_a_kept_record_by_lignindb_and_further_on_by_rocksdb_is_pas
 ///
 /// Where the plain delete is in the block that is rolled back, the tree
 /// stands again with its element on both engines, which refuse the
-/// batch alike at the tree that was never made.
+/// batch alike.
 #[test]
 fn a_record_that_a_commit_kept_is_known_after_a_rollback_and_one_of_the_block_is_not() {
     use lignin_testkit::{
