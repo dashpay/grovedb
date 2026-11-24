@@ -19,6 +19,11 @@
 //! compared, and the calls that the engines answer differently are
 //! written out with what each engine answers ([`differing`]): no other
 //! call may differ, and none of these may come to agree unnoticed.
+//!
+//! [`deleted_as_a_tree`] is one write that is charged differently where
+//! a tree was made again over such records: its delete as a tree with
+//! what it holds, whose cleanup removes on RocksDB the records that
+//! were kept.
 
 use grovedb_costs::OperationCost;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
@@ -28,10 +33,10 @@ use super::{
     Lignin,
 };
 use crate::{
-    batch::{BatchApplyOptions, QualifiedGroveDbOp as Op},
+    batch::{BatchApplyOptions, QualifiedGroveDbOp as Op, SubelementsDeletionBehavior},
     engine::Engine,
     query_result_type::QueryResultType,
-    Element, Error, GroveDb, PathQuery, Query,
+    Element, Error, GroveDb, PathQuery, Query, TreeType,
 };
 
 /// The path of the tree that holds the three trees of the history.
@@ -413,6 +418,152 @@ fn a_tree_removed_with_an_element_in_it_and_made_again_answers_as_on_rocksdb_but
                 }
             }
             assert!(found == differing, "grove version {number}");
+        }
+    }
+}
+
+const P: &[&[u8]] = &[b"p"];
+const T: &[&[u8]] = &[b"p", b"t"];
+
+/// A tree `t` with an empty sum tree under one key, removed by a batch's
+/// plain delete; `t` made again with nothing in it; and `t` deleted as
+/// a tree by a batch, with `behavior` for what it holds. Then whether
+/// the path of `t` holds the old key. Each batch is applied in a
+/// transaction of its own ([`batch`]).
+fn deleted_as_a_tree<E: Engine>(
+    db: &GroveDb<E>,
+    v: &GroveVersion,
+    behavior: SubelementsDeletionBehavior,
+) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let owned = |path: &[&[u8]]| -> Vec<Vec<u8>> { path.iter().map(|s| s.to_vec()).collect() };
+    let root: &[&[u8]] = &[];
+    h.write(
+        "the tree above",
+        db.insert(root, b"p", Element::empty_tree(), None, None, v),
+    )
+    .expect("the tree above");
+    let put_t = || Op::insert_or_replace_op(owned(P), b"t".to_vec(), Element::empty_tree());
+    let held = Op::insert_or_replace_op(owned(T), HELD.to_vec(), Element::empty_sum_tree());
+    batch(&mut h, "made", vec![put_t(), held]);
+    batch(
+        &mut h,
+        "removed by a plain delete",
+        vec![Op::delete_op(owned(P), b"t".to_vec())],
+    );
+    batch(&mut h, "made again", vec![put_t()]);
+    let as_a_tree = Op::delete_tree_op(owned(P), b"t".to_vec(), TreeType::NormalTree, behavior);
+    batch(&mut h, DELETED_AS_A_TREE, vec![as_a_tree]);
+    h.read("has the tree", db.has_raw(P, b"t", None, v));
+    h.read(HAS_THE_OLD_KEY, db.has_raw(T, HELD, None, v));
+    h.answers
+}
+
+const DELETED_AS_A_TREE: &str = "deleted as a tree";
+const HAS_THE_OLD_KEY: &str = "has the old key";
+
+/// What a batch was charged: seeks, bytes loaded, bytes removed and hash
+/// calls. It added nothing, and what it replaced is compared apart.
+type Charged = (u32, u64, u32, u32);
+
+fn charged((_, cost, _): &Answer) -> Charged {
+    assert_eq!(cost.storage_cost.added_bytes, 0);
+    (
+        cost.seek_count,
+        cost.storage_loaded_bytes,
+        cost.storage_cost.removed_bytes.total_removed_bytes(),
+        cost.hash_node_calls,
+    )
+}
+
+/// What the delete of the tree made again with its children is charged
+/// on LigninDB and then on RocksDB, on the grove version of `number`:
+/// the cleanup of the deleted tree removes the kept record on RocksDB,
+/// and is charged its removal.
+///
+/// **RocksDB's is what a later unit has to give if this stated
+/// difference is turned; LigninDB's is what it gives today.**
+fn charged_with_its_children(number: usize) -> (Charged, Charged) {
+    match number {
+        1..=3 => ((9, 794, 109, 8), (15, 1677, 215, 10)),
+        _ => ((12, 1658, 109, 12), (21, 3405, 215, 18)),
+    }
+}
+
+/// A tree made again at the path of a tree that a plain delete removed
+/// with an element in it, and deleted as a tree by a batch. With its
+/// children deleted, RocksDB removes the record it kept and is charged
+/// for it, on every grove version, which is a stated difference; the
+/// path holds nothing afterwards on either engine. With no cleanup
+/// asked, the batch is charged alike on both engines and the kept
+/// record stays on RocksDB. Both engines take every batch and end on
+/// the same root hash, and every other call is answered and charged
+/// alike.
+#[test]
+fn a_tree_made_again_over_kept_records_is_charged_otherwise_where_it_is_deleted_as_a_tree() {
+    let behaviors = [
+        SubelementsDeletionBehavior::DeleteChildren,
+        SubelementsDeletionBehavior::DontCheckWithNoCleanup,
+    ];
+    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        for behavior in behaviors {
+            let said = format!("{behavior:?} on grove version {number}");
+            let dir = tempfile::tempdir().expect("a directory");
+            let on_lignin = {
+                let db = Lignin::open_with_engine(dir.path()).expect("a database is made");
+                let answers = deleted_as_a_tree(&db, v, behavior);
+                db.flush().expect("a flush");
+                answers
+            };
+            check(dir.path(), v);
+            let batches = [
+                "made",
+                "removed by a plain delete",
+                "made again",
+                DELETED_AS_A_TREE,
+            ];
+            for call in batches {
+                assert_eq!(taken(&on_lignin, call), 1, "{call}, {said}");
+                let committed = format!("{call}, committed");
+                assert_eq!(taken(&on_lignin, &committed), 1, "{committed}, {said}");
+            }
+            let with_children = behavior == SubelementsDeletionBehavior::DeleteChildren;
+            let (lignin, rocksdb) = charged_with_its_children(number);
+            // What is: LigninDB's charge, and nothing under the path.
+            let deleted = answer_of(&on_lignin, DELETED_AS_A_TREE);
+            if with_children {
+                assert_eq!(charged(deleted), lignin, "LigninDB, {said}");
+            }
+            assert_eq!(answer_of(&on_lignin, HAS_THE_OLD_KEY).2, "Ok(false)");
+            #[cfg(feature = "rocksdb_storage")]
+            {
+                let dir = tempfile::tempdir().expect("a directory");
+                let db = GroveDb::<crate::RocksDbEngine>::open_with_engine(dir.path())
+                    .expect("a database on RocksDB");
+                let on_rocksdb = deleted_as_a_tree(&db, v, behavior);
+                assert_eq!(on_lignin.len(), on_rocksdb.len(), "{said}");
+                for (is, was) in on_lignin.iter().zip(&on_rocksdb) {
+                    assert_eq!(is.0, was.0, "{said}");
+                    if is.0 == DELETED_AS_A_TREE && with_children {
+                        // Required: RocksDB's charge. The batch is
+                        // taken on both and replaces the same bytes, and
+                        // the root hash after it, the next call, is the
+                        // same.
+                        assert_eq!(charged(was), rocksdb, "RocksDB, {said}");
+                        assert_eq!((is.2.as_str(), was.2.as_str()), ("Ok(())", "Ok(())"));
+                        let replaced = |answer: &Answer| answer.1.storage_cost.replaced_bytes;
+                        assert_eq!(replaced(is), replaced(was), "{said}");
+                    } else if is.0 == HAS_THE_OLD_KEY && !with_children {
+                        // Required: with no cleanup the record that
+                        // RocksDB kept is still under the path.
+                        assert_eq!(was.2, "Ok(true)", "RocksDB, {said}");
+                    } else {
+                        assert_eq!(is, was, "{said}");
+                    }
+                }
+            }
+            let _ = rocksdb;
         }
     }
 }
