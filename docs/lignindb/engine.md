@@ -376,6 +376,8 @@ A test that needs a database needs an engine for the suite, not RocksDB by name:
 - A function that returns a handle or a Merk has a lifetime of its own for the borrow: `fn open<'a, 'db: 'a>(&'db self, tx: &'a Transaction<'db, E>, batch: Option<&'a E::Batch>) -> Merk<E::Subtree<'a>>`. The methods of `Engine` that open handles have this shape.
 - A handle of an engine may have a destructor, so GroveDB drops a handle, or a Merk on one, before it moves the batch or the transaction the handle borrows.
 
+One change outside GroveDB follows from the same fact: `ChunkProducer::new` in Merk took `&'db Merk<S>` with `S: NodeStore<'db>`, one lifetime for the borrow of the Merk and for what its store borrows. A generic handle cannot meet that. The two are separate lifetimes now.
+
 #### What a caller holds takes a shorter lifetime
 
 A caller of `GroveDb` that names its engine writes `fn f(&self, transaction: TransactionArg)`: the borrow of the database and the lifetime of the transaction are two lifetimes of its function, and the transaction was begun with a longer borrow than the one `f` has. It gives both to a method of `GroveDb`, which takes them with one. That compiles where the compiler may give the transaction the shorter lifetime, which it may for a type that holds its borrows plainly and may not for one that holds them behind a lock or a cell.
@@ -389,11 +391,9 @@ A caller of `GroveDb` that names its engine writes `fn f(&self, transaction: Tra
 | `Engine::SubtreeMove<'db>` | does not | does not |
 | `MultiStateSyncSession<'db, E>` | does not | does not |
 
-`lignindb::txn::WriteTxn<'db>` keeps its state behind a lock, so it does not shorten, and a transaction of the engine that held one by its type would not either: code written for the RocksDB engine in the form above would not compile on the LigninDB engine. The engine therefore keeps its write transaction as it keeps a write scope, as a boxed trait object with the lifetime of its borrow alone (`WriteView` in `grovedb/src/engine/lignin/mod.rs`), and a boxed trait object shortens whatever it holds. What it costs is one indirect call for each operation of the engine on a write transaction: the view that a handle is opened with, the commit, the rollback, a savepoint, the rollback to one, and the opening of a scope. The test `what_a_caller_holds_across_a_call_takes_a_shorter_lifetime` holds the rows that shorten on the LigninDB engine at compile time, and that a transaction and a write scope of that engine go to another thread and are not shared between threads, as before.
+`lignindb::txn::WriteTxn<'db>` keeps its state behind a lock, so it does not shorten, and a transaction of the engine that held one by its type would not either: code written for the RocksDB engine in the form above would not compile on the LigninDB engine. The engine therefore keeps its write transaction as it keeps a write scope, as a boxed trait object with the lifetime of its borrow alone (`WriteView` in `grovedb/src/engine/lignin/mod.rs`), and a boxed trait object shortens whatever it holds. What it costs is one indirect call where the engine asks something of a write transaction: its view, which each handle is opened with and which the application of a group, the adoption of restored subtrees and the walk of a move take once each; the commit; the rollback; a savepoint and the rollback to one; the opening of a scope; a loan of it (`with_write_transaction`); and its drop. A read or a write through a handle makes no such call: a handle keeps the view it was opened with. The test `what_a_caller_holds_across_a_call_takes_a_shorter_lifetime` holds the rows that shorten on the LigninDB engine at compile time, and that a transaction and a write scope of that engine go to another thread and are not shared between threads.
 
 So the engine has no `WriteTxn<'db>` to hand out: `LigninTransaction::with_write_transaction` lends the write transaction to a closure for one call, and returns what the closure answers.
-
-One change outside GroveDB follows from the same fact: `ChunkProducer::new` in Merk took `&'db Merk<S>` with `S: NodeStore<'db>`, one lifetime for the borrow of the Merk and for what its store borrows. A generic handle cannot meet that. The two are separate lifetimes now.
 
 ### Engine-independent helpers
 

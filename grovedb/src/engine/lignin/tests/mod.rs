@@ -981,8 +981,8 @@ fn a_snapshot_reads_one_version_and_refuses_every_write() {
 /// `shortens` compiles only if its type does.
 ///
 /// A transaction and a write scope go to another thread and are not
-/// shared between threads, as before the engine kept its write
-/// transaction behind a trait.
+/// shared between threads: the view of a write scope is `Send` alone,
+/// and both types can hold one.
 #[test]
 fn what_a_caller_holds_across_a_call_takes_a_shorter_lifetime() {
     type Transaction<'db> = <LigninEngine as Engine>::Transaction<'db>;
