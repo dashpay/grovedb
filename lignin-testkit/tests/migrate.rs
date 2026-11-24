@@ -2460,17 +2460,19 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
         let refused = outcome.expect_err("the projection is above the limit");
         assert!(refused.contains("above the limit of 1 MiB"), "{refused}");
         assert!(
-            refused.contains("A smaller --batch or --cache takes it"),
+            refused.contains("the limit is below the 256 MiB"),
             "{refused}"
         );
+        assert!(!refused.contains("smaller ones take it"), "{refused}");
         assert!(!refused.contains("is not built"), "{refused}");
         assert_eq!(word_of(&out, "limit_bytes"), 1 << 20, "{out}");
         assert!(word_of(&out, "projected_peak_bytes") > floor, "{out}");
         assert!(nothing_made());
     }
-    // A limit between the floor and what the largest Merk adds to it.
+    // A limit that the 256 MiB of any run with the largest Merk are
+    // above: no setting of the run answers it.
     let limited = Migration {
-        memory_limit: Some(floor + 1_000 * nodes),
+        memory_limit: Some((256 << 20) + 1_000 * nodes),
         ..plain.clone()
     };
     let (outcome, out) = ran(&limited);
@@ -2480,22 +2482,34 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
         "{refused}\n{out}"
     );
     assert!(refused.contains("is not built"), "{refused}");
+    assert!(!refused.contains("smaller ones take it"), "{refused}");
     assert!(nothing_made());
-    // A commit of every size there is: the sum does not wrap, and is
-    // above every limit.
-    let endless = Migration {
-        batch_bytes: usize::MAX,
-        memory_limit: Some(1 << 50),
+    // A limit that only the sum with what a commit takes and the buffer
+    // pool is above: smaller ones answer it.
+    let limited = Migration {
+        memory_limit: Some(floor + 1_000 * nodes),
         ..plain.clone()
     };
-    let (outcome, out) = ran(&endless);
-    let refused = outcome.expect_err("the projection is above the limit");
-    assert!(
-        refused.contains("A smaller --batch or --cache takes it"),
-        "{refused}"
-    );
-    assert_eq!(word_of(&out, "projected_peak_bytes"), u64::MAX, "{out}");
+    let (outcome, out) = ran(&limited);
+    let refused = outcome.expect_err("the sum is above the limit");
+    assert!(refused.contains("smaller ones take it"), "{refused}\n{out}");
+    assert!(!refused.contains("is not built"), "{refused}");
     assert!(nothing_made());
+    // A commit of every size there is, where a size has the width of the
+    // limit: the sum is one that no number of that width holds, and is
+    // above the largest limit there is.
+    if cfg!(target_pointer_width = "64") {
+        let endless = Migration {
+            batch_bytes: usize::MAX,
+            memory_limit: Some(u64::MAX),
+            ..plain.clone()
+        };
+        let (outcome, out) = ran(&endless);
+        let refused = outcome.expect_err("the projection is above the limit");
+        assert!(refused.contains("smaller ones take it"), "{refused}");
+        assert_eq!(word_of(&out, "projected_peak_bytes"), u64::MAX, "{out}");
+        assert!(nothing_made());
+    }
 
     // The projection of a run that is taken grows with the nodes of the
     // largest Merk that is handed over.
@@ -2536,10 +2550,8 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
             continue;
         }
         let refused = outcome.expect_err("the carried prefix is above the limit");
-        assert!(
-            refused.contains("1 aux and meta records"),
-            "{refused}\n{out}"
-        );
+        assert!(refused.contains("above the limit"), "{refused}");
+        assert!(out.contains("1 aux and meta records"), "{out}");
         // The record counts as a node does, with three times its bytes.
         let projected = word_of(&out, "projected_peak_bytes");
         assert!(projected > floor + 600_000, "{projected}: {out}");
@@ -2572,19 +2584,43 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
         let applied = db.apply_batch(batch, None, None, GroveVersion::latest());
         applied.unwrap().expect("the batch is taken");
     }
-    let commits = |batch_bytes: usize| {
+    let commits = |source: &Path, name: &str, batch_bytes: usize| {
         let sized = Migration {
             batch_bytes,
-            ..migration(&source, &into.join(batch_bytes.to_string()))
+            unreachable: Unreachable::Carry,
+            ..migration(source, &into.join(format!("{name}-{batch_bytes}")))
         };
         let (outcome, out) = ran(&sized);
         assert_eq!(outcome, Ok(Outcome::Done), "{out}");
         word(&out, "migrate: loaded", "commits")
     };
-    let (few, more) = (commits(64 << 20), commits(300_000));
+    let (few, more) = (
+        commits(&source, "nodes", 64 << 20),
+        commits(&source, "nodes", 300_000),
+    );
     assert!(
         more >= few + 2,
         "{few} commits of 64 MiB, {more} of 300,000 bytes"
+    );
+
+    // And by the records it holds that are no nodes, as the projection
+    // counts them. Three prefixes that nothing leads to, each with an aux
+    // record of 100,000 bytes, are carried in one commit where a commit
+    // takes 64 MiB, and in a commit each where it takes 250,000 bytes,
+    // which the bytes of two of them are below.
+    let source = dir.path().join("rocksdb-4");
+    drop(rocks(&source));
+    let large = vec![7; 100_000];
+    for prefix in [[0xC1; 32], [0xC2; 32], [0xC3; 32]] {
+        raw(&source, prefix, 'a', b"an aux record", Some(&large));
+    }
+    let (few, more) = (
+        commits(&source, "records", 64 << 20),
+        commits(&source, "records", 250_000),
+    );
+    assert!(
+        more >= few + 3,
+        "{few} commits of 64 MiB, {more} of 250,000 bytes"
     );
 }
 
