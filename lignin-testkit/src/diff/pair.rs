@@ -289,6 +289,11 @@ pub struct Tally {
     /// passed over: stored records that differ, or an answer at which
     /// no case ends.
     pub passed: u64,
+    /// What the reference's own check answered at the end of the cases
+    /// that ended at a write which the reference alone took
+    /// ([`Family::TakenBelowPlainDelete`]): how often it found nothing,
+    /// reported places, and failed.
+    pub reference_checks: [u64; 3],
 }
 
 impl Tally {
@@ -305,6 +310,9 @@ impl Tally {
         self.clean += other.clean;
         self.ended += other.ended;
         self.passed += other.passed;
+        for (sum, more) in self.reference_checks.iter_mut().zip(other.reference_checks) {
+            *sum += more;
+        }
     }
 }
 
@@ -336,6 +344,22 @@ pub struct Run {
     /// refused, differently in the cost or the error, each of which was
     /// passed over ([`Family::RefusedBelowPlainDelete`]).
     pub passed_refusals: Vec<Divergence>,
+    /// What the reference's own check (`verify_grovedb`) answered at the
+    /// end of a case that ended at a write which the reference alone
+    /// took ([`Family::TakenBelowPlainDelete`]). The case is not held to
+    /// it.
+    pub reference_check: Option<ReferenceCheck>,
+}
+
+/// What the reference's own check answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceCheck {
+    /// It found nothing.
+    Nothing,
+    /// It reported places.
+    Places,
+    /// It failed.
+    Failed,
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -592,6 +616,17 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             });
         }
     }
+    // Where the case ended at a write that the reference alone took, what
+    // the reference's own check answers is kept, and the case is not held
+    // to it.
+    if run.ended_at == Some(Family::TakenBelowPlainDelete) {
+        let checked = catching(|| reference_db.verify_grovedb(None, true, false, grove_version));
+        run.reference_check = Some(match checked {
+            Ok(Ok(issues)) if issues.is_empty() => ReferenceCheck::Nothing,
+            Ok(Ok(_)) => ReferenceCheck::Places,
+            Ok(Err(_)) | Err(_) => ReferenceCheck::Failed,
+        });
+    }
     // The close of a debug build checks the candidate's store again, and
     // panics on what the check above has found: the divergence stands.
     let found_at_the_close = |divergence: &Divergence| divergence.parts == [Part::Check];
@@ -633,6 +668,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             failed_steps: failed_steps.take(),
             passed_costs: passed_costs.take(),
             passed_refusals: passed_refusals.take(),
+            reference_check: None,
         })
     };
     let diverged = |tally, step, parts, reference, candidate| {
@@ -648,6 +684,9 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         tally.cut_short = 1;
         ended(tally, None, Some(format!("at step {step}, {why}")), false)
     };
+    // The root hash of each engine after the last operation that has
+    // one.
+    let mut roots: (Option<[u8; 32]>, Option<[u8; 32]>) = (None, None);
     for (step, op) in case.ops.iter().enumerate() {
         tally.families = known.counts();
         if interrupted() {
@@ -655,26 +694,32 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         }
         // Asked of the reference before the operation: a read of its
         // block's state, which changes nothing.
-        let (over, over_indexed, under_an_insert_only, plain_deletes, root_delete, kept) =
-            catching(|| {
-                let (db, version) = (reference_db, case.grove_version);
-                let block = reference_runner.transactions().block();
-                let kept = known.kept_below_a_removed_tree(
-                    (db, block),
-                    (candidate_db, candidate_runner.transactions().block()),
-                    op,
-                    version,
-                );
-                (
-                    Known::trees_under(db, block, op, version),
-                    Known::indexed_under(db, block, op, version),
-                    Known::indexed_under_an_insert_only(db, block, op, version),
-                    Known::trees_under_a_plain_delete(db, block, op, version),
-                    Known::trees_under_a_root_delete(db, block, op, version),
-                    kept,
-                )
-            })
-            .unwrap_or_default();
+        let (
+            over,
+            over_indexed,
+            under_an_insert_only,
+            plain_deletes,
+            root_delete,
+            kept,
+            no_element,
+        ) = catching(|| {
+            let (db, version) = (reference_db, case.grove_version);
+            let block = reference_runner.transactions().block();
+            let candidate = (candidate_db, candidate_runner.transactions().block());
+            let kept = known.kept_below_a_removed_tree((db, block), candidate, op, version);
+            let no_element =
+                known.named_by_a_kept_record_alone((db, block), candidate, op, version);
+            (
+                Known::trees_under(db, block, op, version),
+                Known::indexed_under(db, block, op, version),
+                Known::indexed_under_an_insert_only(db, block, op, version),
+                Known::trees_under_a_plain_delete(db, block, op, version),
+                Known::trees_under_a_root_delete(db, block, op, version),
+                kept,
+                no_element,
+            )
+        })
+        .unwrap_or_default();
         let was = observe(&mut reference_runner, op);
         // A put of an indexed tree over an indexed tree that the reference
         // took is counted, whatever the candidate did.
@@ -720,12 +765,20 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             // The reference was charged for reading the records it kept
             // below a tree that the batch removes.
             let cost = || Known::family_of_cost(&kept, &was.step, &is.step, &parts);
-            // Both engines refused a write below a plain delete.
-            let refused_write = || known.family_of_refused_write(op, reference, candidate, &parts);
+            // Both engines refused a write below a plain delete, and
+            // each has the root hash it had before.
+            let unchanged =
+                roots.0.is_some() && was.step.root_hash == roots.0 && is.step.root_hash == roots.1;
+            let refused_write =
+                || known.family_of_refused_write(op, reference, candidate, &parts, unchanged);
+            // The reference took a write into a subtree that it opened by
+            // a record it kept.
+            let taken_write = || Known::family_of_taken_write(&no_element, reference, candidate);
             let family = refusal
                 .or_else(root_key)
                 .or_else(cost)
                 .or_else(refused_write)
+                .or_else(taken_write)
                 .or_else(|| known.family_of_answer(op, taken, &parts))
                 .or_else(through_a_proof);
             let Some(family) = family else {
@@ -750,6 +803,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                     failed_steps: failed_steps.take(),
                     passed_costs: passed_costs.take(),
                     passed_refusals: passed_refusals.take(),
+                    reference_check: None,
                 });
             }
             // A read below a plain delete, or a batch that differs in
@@ -771,7 +825,15 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             passed_over = true;
             tally.families = known.counts();
         }
+        // The root hash each engine has now, for the next operation: a
+        // read has none, and leaves it.
+        let before = roots;
+        roots = (
+            was.step.root_hash.or(roots.0),
+            is.step.root_hash.or(roots.1),
+        );
         if !was.step.failed() {
+            known.wrote(op, was.step.root_hash.is_some() && roots.0 != before.0);
             // The trees a plain delete of the batch removed of which the
             // reference still holds a record, as its block sees it now.
             let left = catching(|| {
@@ -1516,6 +1578,7 @@ mod tests {
             clean: 7,
             ended: 8,
             passed: 9,
+            reference_checks: [1, 2, 3],
         };
         tally.add(&tally.clone());
         assert_eq!(
@@ -1532,6 +1595,7 @@ mod tests {
                 clean: 14,
                 ended: 16,
                 passed: 18,
+                reference_checks: [2, 4, 6],
             }
         );
     }

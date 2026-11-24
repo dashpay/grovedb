@@ -366,7 +366,7 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     assert_eq!(rows(&ended.reference)[1..], kept);
     assert_eq!(rows(&ended.candidate), [again]);
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(families.answers, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
     assert_eq!(families.answer_seed[2], Some(case.seed));
 }
 
@@ -525,7 +525,7 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
         let panicked = |line: &String| line.contains(origin) && line.contains(&asserted);
         assert!(divergence.reference.iter().any(panicked), "{divergence:?}");
         assert_eq!(ran.ended_at, None);
-        assert_eq!(ran.tally.families.answers, [0; 10]);
+        assert_eq!(ran.tally.families.answers, [0; 11]);
 
         // With the contract kept, the case of the seed has no divergence.
         let mut keeping = shape.clone();
@@ -567,7 +567,7 @@ fn a_proof_of_a_tree_made_again_before_the_drain_ends_the_case_counted_apart() {
     assert_eq!(rows(&ended.reference), rows(&ended.candidate));
     assert_eq!(ran.ended_at, Some(Family::DroppedTreeProof));
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+    assert_eq!(families.answers, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
     assert_eq!(families.answer_seed[4], Some(case.seed));
 }
 
@@ -649,7 +649,7 @@ fn an_insert_known_not_to_replace_over_an_indexed_tree_ends_the_case_counted_apa
         "{ended:?}"
     );
     let families = ran.tally.families;
-    assert_eq!(families.answers, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    assert_eq!(families.answers, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
     assert_eq!(families.histories[5], 1);
     assert_eq!(families.answer_seed[5], Some(seed));
 }
@@ -777,11 +777,19 @@ fn a_read_below_a_plain_delete_of_a_tree_with_an_element_is_counted_and_the_case
         let families = run.tally.families;
         assert_eq!(
             families.histories,
-            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
             "{number}"
         );
-        assert_eq!(families.stored, [0, 0, 0, 0, 0, 0, 1, 0, 0, 0], "{number}");
-        assert_eq!(families.answers, [0, 0, 0, 0, 0, 0, 1, 0, 0, 0], "{number}");
+        assert_eq!(
+            families.stored,
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            "{number}"
+        );
+        assert_eq!(
+            families.answers,
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            "{number}"
+        );
         assert_eq!(run.tally.closes.checked, 1, "{number}");
 
         // The tree made again and its key written: every answer alike.
@@ -807,11 +815,15 @@ fn a_read_below_a_plain_delete_of_a_tree_with_an_element_is_counted_and_the_case
         let families = run.tally.families;
         assert_eq!(
             families.histories,
-            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
             "{number}"
         );
-        assert_eq!(families.stored, [0, 0, 0, 0, 0, 0, 1, 0, 0, 0], "{number}");
-        assert_eq!(families.answers, [0; 10], "{number}");
+        assert_eq!(
+            families.stored,
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+            "{number}"
+        );
+        assert_eq!(families.answers, [0; 11], "{number}");
         assert!(run.tally.proofs >= 5, "{:?}", run.tally);
 
         // What the tree holds deleted by the same batch: no place.
@@ -827,7 +839,7 @@ fn a_read_below_a_plain_delete_of_a_tree_with_an_element_is_counted_and_the_case
         assert_eq!(run.divergence, None, "grove version {number}");
         assert_eq!(run.ended_at, None, "grove version {number}");
         assert!(!run.failed_steps.contains(&made().len()), "{number}");
-        assert_eq!(run.tally.families.histories, [0; 10], "{number}");
+        assert_eq!(run.tally.families.histories, [0; 11], "{number}");
     }
 }
 
@@ -920,7 +932,7 @@ fn a_write_after_a_root_key_record_was_left_behind_ends_the_case_counted_apart()
         if number > 3 {
             assert_eq!(run.ended_at, None, "grove version {number}");
             assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
-            assert_eq!(families.histories, [0; 10], "{number}");
+            assert_eq!(families.histories, [0; 11], "{number}");
             continue;
         }
         assert_eq!(run.ended_at, Some(Family::RootKeyLeftBehind), "{number}");
@@ -938,10 +950,14 @@ fn a_write_after_a_root_key_record_was_left_behind_ends_the_case_counted_apart()
         );
         assert_eq!(
             families.histories,
-            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
             "{number}"
         );
-        assert_eq!(families.answers, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0], "{number}");
+        assert_eq!(
+            families.answers,
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            "{number}"
+        );
         assert_eq!(families.answer_seed[7], Some(11));
     }
 }
@@ -1004,8 +1020,11 @@ fn the_streams_of_the_scenes_run_alike_but_for_their_families() {
                 let families = run.tally.families;
                 made[at] += families.histories[of_the_family];
                 if scene == Scene::PlainDelete {
-                    // A read that differs ends no case of this family.
+                    // A read that differs ends no case of this family,
+                    // and a stream as generated asks for no write that
+                    // an engine refuses.
                     assert_eq!(run.ended_at, None, "{seed} on {number}");
+                    assert!(run.passed_refusals.is_empty(), "{seed} on {number}");
                     passed += families.answers[of_the_family];
                     // The cost of a removal of a tree made again is
                     // passed over on grove versions 4 and 5 alone.
@@ -1217,6 +1236,91 @@ fn a_write_that_both_engines_refuse_below_a_plain_delete_is_counted_apart_and_pa
     }
 }
 
+/// A tree is removed by a plain delete with a sum tree in it and made
+/// again, and the key of the sum tree is not written again. A write
+/// into the subtree under that key is taken by RocksDB, which opens the
+/// subtree by the record it kept though its tree of elements holds no
+/// element there, and is refused by LigninDB, which has no such
+/// subtree. The case ends at that answer, counted apart, with LigninDB's
+/// store checked and what the reference's own check answers kept.
+#[test]
+fn a_write_that_rocksdb_alone_takes_below_a_plain_delete_ends_the_case_counted_apart() {
+    use lignin_testkit::{
+        diff::{Case, Family},
+        workload::{BatchOp, Op, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let put = |at: &[&[u8]], key: &[u8], element: grovedb::Element| {
+        Op::Batch(vec![BatchOp::InsertOrReplace {
+            path: path(at),
+            key: key.to_vec(),
+            element,
+        }])
+    };
+    let tree = grovedb::Element::empty_tree;
+    let item = || grovedb::Element::new_item(vec![7; 8]);
+    let ops = vec![
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"p".to_vec(),
+            element: tree(),
+        }),
+        put(&[b"p"], b"t", tree()),
+        put(&[b"p", b"t"], &[1], grovedb::Element::empty_sum_tree()),
+        Op::Commit,
+        Op::Batch(vec![BatchOp::Delete {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+        }]),
+        Op::Commit,
+        put(&[b"p"], b"t", tree()),
+        put(&[b"p", b"t"], &[0], item()),
+        put(&[b"p", b"t"], &[2], item()),
+        Op::Commit,
+        put(&[b"p", b"t", &[1]], b"k", grovedb::Element::new_sum_item(4)),
+        Op::Commit,
+    ];
+    const TAKEN_BY_ONE: usize = 10;
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let case = Case::of(29, grove_version, ops.clone());
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(
+            run.ended_at,
+            Some(Family::TakenBelowPlainDelete),
+            "{number}"
+        );
+        let ended = run.ended_with.as_ref().expect("the answers it ended with");
+        assert_eq!(ended.step, TAKEN_BY_ONE, "{ended:?}");
+        let failed = |lines: &[String]| {
+            let mut failed = lines.iter().filter(|line| line.starts_with("failed "));
+            failed.next().cloned()
+        };
+        assert_eq!(failed(&ended.reference), None, "{ended:?}");
+        let refused = Some("failed InvalidPath".to_string());
+        assert_eq!(failed(&ended.candidate), refused, "{ended:?}");
+        assert!(ended.parts.contains(&Part::Error), "{ended:?}");
+        assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
+        let families = run.tally.families;
+        assert_eq!(families.histories[10], 1, "grove version {number}");
+        assert_eq!(families.answers[10], 1, "grove version {number}");
+        assert_eq!(families.answer_seed[10], Some(29));
+        assert_eq!(run.tally.closes.checked, 1, "{number}");
+        println!(
+            "grove version {number}: the reference's own check: {:?}",
+            run.reference_check
+        );
+        assert!(run.reference_check.is_some(), "grove version {number}");
+    }
+}
+
 /// The records RocksDB keeps below an element written over a tree are
 /// read like those below a plain delete where a checked batch replaces
 /// the tree above on grove versions 4 and 5: the batch differs in the
@@ -1326,7 +1430,7 @@ fn a_partial_batch_into_full_tree_pages_is_answered_alike() {
     assert!(!run.failed_steps.contains(&AT), "{:?}", run.failed_steps);
     assert_eq!(run.tally.closes.checked, 1);
     // No answer and no stored record was passed over for a family.
-    assert_eq!(run.tally.families.answers, [0; 10]);
-    assert_eq!(run.tally.families.stored, [0; 10]);
+    assert_eq!(run.tally.families.answers, [0; 11]);
+    assert_eq!(run.tally.families.stored, [0; 11]);
     assert!(run.passed_costs.is_empty());
 }

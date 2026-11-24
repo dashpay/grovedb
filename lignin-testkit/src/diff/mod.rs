@@ -114,7 +114,7 @@ pub use self::{
     engines::{Candidate, Fault, Reference, StandIn},
     families::{Counts, Family},
     fuzz::{fuzz, Finding, Settings, Summary},
-    pair::{run, Divergence, Part, Run, Side, Stored, Tally},
+    pair::{run, Divergence, Part, ReferenceCheck, Run, Side, Stored, Tally},
     scenes::{Placing, Scene},
     shrink::{shrink, Budget, Shrunk},
 };

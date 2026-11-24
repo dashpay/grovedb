@@ -332,6 +332,14 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
          end), {} ended at an answer of one, {} with something of one passed over",
         tally.clean, tally.ended, tally.passed
     );
+    let [nothing, places, failed] = tally.reference_checks;
+    if nothing + places + failed > 0 {
+        let _ = writeln!(
+            out,
+            "  the reference's own check after a write that it alone took: {nothing} found \
+             nothing, {places} reported places, {failed} failed"
+        );
+    }
     let _ = writeln!(out, "  {}", progress_line(&summary.progress));
     if let Some(why) = &summary.first_cut_short {
         let _ = writeln!(out, "  the first case cut short: {why}");
@@ -462,6 +470,11 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
                 "the engines answered the same but for the answers that were passed over"
             ),
             None => writeln!(out, "the engines answered the same"),
+            Some(_) if passed => writeln!(
+                out,
+                "the engines answered the same up to that answer but for the answers that were \
+                 passed over, and the case was not run further"
+            ),
             Some(_) => writeln!(
                 out,
                 "the engines answered the same up to that answer, and the case was not run further"

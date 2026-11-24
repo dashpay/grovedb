@@ -475,6 +475,25 @@ pub fn a_record_is_under<'db, E: StreamEngine>(
     Ok(!records.is_empty())
 }
 
+/// Whether a node record is stored under `key` in the subtree at `path`
+/// as `transaction` sees `db`, whether or not an element leads to it.
+pub fn a_node_is_under<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+    key: &[u8],
+) -> Result<bool, String> {
+    let place = Place {
+        path: path.to_vec(),
+        secondary: None,
+        data: Keyspace::Nodes,
+    };
+    let mut records = Vec::new();
+    list(db.engine(), transaction, &place, true, &mut records)?;
+    let mut nodes = (records.iter()).filter(|record| record.keyspace == Keyspace::Nodes);
+    Ok(nodes.any(|record| record.key == key))
+}
+
 /// A node record by the path of its subtree and its key.
 pub type NodeKey = (Vec<Vec<u8>>, Vec<u8>);
 

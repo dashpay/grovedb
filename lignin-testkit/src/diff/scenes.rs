@@ -234,9 +234,10 @@ fn held(rng: &mut Rng) -> Element {
 /// tree is removed by one batch: a tree that is emptied first, with one
 /// chance in four, after the elements it holds, and the others by a
 /// plain delete alone. After every batch its block is committed and
-/// some reads of each tree follow ([`looked_at`]); one removal in eight
-/// is first applied and rolled back, with such reads after the
-/// rollback, and then applied again. One stream in two applies its batches with
+/// some reads of each tree follow ([`looked_at`]), but for one removal
+/// in eight, which is first applied and rolled back, with such reads
+/// after the rollback, and then applied again and committed. One stream
+/// in two applies its batches with
 /// operations that declare no check of backward references, and the
 /// flags callbacks ([`Op::FlagsBatch`]); the other with checked
 /// operations ([`Op::Batch`]).

@@ -133,7 +133,8 @@ pub struct Summary {
     pub first_cut_short: Option<String>,
     /// The cases that ended at a step that is counted apart
     /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`],
-    /// [`Family::RootKeyLeftBehind`]), and those that passed over an
+    /// [`Family::RootKeyLeftBehind`], [`Family::TakenBelowPlainDelete`]),
+    /// and those that passed over an
     /// answer that is ([`Family::KeptRecordsCost`],
     /// [`Family::RefusedBelowPlainDelete`], by the first such step of
     /// the case): the family, the seed of the case and the step, in the
@@ -219,20 +220,25 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
             let mut compared = run.tally;
             if !whole {
                 compared.families = Default::default();
-            } else {
+            } else if run.divergence.is_none() {
+                // Of the cases the run counts: those it did not
+                // interrupt and that did not end it.
                 let met = &run.tally.families;
                 let to_its_end = run.ended_at.is_none() && run.cut_short.is_none();
-                let clean = met.is_empty() && to_its_end && run.divergence.is_none();
-                compared.clean = u64::from(clean);
+                compared.clean = u64::from(met.is_empty() && to_its_end);
                 compared.ended = u64::from(run.ended_at.is_some());
                 compared.passed = u64::from(met.passed_over());
+                if let Some(check) = run.reference_check {
+                    compared.reference_checks[check as usize] = 1;
+                }
             }
             tally.lock().expect("no worker panics").add(&compared);
             if let (
                 Some(
                     family @ (Family::DroppedTreeProof
                     | Family::InsertOnlyOverIndexed
-                    | Family::RootKeyLeftBehind),
+                    | Family::RootKeyLeftBehind
+                    | Family::TakenBelowPlainDelete),
                 ),
                 Some(ended),
             ) = (run.ended_at, &run.ended_with)
