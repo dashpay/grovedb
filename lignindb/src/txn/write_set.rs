@@ -547,6 +547,17 @@ pub(crate) struct WriteSet {
     /// there, from the prefix that is kept, or took one from there and
     /// brought none.
     covered: HashMap<Subtree, Vec<(EntryId, Option<Subtree>)>>,
+    /// For each subtree that `leaving` names, what its drops and its
+    /// clears say of the subtrees below it (`taking`), counted
+    /// ([`Self::takes_below`]).
+    taken: HashMap<Subtree, Taken>,
+    /// Every prefix that a move names, on either side, each with how
+    /// many times ([`Self::named_by_a_move`]).
+    named: HashMap<Subtree, u32>,
+    /// For each subtree, the enters of it among `subtrees`, oldest
+    /// first: where each stands there, and the subtree of the host
+    /// that it states ([`Self::host_of`]).
+    enters: HashMap<Subtree, Vec<(u32, Option<Subtree>)>>,
     arena: Arena,
     /// The copies of committed values that entries kept. They are not taken
     /// out with a mark: an entry from before the mark can have its copy
@@ -556,6 +567,28 @@ pub(crate) struct WriteSet {
     met: usize,
     /// The serial of the operation that was added last. It never goes back.
     serial: u64,
+}
+
+/// What the drops and the clears of one subtree say of the subtrees below
+/// it, counted: how many take them, how many leave them, and how many say
+/// nothing, so that the version which is read says
+/// ([`WriteSet::taking`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Taken {
+    takes: u32,
+    leaves: u32,
+    unsaid: u32,
+}
+
+impl Taken {
+    /// The count of the drops and clears that say `rooted`.
+    fn said(&mut self, rooted: Option<bool>) -> &mut u32 {
+        match rooted {
+            Some(true) => &mut self.takes,
+            Some(false) => &mut self.leaves,
+            None => &mut self.unsaid,
+        }
+    }
 }
 
 /// The Merks that the nodes of one operation host, a list for each node in
@@ -811,7 +844,17 @@ impl WriteSet {
             }
             if self.leaving.last() == Some(&id) {
                 self.leaving.pop();
-                self.taking.pop();
+                let rooted = self
+                    .taking
+                    .pop()
+                    .expect("each drop and clear says what it takes");
+                let subtree = entry.unit.subtree;
+                let taken = self.taken.get_mut(&subtree);
+                let taken = taken.expect("a drop or a clear is counted");
+                *taken.said(rooted) -= 1;
+                if *taken == Taken::default() {
+                    self.taken.remove(&subtree);
+                }
                 self.left += 1;
             }
             if self.moved.last() == Some(&id) {
@@ -840,6 +883,25 @@ impl WriteSet {
                         self.sources.remove(&source);
                     }
                 }
+                for name in names.named() {
+                    let named = self.named.get_mut(&name);
+                    let named = named.expect("a name of a move is counted");
+                    *named -= 1;
+                    if *named == 0 {
+                        self.named.remove(&name);
+                    }
+                }
+            }
+        }
+        for at in (mark.subtrees..self.subtrees.len()).rev() {
+            if let SubtreeEntry::Enter { subtree, .. } = self.subtrees[at] {
+                let enters = self.enters.get_mut(&subtree);
+                let enters = enters.expect("an enter is indexed");
+                let last = enters.pop();
+                debug_assert_eq!(last.map(|(last, _)| last as usize), Some(at));
+                if enters.is_empty() {
+                    self.enters.remove(&subtree);
+                }
             }
         }
         self.ops.truncate(mark.ops);
@@ -864,6 +926,9 @@ impl WriteSet {
         self.moved.clear();
         self.sources.clear();
         self.covered.clear();
+        self.taken.clear();
+        self.named.clear();
+        self.enters.clear();
         self.arena.clear();
         self.kept.clear();
         self.units.clear();
@@ -1048,6 +1113,11 @@ impl WriteSet {
                     }
                 }
             };
+            if let SubtreeEntry::Enter { subtree, host, .. } = entry {
+                let at = self.subtrees.len() as u32;
+                let host = host.map(|(host, ..)| host);
+                self.enters.entry(subtree).or_default().push((at, host));
+            }
             self.subtrees.push(entry);
         }
         let mut cut = cut.concat_bytes();
@@ -1079,6 +1149,7 @@ impl WriteSet {
             };
             self.leaving.push(id);
             self.taking.push(rooted);
+            *self.taken.entry(subtree).or_default().said(rooted) += 1;
             self.left += 1;
         }
         // The moves of a batch are made together, and are one entry.
@@ -1095,6 +1166,9 @@ impl WriteSet {
             // that a subtree is brought to is that, whatever else
             // names it.
             let names = Names::of(self.arena.get(self.entries[id as usize].key));
+            for name in names.named() {
+                *self.named.entry(name).or_default() += 1;
+            }
             let brought = (names.targets.iter().zip(names.sources))
                 .map(|(to, from)| (Subtree::new(*to), Some(Subtree::new(*from))));
             let taken =
@@ -1695,6 +1769,12 @@ impl WriteSet {
         sources.copied().map(Subtree::new).collect()
     }
 
+    /// Whether a move of the set names `prefix`, on either side: whether
+    /// [`Self::moved_names`] has it, asked with one lookup.
+    pub(crate) fn named_by_a_move(&self, prefix: &Subtree) -> bool {
+        self.named.contains_key(prefix)
+    }
+
     /// Every prefix that the moves of the set name, on either side.
     pub(crate) fn moved_names(&self) -> Vec<Subtree> {
         let named = |id: &EntryId| self.names(*id).named().collect::<Vec<_>>();
@@ -1832,6 +1912,22 @@ impl WriteSet {
             .collect()
     }
 
+    /// Whether the transaction dropped or cleared a subtree.
+    pub(crate) fn has_leaves(&self) -> bool {
+        !self.leaving.is_empty()
+    }
+
+    /// Whether a drop or a clear of `subtree` that the set holds takes
+    /// the subtrees below it, where `rooted` says whether the version
+    /// that is read has the Merk under `subtree` with a node: whether
+    /// [`Self::taking`] has the subtree as one that takes them, or as
+    /// one of which that version says and `rooted`. It is asked with
+    /// one lookup.
+    pub(crate) fn takes_below(&self, subtree: &Subtree, rooted: bool) -> bool {
+        let taken = self.taken.get(subtree);
+        taken.is_some_and(|taken| taken.takes > 0 || (rooted && taken.unsaid > 0))
+    }
+
     /// [`Self::taking`], of the operations `ops` only.
     pub(crate) fn taking_in(&self, ops: std::ops::Range<usize>) -> Vec<(Subtree, Option<bool>)> {
         let taking = self.leaving.iter().zip(&self.taking);
@@ -1888,7 +1984,17 @@ impl WriteSet {
     /// stands, and so which enter made it, is not said here
     /// (`ByKey::standing`).
     pub(crate) fn host_of(&self, subtree: &Subtree) -> Option<Option<Subtree>> {
-        Self::last_host(&self.subtrees, subtree)
+        let enters = self.enters.get(subtree);
+        let host = enters
+            .and_then(|enters| enters.last())
+            .map(|(_, host)| *host);
+        #[cfg(any(test, feature = "held_reads"))]
+        assert_eq!(
+            host,
+            Self::last_host(&self.subtrees, subtree),
+            "{subtree:?}"
+        );
+        host
     }
 
     /// The place of the first operation of a scope that is open, or the
@@ -2617,7 +2723,13 @@ impl ConcatBytes for [Subtree] {
 mod held {
     //! What the index of the prefixes that moves cover answers is held,
     //! at every call, to the answers that were made before it: the
-    //! names of every move of the set are looked through. That is so in
+    //! names of every move of the set are looked through. So is the
+    //! host that the index of the enters gives for a subtree, to the
+    //! last enter of it among all that the set holds
+    //! ([`WriteSet::host_of`]). The counts of what the drops and the
+    //! clears take, and of the names of the moves, are held to the
+    //! lists they are counted from wherever an answer of the directory
+    //! is held that is made from them (`opened::held`). That is so in
     //! a test build of this crate, and in a build with the feature
     //! `held_reads`.
 
@@ -2636,6 +2748,41 @@ mod held {
             let older = |id: &EntryId| before.is_none_or(|before| *id < before);
             let mut moves = self.moved.iter().rev().copied().filter(older);
             moves.find_map(|id| Some((id, self.names(id).place(at)?)))
+        }
+
+        /// Holds the counts that [`WriteSet::takes_below`] answers
+        /// from to the list of the drops and the clears
+        /// ([`WriteSet::taking`]), and its answer for each subtree
+        /// of the list to what the list says of it: one of its
+        /// entries takes what is below, or one leaves that to the
+        /// version, which has the Merk with a node or with none.
+        pub(crate) fn hold_taken(&self) {
+            let mut taken: HashMap<Subtree, Taken> = HashMap::new();
+            // For each subtree, whether the list takes what is
+            // below it: where the version has its Merk with no
+            // node, and where it has it with one.
+            let mut listed: HashMap<Subtree, [bool; 2]> = HashMap::new();
+            for (subtree, rooted) in self.taking() {
+                *taken.entry(subtree).or_default().said(rooted) += 1;
+                let takes = listed.entry(subtree).or_default();
+                takes[0] |= rooted.unwrap_or(false);
+                takes[1] |= rooted.unwrap_or(true);
+            }
+            assert_eq!(self.taken, taken, "what the drops and the clears take");
+            for (subtree, takes) in listed {
+                let answered = [false, true].map(|rooted| self.takes_below(&subtree, rooted));
+                assert_eq!(answered, takes, "{subtree:?}");
+            }
+        }
+
+        /// Holds the counts that [`WriteSet::named_by_a_move`] answers
+        /// from to the list of the names ([`WriteSet::moved_names`]).
+        pub(crate) fn hold_named(&self) {
+            let mut named: HashMap<Subtree, u32> = HashMap::new();
+            for name in self.moved_names() {
+                *named.entry(name).or_default() += 1;
+            }
+            assert_eq!(self.named, named, "the names of the moves");
         }
     }
 }

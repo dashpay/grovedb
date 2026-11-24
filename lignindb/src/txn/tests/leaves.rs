@@ -1,15 +1,21 @@
 //! Whether a subtree leaves with a move of the transaction that reads it
-//! (`Opened::leaves_with_a_move`, `transactions.md` MV2), over
-//! transactions at random. The answer is made from the subtree's own
-//! hosts, and at every read it is held to the answer it was made with
-//! before, which opens every prefix that a move of the transaction took
-//! a subtree from (`opened::held`). Here the transactions are made that
-//! the two are compared over: subtrees entered under each other, some
-//! with nodes and some with none; moves, of a subtree that was moved, of
-//! one under a host that was moved, and to a prefix that a move left;
-//! drops and clears between them; marks and rollbacks to them; scopes
-//! that merge and scopes that are rolled back; and commits, after which
-//! the next transaction reads another version of the directory.
+//! (`Opened::leaves_with_a_move`, `transactions.md` MV2), whether the
+//! transaction took it with a subtree above it that it dropped or
+//! cleared (`Opened::seen_entry`, CV9), and whether a move decides what
+//! is read under it (`Opened::moved`), over transactions at random.
+//! Each answer is made from the subtree's own hosts, and at every call
+//! it is held to the answer it was made with before, which opens every
+//! prefix that a move of the transaction took a subtree from, every
+//! subtree that the transaction dropped or cleared, or every prefix
+//! that a move names (`opened::held`). Here the transactions are made
+//! that the answers are compared over: subtrees entered under each
+//! other, some with nodes and some with none; moves, of a subtree that
+//! was moved, of one under a host that was moved, and to a prefix that
+//! a move left; drops and clears between them, of one subtree and of
+//! several at once; marks and rollbacks to them; scopes that merge and
+//! scopes that are rolled back; reads by a scope whose writes are kept
+//! in the write set, which a move refuses; and commits, after which the
+//! next transaction reads another version of the directory.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -145,11 +151,20 @@ struct Made {
     moved_over_what_left: usize,
     drops: usize,
     clears: usize,
+    /// Batches that dropped or cleared several subtrees, and how many
+    /// subtrees those were.
+    many_left: usize,
+    left_at_once: usize,
     rewinds: usize,
     scopes_rolled_back: usize,
     commits: usize,
     /// Reads that were made while the transaction held a move.
     reads_beside_a_move: usize,
+    /// Reads of a scope whose writes are kept in the write set, made
+    /// while the transaction held a move, and those of them that the
+    /// move refused.
+    reads_of_a_scope: usize,
+    refused_by_a_move: usize,
 }
 
 /// One run: `steps` steps on a store of its own.
@@ -229,7 +244,7 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
                 }));
             }
             // Nodes that host nothing come and go.
-            22..34 => {
+            22..29 => {
                 let name = pick(&mut rng, &live);
                 let written: Vec<(Vec<u8>, Option<Vec<u8>>)> = (0..1 + rng.below(3))
                     .map(|_| {
@@ -252,6 +267,53 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
                         }
                     }
                 });
+            }
+            // Several subtrees leave in one batch, none of them below
+            // another: each is dropped, with the element that hosted
+            // it, or cleared.
+            29..34 => {
+                let mut rest = live.clone();
+                let mut chosen: Vec<(u8, bool)> = Vec::new();
+                // Those that are chosen, and what is below them.
+                let mut taken: BTreeSet<u8> = BTreeSet::new();
+                for _ in 0..2 + rng.below(6) {
+                    if rest.is_empty() {
+                        break;
+                    }
+                    let name = rest.swap_remove(rng.below(rest.len()));
+                    let below = account.held.below(name);
+                    let above_one = |(other, _): &(u8, bool)| below.contains(other);
+                    if taken.contains(&name) || chosen.iter().any(above_one) {
+                        continue;
+                    }
+                    taken.insert(name);
+                    taken.extend(below);
+                    chosen.push((name, rng.chance(50)));
+                }
+                if chosen.len() < 2 {
+                    continue;
+                }
+                for (name, dropped) in &chosen {
+                    if !*dropped {
+                        batch.subtrees.push(OwnedSubtree::Clear(sub(*name)));
+                        changes.cleared.push(*name);
+                        continue;
+                    }
+                    if let Some((host, key)) = account.held.live[name].0.clone() {
+                        changes.edit(host, move |items| drop(items.remove(&key)));
+                    }
+                    batch.subtrees.push(OwnedSubtree::Drop(sub(*name)));
+                }
+                counted.many_left = 1;
+                counted.left_at_once = chosen.len();
+                after = Some(Box::new(move |account| {
+                    for (name, dropped) in chosen {
+                        account.held.empty(name);
+                        if dropped {
+                            account.held.live.remove(&name);
+                        }
+                    }
+                }));
             }
             // What a commit left under a hosted subtree leaves the
             // transaction: it is dropped, or the subtree above it is
@@ -430,6 +492,8 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
                     made.moved_over_what_left += counted.moved_over_what_left;
                     made.drops += counted.drops;
                     made.clears += counted.clears;
+                    made.many_left += counted.many_left;
+                    made.left_at_once += counted.left_at_once;
                 }
                 (true, false) => made.scopes_rolled_back += 1,
                 (false, _) => made.refused += 1,
@@ -446,6 +510,23 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
             let _ = tx.txn.get(aux(name), b"x", &mut value);
             let _ = tx.txn.node(sub(name), &[b'n', 1], handle_of);
             made.reads_beside_a_move += 2 * usize::from(moving);
+        }
+        // One step in three while the transaction holds a move, every
+        // prefix is read once more by a scope whose writes are kept in
+        // the write set: it is answered where no move decides what is
+        // under the prefix, and refused where one does.
+        if moving && rng.chance(34) {
+            let laid_out = tx.txn.scope().expect("a scope");
+            let by_key = tx.txn.scope().expect("a scope");
+            assert!(!by_key.is_laid_out());
+            for name in POOL {
+                let mut value = Vec::new();
+                let read = by_key.get(aux(name), b"x", &mut value);
+                made.reads_of_a_scope += 1;
+                made.refused_by_a_move += usize::from(read.is_err());
+            }
+            by_key.rollback();
+            laid_out.rollback();
         }
     }
     let _ = db.commit(&versions, &tx.txn).expect("a commit");
@@ -473,6 +554,16 @@ fn assert_made(made: &Made, compared: &Compared) {
     );
     assert!(compared.leaves > 250 && compared.stays > 5_000 && compared.absent > 50_000);
     assert!(compared.deepest >= 3);
+    // What the transaction took with a subtree above, by a drop or a
+    // clear that says so and by a clear of which the version says, and
+    // what it kept; with clears of each kind in its write set.
+    assert!(compared.taken > 1_500 && compared.taken_as_the_version_says > 300);
+    assert!(compared.kept > 8_000);
+    assert!(compared.beside_a_clear_of_no_node > 1_000 && compared.beside_a_clear_unsaid > 1_000);
+    // What a move decides for a scope beside it, by a prefix above.
+    assert!(compared.below_a_name > 200 && compared.below_no_name > 5_000);
+    assert!(made.reads_of_a_scope > 50_000 && made.refused_by_a_move > 15_000);
+    assert!(made.many_left > 300 && made.left_at_once > 2 * made.many_left);
     assert!(made.moves > 2_000 && made.with_one_below > 200 && made.left_behind > 150);
     assert!(made.left_below > 40 && made.moved_over_what_left > 40);
     assert!(made.moved_again > 800 && made.under_a_moved_host > 150);
@@ -483,25 +574,25 @@ fn assert_made(made: &Made, compared: &Compared) {
 }
 
 #[test]
-fn a_subtree_leaves_with_a_move_as_every_source_says_in_the_first_quarter_of_the_runs() {
+fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_first_quarter_of_the_runs() {
     let (made, compared) = runs(0..750);
     assert_made(&made, &compared);
 }
 
 #[test]
-fn a_subtree_leaves_with_a_move_as_every_source_says_in_the_second_quarter_of_the_runs() {
+fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_second_quarter_of_the_runs() {
     let (made, compared) = runs(750..1_500);
     assert_made(&made, &compared);
 }
 
 #[test]
-fn a_subtree_leaves_with_a_move_as_every_source_says_in_the_third_quarter_of_the_runs() {
+fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_third_quarter_of_the_runs() {
     let (made, compared) = runs(1_500..2_250);
     assert_made(&made, &compared);
 }
 
 #[test]
-fn a_subtree_leaves_with_a_move_as_every_source_says_in_the_last_quarter_of_the_runs() {
+fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_last_quarter_of_the_runs() {
     let (made, compared) = runs(2_250..3_000);
     assert_made(&made, &compared);
 }
