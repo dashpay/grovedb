@@ -294,6 +294,10 @@ impl Opened {
         subtree: &Subtree,
     ) -> Result<bool, TxnError> {
         if !set.has_moves() || set.moves(subtree) {
+            // No host is asked: the function began so before as well,
+            // and that answer is held to it too.
+            #[cfg(any(test, feature = "held_reads"))]
+            self.held_before_the_hosts(path, guard, set, subtree)?;
             return Ok(false);
         }
         let source = |above: &Subtree, _: &Entry| set.took_from(above);
@@ -308,10 +312,11 @@ impl Opened {
         }
     }
 
-    /// Whether `subtree` is below a Merk of which `found` says yes: it is
-    /// asked of each Merk the subtree is below at this version, the
-    /// nearest first, with the prefix that Merk is entered under and its
-    /// entry.
+    /// Whether `subtree` is below a Merk of which `found` says yes. The
+    /// Merks that the subtree is below at this version are asked from the
+    /// nearest on, each with the prefix it is entered under and its
+    /// entry, and the walk ends at the first of which `found` says yes:
+    /// what is above that Merk is not read.
     ///
     /// The entry of a Merk in use names the element that hosts it by the
     /// prefix of the Merk that element is in, and has the ids of the Merks
@@ -327,9 +332,18 @@ impl Opened {
     /// below its Merk, is asked here of the entries above the subtree,
     /// and of whether the list has their prefixes.
     ///
-    /// `None` where the walk does not find, under the prefix that an
-    /// entry names for its host's Merk, the Merk whose id the entry has
-    /// for it: nothing is answered from such a directory here.
+    /// `None` where the walk, before it ends, does not find, under the
+    /// prefix that an entry names for its host's Merk, the Merk whose id
+    /// the entry has for it: nothing is answered from such a directory
+    /// here.
+    ///
+    /// The walk reads the entry of the subtree and the entries above it
+    /// that it comes to, and no entry of a list. A read that fails is
+    /// this call's error. A function that opens the prefixes of a list
+    /// reads other entries: where a page of the directory cannot be
+    /// read, the two can fail at different entries, and one can fail
+    /// where the other answers. What they have in common is the answer
+    /// where each reads what it opens.
     fn above_by_hosts<'s>(
         &mut self,
         path: &WritePath<'s>,
@@ -484,6 +498,11 @@ pub(crate) mod held {
     //! a test build of this crate, and in a build with the feature
     //! `held_reads`, by which the tests of another crate hold the
     //! answers over their own calls.
+    //!
+    //! What is compared is an answer. A read of the directory that
+    //! fails ends the call with its error before anything is
+    //! compared, and the walk up the hosts reads other entries than a
+    //! look through a list does (`Opened::above_by_hosts`).
 
     #[cfg(test)]
     use std::cell::Cell;
@@ -500,6 +519,9 @@ pub(crate) mod held {
         pub(crate) stays: u64,
         /// It does not: this version has no such subtree.
         pub(crate) absent: u64,
+        /// [`Opened::leaves_with_a_move`] answered before it asked a
+        /// host: the set holds no move, or a move names the subtree.
+        pub(crate) unasked: u64,
         /// A walk up the hosts gave no answer, whichever was asked.
         pub(crate) unanswered: u64,
         /// The most Merks that a subtree which was asked for is below.
@@ -530,6 +552,7 @@ pub(crate) mod held {
                 leaves: 0,
                 stays: 0,
                 absent: 0,
+                unasked: 0,
                 unanswered: 0,
                 deepest: 0,
                 taken: 0,
@@ -550,7 +573,9 @@ pub(crate) mod held {
     }
 
     impl Opened {
-        /// The answer as it was made: by opening every source.
+        /// The answer as it was made: no for a set with no move and
+        /// for a subtree that a move names, by every name of every
+        /// move, and otherwise by opening every source.
         fn leaves_by_every_source<'s>(
             &mut self,
             path: &WritePath<'s>,
@@ -558,7 +583,34 @@ pub(crate) mod held {
             set: &WriteSet,
             subtree: &Subtree,
         ) -> Result<bool, TxnError> {
+            if !set.has_moves() || set.moves_by_every_name(subtree) {
+                return Ok(false);
+            }
             self.below_one_of(path, guard, &set.moved_from(), subtree)
+        }
+
+        /// Holds the answer that [`Opened::leaves_with_a_move`] gives
+        /// before it asks a host, which is no, to the answer as it
+        /// was made.
+        pub(super) fn held_before_the_hosts<'s>(
+            &mut self,
+            path: &WritePath<'s>,
+            guard: &OperationGuard<'s>,
+            set: &WriteSet,
+            subtree: &Subtree,
+        ) -> Result<(), TxnError> {
+            let by_every_source = self.leaves_by_every_source(path, guard, set, subtree)?;
+            assert!(
+                !by_every_source,
+                "whether {subtree:?} leaves with a move, where no host is asked"
+            );
+            #[cfg(test)]
+            {
+                let mut compared = COMPARED.get();
+                compared.unasked += 1;
+                COMPARED.set(compared);
+            }
+            Ok(())
         }
 
         /// Holds `by_hosts`, what the walk up the hosts of `subtree`
@@ -581,7 +633,12 @@ pub(crate) mod held {
                 let host = entry.host()?;
                 Some(Subtree::new(*host.parent))
             });
-            while let Some(prefix) = above {
+            // Each prefix once: in a directory whose entries name each
+            // other as hosts in a ring, the look ends where it comes
+            // to one again.
+            let mut asked: Vec<Subtree> = Vec::new();
+            while let Some(prefix) = above.filter(|prefix| !asked.contains(prefix)) {
+                asked.push(prefix);
                 assert_eq!(
                     set.took_from(&prefix),
                     sources.contains(&prefix),

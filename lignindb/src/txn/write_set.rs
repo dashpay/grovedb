@@ -2736,7 +2736,7 @@ mod held {
     use super::*;
 
     impl WriteSet {
-        pub(super) fn moves_by_every_name(&self, subtree: &Subtree) -> bool {
+        pub(crate) fn moves_by_every_name(&self, subtree: &Subtree) -> bool {
             (self.moved.iter()).any(|id| self.names(*id).place(subtree).is_some())
         }
 
