@@ -538,6 +538,11 @@ pub(crate) struct WriteSet {
     /// The prefixes that the moves took a subtree from, each with how
     /// many of the moves' pairs name it so ([`Self::took_from`]).
     sources: HashMap<Subtree, u32>,
+    /// For each prefix that a move covers, the moves that cover it,
+    /// oldest first, each with what it did there ([`Names::place`]): it
+    /// brought a subtree there, from the prefix that is kept, or took
+    /// one from there and brought none.
+    covered: HashMap<Subtree, Vec<(EntryId, Option<Subtree>)>>,
     arena: Arena,
     /// The copies of committed values that entries kept. They are not taken
     /// out with a mark: an entry from before the mark can have its copy
@@ -808,7 +813,21 @@ impl WriteSet {
             if self.moved.last() == Some(&id) {
                 self.moved.pop();
                 self.left += 1;
-                for source in Names::of(self.arena.get(entry.key)).sources {
+                let names = Names::of(self.arena.get(entry.key));
+                for covered in names.covered() {
+                    // A prefix that the move covers twice has it once, and
+                    // is passed twice here.
+                    let Some(moves) = self.covered.get_mut(&covered) else {
+                        continue;
+                    };
+                    if moves.last().is_some_and(|(last, _)| *last == id) {
+                        moves.pop();
+                    }
+                    if moves.is_empty() {
+                        self.covered.remove(&covered);
+                    }
+                }
+                for source in names.sources {
                     let source = Subtree::new(*source);
                     let named = self.sources.get_mut(&source);
                     let named = named.expect("a source of a move is counted");
@@ -840,6 +859,7 @@ impl WriteSet {
         self.left += 1;
         self.moved.clear();
         self.sources.clear();
+        self.covered.clear();
         self.arena.clear();
         self.kept.clear();
         self.units.clear();
@@ -1065,6 +1085,20 @@ impl WriteSet {
             self.left += 1;
             for source in moves.iter().flat_map(Moving::sources) {
                 *self.sources.entry(source).or_default() += 1;
+            }
+            // What the move did under each prefix it covers, as
+            // [`Names::place`] says it: a prefix that a subtree is
+            // brought to is that, whatever else names it.
+            let names = Names::of(self.arena.get(self.entries[id as usize].key));
+            let brought = (names.targets.iter().zip(names.sources))
+                .map(|(to, from)| (Subtree::new(*to), Some(Subtree::new(*from))));
+            let taken =
+                (names.sources.iter().chain(names.left)).map(|from| (Subtree::new(*from), None));
+            for (at, place) in brought.chain(taken) {
+                let covering = self.covered.entry(at).or_default();
+                if covering.last().is_none_or(|(last, _)| *last != id) {
+                    covering.push((id, place));
+                }
             }
         }
         let first = self.entries.len() as EntryId;
@@ -1620,7 +1654,27 @@ impl WriteSet {
     /// Whether a move of the set names `subtree`, on either side, or took
     /// it out as one that left with it.
     pub(crate) fn moves(&self, subtree: &Subtree) -> bool {
-        (self.moved.iter()).any(|id| self.names(*id).place(subtree).is_some())
+        let moves = self.covered.contains_key(subtree);
+        #[cfg(test)]
+        assert_eq!(moves, self.moves_by_every_name(subtree), "{subtree:?}");
+        moves
+    }
+
+    /// The newest move among those older than `before`, or of all,
+    /// that did something under `at`, with what it did
+    /// ([`Names::place`]).
+    fn moved_under(
+        &self,
+        at: &Subtree,
+        before: Option<EntryId>,
+    ) -> Option<(EntryId, Option<Subtree>)> {
+        let older =
+            |(id, _): &&(EntryId, Option<Subtree>)| before.is_none_or(|before| *id < before);
+        let covering = self.covered.get(at);
+        let moved = covering.and_then(|covering| covering.iter().rev().find(older).copied());
+        #[cfg(test)]
+        assert_eq!(moved, self.moved_under_by_every_name(at, before), "{at:?}");
+        moved
     }
 
     /// Whether a move of the set took a subtree from `prefix`: whether
@@ -1668,9 +1722,7 @@ impl WriteSet {
         let mut stretches = Vec::new();
         let (mut at, mut before) = (subtree, before);
         loop {
-            let older = |id: &EntryId| before.is_none_or(|before| *id < before);
-            let mut moves = self.moved.iter().rev().copied().filter(older);
-            let moved = moves.find_map(|id| Some((id, self.names(id).place(&at)?)));
+            let moved = self.moved_under(&at, before);
             let after = moved.map(|(id, _)| id);
             stretches.push(Stretch {
                 subtree: at,
@@ -2552,6 +2604,32 @@ impl ConcatBytes for [Subtree] {
             bytes.extend_from_slice(subtree.as_bytes());
         }
         bytes
+    }
+}
+
+#[cfg(test)]
+mod held {
+    //! What the index of the prefixes that moves cover answers is held,
+    //! in a test build and at every call, to the answers that were
+    //! made before it: the names of every move of the set are looked
+    //! through.
+
+    use super::*;
+
+    impl WriteSet {
+        pub(super) fn moves_by_every_name(&self, subtree: &Subtree) -> bool {
+            (self.moved.iter()).any(|id| self.names(*id).place(subtree).is_some())
+        }
+
+        pub(super) fn moved_under_by_every_name(
+            &self,
+            at: &Subtree,
+            before: Option<EntryId>,
+        ) -> Option<(EntryId, Option<Subtree>)> {
+            let older = |id: &EntryId| before.is_none_or(|before| *id < before);
+            let mut moves = self.moved.iter().rev().copied().filter(older);
+            moves.find_map(|id| Some((id, self.names(id).place(at)?)))
+        }
     }
 }
 
