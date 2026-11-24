@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     fmt,
+    time::Instant,
 };
 
 use lignin_format::{
@@ -29,7 +30,7 @@ use lignin_tree::{
 use super::{
     error::{CommitError, Failure, Stopped},
     outcome::{Committed, Published},
-    state::{CommitLock, CommitState, CommitStats, Counted},
+    state::{CommitLock, CommitState, CommitStats, Counted, Spent},
 };
 use crate::{
     snapshot::OperationGuard,
@@ -291,9 +292,11 @@ impl<'s> Committer<'s> {
         write: impl FnOnce(&WriteTxn<'t>) -> Result<(), TxnError>,
         untold: &mut Option<FlushError>,
     ) -> Result<Committed, CommitError> {
+        let began = Instant::now();
         #[cfg(test)]
         self.state.before_lock();
         let lock = self.state.lock();
+        self.state.spent(Spent::LockWait, began);
         if let Some(stopped) = self.state.stopped() {
             return Err(CommitError::Stopped(stopped));
         }
@@ -373,7 +376,10 @@ impl<'s> Committer<'s> {
     /// An error of write-back here changes nothing of the commit: it is
     /// counted and told to whoever the [`CommitState`] reports to.
     fn after(&self) {
-        if let Err(error) = self.write_back.place_ready() {
+        let began = Instant::now();
+        let placed = self.write_back.place_ready();
+        self.state.spent(Spent::Placing, began);
+        if let Err(error) = placed {
             self.state.write_back_failed(&error);
         }
         match self.write_back.wait_for_room() {
@@ -561,7 +567,9 @@ impl<'s> Committer<'s> {
         // (LT7): nothing else is appended meanwhile (`log-format.md` LG22).
         let guard = path.versions.guard();
         let mut flat = flat.for_commit(&guard);
+        let began = Instant::now();
         let counts = (path.values.step()).map_err(|error| self.failed(error.into()))?;
+        self.state.spent(Spent::CountsWait, began);
         // From here on the hold on the files of those values is given up
         // only where the group is known not to be in the log, and once
         // the values are counted. A commit that ends in any other way
@@ -603,7 +611,10 @@ impl<'s> Committer<'s> {
                     return Err(self.failed(failure));
                 }
             };
-            match self.log.append_group(&at, &lock.scratch.group) {
+            let began = Instant::now();
+            let appended = self.log.append_group(&at, &lock.scratch.group);
+            self.state.spent(Spent::Appending, began);
+            match appended {
                 Ok(appended) => break (appended, logged),
                 Err(LogError::PlaceTaken { .. }) if places < MAX_PLACES => {
                     places += 1;
@@ -689,7 +700,9 @@ impl<'s> Committer<'s> {
         drop(lock);
 
         self.state.count(Counted::Published { group_len });
+        let began = Instant::now();
         path.versions.reclaim();
+        self.state.spent(Spent::Reclaiming, began);
         let Installed {
             created,
             changed,
