@@ -1083,3 +1083,44 @@ fn the_cost_of_a_plain_delete_of_a_tree_made_again_is_counted_apart_on_versions_
         assert!(!Family::PlainDeleteCost.ends_a_case());
     }
 }
+
+/// A partial batch that puts a node into tree pages that are full of
+/// cells it does not hold: the case of one seed on grove version 5, cut
+/// after that batch, which is its operation 297 and pauses at height 3.
+///
+/// LigninDB refused the batch with an error of its tree pages, where
+/// RocksDB wrote it in segments, until the write found room for such a
+/// cell. The engines answer every operation of the cut case alike, the
+/// batch is taken, and what they store is the same after every write.
+#[test]
+fn a_partial_batch_into_full_tree_pages_is_answered_alike() {
+    use lignin_testkit::{diff::Case, workload::Op};
+
+    let mut shape = Shape::default()
+        .for_grove_version(5)
+        .expect("a grove version");
+    shape.scenes = 0;
+    let case = Case::generate(0x2de2_9de8_f6fb_659c, &shape);
+    assert_eq!(
+        case.digest(),
+        "06bb3e3f74d545fa667afe1269f39f77fa30e5ee41a81a3b1362577dbd6af320"
+    );
+    assert_eq!(case.ops.len(), 1902);
+    const AT: usize = 297;
+    assert!(
+        matches!(&case.ops[AT], Op::PartialBatch(batch) if batch.pause_height == Some(3)),
+        "{:?}",
+        case.ops[AT]
+    );
+    let cut = case.with_ops(case.ops[..=AT].to_vec());
+    let run = ran(&cut);
+    if let Some(divergence) = &run.divergence {
+        let report = divergence.report(&cut, "RocksDB", "LigninDB");
+        panic!("{}", report.join("\n"));
+    }
+    assert_eq!(run.ended_at, None);
+    assert_eq!(run.cut_short, None);
+    assert_eq!(run.tally.steps as usize, AT + 1);
+    assert!(!run.failed_steps.contains(&AT), "{:?}", run.failed_steps);
+    assert_eq!(run.tally.closes.checked, 1);
+}
