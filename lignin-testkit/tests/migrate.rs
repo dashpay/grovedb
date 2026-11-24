@@ -45,7 +45,14 @@ use std::{
 use grovedb::{
     batch::QualifiedGroveDbOp, BackwardsReferences, Element, GroveDb, LigninEngine, RocksDbEngine,
 };
-use grovedb_storage::{prefix::build_prefix, Storage, StorageContext};
+use grovedb_merk::{
+    cost_model::Keyspace as MerkKeyspace,
+    store::lignin::{keeps_flat_records, left_behind_key, tree_type_bytes},
+    TreeType,
+};
+use grovedb_storage::{
+    flat::pending_prefix_drops_namespace, prefix::build_prefix, Storage, StorageContext,
+};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_io::sim::{CrashPoint, SimConfig, SimVfs};
 use lignin_store::wal::SyncPolicy;
@@ -61,10 +68,14 @@ use lignin_testkit::{
     workload::{Op, StreamEngine},
 };
 use lignin_tools::{
-    migrate::{migrate, work_dir, Migration, Unreachable},
+    migrate::{migrate, work_dir, Migration, Unreachable, WORK_DATABASE, WORK_MARK},
     Outcome,
 };
-use lignindb::Options;
+use lignindb::{
+    commit::NoStaleHashes,
+    txn::{Batch, Column, RecordWrite, Subtree, SubtreeWrite},
+    Db, Options,
+};
 
 /// One trace of the corpus: its grove version, its name and its
 /// operations.
@@ -157,6 +168,10 @@ fn same_stored<A: StreamEngine, B: StreamEngine>(
 struct Went {
     /// The steps after the cut that both engines answered alike.
     steps: u64,
+    /// The operations after a step at which neither engine could be
+    /// observed, both for the same reason: the stream ends there, as in
+    /// the pair runner, and they were not applied.
+    unobserved: u64,
     /// The records the migrator compared.
     compared: u64,
     /// The records that the listings of the two groves held, right after
@@ -281,9 +296,13 @@ fn gone_on(
                 };
                 let (was, is) = (text(was), text(is));
                 // Engines that cannot be observed in the same way did the
-                // same, and the stream ends there, as in the pair runner.
+                // same, and the stream ends there, as in the pair runner:
+                // what follows is counted as not applied.
                 match was == is {
-                    true => break,
+                    true => {
+                        went.unobserved = (trace.ops.len() - step) as u64;
+                        break;
+                    }
                     false => {
                         return Err(format!(
                             "step {step} ({op:?}) was not observed alike:\n  RocksDB:  {was}\n  \
@@ -308,6 +327,14 @@ fn gone_on(
     }
     drop((reference, candidate));
     went.listed += same_stored(&rocks, &lignin, version, "at the end of the stream")?;
+    // Every operation after the cut was compared, or follows one that
+    // neither engine could be observed at.
+    assert_eq!(
+        went.steps + went.unobserved,
+        (trace.ops.len() - cut) as u64,
+        "{} cut at {cut}",
+        trace.name
+    );
     Ok(Some(went))
 }
 
@@ -409,11 +436,20 @@ fn checked(traces: &[Trace], plan: &[(usize, usize)], batch: usize) {
     let ended = run(traces, plan, batch);
     let mut sum = Went::default();
     let (mut went_on, mut failed) = (0usize, Vec::new());
+    // The cuts whose stream ended at a step neither engine could be
+    // observed at, and those after which no step was compared at all.
+    let (mut ended_early, mut no_step) = (0usize, Vec::new());
     for ((trace, wanted), came_to) in plan.iter().zip(ended) {
         let trace = &traces[*trace];
         match came_to {
-            Ok((_, went)) => {
+            Ok((cut, went)) => {
                 went_on += 1;
+                ended_early += usize::from(went.unobserved > 0);
+                if went.steps == 0 {
+                    let version = trace.version.protocol_version;
+                    no_step.push(format!("v{version} {} at {cut}", trace.name));
+                }
+                sum.unobserved += went.unobserved;
                 sum.steps += went.steps;
                 sum.compared += went.compared;
                 sum.listed += went.listed;
@@ -437,12 +473,19 @@ fn checked(traces: &[Trace], plan: &[(usize, usize)], batch: usize) {
         }
     }
     println!(
-        "{} cuts of {} traces: {went_on} went on the same to the end, {} did not; {sum:?}",
+        "{} cuts of {} traces: {went_on} went on the same, {} did not; {ended_early} of them \
+         ended at a step that neither engine could be observed at, with {} operations not \
+         applied; {} compared no step after the cut; {sum:?}",
         plan.len(),
         traces.len(),
-        failed.len()
+        failed.len(),
+        sum.unobserved,
+        no_step.len()
     );
     assert!(failed.is_empty(), "{}", failed.join("\n"));
+    // A cut after which nothing was compared shows nothing of how the
+    // history goes on.
+    assert!(no_step.is_empty(), "{}", no_step.join("\n"));
     // What the migrated sources held: a comparison of groves with nothing
     // in them would pass as well.
     assert!(
@@ -507,11 +550,17 @@ fn put(db: &Rocks, path: &[&[u8]], key: &[u8], element: Element) {
 }
 
 /// Fills a grove: trees three deep, of items and of sums, aux records, a
-/// tree with one item, and a tree that is dropped flat and not drained.
+/// tree with one item, a tree of flat records, and a tree that is dropped
+/// flat and not drained.
 fn fill(db: &Rocks) {
     let v = GroveVersion::latest();
     for name in [b"a", b"c", b"d", b"e"] {
         put(db, ROOT, name, Element::empty_tree());
+    }
+    put(db, ROOT, b"m", Element::empty_mmr_tree());
+    for n in 0..5u8 {
+        let appended = db.mmr_tree_append(ROOT, b"m", vec![n; 60], None, v);
+        appended.unwrap().expect("an append");
     }
     put(db, ROOT, b"b", Element::empty_sum_tree());
     for n in 0..40u8 {
@@ -547,9 +596,9 @@ fn fill(db: &Rocks) {
     committed.unwrap().expect("the commit of the flat drop");
 }
 
-/// The nodes of the Merks of a grove of [`fill`]: four trees at the root,
+/// The nodes of the Merks of a grove of [`fill`]: five trees at the root,
 /// the dropped one is none of them, and what the others hold.
-const NODES: u64 = 4 + 40 + 12 + 1 + 1 + 9 + 1;
+const NODES: u64 = 5 + 40 + 12 + 1 + 1 + 9 + 1;
 
 /// A grove of [`fill`] on RocksDB in `dir`, closed. Returns its root hash.
 fn small(dir: &Path) -> [u8; 32] {
@@ -669,11 +718,7 @@ fn copy_dir(from: &Path, to: &Path) {
 /// The groves in `source` and in `target` store the same and are checked
 /// alike by GroveDB: how many records both hold.
 fn alike(source: &Path, target: &Path) -> u64 {
-    alike_on(source, target, GroveVersion::latest())
-}
-
-/// [`alike`] for groves of the grove version `v`.
-fn alike_on(source: &Path, target: &Path, v: &GroveVersion) -> u64 {
+    let v = GroveVersion::latest();
     let (rocks, lignin) = (
         rocks(source),
         Lignin::open_with_engine(target).expect("the target"),
@@ -727,6 +772,15 @@ fn the_source_is_never_written_and_its_log_is_carried() {
     assert_eq!(word(&out, "migrate: survey", "nodes"), NODES);
     assert_eq!(word(&out, "migrate: loaded", "nodes"), NODES);
     assert_eq!(word(&out, "migrate: survey", "pending_drops"), 1);
+    let flat = word(&out, "migrate: survey", "flat");
+    assert!(flat >= 5, "{out}");
+    assert_eq!(word(&out, "migrate: loaded", "flat"), flat);
+    // The rate of a run that made the whole target, by its own count.
+    assert_eq!(word(&out, "migrate: done", "elements"), NODES + flat);
+    assert!(
+        word(&out, "migrate: done", "elements_per_second") > 0,
+        "{out}"
+    );
     assert_eq!(word(&out, "migrate: survey", "aux"), 5);
     assert!(
         out.contains(&format!("root_hash={}", hex::encode(root))),
@@ -899,6 +953,55 @@ fn a_target_that_holds_something_is_refused_and_an_empty_directory_is_taken() {
     let (outcome, _) = ran(&migration(&source, Path::new("/")));
     let refused = outcome.expect_err("a target with no name is refused");
     assert!(refused.contains("has no name of its own"), "{refused}");
+
+    // A name under which no database is opened.
+    let creating = dir.path().join("Backup.CREATING");
+    let (outcome, _) = ran(&migration(&source, &creating));
+    let refused = outcome.expect_err("a target that ends in .creating is refused");
+    assert!(refused.contains("ends in .creating"), "{refused}");
+    assert!(!creating.exists() && !work_dir(&creating).unwrap().exists());
+
+    // A target inside the source, also by another name of the source:
+    // nothing is made there.
+    let before = files(&source);
+    let link = dir.path().join("a link to the source");
+    std::os::unix::fs::symlink(&source, &link).expect("a link");
+    for inside in [source.join("out"), link.join("out"), source.clone()] {
+        let (outcome, _) = ran(&migration(&source, &inside));
+        let refused = outcome.expect_err("a target inside the source is refused");
+        assert!(refused.contains("one inside the other"), "{refused}");
+    }
+    assert!(
+        files(&source) == before,
+        "the source's directory is as it was"
+    );
+
+    // A work directory that someone put a file into is not taken for the
+    // work of a migration, and is left as it is.
+    let other = dir.path().join("other");
+    let work = work_dir(&other).unwrap();
+    std::fs::create_dir(&work).expect("a directory");
+    std::fs::write(work.join("README"), b"of someone").expect("a file");
+    let (outcome, out) = ran(&migration(&source, &other));
+    let refused = outcome.expect_err("a work directory of someone else is refused");
+    assert!(
+        refused.contains("is not the work of a migration"),
+        "{refused}\n{out}"
+    );
+    let left: Vec<_> = std::fs::read_dir(&work).expect("the directory").collect();
+    assert_eq!(left.len(), 1, "the file alone is there");
+    assert!(!other.exists());
+
+    // A grove with nothing in it is a source as any other.
+    let (empty, of_empty) = (dir.path().join("empty"), dir.path().join("of-empty"));
+    let nothing = root_of(&rocks(&empty));
+    assert_eq!(nothing, [0; 32]);
+    let (outcome, out) = ran(&migration(&empty, &of_empty));
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert_eq!(
+        root_of(&Lignin::open_with_engine(&of_empty).expect("the target")),
+        nothing
+    );
     let (outcome, _) = ran(&migration(&dir.path().join("nothing"), &target));
     assert!(outcome.is_err(), "a source that is not there is refused");
 }
@@ -1095,7 +1198,8 @@ fn power_cuts_at_any_change_leave_a_load_that_goes_on() {
                     Ok(Outcome::Done) => {
                         assert_eq!(compared(&out), expected, "after {after}:\n{out}");
                         gone_on += u64::from(out.contains("migrate: resumed"));
-                        fresh += u64::from(out.contains("migrate: survey"));
+                        let loaded = out.contains("migrate: loaded");
+                        fresh += u64::from(loaded && !out.contains("migrate: resumed"));
                     }
                     // The run before gave the store its name, and the
                     // power went off before it said so.
@@ -1111,8 +1215,10 @@ fn power_cuts_at_any_change_leave_a_load_that_goes_on() {
                 break;
             }
             // The power went off inside the run, or after its last
-            // change, which is the sync that makes the name durable.
-            let ended = matches!(outcome, Err(_) | Ok(Outcome::Done));
+            // change, which is the sync that makes the name durable. A
+            // check that could not read the store it checks says that
+            // the store is not sound, and gives it no name.
+            let ended = matches!(outcome, Err(_) | Ok(Outcome::Done) | Ok(Outcome::NotSound));
             assert!(ended, "after {after}: {outcome:?}\n{out}");
             cuts += 1;
             device = device.crash(after);
@@ -1149,16 +1255,43 @@ fn a_full_device_stops_a_load_that_goes_on_once_there_is_room() {
     assert_eq!(outcome, Ok(Outcome::Done), "{out}");
     let used = whole.used_bytes();
 
-    let device = SimVfs::new(SimConfig::new(0));
-    device.set_capacity(Some(used / 2));
-    let (outcome, out) = ran(&on(&device, &source, refuse, SyncPolicy::Never));
-    assert_eq!(outcome, Ok(Outcome::IncompleteMigration), "{out}");
     assert_eq!(Outcome::IncompleteMigration.status(), 4);
-    assert!(out.contains("IS FULL"), "{out}");
-    device.set_capacity(None);
-    let (outcome, out) = ran(&on(&device, &source, refuse, SyncPolicy::Never));
-    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
-    assert_eq!(root_of(&grove_on(&device)), root);
+    // A device with room for nothing, for the first files of a database,
+    // and for a part of the load: each run ends as one that is not
+    // complete, and the run after room was made goes on to the end.
+    let mut stopped = 0;
+    for capacity in [
+        0,
+        64,
+        4 << 10,
+        used / 16,
+        used / 4,
+        used / 2,
+        used - used / 8,
+    ] {
+        let device = SimVfs::new(SimConfig::new(capacity));
+        device.set_capacity(Some(capacity));
+        let (outcome, out) = ran(&on(&device, &source, refuse, SyncPolicy::Never));
+        match outcome {
+            Ok(Outcome::IncompleteMigration) => {
+                assert!(out.contains("IS FULL"), "{out}");
+                stopped += 1;
+            }
+            // The device had room for all of it.
+            Ok(Outcome::Done) => {}
+            other => panic!("a device of {capacity} bytes: {other:?}\n{out}"),
+        }
+        device.set_capacity(None);
+        let (outcome, out) = ran(&on(&device, &source, refuse, SyncPolicy::Never));
+        let whole = "a database that a migration left at the target is whole";
+        match outcome {
+            Ok(Outcome::Done) => {}
+            Err(refused) if refused.contains(whole) => {}
+            other => panic!("after a device of {capacity} bytes: {other:?}\n{out}"),
+        }
+        assert_eq!(root_of(&grove_on(&device)), root, "{capacity}");
+    }
+    assert!(stopped >= 4, "{stopped} devices were full");
 }
 
 /// A load goes on from the source it was begun on, in the state it was
@@ -1177,13 +1310,16 @@ fn a_load_of_another_state_of_the_source_is_refused() {
         9,
     );
 
-    for other in [Unreachable::Refuse, Unreachable::Carry] {
+    // A run that is told nothing of the records nothing leads to is
+    // refused by its survey, as a first run is, and one that is told
+    // otherwise than the load was begun with by the journal.
+    for (other, said) in [
+        (Unreachable::Refuse, "holds what a migration does not carry"),
+        (Unreachable::Carry, "was begun with --unreachable leave"),
+    ] {
         let (outcome, out) = ran(&on(&left, &source, other, every));
         let refused = outcome.expect_err("another choice is refused");
-        assert!(
-            refused.contains("was begun with --unreachable leave"),
-            "{refused}\n{out}"
-        );
+        assert!(refused.contains(said), "{refused}\n{out}");
     }
     put(
         &rocks(&source),
@@ -1210,9 +1346,9 @@ fn a_target_that_differs_from_its_source_is_not_named() {
     assert_eq!(outcome, Ok(Outcome::Done), "{out}");
     // As a run leaves it that ended before the rename, with one item more.
     let work = work_dir(&target).unwrap();
-    std::fs::rename(&target, &work).expect("the name of the work directory");
+    let database = unnamed(&target);
     {
-        let lignin = Lignin::open_with_engine(&work).expect("the store");
+        let lignin = Lignin::open_with_engine(&database).expect("the store");
         let item = Element::new_item(b"not of the source".to_vec());
         let inserted = lignin.insert(
             &[b"a".as_slice()],
@@ -1473,57 +1609,63 @@ fn records_no_tree_links_and_a_root_key_that_names_no_root_are_carried() {
 }
 
 /// On the grove versions 1 to 3 a tree that keeps flat records can hold a
-/// keyed child, whose node lies among the flat records of the tree. It is
-/// carried as the record it is and counted, and the two groves go on
-/// alike.
+/// keyed child, whose node lies among the flat records of the tree, and
+/// which can be a tree with records under a prefix of its own. The engine
+/// keeps such a child as a node of a Merk, which this command does not
+/// make: the source is refused, whatever it is told of the records that
+/// nothing leads to, and nothing is made.
 #[test]
-fn a_keyed_child_under_a_tree_of_flat_records_is_carried() {
-    for version in GROVE_VERSIONS.iter().take(3) {
+fn a_keyed_child_under_a_tree_of_flat_records_refuses_the_source() {
+    for (number, version) in GROVE_VERSIONS.iter().take(3).enumerate() {
         let dir = tempfile::tempdir().expect("a directory");
         let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
         {
             let db = rocks(&source);
             let tree = Element::empty_mmr_tree();
             let made = QualifiedGroveDbOp::insert_or_replace_op(vec![], b"mmr".to_vec(), tree);
-            let item = Element::new_item(b"a keyed child".to_vec());
+            // On the first of the three versions the child is a tree
+            // that holds an item.
+            let child = match number {
+                0 => Element::empty_tree(),
+                _ => Element::new_item(b"a keyed child".to_vec()),
+            };
             let under = vec![b"mmr".to_vec()];
-            let child = QualifiedGroveDbOp::insert_or_replace_op(under, b"child".to_vec(), item);
-            let applied = db.apply_batch(vec![made, child], None, None, version);
+            let child = QualifiedGroveDbOp::insert_or_replace_op(under, b"child".to_vec(), child);
+            let mut batch = vec![made, child];
+            if number == 0 {
+                let below = vec![b"mmr".to_vec(), b"child".to_vec()];
+                let item = Element::new_item(b"below a keyed child".to_vec());
+                batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+                    below,
+                    b"item".to_vec(),
+                    item,
+                ));
+            }
+            let applied = db.apply_batch(batch, None, None, version);
             applied.unwrap().expect("the batch is taken");
             for n in 0..3u8 {
                 let appended = db.mmr_tree_append(ROOT, b"mmr", vec![n; 40], None, version);
                 appended.unwrap().expect("an append");
             }
         }
-        let (outcome, out) = ran(&migration(&source, &target));
-        assert_eq!(outcome, Ok(Outcome::Done), "{out}");
-        assert_eq!(word(&out, "migrate: survey", "keyed_children"), 1, "{out}");
-        assert!(word(&out, "migrate: survey", "flat") > 1, "{out}");
-        assert!(alike_on(&source, &target, version) > 0);
-
-        let lignin = Lignin::open_with_engine(&target).expect("the target");
-        let rocks = rocks(&source);
-        let was = rocks.mmr_tree_append(ROOT, b"mmr", vec![9; 40], None, version);
-        let is = lignin.mmr_tree_append(ROOT, b"mmr", vec![9; 40], None, version);
-        assert_eq!(format!("{:?}", was.unwrap()), format!("{:?}", is.unwrap()));
-        let read = |path: &[&[u8]], key: &[u8]| {
-            let was = rocks.get(path, key, None, version).unwrap();
-            let is = lignin.get(path, key, None, version).unwrap();
-            assert_eq!(format!("{was:?}"), format!("{is:?}"));
-        };
-        read(ROOT, b"mmr");
-        read(&[b"mmr"], b"child");
-        let roots = (
-            rocks
-                .root_hash(None, version)
-                .unwrap()
-                .expect("a root hash"),
-            lignin
-                .root_hash(None, version)
-                .unwrap()
-                .expect("a root hash"),
-        );
-        assert_eq!(roots.0, roots.1);
+        for told in Unreachable::ALL {
+            let telling = Migration {
+                unreachable: told,
+                ..migration(&source, &target)
+            };
+            let (outcome, out) = ran(&telling);
+            let refused = outcome.expect_err("the source is refused");
+            assert!(
+                refused.contains("holds what a migration does not carry"),
+                "{refused}"
+            );
+            assert_eq!(word(&out, "migrate: survey", "keyed_children"), 1, "{out}");
+            let line = (out.lines())
+                .find(|line| line.contains("NOT CARRIED") && line.contains("keyed children"));
+            let line = line.unwrap_or_else(|| panic!("no line of the keyed child in:\n{out}"));
+            assert!(line.contains("NOT CARRIED: /mmr:"), "{line}");
+            assert!(!target.exists() && !work_dir(&target).unwrap().exists());
+        }
     }
 }
 
@@ -1537,7 +1679,7 @@ fn a_source_that_is_not_carried_is_refused_before_anything_is_made() {
     let e = prefix_of(&[b"e"]);
     type Write<'a> = ([u8; 32], char, &'a [u8], Option<&'a [u8]>);
     let x: Option<&[u8]> = Some(b"x");
-    let faults: [(&str, &[Write<'_>], &str); 7] = [
+    let faults: [(&str, &[Write<'_>], &str); 8] = [
         (
             "roots",
             &[(a, 'r', b"other", x)],
@@ -1562,6 +1704,11 @@ fn a_source_that_is_not_carried_is_refused_before_anything_is_made() {
             "journal",
             &[([0; 32], 'a', b"lignin_migration_in_progress", x)],
             "its journal",
+        ),
+        (
+            "restore",
+            &[([0; 32], 'a', b"grovedb_state_sync_restore_in_progress", x)],
+            "a state-sync restore that did not finish",
         ),
     ];
     for (name, writes, said) in faults {
@@ -1697,4 +1844,156 @@ fn a_database_of_the_environment_is_migrated_and_read_alike() {
         hex::encode(root)
     );
     assert_eq!(issues, named + emptied);
+}
+
+/// Puts the database at `target` back where a run leaves it that ended
+/// before the rename: in the work directory of a migration to `target`,
+/// which has the file that marks it. Returns where the database is.
+fn unnamed(target: &Path) -> std::path::PathBuf {
+    let work = work_dir(target).unwrap();
+    std::fs::create_dir(&work).expect("the work directory");
+    std::fs::write(work.join(WORK_MARK), b"").expect("its mark");
+    let database = work.join(WORK_DATABASE);
+    std::fs::rename(target, &database).expect("the database");
+    database
+}
+
+/// Writes `batch` into the store in `dir`, beside GroveDB.
+fn written(dir: &Path, batch: &Batch<'_>) {
+    let options = Options {
+        create_if_missing: false,
+        ..Options::default()
+    };
+    let db = Db::open(dir, &options).expect("the store");
+    db.unchecked_at_close();
+    let transaction = db.begin();
+    {
+        let scope = transaction.scope().expect("a scope");
+        (scope.apply_by_kind(batch, keeps_flat_records)).expect("the write is taken");
+        scope.merge();
+    }
+    (db.commit(&transaction, &mut NoStaleHashes)).expect("a commit");
+    drop(transaction);
+    db.close().expect("a close");
+}
+
+/// What a target holds that its source does not is found by the
+/// comparison, also where it changes neither the root hash nor how many
+/// subtrees the directory has: a record beside the grove's own in each
+/// keyspace, a mark with a value, and a subtree that nothing hosts.
+#[test]
+fn what_a_target_holds_beside_what_its_source_holds_is_found() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let source = dir.path().join("rocksdb");
+    small(&source);
+    let namespace = Subtree::new(*pending_prefix_drops_namespace());
+    let a = Subtree::new(prefix_of(&[b"a"]));
+    let mark = left_behind_key(MerkKeyspace::Data, &prefix_of(&[b"d"])).expect("a mark");
+    let kept = [[0x55; 32].as_slice(), b"r"].concat();
+    let normal = tree_type_bytes(TreeType::NormalTree);
+    let put = RecordWrite::put;
+    let cases: [(&str, Vec<RecordWrite<'_>>, &str); 6] = [
+        (
+            "aux",
+            vec![put(Column::Aux, a, b"more", b"x")],
+            "aux keyspace",
+        ),
+        (
+            "meta",
+            vec![put(Column::Meta, a, b"more", b"x")],
+            "meta keyspace",
+        ),
+        (
+            "mark",
+            vec![put(Column::Aux, namespace, &mark, b"x")],
+            "a mark has a value",
+        ),
+        (
+            "roots",
+            vec![put(Column::Roots, a, b"r", b"k")],
+            "the roots keyspace of the subtree",
+        ),
+        (
+            "kept",
+            vec![put(Column::Roots, namespace, &kept, b"k")],
+            "records of root keys",
+        ),
+        ("subtree", Vec::new(), "subtrees in use"),
+    ];
+    for (name, records, said) in cases {
+        let target = dir.path().join(name);
+        let (outcome, out) = ran(&migration(&source, &target));
+        assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+        assert_eq!(word(&out, "migrate: compared", "marks"), 1, "{out}");
+        // As a run leaves it that ended before the rename.
+        let work = work_dir(&target).unwrap();
+        let database = unnamed(&target);
+        let entered = [SubtreeWrite::Enter {
+            subtree: Subtree::new([0xEE; 32]),
+            tree_type: &normal,
+            host: None,
+        }];
+        let batch = Batch {
+            records: &records,
+            subtrees: match name {
+                "subtree" => &entered[..],
+                _ => &[],
+            },
+            ..Batch::default()
+        };
+        written(&database, &batch);
+        let (outcome, out) = ran(&migration(&source, &target));
+        assert_eq!(outcome, Ok(Outcome::NotSound), "{name}:\n{out}");
+        let line = out.lines().find(|line| line.contains("DIFFERS:"));
+        let line = line.unwrap_or_else(|| panic!("{name}: no difference in:\n{out}"));
+        assert!(line.contains(said), "{name}: {line}");
+        assert!(work.exists() && !target.exists());
+    }
+}
+
+/// A grove as deep as the walk follows is migrated on a thread with the
+/// stack a thread has unless it asks for more, and one that is a tree
+/// deeper is refused in words before anything is made.
+#[test]
+fn a_grove_deeper_than_the_walk_follows_is_refused() {
+    const DEEPEST: usize = 256;
+    let dir = tempfile::tempdir().expect("a directory");
+    let source = dir.path().join("rocksdb");
+    let deeper = |from: usize, to: usize| {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(STACK_BYTES)
+                .spawn_scoped(scope, || {
+                    let db = rocks(&source);
+                    for depth in from..to {
+                        let path: Vec<&[u8]> = vec![b"t".as_slice(); depth];
+                        put(&db, &path, b"t", Element::empty_tree());
+                    }
+                    let path: Vec<&[u8]> = vec![b"t".as_slice(); to];
+                    put(&db, &path, b"item", Element::new_item(vec![to as u8]));
+                })
+                .expect("a thread")
+                .join()
+                .expect("the grove is made");
+        });
+    };
+    deeper(0, DEEPEST);
+    let target = dir.path().join("lignindb");
+    let (outcome, out) = ran(&migration(&source, &target));
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert_eq!(
+        word(&out, "migrate: survey", "subtrees"),
+        DEEPEST as u64 + 1,
+        "{out}"
+    );
+
+    deeper(DEEPEST, DEEPEST + 1);
+    let target = dir.path().join("deeper");
+    let (outcome, out) = ran(&migration(&source, &target));
+    let refused = outcome.expect_err("a grove that is too deep is refused");
+    assert!(
+        refused.contains("more than 256 trees deep"),
+        "{refused}\n{out}"
+    );
+    assert!(!target.exists() && !work_dir(&target).unwrap().exists());
 }
