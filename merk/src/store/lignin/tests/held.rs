@@ -18,7 +18,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use lignin_format::tree_page::Side;
+use lignin_format::{tree_page::Side, CommitVersion};
 use lignin_tree::{hash::Stale, node::NodeHandle};
 use lignindb::txn::{
     Batch, Hosted, NodeView, RootPut, Scope, SubtreeView, TxnError, Unit, ValuePut,
@@ -890,6 +890,10 @@ impl Reads for Unsteady<'_, '_> {
 
     fn by_key(&self, subtree: Subtree) -> bool {
         Reads::by_key(self.transaction, subtree)
+    }
+
+    fn version(&self, unit: Unit) -> CommitVersion {
+        Reads::version(self.transaction, unit)
     }
 }
 

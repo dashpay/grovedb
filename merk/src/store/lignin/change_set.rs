@@ -29,7 +29,7 @@ use super::{
     },
     feature::{encode_aggregate, encode_feature},
     hash::{held_link, stale_hashes, HeldLink},
-    record_len, refused, LigninHost, LigninSubtree, LigninView, Loose, MODEL,
+    record_len, refused, LigninHost, LigninSubtree, LigninView, Loose, RootLeftBehind, MODEL,
 };
 use crate::{
     cost_model::{self, BatchCharge, ImmediateBatchCharge, Keyspace},
@@ -746,6 +746,10 @@ struct Marks {
     /// subtree: by the subtree each is kept under, the key it has there
     /// ([`kept_key`]).
     kept: BTreeMap<Prefix, BTreeSet<Vec<u8>>>,
+    /// The Merks of which a handle read a root-key record that does not
+    /// name their root, each as the latest such read found it
+    /// ([`LigninBatch::note_root_left_behind`]).
+    roots_left_behind: BTreeMap<Prefix, RootLeftBehind>,
 }
 
 impl Marks {
@@ -788,6 +792,7 @@ impl Marks {
         self.moves.extend(other.moves);
         self.absent.extend(other.absent);
         self.over_trees.extend(other.over_trees);
+        self.roots_left_behind.extend(other.roots_left_behind);
         for (node, read) in other.tree_reads {
             self.tree_reads.entry(node).or_insert(read);
         }
@@ -915,14 +920,19 @@ impl LigninBatch {
     }
 
     /// Moves everything staged into a new batch and leaves this one empty,
-    /// still open for the handles that stage into it.
+    /// still open for the handles that stage into it. What those handles
+    /// read of root-key records that did not name their root is kept in
+    /// both ([`Self::note_root_left_behind`]).
     pub fn take_pending(&self) -> Self {
         // The marks are taken with what they are of: a call that stages
         // holds them from its first write to its mark.
         let mut marks = self.marks();
+        let roots_left_behind = marks.roots_left_behind.clone();
+        let taken = std::mem::take(&mut *marks);
+        marks.roots_left_behind = roots_left_behind;
         Self {
             staged: self.staged.take_pending(),
-            marks: Mutex::new(std::mem::take(&mut *marks)),
+            marks: Mutex::new(taken),
         }
     }
 
@@ -994,6 +1004,25 @@ impl LigninBatch {
         let _held = self.marks();
         self.host(subtree);
         self.staged.drop_subtree(Subtree::new(subtree.prefix));
+    }
+
+    /// Takes in that a handle which stages into the batch read the
+    /// root-key record of the Merk of `subtree`, and that the record does
+    /// not name the root of that Merk ([`RootLeftBehind`]). From there on
+    /// the batch is refused where it is settled if it holds a put or a
+    /// removal of a node of that Merk: whichever handle staged the node,
+    /// whenever, and whatever a later read of the record finds. A Merk
+    /// that was opened from the record can be written for as long as it
+    /// is there, and can hand the key of its root to another handle.
+    /// The batch that [`Self::take_pending`] takes out of this one has
+    /// the read as well, and so has a batch that this one is merged into
+    /// ([`Self::merge_overwriting`]). So a batch in which a record was
+    /// read so is not used again for nodes of that Merk: its caller makes
+    /// a new one. The refusal names what the latest such read of the
+    /// batch found, or after a merge what the batch that was merged in
+    /// had kept for that Merk.
+    pub(super) fn note_root_left_behind(&self, subtree: Prefix, found: RootLeftBehind) {
+        self.marks().roots_left_behind.insert(subtree, found);
     }
 
     /// Stages `change_set`. `began_empty` says that it is of a writer
@@ -1117,6 +1146,11 @@ impl LigninBatch {
         let mut marks = marks.into_inner().unwrap_or_else(PoisonError::into_inner);
         let moved = std::mem::take(&mut marks.moved);
         let mut charge = MODEL.batch();
+        let left_behind = (marks.roots_left_behind.iter())
+            .find(|(subtree, _)| marks.merks.contains_key(*subtree));
+        if let Some((subtree, found)) = left_behind {
+            return Err(found.refusal(subtree)).wrap_with_cost(charge.finish(false));
+        }
         let kept = &marks.kept;
         let settled = (staged.resolve())
             .map_err(|error| fault(TxnError::Batch(error)))

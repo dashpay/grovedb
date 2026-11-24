@@ -2,21 +2,24 @@
 //! the root key of a parent element, and the open by what the subtree
 //! directory holds, each beside the same open on RocksDB.
 
+use std::cell::{Cell, RefCell};
+
 use grovedb_costs::{CostResult, OperationCost};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
-use lignin_tree::directory::DirectoryError;
-use lignindb::txn::{Column, Subtree, TxnError, Unit, WriteTxn};
+use lignin_format::{tree_page::Side, CommitVersion};
+use lignin_tree::{directory::DirectoryError, node::NodeHandle};
+use lignindb::txn::{Column, NodeView, Subtree, SubtreeView, TxnError, Unit, WriteTxn};
 
 use super::{
-    access::fault,
+    access::{fault, read_record_with_root, Reads},
     tests::{apply, version, Lignin, Outcome, NO_VALUE_DEFINED_COST},
     tree_type_bytes, tree_type_from_bytes, LigninBatch, LigninEntry, LigninHost, LigninHosted,
     LigninNodeStore, LigninSubtree, LigninWriter,
 };
 use crate::{
-    merk::defaults::ROOT_KEY_KEY, store::NodeStore, tree::kv::KV, CryptoHash, Error, Merk,
-    MerkType, Op, TreeFeatureType, TreeType,
+    cost_model::Keyspace, merk::defaults::ROOT_KEY_KEY, store::NodeStore, tree::kv::KV, CryptoHash,
+    Error, Merk, MerkType, Op, TreeFeatureType, TreeType,
 };
 
 /// A subtree that the store of the tests is made with, and three that it
@@ -945,4 +948,550 @@ fn a_merk_that_is_too_deep_is_not_supported_and_no_storage_error() {
     assert!(matches!(damaged, Error::StorageError(_)), "{damaged}");
     let scope_open = fault(TxnError::ScopeOpen);
     assert!(matches!(scope_open, Error::StorageError(_)), "{scope_open}");
+}
+
+/// A Merk that is opened from a root-key record which does not name its
+/// root writes no node (GROVE-05-F1). The record of a Merk with no parent
+/// element is left naming a node that is gone, as GroveDB leaves the
+/// record of the root Merk on grove versions 1 to 3: the root node is
+/// deleted through a Merk that is opened with the root key given, whose
+/// commit writes no record. From there on:
+///
+/// - a batch is refused where it is settled, if a handle that stages into
+///   it read the record and it holds a node of the Merk, whichever of
+///   its handles staged the node;
+/// - a batch whose handle read the record and that holds no node of the
+///   Merk is taken, also where it holds nodes of another Merk;
+/// - a handle that writes at once and read the record is refused its
+///   commit;
+/// - nothing is written by a refusal: the directory, the record and the
+///   root hash are what they were;
+/// - a batch that is merged with one whose handle read the record is
+///   refused as that one is, and so is a batch whose handle read the
+///   record before its staged writes were taken out of it, where the
+///   nodes are staged afterwards or merged in afterwards;
+/// - the refusal names the record as the latest such read of the batch
+///   found it;
+/// - a batch in which the record was read so is refused the nodes of
+///   the Merk for good, also once the record names the root and a new
+///   handle reads it, and a new batch takes them;
+/// - a write of the record is taken, and a handle that reads the record
+///   again where it names the root writes;
+/// - a record of a Merk with no node is not judged;
+/// - a Merk that has nodes and no record is refused as one whose record
+///   names another node.
+#[test]
+fn a_merk_opened_from_a_root_key_record_that_does_not_name_its_root_writes_no_node() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let subtree = LigninSubtree::alone(FRESH);
+    let tree_type = TreeType::NormalTree;
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let more = puts(tree_type, 100..103, 25);
+
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    store.enter(tree_type).unwrap();
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    apply(&mut merk, &puts(tree_type, 0..20, 25));
+    let first = merk.root_key().expect("a root");
+    drop(merk);
+    staged.apply(&writer).unwrap().unwrap();
+
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let (mut merk, _) = open_layered(store, Some(first.clone()), tree_type);
+    apply(&mut merk, &[(first.clone(), Op::Delete)]);
+    let (root, root_hash) = (merk.root_key().expect("a root"), merk.root_hash().unwrap());
+    drop(merk);
+    staged.apply(&writer).unwrap().unwrap();
+    assert_ne!(root, first);
+
+    let held = |told: &str| {
+        let entry = entry_of(&writer, FRESH).expect("the subtree is entered");
+        assert_eq!(entry.root_key, Some(root.clone()), "{told}");
+        let reader = LigninNodeStore::deferred(&writer, subtree.clone(), None);
+        let record = reader.root_key().unwrap().unwrap();
+        assert_eq!(record, Some(first.clone()), "{told}");
+        let reader = LigninNodeStore::deferred(&writer, subtree.clone(), None);
+        let (merk, _) = open_layered(reader, Some(root.clone()), tree_type);
+        assert_eq!(merk.root_hash().unwrap(), root_hash, "{told}");
+        // The record names no node, so the Merk is opened from it with
+        // none, as it is on every engine.
+        let reader = LigninNodeStore::deferred(&writer, subtree.clone(), None);
+        let (merk, _) = open(Kind::Base, reader, tree_type);
+        assert_eq!(merk.root_key(), None, "{told}");
+    };
+    held("after the delete");
+    let words = format!(
+        "lignindb: the root-key record of Merk {} names the key {}, and the root of that Merk is \
+         the node under the key {}: no node of a Merk is written where its root-key record was \
+         read and does not name its root. On grove versions 1 to 3 the delete of a tree that \
+         holds elements leaves the record so where it changes the root of the Merk the tree was \
+         in (grovedb/src/operations/delete/delete_internal_on_transaction/v0.rs, GroveDB #686 and #1065)",
+        hex::encode(FRESH),
+        hex::encode(&first),
+        hex::encode(&root),
+    );
+    let refused = |error: Error, told: &str| match error {
+        Error::NotSupported(said) => assert_eq!(said, words, "{told}"),
+        other => panic!("{told}: {other}"),
+    };
+
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    assert_eq!(merk.root_key(), None);
+    apply(&mut merk, &more);
+    drop(merk);
+    let applied = staged.apply(&writer).value;
+    refused(applied.expect_err("a batch"), "a batch");
+    held("after a batch");
+
+    let staged = LigninBatch::new();
+    let reader = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    assert_eq!(reader.root_key().unwrap().unwrap(), Some(first.clone()));
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let (mut merk, _) = open_layered(store, Some(root.clone()), tree_type);
+    apply(&mut merk, &more);
+    drop(merk);
+    let applied = staged.apply(&writer).value;
+    refused(
+        applied.expect_err("the node of another handle"),
+        "the node of another handle",
+    );
+    held("after the node of another handle");
+
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    assert_eq!(store.root_key().unwrap().unwrap(), Some(first.clone()));
+    store.put_meta_record(b"meta", b"1").unwrap().unwrap();
+    (staged.apply(&writer).value).expect("a batch with no node");
+    held("after a batch with no node");
+
+    let beside = LigninSubtree::alone(OTHER);
+    let staged = LigninBatch::new();
+    let reader = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    assert_eq!(reader.root_key().unwrap().unwrap(), Some(first.clone()));
+    let store = LigninNodeStore::deferred(&writer, beside.clone(), Some(&staged));
+    store.enter(tree_type).unwrap();
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    apply(&mut merk, &more);
+    let beside_root = merk.root_key();
+    drop(merk);
+    (staged.apply(&writer).value).expect("the nodes of another Merk");
+    assert!(beside_root.is_some());
+    assert_eq!(entry_of(&writer, OTHER).unwrap().root_key, beside_root);
+    held("after a batch with the nodes of another Merk");
+
+    let store = LigninNodeStore::immediate(&writer, subtree.clone());
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    assert_eq!(merk.root_key(), None);
+    let applied = merk.apply::<_, Vec<u8>>(&more, &[], None, version());
+    refused(
+        applied.value.expect_err("a handle that writes at once"),
+        "a handle that writes at once",
+    );
+    drop(merk);
+    held("after a handle that writes at once");
+
+    for read_by_the_first in [true, false] {
+        let (one, other) = (LigninBatch::new(), LigninBatch::new());
+        let (reads, writes) = match read_by_the_first {
+            true => (&one, &other),
+            false => (&other, &one),
+        };
+        let reader = LigninNodeStore::deferred(&writer, subtree.clone(), Some(reads));
+        assert_eq!(reader.root_key().unwrap().unwrap(), Some(first.clone()));
+        let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(writes));
+        let (mut merk, _) = open_layered(store, Some(root.clone()), tree_type);
+        apply(&mut merk, &more);
+        drop(merk);
+        one.merge_overwriting(other);
+        let applied = one.apply(&writer).value;
+        refused(
+            applied.expect_err("two batches merged"),
+            "two batches merged",
+        );
+        held("after two batches merged");
+    }
+
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    staged.take_pending().apply(&writer).unwrap().unwrap();
+    apply(&mut merk, &more);
+    drop(merk);
+    let applied = staged.apply(&writer).value;
+    refused(
+        applied.expect_err("a batch whose first writes were taken out"),
+        "a batch whose first writes were taken out",
+    );
+    held("after a batch whose first writes were taken out");
+
+    let staged = LigninBatch::new();
+    let reader = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    assert_eq!(reader.root_key().unwrap().unwrap(), Some(first.clone()));
+    staged.take_pending().apply(&writer).unwrap().unwrap();
+    let other = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&other));
+    let (mut merk, _) = open_layered(store, Some(root.clone()), tree_type);
+    apply(&mut merk, &more);
+    drop(merk);
+    drop(reader);
+    staged.merge_overwriting(other);
+    let applied = staged.apply(&writer).value;
+    refused(
+        applied.expect_err("nodes merged in after the writes were taken out"),
+        "nodes merged in after the writes were taken out",
+    );
+    held("after nodes merged in after the writes were taken out");
+
+    // The record is removed, and a second handle of a batch whose first
+    // read found it naming another node finds none: the refusal names
+    // what the second found.
+    let staged = LigninBatch::new();
+    let reader = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    assert_eq!(reader.root_key().unwrap().unwrap(), Some(first.clone()));
+    drop(reader);
+    let record = LigninNodeStore::immediate(&writer, subtree.clone());
+    record.set_root_key(None).unwrap().unwrap();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    assert_eq!(merk.root_key(), None);
+    apply(&mut merk, &more);
+    drop(merk);
+    match staged.apply(&writer).value.expect_err("the latest read") {
+        Error::NotSupported(said) => assert_eq!(
+            said,
+            words.replace(
+                &format!("names the key {}", hex::encode(&first)),
+                "is absent"
+            ),
+            "the latest read"
+        ),
+        other => panic!("the latest read: {other}"),
+    }
+    record.set_root_key(Some(&first)).unwrap().unwrap();
+    drop(record);
+    held("after the latest read");
+
+    let used = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&used));
+    assert_eq!(store.root_key().unwrap().unwrap(), Some(first.clone()));
+    store.put_meta_record(b"meta", b"2").unwrap().unwrap();
+    (used.apply(&writer).value).expect("a batch with no node");
+    drop(store);
+
+    let store = LigninNodeStore::immediate(&writer, subtree.clone());
+    assert_eq!(store.root_key().unwrap().unwrap(), Some(first.clone()));
+    store.set_root_key(Some(&root)).unwrap().unwrap();
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    assert_eq!(merk.root_key(), Some(root.clone()));
+    assert_eq!(merk.root_hash().unwrap(), root_hash);
+    let applied = merk.apply::<_, Vec<u8>>(&more, &[], None, version());
+    applied.value.expect("a record that names the root again");
+    let root = merk.root_key();
+    drop(merk);
+    assert_eq!(entry_of(&writer, FRESH).unwrap().root_key, root);
+
+    // The batch that the record was read in while it named another node
+    // takes no node of the Merk, whatever its new handle reads. A new
+    // batch does.
+    let later = puts(tree_type, 200..203, 25);
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&used));
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    assert_eq!(merk.root_key(), root);
+    apply(&mut merk, &later);
+    drop(merk);
+    let applied = used.apply(&writer).value;
+    refused(
+        applied.expect_err("a batch that is used again"),
+        "a batch that is used again",
+    );
+    assert_eq!(entry_of(&writer, FRESH).unwrap().root_key, root);
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    apply(&mut merk, &later);
+    let root = merk.root_key();
+    drop(merk);
+    (staged.apply(&writer).value).expect("a new batch");
+    assert_eq!(entry_of(&writer, FRESH).unwrap().root_key, root);
+
+    const EMPTY: [u8; 32] = [233; 32];
+    let other = LigninSubtree::alone(EMPTY);
+    let store = LigninNodeStore::immediate(&writer, other.clone());
+    store.enter(tree_type).unwrap();
+    store.set_root_key(Some(b"absent")).unwrap().unwrap();
+    let store = LigninNodeStore::immediate(&writer, other);
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    assert_eq!(merk.root_key(), None);
+    let applied = merk.apply::<_, Vec<u8>>(&more, &[], None, version());
+    applied.value.expect("a record under a Merk with no node");
+    let root = merk.root_key();
+    drop(merk);
+    assert!(root.is_some());
+    assert_eq!(entry_of(&writer, EMPTY).unwrap().root_key, root);
+
+    let third = LigninSubtree::alone(CHILD);
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, third.clone(), Some(&staged));
+    store.enter(tree_type).unwrap();
+    let (mut merk, _) = open_layered(store, None, tree_type);
+    apply(&mut merk, &puts(tree_type, 0..5, 25));
+    let root = merk.root_key().expect("a root");
+    drop(merk);
+    staged.apply(&writer).unwrap().unwrap();
+    let store = LigninNodeStore::immediate(&writer, third);
+    assert_eq!(store.root_key().unwrap().unwrap(), None);
+    let (mut merk, _) = open(Kind::Base, store, tree_type);
+    assert_eq!(merk.root_key(), None);
+    let applied = merk.apply::<_, Vec<u8>>(&more, &[], None, version());
+    match applied.value.expect_err("a Merk with nodes and no record") {
+        Error::NotSupported(said) => {
+            let begins = format!(
+                "lignindb: the root-key record of Merk {} is absent, and the root of that Merk \
+                 is the node under the key {}: ",
+                hex::encode(CHILD),
+                hex::encode(&root),
+            );
+            assert!(said.starts_with(&begins), "{said}");
+        }
+        other => panic!("{other}"),
+    }
+    drop(merk);
+    assert_eq!(entry_of(&writer, CHILD).unwrap().root_key, Some(root));
+
+    writer.into_scope().merge();
+    commit(&lignin, &transaction);
+}
+
+/// What [`read_record_with_root`] is given in the place of a transaction:
+/// the transaction, with something done once after its first read of the
+/// directory and once after its first read of a record.
+struct Met<'a, R: Reads> {
+    under: &'a R,
+    after_the_root: Hook<'a>,
+    after_the_record: Hook<'a>,
+    records: Cell<usize>,
+}
+
+type Hook<'a> = RefCell<Option<Box<dyn FnOnce() + 'a>>>;
+
+fn hook<'a>(run: impl FnOnce() + 'a) -> Hook<'a> {
+    RefCell::new(Some(Box::new(run)))
+}
+
+fn run(hook: &Hook<'_>) {
+    let run = hook.borrow_mut().take();
+    if let Some(run) = run {
+        run();
+    }
+}
+
+impl<R: Reads> Reads for Met<'_, R> {
+    fn node<T>(
+        &self,
+        subtree: Subtree,
+        key: &[u8],
+        hint: Option<NodeHandle>,
+        read: impl FnOnce(Option<NodeView<'_>>) -> T,
+    ) -> Result<T, TxnError> {
+        self.under.node(subtree, key, hint, read)
+    }
+
+    fn committed_node<T>(
+        &self,
+        subtree: Subtree,
+        key: &[u8],
+        read: impl FnOnce(Option<NodeView<'_>>) -> T,
+    ) -> Result<T, TxnError> {
+        self.under.committed_node(subtree, key, read)
+    }
+
+    fn child<T>(
+        &self,
+        subtree: Subtree,
+        parent: NodeHandle,
+        side: Side,
+        read: impl FnOnce(Option<NodeView<'_>>) -> T,
+    ) -> Result<Option<T>, TxnError> {
+        self.under.child(subtree, parent, side, read)
+    }
+
+    fn get(
+        &self,
+        unit: Unit,
+        key: &[u8],
+        committed: bool,
+        out: &mut Vec<u8>,
+    ) -> Result<bool, TxnError> {
+        let found = self.under.get(unit, key, committed, out);
+        self.records.set(self.records.get() + 1);
+        run(&self.after_the_record);
+        found
+    }
+
+    fn subtree<T>(
+        &self,
+        subtree: Subtree,
+        read: impl FnOnce(Option<SubtreeView<'_>>) -> T,
+    ) -> Result<T, TxnError> {
+        let shown = self.under.subtree(subtree, read);
+        run(&self.after_the_root);
+        shown
+    }
+
+    fn by_key(&self, subtree: Subtree) -> bool {
+        self.under.by_key(subtree)
+    }
+
+    fn version(&self, unit: Unit) -> CommitVersion {
+        self.under.version(unit)
+    }
+}
+
+/// The root is read on both sides of the record, and the reads are made
+/// again where something came between them:
+///
+/// - a commit of another transaction that changes the root and the
+///   record, between the read of the record and the second read of the
+///   root;
+/// - a write of the same transaction through another handle that does
+///   the same;
+/// - two commits of another transaction, one on each side of the read of
+///   the record, that leave the root under the key it had: the roots are
+///   equal, and the committed version is not.
+///
+/// Each time the record that is answered names the root that is
+/// answered. With nothing between, the record is read once.
+#[test]
+fn a_change_between_the_reads_of_the_record_and_of_the_root_has_them_read_again() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let subtree = LigninSubtree::alone(FRESH);
+    let tree_type = TreeType::NormalTree;
+    // A commit that makes the Merk, or writes it.
+    let written = |batch: &[(Vec<u8>, Op)]| {
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let staged = LigninBatch::new();
+        let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+        if store.entry().unwrap().is_none() {
+            store.enter(tree_type).unwrap();
+        }
+        let (mut merk, _) = open(Kind::Base, store, tree_type);
+        apply(&mut merk, batch);
+        let root = merk.root_key();
+        drop(merk);
+        staged.apply(&writer).unwrap().unwrap();
+        writer.into_scope().merge();
+        commit(&lignin, &transaction);
+        root
+    };
+    let read = |met: &Met<'_, WriteTxn<'_>>| {
+        let both = read_record_with_root(met, Keyspace::Roots, &FRESH, ROOT_KEY_KEY, &FRESH);
+        (both.expect("the two are read"), met.records.get())
+    };
+    let nothing = || RefCell::new(None);
+    let first = written(&puts(tree_type, 0..20, 25)).expect("a root");
+
+    // A commit of another transaction.
+    let transaction = path.begin();
+    let second = Cell::new(None);
+    let met = Met {
+        under: &transaction,
+        after_the_root: nothing(),
+        after_the_record: hook(|| second.set(written(&[(first.clone(), Op::Delete)]))),
+        records: Cell::new(0),
+    };
+    let (both, records) = read(&met);
+    drop(met);
+    let second = second.take().expect("the commit between the reads");
+    assert_ne!(second, first);
+    assert_eq!(both, (Some(second.clone()), Some(second.clone())));
+    assert_eq!(records, 2);
+
+    // Nothing between.
+    let met = Met {
+        under: &transaction,
+        after_the_root: nothing(),
+        after_the_record: nothing(),
+        records: Cell::new(0),
+    };
+    assert_eq!(
+        read(&met),
+        ((Some(second.clone()), Some(second.clone())), 1)
+    );
+    drop(met);
+
+    // A write of the same transaction through another handle.
+    let third = Cell::new(None);
+    let met = Met {
+        under: &transaction,
+        after_the_root: nothing(),
+        after_the_record: hook(|| {
+            let store = LigninNodeStore::immediate(&transaction, subtree.clone());
+            let (mut merk, _) = open(Kind::Base, store, tree_type);
+            apply(&mut merk, &[(second.clone(), Op::Delete)]);
+            third.set(merk.root_key());
+        }),
+        records: Cell::new(0),
+    };
+    let (both, records) = read(&met);
+    drop(met);
+    let third = third.take().expect("the write between the reads");
+    assert_ne!(third, second);
+    assert_eq!(both, (Some(third.clone()), Some(third)));
+    assert_eq!(records, 2);
+    transaction.rollback().unwrap();
+    drop(transaction);
+
+    // Two commits that leave the root under the key it had: the Merk of
+    // one node is emptied before the read of the record, and its node is
+    // put again after it.
+    let all: Vec<_> = (0..20).filter(|n| be(*n) != second).collect();
+    let only = written(&deletes(all.into_iter())).expect("a root");
+    let one = [(only.clone(), Op::Put(vec![7; 9], feature(tree_type, 0)))];
+    let transaction = path.begin();
+    let met = Met {
+        under: &transaction,
+        after_the_root: hook(|| assert_eq!(written(&[(only.clone(), Op::Delete)]), None)),
+        after_the_record: hook(|| assert_eq!(written(&one), Some(only.clone()))),
+        records: Cell::new(0),
+    };
+    assert_eq!(read(&met), ((Some(only.clone()), Some(only.clone())), 2));
+}
+
+/// A handle that only reads, and one that stages into no batch, read the
+/// root-key record and nothing else: the read is answered where a scope
+/// of the transaction holds the Merk of the subtree for writing, which
+/// refuses a read of the directory's entry from outside it.
+#[test]
+fn a_handle_that_writes_nothing_reads_the_root_key_record_alone() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let subtree = LigninSubtree::alone(FRESH);
+    let tree_type = TreeType::NormalTree;
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let store = LigninNodeStore::immediate(&writer, subtree.clone());
+    store.enter(tree_type).unwrap();
+    let (mut merk, _) = open_layered(store, None, tree_type);
+    apply(&mut merk, &puts(tree_type, 0..5, 25));
+    assert!(merk.root_key().is_some());
+
+    for reader in [
+        LigninNodeStore::read_only(&transaction, subtree.clone()),
+        LigninNodeStore::deferred(&transaction, subtree.clone(), None),
+    ] {
+        let entry = reader.entry();
+        assert!(entry.is_err(), "the scope holds the Merk: {entry:?}");
+        assert_eq!(reader.root_key().unwrap().unwrap(), None);
+    }
+    drop(merk);
+    writer.into_scope().merge();
+    commit(&lignin, &transaction);
 }

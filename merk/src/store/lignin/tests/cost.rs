@@ -1204,11 +1204,35 @@ fn deferred_on_rocks(rocks: &TempStorage, transaction: &Tx<'_>, script: &Script)
     (steps, Some((applied.cost, ended)))
 }
 
+/// Plays `script` on LigninDB. The handles of `open` make every step but
+/// a read of a root-key record, which a handle of `reader` makes that is
+/// opened for that read alone: where a handle read a root-key record that
+/// does not name the root of its Merk, no node of that Merk is written
+/// through it, or with the batch it stages into ([Opening a Merk] in
+/// `node-store.md`), and these histories keep the record as any other,
+/// whatever the root of its Merk is.
+fn run_script_on_lignin<'db>(
+    open: impl Fn(Prefix) -> LigninNodeStore<'db>,
+    reader: impl Fn(Prefix) -> LigninNodeStore<'db>,
+    script: &Script,
+) -> Played {
+    let mut handles: HashMap<Prefix, LigninNodeStore<'db>> = HashMap::new();
+    let steps = script.iter().map(|(prefix, step)| {
+        if matches!(step, Step::RootKey) {
+            return run_step(&reader(*prefix), step);
+        }
+        let store = handles.entry(*prefix).or_insert_with(|| open(*prefix));
+        run_step(store, step)
+    });
+    steps.collect()
+}
+
 fn deferred_on_lignin(writer: &LigninWriter<'_, '_>, script: &Script) -> Act {
     let staged = LigninBatch::new();
     let open =
         |prefix| LigninNodeStore::deferred(writer, LigninSubtree::alone(prefix), Some(&staged));
-    let steps = run_script(open, script);
+    let reader = |prefix| LigninNodeStore::deferred(writer, LigninSubtree::alone(prefix), None);
+    let steps = run_script_on_lignin(open, reader, script);
     let applied = staged.apply(writer);
     let ended = outcome(applied.value, |_| Ended::Done);
     (steps, Some((applied.cost, ended)))
@@ -1239,7 +1263,7 @@ fn immediate_on_rocks(rocks: &TempStorage, transaction: &Tx<'_>, script: &Script
 
 fn immediate_on_lignin(writer: &LigninWriter<'_, '_>, script: &Script) -> Played {
     let open = |prefix| LigninNodeStore::immediate(writer, LigninSubtree::alone(prefix));
-    run_script(open, script)
+    run_script_on_lignin(open, open, script)
 }
 
 /// One part of a history that is played on each engine.
