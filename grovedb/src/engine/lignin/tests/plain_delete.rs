@@ -1,7 +1,9 @@
 //! A tree that holds an element, removed by a batch's plain delete, and
 //! made again at its key (GROVE-10): a shape recorded from real blocks.
 //!
-//! A plain delete of a batch checks nothing below its key. RocksDB keeps
+//! A plain delete of a batch removes nothing below its key (on grove
+//! versions 4 and 5 a checked one looks through the tree for elements
+//! that take part in backward references, and removes none). RocksDB keeps
 //! the records of the removed tree under their prefix, which no element
 //! leads to, and LigninDB drops a subtree with its element. So the two
 //! engines differ in the reads that take the records under a prefix as
@@ -25,7 +27,10 @@
 //! what it holds, whose cleanup removes on RocksDB the records that
 //! were kept.
 
-use grovedb_costs::OperationCost;
+use grovedb_costs::{
+    storage_cost::{removal::StorageRemovedBytes::BasicStorageRemoval, StorageCost},
+    OperationCost,
+};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use super::{
@@ -230,8 +235,9 @@ const BATCHES: [&str; 11] = [
 /// delete alone. Then the tree `one` made again alone, its sum tree put
 /// and an element put below that, each by a batch of its own; the other
 /// two made again with what they hold by one batch; all three removed,
-/// where two of them were emptied first; and all made and removed a
-/// third time. After every batch, [`reads`].
+/// each after what it holds; and all made and removed a third time, the
+/// first after what it holds and the other two by a plain delete alone.
+/// After every batch, [`reads`].
 fn history<E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
     let mut h = History::new(db, v);
     for depth in 0..PARENT.len() {
@@ -462,32 +468,47 @@ fn deleted_as_a_tree<E: Engine>(
 const DELETED_AS_A_TREE: &str = "deleted as a tree";
 const HAS_THE_OLD_KEY: &str = "has the old key";
 
-/// What a batch was charged: seeks, bytes loaded, bytes removed and hash
-/// calls. It added nothing, and what it replaced is compared apart.
-type Charged = (u32, u64, u32, u32);
-
-fn charged((_, cost, _): &Answer) -> Charged {
-    assert_eq!(cost.storage_cost.added_bytes, 0);
-    (
-        cost.seek_count,
-        cost.storage_loaded_bytes,
-        cost.storage_cost.removed_bytes.total_removed_bytes(),
-        cost.hash_node_calls,
-    )
+/// A cost of seeks, bytes loaded, bytes replaced and removed, and hash
+/// calls, and nothing else: no byte added, no Sinsemilla hash call.
+fn cost_of(seeks: u32, loaded: u64, replaced: u32, removed: u32, hashes: u32) -> OperationCost {
+    OperationCost {
+        seek_count: seeks,
+        storage_cost: StorageCost {
+            added_bytes: 0,
+            replaced_bytes: replaced,
+            removed_bytes: BasicStorageRemoval(removed),
+        },
+        storage_loaded_bytes: loaded,
+        hash_node_calls: hashes,
+        sinsemilla_hash_calls: 0,
+    }
 }
 
 /// What the delete of the tree made again with its children is charged
-/// on LigninDB and then on RocksDB, on the grove version of `number`:
-/// the cleanup of the deleted tree removes the kept record on RocksDB,
-/// and is charged its removal.
+/// on LigninDB and then on RocksDB, on the grove version of `number`,
+/// whole: the cleanup of the deleted tree removes the kept record on
+/// RocksDB, and is charged its removal.
 ///
 /// **RocksDB's is what a later unit has to give if this stated
 /// difference is turned; LigninDB's is what it gives today.**
-fn charged_with_its_children(number: usize) -> (Charged, Charged) {
+fn charged_with_its_children(number: usize) -> (OperationCost, OperationCost) {
     match number {
-        1..=3 => ((9, 794, 109, 8), (15, 1677, 215, 10)),
-        _ => ((12, 1658, 109, 12), (21, 3405, 215, 18)),
+        1..=3 => (cost_of(9, 794, 75, 109, 8), cost_of(15, 1677, 75, 215, 10)),
+        _ => (
+            cost_of(12, 1658, 75, 109, 12),
+            cost_of(21, 3405, 75, 215, 18),
+        ),
     }
+}
+
+/// What each engine answers, where the tree was deleted with no cleanup,
+/// to whether its path holds the old key: LigninDB and then RocksDB,
+/// which reads the record it kept.
+fn the_old_key_with_no_cleanup() -> (Said, Said) {
+    (
+        (1, 0, 1, "Ok(false)".to_string()),
+        (1, 71, 1, "Ok(true)".to_string()),
+    )
 }
 
 /// A tree made again at the path of a tree that a plain delete removed
@@ -530,12 +551,15 @@ fn a_tree_made_again_over_kept_records_is_charged_otherwise_where_it_is_deleted_
             }
             let with_children = behavior == SubelementsDeletionBehavior::DeleteChildren;
             let (lignin, rocksdb) = charged_with_its_children(number);
+            let (has_on_lignin, has_on_rocksdb) = the_old_key_with_no_cleanup();
             // What is: LigninDB's charge, and nothing under the path.
             let deleted = answer_of(&on_lignin, DELETED_AS_A_TREE);
             if with_children {
-                assert_eq!(charged(deleted), lignin, "LigninDB, {said}");
+                assert_eq!(deleted.1, lignin, "LigninDB, {said}");
+                assert_eq!(deleted.2, "Ok(())", "LigninDB, {said}");
             }
-            assert_eq!(answer_of(&on_lignin, HAS_THE_OLD_KEY).2, "Ok(false)");
+            let has = answer_of(&on_lignin, HAS_THE_OLD_KEY);
+            assert_eq!(self::said(has), has_on_lignin, "LigninDB, {said}");
             #[cfg(feature = "rocksdb_storage")]
             {
                 let dir = tempfile::tempdir().expect("a directory");
@@ -546,24 +570,22 @@ fn a_tree_made_again_over_kept_records_is_charged_otherwise_where_it_is_deleted_
                 for (is, was) in on_lignin.iter().zip(&on_rocksdb) {
                     assert_eq!(is.0, was.0, "{said}");
                     if is.0 == DELETED_AS_A_TREE && with_children {
-                        // Required: RocksDB's charge. The batch is
-                        // taken on both and replaces the same bytes, and
-                        // the root hash after it, the next call, is the
-                        // same.
-                        assert_eq!(charged(was), rocksdb, "RocksDB, {said}");
-                        assert_eq!((is.2.as_str(), was.2.as_str()), ("Ok(())", "Ok(())"));
-                        let replaced = |answer: &Answer| answer.1.storage_cost.replaced_bytes;
-                        assert_eq!(replaced(is), replaced(was), "{said}");
+                        // Required: RocksDB's charge, whole. The batch
+                        // is taken on both, and the root hash after it,
+                        // the next call, is the same.
+                        assert_eq!(was.1, rocksdb, "RocksDB, {said}");
+                        assert_eq!(was.2, "Ok(())", "RocksDB, {said}");
                     } else if is.0 == HAS_THE_OLD_KEY && !with_children {
                         // Required: with no cleanup the record that
-                        // RocksDB kept is still under the path.
-                        assert_eq!(was.2, "Ok(true)", "RocksDB, {said}");
+                        // RocksDB kept is still under the path, and the
+                        // read is charged its bytes.
+                        assert_eq!(self::said(was), has_on_rocksdb, "RocksDB, {said}");
                     } else {
                         assert_eq!(is, was, "{said}");
                     }
                 }
             }
-            let _ = rocksdb;
+            let _ = (rocksdb, has_on_rocksdb);
         }
     }
 }
