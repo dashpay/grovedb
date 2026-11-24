@@ -6,8 +6,10 @@ use std::{io::Write, path::PathBuf, time::Duration};
 use super::{
     case::Case,
     engines::{Candidate, Fault, Reference, StandIn},
+    families::Family,
     fuzz::{fuzz, Finding, Progress, Settings},
     pair::{quoted, run, Side, Stored},
+    scenes::Scene,
     shrink::{shrink, Shrunk},
 };
 use crate::{
@@ -49,6 +51,10 @@ options:
   --no-scenes         no case takes the stream of a scene beside its
                       workloads: the cases as their seeds gave them before
                       there were scenes
+  --no-plain-delete-scene
+                      no case takes the scene of a plain delete of a tree
+                      that holds elements; the scene of a delete at the
+                      root path is still taken
   --stored-every N    compare the records the engines store after every N
                       operations that are not reads, and after the last
                       (default: 32; 0 for after the last only)
@@ -61,8 +67,8 @@ options:
   --no-shrink         leave a stream the engines differ on as it is
 
 A case is a function of its seed and of --grove-version, --max-ops,
---keep-the-drop-contract and --no-scenes, so `case` takes the four as the
-run had them. fuzz and case exit with 1 when the
+--keep-the-drop-contract, --no-scenes and --no-plain-delete-scene, so `case`
+takes the five as the run had them. fuzz and case exit with 1 when the
 engines differ at a step or in a stored record that is of no named open
 difference, and with 0 when the run was made and found no such difference:
 also where a case ended at an answer of a named open difference, which the
@@ -127,6 +133,10 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
             "--max-ops" => settings.shape.max_ops_per_stream = number(value()?)?.max(1) as usize,
             "--keep-the-drop-contract" => settings.shape.keeps_the_drop_contract = true,
             "--no-scenes" => settings.shape.scenes = 0,
+            "--no-plain-delete-scene" => {
+                let kinds = &mut settings.shape.scene_kinds;
+                kinds.retain(|scene| *scene != Scene::PlainDelete);
+            }
             "--stored-every" => {
                 settings.stored = match number(value()?)? {
                     0 => Stored::AtTheEnd,
@@ -269,7 +279,7 @@ fn write_finding(out: &mut dyn Write, finding: &Finding, reference: &str, candid
     let _ = writeln!(
         out,
         "to run the case again: lignin-diff case --seed {:#x} (with the --grove-version, \
-         --max-ops, --keep-the-drop-contract, --no-scenes, --stored-every and --fault of this run)",
+         --max-ops, --keep-the-drop-contract, --no-scenes, --no-plain-delete-scene, --stored-every and --fault of this run)",
         finding.case.seed
     );
 }
@@ -315,6 +325,13 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
     for (family, seed, step) in &summary.apart {
         let _ = writeln!(out, "  {}: seed {seed:#x}, step {step}", family.name());
     }
+    let tally = &summary.progress.tally;
+    let _ = writeln!(
+        out,
+        "  of the cases: {} clean (met no named open difference and were compared to their \
+         end), {} ended at an answer of one, {} with something of one passed over",
+        tally.clean, tally.ended, tally.passed
+    );
     let _ = writeln!(out, "  {}", progress_line(&summary.progress));
     if let Some(why) = &summary.first_cut_short {
         let _ = writeln!(out, "  the first case cut short: {why}");
@@ -407,8 +424,43 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
             family.name()
         );
     }
+    let passed_over = [
+        (Family::KeptRecordsCost, "cost", &ran.passed_costs),
+        (
+            Family::RefusedBelowPlainDelete,
+            "refusal",
+            &ran.passed_refusals,
+        ),
+    ];
+    for (family, what, steps) in passed_over {
+        for passed in steps {
+            let _ = writeln!(
+                out,
+                "  the {what} at step {} was passed over, an answer of the open difference: {}",
+                passed.step,
+                family.name()
+            );
+            for line in passed.report(&case, reference.name(), candidate.name()) {
+                let _ = writeln!(out, "    {line}");
+            }
+        }
+    }
+    let passed_reads = ran.tally.families.answers_of(Family::BelowPlainDelete) > 0;
+    if passed_reads {
+        let _ = writeln!(
+            out,
+            "  reads that the engines answered differently were passed over, answers of the \
+             open difference: {}",
+            Family::BelowPlainDelete.name()
+        );
+    }
+    let passed = passed_reads || !ran.passed_costs.is_empty() || !ran.passed_refusals.is_empty();
     let Some(divergence) = ran.divergence else {
         let _ = match ran.ended_at {
+            None if passed => writeln!(
+                out,
+                "the engines answered the same but for the answers that were passed over"
+            ),
             None => writeln!(out, "the engines answered the same"),
             Some(_) => writeln!(
                 out,
@@ -762,7 +814,7 @@ mod tests {
         assert!(text.contains("\nthe stream was not shrunk: no database any more\n"));
         assert!(text.ends_with(
             "to run the case again: lignin-diff case --seed 0x9 (with the --grove-version, \
-             --max-ops, --keep-the-drop-contract, --no-scenes, --stored-every and --fault of this run)\n"
+             --max-ops, --keep-the-drop-contract, --no-scenes, --no-plain-delete-scene, --stored-every and --fault of this run)\n"
         ));
 
         // The case command: a candidate that opens once, for the run that
@@ -808,6 +860,7 @@ mod tests {
                 cut_short: 9,
                 families: crate::diff::Counts::default(),
                 closes: crate::diff::close::Closes::default(),
+                ..Tally::default()
             },
             scratch_bytes: 0,
         });

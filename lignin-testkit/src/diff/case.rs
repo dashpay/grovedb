@@ -74,6 +74,8 @@ pub struct Shape {
     /// See [`Shape::scenes_out_of`]. With none, a case is the case its
     /// seed gave before there were scenes.
     pub scenes: u64,
+    /// The scenes a case can take.
+    pub scene_kinds: Vec<Scene>,
 }
 
 impl Default for Shape {
@@ -88,6 +90,7 @@ impl Default for Shape {
             keeps_the_drop_contract: false,
             scenes_out_of: 4,
             scenes: 1,
+            scene_kinds: Scene::ALL.to_vec(),
         }
     }
 }
@@ -341,7 +344,8 @@ impl Case {
             });
             streams.push(ops);
         }
-        let scene = Scene::draw(seed, grove_version, shape.scenes, shape.scenes_out_of);
+        let (taken, out_of) = (shape.scenes, shape.scenes_out_of);
+        let scene = Scene::draw(seed, grove_version, taken, out_of, &shape.scene_kinds);
         let (mut first, mut last) = (Vec::new(), Vec::new());
         let mut arrangement = arrangement;
         if let Some((scene, placing, scene_seed)) = scene {

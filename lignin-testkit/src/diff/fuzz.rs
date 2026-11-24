@@ -133,8 +133,9 @@ pub struct Summary {
     pub first_cut_short: Option<String>,
     /// The cases that ended at a step that is counted apart
     /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`],
-    /// [`Family::RootKeyLeftBehind`]), and those that passed over a cost
-    /// that is ([`Family::PlainDeleteCost`], by the first such step of
+    /// [`Family::RootKeyLeftBehind`]), and those that passed over an
+    /// answer that is ([`Family::KeptRecordsCost`],
+    /// [`Family::RefusedBelowPlainDelete`], by the first such step of
     /// the case): the family, the seed of the case and the step, in the
     /// order of the seeds.
     pub apart: Vec<(Family, u64, usize)>,
@@ -212,7 +213,21 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 settings.stored,
                 &abandoned,
             )?;
-            tally.lock().expect("no worker panics").add(&run.tally);
+            // An interrupted run is no case of the run's: what it met
+            // of the families is not counted, nor listed apart.
+            let whole = !run.interrupted;
+            let mut compared = run.tally;
+            if !whole {
+                compared.families = Default::default();
+            } else {
+                let met = &run.tally.families;
+                let to_its_end = run.ended_at.is_none() && run.cut_short.is_none();
+                let clean = met.is_empty() && to_its_end && run.divergence.is_none();
+                compared.clean = u64::from(clean);
+                compared.ended = u64::from(run.ended_at.is_some());
+                compared.passed = u64::from(met.passed_over());
+            }
+            tally.lock().expect("no worker panics").add(&compared);
             if let (
                 Some(
                     family @ (Family::DroppedTreeProof
@@ -225,9 +240,15 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 let mut apart = apart.lock().expect("no worker panics");
                 apart.push((family, case.seed, ended.step));
             }
-            if let Some(step) = run.passed_cost_steps.first() {
-                let mut apart = apart.lock().expect("no worker panics");
-                apart.push((Family::PlainDeleteCost, case.seed, *step));
+            let passed = [
+                (Family::KeptRecordsCost, run.passed_costs.first()),
+                (Family::RefusedBelowPlainDelete, run.passed_refusals.first()),
+            ];
+            for (family, first) in passed {
+                if let (Some(first), true) = (first, whole) {
+                    let mut apart = apart.lock().expect("no worker panics");
+                    apart.push((family, case.seed, first.step));
+                }
             }
             // An interrupted run is no case of the run's, but for what
             // the check of the candidate's store found at its end.
@@ -423,6 +444,12 @@ mod tests {
         );
         assert_eq!(summary.progress.tally.cut_short, 0);
         assert_eq!(summary.first_cut_short, None);
+        // Both engines are RocksDB: no case ends at a named open
+        // difference or has something of one passed over, and a case
+        // that made no place of one is clean.
+        let tally = &summary.progress.tally;
+        assert_eq!((tally.ended, tally.passed), (0, 0));
+        assert!((1..=12).contains(&tally.clean), "{}", tally.clean);
         assert!(reports > 0);
         assert_eq!(
             std::fs::read_dir(scratch.path())

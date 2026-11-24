@@ -279,6 +279,16 @@ pub struct Tally {
     /// What the checks of the candidate's store at the ends of the cases
     /// came to ([`super::close`]).
     pub closes: Closes,
+    /// The cases that met nothing of a named open difference and were
+    /// compared to their end. A fuzzing run counts them, and the two
+    /// below, of the cases it did not interrupt.
+    pub clean: u64,
+    /// The cases that ended at an answer of a named open difference.
+    pub ended: u64,
+    /// The cases in which something of a named open difference was
+    /// passed over: stored records that differ, or an answer at which
+    /// no case ends.
+    pub passed: u64,
 }
 
 impl Tally {
@@ -292,6 +302,9 @@ impl Tally {
         self.cut_short += other.cut_short;
         self.families.add(&other.families);
         self.closes.add(&other.closes);
+        self.clean += other.clean;
+        self.ended += other.ended;
+        self.passed += other.passed;
     }
 }
 
@@ -315,10 +328,14 @@ pub struct Run {
     pub ended_with: Option<Divergence>,
     /// The steps that both engines answered alike with an error.
     pub failed_steps: Vec<usize>,
-    /// The steps at which the engines differed in the cost of a batch
-    /// that removes a tree made again below a plain delete, which was
-    /// passed over ([`Family::PlainDeleteCost`]).
-    pub passed_cost_steps: Vec<usize>,
+    /// The answers the engines gave differently in the cost of a batch
+    /// that removes or replaces a tree over records RocksDB kept, each of
+    /// which was passed over ([`Family::KeptRecordsCost`]).
+    pub passed_costs: Vec<Divergence>,
+    /// The answers of a write below a plain delete that both engines
+    /// refused, differently in the cost or the error, each of which was
+    /// passed over ([`Family::RefusedBelowPlainDelete`]).
+    pub passed_refusals: Vec<Divergence>,
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -603,7 +620,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
     // The places of the named open differences that the case has made.
     let mut known = Known::default();
     let failed_steps = std::cell::RefCell::new(Vec::new());
-    let passed_cost_steps = std::cell::RefCell::new(Vec::new());
+    let passed_costs = std::cell::RefCell::new(Vec::new());
+    let passed_refusals = std::cell::RefCell::new(Vec::new());
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
             tally,
@@ -613,7 +631,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             ended_at: None,
             ended_with: None,
             failed_steps: failed_steps.take(),
-            passed_cost_steps: passed_cost_steps.take(),
+            passed_costs: passed_costs.take(),
+            passed_refusals: passed_refusals.take(),
         })
     };
     let diverged = |tally, step, parts, reference, candidate| {
@@ -640,7 +659,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             catching(|| {
                 let (db, version) = (reference_db, case.grove_version);
                 let block = reference_runner.transactions().block();
-                let kept = known.kept_below_a_tree_made_again(
+                let kept = known.kept_below_a_removed_tree(
                     (db, block),
                     (candidate_db, candidate_runner.transactions().block()),
                     op,
@@ -672,6 +691,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
         };
         let parts = differences(&was.step, &is.step);
+        // Whether an answer that differs is passed over at this step.
+        let mut passed_over = false;
         if !parts.is_empty() {
             // An answer that differs at an operation which names a place
             // of a named open difference, or in which the candidate
@@ -694,13 +715,17 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             };
             // The candidate refuses a write of the root Merk whose
             // root-key record a delete of the case left behind.
-            let root_key = || known.family_of_root_key_refusal(reference, candidate, &is.remarks);
+            let root_key =
+                || known.family_of_root_key_refusal(op, reference, candidate, &is.remarks);
             // The reference was charged for reading the records it kept
             // below a tree that the batch removes.
             let cost = || Known::family_of_cost(&kept, &was.step, &is.step, &parts);
+            // Both engines refused a write below a plain delete.
+            let refused_write = || known.family_of_refused_write(op, reference, candidate, &parts);
             let family = refusal
                 .or_else(root_key)
                 .or_else(cost)
+                .or_else(refused_write)
                 .or_else(|| known.family_of_answer(op, taken, &parts))
                 .or_else(through_a_proof);
             let Some(family) = family else {
@@ -723,7 +748,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                     ended_at: Some(family),
                     ended_with: Some(ended_with),
                     failed_steps: failed_steps.take(),
-                    passed_cost_steps: passed_cost_steps.take(),
+                    passed_costs: passed_costs.take(),
+                    passed_refusals: passed_refusals.take(),
                 });
             }
             // A read below a plain delete, or a batch that differs in
@@ -731,9 +757,18 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             // engines in different states, so it is counted and the case
             // goes on, as after an operation both answered alike.
             known.passed_an_answer(family, case.seed);
-            if family == Family::PlainDeleteCost {
-                passed_cost_steps.borrow_mut().push(step);
+            let passed = || Divergence {
+                step,
+                parts: parts.clone(),
+                reference: lines(&was),
+                candidate: lines(&is),
+            };
+            match family {
+                Family::KeptRecordsCost => passed_costs.borrow_mut().push(passed()),
+                Family::RefusedBelowPlainDelete => passed_refusals.borrow_mut().push(passed()),
+                _ => {}
             }
+            passed_over = true;
             tally.families = known.counts();
         }
         if !was.step.failed() {
@@ -766,10 +801,13 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             known.made_again(standing.unwrap_or_default());
         }
         tally.families = known.counts();
-        if was.step.failed() {
+        // An answer that was passed over is no common failure, though
+        // both engines may have failed: they differ in it.
+        let failed_alike = was.step.failed() && !passed_over;
+        if failed_alike {
             failed_steps.borrow_mut().push(step);
         }
-        tally.failed += u64::from(was.step.failed());
+        tally.failed += u64::from(failed_alike);
         tally.proofs += u64::from(was.step.proof.is_some());
 
         let last = step + 1 == case.ops.len();
@@ -996,6 +1034,7 @@ mod tests {
                 cut_short: 0,
                 families: Counts::default(),
                 closes: Closes::default(),
+                ..Tally::default()
             }
         );
         let once = with(Stored::AtTheEnd);
@@ -1474,6 +1513,9 @@ mod tests {
             cut_short: 6,
             families: Counts::default(),
             closes: Closes::default(),
+            clean: 7,
+            ended: 8,
+            passed: 9,
         };
         tally.add(&tally.clone());
         assert_eq!(
@@ -1487,6 +1529,9 @@ mod tests {
                 cut_short: 12,
                 families: Counts::default(),
                 closes: Closes::default(),
+                clean: 14,
+                ended: 16,
+                passed: 18,
             }
         );
     }

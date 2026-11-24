@@ -481,13 +481,16 @@ pub type NodeKey = (Vec<Vec<u8>>, Vec<u8>);
 /// The node records at and below `path` as `transaction` sees `db`,
 /// whether or not an element leads to them, each by the path of its
 /// subtree and its key: those under the prefix of the subtree at `path`,
-/// and those under the path of every key among them, and so on down.
-/// None where there are more than `most`.
+/// and those under the path of every key among them whose record is the
+/// element of a tree that keeps a Merk, and so on down. That is the
+/// walk GroveDB makes for the elements of a tree that take part in
+/// backward references. None where there are more than `most`.
 pub fn node_keys_below<'db, E: StreamEngine>(
     db: &'db Db<E>,
     transaction: &Tx<'db, E>,
     path: &[Vec<u8>],
     most: usize,
+    grove_version: &GroveVersion,
 ) -> Result<Option<BTreeSet<NodeKey>>, String> {
     let mut found = BTreeSet::new();
     let mut queue = vec![path.to_vec()];
@@ -503,9 +506,12 @@ pub fn node_keys_below<'db, E: StreamEngine>(
             if record.keyspace != Keyspace::Nodes {
                 continue;
             }
-            let mut below = path.clone();
-            below.push(record.key.clone());
-            queue.push(below);
+            let element = Element::raw_decode(&record.value, grove_version);
+            if element.is_ok_and(|tree| tree.is_any_tree() && !tree.uses_non_merk_data_storage()) {
+                let mut below = path.clone();
+                below.push(record.key.clone());
+                queue.push(below);
+            }
             found.insert((path.clone(), record.key));
             if found.len() > most {
                 return Ok(None);

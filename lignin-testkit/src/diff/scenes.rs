@@ -9,7 +9,7 @@
 //! those of its workloads as it deals theirs:
 //!
 //! - [`Scene::PlainDelete`]: a tree that holds an element is removed by a
-//!   batch's plain delete, which looks at nothing below its key, and a
+//!   batch's plain delete, which removes nothing below its key, and a
 //!   tree is made again at the key, with reads of the tree, of the key
 //!   it held and of the tree above between the steps. It is a shape
 //!   recorded from real blocks: there the tree holds one element, an
@@ -66,19 +66,20 @@ impl Scene {
     }
 
     /// The scene a case of `seed` takes on `grove_version`, where `taken`
-    /// of `out_of` cases take one: drawn from the seed apart from
-    /// everything else of the case, so a case that takes none is the
-    /// case it was before there were scenes.
+    /// of `out_of` cases take one of the scenes `among`: drawn from the
+    /// seed apart from everything else of the case, so a case that
+    /// takes none is the case it was before there were scenes.
     pub fn draw(
         seed: u64,
         grove_version: &GroveVersion,
         taken: u64,
         out_of: u64,
+        among: &[Scene],
     ) -> Option<(Scene, Placing, u64)> {
         let mut rng = Rng::derive(seed, SCENE, 0);
         let scenes: Vec<Scene> = Scene::ALL
             .into_iter()
-            .filter(|scene| scene.is_for(grove_version))
+            .filter(|scene| among.contains(scene) && scene.is_for(grove_version))
             .collect();
         if scenes.is_empty() || !rng.chance(taken, out_of.max(1)) {
             return None;
@@ -173,8 +174,9 @@ const BESIDE: [&[u8]; 2] = [&[0], &[2]];
 
 /// The reads of the tree under `key` in `parent`: its element, the
 /// element under [`HELD`] in it by each way of reading one key, whether
-/// it is empty, and a range of it, of the tree above and of both. A
-/// stream takes each with one chance in two, and one at least.
+/// it is empty, and a range of it, of the tree above and of both. One
+/// of them, drawn first, is taken in any case, and each of the others
+/// with one chance in two.
 fn looked_at(ops: &mut Vec<Op>, rng: &mut Rng, parent: &[Vec<u8>], key: &[u8]) {
     let tree = joined(parent, key);
     let fetch = |fetch, cache| {
@@ -212,8 +214,8 @@ fn flags() -> Option<Vec<u8>> {
     Some(vec![0, 0, 4])
 }
 
-/// What a tree of [`plain_delete`] holds under [`HELD`]: an empty sum
-/// tree in three streams of four.
+/// What a tree of [`plain_delete`] holds under [`HELD`], drawn for each
+/// tree in each round: an empty sum tree three times in four.
 fn held(rng: &mut Rng) -> Element {
     match rng.index(8) {
         0 => Element::empty_tree_with_flags(flags()),
@@ -231,9 +233,10 @@ fn held(rng: &mut Rng) -> Element {
 /// sometimes an element is put below a held sum tree, and then every
 /// tree is removed by one batch: a tree that is emptied first, with one
 /// chance in four, after the elements it holds, and the others by a
-/// plain delete alone. After every batch its block is committed and the
-/// trees are read ([`looked_at`]); one removal in eight is rolled back
-/// first and made again. One stream in two applies its batches with
+/// plain delete alone. After every batch its block is committed and
+/// some reads of each tree follow ([`looked_at`]); one removal in eight
+/// is first applied and rolled back, with such reads after the
+/// rollback, and then applied again. One stream in two applies its batches with
 /// operations that declare no check of backward references, and the
 /// flags callbacks ([`Op::FlagsBatch`]); the other with checked
 /// operations ([`Op::Batch`]).
@@ -430,9 +433,15 @@ mod tests {
             let mut drawn = BTreeSet::new();
             let mut taken = 0;
             for seed in 0..SEEDS {
-                let scene = Scene::draw(seed, grove_version, 1, 4);
-                assert_eq!(scene, Scene::draw(seed, grove_version, 1, 4));
-                assert_eq!(Scene::draw(seed, grove_version, 0, 4), None);
+                let all = &Scene::ALL;
+                let scene = Scene::draw(seed, grove_version, 1, 4, all);
+                assert_eq!(scene, Scene::draw(seed, grove_version, 1, 4, all));
+                assert_eq!(Scene::draw(seed, grove_version, 0, 4, all), None);
+                assert_eq!(Scene::draw(seed, grove_version, 1, 4, &[]), None);
+                // With one scene left out, the other is drawn or none.
+                let other = Scene::draw(seed, grove_version, 1, 4, &[Scene::RootDelete]);
+                assert!(other.is_none_or(|(scene, ..)| scene == Scene::RootDelete));
+                assert_eq!(other.is_some(), scene.is_some() && number <= 3);
                 if let Some((scene, placing, _)) = scene {
                     assert!(scene.is_for(grove_version));
                     drawn.insert((scene.name(), format!("{placing:?}")));
@@ -455,9 +464,9 @@ mod tests {
     }
 
     /// The streams of a plain delete, of 64 seeds. Every stream is a
-    /// function of its seed, removes a tree by a plain delete whose key
-    /// a batch put a tree under before, and puts a tree under that key
-    /// again afterwards. Among them are the kinds that a stream varies:
+    /// function of its seed, removes every tree it makes by a plain
+    /// delete, and puts a tree under the key of each again afterwards.
+    /// Among them are the kinds that a stream varies:
     /// a tree removed with its element in it and one emptied first, an
     /// element under the held key that is a sum tree, a tree and an
     /// item, a tree made with its element by one batch and step by
@@ -473,7 +482,7 @@ mod tests {
             // The trees: the places that a batch puts an empty tree at.
             let mut trees = BTreeSet::new();
             let mut removed = BTreeSet::new();
-            let mut made_again = 0;
+            let mut made_again = BTreeSet::new();
             let unchecked = ops.iter().any(|op| matches!(op, Op::FlagsBatch(_)));
             let checked = ops.iter().any(|op| matches!(op, Op::Batch(_)));
             assert!(unchecked != checked, "seed {seed}");
@@ -489,7 +498,9 @@ mod tests {
                             let place = joined(path, key);
                             assert!(element.get_flags().is_some(), "seed {seed}");
                             if matches!(element, Element::Tree(..)) && key.as_slice() != HELD {
-                                made_again += u64::from(removed.contains(&place));
+                                if removed.contains(&place) {
+                                    made_again.insert(place.clone());
+                                }
                                 trees.insert(place);
                                 continue;
                             }
@@ -534,7 +545,8 @@ mod tests {
             }
             assert!((1..=4).contains(&trees.len()), "seed {seed}");
             assert_eq!(removed, trees, "seed {seed}");
-            assert!(made_again >= trees.len() as u64, "seed {seed}");
+            // Each tree is made again after it was removed.
+            assert_eq!(made_again, trees, "seed {seed}");
             let reads = ops.iter().filter(|op| matches!(op, Op::Read(_))).count();
             assert!(reads >= 4, "seed {seed}: {reads} reads");
         }
@@ -573,6 +585,8 @@ mod tests {
             let mut deletes = 0;
             let mut rollbacks = 0;
             let mut writes_after = 0;
+            // Whether a delete stands with no write after it yet.
+            let mut owed = false;
             for op in &ops {
                 match op {
                     Op::Write(Write::Insert { path, key, element }) if deleted.is_empty() => {
@@ -589,6 +603,8 @@ mod tests {
                         }
                     }
                     Op::Write(Write::Insert { path, .. }) => {
+                        assert!(owed, "seed {seed}: a write that follows no delete");
+                        owed = false;
                         writes_after += 1;
                         kinds.insert(match path.len() {
                             0 => "a tree made at the root",
@@ -597,12 +613,15 @@ mod tests {
                     }
                     Op::Write(Write::Delete { path, key }) => {
                         assert!(path.is_empty() && made.contains(key), "seed {seed}");
+                        assert!(!owed, "seed {seed}: no write after the delete before");
+                        owed = true;
                         deletes += 1;
                         if deleted.last() != Some(key) {
                             deleted.push(key.clone());
                         }
                     }
                     Op::Transaction(TransactionOp::Rollback) => {
+                        owed = false;
                         rollbacks += 1;
                         kinds.insert("a delete rolled back");
                     }
@@ -616,6 +635,7 @@ mod tests {
             assert_eq!((all.len(), &all), (deleted.len(), &made), "seed {seed}");
             assert_eq!(deletes, made.len() + rollbacks, "seed {seed}");
             assert_eq!(writes_after, made.len(), "seed {seed}");
+            assert!(!owed, "seed {seed}: no write after the last delete");
         }
         let expected = [
             "a delete rolled back",
