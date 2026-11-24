@@ -133,7 +133,8 @@ pub struct Summary {
     pub first_cut_short: Option<String>,
     /// The cases that ended at a step that is counted apart
     /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`],
-    /// [`Family::RootKeyLeftBehind`], [`Family::TakenBelowPlainDelete`]),
+    /// [`Family::RootKeyLeftBehind`], [`Family::TakenBelowPlainDelete`],
+    /// [`Family::SweptByARefusedInsert`]),
     /// and those that passed over an
     /// answer that is ([`Family::KeptRecordsCost`],
     /// [`Family::RefusedBelowPlainDelete`], by the first such step of
@@ -240,7 +241,8 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                     family @ (Family::DroppedTreeProof
                     | Family::InsertOnlyOverIndexed
                     | Family::RootKeyLeftBehind
-                    | Family::TakenBelowPlainDelete),
+                    | Family::TakenBelowPlainDelete
+                    | Family::SweptByARefusedInsert),
                 ),
                 Some(ended),
             ) = (run.ended_at, &run.ended_with)

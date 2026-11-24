@@ -705,6 +705,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             no_element,
             below_plain_deletes,
             under_a_left_record,
+            under_a_dedicated_insert,
         ) = catching(|| {
             let (db, version) = (reference_db, case.grove_version);
             let block = reference_runner.transactions().block();
@@ -716,6 +717,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 known.under_a_left_record((db, block), candidate, op, version);
             let plain_deletes = Known::trees_under_a_plain_delete(db, block, op, version);
             let below_plain_deletes = Known::records_below(db, block, &plain_deletes, version);
+            let under_a_dedicated_insert =
+                Known::tree_under_a_dedicated_insert((db, block), candidate, op, version);
             (
                 Known::trees_under(db, block, op, version),
                 Known::indexed_under(db, block, op, version),
@@ -726,6 +729,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 no_element,
                 below_plain_deletes,
                 under_a_left_record,
+                under_a_dedicated_insert,
             )
         })
         .unwrap_or_default();
@@ -873,6 +877,53 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             passed_over = true;
             tally.families = known.counts();
         }
+        // A dedicated insert over a tree that both engines refused
+        // alike, after which the reference alone reads the tree as
+        // empty: the stated difference of such an insert. Where the
+        // next operation gives the block up, the engines agree again
+        // and the case goes on. Else it ends here, counted.
+        let swept = under_a_dedicated_insert.as_ref().is_some_and(|child| {
+            let refused_alike = parts.is_empty() && was.step.failed();
+            let left = || {
+                let reference = (reference_db, reference_runner.transactions().block());
+                let candidate = (candidate_db, candidate_runner.transactions().block());
+                Known::swept_by_a_refused_insert(reference, candidate, child, case.grove_version)
+            };
+            refused_alike && catching(left).unwrap_or(false)
+        });
+        let given_up_next = matches!(
+            case.ops.get(step + 1),
+            Some(Op::Transaction(
+                TransactionOp::Rollback | TransactionOp::Abandon
+            ))
+        );
+        if swept {
+            known.came_to_a_refused_insert();
+            tally.families = known.counts();
+        }
+        if swept && !given_up_next {
+            let family = Family::SweptByARefusedInsert;
+            known.ended_at(family, case.seed);
+            tally.families = known.counts();
+            let ended_with = Divergence {
+                step,
+                parts: vec![Part::Stored],
+                reference: lines(&was),
+                candidate: lines(&is),
+            };
+            return Ok(Run {
+                tally,
+                divergence: None,
+                cut_short: None,
+                interrupted: false,
+                ended_at: Some(family),
+                ended_with: Some(ended_with),
+                failed_steps: failed_steps.take(),
+                passed_costs: passed_costs.take(),
+                passed_refusals: passed_refusals.take(),
+                reference_check: None,
+            });
+        }
         // The root hash each engine has now, for the next operation: a
         // read has none, and leaves it.
         let before = roots;
@@ -939,7 +990,9 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             Stored::AtTheEnd => last,
             Stored::Every(every) => last || (write && writes.is_multiple_of(every.max(1))),
         };
-        if !due {
+        // After a dedicated insert that left the engines apart and that
+        // the next operation gives up, what they store is not compared.
+        if !due || swept {
             continue;
         }
         let before = std::mem::take(&mut places);

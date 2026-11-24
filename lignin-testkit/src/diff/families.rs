@@ -80,6 +80,19 @@
 //! The case ends there, counted for the family
 //! ([`Known::family_of_commit`]).
 //!
+//! One family is of no answer that differs (GROVE-04-F3, D-422):
+//!
+//! - [`Family::SweptByARefusedInsert`]: a dedicated insert into an
+//!   indexed tree, over a child that is a tree, makes two writes of its
+//!   transaction: it removes what the child held, and then puts the
+//!   element. Where the put is refused, both engines answer alike, and
+//!   RocksDB keeps the removal in the caller's transaction, with the
+//!   old element over a subtree that holds nothing; LigninDB rolls the
+//!   removal back and keeps the child as it was. The root hash is the
+//!   same. The case ends at such an insert, counted, unless its next
+//!   operation gives the block up, after which the engines agree again
+//!   ([`Known::swept_by_a_refused_insert`]).
+//!
 //! Of a place below a plain delete a refused write is counted apart, by
 //! the owner's ruling D-386:
 //!
@@ -364,6 +377,11 @@ pub enum Family {
     /// only a record RocksDB kept leads to, which RocksDB takes and the
     /// candidate refuses.
     TakenBelowPlainDelete,
+    /// A dedicated insert into an indexed tree, over a child that is a
+    /// tree with elements, that both engines refuse alike after the
+    /// removal of what the child held: RocksDB keeps the removal in the
+    /// caller's transaction and LigninDB rolls it back.
+    SweptByARefusedInsert,
 }
 
 /// How many families there are.
@@ -498,7 +516,7 @@ const LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS: u32 = 3;
 
 impl Family {
     /// Every family.
-    pub const ALL: [Family; 11] = [
+    pub const ALL: [Family; 12] = [
         Family::WrittenOver,
         Family::BelowFlatDrop,
         Family::DroppedTree,
@@ -510,6 +528,7 @@ impl Family {
         Family::KeptRecordsCost,
         Family::RefusedBelowPlainDelete,
         Family::TakenBelowPlainDelete,
+        Family::SweptByARefusedInsert,
     ];
 
     /// What a report calls the family.
@@ -547,6 +566,10 @@ impl Family {
                 "a write below a tree that a batch's plain delete removed, into a subtree that \
                  only a record RocksDB kept leads to, which RocksDB takes and LigninDB refuses"
             }
+            Family::SweptByARefusedInsert => {
+                "a dedicated insert into an indexed tree over a tree with elements, refused by \
+                 both after its removal, which RocksDB keeps and LigninDB rolls back"
+            }
         }
     }
 
@@ -574,6 +597,7 @@ impl Family {
             Family::KeptRecordsCost => 8,
             Family::RefusedBelowPlainDelete => 9,
             Family::TakenBelowPlainDelete => 10,
+            Family::SweptByARefusedInsert => 11,
         }
     }
 }
@@ -591,7 +615,9 @@ pub struct Counts {
     /// path of a tree that held elements, whether or not it changed the
     /// root; and for a dropped tree through a proof and for the cost of
     /// a batch that removes a tree made again below a plain delete,
-    /// which are counted apart, the cases that came to such a step.
+    /// which are counted apart, the cases that came to such a step;
+    /// and for a dedicated insert refused after its removal the cases
+    /// that came to one, whether or not the block was given up next.
     pub histories: [u64; FAMILIES],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
@@ -669,6 +695,7 @@ impl Counts {
                     Family::BelowPlainDelete => "with a read that differs passed over",
                     Family::KeptRecordsCost => "with such a cost passed over",
                     Family::RefusedBelowPlainDelete => "with such a refusal passed over",
+                    Family::SweptByARefusedInsert => "ended there, the block not given up next",
                     _ => "ended at an answer that differs",
                 };
                 format!(
@@ -941,6 +968,20 @@ fn plain_deletes(op: &Op) -> Vec<Path> {
     }
     deletes.retain(|place| named_once(op, place));
     deletes
+}
+
+/// Whether `transaction` reads in `db` a tree at `place` as empty, and
+/// nothing where it cannot ask: where no tree is there, or the read
+/// fails.
+fn reads_empty<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    place: &Path,
+    grove_version: &GroveVersion,
+) -> Option<bool> {
+    db.is_empty_tree(place.as_slice(), Some(transaction), grove_version)
+        .value
+        .ok()
 }
 
 /// Whether `transaction` reads in `db` a tree at `place` that holds an
@@ -2186,6 +2227,59 @@ impl Known {
         (matches!(op, Op::Commit) && conflict && taken && beside).then_some(Family::DroppedTree)
     }
 
+    /// The tree under the key of a dedicated insert into an indexed
+    /// tree: where `op` is such an insert (`Write::IndexedInsert`) and
+    /// each engine's block reads, under the key it names, a tree that
+    /// holds elements. Asked before the operation is applied. None for
+    /// any other operation, and where either engine reads there no
+    /// tree, an empty one, or cannot read.
+    pub fn tree_under_a_dedicated_insert<'db, A: StreamEngine, B: StreamEngine>(
+        reference: (&'db Db<A>, &Tx<'db, A>),
+        candidate: (&'db Db<B>, &Tx<'db, B>),
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> Option<Path> {
+        let Op::Write(Write::IndexedInsert { path, key, .. }) = op else {
+            return None;
+        };
+        let child = joined(path, key);
+        let held = holds_elements(reference.0, reference.1, &child, grove_version)
+            && holds_elements(candidate.0, candidate.1, &child, grove_version);
+        held.then_some(child)
+    }
+
+    /// Whether a dedicated insert over the tree `child`
+    /// ([`Known::tree_under_a_dedicated_insert`]), which both engines
+    /// refused with the same answer, left the stated difference of such
+    /// an insert (GROVE-04-F3): asked after the operation, of each
+    /// engine's block. The reference reads the tree as empty, since it
+    /// keeps in the caller's transaction the removal that the insert
+    /// made before its put was refused, and the candidate reads it as
+    /// holding elements, as before the call. With any other pair of
+    /// reads, also one that fails, it did not.
+    ///
+    /// The case ends at such an insert, counted
+    /// ([`Family::SweptByARefusedInsert`]), unless its next operation
+    /// is a rollback of the block or gives the block up, after which
+    /// the engines hold the same again: then the case goes on, and
+    /// what the engines store is not compared at this step.
+    pub fn swept_by_a_refused_insert<'db, A: StreamEngine, B: StreamEngine>(
+        reference: (&'db Db<A>, &Tx<'db, A>),
+        candidate: (&'db Db<B>, &Tx<'db, B>),
+        child: &Path,
+        grove_version: &GroveVersion,
+    ) -> bool {
+        let swept = reads_empty(reference.0, reference.1, child, grove_version);
+        let kept = reads_empty(candidate.0, candidate.1, child, grove_version);
+        swept == Some(true) && kept == Some(false)
+    }
+
+    /// The case came to a dedicated insert that was refused after its
+    /// removal ([`Known::swept_by_a_refused_insert`]).
+    pub fn came_to_a_refused_insert(&mut self) {
+        self.counts.histories[Family::SweptByARefusedInsert.index()] = 1;
+    }
+
     /// Whether the case has dropped a tree flat.
     pub fn dropped_flat(&self) -> bool {
         !self.flat_drops.is_empty()
@@ -2672,15 +2766,18 @@ mod tests {
         // The family has no place: no path is of it, and no stored record.
         let mut known = Known::default();
         known.came_to_indexed_over_indexed(&over);
-        assert_eq!(known.counts().histories, [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(known.family(&over[0]), None);
         let differs = [record(&[b"t", b"indexed"], 1)];
         let (was, is) = known.passed_over(7, &differs, &[]);
         assert_eq!((was.len(), is.len()), (1, 0));
-        assert_eq!(known.counts().stored, [0; 11]);
+        assert_eq!(known.counts().stored, [0; 12]);
         known.ended_at(Family::IndexedOverIndexed, 11);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.answers, [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[3], Some(11));
         assert_eq!(
             counts.lines(),
@@ -2875,10 +2972,13 @@ mod tests {
         // The family has no place, and no stored record is of it.
         let mut known = Known::default();
         known.came_to_insert_only_over_indexed(&over);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(known.family(&over[0]), None);
         known.ended_at(Family::InsertOnlyOverIndexed, 13);
-        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         assert_eq!(known.counts().answer_seed[5], Some(13));
     }
 
@@ -2931,14 +3031,14 @@ mod tests {
             let (was, is) = known.passed_over(7, &differs, &differs[..1]);
             assert_eq!((was.len(), is.len()), (2, 1), "{elsewhere:?}");
         }
-        assert_eq!(known.counts().stored, [0; 11]);
+        assert_eq!(known.counts().stored, [0; 12]);
 
         // A stored difference in the dropped tree's own subtree is passed
         // over and counted, but not in the record of its drop.
         let kept = [record(&[b"c"], 1), record(&[b"a", b"dropped"], 1)];
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (1, 1));
-        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(known.counts().stored_seed[..4], [None, None, Some(7), None]);
         let mut drop_record = record(&[b"a", b"dropped"], 1);
         drop_record.keyspace = Keyspace::DropRecord;
@@ -3205,6 +3305,100 @@ mod tests {
         assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
     }
 
+    /// The tree under a dedicated insert is asked for an insert through
+    /// the method of an indexed tree alone, where both engines read a
+    /// tree with an element under its key; and the insert left the
+    /// stated difference where, after it, the reference reads that tree
+    /// as empty and the candidate as holding elements, and with no
+    /// other pair of reads.
+    #[test]
+    fn a_refused_dedicated_insert_swept_the_tree_where_the_reference_alone_reads_it_empty() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let dedicated = |key: &[u8]| {
+            Op::Write(Write::IndexedInsert {
+                path: path(&[b"top"]),
+                key: key.to_vec(),
+                element: Element::empty_sum_tree(),
+                tree: IndexedTree::Sum,
+            })
+        };
+        for grove_version in GROVE_VERSIONS.iter() {
+            // Two groves that differ in what the tree `g` holds.
+            let (full_dir, swept_dir) = (scratch(), scratch());
+            let full: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(full_dir.path()).expect("a database");
+            let swept: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(swept_dir.path()).expect("a database");
+            let mut in_full = Transactions::new(&full);
+            let mut in_swept = Transactions::new(&swept);
+            let both = [
+                insert(&[], b"top", Element::empty_tree()),
+                insert(&[b"top"], b"g", Element::empty_tree()),
+                insert(&[b"top"], b"e", Element::empty_tree()),
+                insert(&[b"top"], b"i", Element::new_item(vec![1])),
+            ];
+            let held = insert(&[b"top", b"g"], b"n", Element::new_item(vec![1]));
+            for op in both.iter().chain([&held]) {
+                (in_full.apply(op, grove_version).unwrap())
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            }
+            for op in &both {
+                (in_swept.apply(op, grove_version).unwrap())
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            }
+            let (full, swept) = ((&full, in_full.block()), (&swept, in_swept.block()));
+            let child = path(&[b"top", b"g"]);
+            let under =
+                |op: &Op| Known::tree_under_a_dedicated_insert(full, full, op, grove_version);
+            assert_eq!(under(&dedicated(b"g")), Some(child.clone()));
+            for other in [
+                dedicated(b"e"),
+                dedicated(b"i"),
+                dedicated(b"absent"),
+                insert(&[b"top"], b"g", Element::empty_sum_tree()),
+                Op::Batch(vec![BatchOp::InsertOrReplace {
+                    path: path(&[b"top"]),
+                    key: b"g".to_vec(),
+                    element: Element::empty_sum_tree(),
+                }]),
+                Op::Commit,
+            ] {
+                assert_eq!(under(&other), None, "{other:?}");
+            }
+            // An engine that reads the tree as empty before the insert.
+            let op = dedicated(b"g");
+            let asked = Known::tree_under_a_dedicated_insert(full, swept, &op, grove_version);
+            assert_eq!(asked, None);
+            let asked = Known::tree_under_a_dedicated_insert(swept, full, &op, grove_version);
+            assert_eq!(asked, None);
+
+            let left = |reference, candidate, child: &Path| {
+                Known::swept_by_a_refused_insert(reference, candidate, child, grove_version)
+            };
+            assert!(left(swept, full, &child));
+            assert!(!left(full, full, &child));
+            assert!(!left(swept, swept, &child));
+            assert!(!left(full, swept, &child));
+            // No tree at the place on one engine, or on both.
+            assert!(!left(swept, full, &path(&[b"top", b"i"])));
+            assert!(!left(swept, full, &path(&[b"top", b"absent"])));
+        }
+        let mut known = Known::default();
+        known.came_to_a_refused_insert();
+        assert_eq!(known.counts().histories[11], 1);
+        assert_eq!(known.counts().answers[11], 0);
+        known.ended_at(Family::SweptByARefusedInsert, 9);
+        assert_eq!(known.counts().answers[11], 1);
+        assert_eq!(known.counts().answer_seed[11], Some(9));
+        assert!(Family::SweptByARefusedInsert.ends_a_case());
+    }
+
     /// A step is of a dropped tree through a proof where the operation
     /// is a raw query of committed state, a tree made again at a dropped
     /// path whose record is pending is under a key its items select, and
@@ -3414,8 +3608,8 @@ mod tests {
         // The case that ends there is counted for the kind alone.
         known.ended_at(Family::DroppedTreeProof, 5);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(counts.histories, [0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.answers, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.histories, [0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[4], Some(5));
     }
 
@@ -3550,11 +3744,11 @@ mod tests {
         let (was, is) = known.passed_over(7, &reference, &candidate);
         assert_eq!(was, is);
         let counts = known.counts();
-        assert_eq!(counts.stored, [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.stored, [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.stored_seed[..4], [Some(7), Some(7), None, None]);
         assert_eq!(
             (counts.histories, counts.answers),
-            ([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0], [0; 11])
+            ([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0; 12])
         );
         assert_eq!(counts.stored_differences(), 2);
         assert_eq!(counts.answer_differences(), 0);
@@ -3576,7 +3770,7 @@ mod tests {
             let (was, is) = known.passed_over(7, &reference, &candidate);
             assert_eq!(was, vec![same.clone(), elsewhere]);
             assert_eq!(is, vec![same.clone()]);
-            assert_eq!(known.counts().stored, [0; 11]);
+            assert_eq!(known.counts().stored, [0; 12]);
         }
     }
 
@@ -3892,10 +4086,10 @@ mod tests {
         one.ended_at(Family::WrittenOver, 9);
         counts.add(&one.counts());
         counts.add(&one.counts());
-        assert_eq!(counts.answers, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.answers, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[..4], [Some(9), None, None, None]);
         assert_eq!(counts.answer_differences(), 2);
-        assert_eq!(counts.histories, [2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.histories, [2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let lines = counts.lines();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with(
@@ -3924,7 +4118,10 @@ mod tests {
         let mut known = Known::default();
         known.took(&delete, Vec::new(), vec![removed.clone()], false);
         let family = Some(Family::BelowPlainDelete);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+        );
         let of_it: [&[&[u8]]; 2] = [&[b"p", b"t"], &[b"p", b"t", b"below"]];
         for of in of_it {
             assert_eq!(known.family(&path(of)), family, "{of:?}");
@@ -4287,7 +4484,10 @@ mod tests {
         };
         assert_eq!(of(&known, &put, &took, &refused, &words), None);
         known.took(&delete, Vec::new(), Vec::new(), true);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+        );
         assert_eq!(of(&known, &put, &took, &refused, &words), family);
         assert_eq!(of(&known, &batch, &took, &refused, &words), family);
         assert_eq!(of(&known, &delete, &took, &refused, &words), family);
@@ -4342,13 +4542,16 @@ mod tests {
         assert_eq!(of(&known, &put, &took, &refused, &words), family);
         known.wrote(&put, true);
         assert_eq!(of(&known, &put, &took, &refused, &words), None);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+        );
         known.took(&delete, Vec::new(), Vec::new(), true);
         assert_eq!(of(&known, &put, &took, &refused, &words), family);
         // It is of an answer alone: no path is of it.
         assert_eq!(known.family(&[]), None);
         known.ended_at(Family::RootKeyLeftBehind, 9);
-        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
     }
 
     /// A cost is of the family of a plain delete of a tree made again
@@ -4514,11 +4717,17 @@ mod tests {
         assert!(!met.refused_after_the_look(&after, &kept, &never, &never));
         let mut known = Known::default();
         known.passed_an_answer(Family::KeptRecordsCost, 5);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
-        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
         known.passed_an_answer(Family::BelowPlainDelete, 5);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
-        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0]);
     }
 
     /// A refusal is of the family of a write that both engines refuse
@@ -4736,8 +4945,11 @@ mod tests {
             None
         );
         known.passed_an_answer(Family::RefusedBelowPlainDelete, 3);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0]);
-        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
         assert!(known.counts().passed_over());
     }
 
@@ -4831,8 +5043,11 @@ mod tests {
         assert!(Family::TakenBelowPlainDelete.ends_a_case());
         let mut known = Known::default();
         known.ended_at(Family::TakenBelowPlainDelete, 4);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
         assert!(!known.counts().passed_over());
     }
 
