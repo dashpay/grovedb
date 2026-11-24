@@ -500,9 +500,11 @@ pub(crate) mod held {
     //! answers over their own calls.
     //!
     //! What is compared is an answer. A read of the directory that
-    //! fails ends the call with its error before anything is
-    //! compared, and the walk up the hosts reads other entries than a
-    //! look through a list does (`Opened::above_by_hosts`).
+    //! fails ends the call with its error before the two answers of
+    //! what the subtree is below are compared: what the write set
+    //! counts may have been held to its lists by then. And the walk
+    //! up the hosts reads other entries than a look through a list
+    //! does (`Opened::above_by_hosts`).
 
     #[cfg(test)]
     use std::cell::Cell;

@@ -176,7 +176,7 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
     let mut account = Account::default();
     let mut marks: Vec<(Mark, Account)> = Vec::new();
     // The subtrees as the last commit left them, and the subtree that
-    // the next step is to move.
+    // the next step is to try to move.
     let mut committed = Held::default();
     let mut to_move: Option<u8> = None;
     for step in 0..steps {
@@ -209,7 +209,8 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
         let mut after: Option<Noted> = None;
         let mut counted = Made::default();
         // The subtree above what this step takes out of the
-        // transaction, which the next step moves if this one is kept.
+        // transaction, which the next step tries to move if this one
+        // is kept: it moves it where enough prefixes are free.
         let mut left_under: Option<u8> = None;
         let stamp = step as u8;
         let mut what = match live.is_empty() {
@@ -217,7 +218,7 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
             false => rng.below(100),
         };
         // The subtree that the step before left something under is
-        // moved now, if an element still hosts it.
+        // to be moved now, if an element still hosts it.
         let hosted =
             |name: &u8| (account.held.live.get(name)).is_some_and(|(host, _)| host.is_some());
         let moved_now = to_move.take().filter(hosted);
@@ -320,7 +321,7 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
             }
             // What a commit left under a hosted subtree leaves the
             // transaction: it is dropped, or the subtree above it is
-            // cleared. The next step moves that subtree.
+            // cleared. The next step tries to move that subtree.
             34..40 => {
                 if under_a_host.is_empty() {
                     continue;
