@@ -776,7 +776,14 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             // Whether each engine has the root hash it had before.
             let unchanged =
                 roots.0.is_some() && was.step.root_hash == roots.0 && is.step.root_hash == roots.1;
-            let cost = || Known::family_of_cost(&kept, &was.step, &is.step, &parts, unchanged);
+            let cost = || {
+                // Where both refused the batch: each has the root hash
+                // it had, and both refused after the look.
+                let (was_said, is_said) = (&was.remarks, &is.remarks);
+                let after_the_look =
+                    unchanged && known.refused_after_the_look(op, &kept, was_said, is_said);
+                Known::family_of_cost(&kept, &was.step, &is.step, &parts, after_the_look)
+            };
             let refused_write = || {
                 // The reference read what the candidate did not: it
                 // was charged more bytes loaded, and no fewer seeks and
