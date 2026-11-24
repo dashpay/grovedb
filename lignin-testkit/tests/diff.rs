@@ -1842,6 +1842,90 @@ fn a_record_that_a_commit_kept_is_known_after_a_rollback_and_one_of_the_block_is
     }
 }
 
+/// A shape of the refused write that no rule of the fuzzer holds, kept
+/// here with what each engine answers. A tree that holds an item is
+/// removed by a batch's plain delete, and a batch then deletes below
+/// the item's key and in a tree beside that was never made. RocksDB
+/// kept the item's record: where it opens the subtree under that key it
+/// reads the record and refuses with `CorruptedPath`, for a parent
+/// that is no tree. LigninDB holds no record there and refuses with
+/// `InvalidPath`, for no element above the subtree. Both keep the root
+/// hash they had. The run ends there as a divergence in the cost and
+/// the error, on every grove version: the batch writes into a tree that
+/// is neither at the removed tree's path nor the tree above it, so the
+/// refusal is of no family.
+#[test]
+fn a_batch_below_a_kept_item_is_refused_with_another_error_by_each_engine_and_ends_the_run() {
+    use lignin_testkit::{
+        diff::Case,
+        workload::{BatchOp, Op, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let put = |at: &[&[u8]], key: &[u8], element: grovedb::Element| BatchOp::InsertOrReplace {
+        path: path(at),
+        key: key.to_vec(),
+        element,
+    };
+    let delete = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+        path: path(at),
+        key: key.to_vec(),
+    };
+    let ops = vec![
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"p".to_vec(),
+            element: grovedb::Element::empty_tree(),
+        }),
+        Op::Batch(vec![put(&[b"p"], b"t", grovedb::Element::empty_tree())]),
+        Op::Batch(vec![put(
+            &[b"p", b"t"],
+            &[1],
+            grovedb::Element::new_item(vec![7; 8]),
+        )]),
+        Op::Batch(vec![delete(&[b"p"], b"t")]),
+        Op::Batch(vec![
+            delete(&[b"p", b"t", &[1]], b"k"),
+            delete(&[b"p", b"beside"], &[1]),
+        ]),
+        Op::Commit,
+    ];
+    const REFUSED: usize = 4;
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let case = Case::of(51, grove_version, ops.clone());
+        let run = ran(&case);
+        let divergence = run.divergence.as_ref().expect("a divergence");
+        println!(
+            "grove version {number}: step {} differs in {:?}\n  RocksDB: {:?}\n  LigninDB: {:?}",
+            divergence.step, divergence.parts, divergence.reference, divergence.candidate
+        );
+        assert_eq!(divergence.step, REFUSED, "grove version {number}");
+        assert_eq!(divergence.parts, [Part::Cost, Part::Error], "{number}");
+        let line = |lines: &[String], start: &str| {
+            let mut found = lines.iter().filter(|line| line.starts_with(start));
+            found.next().cloned().unwrap_or_default()
+        };
+        let (reference, candidate) = (&divergence.reference, &divergence.candidate);
+        assert_eq!(line(reference, "failed "), "failed CorruptedPath");
+        assert_eq!(line(candidate, "failed "), "failed InvalidPath");
+        assert_eq!(
+            line(reference, "# failed"),
+            "# failed: corrupted path: cannot open a subtree as parent exists but is not a tree"
+        );
+        assert!(
+            line(candidate, "# failed").ends_with("at path [p/t] for key 0x01"),
+            "{candidate:?}"
+        );
+        // Neither wrote: each has the root hash the other has.
+        assert_eq!(line(reference, "root "), line(candidate, "root "));
+        assert!(line(reference, "root ").len() > 5, "{reference:?}");
+        assert_eq!(run.ended_at, None, "grove version {number}");
+    }
+}
+
 /// A write into a subtree below a tree that a plain delete removed,
 /// which both engines refuse: RocksDB gets further before it refuses,
 /// for the records it kept, so the cost of the refusal differs, and on
