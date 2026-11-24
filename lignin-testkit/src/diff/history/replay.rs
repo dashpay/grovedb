@@ -44,6 +44,15 @@ pub struct Settings {
     pub keep_going: usize,
     /// A line of progress after every this many blocks. `0`: none.
     pub progress_every: u64,
+    /// The directory the two databases are in, as `reference` and
+    /// `candidate`: they are made there, or opened from it, and stay there.
+    /// `None`: a new directory under `scratch`, removed at the end.
+    pub stores: Option<PathBuf>,
+    /// The databases of `stores` are as a replay left them after this
+    /// block. The stream is read and not made up to the block's `finalized`
+    /// mark, where the root hash of each engine must be the one the mark
+    /// has; the replay goes on from there.
+    pub resume_after: Option<u64>,
 }
 
 /// The calls of one method: how the engines answered them, and how the
@@ -84,6 +93,11 @@ pub struct Summary {
     pub replayed: u64,
     /// Of those, the calls made with a stand-in for an argument.
     pub stand_ins: u64,
+    /// The block a replay went on after, from databases an earlier replay
+    /// left (`Settings::resume_after`).
+    pub resumed_after: Option<u64>,
+    /// Calls read and not made: they are before that block's end.
+    pub before_the_resume: u64,
     /// By method.
     pub by_method: BTreeMap<String, AgainstRecording>,
     /// Reads that were not made, by method: how many and why (the first).
@@ -297,6 +311,18 @@ fn word<'a>(mark: &'a str, name: &str) -> Option<&'a str> {
     mark.split(' ').find_map(|word| word.strip_prefix(name))
 }
 
+/// The root hash of a database with no transaction, or why it gave none.
+fn root_of<E: grovedb::Engine>(
+    db: &GroveDb<E>,
+    version: &'static GroveVersion,
+) -> Result<String, String> {
+    let failed = |error: grovedb::Error| format!("error {error:?}");
+    match catching(|| db.root_hash(None, version).value.map_err(failed)) {
+        Ok(root) => root.map(hex::encode),
+        Err(panic) => Err(format!("panic: {}", shorten(&clean(&panic)))),
+    }
+}
+
 /// Replays the stream on a fresh database of each engine and writes what it
 /// finds to `out` as it goes.
 ///
@@ -305,14 +331,33 @@ fn word<'a>(mark: &'a str, name: &str) -> Option<&'a str> {
 pub fn replay(settings: &Settings, out: &mut dyn Write) -> Result<Summary, String> {
     let io = |e: std::io::Error| format!("writing the report: {e}");
     let used = used_transactions(&settings.stream)?;
-    let dir = tempfile::Builder::new()
-        .prefix("lignin-history-")
-        .tempdir_in(&settings.scratch)
-        .map_err(|e| format!("{}: {e}", settings.scratch.display()))?;
-    let reference: GroveDb<Reference> = GroveDb::open_with_engine(dir.path().join("reference"))
+    let temporary;
+    let stores: &Path = match (&settings.stores, settings.resume_after) {
+        (Some(stores), resume) => {
+            let there = stores.join("reference").exists() || stores.join("candidate").exists();
+            if resume.is_none() && there {
+                return Err(format!(
+                    "{} holds databases: a replay from the first block needs a directory without",
+                    stores.display()
+                ));
+            }
+            stores
+        }
+        (None, Some(_)) => return Err("a replay that goes on needs its databases".to_string()),
+        (None, None) => {
+            temporary = tempfile::Builder::new()
+                .prefix("lignin-history-")
+                .tempdir_in(&settings.scratch)
+                .map_err(|e| format!("{}: {e}", settings.scratch.display()))?;
+            temporary.path()
+        }
+    };
+    let reference: GroveDb<Reference> = GroveDb::open_with_engine(stores.join("reference"))
         .map_err(|e| format!("opening the reference: {e:?}"))?;
-    let candidate: GroveDb<Candidate> = GroveDb::open_with_engine(dir.path().join("candidate"))
+    let candidate: GroveDb<Candidate> = GroveDb::open_with_engine(stores.join("candidate"))
         .map_err(|e| format!("opening the candidate: {e:?}"))?;
+    // The block whose end the databases are at, until its mark is passed.
+    let mut resuming = settings.resume_after;
     let mut reference_transactions = Transactions::default();
     let mut candidate_transactions = Transactions::default();
 
@@ -360,6 +405,33 @@ pub fn replay(settings: &Settings, out: &mut dyn Write) -> Result<Summary, Strin
                     }
                 } else if mark.starts_with("finalized ") {
                     let at = heights(&mark, "height=").unwrap_or(height);
+                    if let Some(resume) = resuming {
+                        if at != resume {
+                            continue;
+                        }
+                        // The databases are at the end of this block if
+                        // each has the root hash the block was recorded
+                        // with.
+                        let recorded = word(&mark, "grove_root=").unwrap_or("-");
+                        let roots = version.map(|version| {
+                            (root_of(&reference, version), root_of(&candidate, version))
+                        });
+                        match roots {
+                            Some((Ok(r), Ok(c))) if r == recorded && c == recorded => {
+                                summary.resumed_after = Some(at);
+                                resuming = None;
+                            }
+                            roots => {
+                                summary.ended_early = Some(format!(
+                                    "the databases are not at the end of height {at}: the block \
+                                     was recorded with the root hash {recorded}, and they have \
+                                     {roots:?}"
+                                ));
+                                break 'stream;
+                            }
+                        }
+                        continue;
+                    }
                     let Some(version) = version else {
                         summary.ended_early = Some(format!(
                             "height {at} was finalized before any call named a grove version: \
@@ -443,6 +515,27 @@ pub fn replay(settings: &Settings, out: &mut dyn Write) -> Result<Summary, Strin
             "height {height} ({request}), call {} `{}`",
             call.seq, call.method
         );
+        if let Some(protocol) = call.peek("gv").and_then(|gv| gv.parse::<u32>().ok()) {
+            let of_call = grove_version(protocol)?;
+            if first_version.is_none() {
+                first_version = Some(of_call);
+                close::opened(&candidate, of_call);
+            }
+            version = Some(of_call);
+        }
+        // A call before the block the databases are at the end of is not
+        // made. What it says of the calls after it is kept: the grove
+        // version (above), and the aux keys written with a stand-in.
+        if resuming.is_some() {
+            if let ("put_aux", Some(key), Some(value)) =
+                (call.method.as_str(), call.peek("key"), call.peek("value"))
+                && value.starts_with('#')
+            {
+                stand_in_keys.insert(key.to_string());
+            }
+            summary.before_the_resume += 1;
+            continue;
+        }
         // The stream has the order in which calls returned. Of two threads,
         // or of a call made inside a callback of another, that is not the
         // order of what they did to the database.
@@ -505,14 +598,6 @@ pub fn replay(settings: &Settings, out: &mut dyn Write) -> Result<Summary, Strin
                 candidate_transactions.start(&candidate, id, snapshot);
             }
             continue;
-        }
-        if let Some(protocol) = call.peek("gv").and_then(|gv| gv.parse::<u32>().ok()) {
-            let of_call = grove_version(protocol)?;
-            if first_version.is_none() {
-                first_version = Some(of_call);
-                close::opened(&candidate, of_call);
-            }
-            version = Some(of_call);
         }
 
         let on_reference = catching(|| apply(&reference, &mut reference_transactions, &call));
@@ -644,6 +729,12 @@ pub fn replay(settings: &Settings, out: &mut dyn Write) -> Result<Summary, Strin
         }
     }
 
+    if let Some(resume) = resuming {
+        summary.ended_early.get_or_insert(format!(
+            "the stream has no `finalized` mark of height {resume}, which the databases are \
+             said to be at the end of"
+        ));
+    }
     summary.open_at_end = reference_transactions.open();
     // The store is read by the rules of the first grove version of the
     // stream. What a delete on an early version left in it is still there
@@ -751,6 +842,14 @@ pub fn report(summary: &Summary, out: &mut dyn Write) -> std::io::Result<()> {
         summary.replayed - summary.stand_ins,
         summary.stand_ins
     )?;
+    if let Some(height) = summary.resumed_after {
+        writeln!(
+            out,
+            "went on after height {height}, where both databases had the recorded root hash: the \
+             {} calls before it were read and not made, and the blocks above are those after it",
+            summary.before_the_resume
+        )?;
+    }
     writeln!(
         out,
         "root hash after a block: both engines gave one and the same at {} of {}; of those it is \

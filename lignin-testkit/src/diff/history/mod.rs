@@ -44,8 +44,15 @@
 //! ```text
 //! cargo run --release -p lignin-testkit --bin lignin-history -- \
 //!     STREAM --scratch DIR [--stop-height N] [--show-heights A-B,C] \
-//!     [--watch FILE] [--keep-going N] [--progress N]
+//!     [--watch FILE] [--keep-going N] [--progress N] \
+//!     [--stores DIR [--resume-after N]]
 //! ```
+//!
+//! With `--stores` the two databases are made in a directory and stay
+//! there. A later replay of the same stream goes on from them with
+//! `--resume-after N`, where `N` is the block they are at the end of: it
+//! makes no call up to that block's mark, and ends there unless both
+//! databases have the root hash the block was recorded with.
 
 pub mod calls;
 pub mod replay;

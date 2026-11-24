@@ -36,6 +36,14 @@ fn settings(arguments: &[String]) -> Result<lignin_testkit::diff::history::Setti
                     .parse()
                     .map_err(|_| "--keep-going: a number")?
             }
+            "--stores" => settings.stores = Some(value("--stores")?.into()),
+            "--resume-after" => {
+                settings.resume_after = Some(
+                    value("--resume-after")?
+                        .parse()
+                        .map_err(|_| "--resume-after: a height")?,
+                )
+            }
             "--progress" => {
                 settings.progress_every = value("--progress")?
                     .parse()
@@ -75,7 +83,7 @@ fn settings(arguments: &[String]) -> Result<lignin_testkit::diff::history::Setti
         }
     }
     settings.stream = stream
-        .ok_or("usage: lignin-history STREAM --scratch DIR [--stop-height N] [--show-heights A-B,C] [--watch FILE] [--keep-going N] [--progress N]")?
+        .ok_or("usage: lignin-history STREAM --scratch DIR [--stop-height N] [--show-heights A-B,C] [--watch FILE] [--keep-going N] [--progress N] [--stores DIR [--resume-after N]]")?
         .into();
     Ok(settings)
 }

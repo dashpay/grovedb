@@ -67,16 +67,26 @@ fn first_block() -> Vec<String> {
 /// The summary of a replay of these lines, and what the replay and its
 /// report wrote.
 fn replayed(lines: &[String], keep_going: usize) -> (Summary, String) {
+    replayed_with(lines, keep_going, |_| ())
+}
+
+/// The same, with settings a test changes.
+fn replayed_with(
+    lines: &[String],
+    keep_going: usize,
+    change: impl FnOnce(&mut Settings),
+) -> (Summary, String) {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join("stream.rec");
     std::fs::write(&path, stream(lines)).expect("the stream");
-    let settings = Settings {
+    let mut settings = Settings {
         stream: path,
         scratch: dir.path().to_path_buf(),
         keep_going,
         show_heights: vec![(0, u64::MAX)],
         ..Settings::default()
     };
+    change(&mut settings);
     run_on_a_large_stack(move || {
         let mut out = Vec::new();
         let summary = replay(&settings, &mut out).expect("a replay");
@@ -755,6 +765,97 @@ fn the_root_hash_after_a_block_is_held_against_the_recorded_one() {
         "{report}"
     );
     assert_eq!(summary.roots_not_as_recorded, vec![2]);
+}
+
+/// The databases a replay leaves after a block are gone on from by a later
+/// replay of the same stream: it makes no call of the blocks before, checks
+/// that both databases have the root hash the block was recorded with, and
+/// comes to the root hashes a replay from the first block comes to.
+/// Databases that are at the end of another block are refused.
+#[test]
+fn a_replay_goes_on_from_the_databases_another_left_after_a_block() {
+    let mut lines = first_block();
+    lines.extend([
+        mark_request(2),
+        "insert\tpath=/61\tkey=70\telement=00010100\toptions=None\ttx=-\tgv=1\t|\tok".into(),
+        mark_finalized(2),
+        mark_request(3),
+        "insert\tpath=/61\tkey=71\telement=00010200\toptions=None\ttx=-\tgv=1\t|\tok".into(),
+        "has_raw\tpath=/61\tkey=70\ttx=-\tgv=1\t|\tok\tv=true".into(),
+        mark_finalized(3),
+    ]);
+    // The root hash after each block, from a replay of the whole stream.
+    let (whole, report) = replayed(&lines, 1);
+    assert!(whole.alike(), "{report}");
+    let finalized = lines
+        .iter_mut()
+        .filter(|line| line.starts_with("finalized "));
+    for (block, line) in finalized.enumerate() {
+        let height = block + 1;
+        let root = report
+            .lines()
+            .find(|line| line.starts_with(&format!("height {height} finalized: ")))
+            .and_then(|line| line.split("root hash reference ").nth(1))
+            .and_then(|rest| rest.split(',').next())
+            .expect("the root hash of the block");
+        *line = line.replace("grove_root=-", &format!("grove_root={root}"));
+    }
+
+    let kept = tempfile::tempdir().expect("a directory");
+    let stores = kept.path().join("stores");
+    let at = stores.clone();
+    let (first, report) = replayed_with(&lines, 1, |settings| {
+        settings.stores = Some(at);
+        settings.stop_height = Some(1);
+    });
+    assert!(first.alike(), "{report}");
+    assert_eq!((first.blocks, first.resumed_after), (1, None));
+    assert!(stores.join("reference").exists() && stores.join("candidate").exists());
+
+    // From the first block again, over databases that are there: refused.
+    let at = stores.clone();
+    let again = std::panic::catch_unwind(|| {
+        replayed_with(&first_block(), 1, |settings| settings.stores = Some(at))
+    });
+    assert!(
+        again.is_err(),
+        "a replay from the first block took kept databases"
+    );
+
+    // After block 2, where the databases are at the end of block 1: refused,
+    // with no call made.
+    let at = stores.clone();
+    let (wrong, report) = replayed_with(&lines, 1, |settings| {
+        settings.stores = Some(at);
+        settings.resume_after = Some(2);
+    });
+    assert!(!wrong.alike(), "{report}");
+    let why = wrong.ended_early.expect("it ended early");
+    assert!(why.contains("not at the end of height 2"), "{why}");
+    assert_eq!((wrong.replayed, wrong.blocks), (0, 0), "{report}");
+
+    // After block 1: the two blocks after it, with the root hashes of the
+    // whole replay.
+    let at = stores.clone();
+    let (rest, report) = replayed_with(&lines, 1, |settings| {
+        settings.stores = Some(at);
+        settings.resume_after = Some(1);
+    });
+    assert!(rest.alike(), "{report}");
+    assert_eq!(rest.resumed_after, Some(1), "{report}");
+    assert_eq!(
+        rest.before_the_resume, first.calls,
+        "the calls of the first block, and the two steps of its transaction, are not made"
+    );
+    assert_eq!(
+        (rest.blocks, rest.roots_alike, rest.roots_as_recorded),
+        (2, 2, 2),
+        "{report}"
+    );
+    assert_eq!(rest.replayed, whole.replayed - first.replayed, "{report}");
+    assert_eq!(rest.by_method["has_raw"].other_outcome, 0, "{report}");
+    assert!(rest.sound, "{}", rest.close);
+    assert!(report.contains("went on after height 1"), "{report}");
 }
 
 #[test]
