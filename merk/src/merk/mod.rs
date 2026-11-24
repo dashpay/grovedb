@@ -44,6 +44,8 @@ pub mod committer;
 mod convert_to_big_sum_tree;
 /// Getting values by key from a Merk tree.
 pub mod get;
+/// The set of keys an apply notes.
+mod key_set;
 /// Metadata (non-authenticated KV) access for Merk trees, cached in memory
 /// alongside uncommitted tree state.
 mod meta;
@@ -72,6 +74,7 @@ use grovedb_costs::{
     OperationCost,
 };
 use grovedb_version::version::GroveVersion;
+pub use key_set::KeySet;
 use source::{MerkSource, PaidNodes};
 
 use crate::{
@@ -102,9 +105,9 @@ use crate::{
 /// Key update types
 pub struct KeyUpdates {
     /// Keys that were newly inserted.
-    pub new_keys: BTreeSet<Vec<u8>>,
+    pub new_keys: KeySet,
     /// Keys whose values were updated.
-    pub updated_keys: BTreeSet<Vec<u8>>,
+    pub updated_keys: KeySet,
     /// Keys that were deleted, along with their storage costs.
     pub deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
     /// The previous root key if the root key changed.
@@ -114,17 +117,22 @@ pub struct KeyUpdates {
 impl KeyUpdates {
     /// New KeyUpdate
     pub fn new(
-        new_keys: BTreeSet<Vec<u8>>,
-        updated_keys: BTreeSet<Vec<u8>>,
+        new_keys: impl Into<KeySet>,
+        updated_keys: impl Into<KeySet>,
         deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
         updated_root_key_from: Option<Vec<u8>>,
     ) -> Self {
         Self {
-            new_keys,
-            updated_keys,
+            new_keys: new_keys.into(),
+            updated_keys: updated_keys.into(),
             deleted_keys,
             updated_root_key_from,
         }
+    }
+
+    /// No key update.
+    pub fn none() -> Self {
+        Self::new(KeySet::new(), KeySet::new(), LinkedList::new(), None)
     }
 }
 

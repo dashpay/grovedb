@@ -1,5 +1,3 @@
-use std::collections::{BTreeSet, LinkedList};
-
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
@@ -161,8 +159,7 @@ where
 
         // No key is added, removed or moved, so the root key stays and only
         // the rewritten nodes are written.
-        let key_updates =
-            KeyUpdates::new(BTreeSet::new(), BTreeSet::new(), LinkedList::new(), None);
+        let key_updates = KeyUpdates::none();
         let aux: &AuxMerkBatch<Vec<u8>> = &[];
         cost_return_on_error!(
             &mut cost,
