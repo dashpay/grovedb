@@ -126,6 +126,18 @@ impl Pair {
         let expected = self.model.outcomes();
         assert_eq!(self.batch.len(), expected.len(), "seed {seed}");
         let resolved = self.batch.resolve().expect("no call is refused");
+        // The outcomes of one unit are those of the batch that are of
+        // the unit, in their order, also for a unit the batch holds
+        // nothing of.
+        for column in COLUMNS {
+            for name in 0..4 {
+                let unit = super::unit(column, name);
+                let of_unit: Vec<_> = resolved.outcomes_of(unit).collect();
+                let all = resolved.outcomes();
+                let filtered: Vec<_> = all.filter(|outcome| outcome.unit == unit).collect();
+                assert_eq!(of_unit, filtered, "seed {seed}");
+            }
+        }
         let outcomes: Vec<(Key, (Option<u8>, u32))> = (resolved.outcomes())
             .map(|outcome| {
                 let column = COLUMNS
