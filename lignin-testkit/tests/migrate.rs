@@ -66,7 +66,7 @@ use lignin_store::wal::SyncPolicy;
 use lignin_testkit::{
     diff::{
         pair::differences,
-        state::{first_difference, stored},
+        state::{first_difference, stored, Keyspace as Listed},
     },
     golden::{
         plan,
@@ -75,7 +75,10 @@ use lignin_testkit::{
     workload::{Op, StreamEngine},
 };
 use lignin_tools::{
-    migrate::{migrate, work_dir, Migration, Unreachable, MARK_TEXT, WORK_DATABASE, WORK_MARK},
+    migrate::{
+        migrate, work_dir, Migration, Unreachable, MARK_TEXT, WORK_DATABASE, WORK_MARK,
+        WORK_MARK_NEW,
+    },
     Outcome,
 };
 use lignindb::{
@@ -127,6 +130,7 @@ fn migrated(source: &Path, target: &Path, batch_bytes: usize) -> Result<String, 
         batch_bytes,
         progress: Duration::from_secs(5),
         unreachable: Unreachable::Leave,
+        memory_limit: None,
     };
     let mut out = Vec::new();
     let outcome = migrate(&migration, &mut out);
@@ -150,24 +154,157 @@ fn word(out: &str, line: &str, name: &str) -> u64 {
     word.unwrap_or_else(|| panic!("no word {name} in {line:?}"))
 }
 
-/// What both groves store, listed through the seam and compared.
+/// What both groves store, listed through the seam and compared: how
+/// many records, and how many answers the calls of the trees that keep
+/// flat records gave alike ([`flat_reads`]).
 fn same_stored<A: StreamEngine, B: StreamEngine>(
     rocks: &GroveDb<A>,
     lignin: &GroveDb<B>,
     version: &GroveVersion,
     when: &str,
 ) -> Result<u64, String> {
+    same_stored_and_read(rocks, lignin, version, when).map(|(records, _)| records)
+}
+
+/// [`same_stored`], with how many trees that keep flat records both
+/// groves have and how many answers of their calls were alike.
+fn same_stored_and_read<A: StreamEngine, B: StreamEngine>(
+    rocks: &GroveDb<A>,
+    lignin: &GroveDb<B>,
+    version: &GroveVersion,
+    when: &str,
+) -> Result<(u64, (u64, u64)), String> {
     let before = BTreeSet::new();
-    let (was, is) = (rocks.start_transaction(), lignin.start_transaction());
-    let reference = stored(rocks, &was, version, &before)?;
-    let candidate = stored(lignin, &is, version, &before)?;
-    match first_difference(&reference.records, &candidate.records) {
-        None => Ok(reference.records.len() as u64),
-        Some((reference, candidate)) => Err(format!(
+    let (reference, candidate) = {
+        let (was, is) = (rocks.start_transaction(), lignin.start_transaction());
+        (
+            stored(rocks, &was, version, &before)?,
+            stored(lignin, &is, version, &before)?,
+        )
+    };
+    if let Some((reference, candidate)) = first_difference(&reference.records, &candidate.records) {
+        return Err(format!(
             "{when}, the groves store otherwise:\n  RocksDB:  {reference:?}\n  LigninDB: \
              {candidate:?}"
-        )),
+        ));
     }
+    // Each tree that keeps flat records is asked through its own calls, on
+    // both engines.
+    let flat = (reference.places.iter()).filter(|place| place.data == Listed::Flat);
+    let (mut trees, mut answers) = (0, 0);
+    for place in flat {
+        let (was, is) = (
+            flat_reads(rocks, &place.path, version),
+            flat_reads(lignin, &place.path, version),
+        );
+        if let Some(at) = (0..was.len().max(is.len())).find(|at| was.get(*at) != is.get(*at)) {
+            let path: Vec<String> = place.path.iter().map(hex::encode).collect();
+            return Err(format!(
+                "{when}, the tree of flat records at /{} answers otherwise:\n  RocksDB:  \
+                 {:?}\n  LigninDB: {:?}",
+                path.join("/"),
+                was.get(at),
+                is.get(at)
+            ));
+        }
+        trees += 1;
+        answers += was.len() as u64;
+    }
+    Ok((reference.records.len() as u64, (trees, answers)))
+}
+
+/// What the calls of a tree that keeps flat records answer for the tree
+/// at `path`: how many leaves it holds, its root or its anchor, and its
+/// first and its last leaves, each as the call gave it.
+fn flat_reads<E: grovedb::Engine>(
+    db: &GroveDb<E>,
+    path: &[Vec<u8>],
+    v: &GroveVersion,
+) -> Vec<String> {
+    /// How many leaves are read at each end of a tree.
+    const EDGE: u64 = 48;
+    let (key, above) = path.split_last().expect("a tree below the root");
+    let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+    let above = above.as_slice();
+    let mut reads = Vec::new();
+    let mut read = |what: String, answer: String| reads.push(format!("{what}: {answer}"));
+    // The answer of a call, or its error, in words.
+    macro_rules! answer {
+        ($call:expr) => {
+            $call.unwrap().map_err(|error| error.to_string())
+        };
+    }
+    // The first leaves and the last ones.
+    let ends = |count: u64| (0..count.min(EDGE)).chain(count.saturating_sub(EDGE).max(EDGE)..count);
+    let element = answer!(db.get_raw(above.into(), key, None, v));
+    match &element {
+        Ok(Element::CommitmentTree(..)) => {
+            let count = answer!(db.commitment_tree_count(above, key, None, v));
+            read("count".to_owned(), format!("{count:?}"));
+            let anchor = answer!(db.commitment_tree_anchor(above, key, None, v));
+            let anchor = anchor.map(|anchor| hex::encode(anchor.to_bytes()));
+            read("anchor".to_owned(), format!("{anchor:?}"));
+            let count = count.unwrap_or(0);
+            for from in [0, count.saturating_sub(EDGE)] {
+                let page = db.commitment_tree_get_range(above, key, from, EDGE as u16, None, v);
+                read(
+                    format!("leaves from {from}"),
+                    format!("{:?}", answer!(page)),
+                );
+            }
+            for at in [0, count / 2, count.saturating_sub(1)] {
+                let leaf = db.commitment_tree_get_value(above, key, at, None, v);
+                read(format!("leaf {at}"), format!("{:?}", answer!(leaf)));
+            }
+        }
+        Ok(Element::MmrTree(..)) => {
+            let count = answer!(db.mmr_tree_leaf_count(above, key, None, v));
+            read("count".to_owned(), format!("{count:?}"));
+            let root = answer!(db.mmr_tree_root_hash(above, key, None, v));
+            read("root".to_owned(), format!("{:?}", root.map(hex::encode)));
+            for at in ends(count.unwrap_or(0)) {
+                let leaf = db.mmr_tree_get_value(above, key, at, None, v);
+                read(format!("leaf {at}"), format!("{:?}", answer!(leaf)));
+            }
+        }
+        Ok(Element::BulkAppendTree(..)) => {
+            let count = answer!(db.bulk_count(above, key, None, v));
+            read("count".to_owned(), format!("{count:?}"));
+            let chunks = answer!(db.bulk_chunk_count(above, key, None, v));
+            read("chunks".to_owned(), format!("{chunks:?}"));
+            for from in [0, count.unwrap_or(0).saturating_sub(EDGE)] {
+                let page = db.bulk_get_range(above, key, from, EDGE as u16, None, v);
+                read(
+                    format!("leaves from {from}"),
+                    format!("{:?}", answer!(page)),
+                );
+            }
+        }
+        Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => {
+            let count = answer!(db.dense_tree_count(above, key, None, v));
+            read("count".to_owned(), format!("{count:?}"));
+            let root = answer!(db.dense_tree_root_hash(above, key, None, v));
+            read("root".to_owned(), format!("{:?}", root.map(hex::encode)));
+            for at in ends(u64::from(count.unwrap_or(0))) {
+                let leaf = db.dense_tree_get(above, key, at as u16, None, v);
+                read(format!("leaf {at}"), format!("{:?}", answer!(leaf)));
+            }
+        }
+        Ok(Element::PrivateDocumentStore(..)) => {
+            let count = answer!(db.private_document_store_count(above, key, None, v));
+            read("count".to_owned(), format!("{count:?}"));
+            for from in [0, count.unwrap_or(0).saturating_sub(EDGE)] {
+                let page =
+                    db.private_document_store_get_range(above, key, from, EDGE as u16, None, v);
+                read(
+                    format!("leaves from {from}"),
+                    format!("{:?}", answer!(page)),
+                );
+            }
+        }
+        other => read("no tree of flat records".to_owned(), format!("{other:?}")),
+    }
+    reads
 }
 
 /// What a trace that was cut, migrated and gone on with came to.
@@ -513,7 +650,10 @@ fn the_corpus_goes_on_the_same_after_a_migration_at_its_middle() {
         .map(|trace| (trace, traces[trace].ops.len() / 2))
         .collect();
     let ended_early = checked(&traces, &plan, 64 << 20);
-    assert_eq!(ended_early, 0, "a stream ended before its last step");
+    assert_eq!(
+        ended_early, 0,
+        "a stream ended at a step that neither engine could be observed at"
+    );
 }
 
 /// Every trace of the corpus, cut at three places over its length and
@@ -531,8 +671,8 @@ fn the_corpus_goes_on_the_same_after_a_migration_at_every_kind_of_place() {
                 .map(|wanted| (at, wanted)),
         );
     }
-    // How many of the cuts ended before the last step of their stream is
-    // in the line that `checked` prints.
+    // How many of the cuts ended at a step that neither engine could be
+    // observed at is in the line that `checked` prints.
     checked(&traces, &plan, 1 << 20);
 }
 
@@ -695,6 +835,7 @@ fn migration(source: &Path, target: &Path) -> Migration {
         batch_bytes: 1,
         progress: Duration::ZERO,
         unreachable: Unreachable::Refuse,
+        memory_limit: None,
     }
 }
 
@@ -736,7 +877,8 @@ fn alike(source: &Path, target: &Path) -> u64 {
         rocks(source),
         Lignin::open_with_engine(target).expect("the target"),
     );
-    let records = same_stored(&rocks, &lignin, v, "after the migration").expect("the same");
+    let (records, _) =
+        same_stored_and_read(&rocks, &lignin, v, "after the migration").expect("the same");
     let checked = |issues: Result<_, grovedb::Error>| issues.map_err(|error| error.to_string());
     let was = checked(rocks.verify_grovedb(None, true, false, v));
     let is = checked(lignin.verify_grovedb(None, true, false, v));
@@ -1009,6 +1151,29 @@ fn a_target_that_holds_something_is_refused_and_an_empty_directory_is_taken() {
     }
     assert_eq!(held(&elsewhere), Vec::<String>::new());
 
+    // A target beside the source that is named through the source's
+    // directory is beside it, and is taken.
+    let beside = source.join("..").join("beside the source");
+    let (outcome, out) = ran(&migration(&source, &beside));
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert!(dir.path().join("beside the source").is_dir());
+
+    // A file at the target with the command's work directory beside it:
+    // no run gave a file the name of a database, and the work directory
+    // is left as it is.
+    let work = work_dir(&file).unwrap();
+    std::fs::create_dir(&work).expect("a directory");
+    std::fs::write(work.join(WORK_MARK), MARK_TEXT).expect("its file");
+    let before = held(&work);
+    let (outcome, _) = ran(&migration(&source, &file));
+    let refused = outcome.expect_err("a target that is a file is refused");
+    assert!(
+        refused.contains("is there and is no directory"),
+        "{refused}"
+    );
+    assert_eq!(held(&work), before);
+    std::fs::remove_dir_all(&work).expect("the directory is removed");
+
     // The directory a target is to be in is not made.
     let below = dir.path().join("no such directory");
     let (outcome, out) = ran(&migration(&source, &below.join("lignindb")));
@@ -1126,11 +1291,40 @@ fn what_is_at_the_work_directory_and_is_not_the_commands_is_refused_untouched() 
             }),
         ),
         (
-            "a database beside a file that was cut short",
+            "a database beside a file with the first bytes of the command's",
             Box::new(|work| {
                 made(work);
                 file(work.join(WORK_MARK), &MARK_TEXT[..7]);
                 made(&work.join(WORK_DATABASE));
+            }),
+        ),
+        (
+            "a file of that name with no byte",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK), b"");
+            }),
+        ),
+        (
+            "a file of that name with the first bytes of the command's",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK), &MARK_TEXT[..7]);
+            }),
+        ),
+        (
+            "a database beside a file of the name the command's is made under",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK_NEW), MARK_TEXT);
+                made(&work.join(WORK_DATABASE));
+            }),
+        ),
+        (
+            "a directory of the name the command's file is made under",
+            Box::new(|work| {
+                made(work);
+                made(&work.join(WORK_MARK_NEW));
             }),
         ),
         (
@@ -1181,13 +1375,23 @@ fn a_work_directory_that_a_stop_left_at_its_making_is_taken() {
     let dir = tempfile::tempdir().expect("a directory");
     let source = dir.path().join("rocksdb");
     let root = small(&source);
-    let left: [Option<&[u8]>; 4] = [None, Some(b""), Some(&MARK_TEXT[..10]), Some(MARK_TEXT)];
+    // The file before it has its name holds whatever the stop left of it:
+    // no byte, its first bytes, bytes that were never written, or all.
+    let never_written = vec![0; MARK_TEXT.len()];
+    let left: [Option<(&str, &[u8])>; 6] = [
+        None,
+        Some((WORK_MARK_NEW, b"")),
+        Some((WORK_MARK_NEW, &MARK_TEXT[..10])),
+        Some((WORK_MARK_NEW, &never_written)),
+        Some((WORK_MARK_NEW, MARK_TEXT)),
+        Some((WORK_MARK, MARK_TEXT)),
+    ];
     for (number, file) in left.into_iter().enumerate() {
         let target = dir.path().join(format!("lignindb-{number}"));
         let work = work_dir(&target).unwrap();
         std::fs::create_dir(&work).expect("the work directory");
-        if let Some(bytes) = file {
-            std::fs::write(work.join(WORK_MARK), bytes).expect("its file");
+        if let Some((name, bytes)) = file {
+            std::fs::write(work.join(name), bytes).expect("its file");
         }
         let (outcome, out) = ran(&migration(&source, &target));
         assert_eq!(outcome, Ok(Outcome::Done), "{file:?}: {out}");
@@ -1371,10 +1575,25 @@ fn a_sync_that_fails_after_the_rename_is_said_and_made_by_the_next_run() {
             "{said}"
         );
         device.clear_rules();
-        assert_eq!(root_of(&grove_on(&device)), root, "{at:?} {fault}");
+        // The database has its name on the device as it is, and the work
+        // directory holds its file alone. Nothing opens the database
+        // here: an open is a session, which syncs.
+        let named = device.read_dir(Path::new(ON_DEVICE)).expect("the target");
+        assert!(!named.is_empty(), "{at:?} {fault}");
         let left = device.read_dir(&work).expect("the work directory");
         assert_eq!(left.len(), 1, "{left:?}");
+        // A power cut now takes the name back: the database is in the
+        // work directory again, and the same command goes on from there.
+        let image = device.crash_image();
+        let lost = image.recover(&image.lose_all()).expect("a device");
+        let unnamed = lost.read_dir(Path::new(ON_DEVICE));
+        assert!(unnamed.is_err(), "the name was not durable: {unnamed:?}");
+        let again = on(&lost, &source, Unreachable::Refuse, SyncPolicy::EveryCommit);
+        let (outcome, said) = ran(&again);
+        assert_eq!(outcome, Ok(Outcome::Done), "{said}");
+        assert_eq!(root_of(&grove_on(&lost)), root, "{at:?} {fault}");
 
+        // With no power cut, the same command makes the syncs.
         let (outcome, said) = ran(&migration);
         let refused = outcome.expect_err("the target is there");
         assert!(
@@ -1677,11 +1896,11 @@ fn a_full_device_stops_a_load_that_goes_on_once_there_is_room() {
     }
     assert!(stopped >= 4, "{stopped} devices were full");
 
-    // A device that fills at each step of the migration of a grove with
-    // nothing in it, the making of the work directory and the first
-    // commit of the database among them: up to the rename a full device
-    // is never another failure, and after it the run says what is at the
-    // target.
+    // Devices of 97 sizes, from none to what the migration of a grove
+    // with nothing in it uses: the smallest of them fill while the work
+    // directory is made and in the first commit of the database. On each,
+    // a full device up to the rename is never another failure, and after
+    // the rename the run says what is at the target.
     let empty = dir.path().join("empty");
     drop(rocks(&empty));
     let whole = SimVfs::new(SimConfig::new(0));
@@ -2160,6 +2379,54 @@ fn a_flat_record_is_a_keyed_child_as_the_node_of_its_own_key_alone() {
     }
 }
 
+/// A run says what peak of memory it projects from the largest Merk it
+/// hands over, and a source that projects more than the limit is refused
+/// before anything is made, by a run that migrates and by one that only
+/// surveys.
+#[test]
+fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
+    let root = small(&source);
+    let word_of = |out: &str, name: &str| word(out, "migrate: memory", name);
+    // The floor alone is above a megabyte.
+    for surveys in [true, false] {
+        let limited = Migration {
+            target: (!surveys).then(|| target.clone()),
+            memory_limit: Some(1 << 20),
+            ..migration(&source, &target)
+        };
+        let (outcome, out) = ran(&limited);
+        let refused = outcome.expect_err("the projection is above the limit");
+        assert!(refused.contains("above the limit of 1 MiB"), "{refused}");
+        assert!(refused.contains("is not built"), "{refused}");
+        assert_eq!(word_of(&out, "limit_bytes"), 1 << 20, "{out}");
+        assert!(word_of(&out, "projected_peak_bytes") > 256 << 20, "{out}");
+        assert!(!target.exists() && !work_dir(&target).unwrap().exists());
+    }
+    // The projection grows with the nodes of the largest Merk that is
+    // handed over: the tree of forty items of this grove.
+    let roomy = Migration {
+        memory_limit: Some(1 << 40),
+        ..migration(&source, &target)
+    };
+    let (outcome, out) = ran(&roomy);
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    // The floor: 256 MiB, what a commit takes and the buffer pool.
+    let floor = (256 << 20) + roomy.batch_bytes as u64 + roomy.options.cache_size as u64;
+    let nodes = 40;
+    let projected = word_of(&out, "projected_peak_bytes");
+    assert!(
+        projected > floor + 1_000 * nodes && projected < floor + 4_000 * nodes,
+        "{projected}: {out}"
+    );
+    assert_eq!(word(&out, "migrate: survey", "largest_merk_nodes"), nodes);
+    assert_eq!(
+        root_of(&Lignin::open_with_engine(&target).expect("the target")),
+        root
+    );
+}
+
 /// A source that holds what a migration does not carry is refused by the
 /// survey, with what was found, before anything is made.
 #[test]
@@ -2284,6 +2551,7 @@ fn a_database_of_the_environment_is_migrated_and_read_alike() {
         batch_bytes: 64 << 20,
         progress: Duration::from_secs(5),
         unreachable,
+        memory_limit: None,
     };
     let (outcome, out) = ran(&migration);
     for line in out.lines().filter(|line| line.starts_with("migrate:")) {
@@ -2301,8 +2569,13 @@ fn a_database_of_the_environment_is_migrated_and_read_alike() {
             .spawn_scoped(scope, || {
                 let rocks = rocks(source);
                 let lignin = Lignin::open_with_engine(&target).expect("the target");
-                let listed = same_stored(&rocks, &lignin, version, "after the migration");
-                let listed = listed.expect("the groves store the same");
+                let listed = same_stored_and_read(&rocks, &lignin, version, "after the migration");
+                let (listed, (flat_trees, flat_answers)) =
+                    listed.expect("the groves store the same");
+                println!(
+                    "trees that keep flat records: {flat_trees}, asked through their own calls \
+                     on both engines: {flat_answers} answers alike"
+                );
                 let checked =
                     |issues: Result<_, grovedb::Error>| issues.map_err(|error| error.to_string());
                 let was = checked(rocks.verify_grovedb(None, true, false, version));
