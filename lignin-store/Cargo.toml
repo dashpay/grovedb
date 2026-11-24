@@ -1,7 +1,7 @@
 [package]
 name = "lignin-store"
 description = "LigninDB page store: buffer pool, write-ahead log, segments, page table, recovery and cleaner"
-version = "6.1.1"
+version = "7.0.0"
 edition = "2024"
 license = "MIT"
 homepage = "https://www.grovedb.org"
@@ -19,8 +19,8 @@ name = "cold_read"
 required-features = ["direct_io"]
 
 [dependencies]
-lignin-format = { version = "6.1.1", path = "../lignin-format" }
-lignin-io = { version = "6.1.1", path = "../lignin-io" }
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7.2"

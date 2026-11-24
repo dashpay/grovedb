@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-11-24
+
 ### Added
 - `Node::key_and_value` and `Node::key` (`grovedb-query`): the key and value
   of a proof node that reveals a row, and the key of any node that reveals
@@ -678,6 +680,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GroveDBOperationsProofVersions` by hand) and on V5 local pages; resolved
   references keep the target binding Merk already verifies. V1..V4 refuse
   such a global page, as 6.1.1 did.
+- Count-offset proof verification checks the type of the tree a page reads.
+  The prover serves a page with a nonzero offset only from a
+  `ProvableCountTree`, a `ProvableCountSumTree`, a
+  `ProvableCountProvableSumTree` or a `ProvableCountProvableBigSumTree`. The
+  verifier now applies the same rule in the V1 walk, on the proved row of the
+  tree the page reads, and refuses any other tree, an empty one included,
+  with the prover's `InvalidQuery` error. The page's own proof carries no
+  trace of the tree it was built over, so the verifier had no such check
+  before. Not gated by Grove version: the prover has always refused these
+  trees, so no proof it produces changes verdict.
 - `verify_query_get_parent_tree_info` and
   `verify_subset_query_get_parent_tree_info` report the aggregate of the tree
   the query's path ends in when a result row is itself a tree whose lower

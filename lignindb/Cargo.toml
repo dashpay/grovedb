@@ -1,7 +1,7 @@
 [package]
 name = "lignindb"
 description = "LigninDB storage engine: transactions, snapshots, savepoints, checkpoints and verify"
-version = "6.1.1"
+version = "7.0.0"
 edition = "2024"
 license = "MIT"
 homepage = "https://www.grovedb.org"
@@ -9,10 +9,10 @@ repository = "https://github.com/dashpay/grovedb"
 publish = false
 
 [dependencies]
-lignin-format = { version = "6.1.1", path = "../lignin-format" }
-lignin-store = { version = "6.1.1", path = "../lignin-store" }
-lignin-tree = { version = "6.1.1", path = "../lignin-tree" }
-lignin-io = { version = "6.1.1", path = "../lignin-io" }
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-store = { version = "7.0.0", path = "../lignin-store" }
+lignin-tree = { version = "7.0.0", path = "../lignin-tree" }
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
 tempfile = { workspace = true, optional = true }
 
 [features]

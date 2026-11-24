@@ -1,7 +1,7 @@
 [package]
 name = "lignin-io"
 description = "LigninDB file layer: the Vfs trait, the std backend and the fault-injecting backend"
-version = "6.1.1"
+version = "7.0.0"
 edition = "2024"
 license = "MIT"
 homepage = "https://www.grovedb.org"

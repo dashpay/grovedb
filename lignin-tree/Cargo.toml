@@ -1,7 +1,7 @@
 [package]
 name = "lignin-tree"
 description = "LigninDB tree layer: Merkle host, flat keyspace, subtree directory, lazy hashing and cursors"
-version = "6.1.1"
+version = "7.0.0"
 edition = "2024"
 license = "MIT"
 homepage = "https://www.grovedb.org"
@@ -9,9 +9,9 @@ repository = "https://github.com/dashpay/grovedb"
 publish = false
 
 [dependencies]
-lignin-format = { version = "6.1.1", path = "../lignin-format" }
-lignin-store = { version = "6.1.1", path = "../lignin-store" }
+lignin-format = { version = "7.0.0", path = "../lignin-format" }
+lignin-store = { version = "7.0.0", path = "../lignin-store" }
 
 [dev-dependencies]
-lignin-io = { version = "6.1.1", path = "../lignin-io" }
+lignin-io = { version = "7.0.0", path = "../lignin-io" }
 tempfile = { workspace = true }
