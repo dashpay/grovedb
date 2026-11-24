@@ -47,6 +47,66 @@ pub(super) struct Kid {
     pub via: Via,
 }
 
+/// How many kids a cell keeps in itself: two links and one hosted root.
+const KIDS_INLINE: usize = 3;
+
+/// What a cell points at, in the order it was told: a slice of [`Kid`]s
+/// that asks the allocator for nothing while the cell has no more than
+/// [`KIDS_INLINE`] of them.
+#[derive(Debug)]
+pub(super) struct Kids {
+    inline: [Kid; KIDS_INLINE],
+    len: usize,
+    /// Every kid, once there are more than the cell keeps in itself.
+    spilled: Vec<Kid>,
+}
+
+impl Kids {
+    const fn new() -> Self {
+        let none = Kid {
+            cell: NOWHERE,
+            via: Via::Link(Side::Left),
+        };
+        Self {
+            inline: [none; KIDS_INLINE],
+            len: 0,
+            spilled: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, kid: Kid) {
+        if self.len < KIDS_INLINE {
+            self.inline[self.len] = kid;
+        } else {
+            if self.len == KIDS_INLINE {
+                self.spilled.extend_from_slice(&self.inline);
+            }
+            self.spilled.push(kid);
+        }
+        self.len += 1;
+    }
+}
+
+impl std::ops::Deref for Kids {
+    type Target = [Kid];
+
+    fn deref(&self) -> &[Kid] {
+        match self.len <= KIDS_INLINE {
+            true => &self.inline[..self.len],
+            false => &self.spilled,
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a Kids {
+    type IntoIter = std::slice::Iter<'a, Kid>;
+    type Item = &'a Kid;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// One cell the plan knows: a node of the write, a cell the write removes,
 /// or a cell that was reached from one of them.
 #[derive(Debug)]
@@ -74,7 +134,7 @@ pub(super) struct Cell {
     /// root of its fragment whatever its page holds, and stays in its page.
     anchored: bool,
     /// What the cell points at after the write.
-    pub kids: Vec<Kid>,
+    pub kids: Kids,
     /// The rule that carried the cell last.
     pub cause: Option<Cause>,
 }
@@ -698,7 +758,7 @@ impl<P: Pages> Planner<'_, '_, P> {
             removed: false,
             free: false,
             anchored: false,
-            kids: Vec::new(),
+            kids: Kids::new(),
             cause: None,
         });
         if let Some(address) = origin {
@@ -888,10 +948,10 @@ impl<P: Pages> Planner<'_, '_, P> {
         self.up(cell).is_some() || self.plan.cells[cell].free
     }
 
-    fn kids_in(&self, cell: usize, page: usize) -> Vec<usize> {
+    /// The kids of `cell` that the plan has in `page`, in their order.
+    fn kids_in(&self, cell: usize, page: usize) -> impl Iterator<Item = usize> + '_ {
         let kids = self.plan.cells[cell].kids.iter().map(|kid| kid.cell);
-        kids.filter(|kid| self.plan.cells[*kid].page == page)
-            .collect()
+        kids.filter(move |kid| self.plan.cells[*kid].page == page)
     }
 
     /// The root of the fragment `cell` is in.
@@ -1188,7 +1248,7 @@ impl<P: Pages> Planner<'_, '_, P> {
         parts: &mut Vec<(usize, usize)>,
     ) -> Result<(), FragmentError> {
         self.read(cell)?;
-        let below = self.kids_in(cell, page);
+        let below: Vec<usize> = self.kids_in(cell, page).collect();
         if let Some(above) = above {
             self.lift(cell, above, Cause::Split)?;
         }
@@ -1283,4 +1343,45 @@ fn choose(parts: &[(usize, usize)], target: usize) -> Vec<usize> {
 pub(super) fn choose_parts(parts: &[usize], target: usize) -> Vec<usize> {
     let parts: Vec<(usize, usize)> = parts.iter().map(|bytes| (0, *bytes)).collect();
     choose(&parts, target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kid(cell: usize) -> Kid {
+        let via = match cell % 3 {
+            0 => Via::Link(Side::Left),
+            1 => Via::Link(Side::Right),
+            _ => Via::Hosted(cell as u8),
+        };
+        Kid { cell, via }
+    }
+
+    /// A cell's kids are the slice of what was pushed, in that order,
+    /// whether the cell keeps them in itself or not.
+    #[test]
+    fn kids_are_what_was_pushed_in_their_order() {
+        for count in 0..=2 * KIDS_INLINE + 1 {
+            let mut kids = Kids::new();
+            assert!(kids.is_empty());
+            for cell in 0..count {
+                kids.push(kid(cell));
+                assert_eq!(kids.len(), cell + 1);
+            }
+            let cells: Vec<usize> = kids.iter().map(|kid| kid.cell).collect();
+            assert_eq!(cells, (0..count).collect::<Vec<_>>());
+            let back: Vec<usize> = kids.iter().rev().map(|kid| kid.cell).collect();
+            assert_eq!(back, (0..count).rev().collect::<Vec<_>>());
+            for (at, found) in (&kids).into_iter().enumerate() {
+                assert_eq!((found.cell, found.via), (at, kid(at).via));
+            }
+            assert_eq!(kids.get(count).map(|kid| kid.cell), None);
+            assert_eq!(
+                kids.spilled.capacity() == 0,
+                count <= KIDS_INLINE,
+                "{count} kids"
+            );
+        }
+    }
 }
