@@ -161,7 +161,8 @@
 //! projection is above the limit: the 256 MiB of any run; those with the
 //! largest of what the load holds whole, which no setting makes less,
 //! since loading it in parts is not built; or only the sum with
-//! `--batch` and `--cache`, which smaller ones answer.
+//! `--batch` and `--cache`, which smaller ones answer where the least
+//! the command takes for them (1 MiB each) is not above the limit too.
 //!
 //! # Exit status
 //!
@@ -268,6 +269,10 @@ pub struct Migration {
 /// What a migration holds beside a commit, the buffer pool and the
 /// heaviest Merk it hands over: the floor of what it projects.
 const PEAK_FLOOR: u64 = 256 << 20;
+
+/// The least that the command takes for `--batch` and for `--cache`: each
+/// is given in MiB, and is 1 or more.
+const LEAST_OF_A_SETTING: u128 = 1 << 20;
 
 /// The memory of the machine, in bytes, as `/proc/meminfo` states it:
 /// `None` where the file is not there, cannot be read or states no
@@ -1262,28 +1267,46 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         limit.map_or("none".to_owned(), |limit| limit.to_string())
     )?;
     if let Some(limit) = limit.filter(|limit| projected > u128::from(*limit)) {
-        // Which part is above the limit says what answers the refusal.
-        let more = "a larger --memory-limit takes it where the machine has that memory";
+        // Which part is above the limit says what can answer the refusal,
+        // as far as anything can: a limit has a largest value, and a commit
+        // and the buffer pool have a least size.
+        let more = "a larger --memory-limit can take it, where there is one and the machine \
+                    has that memory";
         let cause = if u128::from(PEAK_FLOOR) > u128::from(limit) {
             format!(
                 "the limit is below the 256 MiB that a run holds whatever it migrates and \
-                 however it is set: {more}"
+                 however it is set. Only {more}"
             )
         } else if whole > u128::from(limit) {
             format!(
                 "the largest of what it holds whole is {}, which with the 256 MiB of any run \
-                 is about {} MiB, and no --batch or --cache makes that less: {more}. A load \
-                 of it in parts, which such a source needs otherwise, is not built",
+                 is about {} MiB, and no --batch or --cache makes that less. Only {more}. A \
+                 load of it in parts, which such a source needs otherwise, is not built",
                 heaviest.named(),
                 whole.div_ceil(1 << 20)
             )
         } else {
-            format!(
+            let least = whole + 2 * LEAST_OF_A_SETTING;
+            let stated = format!(
                 "--batch and --cache are {} MiB of it, and without them the run projects \
-                 about {} MiB: smaller ones take it, or {more}",
+                 about {} MiB, which the limit holds",
                 settings.div_ceil(1 << 20),
                 whole.div_ceil(1 << 20)
-            )
+            );
+            if least > u128::from(limit) {
+                format!(
+                    "{stated}. But each of the two is 1 MiB or more, and with both at 1 MiB \
+                     the run still projects about {} MiB. Only {more}",
+                    least.div_ceil(1 << 20)
+                )
+            } else {
+                format!(
+                    "{stated}. A migration with a smaller --batch or --cache can take it: \
+                     with both at 1 MiB, the least each can be, the run projects about {} \
+                     MiB. Or {more}",
+                    least.div_ceil(1 << 20)
+                )
+            }
         };
         return Err(refused(format!(
             "the source {} projects a peak of about {} MiB of memory, above the limit of {} \

@@ -2463,7 +2463,10 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
             refused.contains("the limit is below the 256 MiB"),
             "{refused}"
         );
-        assert!(!refused.contains("smaller ones take it"), "{refused}");
+        assert!(
+            !refused.contains("a smaller --batch or --cache"),
+            "{refused}"
+        );
         assert!(!refused.contains("is not built"), "{refused}");
         assert_eq!(word_of(&out, "limit_bytes"), 1 << 20, "{out}");
         assert!(word_of(&out, "projected_peak_bytes") > floor, "{out}");
@@ -2482,7 +2485,10 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
         "{refused}\n{out}"
     );
     assert!(refused.contains("is not built"), "{refused}");
-    assert!(!refused.contains("smaller ones take it"), "{refused}");
+    assert!(
+        !refused.contains("a smaller --batch or --cache"),
+        "{refused}"
+    );
     assert!(nothing_made());
     // A limit that only the sum with what a commit takes and the buffer
     // pool is above: smaller ones answer it.
@@ -2492,7 +2498,30 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
     };
     let (outcome, out) = ran(&limited);
     let refused = outcome.expect_err("the sum is above the limit");
-    assert!(refused.contains("smaller ones take it"), "{refused}\n{out}");
+    assert!(
+        refused.contains("with a smaller --batch or --cache can take it"),
+        "{refused}\n{out}"
+    );
+    assert!(!refused.contains("is not built"), "{refused}");
+    assert!(nothing_made());
+    // The same where a commit and the buffer pool are the least that the
+    // command takes for them: no smaller ones are there to give.
+    let mut least = Migration {
+        batch_bytes: 1 << 20,
+        memory_limit: Some((256 << 20) + (1 << 20) + 4_000 * nodes),
+        ..plain.clone()
+    };
+    least.options.cache_size = 1 << 20;
+    let (outcome, out) = ran(&least);
+    let refused = outcome.expect_err("the sum is above the limit");
+    assert!(
+        refused.contains("with both at 1 MiB the run still projects"),
+        "{refused}\n{out}"
+    );
+    assert!(
+        !refused.contains("a smaller --batch or --cache"),
+        "{refused}"
+    );
     assert!(!refused.contains("is not built"), "{refused}");
     assert!(nothing_made());
     // A commit of every size there is, where a size has the width of the
@@ -2506,7 +2535,10 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
         };
         let (outcome, out) = ran(&endless);
         let refused = outcome.expect_err("the projection is above the limit");
-        assert!(refused.contains("smaller ones take it"), "{refused}");
+        assert!(
+            refused.contains("with a smaller --batch or --cache can take it"),
+            "{refused}"
+        );
         assert_eq!(word_of(&out, "projected_peak_bytes"), u64::MAX, "{out}");
         assert!(nothing_made());
     }
