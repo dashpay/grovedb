@@ -232,6 +232,21 @@ pub struct FlushStats {
     /// Their bytes, without the page id of each run, plus the bytes of the
     /// out-of-line values the groups carry.
     pub node_record_bytes: u64,
+    /// The records among `node_records` that put a cell into a slot: a
+    /// new node, or a cell that was carried from another page, which a
+    /// group repeats whole.
+    pub insert_records: u64,
+    /// Their bytes.
+    pub insert_record_bytes: u64,
+    /// The records among `node_records` that take a cell out of a page:
+    /// its node was deleted, or the cell was carried to another page.
+    pub remove_records: u64,
+    /// The out-of-line values those groups carry: new values, and the
+    /// values of cells that were carried to another page, which a group
+    /// repeats.
+    pub values_logged: u64,
+    /// Their bytes, which are among `node_record_bytes`.
+    pub value_logged_bytes: u64,
     /// Changes those groups carry for flat pages: the flat keyspace.
     pub other_records: u64,
     /// Their bytes, without the page id of each run.
@@ -287,6 +302,11 @@ pub(super) struct Counters {
     pub(super) groups: AtomicU64,
     pub(super) node_records: AtomicU64,
     pub(super) node_record_bytes: AtomicU64,
+    pub(super) insert_records: AtomicU64,
+    pub(super) insert_record_bytes: AtomicU64,
+    pub(super) remove_records: AtomicU64,
+    pub(super) values_logged: AtomicU64,
+    pub(super) value_logged_bytes: AtomicU64,
     pub(super) other_records: AtomicU64,
     pub(super) other_record_bytes: AtomicU64,
     pub(super) value_stored_bytes: AtomicU64,
@@ -333,6 +353,11 @@ impl Counters {
             groups: read(&self.groups),
             node_records: read(&self.node_records),
             node_record_bytes: read(&self.node_record_bytes),
+            insert_records: read(&self.insert_records),
+            insert_record_bytes: read(&self.insert_record_bytes),
+            remove_records: read(&self.remove_records),
+            values_logged: read(&self.values_logged),
+            value_logged_bytes: read(&self.value_logged_bytes),
             other_records: read(&self.other_records),
             other_record_bytes: read(&self.other_record_bytes),
             value_stored_bytes: read(&self.value_stored_bytes),

@@ -380,11 +380,16 @@ impl Background {
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 35] = [
+pub const DETAIL_IDS: [&str; 40] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
     "log_mark_bytes",
+    "log_inserts",
+    "log_insert_bytes",
+    "log_removes",
+    "log_values",
+    "log_value_bytes",
     "segment_bytes",
     "base_blocks",
     "base_payload_bytes",
@@ -423,6 +428,7 @@ pub const DETAIL_IDS: [&str; 35] = [
 fn details(stats: &DbStats) -> Vec<Detail> {
     let (log, flush, cleaner) = (&stats.store.log, &stats.store.flush, &stats.cleaner);
     const LOG: &str = "lignindb engine counters: the log's appends by kind";
+    const GROUPS: &str = "lignindb engine counters: what the commit groups carry";
     const FLUSH: &str = "lignindb engine counters: write-back";
     const CLEANER: &str = "lignindb engine counters: the cleaner";
     const RECLAIMER: &str = "lignindb engine counters: the reclaimer";
@@ -432,6 +438,11 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("B", log.change_bytes, LOG),
         ("records", log.changes, LOG),
         ("B", log.mark_bytes, LOG),
+        ("records", flush.insert_records, GROUPS),
+        ("B", flush.insert_record_bytes, GROUPS),
+        ("records", flush.remove_records, GROUPS),
+        ("values", flush.values_logged, GROUPS),
+        ("B", flush.value_logged_bytes, GROUPS),
         ("B", flush.stored_bytes, FLUSH),
         ("blocks", flush.base_blocks, FLUSH),
         ("B", flush.base_bytes, FLUSH),

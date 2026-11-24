@@ -7,7 +7,7 @@ use std::{
 };
 
 use lignin_format::{
-    delta::DeltaRun,
+    delta::{Delta, DeltaRun},
     segment::{BlockContent, Compression, FRAME_LEN},
     wal::{Change, Entry, FlatRun, Record, Removed},
     CommitVersion, FormatVersion, PageId, PageSize, SlotId,
@@ -203,6 +203,11 @@ impl Round {
 struct Told {
     node_records: usize,
     node_bytes: usize,
+    inserts: usize,
+    insert_bytes: usize,
+    removes: usize,
+    values: usize,
+    value_bytes: usize,
     other_records: usize,
     other_bytes: usize,
 }
@@ -213,6 +218,16 @@ impl Told {
             Entry::Tree(run) => {
                 self.node_records += run.deltas().len();
                 self.node_bytes += run.encoded_len() - DeltaRun::HEADER_LEN;
+                for delta in run.deltas() {
+                    match delta {
+                        Delta::Insert { .. } => {
+                            self.inserts += 1;
+                            self.insert_bytes += delta.encoded_len();
+                        }
+                        Delta::Remove { .. } => self.removes += 1,
+                        _ => {}
+                    }
+                }
             }
             Entry::Flat(run) => {
                 self.other_records += run.changes().len();
@@ -226,6 +241,11 @@ impl Told {
         count(&counters.groups, 1);
         count(&counters.node_records, self.node_records as u64);
         count(&counters.node_record_bytes, self.node_bytes as u64);
+        count(&counters.insert_records, self.inserts as u64);
+        count(&counters.insert_record_bytes, self.insert_bytes as u64);
+        count(&counters.remove_records, self.removes as u64);
+        count(&counters.values_logged, self.values as u64);
+        count(&counters.value_logged_bytes, self.value_bytes as u64);
         count(&counters.other_records, self.other_records as u64);
         count(&counters.other_record_bytes, self.other_bytes as u64);
     }
@@ -429,10 +449,19 @@ impl<'s> WriteBack<'s> {
                 .map_err(|source| FlushError::Log(LogError::Refused { offset, source }))?;
             match record {
                 Record::Part(part) => parts.push(part),
-                Record::Value(part) => told.node_bytes += part.data().len(),
+                Record::Value(part) => {
+                    let len = part.data().len();
+                    told.node_bytes += len;
+                    told.values += usize::from(part.part() == 0);
+                    told.value_bytes += len;
+                }
                 _ => {}
             }
             offset += len;
+        }
+
+        for entry in parts.iter().flat_map(|part| part.entries()) {
+            told.entry(&entry);
         }
 
         let logged = group.len() as u64;
@@ -444,7 +473,6 @@ impl<'s> WriteBack<'s> {
             .fetch_add(logged, Ordering::Relaxed);
         kept.group_at(version.get(), at, before);
         for entry in parts.iter().flat_map(|part| part.entries()) {
-            told.entry(&entry);
             match entry {
                 Entry::Tree(run) => {
                     match run.created() {
