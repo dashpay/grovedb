@@ -7,7 +7,7 @@
 //! through [`Access`].
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
@@ -1120,24 +1120,30 @@ pub(super) fn apply_batch(
     entry: &mut Option<LigninEntryRefused>,
 ) -> Result<Written, Error> {
     let mut written = Written::default();
-    let fresh = |subtree: Subtree| {
-        (batch.subtrees.iter()).any(|write| match write {
-            // A subtree that is stated anew keeps its nodes, and so does
-            // one that is said not to be under a node.
+    // The subtrees that the batch states otherwise than as entered if
+    // absent: a subtree that is stated anew keeps its nodes, and so does
+    // one that is said not to be under a node.
+    let kept = |write: &&SubtreeWrite<'_>| {
+        matches!(
+            write,
             SubtreeWrite::EnterIfAbsent { .. }
-            | SubtreeWrite::Convert { .. }
-            | SubtreeWrite::NotUnder { .. } => false,
-            write => write.subtree() == subtree,
-        })
+                | SubtreeWrite::Convert { .. }
+                | SubtreeWrite::NotUnder { .. }
+        )
     };
+    let stated: HashSet<Subtree> = (batch.subtrees.iter())
+        .filter(|write| !kept(write))
+        .map(SubtreeWrite::subtree)
+        .collect();
+    let fresh = |subtree: Subtree| stated.contains(&subtree);
+    // Those that it enters if they are absent, where it drops or clears
+    // a subtree.
     let leaves = batch.subtrees.iter().any(SubtreeWrite::leaves);
-    let restated = |subtree: Subtree| {
-        let mut writes = batch.subtrees.iter();
-        leaves
-            && writes.any(|write| {
-                matches!(write, SubtreeWrite::EnterIfAbsent { .. }) && write.subtree() == subtree
-            })
-    };
+    let if_absent: HashSet<Subtree> = (batch.subtrees.iter())
+        .filter(|write| leaves && matches!(write, SubtreeWrite::EnterIfAbsent { .. }))
+        .map(SubtreeWrite::subtree)
+        .collect();
+    let restated = |subtree: Subtree| if_absent.contains(&subtree);
     let mut keep = Vec::with_capacity(batch.merks.len());
     for (at, merk) in batch.merks.iter().enumerate() {
         let fresh = whole.get(at) == Some(&true) || fresh(merk.subtree);

@@ -1917,7 +1917,7 @@ impl LigninSettled {
         prefix: &[u8; 32],
     ) -> impl Iterator<Item = (&[u8], LigninOutcome<'_>)> {
         let unit = Unit::new(column(keyspace), Subtree::new(*prefix));
-        let held = (self.resolved.outcomes()).filter(move |outcome| outcome.unit == unit);
+        let held = self.resolved.outcomes_of(unit);
         held.map(|outcome| {
             let write = match outcome.write {
                 Staged::Record(value) => LigninOutcome::Put(Some(value)),
@@ -2121,9 +2121,8 @@ impl LigninSettled {
     /// The nodes that the batch puts in the Merk `prefix` with a stated
     /// value: each by its key, with that value.
     pub fn stated(&self, prefix: &[u8; 32]) -> impl Iterator<Item = (&[u8], &[u8])> {
-        let subtree = Subtree::new(*prefix);
-        let nodes =
-            (self.resolved.outcomes()).filter(move |outcome| outcome.unit.subtree == subtree);
+        // A node is a record of the data column.
+        let nodes = (self.resolved).outcomes_of(Unit::data(Subtree::new(*prefix)));
         nodes.filter_map(|outcome| match outcome.write {
             Staged::Node(node) => Some((outcome.key, node.value.as_deref()?)),
             _ => None,
