@@ -164,6 +164,13 @@ the lines are not there as it expects them, and when the workspace does not
 resolve without them: then with Cargo's words and the name of the
 dependency.
 
+The LigninDB crates carry the version of the workspace they are committed
+in and ask the GroveDB crates and each other for it. Where the pinned
+engine is of an earlier release (the pin is at 6.1.1, the workspace at
+7.0.0 since #1068), the script writes the pinned engine's version into the
+worktree's copies of their manifests, for themselves and for what they ask,
+and says so. No trace holds a version of a crate.
+
 The crate builds against either engine with no switch to set. Its build
 script looks for the `Engine` seam next to it (`grovedb/src/engine/mod.rs`).
 Where the seam is, `workload::apply` and the runner of the corpus are

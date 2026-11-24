@@ -117,6 +117,30 @@ git -C "$repo" worktree add --force --quiet --detach "$worktree" "$pin"
 git -C "$worktree" checkout --quiet "$head" -- "${taken[@]}"
 cp "$repo/Cargo.lock" "$worktree/Cargo.lock"
 
+# The LigninDB crates carry the version of the workspace they are committed
+# in, and ask the GroveDB crates and each other for it. The pinned engine can
+# be of an earlier release, and then Cargo selects no version for what the
+# test kit asks. The worktree's copies of their manifests are given the pinned
+# engine's version, for themselves and for what they ask. Nothing recorded
+# holds a version of a crate.
+version_of() {
+    sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | sed -n 1p
+}
+ours=$(version_of "$worktree/$testkit")
+theirs=$(version_of "$worktree/grovedb/Cargo.toml")
+[ -n "$ours" ] && [ -n "$theirs" ] || fail \
+    "the version of the test kit ($ours) or of the pinned engine ($theirs) could not be read from its manifest"
+if [ "$ours" != "$theirs" ]; then
+    asked=$(printf '%s' "$ours" | sed 's/\./\\./g')
+    for member in "${taken[@]}"; do
+        [ "$member" = Cargo.toml ] && continue
+        sed "s/\"$asked\"/\"$theirs\"/g" "$worktree/$member/Cargo.toml" > "$worktree/$member/Cargo.toml.pinned"
+        mv "$worktree/$member/Cargo.toml.pinned" "$worktree/$member/Cargo.toml"
+    done
+    echo "record-at-pin: the LigninDB crates are at $ours and the pinned engine at $theirs:" \
+        "the worktree's copies of their manifests say $theirs" >&2
+fi
+
 # The recording builds the test kit alone. Of the LigninDB crates, the
 # worktree's workspace lists only lignin-testkit as a member; the others are
 # in it as the test kit's path dependencies, or not at all. A LigninDB crate
