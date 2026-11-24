@@ -678,6 +678,8 @@ impl<'s> WriteTxn<'s> {
                 whole.push(named);
             }
         }
+        // What is written is no read beside.
+        let written: HashSet<Unit> = units.iter().copied().collect();
         let nodes = batch.merks.iter().flat_map(|merk| merk.nodes);
         let mut reads: Vec<Unit> = nodes
             .filter_map(|node| match node.hosted {
@@ -686,7 +688,7 @@ impl<'s> WriteTxn<'s> {
             })
             .flatten()
             .map(|hosted| Unit::data(*hosted))
-            .filter(|unit| !units.contains(unit))
+            .filter(|unit| !written.contains(unit))
             .collect();
         let dated = batch.subtrees.iter().filter_map(|write| match write {
             SubtreeWrite::DropUnder {
@@ -696,11 +698,11 @@ impl<'s> WriteTxn<'s> {
             } => Some(Unit::data(host.subtree)),
             _ => None,
         });
-        reads.extend(dated.filter(|unit| !units.contains(unit)));
+        reads.extend(dated.filter(|unit| !written.contains(unit)));
         // What a batch says a subtree is not under is a read of the
         // subtree's entry, which is of its Merk's unit (SC2).
         let stated = batch.not_under().map(|(subtree, _)| Unit::data(subtree));
-        reads.extend(stated.filter(|unit| !units.contains(unit)));
+        reads.extend(stated.filter(|unit| !written.contains(unit)));
         reads.sort_unstable();
         reads.dedup();
         let mut hosts = Hosts {
