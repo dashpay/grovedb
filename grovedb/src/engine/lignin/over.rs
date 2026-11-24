@@ -195,7 +195,7 @@
 //!   group drops or clears itself, where neither that batch nor a later
 //!   one writes a node of it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
@@ -289,7 +289,7 @@ pub(super) fn prefix_under(path: &[Vec<u8>], key: &[u8]) -> [u8; 32] {
 
 /// Whether the subtree `prefix` is below one of `drops` in the directory
 /// as the transaction has it.
-fn below(view: LigninView<'_>, drops: &[[u8; 32]], prefix: [u8; 32]) -> Result<bool, Error> {
+fn below(view: LigninView<'_>, drops: &HashSet<[u8; 32]>, prefix: [u8; 32]) -> Result<bool, Error> {
     let mut entry = entered(view, prefix)?;
     while let Some(host) = entry.and_then(|entry| entry.host) {
         if drops.contains(&host.subtree) {
@@ -481,17 +481,17 @@ pub(super) fn left(
     parts: &[LigninSettled],
     left_out: &BTreeSet<[u8; 32]>,
 ) -> Result<Left, Error> {
-    let written = |prefix: &[u8; 32]| {
-        let mut written = parts.iter().flat_map(LigninSettled::written);
-        written.any(|subtree| subtree.prefix == *prefix)
-    };
-    let own_business = |prefix: &[u8; 32]| {
-        let moved = |part: &LigninSettled| {
-            let mut pairs = part.moves().iter();
-            pairs.any(|(from, to)| from == prefix || to == prefix)
-        };
-        parts.iter().any(|part| part.enters(prefix) || moved(part))
-    };
+    // The subtrees that the group holds a write for, and the prefixes
+    // that a pair of a move names on either side.
+    let held: HashSet<[u8; 32]> = (parts.iter().flat_map(LigninSettled::written))
+        .map(|subtree| subtree.prefix)
+        .collect();
+    let written = |prefix: &[u8; 32]| held.contains(prefix);
+    let moved: HashSet<[u8; 32]> = (parts.iter().flat_map(|part| part.moves()))
+        .flat_map(|(from, to)| [*from, *to])
+        .collect();
+    let own_business =
+        |prefix: &[u8; 32]| moved.contains(prefix) || parts.iter().any(|part| part.enters(prefix));
     let mut left = Left::default();
     let mut seen = BTreeSet::new();
     // Each with the subtree that its element is in.
@@ -673,23 +673,29 @@ pub(super) fn left(
         return Ok(left);
     }
     // A drop takes what is below it, and names none of it.
-    let all: Vec<[u8; 32]> = dropped.iter().map(|(prefix, _)| *prefix).collect();
+    let all: HashSet<[u8; 32]> = dropped.iter().map(|(prefix, _)| *prefix).collect();
     for (prefix, above) in dropped {
         if !(all.contains(&above) || below(view, &all, above)?) {
             left.drops.push(prefix);
         }
     }
+    // The drops that are stated, and the subtrees that are entered
+    // again, to find one of them by.
+    let drops: HashSet<[u8; 32]> = left.drops.iter().copied().collect();
+    let mut again: HashSet<[u8; 32]> = (left.enters.iter())
+        .map(|(known, _)| known.prefix)
+        .collect();
     // What the group writes below a dropped subtree is entered again,
     // under the element that the group states for it.
     for subtree in parts.iter().flat_map(LigninSettled::written) {
         let prefix = subtree.prefix;
-        if left.enters.iter().any(|(known, _)| known.prefix == prefix) {
+        if again.contains(&prefix) {
             continue;
         }
         let Some(host) = &subtree.host else {
             continue;
         };
-        if own_business(&prefix) || !below(view, &left.drops, prefix)? {
+        if own_business(&prefix) || !below(view, &drops, prefix)? {
             continue;
         }
         let Host::Stated(value) = host_of(parts, host) else {
@@ -701,17 +707,17 @@ pub(super) fn left(
         }
         let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
         left.enters.push((subtree.clone(), bytes));
+        again.insert(prefix);
     }
     // What the group writes into a subtree that leaves and is not entered
     // again is refused by the transaction, whatever is published beside
     // the group.
     for subtree in parts.iter().flat_map(LigninSettled::written) {
         let prefix = subtree.prefix;
-        let again = left.enters.iter().any(|(known, _)| known.prefix == prefix);
-        if again || own_business(&prefix) {
+        if again.contains(&prefix) || own_business(&prefix) {
             continue;
         }
-        if left.drops.contains(&prefix) || below(view, &left.drops, prefix)? {
+        if drops.contains(&prefix) || below(view, &drops, prefix)? {
             left.bare.push(prefix);
         }
     }
