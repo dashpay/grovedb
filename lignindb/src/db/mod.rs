@@ -1034,11 +1034,36 @@ impl Db {
     /// has none ([`Self::open_at_rest`]). Where one of them cannot be
     /// started, those that were are ended again and the handle is left
     /// with none.
+    ///
+    /// It returns once the loop of write-back has said that it runs. A
+    /// committer that finds write-back over a bound and no loop running
+    /// makes a turn of write-back itself, syncs and all
+    /// ([`WriteBack::wait_for_room`]), and the loop says that it runs at
+    /// its first instruction, on its thread: so nobody commits through
+    /// this handle before that. The wait ends with the thread, too: a
+    /// thread that has ended with no loop running is an error of the
+    /// start.
     fn start(&mut self, options: &Options) -> Result<(), OpenError> {
         let started = Instant::now();
         let shared = &self.shared;
         let writer = shared.clone();
-        let write_back = spawn("lignindb-write-back", move || write_back(&writer))?;
+        #[cfg(test)]
+        let before_the_loop = BEFORE_THE_LOOP.with(|hook| hook.borrow_mut().take());
+        let write_back = spawn("lignindb-write-back", move || {
+            #[cfg(test)]
+            if let Some(before_the_loop) = before_the_loop {
+                before_the_loop();
+            }
+            write_back(&writer);
+        })?;
+        while !shared.write_back().is_running() {
+            if write_back.is_finished() {
+                let _ = write_back.join();
+                let ended = "the thread of write-back ended before its loop was seen to run";
+                return Err(OpenError::Thread(std::io::Error::other(ended)));
+            }
+            thread::yield_now();
+        }
         // A thread that is never to sleep would spin.
         let idle = options.idle.max(Duration::from_millis(1));
         let reclaimer = shared.clone();
@@ -1949,6 +1974,14 @@ impl Drop for Db {
         // The check of a debug build is made as at a close.
         let _ = self.shut_and_check();
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has the thread of write-back run before its loop, in
+    /// the next database whose background work this thread starts.
+    static BEFORE_THE_LOOP: std::cell::RefCell<Option<Box<dyn FnOnce() + Send>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Starts a thread of a database's background work.

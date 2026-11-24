@@ -640,6 +640,55 @@ fn a_committer_whose_loop_has_ended_makes_the_pass_itself() {
     db.check_cold();
 }
 
+/// A loop that ends by a panic has ended like one that was stopped: it
+/// is not said to run any more, so whoever finds no room makes the turn
+/// itself and does not wait for a loop that is gone.
+#[test]
+fn a_loop_that_ends_by_a_panic_is_not_said_to_run() {
+    let config = FlushConfig {
+        idle: std::time::Duration::from_millis(2),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (fs, db) = Db::on_sim(config, LogOptions::default());
+    db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
+    db.wb().pass().expect("a pass");
+    let first = db.chain(page(1))[0].location().expect("a block").file;
+    db.commit(&[hash((1, 1), 1)]);
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpKind::Append)
+            .at(FileNames::SEGMENT.path(db_dir(), first)),
+    );
+
+    let wb = db.wb();
+    assert!(!wb.is_running());
+    // The first turn fails, and what is told of it panics. A loop that
+    // is told of nothing is stopped, so that the test fails then and
+    // does not hang.
+    let (told, entered) = std::sync::mpsc::channel();
+    let (entered, ended) = std::thread::scope(|scope| {
+        let run = scope.spawn(|| {
+            // A loop that ends before it tells of anything ends the wait.
+            let told = told;
+            wb.run(|error| {
+                let _ = told.send(());
+                panic!("{error}")
+            });
+        });
+        let entered = entered.recv_timeout(std::time::Duration::from_secs(60));
+        if entered.is_err() {
+            wb.stop();
+        }
+        (entered, run.join())
+    });
+    assert!(
+        entered.is_ok(),
+        "the loop told of no failed turn within a minute"
+    );
+    assert!(ended.is_err(), "the loop ended with no panic");
+    assert!(!wb.is_running());
+}
+
 /// A loop that is stopped before it begins ends at once, and the next one
 /// runs.
 #[test]
