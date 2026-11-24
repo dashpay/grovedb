@@ -29,7 +29,7 @@ use grovedb::GroveDb;
 use super::{
     case::Case,
     close::{self, Closes},
-    families::{Counts, Family, Known},
+    families::{AtALeftRecord, Counts, Family, Known},
     state::{first_difference, pending_drop_paths, stored, Listing, Place, Record},
 };
 use crate::{
@@ -779,17 +779,20 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             let unchanged =
                 roots.0.is_some() && was.step.root_hash == roots.0 && is.step.root_hash == roots.1;
             let refused_write = || {
-                let (left, said) = (&under_a_left_record, &is.remarks);
                 // The reference read what the candidate did not: it
                 // was charged more bytes loaded, and no fewer seeks and
                 // hash calls.
                 let (more, less) = (&was.step.cost, &is.step.cost);
-                let read_more = more.storage_loaded_bytes > less.storage_loaded_bytes
+                let reference_read_more = more.storage_loaded_bytes > less.storage_loaded_bytes
                     && more.seek_count >= less.seek_count
                     && more.hash_node_calls >= less.hash_node_calls;
-                known.family_of_refused_write(
-                    op, reference, candidate, &parts, unchanged, left, said, read_more,
-                )
+                let at = AtALeftRecord {
+                    subtrees: &under_a_left_record,
+                    reference_said: &was.remarks,
+                    candidate_said: &is.remarks,
+                    reference_read_more,
+                };
+                known.family_of_refused_write(op, reference, candidate, &parts, unchanged, &at)
             };
             // The reference took a write into a subtree that it opened by
             // a record it kept.
