@@ -26,6 +26,25 @@
 //!
 //! The record of the root key under such a prefix is carried whatever the
 //! choice is, with every other record of a root key ([`super::load`]).
+//!
+//! # What the two choices give a later operation
+//!
+//! With the records left behind, the target is what a database written on
+//! LigninDB holds. Two reads by the path of such a tree answer otherwise
+//! than on RocksDB: a read that asks for no element on the way
+//! (`has_raw`) finds nothing, and a tree that is made again at the path
+//! is empty (`is_empty_tree`). So does a cursor that steps from no key
+//! beside such a prefix, where the prefix is the first or the last of
+//! its keyspace (`flat-store.md`, "A step from no key"): the survey says
+//! how many prefixes of the grove lie before and after each.
+//!
+//! With the records carried, those reads answer as on RocksDB. **A write
+//! below a tree that is made again at such a path is refused by the engine
+//! as it stands**: the subtree is entered under no element, and the
+//! engine takes no write of an element's subtree that a write by its
+//! prefix entered. The test
+//! `records_that_nothing_leads_to_are_refused_left_or_carried` of
+//! `lignin-testkit` holds both.
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -498,6 +498,126 @@ fn the_arguments_name_each_subcommand_and_nothing_else() {
     }
 }
 
+/// `migrate` takes a source and a target, or a source to survey, and its
+/// options are refused by every other subcommand.
+#[test]
+fn the_arguments_of_migrate() {
+    use std::time::Duration;
+
+    use args::Unreachable;
+
+    let parse = |line: &str| args::parse(&words(line));
+    assert_eq!(
+        parse("migrate s t --batch 2 --progress 0 --unreachable carry --cache 3").unwrap(),
+        Command::Migrate {
+            source: "s".into(),
+            target: Some("t".into()),
+            cache_size: 3 << 20,
+            batch_bytes: 2 << 20,
+            progress: Duration::ZERO,
+            unreachable: Unreachable::Carry,
+        }
+    );
+    assert_eq!(
+        parse("migrate s --survey --unreachable leave").unwrap(),
+        Command::Migrate {
+            source: "s".into(),
+            target: None,
+            cache_size: args::DEFAULT_CACHE,
+            batch_bytes: args::DEFAULT_MIGRATE_BATCH,
+            progress: args::DEFAULT_MIGRATE_PROGRESS,
+            unreachable: Unreachable::Leave,
+        }
+    );
+    assert!(matches!(
+        parse("migrate s t").unwrap(),
+        Command::Migrate {
+            unreachable: Unreachable::Refuse,
+            ..
+        }
+    ));
+    for choice in Unreachable::ALL {
+        assert_eq!(Unreachable::named(choice.name()), Some(choice));
+    }
+    assert_eq!(Unreachable::named("maybe"), None);
+    assert_eq!(Unreachable::default(), Unreachable::Refuse);
+
+    for (line, says) in [
+        ("migrate s", "migrate takes SOURCE and TARGET"),
+        ("migrate s t u", "migrate takes SOURCE and TARGET"),
+        (
+            "migrate s t --survey",
+            "migrate --survey takes SOURCE and no other argument",
+        ),
+        (
+            "migrate s --survey --batch 2",
+            "migrate --survey takes SOURCE and no other argument",
+        ),
+        (
+            "migrate s --survey --cache 2",
+            "migrate --survey takes SOURCE and no other argument",
+        ),
+        (
+            "migrate s --survey --progress 2",
+            "migrate --survey takes SOURCE and no other argument",
+        ),
+        ("migrate s t --batch 0", "--batch takes 1 MiB or more"),
+        ("migrate s t --batch", "--batch takes a value"),
+        (
+            "migrate s t --progress soon",
+            "\"soon\" is not a number of seconds",
+        ),
+        (
+            "migrate s t --unreachable maybe",
+            "--unreachable takes refuse, leave or carry",
+        ),
+        ("migrate s t --unreachable", "--unreachable takes a value"),
+        ("stats d --survey", "stats takes no --survey"),
+        ("stats d --batch 1", "stats takes no --batch"),
+        ("stats d --progress 1", "stats takes no --progress"),
+        (
+            "stats d --unreachable leave",
+            "stats takes no --unreachable",
+        ),
+    ] {
+        match parse(line) {
+            Err(ToolError::Usage(what)) => assert_eq!(what, says, "{line}"),
+            other => panic!("{line}: {other:?}"),
+        }
+    }
+    assert_eq!(Outcome::IncompleteMigration.status(), 4);
+    contains(
+        args::USAGE,
+        &[
+            "migrate   SOURCE TARGET [--batch MIB] [--progress SECS]",
+            "migrate   SOURCE --survey",
+            "is made again at such a path is refused by the engine as",
+            "left without stopping is migrated as the state that node",
+        ],
+    );
+}
+
+/// `migrate` is in a build with the feature of its name. In another build
+/// the command says so, and in one that has it a source that is no
+/// RocksDB database is refused in the tool's words.
+#[test]
+fn migrate_is_in_a_build_with_its_feature() {
+    let dir = temp();
+    let line = format!("migrate {} --survey", dir.path().join("none").display());
+    let (outcome, report) = run(&line);
+    let error = outcome
+        .expect_err("nothing is there to migrate")
+        .to_string();
+    assert_eq!(report, "");
+    #[cfg(feature = "migrate")]
+    assert!(error.starts_with("the migration: "), "{error}");
+    #[cfg(not(feature = "migrate"))]
+    assert_eq!(
+        error,
+        "this build of lignin has no migrate: build lignin-tools with the Cargo feature migrate"
+    );
+}
+
 /// The command line: the report to one writer, an error to the other, and
 /// the exit status by what happened.
 #[test]

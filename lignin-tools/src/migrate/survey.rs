@@ -129,6 +129,9 @@ pub(crate) struct Survey {
     pub(crate) stale_roots: Vec<String>,
     /// The largest Merk.
     pub(crate) largest: Largest,
+    /// The Merk with the most elements that lead to subtrees: how many,
+    /// and where it is.
+    pub(crate) widest: (u64, String),
     /// The records of root keys.
     pub(crate) root_keys: RootKeys,
     /// The pending-drop records.
@@ -137,6 +140,8 @@ pub(crate) struct Survey {
     pub(crate) left_behind: Counts,
     /// The records that nothing leads to.
     pub(crate) orphans: Vec<Orphan>,
+    /// Whether the paths of their prefixes were looked for.
+    pub(crate) paths: bool,
     /// Everything else that refuses the source, in words.
     pub(crate) faults: Vec<String>,
 }
@@ -206,6 +211,9 @@ impl Visit for Counting<'_> {
         survey.no_element += found.no_element;
         if found.stale_root {
             survey.stale_roots.push(place.named());
+        }
+        if found.trees > survey.widest.0 {
+            survey.widest = (found.trees, place.named());
         }
         if found.nodes > 0 && found.held >= survey.largest.held {
             survey.largest = Largest {
@@ -513,10 +521,13 @@ fn explain(source: &Source, side: &Side, survey: &mut Survey) -> Result<(), Tool
     Ok(())
 }
 
-/// Surveys `source`. `side` is its aux and meta keyspaces.
-pub(crate) fn survey(source: &Source, side: &Side) -> Result<Survey, ToolError> {
+/// Surveys `source`. `side` is its aux and meta keyspaces. With `paths`,
+/// the path of each prefix that nothing leads to is looked for, which is
+/// one more walk of the grove.
+pub(crate) fn survey(source: &Source, side: &Side, paths: bool) -> Result<Survey, ToolError> {
     let mut survey = Survey {
         root_hash: root_hash(source)?,
+        paths,
         ..Survey::default()
     };
     if source.get(Keyspace::Aux, &ROOT, JOURNAL_KEY)?.is_some() {
@@ -537,7 +548,7 @@ pub(crate) fn survey(source: &Source, side: &Side) -> Result<Survey, ToolError> 
     // beside it is not known.
     if survey.faults.is_empty() {
         beside_the_walk(source, side, &mut survey)?;
-        if !survey.orphans.is_empty() {
+        if paths && !survey.orphans.is_empty() {
             explain(source, side, &mut survey)?;
         }
     }
@@ -565,6 +576,14 @@ impl Survey {
                 match self.largest.at.is_empty() {
                     true => "(none)",
                     false => &self.largest.at,
+                }
+            ),
+            format!(
+                "widest Merk: {} of its elements lead to subtrees, at {}",
+                self.widest.0,
+                match self.widest.1.is_empty() {
+                    true => "(none)",
+                    false => &self.widest.1,
                 }
             ),
             format!("data records: {}", count(self.counts.of(Keyspace::Data))),
@@ -675,7 +694,11 @@ impl Survey {
                     Some(key) => format!("names the key {}", hex(key)),
                     None => "is not there".to_owned(),
                 },
-                orphan.path.as_deref().unwrap_or("not found"),
+                match (&orphan.path, self.paths) {
+                    (Some(path), _) => path,
+                    (None, true) => "not found",
+                    (None, false) => "not looked for (--survey looks for it)",
+                },
                 match orphan.tree_stands {
                     Some(true) => "yes",
                     Some(false) => "no",
@@ -705,7 +728,8 @@ impl Survey {
             .map(|orphan| orphan.counts.records())
             .sum();
         format!(
-            "subtrees={} nodes={} largest_merk_nodes={} largest_merk_bytes={} data_bytes={} \
+            "subtrees={} nodes={} largest_merk_nodes={} largest_merk_bytes={} \
+             widest_merk_trees={} data_bytes={} \
              flat={} aux={} meta={} root_keys={} root_keys_where_no_tree={} unlinked={} \
              keyed_children={} pending_drops={} left_behind={} marks={} stale_roots={} \
              orphan_prefixes={} orphan_records={} orphan_bytes={} faults={}",
@@ -713,6 +737,7 @@ impl Survey {
             self.nodes,
             self.largest.nodes,
             self.largest.held,
+            self.widest.0,
             self.counts.of(Keyspace::Data).bytes,
             self.flat.records,
             self.counts.of(Keyspace::Aux).records,

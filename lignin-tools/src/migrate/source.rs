@@ -25,7 +25,9 @@
 //!
 //! **The source is not to change while it is read.** [`Source::unchanged`]
 //! compares the names, the lengths and the modification times of the
-//! directory's entries with what they were at the open.
+//! directory's entries with what they were at the open. RocksDB's info log
+//! (`LOG`, `LOG.old.*`) is left out: it is no part of the database, and a
+//! process whose open for writing is refused has begun a new one by then.
 //!
 //! # The layout the reader takes
 //!
@@ -104,11 +106,22 @@ fn source_error(dir: &Path, what: impl std::fmt::Display) -> ToolError {
 /// was last modified.
 type Listed = (std::ffi::OsString, u64, Option<SystemTime>);
 
-/// The entries of `dir`, in the order of their names.
+/// Whether `name` is a file of RocksDB's info log, which every open for
+/// writing begins anew before it asks for the lock.
+fn is_info_log(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name == "LOG" || name.starts_with("LOG.old.")
+}
+
+/// The entries of `dir` but RocksDB's info log, in the order of their
+/// names.
 fn listing(dir: &Path) -> io::Result<Vec<Listed>> {
     let mut listed = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if is_info_log(&entry.file_name()) {
+            continue;
+        }
         let metadata = entry.metadata()?;
         listed.push((entry.file_name(), metadata.len(), metadata.modified().ok()));
     }
@@ -442,5 +455,157 @@ impl Counts {
     /// The bytes of every keyspace.
     pub(crate) fn bytes(&self) -> u64 {
         self.0.iter().map(|count| count.bytes).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use rocksdb::{Options, DB};
+
+    use super::*;
+
+    /// The name of the variable that tells
+    /// [`a_process_that_opens_a_database`] which directory to open, and
+    /// what it prints.
+    const OPENS: &str = "LIGNIN_MIGRATE_TEST_OPENS";
+    const OPENED: &str = "the database was opened for writing";
+    const REFUSED: &str = "the open for writing was refused";
+
+    fn families() -> Vec<&'static str> {
+        Keyspace::ALL
+            .iter()
+            .map(|keyspace| keyspace.family())
+            .collect()
+    }
+
+    fn open_for_writing(dir: &Path) -> Result<DB, rocksdb::Error> {
+        let mut options = Options::default();
+        options.create_if_missing(true);
+        options.create_missing_column_families(true);
+        DB::open_cf(&options, dir, families())
+    }
+
+    /// No test of its own: the process that the tests below start, which
+    /// opens a database for writing as a node does and says how that went.
+    #[test]
+    fn a_process_that_opens_a_database() {
+        let Some(dir) = std::env::var_os(OPENS) else {
+            return;
+        };
+        match open_for_writing(Path::new(&dir)) {
+            Ok(_) => println!("{OPENED}"),
+            Err(error) => println!("{REFUSED}: {error}"),
+        }
+    }
+
+    /// What another process is told when it opens `dir` for writing.
+    fn another_process_opens(dir: &Path) -> String {
+        let mut child = Command::new(std::env::current_exe().expect("this binary"));
+        child.args([
+            "--exact",
+            "migrate::source::tests::a_process_that_opens_a_database",
+        ]);
+        child.arg("--nocapture").env(OPENS, dir);
+        let output = child.output().expect("a process");
+        let said = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(said.contains(OPENED) || said.contains(REFUSED), "{said}");
+        said
+    }
+
+    /// While a source is open here, no other process opens it for writing:
+    /// a node cannot be started on a database that is being migrated. It
+    /// can once the source is closed.
+    #[test]
+    fn no_process_opens_a_source_for_writing_while_it_is_read() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let dir = dir.path().join("rocksdb");
+        {
+            let db = open_for_writing(&dir).expect("a database");
+            let roots = db.cf_handle("roots").expect("the family");
+            db.put_cf(roots, [[0; 32].as_slice(), b"r"].concat(), b"k")
+                .expect("a put");
+            db.put([[0; 32].as_slice(), b"k"].concat(), b"a record")
+                .expect("a put");
+        }
+        let source = Source::open(&dir).expect("the source opens");
+        assert!(source.is_locked());
+        // Every read the migrator makes is made with the lock held.
+        let fingerprint = source.fingerprint().expect("a fingerprint");
+        assert!(fingerprint.sequence >= 2, "{fingerprint:?}");
+        assert_eq!(
+            source.get(Keyspace::Roots, &[0; 32], b"r").unwrap(),
+            Some(b"k".to_vec())
+        );
+        assert!(source.holds(Keyspace::Data, &[0; 32]).unwrap());
+        assert!(!source.holds(Keyspace::Aux, &[0; 32]).unwrap());
+        {
+            let mut records = source.records(Keyspace::Data);
+            assert!(records.current().unwrap().is_some());
+            records.next();
+            assert!(records.current().unwrap().is_none());
+        }
+        source.unchanged().expect("nothing wrote the source");
+
+        let logs = |dir: &Path| {
+            let entries = std::fs::read_dir(dir).expect("the directory");
+            let names = entries.map(|entry| entry.expect("an entry").file_name());
+            names.filter(|name| is_info_log(name)).count()
+        };
+        let before = logs(&dir);
+        let said = another_process_opens(&dir);
+        assert!(said.contains(REFUSED), "{said}");
+        // The refused open began a new info log, and wrote nothing else.
+        assert_eq!(logs(&dir), before + 1);
+        source
+            .unchanged()
+            .expect("the refused open wrote no file of the database");
+        drop(source);
+        let said = another_process_opens(&dir);
+        assert!(said.contains(OPENED), "{said}");
+    }
+
+    /// What is no source is refused in words: a directory with no
+    /// database, and a database whose column families are not GroveDB's.
+    #[test]
+    fn what_is_no_grovedb_is_refused() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let message = |dir: &Path| match Source::open(dir) {
+            Err(ToolError::Migrate(message)) => message,
+            Ok(_) => panic!("{} opened", dir.display()),
+            Err(other) => panic!("{other:?}"),
+        };
+        assert!(message(dir.path()).contains("holds no RocksDB database"));
+        let other = dir.path().join("other");
+        {
+            let mut options = Options::default();
+            options.create_if_missing(true);
+            DB::open(&options, &other).expect("a database");
+        }
+        assert!(message(&other).contains("its column families are"));
+        // A directory with no LOCK file, as one that was never opened for
+        // writing: it is read, and nothing keeps a process from it.
+        let unlocked = dir.path().join("unlocked");
+        drop(open_for_writing(&unlocked).expect("a database"));
+        std::fs::remove_file(unlocked.join("LOCK")).expect("the lock file is removed");
+        let source = Source::open(&unlocked).expect("the source opens");
+        assert!(!source.is_locked());
+        // Something writes the directory while it is read.
+        std::fs::write(unlocked.join("a file"), b"written").expect("a file");
+        let changed = source.unchanged().expect_err("the directory changed");
+        assert!(changed
+            .to_string()
+            .contains("it changed while it was read (a file)"));
+    }
+
+    #[test]
+    fn the_prefix_after_a_prefix() {
+        assert_eq!(after(&[0; 32]).unwrap()[31], 1);
+        let mut carried = [0xff; 32];
+        carried[0] = 7;
+        let next = after(&carried).unwrap();
+        assert_eq!((next[0], next[1], next[31]), (8, 0, 0));
+        assert_eq!(after(&[0xff; 32]), None);
     }
 }

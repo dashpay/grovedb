@@ -64,17 +64,21 @@
 //! pending-drop record names ([`beside`]). The survey says of each such
 //! prefix what it holds. `--unreachable` says what becomes of them: the
 //! source is refused, which is what happens unless the option is given;
-//! they are left behind (`leave`); or they are carried (`carry`). A run
-//! that goes on with a work directory is given the choice that the run
-//! which began it was given.
+//! they are left behind (`leave`), and the target is what a database
+//! written on LigninDB holds; or they are carried (`carry`), and a write
+//! below a tree that is made again at such a path is refused by the engine
+//! as it stands ([`beside`] says what each choice gives a later
+//! operation). A run that goes on with a work directory is given the
+//! choice that the run which began it was given.
 //!
 //! # Memory
 //!
 //! A Merk is handed over whole, so every node of the largest Merk of the
 //! source is in memory at once, with the engine's pages of it
 //! (`transactions.md` LD7). The survey says how large that Merk is. Beside
-//! it the migrator holds what one commit takes (`--batch`), and the buffer
-//! pool of the target (`--cache`).
+//! it the migrator holds what one commit takes (`--batch`: the keys and
+//! values it carries, and a page of the store for each Merk it hands
+//! over), and the buffer pool of the target (`--cache`).
 //!
 //! # Exit status
 //!
@@ -134,7 +138,8 @@ pub struct Migration {
     /// How the database of the target is opened. A database is made where
     /// there is none, whatever `create_if_missing` says.
     pub options: Options,
-    /// About how many bytes of the source's records one commit takes.
+    /// About how many bytes one commit takes: the keys and values it
+    /// carries, and a page of the store for each Merk it hands over.
     pub batch_bytes: usize,
     /// How often the load says where it stands, at the commit it has come
     /// to: with no time, after every commit.
@@ -274,7 +279,9 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
     let side = Side::read(&source)?;
     let surveyed = |out: &mut dyn Write| -> Result<Survey, ToolError> {
         let began = Instant::now();
-        let survey = survey::survey(&source, &side)?;
+        // The paths of the prefixes that nothing leads to cost a walk of
+        // the grove: a run that only surveys looks for them.
+        let survey = survey::survey(&source, &side, migration.target.is_none())?;
         write_survey(&survey, migration.unreachable, out)?;
         writeln!(
             out,

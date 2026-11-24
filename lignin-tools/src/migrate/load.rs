@@ -21,6 +21,12 @@
 //! No commit drops or clears a subtree: by key a batch with a load beside
 //! one is refused (`BatchError::LoadBeside`).
 //!
+//! **How much a commit takes** is counted as what the transaction holds
+//! until it commits: the keys and values it carries, and for each Merk a
+//! page of the store, since the loads of a batch are laid out in pages of
+//! their own. So a grove of many small Merks is committed after a few
+//! thousand of them, and one of large values after as many bytes.
+//!
 //! **A Merk is handed over after the Merks its nodes host.** So each node
 //! is written once, with the place of every pointer it has: the cell of a
 //! tree's element points at the root of each Merk the element hosts from
@@ -595,7 +601,7 @@ impl Visit for Load<'_> {
         let held = merk.nodes.iter().chain(&merk.unlinked);
         let bytes: usize = held.map(|node| node.key.len() + node.value.len()).sum();
         carried.bytes += bytes as u64;
-        self.pending.bytes += bytes;
+        self.pending.bytes += bytes + self.db.page_size().get();
         self.pending.merks.push(Handed {
             subtree: Subtree::new(place.prefix),
             host: place.host.as_ref().map(|host| Subtree::new(host.parent)),

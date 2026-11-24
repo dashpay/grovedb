@@ -34,15 +34,20 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      source is read and never written. The work is done in
                                      TARGET.migrating, which becomes TARGET once every record was
                                      compared and the store verified; run again to go on after a
-                                     stop. --batch is how much of the source one commit takes
-                                     (64 MiB unless given), and --progress how often a line
-                                     says where the load stands (5 s unless given; 0 is after
-                                     every commit). A source that a node left without
-                                     stopping is migrated as the state that node would recover
-                                     to. --unreachable says what becomes of records under a
-                                     prefix that no element leads to: the source is refused
-                                     (unless given), they are left behind, or they are carried
-                                     as records that no tree links
+                                     stop. --batch is about how much one commit of the load
+                                     holds in memory (64 MiB unless given: the keys and values
+                                     it carries, and a page for each Merk), and --progress how
+                                     often a line says where the load stands (5 s unless
+                                     given; 0 is after every commit). A source that a node
+                                     left without stopping is migrated as the state that node
+                                     would recover to. --unreachable says what becomes of
+                                     records under a prefix that no element leads to: the
+                                     source is refused (unless given); they are left behind,
+                                     and the target is what a database written on LigninDB
+                                     holds; or they are carried as records that no tree links.
+                                     In a store that carries them, a write below a tree that
+                                     is made again at such a path is refused by the engine as
+                                     it stands
   migrate   SOURCE --survey [--unreachable refuse|leave|carry]
                                      what SOURCE holds and whether it can be migrated; writes
                                      nothing
@@ -59,8 +64,8 @@ before the end in a state that the same command goes on from.
 /// The buffer pool of an open unless `--cache` says another size.
 pub const DEFAULT_CACHE: usize = 64 << 20;
 
-/// How much of the source one commit of `migrate` takes unless `--batch`
-/// says: the bytes of the records it reads.
+/// About how much one commit of `migrate` holds unless `--batch` says: the
+/// keys and values it carries, and a page of the store for each Merk.
 pub const DEFAULT_MIGRATE_BATCH: usize = 64 << 20;
 
 /// How often a load of `migrate` says where it stands, unless `--progress`
@@ -168,7 +173,7 @@ pub enum Command {
         target: Option<PathBuf>,
         /// The bytes of the buffer pool of the target.
         cache_size: usize,
-        /// The bytes of source records one commit takes.
+        /// About how many bytes one commit of the load holds.
         batch_bytes: usize,
         /// How often the load says where it stands.
         progress: Duration,
@@ -185,10 +190,12 @@ pub enum Unreachable {
     /// A source that holds any is refused, before anything is written.
     #[default]
     Refuse = 0,
-    /// They are left behind: the target holds none of them.
+    /// They are left behind: the target holds none of them, as a database
+    /// that was written on LigninDB holds none.
     Leave = 1,
     /// They are carried, as records that no tree links under a subtree
-    /// with no host.
+    /// with no host. The engine of GroveDB as it stands refuses a write
+    /// below a tree that is made again at the path of such a subtree.
     Carry = 2,
 }
 
