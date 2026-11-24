@@ -6,6 +6,7 @@ mod acceptance;
 mod chains;
 mod checkpoint;
 pub(crate) mod crash;
+mod deferral;
 mod errors;
 mod faults;
 mod flat;
@@ -92,6 +93,15 @@ pub(crate) struct StopOnDrop<'s>(pub(crate) WriteBack<'s>);
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
         self.0.stop();
+    }
+}
+
+/// The thresholds of a store whose loop leaves no page for a later turn:
+/// for the tests of what the loop does with every page due.
+pub(crate) fn eager() -> FlushConfig {
+    FlushConfig {
+        max_deferred: 0,
+        ..FlushConfig::new(Db::SIZE)
     }
 }
 

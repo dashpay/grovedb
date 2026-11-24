@@ -122,6 +122,14 @@ pub trait Engine: Sized {
         Ok(Vec::new())
     }
 
+    /// What the engine has seen of its own state since the last call, as
+    /// means and peaks over the commits in between, in the same order at
+    /// every call. Each becomes a measured row of a write phase under its
+    /// own id, as it is and not per transition.
+    fn gauges(&mut self) -> Result<Vec<Detail>, BenchError> {
+        Ok(Vec::new())
+    }
+
     /// How the Merk node records written since the engine was opened
     /// divide up, for an engine that writes whole node records. Read after
     /// [`Engine::counters`].
@@ -141,10 +149,12 @@ pub trait Block {
     fn commit(self) -> Result<(), BenchError>;
 }
 
-/// A count of an engine beside its [`Counters`] ([`Engine::details`]).
+/// A count of an engine beside its [`Counters`] ([`Engine::details`]),
+/// or a reading of its state ([`Engine::gauges`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Detail {
-    /// The row is `<id>_per_transition`.
+    /// The row of a detail is `<id>_per_transition`, and the row of a
+    /// gauge is `<id>`.
     pub id: &'static str,
     /// The unit of the count.
     pub unit: &'static str,
@@ -397,5 +407,6 @@ mod tests {
         let mut engine = RocksDbEngine::open_with(dir.path(), &settings).unwrap();
         assert_eq!(engine.dir(), dir.path());
         assert_eq!(engine.details().unwrap(), Vec::new());
+        assert_eq!(engine.gauges().unwrap(), Vec::new());
     }
 }

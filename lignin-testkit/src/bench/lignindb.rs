@@ -4,10 +4,14 @@
 //!
 //! Every count comes from one reading of the engine's stats
 //! ([`Counters::from`] of `lignin_store::stats::StoreStats`), so nothing is
-//! collected between commits. The background work is idle once no page
-//! version waits to be written back and write-back, the cleaner and the
-//! reclaimer have done nothing for a second, or for three of their idle
-//! times where that is longer.
+//! collected between commits. The background work is idle once no value
+//! waits for its place, no turn of write-back is under way, and
+//! write-back, the cleaner and the reclaimer have done nothing for a
+//! second, or for three of their idle times where that is longer. Pages
+//! that write-back leaves for a later turn
+//! ([`FlushConfig::max_deferred`]) wait on: they are written in a later
+//! phase, at a table checkpoint or when the database is closed, and
+//! counted where they are written.
 //!
 //! # Details
 //!
@@ -21,6 +25,13 @@
 //!   `table_checkpoint_bytes` add up to the flush bytes;
 //! - `cleaner_block_bytes` and `cleaner_value_bytes` add up to the
 //!   compaction bytes, in a session whose cleaner met no error.
+//!
+//! [`Engine::gauges`] says what stood after the commits of a phase
+//! ([`GAUGE_IDS`]), read once after every commit, before anything is
+//! waited for: the log that no table checkpoint covers, which is what a
+//! recovery after a crash at that moment reads, and the page versions
+//! that wait to be written back, each as the mean and the most over the
+//! phase's commits.
 //!
 //! **What no count holds.** The engine also writes its manifest anew
 //! whenever the files it names or their lengths change, a footer at the
@@ -43,6 +54,7 @@
 //! | `chain_deltas` | [`FlushConfig::max_chain_deltas`] |
 //! | `chain_bytes` | [`FlushConfig::max_chain_bytes`] |
 //! | `segment_mb` | [`FlushConfig::segment_len`] |
+//! | `deferred` | [`FlushConfig::max_deferred`] |
 //! | `unwritten` | [`FlushConfig::max_unwritten`] |
 //! | `log_held_mb` | [`FlushConfig::max_log_held`] |
 //! | `checkpoint_log_mb` | [`FlushConfig::checkpoint_log_bytes`] |
@@ -58,18 +70,19 @@
 //! | `cleaner_idle_ms` | [`CleanerConfig::idle`] |
 //! | `pace` | [`Pace`]: `free` (the default) or `block` |
 //!
-//! A share is at most 100, and a length or a time is not 0.
+//! A share is at most 100, and a length or a time is not 0. `chain_deltas`
+//! and `deferred` can be 0.
 //!
 //! # Pace
 //!
-//! Write-back is woken by every commit and writes each page version that
-//! waits as one block. A harness that applies blocks back to back commits
-//! faster than blocks arrive in use, so how many commits one block of a
-//! page holds follows the machine. With [`Pace::Block`],
+//! Write-back is woken by every commit, and a turn of it writes the pages
+//! that are due as one block each. A harness that applies blocks back to
+//! back commits faster than blocks arrive in use, so how many commits a
+//! turn finds follows the machine. With [`Pace::Block`],
 //! [`Engine::settle`] waits after every commit, outside every timed
 //! region, until a turn of write-back that began after the commit has
-//! ended with nothing left to write back: each block's pages are then
-//! written by themselves. The cleaner and the reclaimer are not waited
+//! ended and no value waits for its place: write-back has then had a turn
+//! for each block by itself. The cleaner and the reclaimer are not waited
 //! for, so what they write still follows their timing.
 
 use std::{
@@ -100,7 +113,63 @@ pub struct LigninDbEngine {
     quiet: Duration,
     /// The reading [`Engine::counters`] took last.
     read: Option<DbStats>,
+    /// What stood after each commit since the gauges were last read.
+    stood: Stood,
 }
+
+/// What stood after the commits that were looked at: the bytes of log that
+/// no table checkpoint covered, and the page versions that waited.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Stood {
+    looks: u64,
+    log_held: (u128, u64),
+    waiting: (u128, u64),
+}
+
+impl Stood {
+    fn look(&mut self, log_held: u64, waiting: u64) {
+        self.looks += 1;
+        self.log_held = (
+            self.log_held.0 + u128::from(log_held),
+            self.log_held.1.max(log_held),
+        );
+        self.waiting = (
+            self.waiting.0 + u128::from(waiting),
+            self.waiting.1.max(waiting),
+        );
+    }
+
+    /// The mean and the most of each, in the order of [`GAUGE_IDS`].
+    fn gauges(&self) -> Vec<Detail> {
+        const SOURCE: &str = "lignindb engine: read after every commit of the phase";
+        let mean =
+            |sum: u128| u64::try_from(sum / u128::from(self.looks.max(1))).unwrap_or(u64::MAX);
+        let read = [
+            ("B", mean(self.log_held.0)),
+            ("B", self.log_held.1),
+            ("versions", mean(self.waiting.0)),
+            ("versions", self.waiting.1),
+        ];
+        GAUGE_IDS
+            .into_iter()
+            .zip(read)
+            .map(|(id, (unit, total))| Detail {
+                id,
+                unit,
+                total,
+                source: SOURCE,
+            })
+            .collect()
+    }
+}
+
+/// The ids of the gauges, in the order [`Engine::gauges`] gives them.
+pub const GAUGE_IDS: [&str; 4] = [
+    "log_held_mean",
+    "log_held_max",
+    "page_versions_waiting_mean",
+    "page_versions_waiting_max",
+];
 
 /// How long [`Engine::wait_for_background`] and a paced commit wait at most.
 const BACKGROUND_TIMEOUT: Duration = Duration::from_secs(1800);
@@ -194,15 +263,15 @@ impl Tuning {
                         _ => return Err(refused(key, "free or block", value)),
                     }
                 }
-                "chain_deltas" | "chain_bytes" | "segment_mb" | "unwritten" | "log_held_mb"
-                | "checkpoint_log_mb" | "flush_idle_ms" => {
+                "chain_deltas" | "chain_bytes" | "segment_mb" | "deferred" | "unwritten"
+                | "log_held_mb" | "checkpoint_log_mb" | "flush_idle_ms" => {
                     flush_set = true;
+                    // No delta at all, and no page left for a later turn,
+                    // are thresholds of write-back.
+                    let count = || value.parse().map_err(|_| refused(key, "a number", value));
                     match key {
-                        // No delta at all is a threshold of write-back.
-                        "chain_deltas" => {
-                            flush.max_chain_deltas =
-                                (value.parse()).map_err(|_| refused(key, "a number", value))?
-                        }
+                        "chain_deltas" => flush.max_chain_deltas = count()?,
+                        "deferred" => flush.max_deferred = count()?,
                         "chain_bytes" => flush.max_chain_bytes = number(key, value)?,
                         "segment_mb" => flush.segment_len = bytes(key, value, MIB)?,
                         "unwritten" => flush.max_unwritten = number(key, value)?,
@@ -265,11 +334,12 @@ impl Tuning {
 }
 
 /// What of the stats moves while the background work has something to
-/// do: what waits for write-back, and everything that write-back, the
-/// cleaner and the reclaimer have written, moved and given back.
+/// do: whether a turn of write-back is under way, the values that wait
+/// for their place, and everything that write-back, the cleaner and the
+/// reclaimer have written, moved and given back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Background {
-    waiting: (usize, usize),
+    waiting: (bool, usize),
     written: [u64; 4],
     cleaned: [u64; 9],
     reclaimed: (lignindb::db::ReclaimStats, u64),
@@ -279,7 +349,10 @@ impl Background {
     fn of(stats: &DbStats) -> Self {
         let (store, cleaner) = (&stats.store, &stats.cleaner);
         Background {
-            waiting: (store.watch.unwritten, store.watch.pending_value_bytes),
+            waiting: (
+                store.watch.turns_begun != store.watch.turns_ended,
+                store.watch.pending_value_bytes,
+            ),
             written: [
                 store.log_bytes,
                 store.flush_bytes,
@@ -302,12 +375,12 @@ impl Background {
     }
 
     fn waits(&self) -> bool {
-        self.waiting != (0, 0)
+        self.waiting != (false, 0)
     }
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 33] = [
+pub const DETAIL_IDS: [&str; 35] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
@@ -318,6 +391,8 @@ pub const DETAIL_IDS: [&str; 33] = [
     "delta_blocks",
     "delta_payload_bytes",
     "consolidations",
+    "flat_blocks",
+    "flat_block_bytes",
     "runs_refused",
     "versions_held_for_readers",
     "value_log_bytes",
@@ -363,6 +438,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("blocks", flush.delta_blocks, FLUSH),
         ("B", flush.delta_bytes, FLUSH),
         ("blocks", flush.consolidations, FLUSH),
+        ("blocks", flush.flat_blocks, FLUSH),
+        ("B", flush.flat_stored_bytes, FLUSH),
         ("blocks", flush.runs_refused, FLUSH),
         ("versions", flush.held_for_readers, FLUSH),
         ("B", flush.value_stored_bytes, FLUSH),
@@ -410,24 +487,22 @@ impl LigninDbEngine {
     }
 
     /// Waits until a turn of write-back that began after this call has
-    /// ended with no page version left to write back and no pending value
-    /// held: the turn has seen every commit that was published before the
-    /// call, and with no commit made meanwhile its count of what is left
-    /// is exact.
+    /// ended and no pending value is held: the turn has seen every commit
+    /// that was published before the call, has placed their values and
+    /// has written the pages that were due.
     fn wait_for_write_back(&self) -> Result<(), BenchError> {
         let deadline = Instant::now() + BACKGROUND_TIMEOUT;
         let begun = self.stats().store.watch.turns_begun;
         loop {
             let watch = self.stats().store.watch;
-            let waits = (watch.unwritten, watch.pending_value_bytes) != (0, 0);
-            if watch.turns_ended > begun && !waits {
+            if watch.turns_ended > begun && watch.pending_value_bytes == 0 {
                 return Ok(());
             }
             if watch.failing_pages > 0 || Instant::now() > deadline {
                 return Err(BenchError::Check(format!(
-                    "LigninDB's write-back has not written what it owes: {} page versions \
-                     wait, {} pages fail",
-                    watch.unwritten, watch.failing_pages
+                    "LigninDB's write-back has not had its turn: {} bytes of values wait \
+                     for their place, {} pages fail",
+                    watch.pending_value_bytes, watch.failing_pages
                 )));
             }
             std::thread::sleep(PACE_POLL_INTERVAL);
@@ -454,6 +529,7 @@ impl Engine for LigninDbEngine {
             pace: tuning.pace,
             quiet: tuning.quiet(),
             read: None,
+            stood: Stood::default(),
         })
     }
 
@@ -470,6 +546,8 @@ impl Engine for LigninDbEngine {
     }
 
     fn settle(&mut self) -> Result<(), BenchError> {
+        let watch = self.stats().store.watch;
+        self.stood.look(watch.log_held, watch.unwritten as u64);
         match self.pace {
             Pace::Free => Ok(()),
             Pace::Block => self.wait_for_write_back(),
@@ -530,6 +608,10 @@ impl Engine for LigninDbEngine {
         let counters = Counters::from(&stats.store);
         self.read = Some(stats);
         Ok(counters)
+    }
+
+    fn gauges(&mut self) -> Result<Vec<Detail>, BenchError> {
+        Ok(std::mem::take(&mut self.stood).gauges())
     }
 
     fn details(&mut self) -> Result<Vec<Detail>, BenchError> {
@@ -706,6 +788,7 @@ mod settings_tests {
             "chain_deltas=0",
             "chain_bytes=9000",
             "segment_mb=11",
+            "deferred=0",
             "unwritten=13",
             "log_held_mb=17",
             "checkpoint_log_mb=19",
@@ -733,6 +816,7 @@ mod settings_tests {
                 max_chain_deltas: 0,
                 max_chain_bytes: 9000,
                 segment_len: 11 << 20,
+                max_deferred: 0,
                 max_unwritten: 13,
                 max_log_held: 17 << 20,
                 checkpoint_log_bytes: 19 << 20,
@@ -827,12 +911,14 @@ mod settings_tests {
     /// The details are of the reading the counters took, in the order of
     /// their ids, and add up to the counters they split. A paced engine
     /// has settled once a turn of write-back that began after the commit
-    /// has left nothing to write back.
+    /// has ended: with no page left for a later turn, nothing waits to be
+    /// written back then.
     #[test]
     fn details_split_the_counters_of_one_reading() {
         let dir = tempfile::tempdir().unwrap();
         let grove_version = GroveVersion::latest();
-        let mut engine = LigninDbEngine::open_with(dir.path(), &settings(&["pace=block"])).unwrap();
+        let paced = settings(&["pace=block", "deferred=0"]);
+        let mut engine = LigninDbEngine::open_with(dir.path(), &paced).unwrap();
         // Before any reading of the counters the details take their own.
         let fresh = engine.details().unwrap();
         assert_eq!(
@@ -876,6 +962,22 @@ mod settings_tests {
             "a turn that began after the commit"
         );
         assert_eq!((watch.unwritten, watch.pending_value_bytes), (0, 0));
+
+        // One look after the open and one after the commit, whose group
+        // stood in the log then: no table checkpoint was due.
+        let gauges = engine.gauges().unwrap();
+        assert_eq!(
+            gauges.iter().map(|gauge| gauge.id).collect::<Vec<_>>(),
+            GAUGE_IDS
+        );
+        let (held_mean, held_max) = (gauges[0].total, gauges[1].total);
+        assert!(held_max > 1000 && held_mean >= held_max / 2, "{gauges:?}");
+        assert!(gauges[2].total <= gauges[3].total, "{gauges:?}");
+        assert!(engine
+            .gauges()
+            .unwrap()
+            .iter()
+            .all(|gauge| gauge.total == 0));
 
         let after = engine.counters().unwrap().since(&before);
         let details = engine.details().unwrap();

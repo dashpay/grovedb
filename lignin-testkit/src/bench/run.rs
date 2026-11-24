@@ -421,6 +421,8 @@ struct PhaseRun {
     commit_meter: (Option<u64>, Option<u64>),
     /// The engine's details over the phase.
     details: Vec<Detail>,
+    /// The engine's gauges over the phase.
+    gauges: Vec<Detail>,
 }
 
 /// What `now` counts more than `then`, detail by detail.
@@ -473,6 +475,8 @@ fn write_phase<E: Engine>(
     let mut commit_meter = Meter::new(settings, &format!("{phase}-commit"));
     let counters_before = engine.counters()?;
     let details_before = engine.details()?;
+    // What was seen before the phase is not of it.
+    engine.gauges()?;
     let anatomy_before = engine.node_anatomy();
     let written_before = machine::process_io("write_bytes");
     while totals.transitions < transitions {
@@ -521,6 +525,7 @@ fn write_phase<E: Engine>(
     engine.wait_for_background()?;
     totals.counters = engine.counters()?.since(&counters_before);
     let details = details_since(engine.details()?, &details_before)?;
+    let gauges = engine.gauges()?;
     totals.node_anatomy = engine
         .node_anatomy()
         .zip(anatomy_before)
@@ -536,6 +541,7 @@ fn write_phase<E: Engine>(
         apply_meter: apply_meter.finish(),
         commit_meter: commit_meter.finish(),
         details,
+        gauges,
     })
 }
 
@@ -715,6 +721,16 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             detail.total as f64,
             n,
             detail.source,
+        ));
+    }
+    for gauge in &run.gauges {
+        rows.push(measured_row(
+            gauge.id,
+            phase,
+            gauge.unit,
+            gauge.total as f64,
+            1,
+            gauge.source,
         ));
     }
     rows
@@ -1375,8 +1391,23 @@ mod tests {
                 total: 900,
                 source: "lignindb engine counters: write-back",
             }],
+            gauges: vec![Detail {
+                id: "log_held_max",
+                unit: "B",
+                total: 4_000,
+                source: "lignindb engine: the log that no table checkpoint covers",
+            }],
         };
         let rows = count_rows(&run, "lignindb");
+        let gauge = rows
+            .iter()
+            .find(|row| row.id == "log_held_max")
+            .expect("the gauge's row");
+        assert_eq!(
+            (gauge.value, gauge.unit.as_str(), gauge.kind),
+            (4_000.0, "B", RowKind::Measured),
+            "as it is, and not per transition"
+        );
         let detail = rows
             .iter()
             .find(|row| row.id == "segment_bytes_per_transition")

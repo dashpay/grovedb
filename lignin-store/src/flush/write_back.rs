@@ -17,7 +17,7 @@ use super::{
     config::{count, max_run_len, Counters},
     error::FlushError,
     page::{self, PageKind},
-    state::{lock, Changes, Files, FlushState, Untrimmed},
+    state::{lock, Changes, Files, FlushState, Rested, Untrimmed},
 };
 use crate::{
     alloc::Pins,
@@ -129,6 +129,10 @@ pub struct Pass {
     /// has a pending value, or bytes attached that could not be taken
     /// off.
     pub blocked: usize,
+    /// Pages whose current version the pass left for a later one,
+    /// because they are among those that changed last
+    /// ([`FlushConfig::max_deferred`](super::FlushConfig::max_deferred)).
+    pub deferred: usize,
     /// Page versions that still wait: the pool lists them as owed.
     pub waiting: usize,
 }
@@ -172,6 +176,10 @@ pub(super) struct Round {
     oldest_pin: CommitVersion,
     /// Whether the values of a page are still regrouped in this pass.
     regroups: bool,
+    /// How many pages the pass may leave for a later one.
+    leave: usize,
+    /// The pages it leaves: their current version is not written.
+    deferred: BTreeSet<PageId>,
     /// The first error that did not end the pass.
     failed: Option<FlushError>,
     /// The pages that their bytes kept from being written.
@@ -221,6 +229,36 @@ impl Told {
         count(&counters.other_records, self.other_records as u64);
         count(&counters.other_record_bytes, self.other_bytes as u64);
     }
+}
+
+/// The pages of `owed` that a pass which may leave `leave` pages leaves
+/// for a later one. With more pages than that, flat pages are left before
+/// tree pages, since every block of a flat page is its whole image, and
+/// among the pages of one kind those whose newest version is the newest:
+/// the ones that have waited longest are written. `is_flat` says whether
+/// the page whose newest version is the one given is a flat page, and is
+/// asked only where there are more pages than may be left.
+fn left_for_later(
+    owed: &BTreeMap<PageId, Vec<CommitVersion>>,
+    leave: usize,
+    is_flat: impl Fn(PageId, CommitVersion) -> bool,
+) -> BTreeSet<PageId> {
+    if leave == 0 {
+        return BTreeSet::new();
+    }
+    if owed.len() <= leave {
+        return owed.keys().copied().collect();
+    }
+    let mut newest: Vec<(bool, CommitVersion, PageId)> = owed
+        .iter()
+        .filter_map(|(&page, versions)| {
+            let born = *versions.last()?;
+            Some((is_flat(page, born), born, page))
+        })
+        .collect();
+    newest.sort_unstable();
+    newest.drain(..newest.len().saturating_sub(leave));
+    newest.into_iter().map(|(.., page)| page).collect()
 }
 
 /// What a test does after a look.
@@ -412,7 +450,8 @@ impl<'s> WriteBack<'s> {
                     match run.created() {
                         None => {
                             let records = &run.as_bytes()[DeltaRun::HEADER_LEN..];
-                            kept.committed(run.page(), version.get(), records);
+                            let most = max_run_len(self.size);
+                            kept.committed(run.page(), version.get(), records, most);
                         }
                         Some(_) => kept.forget(run.page()),
                     }
@@ -467,7 +506,8 @@ impl<'s> WriteBack<'s> {
                     if let Some((delta, born)) = delta {
                         let mut records = Vec::with_capacity(delta.encoded_len());
                         if delta.encode_into(&mut records).is_ok() {
-                            lock(&self.state.kept).stepped(step.page(), born, &records);
+                            let most = max_run_len(self.size);
+                            lock(&self.state.kept).stepped(step.page(), born, &records, most);
                         }
                     }
                 }
@@ -476,7 +516,8 @@ impl<'s> WriteBack<'s> {
                     (None, Some(Removed::Tree(run))) => {
                         if let Some(born) = born(reclaim.page()) {
                             let records = &run.as_bytes()[DeltaRun::HEADER_LEN..];
-                            lock(&self.state.kept).stepped(reclaim.page(), born, records);
+                            let most = max_run_len(self.size);
+                            lock(&self.state.kept).stepped(reclaim.page(), born, records, most);
                         }
                     }
                     (None, _) => {}
@@ -542,17 +583,32 @@ impl<'s> WriteBack<'s> {
     /// errors. Whatever the pass returns, what it wrote and linked
     /// stands, and it can be called again.
     pub fn pass(&self) -> Result<Pass, FlushError> {
-        let (pass, result) = self.pass_through();
+        let (pass, result) = self.pass_through(0);
         result.map(|()| pass)
     }
 
-    /// One pass, with what it did even if it ended with an error.
-    pub(super) fn pass_through(&self) -> (Pass, Result<(), FlushError>) {
+    /// How many pages a turn of the background loop leaves for a later
+    /// turn: what the configuration says, and no more than half of the
+    /// page versions that may wait or a quarter of the pool's frames,
+    /// which a version that waits takes one of.
+    pub fn deferral(&self) -> usize {
+        let config = &self.state.config;
+        config
+            .max_deferred
+            .min(config.max_unwritten / 2)
+            .min(self.stores.pool.frames() / 4)
+    }
+
+    /// One pass that leaves up to `leave` pages for a later one, with what
+    /// it did even if it ended with an error.
+    pub(super) fn pass_through(&self, leave: usize) -> (Pass, Result<(), FlushError>) {
         let mut files = lock(&self.state.files);
         let mut round = Round {
             pass: Pass::default(),
             oldest_pin: self.stores.versions.oldest_pin(),
             regroups: self.stores.page_values.is_some(),
+            leave,
+            deferred: BTreeSet::new(),
             failed: None,
             failing: BTreeSet::new(),
         };
@@ -571,7 +627,27 @@ impl<'s> WriteBack<'s> {
     }
 
     fn pass_with(&self, files: &mut Files, round: &mut Round) -> Result<(), FlushError> {
-        let owed = self.owed();
+        let mut owed = self.owed();
+        let pool = self.stores.pool;
+        let rested = &files.rested;
+        round.deferred = left_for_later(&owed, round.leave, |page, born| {
+            match rested.get(&page).filter(|rests| rests.born == born) {
+                Some(rests) => rests.flat,
+                None => (pool.get_version(page, born)).is_some_and(|frame| !is_tree(&frame)),
+            }
+        });
+        // A page that an earlier pass left, and found with nothing to do
+        // for it, is not looked at while it is left again with the same
+        // version waiting: no commit has changed it since, and a page
+        // step gives a page no pending value. So a turn costs what the
+        // commits since the last one changed, not what waits.
+        let deferred = &round.deferred;
+        (files.rested).retain(|page, rests| {
+            deferred.contains(page)
+                && (owed.get(page)).is_some_and(|waits| waits[..] == [rests.born])
+        });
+        owed.retain(|page, _| !files.rested.contains_key(page));
+        round.pass.deferred += files.rested.len();
         // The pages that have no pending value are written whatever
         // becomes of the values of the others.
         if let Err(error) = self.append_pending(files, &owed, round) {
@@ -699,6 +775,17 @@ impl<'s> WriteBack<'s> {
                     };
                     stripped = without;
                     frame = &stripped;
+                }
+                if round.deferred.contains(&page) {
+                    // The versions before it that no reader can ask for
+                    // are noted as kept for readers: the block of this
+                    // one will hold them. The others have their blocks.
+                    round.pass.deferred += 1;
+                    if look.frames.len() == 1 {
+                        let flat = !is_tree(frame);
+                        files.rested.insert(page, Rested { born, flat });
+                    }
+                    return Ok(None);
                 }
             } else {
                 let successor = look.frames.get(index + 1).map(PageRef::born);
@@ -999,6 +1086,10 @@ impl<'s> WriteBack<'s> {
             count(&counters.stored_bytes, u64::from(location.len));
         } else {
             self.linked_image(files, page, born, location, form == Form::Consolidation);
+            if !is_tree(frame) {
+                count(&counters.flat_blocks, 1);
+                count(&counters.flat_stored_bytes, u64::from(location.len));
+            }
         }
         match pool.mark_written(frame) {
             // A page step replaced the frame while its block was written:

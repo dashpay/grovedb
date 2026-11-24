@@ -14,6 +14,10 @@ pub const DEFAULT_SEGMENT_LEN: u64 = 64 << 20;
 /// The most delta runs a page's chain has after its base image by default.
 pub const DEFAULT_CHAIN_DELTAS: usize = 8;
 
+/// The most pages a turn of the background loop leaves for a later turn
+/// by default.
+pub const DEFAULT_DEFERRED: usize = 1024;
+
 /// The longest run of deltas that write-back puts into one block of a store
 /// of `page_size`: one page size. A longer run would cost a reader more
 /// than the base image it stands for, so the page is written as a base
@@ -38,6 +42,21 @@ pub struct FlushConfig {
     pub max_chain_bytes: usize,
     /// The length at which a segment is sealed and the next one begun.
     pub segment_len: u64,
+    /// Deferral: the most pages whose current version a turn of the
+    /// background loop leaves for a later turn
+    /// ([`WriteBack::tick_deferring`](super::WriteBack::tick_deferring)). A turn that finds
+    /// more pages waiting writes those whose current version is the
+    /// oldest and leaves this many, the ones that changed last, flat
+    /// pages before tree pages. With 0 every turn writes every page it
+    /// can. A turn leaves no more than half of [`Self::max_unwritten`]
+    /// and no more than a quarter of the frames of the pool, whatever
+    /// this is, and none where a table checkpoint is due. A pass or a
+    /// turn that a caller makes
+    /// ([`WriteBack::pass`](super::WriteBack::pass),
+    /// [`WriteBack::tick`](super::WriteBack::tick)) and a table
+    /// checkpoint leave none, and neither does the end of a session that
+    /// comes to its pass ([`WriteBack::finish`](super::WriteBack::finish)).
+    pub max_deferred: usize,
     /// Backpressure: the most page versions that may wait to be written
     /// back before a committer is made to wait
     /// ([`WriteBack::wait_for_room`](super::WriteBack::wait_for_room)).
@@ -67,6 +86,7 @@ pub struct FlushConfig {
 impl FlushConfig {
     /// The defaults for a store of `page_size`: at most 8 delta runs and
     /// half a page of delta blocks after a base image, segments of 64 MiB,
+    /// at most 1024 pages left by a turn for a later one,
     /// at most 4096 page versions and 32 MiB of pending values waiting, at
     /// most 256 MiB of log that no table checkpoint covers, and a table
     /// checkpoint for every 64 MiB of log. The background loop sleeps
@@ -77,6 +97,7 @@ impl FlushConfig {
             max_chain_deltas: DEFAULT_CHAIN_DELTAS,
             max_chain_bytes: page_size.get() / 2,
             segment_len: DEFAULT_SEGMENT_LEN,
+            max_deferred: DEFAULT_DEFERRED,
             max_unwritten: 4096,
             max_pending_bytes: 32 << 20,
             max_log_held: 256 << 20,
@@ -136,6 +157,11 @@ pub struct FlushStats {
     /// Base images written because a chain had reached the length or the
     /// byte threshold.
     pub consolidations: u64,
+    /// The base images among `base_blocks` that are of flat pages, whose
+    /// every block is an image.
+    pub flat_blocks: u64,
+    /// The bytes those take in their segments, frames included.
+    pub flat_stored_bytes: u64,
     /// Runs that were not written because they did not give the page in
     /// its frame when they were applied to the page as its chain gives it.
     /// The page was written as a base image. Not zero means that a commit
@@ -239,6 +265,8 @@ pub(super) struct Counters {
     pub(super) delta_bytes: AtomicU64,
     pub(super) stored_bytes: AtomicU64,
     pub(super) consolidations: AtomicU64,
+    pub(super) flat_blocks: AtomicU64,
+    pub(super) flat_stored_bytes: AtomicU64,
     pub(super) runs_refused: AtomicU64,
     pub(super) values_appended: AtomicU64,
     pub(super) value_bytes: AtomicU64,
@@ -283,6 +311,8 @@ impl Counters {
             delta_bytes: read(&self.delta_bytes),
             stored_bytes: read(&self.stored_bytes),
             consolidations: read(&self.consolidations),
+            flat_blocks: read(&self.flat_blocks),
+            flat_stored_bytes: read(&self.flat_stored_bytes),
             runs_refused: read(&self.runs_refused),
             values_appended: read(&self.values_appended),
             value_bytes: read(&self.value_bytes),

@@ -1953,10 +1953,14 @@ impl Session {
         (self.wb().pass().map(|pass| pass.progressed())).map_err(text)
     }
 
-    /// One turn of the background loop: the log is rolled if that is due,
-    /// a pass is made, and a table checkpoint is taken if one is due.
+    /// One turn as the background loop makes it: the log is rolled if that
+    /// is due, a pass is made that leaves the pages that changed last for
+    /// a later turn (`FlushConfig::max_deferred`), and a table checkpoint
+    /// is taken if one is due.
     pub fn tick(&self) -> Result<bool, String> {
-        (self.wb().tick().map(|tick| tick.progressed())).map_err(text)
+        (self.wb().tick_deferring())
+            .map(|tick| tick.progressed())
+            .map_err(text)
     }
 
     /// Takes a table checkpoint. Returns the version it covers, or `None`

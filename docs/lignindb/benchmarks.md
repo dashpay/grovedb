@@ -186,9 +186,12 @@ lists:
 - keyed lookups and hashes, which the tree layer counts in the store's
   `Stats`.
 
-Its background work is idle once no page version waits to be written back
-and write-back, the cleaner and the reclaimer have done nothing for a second,
-or for three of their idle times where a setting makes that longer.
+Its background work is idle once no value waits for its place, no turn of
+write-back is under way, and write-back, the cleaner and the reclaimer have
+done nothing for a second, or for three of their idle times where a setting
+makes that longer. The pages that write-back leaves for a later turn wait on:
+they are counted in the phase in which they are written, and what is written
+when the database is closed is in no phase.
 
 Beside the counters it reports **details**, each as a measured row
 `<detail>_per_transition` of every write phase, from the same reading as the
@@ -200,11 +203,19 @@ counters. They say where the logged and the background bytes went:
 | `segment_bytes`, `value_log_bytes`, `regroup_bytes`, `table_checkpoint_bytes` | the flush bytes: blocks in segments, new values in the value log, the values a regrouping appended again, table-checkpoint files |
 | `cleaner_block_bytes`, `cleaner_value_bytes` | the compaction bytes: blocks and values the cleaner copied |
 | `base_blocks`, `base_payload_bytes`, `delta_blocks`, `delta_payload_bytes`, `consolidations`, `runs_refused` | the blocks: base images and runs of deltas, before compression; how many images were written because a chain had reached a threshold, and how many because a run was refused |
+| `flat_blocks`, `flat_block_bytes` | the images among the base images that are of flat pages, and the bytes they take in their segments |
 | `versions_held_for_readers` | page versions that were kept in memory and written with the next version of their page |
 | `values_appended`, `value_payload_bytes`, `values_regrouped`, `values_given_up` | the values |
 | `table_checkpoints`, `cleaner_checkpoints`, `log_files_dropped`, `room_waits` | table checkpoints in all and those the cleaner asked for, log files, and commits that waited for write-back |
 | `cleaner_blocks_moved`, `cleaner_values_moved`, `cleaner_bytes_trimmed`, `cleaner_bytes_dropped`, `cleaner_segments_dropped`, `cleaner_value_files_dropped` | what the cleaner moved and gave back |
 | `pages_freed`, `value_reads` | pages the reclaimer freed; values read from the value log |
+
+It also reports **gauges**, read once after every commit of a write phase and
+given as they are, not per transition: `log_held_mean` and `log_held_max`, the
+log that no table checkpoint covers, which is what a recovery after a crash at
+that moment reads; and `page_versions_waiting_mean` and
+`page_versions_waiting_max`, the page versions that wait to be written back,
+each of which holds a frame of the pool.
 
 **What no count holds.** LigninDB writes its manifest anew whenever the files
 it names or their lengths change, a footer at the end of each sealed segment
@@ -222,15 +233,15 @@ the keys and the option each sets. A report records the settings of its run
 names no setting, and a value its setting cannot take, are refused before
 anything is measured. RocksDB takes no setting and is opened as without them.
 
-`pace` is the harness's own. LigninDB's write-back is woken by every commit
-and writes each page version that waits as one block, so in a run that
-applies blocks back to back the number of commits one block holds follows the
-machine. With `--set pace=block` the harness waits after every commit,
-outside every timed region, until a turn of write-back that began after the
-commit has ended with nothing left to write back: every block's pages are
-written by themselves, as where blocks come seconds apart. The cleaner and
-the reclaimer are not waited for. `pace=free`, the default, applies blocks
-back to back, which is how the RocksDB baseline is measured.
+`pace` is the harness's own. LigninDB's write-back is woken by every commit,
+and a turn of it writes the pages that are due, so in a run that applies
+blocks back to back the number of commits a turn finds follows the machine.
+With `--set pace=block` the harness waits after every commit, outside every
+timed region, until a turn of write-back that began after the commit has
+ended and no value waits for its place: write-back has a turn for every
+block by itself, as where blocks come seconds apart. The cleaner and the
+reclaimer are not waited for. `pace=free`, the default, applies blocks back
+to back, which is how the RocksDB baseline is measured.
 
 A run with `--engine rocksdb --engine lignindb` reports every row of both
 engines, with each LigninDB row's ratio to RocksDB's in the same run. With no

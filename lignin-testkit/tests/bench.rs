@@ -110,8 +110,11 @@ fn kind_of(id: &str) -> RowKind {
 /// Whether `id` is the row of a detail of LigninDB's background work.
 #[cfg(grovedb_engine_seam)]
 fn is_detail(id: &str) -> bool {
-    id.strip_suffix("_per_transition")
-        .is_some_and(|detail| lignin_testkit::bench::lignindb::DETAIL_IDS.contains(&detail))
+    use lignin_testkit::bench::lignindb::{DETAIL_IDS, GAUGE_IDS};
+    GAUGE_IDS.contains(&id)
+        || id
+            .strip_suffix("_per_transition")
+            .is_some_and(|detail| DETAIL_IDS.contains(&detail))
 }
 
 #[cfg(not(grovedb_engine_seam))]
@@ -573,14 +576,11 @@ fn a_run_of_lignindb_with_settings_splits_its_bytes() {
     let scratch = tempfile::tempdir().unwrap();
     let mut options = options(scratch.path().join("set"));
     options.engines = vec![EngineChoice::LigninDb];
-    for pair in ["pace=block", "chain_deltas=4"] {
+    for pair in ["pace=block", "deferred=4"] {
         options.settings.engine.set(pair).unwrap();
     }
     let report = run(&options).unwrap();
-    assert_eq!(
-        report.method.engine_settings,
-        ["pace=block", "chain_deltas=4"]
-    );
+    assert_eq!(report.method.engine_settings, ["pace=block", "deferred=4"]);
     let engine = &report.engines[0];
     let value = |id: &str, phase: &str| {
         engine
@@ -629,6 +629,11 @@ fn a_run_of_lignindb_with_settings_splits_its_bytes() {
         ));
     }
     assert!(value("segment_bytes_per_transition", "load") > 0.0);
+    // With four pages left by a turn, more than four never wait once
+    // write-back has had its turn; the most is read before the turn.
+    assert!(value("page_versions_waiting_max", "load") >= 4.0);
+    assert!(value("log_held_max", "load") >= value("log_held_mean", "load"));
+    assert!(value("log_held_mean", "load") > 0.0);
     assert!(value("base_blocks_per_transition", "load") > 0.0);
     for row in &engine.rows {
         assert_eq!(row.kind, kind_of(&row.id), "{} in {}", row.id, row.phase);
@@ -637,7 +642,7 @@ fn a_run_of_lignindb_with_settings_splits_its_bytes() {
 
     let table = cli::table(&report);
     assert!(
-        table.contains("\nsettings: pace=block chain_deltas=4\n"),
+        table.contains("\nsettings: pace=block deferred=4\n"),
         "{table}"
     );
     assert!(table.contains("\nlignindb  load     segment_bytes_per_transition"));

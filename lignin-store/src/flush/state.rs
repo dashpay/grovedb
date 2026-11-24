@@ -38,6 +38,16 @@ pub(super) struct Changes {
     pub(super) records: Vec<u8>,
 }
 
+/// A page whose records were let go ([`Kept::bound`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Lost {
+    /// The newest version whose records are not kept.
+    through: u64,
+    /// Whether the records of new commits are still let go: no block of
+    /// the page was written since.
+    still: bool,
+}
+
 /// What write-back was told and has not put into a block yet. This is the
 /// leaf of write-back's locks: it is taken under a page step's lock, and
 /// nothing is taken under it.
@@ -45,6 +55,9 @@ pub(super) struct Changes {
 pub(super) struct Kept {
     /// The changes of each tree page, oldest commit first.
     pages: HashMap<PageId, VecDeque<Changes>>,
+    /// The pages whose records were let go because they had grown past
+    /// what one run holds ([`Self::bound`]).
+    lost: HashMap<PageId, Lost>,
     /// For each page, the versions of it that are kept in the pool for
     /// their readers and whose changes no block holds: they are in the
     /// block of the next version of the page that is written.
@@ -57,8 +70,15 @@ pub(super) struct Kept {
 }
 
 impl Kept {
-    /// A commit changed a tree page.
-    pub(super) fn committed(&mut self, page: PageId, born: u64, records: &[u8]) {
+    /// A commit changed a tree page. No more than `most` bytes of records
+    /// are kept of one page ([`Self::bound`]).
+    pub(super) fn committed(&mut self, page: PageId, born: u64, records: &[u8], most: usize) {
+        if let Some(lost) = self.lost.get_mut(&page)
+            && lost.still
+        {
+            lost.through = born.max(lost.through);
+            return;
+        }
         let changes = self.pages.entry(page).or_default();
         if changes.back().is_some_and(|last| last.born >= born) {
             changes.clear();
@@ -67,10 +87,20 @@ impl Kept {
             born,
             records: records.to_vec(),
         });
+        self.bound(page, most);
     }
 
     /// A page step changed the page version that the commit `born` bore.
-    pub(super) fn stepped(&mut self, page: PageId, born: u64, records: &[u8]) {
+    /// No more than `most` bytes of records are kept of one page
+    /// ([`Self::bound`]).
+    pub(super) fn stepped(&mut self, page: PageId, born: u64, records: &[u8], most: usize) {
+        if self
+            .lost
+            .get(&page)
+            .is_some_and(|lost| born <= lost.through)
+        {
+            return;
+        }
         let changes = self.pages.entry(page).or_default();
         match changes.back_mut() {
             Some(last) if last.born == born => last.records.extend_from_slice(records),
@@ -80,12 +110,43 @@ impl Kept {
                 records: records.to_vec(),
             }),
         }
+        self.bound(page, most);
+    }
+
+    /// Lets go of the records of `page` if they are more than `most`
+    /// bytes: the longest run a block holds. The versions they are of can
+    /// then be written as a base image only, which is what a run of that
+    /// length is written as. So what is kept of a page that many commits
+    /// change before it is written stays within one run, whatever the log
+    /// holds of it.
+    ///
+    /// Nothing more is kept of the page until a block of it is written
+    /// ([`Self::wrote`]). From then on the records of later commits are
+    /// kept again, and the versions up to the newest that was let go have
+    /// none until a block holds the page at that version or a later one.
+    fn bound(&mut self, page: PageId, most: usize) {
+        let Some(changes) = self.pages.get(&page) else {
+            return;
+        };
+        let kept: usize = changes.iter().map(|kept| kept.records.len()).sum();
+        if kept > most {
+            let through = changes.back().map_or(0, |last| last.born);
+            self.pages.remove(&page);
+            self.lost.insert(
+                page,
+                Lost {
+                    through,
+                    still: true,
+                },
+            );
+        }
     }
 
     /// The page was made anew or freed: nothing that was kept of it applies
     /// to what has its id now.
     pub(super) fn forget(&mut self, page: PageId) {
         self.pages.remove(&page);
+        self.lost.remove(&page);
         self.folded.remove(&page);
     }
 
@@ -99,6 +160,9 @@ impl Kept {
             if changes.is_empty() {
                 self.pages.remove(&page);
             }
+        }
+        if self.lost.get(&page).is_some_and(|lost| lost.through < at) {
+            self.lost.remove(&page);
         }
         self.unfold_where(page, |born| born < at);
     }
@@ -115,6 +179,12 @@ impl Kept {
     /// [`Self::changes`] gave them, and every change of the page before
     /// them. What a page step has added since stays.
     pub(super) fn wrote(&mut self, page: PageId, written: &[Changes], through: u64) {
+        if let Some(lost) = self.lost.get_mut(&page) {
+            match lost.through <= through {
+                true => drop(self.lost.remove(&page)),
+                false => lost.still = false,
+            }
+        }
         let Some(changes) = self.pages.get_mut(&page) else {
             return;
         };
@@ -263,6 +333,15 @@ pub(super) struct Untrimmed {
     pub(super) trimmed_at: Option<CommitVersion>,
 }
 
+/// A page that a pass left with nothing to do for it ([`Files::rested`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Rested {
+    /// The version that waited when the pass left the page.
+    pub(super) born: CommitVersion,
+    /// Whether it is a flat page.
+    pub(super) flat: bool,
+}
+
 /// What one pass uses and the next pass uses again. Its lock makes passes
 /// one at a time.
 #[derive(Debug, Default)]
@@ -277,6 +356,13 @@ pub(super) struct Files {
     pub(super) untrimmed: BTreeMap<PageId, Untrimmed>,
     /// The version at which the chains of those pages are trimmed.
     pub(super) trim_bound: TrimBound,
+    /// The pages that a pass left for a later one with nothing to do for
+    /// them meanwhile, each as that pass found it: one version waited,
+    /// the page's current version, with no pending value and nothing
+    /// attached. A pass that leaves such a page again, with that version
+    /// still the only one that waits, does not look at it. An entry that
+    /// holds no more is dropped by the next pass before it is used.
+    pub(super) rested: HashMap<PageId, Rested>,
     pub(super) chain: ChainBuffers,
     pub(super) links: Vec<Link>,
     pub(super) image: Vec<u8>,

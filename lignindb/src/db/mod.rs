@@ -2021,8 +2021,8 @@ fn with_page_values<R>(shared: &Shared, work: impl FnOnce(WriteBack<'_>) -> R) -
 pub const OPEN_TURNS: usize = 8;
 
 /// The turns of write-back that an open makes on its own thread, before
-/// the background threads are started ([`Db::open`]): turns as the loop
-/// makes them, with the loop's view of the store, until the pass of one
+/// the background threads are started ([`Db::open`]): turns that leave
+/// no page for a later one, with the loop's view of the store, until the pass of one
 /// moves nothing on, the turn takes the log to no other file and leaves
 /// no turn of the log due, and `at_most` turns. A table checkpoint that
 /// such a last turn takes asks for no further turn by itself: the record

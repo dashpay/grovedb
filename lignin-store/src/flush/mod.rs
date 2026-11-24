@@ -196,6 +196,7 @@
 //! | is superseded, and no reader can ask for it: the oldest pin is at or past the version that superseded it | The same: one block for several commits (FL3). A version that a pin can still reach, and that has no pending value, gets a block of its own. |
 //! | is older than the free link of its page | Nothing. Nothing older than a free link is written back (`page-table.md` T18), and the pool keeps the version until no reader needs it. |
 //! | is of a page that was freed after the pass took the version in hand | Its block may be written, and gets no link. The link is pushed in a page step, and only while the pool still owes that version: a page that was made under an id used before and freed before it had a link has no free link of its own to refuse the block (T18), and its id may name another page by then. |
+//! | is the page's current version, and the pass is a turn of the loop that leaves the page for a later turn | No block ([deferral](#deferral)). A pending value of it is placed and bytes that are attached for no cell are taken off, as for any current version. The versions before it are dealt with as the rows above say: one that no reader can ask for is kept for the block of this one, and one that a pin can reach gets its block. |
 //! | is a flat page | A base image. Every block of a flat page is its image (PD13). |
 //! | is a tree page whose chain ends in a base image or a run | A run of deltas behind that link, if the conditions below hold. Otherwise a base image. |
 //! | is a tree page with no chain, or one that ends in a free link | A base image. A run that creates its page is never written to a segment (PD11). |
@@ -298,6 +299,77 @@
 //! is a pass. What still waits when the session ends is trimmed by the
 //! cleaner of a later one, as every chain is that an earlier session left
 //! with links under a newer base image.
+//!
+//! # Deferral
+//!
+//! A page that every commit changes would get a block for every commit,
+//! and a flat page an image for every commit, if every turn wrote every
+//! page. Each of those blocks is dead as soon as the next one is written,
+//! and whoever cleans segments pays for it again. So **a turn of the
+//! background loop leaves the pages that changed last for a later turn**
+//! ([`FlushConfig::max_deferred`], 1024 by default). If more pages wait
+//! than the pass of a turn may leave, it leaves flat pages before tree
+//! pages, since every block of a flat page is its whole image and a
+//! change to a tree page is a run of deltas, and among the pages of one
+//! kind it orders them by the version of their newest page version: it
+//! writes those whose newest version is the oldest, which have waited
+//! longest, and leaves the rest ([`Pass::deferred`]). A page that is
+//! changed again before its turn comes is among the newest again, so a
+//! page that changes often waits until something writes every page:
+//!
+//! - a table checkpoint, which covers no commit whose changes are not in
+//!   a block, so a turn in which one is due leaves no page;
+//! - the end of the session ([`WriteBack::finish`]), which is such a
+//!   checkpoint: where it fails before its pass, the pages that were
+//!   left are in no block, and the log has them for the recovery;
+//! - a pass or a turn that a caller makes ([`WriteBack::pass`],
+//!   [`WriteBack::tick`]): only the loop's own turns leave pages
+//!   ([`WriteBack::tick_deferring`]).
+//!
+//! Its block then holds every commit since its last block: the versions
+//! that were superseded meanwhile and that no reader could ask for are
+//! kept in the pool for their readers and go into that block, as the
+//! table above says for any such version. A version that a pin can reach
+//! when a turn looks at it gets a block of its own, as ever. A page with
+//! a pending value has the value placed whether the page is left or not,
+//! and bytes that are attached for no cell are taken off.
+//!
+//! **A turn looks at no page that rests.** A page that a turn has left,
+//! and found with one version waiting and nothing to do for it, rests:
+//! the turns after it do not look at it for as long as that version is
+//! the only one that waits and the page is left again. A commit that
+//! changes the page, a turn that leaves other pages in its place and a
+//! turn that leaves none end that. Every turn reads the pool's list of
+//! what waits. So the turn that the loop makes when its idle time has
+//! passed, in a store at rest, reads that list and no page that rests.
+//!
+//! **What it costs is memory, and it is bounded.** A page version that
+//! waits takes a frame that the pool cannot evict. A turn leaves no more
+//! pages than [`FlushConfig::max_deferred`], than half of
+//! [`FlushConfig::max_unwritten`], so that leaving pages makes no
+//! committer wait for room, and than a quarter of the pool's frames
+//! ([`WriteBack::deferral`]). The records that write-back keeps of a page
+//! until a block holds them are bounded as well: once those of one page
+//! are longer than the longest run ([`max_run_len`]), they are let go,
+//! and the page is written as a base image when its turn comes, which is
+//! what a run of that length is written as. The records of the commits
+//! after that image are kept again. So the records kept of a page that
+//! waits through a thousand commits are one run at most, whatever the
+//! log holds of it. Beside them write-back keeps one number for each
+//! version of the page that was superseded while it waited and got no
+//! block of its own, until the block is written.
+//!
+//! **It changes nothing that is promised.** The log holds every change of
+//! a page until a table checkpoint covers it, and a checkpoint covers it
+//! only once a block holds it, so a crash recovers a page that was left
+//! as it recovers one whose block no checkpoint had linked yet. A reader
+//! is given the page from the pool. With no commit, nothing more is
+//! written: [`FlushState::unwritten`] can stay above 0 in a store at
+//! rest, and the log that is held stays held, within
+//! [`FlushConfig::max_log_held`] as before, until the next checkpoint or
+//! the end of the session. Whoever waits for write-back to have seen a
+//! commit waits for a turn ([`FlushState::turns_begun`],
+//! [`FlushState::turns`]), not for that count to reach 0.
 //!
 //! # Pending values
 //!
@@ -458,7 +530,7 @@
 //! | [`max_log_held`](FlushConfig::max_log_held) | 256 MiB | the log from the oldest commit that no table checkpoint covers, which is what no log file can be dropped from and what a recovery reads ([`WriteBack::log_held`]) |
 //!
 //! The committer waits for the turns of the background loop
-//! ([`WriteBack::tick`]): a pass, and a table checkpoint if one is due,
+//! ([`WriteBack::tick_deferring`]): a pass, and a table checkpoint if one is due,
 //! which it is whenever more log is held than the bound. The wait ends
 //! when write-back is within its bounds again, or when a turn has moved
 //! nothing on ([`Room::Stalled`]): what is left then waits for something
@@ -472,8 +544,10 @@
 //! commit is published and before its next transaction copies a page.**
 //! It returns at once while write-back is within its bounds. Once it is
 //! not, the turn the committer waits for finds no page held back: it
-//! places every value, writes every page and takes the checkpoint. That
-//! wait is what keeps two things bounded when blocks come back to back:
+//! places every value, writes the pages that are due, which is every page
+//! where the log that is held is over its bound, and takes the
+//! checkpoint. That wait is what keeps two things bounded when blocks
+//! come back to back:
 //!
 //! - **The log that is held.** With no such moment no checkpoint is
 //!   installed, however far write-back has written.
