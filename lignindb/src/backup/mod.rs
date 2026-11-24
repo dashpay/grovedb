@@ -95,7 +95,7 @@
 //! | --- | --- |
 //! | 1 | A target that is there is refused, and so is one whose path is inside the source, with nothing touched. |
 //! | 2 | The lock of the source is taken through its lock file, which must be there, and its manifest is read under the lock. No file is made in the source. |
-//! | 3 | Every file the manifest names is measured: a file that is missing, or shorter than the manifest vouches for, ends the copy before anything is made ([`BackupError::Short`]). |
+//! | 3 | Every file the manifest names is measured: a file that is missing, or shorter than the manifest vouches for, ends the copy before anything is made ([`BackupError::Short`]). Each entry the copy reads is looked at first in the listing of its directory, which follows no link: a lock file, a manifest or a named file that is listed as anything but a regular file, and a store subdirectory that is listed as anything but a directory, end the copy as well ([`BackupError::NotRegular`]). |
 //! | 4 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. Its `LOCK` file is the copy's from here on: a database is opened through the lock file it has (`crate::db`). |
 //! | 5 | Each file is copied under its own name and synced: of a file that the manifest names closed or sealed, the bytes up to its valid length; of a file it names open, all it has, since whole records may follow the valid length. The files that the caller has the copy carry ([`Backup::carrying`]) are copied whole. |
 //! | 6 | Every name in the target is made durable, and then the target's own name. |
@@ -225,6 +225,34 @@ const LOCK_FILE_NAME: &str = "LOCK";
 
 /// How many bytes of a file are copied at a time.
 const COPY_CHUNK_LEN: u64 = 1 << 20;
+
+/// The entries of the directory `dir` of a source, and none where it is
+/// not there: the call that opens a file in it says so.
+fn entries_of(vfs: &dyn Vfs, dir: &Path) -> Result<Vec<DirEntry>, BackupError> {
+    match vfs.read_dir(dir) {
+        Ok(entries) => Ok(entries),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(BackupError::io("list", dir)(error)),
+    }
+}
+
+/// Refuses the entry `name` of `dir` where `entries`, the listing of `dir`,
+/// has it as anything but `kind`. A listing follows no link, so a link is
+/// refused whatever it leads to. An entry that is not listed is left to
+/// the call that opens it.
+fn refuse_other(
+    entries: &[DirEntry],
+    dir: &Path,
+    name: &OsStr,
+    kind: EntryKind,
+) -> Result<(), BackupError> {
+    match entries.iter().find(|entry| entry.name == name) {
+        Some(entry) if entry.kind != kind => Err(BackupError::NotRegular {
+            path: dir.join(name),
+        }),
+        _ => Ok(()),
+    }
+}
 
 /// A copy that was made.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +409,13 @@ impl<'a> Backup<'a> {
         }
         let from = &*self.from;
 
+        // What the copy opens by a name is looked at first in the listing
+        // of the directory that holds it (step 3).
+        let listed = entries_of(from, source)?;
+        for name in [LOCK_FILE_NAME, ManifestStore::FILE_NAME] {
+            refuse_other(&listed, source, OsStr::new(name), EntryKind::File)?;
+        }
+
         // The lock of the source, through the lock file it has: none is
         // made in a directory that is only read.
         let lock_path = source.join(LOCK_FILE_NAME);
@@ -399,7 +434,7 @@ impl<'a> Backup<'a> {
             dir: source.to_path_buf(),
             source: error,
         })?;
-        let (mut planned, files, bytes) = self.plan(source, target, &manifest)?;
+        let (mut planned, files, bytes) = self.plan(source, target, &manifest, &listed)?;
         let (carried, carried_bytes) = self.plan_carried(source, target, &mut planned)?;
 
         let mut made = Target::make(&self.to, target, parent)?;
@@ -433,13 +468,18 @@ impl<'a> Backup<'a> {
         })
     }
 
-    /// Measures every file that `manifest` names in `source` and says how
-    /// many bytes of each are copied, and where to. Nothing is made.
+    /// Measures every file that `manifest` names in `source`, whose
+    /// entries are `listed`, and says how many bytes of each are copied,
+    /// and where to. Nothing is made.
+    ///
+    /// A file is opened only where the listing of its directory has it as
+    /// a regular file, in a subdirectory that `listed` has as a directory.
     fn plan(
         &self,
         source: &Path,
         target: &Path,
         manifest: &Manifest,
+        listed: &[DirEntry],
     ) -> Result<(Vec<Planned>, usize, u64), BackupError> {
         let table = manifest.table_checkpoint().map(|table| {
             (
@@ -465,9 +505,25 @@ impl<'a> Backup<'a> {
         });
         let mut planned = Vec::new();
         let mut bytes = 0;
+        // The listing of each subdirectory a named file is in.
+        let mut listings: Vec<(PathBuf, Vec<DirEntry>)> = Vec::new();
         for file in table.into_iter().map(Ok).chain(named) {
             let (names, id, state, valid_len): (FileNames, FileId, FileState, u64) = file?;
             let path = names.path(source, id);
+            let dir = names.dir(source);
+            let at = match listings.iter().position(|(seen, _)| *seen == dir) {
+                Some(at) => at,
+                None => {
+                    if let Some(name) = dir.file_name() {
+                        refuse_other(listed, source, name, EntryKind::Dir)?;
+                    }
+                    listings.push((dir.clone(), entries_of(&*self.from, &dir)?));
+                    listings.len() - 1
+                }
+            };
+            if let Some(name) = path.file_name() {
+                refuse_other(&listings[at].1, &dir, name, EntryKind::File)?;
+            }
             let short = |len| BackupError::Short {
                 path: path.clone(),
                 valid_len,
