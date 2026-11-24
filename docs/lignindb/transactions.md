@@ -125,7 +125,18 @@ In the `data` column a record is one of two things:
 
 The data column of one subtree holds Merk nodes or flat entries, and a
 write transaction refuses the batch that would put the other kind there
-(`BatchError::NotFlat`, `BatchError::NotMerk`, which say when). GroveDB
+(`BatchError::NotFlat`, `BatchError::NotMerk`, which say when). Where the
+refusal goes by what *T* wrote, it counts what *T* wrote in the subtree
+since the last operation of *T* that dropped or cleared the subtree, or
+took it with a subtree above it. Of the batch that is judged, a drop or
+a clear that names the subtree itself counts as such an operation, and
+one of a subtree above it does not. So a batch that drops a subtree,
+enters a subtree below it again and writes there the kind that *T*'s
+earlier writes into it were not, is refused, though it leaves nothing of
+those writes. It takes a batch that is given no tree types, which Merk's
+node store never hands over, or a batch that is taken by key: in a
+transaction that a commit has met or whose layout a refusal stopped, or
+through a scope beside another. GroveDB
 needs both in one case: under a tree that keeps its data as flat entries
 and has a keyed child. Grove versions 1 to 3 take a batch that inserts
 one, and its level is a Merk under the prefix of the tree, beside the
@@ -230,6 +241,39 @@ removed (SEAM-01). The change set must name exactly the node records that
 today's Merk hands to storage for the same operation: no node left out
 because only its hash changed, and none added. The conflict rule equals
 RocksDB's only if this holds (section 14).
+
+**What the writer of a batch keeps for a sound store.** The transaction
+takes the nodes of a change set as they are stated: their hashes, their
+links and what they host. Three rules of the same kind are the writer's
+to keep. The transaction does not hold a batch to them as such: it
+refuses some batches that break one, and a batch that it takes can leave
+a store that fails the physical check:
+
+- every writer of a Merk that an element hosts writes the node of each
+  host above it, or says that it does not (`MerkWrite::anchored`);
+- a Merk with no node hosts no entered subtree at a commit: a batch that
+  removes the node of an element drops the subtree it hosts, and a batch
+  that drops a subtree deletes its element or writes it without the
+  subtree;
+- a host node that is written again names the Merks it hosts
+  (`Hosted::Set`) where the batch holds the change set of one of them.
+
+Among the batches that it refuses is one in which a host keeps what it
+hosts (`Hosted::Keep`) and which holds a change set, not anchored, of a
+Merk that the cell of that host points at (`HostKeeps`); the tree layer
+refuses others where it plans the write. And at the commit the
+transaction refuses a subtree that *T* cleared (`ClearedAlone`) and one
+whose entry an enter if absent of *T* made (`HostAbsent`), by the two
+rules at the end of CV9a.
+
+For the operations of GroveDB on existing GroveVersions, Merk's node
+store on LigninDB and GroveDB's LigninDB engine keep the three in the
+batches they hand over. A write that is made by hand at the engine's
+seam is not held to them: a group that removes the node of a host
+through a handle which was opened by prefix alone, and was told the path
+of that node's Merk by no handle, leaves the subtree under the node
+entered. A caller that hands batches to the transaction itself, as a
+tool that loads a store does, keeps the three itself.
 
 ## 3. Commit versions
 
@@ -425,6 +469,29 @@ is not under is held against the same: *T*'s own writes over the
 committed directory of the version that is read. While *T* holds a move as
 well, MV7 refuses it every drop: a drop if entered is one where it would
 take its subtree, and none where it takes nothing.
+
+**By key, what a clear takes below its subtree is not always what the
+frames take.** Three histories are read otherwise by key than laid out:
+
+- A committed Merk *P* has one node, which hosts a committed subtree *C*
+  that has no node. *T* writes an aux record under *C*, removes the node
+  of *P*, and then clears *P* in a batch that is taken by key. By key
+  *C* is gone for *T*. Laid out, the clear of a Merk with no node takes
+  nothing, and *C* is there.
+- A committed Merk *P* has no node, and a committed subtree *D* is
+  entered under a key of it. *T* gives *P* its first node, which hosts
+  *D*, and enters a subtree *C* under a node of *D*. By key, a clear of
+  *P* leaves *C* entered. Laid out, the clear takes *D* and *C*.
+- A committed Merk *P* has no node. *T* enters a subtree *M* under a key
+  of *P* and then clears *P*, both laid out: the clear takes nothing, and
+  *T* reads *M* as entered. A scope of *T* that is opened beside another
+  reads by key, and is shown *M* as gone.
+
+No record is lost by it: a batch that is taken by key is judged again
+where it is laid out, and the commit writes what the layout holds. It
+takes a clear (`SubtreeWrite::Clear`), which no operation of GroveDB
+states, in a transaction that serves its writes by key or beside a scope
+that does.
 
 On existing GroveVersions a clear that keeps the host is in the write set
 what `Merk::clear` makes of it: one delete for each node, by its key, and
@@ -2054,7 +2121,12 @@ them, are keys of its change sets as for any batch. So:
 Neither sees a foreign commit after the move that enters a subtree below
 `from` and writes no key under a prefix the move names. A writer that
 writes the hosts above its Merk writes such a key. What *T* then does is
-in MV6.
+in MV6. This is not met as a conflict, and it is stated, not closed. It
+takes a second writer beside a transaction that holds a move, which is
+GroveDB's move of an element on grove versions 4 and 5, and a write of
+that writer which enters a subtree below the moved one and puts no node
+above it: a record that is put through the path of a tree is one such
+write, and an enter alone is another.
 
 *A batch that is laid out after the commit of a move.* A transaction of
 whose writes the mover's commit met none is not a conflict for it. Where
