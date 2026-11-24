@@ -1350,10 +1350,10 @@ fn a_partial_batch_is_laid_out_again_in_a_page_with_no_room() {
     alike_through(
         Beside::Again,
         |transaction| {
-            let transaction = transaction
-                .write_transaction()
+            let stats = transaction
+                .with_write_transaction(|transaction| transaction.stats())
                 .expect("a write transaction");
-            rebuilds.borrow_mut().push(transaction.stats().rebuilds);
+            rebuilds.borrow_mut().push(stats.rebuilds);
         },
         |answers, full, what| {
             held(answers, full, what);
@@ -1376,10 +1376,10 @@ fn a_commit_after_the_partial_batch_meets_the_transaction_as_on_rocksdb() {
     alike_through(
         Beside::After,
         |transaction| {
-            let transaction = transaction
-                .write_transaction()
+            let stats = transaction
+                .with_write_transaction(|transaction| transaction.stats())
                 .expect("a write transaction");
-            met.borrow_mut().push(transaction.stats().overlapped);
+            met.borrow_mut().push(stats.overlapped);
         },
         |answers, full, what| {
             assert!(full > 0, "{what}: no page was full");
