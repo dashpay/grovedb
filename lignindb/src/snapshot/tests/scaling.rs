@@ -10,7 +10,9 @@
 //! | `SECS` | 1 | the length of one run; three are made of each, and the median is given |
 //! | `THREADS` | 1, 2, 4, 8, 14, 20, 28, 56 up to the cores, and the cores | the numbers of reader threads |
 //! | `COMMITS` | 2000 | the commits the writer makes in a second |
-//! | `KINDS` | all four | the kinds of read to measure, by name, with commas between them |
+//! | `KINDS` | the first four | the kinds of read to measure, by name, with commas between them |
+//! | `SPREAD` | 64 | the pages of its own that a reader of `many pages` goes round, four at least |
+//! | `POOL` | twice the pages | the size of the pool, as the bytes of that many pages |
 //! | `WRITER` | both | `one` for the runs beside a writer only, `none` for those without |
 //!
 //! One read is what a read with no transaction does (`transactions.md`
@@ -21,6 +23,20 @@
 //! - `lease`: the same, and the snapshot takes its lease
 //! - `own pages`: four pages that no other reader reads
 //! - `shared root`: one page that every reader reads, then three of its own
+//! - `many pages`: four pages of `SPREAD` that no other reader reads, the
+//!   next four at each read. It is measured when `KINDS` names it. With a
+//!   `POOL` smaller than `SPREAD`, a page that a read asks for can have
+//!   left the pool, whatever the number of readers: it is then loaded,
+//!   and a frame can be evicted for it, on the thread of the reader that
+//!   asked, and so on several threads at once. An eviction
+//!   looks through the lanes in which threads announce their pins
+//!   (`lignin_store::cache`). The pool's counts of misses and evictions
+//!   are printed at the end.
+//!
+//! The pool has at most 128 lanes. `THREADS` above that, on a machine
+//! with fewer cores, is the measurement of readers that share lanes: the
+//! reads in a second of a reader's processor time are what to read then,
+//! since the threads share the cores too.
 //!
 //! The writer writes the shared page and two others again in every commit,
 //! writes them back, and asks for a reclaim. Each kind is also run with no
@@ -36,8 +52,9 @@
 //! those that began between that reading and the signal that stops them.
 //! A run with a writer that made no commit is made again.
 //!
-//! The store has one page for all readers and four for each reader, of
-//! 8 KiB, in a pool of twice as many frames. It keeps the pages of the
+//! The store has one page for all readers and four for each reader, or
+//! `SPREAD` where `many pages` is measured, of 8 KiB, in a pool of twice
+//! as many frames unless `POOL` says otherwise. It keeps the pages of the
 //! latest version only and trims its page table, so its memory does not
 //! grow with the length of the run; its segment file grows by three small
 //! blocks a commit. The peak of memory is printed at the end, and so is the
@@ -67,9 +84,10 @@ const ROOT: u32 = 1;
 /// The reads that were counted in every run of the measurement so far.
 static READS: AtomicU64 = AtomicU64::new(0);
 
-/// The pages of a store that `readers` readers read.
-fn pages_for(readers: u32) -> u32 {
-    1 + readers * (READER_PAGES + 1)
+/// The pages of a store that `readers` readers read, each with `own`
+/// pages that no other reader reads.
+fn pages_for(readers: u32, own: u32) -> u32 {
+    1 + readers * own
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -78,6 +96,7 @@ enum Kind {
     Lease,
     OwnPages,
     SharedRoot,
+    ManyPages,
 }
 
 impl Kind {
@@ -87,17 +106,22 @@ impl Kind {
         (Self::OwnPages, "own pages"),
         (Self::SharedRoot, "shared root"),
     ];
+
+    const MANY_PAGES: &'static str = "many pages";
 }
 
-/// The pages reader `reader` reads in one read of `kind`.
-fn path(kind: Kind, reader: u32) -> Vec<u32> {
-    let own = 2 + reader * (READER_PAGES + 1);
+/// The pages reader `reader` reads in reads of `kind`, of the `each`
+/// pages that are its own: all of them in every read, but for
+/// [`Kind::ManyPages`], which reads the next four of them each time.
+fn path(kind: Kind, reader: u32, each: u32) -> Vec<u32> {
+    let own = 2 + reader * each;
     match kind {
         Kind::Pins | Kind::Lease => Vec::new(),
         Kind::OwnPages => (own..=own + READER_PAGES).collect(),
         Kind::SharedRoot => std::iter::once(ROOT)
             .chain(own..own + READER_PAGES)
             .collect(),
+        Kind::ManyPages => (own..own + each).collect(),
     }
 }
 
@@ -140,6 +164,7 @@ fn run(
     length: Duration,
 ) -> Run {
     let pages = store.pages_at(versions.latest()).len() as u32;
+    let each = own_pages();
     let reads_of = store.reads(versions);
     let start = Barrier::new(readers as usize + usize::from(commits > 0) + 1);
     let go = AtomicBool::new(false);
@@ -153,7 +178,11 @@ fn run(
             let (start, go, stop) = (&start, &go, &stop);
             let (total, cpu_nanos) = (&total, &cpu_nanos);
             scope.spawn(move || {
-                let path = path(kind, reader);
+                let path = path(kind, reader, each);
+                let take = match kind {
+                    Kind::ManyPages => READER_PAGES as usize + 1,
+                    _ => path.len(),
+                };
                 let mut buffers = LoadBuffers::new();
                 let mut reads = 0u64;
                 wait_for(start, go);
@@ -164,7 +193,12 @@ fn run(
                     if kind == Kind::Lease {
                         black_box(snapshot.lease());
                     }
-                    for &id in &path {
+                    let from = match kind {
+                        Kind::ManyPages => reads as usize * take % path.len(),
+                        _ => 0,
+                    };
+                    for step in 0..take {
+                        let id = path[(from + step) % path.len()];
                         let frame = operation.page(page(id), &mut buffers).expect("a page");
                         assert!(frame.born() <= snapshot.version());
                         black_box(frame[64]);
@@ -258,6 +292,23 @@ fn median(
     runs.swap_remove(1)
 }
 
+/// Whether `KINDS` names the kind `name`. With no `KINDS`, the first four
+/// kinds are measured.
+fn measured(name: &str) -> bool {
+    match std::env::var("KINDS") {
+        Ok(kinds) => kinds.split(',').any(|kind| kind.trim() == name),
+        Err(_) => name != Kind::MANY_PAGES,
+    }
+}
+
+/// The pages that each reader has of its own.
+fn own_pages() -> u32 {
+    match measured(Kind::MANY_PAGES) {
+        true => setting("SPREAD", 64).max(READER_PAGES + 1),
+        false => READER_PAGES + 1,
+    }
+}
+
 fn setting<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name)
         .ok()
@@ -285,21 +336,19 @@ fn reader_throughput_by_the_number_of_readers() {
     let most = threads.iter().copied().max().expect("a number of readers");
     assert!(threads.iter().all(|n| *n >= 1));
 
-    let pages = pages_for(most);
-    let store = Store::without_history(2 * pages as usize);
+    let pages = pages_for(most, own_pages());
+    let frames: usize = setting("POOL", 2 * pages as usize);
+    let store = Store::without_history(frames);
     let versions = store.versions();
     store.commit(&versions, &Changes::create(pages as usize));
     store.write_back();
 
-    println!("{cores} cores, {length:?} a run, median of 3, {commits} commits/s, {pages} pages\n");
+    println!(
+        "{cores} cores, {length:?} a run, median of 3, {commits} commits/s, {pages} pages, \
+         {frames} frames\n"
+    );
     let optional = |value: Option<f64>, scale: f64| {
         value.map_or_else(|| "?".to_owned(), |value| format!("{:.0}", value * scale))
-    };
-    let kinds = std::env::var("KINDS").ok();
-    let measured = |name: &str| {
-        kinds
-            .as_deref()
-            .is_none_or(|kinds| kinds.split(',').any(|kind| kind.trim() == name))
     };
     let writer = std::env::var("WRITER").unwrap_or_else(|_| "both".to_owned());
     let beside = [(commits, "one"), (0, "none")]
@@ -307,7 +356,8 @@ fn reader_throughput_by_the_number_of_readers() {
         .filter(|(_, which)| writer == "both" || writer == *which)
         .map(|(commits, _)| commits);
     for commits in beside {
-        for (kind, name) in Kind::ALL.into_iter().filter(|(_, name)| measured(name)) {
+        let kinds = (Kind::ALL.into_iter()).chain([(Kind::ManyPages, Kind::MANY_PAGES)]);
+        for (kind, name) in kinds.filter(|(_, name)| measured(name)) {
             let with = if commits > 0 {
                 "one writer"
             } else {
