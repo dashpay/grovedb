@@ -66,7 +66,7 @@
 //! `CostContext` returns the value and cannot fail): the walk is no
 //! operation of the stream.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb::{
     element::indexed::IndexAxis,
@@ -511,7 +511,22 @@ pub fn node_keys_below<'db, E: StreamEngine>(
     most: usize,
     grove_version: &GroveVersion,
 ) -> Result<Option<BTreeSet<NodeKey>>, String> {
-    let mut found = BTreeSet::new();
+    let records = node_records_below(db, transaction, path, most, grove_version)?;
+    Ok(records.map(|records| records.into_keys().collect()))
+}
+
+/// The node records of [`node_keys_below`], each with whether its record
+/// is the element of a tree that keeps a Merk: the walk opens the
+/// subtree under such a key, and GroveDB charges the hash of a path for
+/// each subtree it opens.
+pub fn node_records_below<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+    most: usize,
+    grove_version: &GroveVersion,
+) -> Result<Option<BTreeMap<NodeKey, bool>>, String> {
+    let mut found = BTreeMap::new();
     let mut queue = vec![path.to_vec()];
     while let Some(path) = queue.pop() {
         let place = Place {
@@ -526,12 +541,14 @@ pub fn node_keys_below<'db, E: StreamEngine>(
                 continue;
             }
             let element = Element::raw_decode(&record.value, grove_version);
-            if element.is_ok_and(|tree| tree.is_any_tree() && !tree.uses_non_merk_data_storage()) {
+            let keeps_a_merk =
+                element.is_ok_and(|tree| tree.is_any_tree() && !tree.uses_non_merk_data_storage());
+            if keeps_a_merk {
                 let mut below = path.clone();
                 below.push(record.key.clone());
                 queue.push(below);
             }
-            found.insert((path.clone(), record.key));
+            found.insert((path.clone(), record.key), keeps_a_merk);
             if found.len() > most {
                 return Ok(None);
             }

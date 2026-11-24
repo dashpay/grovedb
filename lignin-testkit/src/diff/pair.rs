@@ -344,10 +344,11 @@ pub struct Run {
     /// refused, differently in the cost or the error, each of which was
     /// passed over ([`Family::RefusedBelowPlainDelete`]).
     pub passed_refusals: Vec<Divergence>,
-    /// What the reference's own check (`verify_grovedb`) answered at the
-    /// end of a case that ended at a write which the reference alone
-    /// took ([`Family::TakenBelowPlainDelete`]). The case is not held to
-    /// it.
+    /// What the reference's own check (`verify_grovedb`) answered in a
+    /// case that ended at a write which the reference alone took
+    /// ([`Family::TakenBelowPlainDelete`]): asked in the reference's
+    /// block right after that write, which the block holds, and before
+    /// the block is dropped with the case. The case is not held to it.
     pub reference_check: Option<ReferenceCheck>,
 }
 
@@ -360,6 +361,17 @@ pub enum ReferenceCheck {
     Places,
     /// It failed.
     Failed,
+}
+
+impl ReferenceCheck {
+    /// What a report says of it.
+    pub fn said(self) -> &'static str {
+        match self {
+            ReferenceCheck::Nothing => "found nothing",
+            ReferenceCheck::Places => "reported places",
+            ReferenceCheck::Failed => "failed",
+        }
+    }
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -616,17 +628,6 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             });
         }
     }
-    // Where the case ended at a write that the reference alone took, what
-    // the reference's own check answers is kept, and the case is not held
-    // to it.
-    if run.ended_at == Some(Family::TakenBelowPlainDelete) {
-        let checked = catching(|| reference_db.verify_grovedb(None, true, false, grove_version));
-        run.reference_check = Some(match checked {
-            Ok(Ok(issues)) if issues.is_empty() => ReferenceCheck::Nothing,
-            Ok(Ok(_)) => ReferenceCheck::Places,
-            Ok(Err(_)) | Err(_) => ReferenceCheck::Failed,
-        });
-    }
     // The close of a debug build checks the candidate's store again, and
     // panics on what the check above has found: the divergence stands.
     let found_at_the_close = |divergence: &Divergence| divergence.parts == [Part::Check];
@@ -702,6 +703,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             root_delete,
             kept,
             no_element,
+            below_plain_deletes,
         ) = catching(|| {
             let (db, version) = (reference_db, case.grove_version);
             let block = reference_runner.transactions().block();
@@ -709,14 +711,17 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             let kept = known.kept_below_a_removed_tree((db, block), candidate, op, version);
             let no_element =
                 known.named_by_a_kept_record_alone((db, block), candidate, op, version);
+            let plain_deletes = Known::trees_under_a_plain_delete(db, block, op, version);
+            let below_plain_deletes = Known::records_below(db, block, &plain_deletes, version);
             (
                 Known::trees_under(db, block, op, version),
                 Known::indexed_under(db, block, op, version),
                 Known::indexed_under_an_insert_only(db, block, op, version),
-                Known::trees_under_a_plain_delete(db, block, op, version),
+                plain_deletes,
                 Known::trees_under_a_root_delete(db, block, op, version),
                 kept,
                 no_element,
+                below_plain_deletes,
             )
         })
         .unwrap_or_default();
@@ -787,6 +792,20 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             if family.ends_a_case() {
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
+                // Where the reference alone took the write, what its own
+                // check answers with that write in its block is kept,
+                // and the case is not held to it.
+                let reference_check = (family == Family::TakenBelowPlainDelete).then(|| {
+                    let block = reference_runner.transactions().block();
+                    let version = case.grove_version;
+                    let checked =
+                        catching(|| reference_db.verify_grovedb(Some(block), true, false, version));
+                    match checked {
+                        Ok(Ok(issues)) if issues.is_empty() => ReferenceCheck::Nothing,
+                        Ok(Ok(_)) => ReferenceCheck::Places,
+                        Ok(Err(_)) | Err(_) => ReferenceCheck::Failed,
+                    }
+                });
                 let ended_with = Divergence {
                     step,
                     parts,
@@ -803,7 +822,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                     failed_steps: failed_steps.take(),
                     passed_costs: passed_costs.take(),
                     passed_refusals: passed_refusals.take(),
-                    reference_check: None,
+                    reference_check,
                 });
             }
             // A read below a plain delete, or a batch that differs in
@@ -832,6 +851,9 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             was.step.root_hash.or(roots.0),
             is.step.root_hash.or(roots.1),
         );
+        // Whatever the engines answered, a record that a plain delete
+        // left is no longer one where the operation names its key.
+        known.forgets(op);
         if !was.step.failed() {
             known.wrote(op, was.step.root_hash.is_some() && roots.0 != before.0);
             // The trees a plain delete of the batch removed of which the
@@ -841,6 +863,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 Known::left_a_record(reference_db, block, plain_deletes)
             });
             known.took(op, over, left.unwrap_or_default(), root_delete);
+            known.left_records(below_plain_deletes);
         }
         // The trees whose flat drop has a pending record now, as the
         // reference's block sees it: the places of the family of a

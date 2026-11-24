@@ -25,7 +25,7 @@ use std::{
 use super::{
     case::{Case, Shape},
     families::Family,
-    pair::{catching, run, Divergence, Side, Stored, Tally},
+    pair::{catching, run, Divergence, ReferenceCheck, Side, Stored, Tally},
     shrink::{shrink, Budget, Shrunk},
 };
 use crate::{
@@ -138,8 +138,10 @@ pub struct Summary {
     /// answer that is ([`Family::KeptRecordsCost`],
     /// [`Family::RefusedBelowPlainDelete`], by the first such step of
     /// the case): the family, the seed of the case and the step, in the
-    /// order of the seeds.
-    pub apart: Vec<(Family, u64, usize)>,
+    /// order of the seeds, and for a case that ended at a write which
+    /// the reference alone took what the reference's own check answered
+    /// with that write ([`super::pair::Run::reference_check`]).
+    pub apart: Vec<(Family, u64, usize, Option<ReferenceCheck>)>,
 }
 
 /// The bytes of the files under `dir`. A file that goes while it is
@@ -244,7 +246,7 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
             ) = (run.ended_at, &run.ended_with)
             {
                 let mut apart = apart.lock().expect("no worker panics");
-                apart.push((family, case.seed, ended.step));
+                apart.push((family, case.seed, ended.step, run.reference_check));
             }
             let passed = [
                 (Family::KeptRecordsCost, run.passed_costs.first()),
@@ -253,7 +255,7 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
             for (family, first) in passed {
                 if let (Some(first), true) = (first, whole) {
                     let mut apart = apart.lock().expect("no worker panics");
-                    apart.push((family, case.seed, first.step));
+                    apart.push((family, case.seed, first.step, None));
                 }
             }
             // An interrupted run is no case of the run's, but for what
@@ -369,7 +371,7 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 }
             });
     let mut apart = apart.into_inner().expect("no worker panics");
-    apart.sort_unstable_by_key(|(_, seed, _)| *seed);
+    apart.sort_unstable_by_key(|(_, seed, ..)| *seed);
     Ok(Summary {
         progress,
         finding,

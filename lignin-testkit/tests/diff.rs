@@ -1147,6 +1147,106 @@ fn the_cost_of_a_plain_delete_of_a_tree_made_again_is_counted_apart_on_versions_
     }
 }
 
+/// The record that RocksDB kept below a plain delete is the element of
+/// a tree: on grove versions 4 and 5 the look of a later plain delete of
+/// the tree made again opens the subtree under it, and RocksDB is
+/// charged the hash of its path beside a seek for the record, a seek in
+/// the subtree and the bytes (D-394). The shape is one the fuzzer met:
+/// a tree with an empty sum tree under `01` removed by a plain delete,
+/// made again, an item put under `02`, and removed again. The step is
+/// counted apart and passed over with both engines' whole costs as they
+/// are here.
+#[test]
+fn the_cost_of_a_plain_delete_over_a_kept_tree_differs_by_the_hash_of_its_path() {
+    use lignin_testkit::{
+        diff::{Case, Family},
+        workload::{BatchOp, Op, Write},
+    };
+
+    let flags = || Some(vec![0, 0, 4]);
+    let tree = || grovedb::Element::empty_tree_with_flags(flags());
+    let mut parent: Vec<Vec<u8>> = Vec::new();
+    let mut ops = Vec::new();
+    for key in [
+        &b"removed-by-a-plain-delete"[..],
+        b"l\x01",
+        b"l\x02",
+        b"l\x03",
+    ] {
+        ops.push(Op::Write(Write::Insert {
+            path: parent.clone(),
+            key: key.to_vec(),
+            element: grovedb::Element::empty_tree(),
+        }));
+        parent.push(key.to_vec());
+    }
+    let mut t = vec![0; 16];
+    t[15] = 1;
+    let inside: Vec<Vec<u8>> = parent.iter().cloned().chain([t.clone()]).collect();
+    let put =
+        |path: &Vec<Vec<u8>>, key: &[u8], element: grovedb::Element| BatchOp::InsertOrReplace {
+            path: path.clone(),
+            key: key.to_vec(),
+            element,
+        };
+    let delete = || {
+        Op::Batch(vec![BatchOp::Delete {
+            path: parent.clone(),
+            key: t.clone(),
+        }])
+    };
+    let item = grovedb::Element::new_item_with_flags(
+        vec![0x25, 0xa4, 0x59, 0x51, 0x69, 0x5f, 0x88, 0x09],
+        flags(),
+    );
+    let held = grovedb::Element::empty_sum_tree_with_flags(flags());
+    ops.extend([
+        Op::Batch(vec![put(&parent, &t, tree()), put(&inside, &[1], held)]),
+        delete(),
+        Op::Batch(vec![put(&parent, &t, tree())]),
+        Op::Batch(vec![put(&inside, &[2], item)]),
+        delete(),
+        Op::Commit,
+    ]);
+    const SECOND_DELETE: usize = 8;
+    assert_eq!(ops[SECOND_DELETE], delete());
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let case = Case::of(31, grove_version, ops.clone());
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(run.ended_at, None, "grove version {number}");
+        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
+        let passed = u64::from(number >= 4);
+        assert_eq!(run.passed_costs.len() as u64, passed, "{number}");
+        for cost in &run.passed_costs {
+            assert_eq!(cost.step, SECOND_DELETE, "grove version {number}");
+            assert_eq!(cost.parts, [Part::Cost], "grove version {number}");
+            let (reference, candidate) = (cost_of(&cost.reference), cost_of(&cost.candidate));
+            println!("grove version {number}: {reference} | {candidate}");
+            let apart = fields_apart(reference, candidate);
+            let expected = [
+                ("seeks".to_string(), -2),
+                ("loaded".to_string(), -462),
+                ("hashes".to_string(), -1),
+            ];
+            assert_eq!(apart, expected, "grove version {number}");
+            assert!(reference.contains("seeks=20 loaded=1665 "), "{reference}");
+            assert!(reference.contains(" hashes=29 "), "{reference}");
+            assert!(candidate.contains("seeks=18 loaded=1203 "), "{candidate}");
+            assert!(candidate.contains(" hashes=28 "), "{candidate}");
+        }
+        let families = run.tally.families;
+        assert_eq!(families.histories[8], passed, "grove version {number}");
+        assert_eq!(families.answers[8], passed, "grove version {number}");
+        assert!(!Family::KeptRecordsCost.ends_a_case());
+    }
+}
+
 /// A write into a subtree below a tree that a plain delete removed,
 /// which both engines refuse: RocksDB gets further before it refuses,
 /// for the records it kept, so the cost of the refusal differs, and on
@@ -1313,11 +1413,18 @@ fn a_write_that_rocksdb_alone_takes_below_a_plain_delete_ends_the_case_counted_a
         assert_eq!(families.answers[10], 1, "grove version {number}");
         assert_eq!(families.answer_seed[10], Some(29));
         assert_eq!(run.tally.closes.checked, 1, "{number}");
+        // With the write in its block the reference's own check
+        // finds nothing: the write put the element of the old sum tree
+        // into the tree made again, with what the sum tree holds now.
         println!(
-            "grove version {number}: the reference's own check: {:?}",
+            "grove version {number}: the reference's own check with the write: {:?}",
             run.reference_check
         );
-        assert!(run.reference_check.is_some(), "grove version {number}");
+        assert_eq!(
+            run.reference_check,
+            Some(lignin_testkit::diff::ReferenceCheck::Nothing),
+            "grove version {number}"
+        );
     }
 }
 

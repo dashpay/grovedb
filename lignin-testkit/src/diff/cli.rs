@@ -322,8 +322,14 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
     if let Some(line) = summary.progress.tally.closes.line() {
         let _ = writeln!(out, "  {line}");
     }
-    for (family, seed, step) in &summary.apart {
-        let _ = writeln!(out, "  {}: seed {seed:#x}, step {step}", family.name());
+    for (family, seed, step, check) in &summary.apart {
+        let check = check.map(|check| {
+            let said = check.said();
+            format!("; the reference's own check with that write in its block {said}")
+        });
+        let check = check.unwrap_or_default();
+        let name = family.name();
+        let _ = writeln!(out, "  {name}: seed {seed:#x}, step {step}{check}");
     }
     let tally = &summary.progress.tally;
     let _ = writeln!(
@@ -336,8 +342,8 @@ fn fuzz_and_report<A: StreamEngine, B: StreamEngine>(
     if nothing + places + failed > 0 {
         let _ = writeln!(
             out,
-            "  the reference's own check after a write that it alone took: {nothing} found \
-             nothing, {places} reported places, {failed} failed"
+            "  the reference's own check with a write that it alone took in its block: \
+             {nothing} found nothing, {places} reported places, {failed} failed"
         );
     }
     let _ = writeln!(out, "  {}", progress_line(&summary.progress));
@@ -430,6 +436,13 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
             out,
             "  the case ended at step {step}, at an answer of the open difference: {}",
             family.name()
+        );
+    }
+    if let Some(check) = ran.reference_check {
+        let _ = writeln!(
+            out,
+            "  the reference's own check with that write in its block {}",
+            check.said()
         );
     }
     let passed_over = [
