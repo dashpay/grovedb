@@ -21,17 +21,21 @@
 //! No commit drops or clears a subtree: by key a batch with a load beside
 //! one is refused (`BatchError::LoadBeside`).
 //!
-//! **How much a commit takes** is counted as what the process holds
-//! until it commits: the keys and values it carries; for each node of a
-//! Merk what a node is measured to take beside them
-//! (`survey::PEAK_A_NODE`), since the migrator's nodes, the transaction's
-//! and the encoded changes of their pages are all held until then; and
-//! for each Merk a page of the store, since the loads of a batch are laid
+//! **How much a commit takes** is counted as the projection of a run
+//! counts it. For each node of a Merk: its key and value, and what a node
+//! is measured to take beside them (`survey::PEAK_A_NODE`). That figure
+//! is the most the process holds for a node over the steps of a commit:
+//! the migrator's nodes are held until the transaction has taken them,
+//! and the transaction's records and the encoded changes of their pages
+//! until the commit is made. For each record that is no node: the same
+//! figure, and its key and value `survey::COPIES_OF_A_RECORD` times. For
+//! each Merk: a page of the store, since the loads of a batch are laid
 //! out in pages of their own. So a grove of many small Merks is committed
 //! after a few thousand of them, one of many nodes after some tens of
 //! thousands of nodes, and one of large values after as many bytes. A
 //! commit ends after the Merk that fills it, and a prefix that nothing
-//! leads to is carried in one commit whatever it holds.
+//! leads to is carried in one commit whatever it holds, with the commit
+//! ended after it where it filled it.
 //!
 //! **A Merk is handed over after the Merks its nodes host.** So each node
 //! is written once, with the place of every pointer it has: the cell of a
@@ -90,7 +94,7 @@ use super::{
     grove::{Link, Node},
     journal::{Carried, Journal, Phase, JOURNAL_KEY},
     source::{Keyspace, Prefix, Source},
-    survey::PEAK_A_NODE,
+    survey::{COPIES_OF_A_RECORD, PEAK_A_NODE},
     walk::{short_key, Chunk, Found, Frame, MerkHeld, Place, Side, Visit, ROOT, ROOT_KEY},
 };
 use crate::{args::Unreachable, hex, ToolError};
@@ -127,6 +131,26 @@ pub(crate) fn base(db: &Db) -> Result<(), ToolError> {
     };
     db.write(&batch, &mut NoStaleHashes)?;
     Ok(())
+}
+
+/// What a commit counts for `nodes` nodes of a Merk with `bytes` of keys
+/// and values, as the projection of a run counts them: what a node is
+/// measured to take beside its key and value for each, and the bytes. It
+/// does not wrap.
+fn weight_of_nodes(nodes: usize, bytes: usize) -> usize {
+    (PEAK_A_NODE as usize)
+        .saturating_mul(nodes)
+        .saturating_add(bytes)
+}
+
+/// What a commit counts for one record that is no node, with `bytes` of
+/// key and value, as the projection counts a record that is read whole
+/// with a carried prefix: a node's figure, and the bytes as often as they
+/// are held. It does not wrap.
+fn weight_of_a_record(bytes: usize) -> usize {
+    (COPIES_OF_A_RECORD as usize)
+        .saturating_mul(bytes)
+        .saturating_add(PEAK_A_NODE as usize)
 }
 
 /// A subtree to enter.
@@ -314,9 +338,15 @@ impl<'t> Load<'t> {
     }
 
     fn record(&mut self, column: Column, subtree: Subtree, key: Vec<u8>, value: Vec<u8>) {
-        self.pending.bytes += key.len() + value.len();
-        self.within.bytes += (key.len() + value.len()) as u64;
+        let bytes = key.len() + value.len();
+        self.charge(weight_of_a_record(bytes));
+        self.within.bytes += bytes as u64;
         self.pending.records.push((column, subtree, key, value));
+    }
+
+    /// Counts `weight` for the commit that is pending.
+    fn charge(&mut self, weight: usize) {
+        self.pending.bytes = self.pending.bytes.saturating_add(weight);
     }
 
     fn say(&mut self, always: bool) -> Result<(), ToolError> {
@@ -537,7 +567,7 @@ impl<'t> Load<'t> {
         carried.unreachable += 1;
         carried.unlinked += nodes.len() as u64;
         carried.bytes += bytes as u64;
-        self.pending.bytes += bytes + nodes.len() * PEAK_A_NODE as usize + 96;
+        self.charge(weight_of_nodes(nodes.len(), bytes).saturating_add(96));
         self.pending.enters.push(Entered {
             subtree,
             tree_type: tree_type_bytes(tree_type.unwrap_or(TreeType::NormalTree)),
@@ -624,7 +654,7 @@ impl Visit for Load<'_> {
                 tree_type: tree_type_bytes(place.tree_type),
                 host: Some((Subtree::new(host.parent), host.key.clone(), host.position)),
             });
-            self.pending.bytes += host.key.len() + 96;
+            self.charge(host.key.len() + 96);
         }
         self.commit_if_due()
     }
@@ -670,10 +700,10 @@ impl Visit for Load<'_> {
         let held = merk.nodes.iter().chain(&merk.unlinked);
         let bytes: usize = held.map(|node| node.key.len() + node.value.len()).sum();
         carried.bytes += bytes as u64;
-        // What the nodes take until the commit is made, beside their keys
-        // and values, and the page a Merk's load begins.
+        // What the nodes take, with their keys and values, and the page a
+        // Merk's load begins.
         let nodes = merk.nodes.len() + merk.unlinked.len();
-        self.pending.bytes += bytes + nodes * PEAK_A_NODE as usize + self.db.page_size().get();
+        self.charge(weight_of_nodes(nodes, bytes).saturating_add(self.db.page_size().get()));
         self.pending.merks.push(Handed {
             subtree: Subtree::new(place.prefix),
             host: place.host.as_ref().map(|host| Subtree::new(host.parent)),

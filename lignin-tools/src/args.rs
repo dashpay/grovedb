@@ -40,8 +40,9 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      nothing else is to open TARGET.migrating meanwhile.
                                      --batch is about how much one commit of the load
                                      holds in memory (64 MiB unless given: about 1.3 KB with
-                                     its key and value for each node, the keys and values of
-                                     other records, and a page for each Merk), and --progress how
+                                     its key and value for each node, the same with three
+                                     times its key and value for each other record, and a
+                                     page for each Merk), and --progress how
                                      often a line says where the load stands (5 s unless
                                      given; 0 is after every commit). A source that a node
                                      left without stopping is migrated as the state that node
@@ -66,7 +67,7 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      --memory-limit before it writes anything. Unless it is
                                      given, the limit is half of the machine's memory as
                                      /proc/meminfo states it (in a container that can be the
-                                     host's), and none where the system has no such file. A
+                                     host's), and none where that file does not state it. A
                                      source whose largest Merk is above the limit needs the
                                      memory: the load of one Merk in parts is not built
   migrate   SOURCE --survey [--unreachable refuse|leave|carry] [--memory-limit MIB]
@@ -95,8 +96,8 @@ pub const DEFAULT_CACHE: usize = 64 << 20;
 
 /// About how much one commit of `migrate` holds unless `--batch` says:
 /// what a node is measured to take with its key and value for each node,
-/// the keys and values of other records, and a page of the store for each
-/// Merk.
+/// the same with three times its key and value for each other record, and
+/// a page of the store for each Merk.
 pub const DEFAULT_MIGRATE_BATCH: usize = 64 << 20;
 
 /// How often a load of `migrate` says where it stands, unless `--progress`
@@ -213,7 +214,7 @@ pub enum Command {
         unreachable: Unreachable,
         /// The most memory the run may project to hold at its peak, in
         /// bytes: `None` for half of the machine's where `/proc/meminfo`
-        /// states it, and for no limit elsewhere.
+        /// states it, and for no limit where it does not.
         memory_limit: Option<u64>,
     },
 }

@@ -95,7 +95,7 @@
 //! back, and says of the target only that it is there. A target that is
 //! a file or a link is refused with nothing synced and nothing removed.
 //! A directory at the target with nothing in it is no target that is
-//! there: the load begins.
+//! there: the run does what the first table says for its work directory.
 //!
 //! Once the syncs are made the run ends with status 0, whatever becomes
 //! of the removal of the work directory and of the last lines of its
@@ -138,10 +138,11 @@
 //! that nothing leads to are read whole too by a load that carries them,
 //! which puts each such prefix into one commit, its nodes with its aux
 //! and meta records. Beside it the migrator holds what one commit takes
-//! (`--batch`: for each node about 1.3 KB with its key and value, the
-//! keys and values of the other records, and a page of the store for
-//! each Merk it hands over; a commit ends after the Merk that fills it),
-//! and the buffer pool of the target (`--cache`).
+//! (`--batch`: for each node about 1.3 KB with its key and value, for
+//! each record that is no node the same with three times its key and
+//! value, and a page of the store for each Merk it hands over; a commit
+//! ends after the Merk that fills it), and the buffer pool of the target
+//! (`--cache`).
 //!
 //! **The run says what peak it projects, before it writes anything**: a
 //! floor (256 MiB, `--batch` and `--cache`), and for each node of the
@@ -153,12 +154,14 @@
 //! held to. **A source whose projection is above `--memory-limit` is
 //! refused**, and nothing is written. Unless the option is given, the
 //! limit is half of the machine's memory as `/proc/meminfo` states it,
-//! which the run says; where the system has no such file no limit is
-//! held, which the run says too, and in a container that file can state
-//! the memory of the host. A refusal says whether the floor alone is
-//! above the limit, which a smaller `--batch` or `--cache` answers, or
-//! the heaviest Merk, which needs the memory: the load of one Merk in
-//! parts is not built.
+//! which the run says. Where that file does not state it (it is not
+//! there, as on a system that is not Linux, or it cannot be read) no
+//! limit is held, which the run says too; and in a container the file
+//! can state the memory of the host. A refusal says which part of the
+//! projection is above the limit: the 256 MiB of any run; those with the
+//! largest of what the load holds whole, which no setting makes less,
+//! since loading it in parts is not built; or only the sum with
+//! `--batch` and `--cache`, which smaller ones answer.
 //!
 //! # Exit status
 //!
@@ -244,9 +247,9 @@ pub struct Migration {
     /// there is none, whatever `create_if_missing` says.
     pub options: Options,
     /// About how many bytes one commit takes: for each node what a node
-    /// is measured to take with its key and value, the keys and values of
-    /// the other records, and a page of the store for each Merk it hands
-    /// over.
+    /// is measured to take with its key and value, for each record that
+    /// is no node the same with three times its key and value, and a page
+    /// of the store for each Merk it hands over.
     pub batch_bytes: usize,
     /// How often the load says where it stands, at the commit it has come
     /// to: with no time, after every commit.
@@ -257,8 +260,8 @@ pub struct Migration {
     /// The most memory, in bytes, that the migration may project to hold
     /// at its peak: a source that projects more is refused before
     /// anything is written. `None` is half of the machine's memory as
-    /// `/proc/meminfo` states it, and no limit where the system has no
-    /// such file.
+    /// `/proc/meminfo` states it, and no limit where that file does not
+    /// state it.
     pub memory_limit: Option<u64>,
 }
 
@@ -267,8 +270,8 @@ pub struct Migration {
 const PEAK_FLOOR: u64 = 256 << 20;
 
 /// The memory of the machine, in bytes, as `/proc/meminfo` states it:
-/// `None` where the system has no such file. In a container the file can
-/// state the memory of the host.
+/// `None` where the file is not there, cannot be read or states no
+/// `MemTotal`. In a container the file can state the memory of the host.
 fn machine_memory() -> Option<u64> {
     let info = std::fs::read_to_string("/proc/meminfo").ok()?;
     let line = info.lines().find(|line| line.starts_with("MemTotal:"))?;
@@ -736,7 +739,7 @@ impl Run<'_> {
                     })?;
                     let _ = cleared(vfs, work);
                 }
-                Work::Empty => {
+                Work::Empty if directory => {
                     let _ = vfs.remove_dir(work);
                 }
                 _ => {}
@@ -1215,13 +1218,14 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         )?;
     }
     // What the run holds at its peak is known before it writes anything.
-    // No sum of it wraps: what no number of this width holds is above
-    // every limit.
+    // The sums are made in a width that holds each of them: one that no
+    // number of the limit's width holds is above every limit.
     let heaviest = survey.heaviest(migration.unreachable);
-    let floor = PEAK_FLOOR
-        .saturating_add(migration.batch_bytes as u64)
-        .saturating_add(migration.options.cache_size as u64);
-    let projected = floor.saturating_add(heaviest.peak());
+    // What the run's own settings add, and what no setting makes less.
+    let settings = migration.batch_bytes as u128 + migration.options.cache_size as u128;
+    let whole = u128::from(PEAK_FLOOR) + u128::from(heaviest.peak());
+    let projected = whole + settings;
+    let floor = u128::from(PEAK_FLOOR) + settings;
     let (limit, whose) = match (migration.memory_limit, machine_memory()) {
         (Some(limit), _) => (Some(limit), "as --memory-limit says".to_owned()),
         (None, Some(machine)) => (
@@ -1243,32 +1247,43 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         heaviest.named(),
         match limit {
             Some(limit) => format!("The limit is {} MiB: {whose}", limit >> 20),
-            None => "This system has no /proc/meminfo to say how much memory the machine \
-                     has, and no --memory-limit is given: no limit is held"
+            None => "The memory of the machine is not read here (/proc/meminfo is not \
+                     there, cannot be read or states no MemTotal), and no --memory-limit \
+                     is given: no limit is held"
                 .to_owned(),
         }
     )?;
     writeln!(
         out,
-        "migrate: memory projected_peak_bytes={projected} limit_bytes={}",
+        "migrate: memory projected_peak_bytes={} limit_bytes={}",
+        // A sum that no number of this width holds is shown as the
+        // largest.
+        u64::try_from(projected).unwrap_or(u64::MAX),
         limit.map_or("none".to_owned(), |limit| limit.to_string())
     )?;
-    if let Some(limit) = limit.filter(|limit| projected > *limit) {
-        // What is above the limit: the floor alone, which the run's own
-        // settings make, or the largest of what the load holds whole.
-        let cause = match floor > limit {
-            true => format!(
-                "what a run holds beside any Merk is {} MiB already (256 MiB, --batch and \
-                 --cache). A smaller --batch or --cache takes it, or a larger --memory-limit \
-                 where the machine has that memory",
-                floor.div_ceil(1 << 20)
-            ),
-            false => format!(
-                "the largest of what it holds whole is {}. A larger --memory-limit takes it \
-                 where the machine has that memory. The load of one Merk in parts, which \
-                 such a source needs otherwise, is not built",
-                heaviest.named()
-            ),
+    if let Some(limit) = limit.filter(|limit| projected > u128::from(*limit)) {
+        // Which part is above the limit says what answers the refusal.
+        let more = "a larger --memory-limit takes it where the machine has that memory";
+        let cause = if u128::from(PEAK_FLOOR) > u128::from(limit) {
+            format!(
+                "the limit is below the 256 MiB that a run holds whatever it migrates and \
+                 however it is set: {more}"
+            )
+        } else if whole > u128::from(limit) {
+            format!(
+                "the largest of what it holds whole is {}, which with the 256 MiB of any run \
+                 is about {} MiB, and no --batch or --cache makes that less: {more}. A load \
+                 of it in parts, which such a source needs otherwise, is not built",
+                heaviest.named(),
+                whole.div_ceil(1 << 20)
+            )
+        } else {
+            format!(
+                "--batch and --cache are {} MiB of it, and without them the run projects \
+                 about {} MiB: smaller ones take it, or {more}",
+                settings.div_ceil(1 << 20),
+                whole.div_ceil(1 << 20)
+            )
         };
         return Err(refused(format!(
             "the source {} projects a peak of about {} MiB of memory, above the limit of {} \
