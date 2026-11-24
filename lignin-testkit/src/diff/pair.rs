@@ -899,12 +899,19 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         );
         if swept {
             known.came_to_a_refused_insert();
+            if given_up_next {
+                known.passed_a_refused_insert(case.seed);
+            }
             tally.families = known.counts();
         }
         if swept && !given_up_next {
             let family = Family::SweptByARefusedInsert;
             known.ended_at(family, case.seed);
             tally.families = known.counts();
+            // Both engines refused the insert alike: it is a common
+            // failure, as it is where the case goes on.
+            failed_steps.borrow_mut().push(step);
+            tally.failed += 1;
             let ended_with = Divergence {
                 step,
                 parts: vec![Part::Stored],
@@ -960,10 +967,27 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 let block = reference_runner.transactions().block();
                 pending_drop_paths(reference_db, block)
             });
-            known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
+            let pending = pending.ok().and_then(Result::ok);
+            let read = pending.is_some();
+            known.pending(pending.unwrap_or_default());
+            // The trees whose record is pending for the first time: of
+            // those, the ones the candidate holds no node record below,
+            // because it dropped the subtree with the drop.
+            let first_seen: Vec<_> = (known.pending_paths().iter())
+                .filter(|tree| !had_a_record.contains(tree))
+                .cloned()
+                .collect();
+            if !first_seen.is_empty() {
+                let dropped = catching(|| {
+                    let block = candidate_runner.transactions().block();
+                    let version = case.grove_version;
+                    Known::holds_nothing_below(candidate_db, block, &first_seen, version)
+                });
+                known.saw_pending(dropped.unwrap_or_default());
+            }
             // A drain writes beside the open block: the trees whose
             // record it reclaimed after the block wrote into them.
-            known.drained(op, &had_a_record);
+            known.drained(op, &had_a_record, read);
             // Those of them at which the reference reads a tree again.
             let standing = catching(|| {
                 let block = reference_runner.transactions().block();
@@ -1391,6 +1415,56 @@ mod tests {
             Op::Commit,
         ]);
         assert_eq!(records(deleted), committed);
+    }
+
+    /// A tree with two items is dropped flat and the drop committed; the
+    /// next block makes the tree again and writes one of the keys, and
+    /// a drain is called before the block commits. The reference's
+    /// drain deletes the range of the dropped prefix beside the block,
+    /// and its commit is a conflict. A candidate that keeps the dropped
+    /// tree's records, and whose drain frees nothing, takes the commit:
+    /// that is no answer of the family of a dropped tree, which is for
+    /// a candidate that dropped the subtree with the drop, and the run
+    /// ends there as a divergence. The stand-in as it is answers as
+    /// the reference does.
+    #[test]
+    fn a_commit_taken_after_a_drain_that_freed_nothing_is_a_divergence() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: at.iter().map(|segment| segment.to_vec()).collect(),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let ops = vec![
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![1])),
+            insert(&[b"d"], b"j", Element::new_item(vec![2])),
+            Op::Commit,
+            Op::Write(Write::DropFlat {
+                path: Vec::new(),
+                key: b"d".to_vec(),
+            }),
+            Op::Commit,
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![3])),
+            Op::FlushPendingDrops,
+            Op::Commit,
+        ];
+        let commit = ops.len() - 1;
+        let keeps = StandIn::side(Fault::Unreclaimed);
+        let run = compared(&case(ops.clone()), &rocksdb(), &keeps, Stored::AtTheEnd);
+        assert_eq!(run.ended_at, None);
+        let divergence = run.divergence.expect("the commit that one engine took");
+        assert_eq!(divergence.step, commit);
+        assert!(divergence.parts.contains(&Part::Error), "{divergence:?}");
+        let conflict = "failed Commit::Conflict".to_string();
+        assert!(divergence.reference.contains(&conflict), "{divergence:?}");
+        assert!(!divergence.candidate.contains(&conflict), "{divergence:?}");
+
+        let run = compared(&case(ops), &rocksdb(), &stand_in(), Stored::AtTheEnd);
+        assert_eq!((run.divergence, run.ended_at), (None, None));
+        assert_eq!(run.failed_steps, [commit]);
     }
 
     /// An engine whose flush frees nothing answers every operation as the

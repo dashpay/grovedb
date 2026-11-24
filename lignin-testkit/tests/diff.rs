@@ -606,6 +606,10 @@ fn a_dedicated_insert_refused_after_its_removal_ends_the_case_unless_the_block_i
         assert_eq!(families.histories[11], 1, "grove version {number}");
         assert_eq!(families.answers[11], 1, "grove version {number}");
         assert_eq!(families.answer_seed[11], Some(case.seed));
+        assert_eq!(families.stored[11], 0, "grove version {number}");
+        // The refusal is a common failure of the two engines.
+        assert_eq!(run.failed_steps, [refused], "grove version {number}");
+        assert_eq!(run.tally.failed, 1, "grove version {number}");
 
         // Given up by the next operation: the case goes on to its end.
         for end in [TransactionOp::Rollback, TransactionOp::Abandon] {
@@ -624,6 +628,10 @@ fn a_dedicated_insert_refused_after_its_removal_ends_the_case_unless_the_block_i
             let families = run.tally.families;
             assert_eq!(families.histories[11], 1, "{end:?} on {number}");
             assert_eq!(families.answers[11], 0, "{end:?} on {number}");
+            // What the engines stored at the insert was passed over.
+            assert_eq!(families.stored[11], 1, "{end:?} on {number}");
+            assert_eq!(families.stored_seed[11], Some(case.seed));
+            assert_eq!(run.tally.failed, 1, "{end:?} on {number}");
         }
 
         // The insert over the tree with the small sum is made by both.
