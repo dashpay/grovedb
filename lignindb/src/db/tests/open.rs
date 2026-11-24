@@ -1512,3 +1512,89 @@ fn a_store_subdirectory_that_is_a_link_is_refused_and_not_followed() {
         assert_eq!(image(&outside), held, "{name:?}: the directory was written");
     }
 }
+
+/// A named pipe in the place of a file that an open opens by its name is
+/// refused before it is opened, so the open does not wait on it: the lock
+/// file, the manifest, the two files of a reserve, and a file the manifest
+/// names in its store subdirectory. A link in such a place is not followed
+/// either. The directory is left as it was.
+#[test]
+fn a_pipe_or_a_link_in_the_place_of_a_file_is_refused_and_not_opened() {
+    use std::os::unix::fs::FileTypeExt;
+
+    use lignin_store::segment::{read_manifest, FileNames};
+
+    use crate::{
+        backup::tests::world::{pipe, within},
+        space::Reserve,
+    };
+
+    let place = temp();
+    let dir = place.path().join("db");
+    let db = Db::open(&dir, &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 8, 40));
+    db.close().expect("the session ends");
+
+    let manifest = read_manifest(&StdVfs, &dir).expect("the manifest");
+    let named = manifest.files().first().expect("a named file");
+    let names = match named.kind() {
+        FileKind::Wal => FileNames::WAL,
+        FileKind::Segment => FileNames::SEGMENT,
+        FileKind::ValueLog => FileNames::VALUE_LOG,
+        kind => panic!("{kind:?}"),
+    };
+    let own = |name: &str| (dir.clone(), dir.join(name));
+    let cases = [
+        own(ManifestStore::FILE_NAME),
+        own("LOCK"),
+        own(Reserve::FILE_NAME),
+        own(Reserve::UNFINISHED_FILE_NAME),
+        (names.dir(&dir), names.path(&dir, named.id())),
+    ];
+    for (lists, entry) in &cases {
+        for is_pipe in [true, false] {
+            // What is there goes outside the directory, and a pipe, or a
+            // link to what went, takes its place.
+            let outside = place.path().join("outside");
+            let was_there = fs::rename(entry, &outside).is_ok();
+            if !was_there {
+                fs::write(&outside, b"").expect("a file for the link");
+            }
+            let held = image(&dir);
+            match is_pipe {
+                true => pipe(entry),
+                false => std::os::unix::fs::symlink(&outside, entry).expect("a link"),
+            }
+            let what = format!("{} (a pipe: {is_pipe})", entry.display());
+
+            let at = dir.clone();
+            let error = within(entry, move || Db::open(&at, &options()).map(drop))
+                .unwrap_or_else(|| panic!("{what}: the open waited on it"))
+                .expect_err("neither is opened");
+            let name = entry.file_name().expect("a name");
+            assert!(
+                matches!(
+                    &error,
+                    OpenError::NotARegularFile { dir, entry } if dir == lists && entry == name
+                ),
+                "{what}: {error:?}"
+            );
+            assert!(error.left_untouched(), "{what}");
+            assert!(error.to_string().contains("a named pipe is not opened"));
+
+            // What took the place of the file is as it was put there, and
+            // the directory holds nothing else that it did not hold.
+            let kind = fs::symlink_metadata(entry).expect("an entry").file_type();
+            assert_eq!((kind.is_fifo(), kind.is_symlink()), (is_pipe, !is_pipe));
+            fs::remove_file(entry).expect("what took its place goes");
+            assert_eq!(image(&dir), held, "{what}: the directory was written");
+            match was_there {
+                true => fs::rename(&outside, entry).expect("the file is back"),
+                false => fs::remove_file(&outside).expect("the file goes"),
+            }
+        }
+    }
+
+    let db = Db::open(&dir, &options()).expect("the database opens as it was");
+    db.close().expect("the session ends");
+}

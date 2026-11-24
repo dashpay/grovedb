@@ -134,6 +134,7 @@
 //! | has a manifest of a format version this build does not read | [`OpenError::FormatVersion`] |
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | lists `seg`, `wal`, `val` or `table` as anything but a directory of its own, such as a symbolic link, which is not followed | [`OpenError::StoreDirNotADirectory`] |
+//! | lists `LOCK`, `MANIFEST`, `RESERVE` or `RESERVE.new`, or a file its manifest names, as anything but a regular file, such as a named pipe or a symbolic link | [`OpenError::NotARegularFile`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
 //! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |

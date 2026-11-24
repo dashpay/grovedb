@@ -11,7 +11,8 @@ use std::{
 };
 
 use lignin_format::{
-    manifest::Manifest, wal::GroupWriter, CommitVersion, FormatError, PageId, PageSize,
+    manifest::Manifest, wal::GroupWriter, CommitVersion, FileId, FileKind, FormatError, PageId,
+    PageSize,
 };
 use lignin_io::{EntryKind, Vfs, VfsLock};
 use lignin_store::{
@@ -79,6 +80,66 @@ fn is_own_dir(name: &OsStr) -> bool {
     .any(|names| names.dir(Path::new("")).as_os_str() == name)
 }
 
+/// Whether an entry with this name is a file that the engine opens by
+/// its name in the database directory.
+fn is_own_file(name: &OsStr) -> bool {
+    [
+        LOCK_FILE,
+        ManifestStore::FILE_NAME,
+        Reserve::FILE_NAME,
+        Reserve::UNFINISHED_FILE_NAME,
+    ]
+    .iter()
+    .any(|own| name == *own)
+}
+
+/// Refuses a file that `manifest` names if its store subdirectory of
+/// `dir` lists it as anything but a regular file. The stores open the
+/// files the manifest names by their paths: a named pipe there would be
+/// waited on, and a link is not followed. A file or a subdirectory that
+/// is not listed is left to the store that opens it, and so is an entry
+/// the manifest does not name, which the stores do not open.
+fn refuse_irregular_named(vfs: &dyn Vfs, dir: &Path, manifest: &Manifest) -> Result<(), OpenError> {
+    let table = (manifest.table_checkpoint()).map(|table| (FileNames::PAGE_TABLE, table.file()));
+    let files = manifest.files().iter().filter_map(|file| {
+        let names = match file.kind() {
+            FileKind::Wal => FileNames::WAL,
+            FileKind::Segment => FileNames::SEGMENT,
+            FileKind::ValueLog => FileNames::VALUE_LOG,
+            FileKind::Manifest | FileKind::PageTable => return None,
+        };
+        Some((names, file.id()))
+    });
+    let named: Vec<(FileNames, FileId)> = table.into_iter().chain(files).collect();
+    for names in [
+        FileNames::WAL,
+        FileNames::SEGMENT,
+        FileNames::VALUE_LOG,
+        FileNames::PAGE_TABLE,
+    ] {
+        if !named.iter().any(|(of, _)| *of == names) {
+            continue;
+        }
+        let subdir = names.dir(dir);
+        let entries = match vfs.read_dir(&subdir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(OpenError::io("list", &subdir)(error)),
+        };
+        let irregular = entries.iter().find(|entry| {
+            entry.kind != EntryKind::File
+                && (names.parse(&entry.name)).is_some_and(|id| named.contains(&(names, id)))
+        });
+        if let Some(entry) = irregular {
+            return Err(OpenError::NotARegularFile {
+                dir: subdir,
+                entry: entry.name.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Looks at the directory `dir` and says what it holds, reading only.
 ///
 /// A directory that holds the mark of a removal, a directory of another
@@ -118,6 +179,17 @@ fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
         (entries.iter()).find(|entry| is_own_dir(&entry.name) && entry.kind != EntryKind::Dir)
     {
         return Err(OpenError::StoreDirNotADirectory {
+            dir: dir.to_path_buf(),
+            entry: entry.name.clone(),
+        });
+    }
+    // A file that the engine opens by its name is refused likewise where
+    // the directory lists it as anything but a regular file, before it is
+    // opened: a named pipe would be waited on.
+    if let Some(entry) =
+        (entries.iter()).find(|entry| is_own_file(&entry.name) && entry.kind != EntryKind::File)
+    {
+        return Err(OpenError::NotARegularFile {
             dir: dir.to_path_buf(),
             entry: entry.name.clone(),
         });
@@ -383,6 +455,7 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
     let (manifest, created) = match found {
         Found::Database(manifest) => {
             page_size(&manifest).map_err(changed)?;
+            refuse_irregular_named(&**vfs, dir, &manifest).map_err(changed)?;
             let store = ManifestStore::open(vfs.clone(), dir).map_err(OpenError::Manifest)?;
             (store, false)
         }

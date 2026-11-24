@@ -67,6 +67,19 @@ pub enum OpenError {
         /// The subdirectory entry that is not a directory.
         entry: OsString,
     },
+    /// A file that the open would open by its name is listed as something
+    /// other than a regular file: the lock file, the manifest or a file of
+    /// the reserve in the database directory, or a file the manifest names
+    /// in a store subdirectory. A named pipe there would be waited on with
+    /// no error, and a symbolic link is not followed. The entry is not
+    /// opened (P-02).
+    NotARegularFile {
+        /// The directory that lists the entry: the database directory or
+        /// a store subdirectory of it.
+        dir: PathBuf,
+        /// The entry that is not a regular file.
+        entry: OsString,
+    },
     /// The database has pages of another size than the one that was asked
     /// for (`segment-manifest.md` M17).
     PageSize {
@@ -274,6 +287,7 @@ impl OpenError {
                 | Self::FormatVersion { .. }
                 | Self::NoManifest { .. }
                 | Self::StoreDirNotADirectory { .. }
+                | Self::NotARegularFile { .. }
                 | Self::NoLockFile { .. }
                 | Self::Deleting { .. }
                 | Self::Creating { .. }
@@ -302,6 +316,13 @@ impl fmt::Display for OpenError {
             Self::NoManifest { dir, entry } => write!(
                 f,
                 "{} has files of a database ({}) and no manifest",
+                dir.display(),
+                Path::new(entry).display()
+            ),
+            Self::NotARegularFile { dir, entry } => write!(
+                f,
+                "{} lists {} as something other than a regular file (a named pipe is not \
+                 opened and a symbolic link is not followed): no database is opened or made",
                 dir.display(),
                 Path::new(entry).display()
             ),
@@ -391,6 +412,7 @@ impl Error for OpenError {
             | Self::FormatVersion { .. }
             | Self::NoManifest { .. }
             | Self::StoreDirNotADirectory { .. }
+            | Self::NotARegularFile { .. }
             | Self::PageSize { .. }
             | Self::Locked { .. } => None,
         }
