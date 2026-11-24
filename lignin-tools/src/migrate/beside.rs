@@ -9,9 +9,9 @@
 //! (`engine.md`, "A subtree leaves with its element").
 //!
 //! So a migration is told what becomes of them
-//! ([`Unreachable`](crate::args::Unreachable)), and the
-//! survey says of each such prefix what it holds ([`Orphan`]), so that it
-//! can be matched to the operation that left it.
+//! ([`Unreachable`](crate::args::Unreachable)), and leaves them behind
+//! unless it is told. The survey says of each such prefix what it holds
+//! ([`Orphan`]), so that it can be matched to the operation that left it.
 //!
 //! # What a migration that carries them writes
 //!

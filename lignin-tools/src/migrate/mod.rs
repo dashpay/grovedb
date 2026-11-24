@@ -120,15 +120,30 @@
 //! # Records that nothing leads to
 //!
 //! RocksDB can hold records under a prefix that no element leads to and no
-//! pending-drop record names (`beside`). The survey says of each such
-//! prefix what it holds. `--unreachable` says what becomes of them: the
-//! source is refused, which is what happens unless the option is given;
-//! they are left behind (`leave`), and the target is what a database
-//! written on LigninDB holds; or they are carried (`carry`), and a write
-//! below a tree that is made again at such a path is refused by the engine
-//! as it stands (`beside` says what each choice gives a later
-//! operation). A run that goes on with a work directory is given the
-//! choice that the run which began it was given.
+//! pending-drop record names (`beside`): a tree that a batch's plain
+//! delete removed while it held an element leaves its records. The survey
+//! says of each such prefix what it holds, and a run says how many
+//! records under how many prefixes it found. `--unreachable` says what
+//! becomes of them.
+//!
+//! **Unless the option is given they are left behind (`leave`)**, and the
+//! target is what a database written on LigninDB holds. No element leads
+//! to such a record, so the root hash is the same without it. What can
+//! answer otherwise than on RocksDB is a read by the path of such a tree
+//! that asks for no element on the way, a tree that is made again at such
+//! a path, and a cursor that steps from no key (`beside` says each). It
+//! is what a run does unless told because a database that a caller of
+//! GroveDB wrote can hold such records, wherever a batch's plain delete
+//! removed a tree that held an element: a run that refused them unless
+//! it is told would refuse such a database, so they are left unless the
+//! run is told otherwise.
+//!
+//! With `refuse` a source that holds any is refused before anything is
+//! written. With `carry` they are carried as records that no tree links,
+//! and a write below a tree that is made again at such a path is refused
+//! by the engine as it stands (`beside` says what each choice gives a
+//! later operation). A run that goes on with a work directory is given
+//! the choice that the run which began it had.
 //!
 //! # Memory
 //!
@@ -961,8 +976,8 @@ impl Run<'_> {
         if !fits {
             return Err(refused(format!(
                 "of the prefixes of the source that nothing leads to, {} has {carried} carried \
-                 and nothing of {left}, and this run was told --unreachable {}. Give what the \
-                 run that loaded it was given, or remove that directory to migrate anew",
+                 and nothing of {left}, and this run has --unreachable {}. Give what the \
+                 run that loaded it had, or remove that directory to migrate anew",
                 work.display(),
                 migration.unreachable.name()
             )));

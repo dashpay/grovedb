@@ -543,6 +543,13 @@ fn the_arguments_of_migrate() {
     assert!(matches!(
         parse("migrate s t").unwrap(),
         Command::Migrate {
+            unreachable: Unreachable::Leave,
+            ..
+        }
+    ));
+    assert!(matches!(
+        parse("migrate s t --unreachable refuse").unwrap(),
+        Command::Migrate {
             unreachable: Unreachable::Refuse,
             ..
         }
@@ -551,7 +558,7 @@ fn the_arguments_of_migrate() {
         assert_eq!(Unreachable::named(choice.name()), Some(choice));
     }
     assert_eq!(Unreachable::named("maybe"), None);
-    assert_eq!(Unreachable::default(), Unreachable::Refuse);
+    assert_eq!(Unreachable::default(), Unreachable::Leave);
 
     for (line, says) in [
         ("migrate s", "migrate takes SOURCE and TARGET"),
@@ -602,7 +609,8 @@ fn the_arguments_of_migrate() {
         &[
             "migrate   SOURCE TARGET [--batch MIB] [--progress SECS]",
             "migrate   SOURCE --survey",
-            "is made again at such a path is refused by the engine as",
+            "element leaves its records). Unless given they are left",
+            "a tree that is made again at such a path is refused by",
             "left without stopping is migrated as the state that node",
             "2 the arguments are not a",
             "A SOURCE with a keyed child under a tree of flat records",

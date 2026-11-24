@@ -2000,7 +2000,7 @@ fn a_load_of_another_state_of_the_source_is_refused() {
         9,
     );
 
-    // A run that is told nothing of the records nothing leads to is
+    // A run that is told to refuse the records nothing leads to is
     // refused by its survey, as a first run is, and one that is told
     // otherwise than the load was begun with by the journal.
     for (other, said) in [
@@ -2765,7 +2765,7 @@ const REAL_TARGET: &str = "LIGNIN_MIGRATE_TARGET";
 /// | --- | --- |
 /// | `LIGNIN_MIGRATE_SOURCE` | the directory of the RocksDB GroveDB. **A copy**: the migration writes nothing there, and the test then opens it as a node does, which does |
 /// | `LIGNIN_MIGRATE_GROVE_VERSION` | the grove version its chain is on, 1 to 5 |
-/// | `LIGNIN_MIGRATE_UNREACHABLE` | `refuse` unless given: `leave` or `carry` |
+/// | `LIGNIN_MIGRATE_UNREACHABLE` | `leave` unless given, as the command: `refuse` or `carry` |
 /// | `LIGNIN_MIGRATE_TARGET` | where the LigninDB database is made: a path that is not there. A temporary directory unless given |
 #[test]
 #[ignore = "takes a RocksDB GroveDB that the environment names"]
@@ -2776,7 +2776,7 @@ fn a_database_of_the_environment_is_migrated_and_read_alike() {
     let number = variable(REAL_VERSION).expect("LIGNIN_MIGRATE_GROVE_VERSION is given");
     let number: usize = number.parse().expect("a grove version");
     let version = &GROVE_VERSIONS[number - 1];
-    let unreachable = variable(REAL_UNREACHABLE).map_or(Unreachable::Refuse, |name| {
+    let unreachable = variable(REAL_UNREACHABLE).map_or(Unreachable::Leave, |name| {
         Unreachable::named(&name).expect("refuse, leave or carry")
     });
     let scratch = tempfile::tempdir().expect("a directory");

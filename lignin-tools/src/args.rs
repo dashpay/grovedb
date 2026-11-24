@@ -47,13 +47,22 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      given; 0 is after every commit). A source that a node
                                      left without stopping is migrated as the state that node
                                      would recover to. --unreachable says what becomes of
-                                     records under a prefix that no element leads to: the
-                                     source is refused (unless given); they are left behind,
-                                     and the target is what a database written on LigninDB
-                                     holds; or they are carried as records that no tree links.
-                                     In a store that carries them, a write below a tree that
-                                     is made again at such a path is refused by the engine as
-                                     it stands
+                                     records under a prefix that no element leads to (a tree
+                                     that a batch's plain delete removed while it held an
+                                     element leaves its records). Unless given they are left
+                                     behind (leave): the run says how many, and the target is
+                                     what a database written on LigninDB holds, with the same
+                                     root hash. What can answer otherwise than on RocksDB is
+                                     a read by the path of such a tree, a tree made again
+                                     there, and a cursor that steps from no key (the
+                                     documentation of the migrate module says each). A
+                                     database written by a caller of GroveDB can hold such
+                                     records, and a run that refused them unless told would
+                                     refuse it. With refuse a source that holds any is
+                                     refused; with carry they are carried as records that no
+                                     tree links. In a store that carries them, a write below
+                                     a tree that is made again at such a path is refused by
+                                     the engine as it stands
                                      A SOURCE with a keyed child under a tree of flat records
                                      (an element put below such a tree, which grove versions 1
                                      to 3 take) is refused: LigninDB keeps such a child as a
@@ -224,10 +233,12 @@ pub enum Command {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Unreachable {
     /// A source that holds any is refused, before anything is written.
-    #[default]
     Refuse = 0,
     /// They are left behind: the target holds none of them, as a database
-    /// that was written on LigninDB holds none.
+    /// that was written on LigninDB holds none. It is what a run does
+    /// unless it is told otherwise, since a caller of GroveDB can have left
+    /// such records (`migrate`, "Records that nothing leads to").
+    #[default]
     Leave = 1,
     /// They are carried, as records that no tree links under a subtree
     /// with no host. The engine of GroveDB as it stands refuses a write
