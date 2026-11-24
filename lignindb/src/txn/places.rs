@@ -52,16 +52,20 @@
 //! [`Applied::nodes`]: super::Applied::nodes
 //! [`NodePut::at`]: super::NodePut::at
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    hash::{BuildHasher, Hasher, RandomState},
+};
 
 use lignin_tree::node::{Lease, NodeHandle};
 
 use super::key::Subtree;
 
-/// The most keys a table keeps. One that is put into a table that has
-/// this many empties the table first: a transaction that comes to more
-/// keys than this under one lease searches for those of them that it
-/// comes back to.
+/// The most keys a table takes before it is emptied. A key that is new
+/// to a table that took this many empties the table first: a transaction
+/// that comes to more keys than this under one lease searches for those
+/// of them that it comes back to. A key that was forgotten counts until
+/// the table is emptied.
 pub(crate) const KEPT_PLACES: usize = 1 << 16;
 
 /// What a table has of one key.
@@ -73,21 +77,44 @@ pub(crate) enum Place {
     Absent,
 }
 
-/// What one lease has shown of the keys of each subtree.
-#[derive(Debug, Default)]
-pub(crate) struct Places {
-    lease: Option<Lease>,
-    by_subtree: HashMap<Subtree, HashMap<Box<[u8]>, Place>>,
-    len: usize,
+/// One key of a table.
+#[derive(Debug)]
+struct Entry {
+    subtree: Subtree,
+    /// Where the key is in [`Places::keys`], and how long it is.
+    key: (u32, u32),
+    /// What is kept of the key: nothing once it is forgotten.
+    place: Option<Place>,
+    /// The entry that was put before this one under the same hash, or no
+    /// entry of the table.
+    before: u32,
 }
 
-impl Places {
+/// What one lease has shown of the keys of each subtree.
+///
+/// The keys are in one buffer and the entries in one list, so a table
+/// that is emptied or dropped gives its memory back in three pieces,
+/// however many keys it took.
+#[derive(Debug, Default)]
+pub(crate) struct Places<S = RandomState> {
+    lease: Option<Lease>,
+    /// The entry that was put last under each hash of a subtree and a key.
+    newest: HashMap<u64, u32>,
+    entries: Vec<Entry>,
+    keys: Vec<u8>,
+    /// How many entries have something of their key.
+    len: usize,
+    hashes: S,
+}
+
+impl<S: BuildHasher> Places<S> {
     /// What the table has of `key` in `subtree`, if it is of `lease`.
     pub(crate) fn get(&self, lease: Lease, subtree: &Subtree, key: &[u8]) -> Option<Place> {
         if self.len == 0 || self.lease != Some(lease) {
             return None;
         }
-        self.by_subtree.get(subtree)?.get(key).copied()
+        let entry = self.entry(self.hash(subtree, key), subtree, key)?;
+        self.entries[entry].place
     }
 
     /// Keeps `handle` as the place of the node under `key` of `subtree`.
@@ -101,25 +128,61 @@ impl Places {
         self.set(lease, subtree, key, Place::Absent);
     }
 
+    fn hash(&self, subtree: &Subtree, key: &[u8]) -> u64 {
+        let mut hasher = self.hashes.build_hasher();
+        hasher.write(subtree.as_bytes());
+        hasher.write(key);
+        hasher.finish()
+    }
+
+    /// The entry of `key` in `subtree`, whose hash is `hash`.
+    fn entry(&self, hash: u64, subtree: &Subtree, key: &[u8]) -> Option<usize> {
+        let mut at = *self.newest.get(&hash)? as usize;
+        loop {
+            let entry = self.entries.get(at)?;
+            let (start, len) = (entry.key.0 as usize, entry.key.1 as usize);
+            if entry.subtree == *subtree && self.keys[start..start + len] == *key {
+                return Some(at);
+            }
+            at = entry.before as usize;
+        }
+    }
+
     fn set(&mut self, lease: Lease, subtree: Subtree, key: &[u8], place: Place) {
-        if self.lease != Some(lease) || self.len >= KEPT_PLACES {
+        if self.lease != Some(lease) {
             self.clear();
             self.lease = Some(lease);
         }
-        let keys = self.by_subtree.entry(subtree).or_default();
-        match keys.get_mut(key) {
-            Some(kept) => *kept = place,
-            None => {
-                keys.insert(key.into(), place);
+        let hash = self.hash(&subtree, key);
+        if let Some(entry) = self.entry(hash, &subtree, key) {
+            if self.entries[entry].place.replace(place).is_none() {
                 self.len += 1;
             }
+            return;
         }
+        if self.entries.len() >= KEPT_PLACES {
+            self.clear();
+            self.lease = Some(lease);
+        }
+        let entry = self.entries.len() as u32;
+        let before = self.newest.insert(hash, entry).unwrap_or(u32::MAX);
+        self.entries.push(Entry {
+            subtree,
+            key: (self.keys.len() as u32, key.len() as u32),
+            place: Some(place),
+            before,
+        });
+        self.keys.extend_from_slice(key);
+        self.len += 1;
     }
 
     /// Forgets what is kept of `key` in `subtree`.
     pub(crate) fn forget(&mut self, subtree: &Subtree, key: &[u8]) {
-        if let Some(keys) = self.by_subtree.get_mut(subtree)
-            && keys.remove(key).is_some()
+        if self.len == 0 {
+            return;
+        }
+        if let Some(entry) = self.entry(self.hash(subtree, key), subtree, key)
+            && self.entries[entry].place.take().is_some()
         {
             self.len -= 1;
         }
@@ -127,14 +190,19 @@ impl Places {
 
     /// Forgets what is kept of every key of `subtree`.
     pub(crate) fn forget_subtree(&mut self, subtree: &Subtree) {
-        if let Some(keys) = self.by_subtree.remove(subtree) {
-            self.len -= keys.len();
+        if self.len == 0 {
+            return;
         }
+        let of_subtree = (self.entries.iter_mut()).filter(|entry| entry.subtree == *subtree);
+        let forgotten = of_subtree.filter_map(|entry| entry.place.take()).count();
+        self.len -= forgotten;
     }
 
     /// Forgets everything.
     pub(crate) fn clear(&mut self) {
-        self.by_subtree.clear();
+        self.newest.clear();
+        self.entries.clear();
+        self.keys.clear();
         self.len = 0;
         self.lease = None;
     }
@@ -157,7 +225,7 @@ mod tests {
     #[test]
     fn a_table_answers_under_its_lease_alone() {
         let (lease, other) = (Lease::take(), Lease::take());
-        let mut places = Places::default();
+        let mut places = Places::<RandomState>::default();
         assert_eq!(places.get(lease, &subtree(1), b"a"), None);
 
         places.put_absent(lease, subtree(1), b"a");
@@ -180,7 +248,7 @@ mod tests {
     #[test]
     fn a_key_is_forgotten_alone_or_with_its_subtree() {
         let lease = Lease::take();
-        let mut places = Places::default();
+        let mut places = Places::<RandomState>::default();
         for key in [b"a", b"b", b"c"] {
             places.put_absent(lease, subtree(1), key);
         }
@@ -209,13 +277,20 @@ mod tests {
     #[test]
     fn a_full_table_is_emptied_by_the_next_key() {
         let lease = Lease::take();
-        let mut places = Places::default();
+        let mut places = Places::<RandomState>::default();
         for key in 0..KEPT_PLACES as u32 {
+            places.put_absent(lease, subtree(1), &key.to_be_bytes());
+            // A key the table has is put in its place.
             places.put_absent(lease, subtree(1), &key.to_be_bytes());
         }
         assert_eq!(places.len(), KEPT_PLACES);
-        // A key the table has is put in its place, and empties nothing
-        // but a table that is full.
+        // A key that is forgotten counts for the table's size until the
+        // table is emptied, and a full table takes it again.
+        places.forget(&subtree(1), &7u32.to_be_bytes());
+        assert_eq!(places.len(), KEPT_PLACES - 1);
+        places.put_absent(lease, subtree(1), &7u32.to_be_bytes());
+        assert_eq!(places.len(), KEPT_PLACES);
+        places.forget(&subtree(1), &7u32.to_be_bytes());
         places.put_absent(lease, subtree(1), b"one more");
         assert_eq!(places.len(), 1);
         assert_eq!(places.get(lease, &subtree(1), &0u32.to_be_bytes()), None);
@@ -223,5 +298,66 @@ mod tests {
             places.get(lease, &subtree(1), b"one more"),
             Some(Place::Absent)
         );
+    }
+
+    /// Every key under one hash.
+    #[derive(Default)]
+    struct OneHash;
+
+    impl BuildHasher for OneHash {
+        type Hasher = Self;
+
+        fn build_hasher(&self) -> Self {
+            Self
+        }
+    }
+
+    impl Hasher for OneHash {
+        fn finish(&self) -> u64 {
+            7
+        }
+
+        fn write(&mut self, _: &[u8]) {}
+    }
+
+    /// Keys that share a hash are told apart by their subtree and their
+    /// bytes: a key that is a part of another, the same key in another
+    /// subtree, and the empty key.
+    #[test]
+    fn keys_under_one_hash_are_kept_apart() {
+        let lease = Lease::take();
+        let mut places = Places::<OneHash>::default();
+        let keys: [(u8, &[u8]); 6] = [
+            (1, b"ab"),
+            (1, b"a"),
+            (1, b"abc"),
+            (2, b"ab"),
+            (1, b""),
+            (2, b""),
+        ];
+        for (name, key) in keys {
+            assert_eq!(places.get(lease, &subtree(name), key), None, "{key:?}");
+            places.put_absent(lease, subtree(name), key);
+        }
+        assert_eq!(places.len(), keys.len());
+        for (at, (name, key)) in keys.into_iter().enumerate() {
+            let kept = places.get(lease, &subtree(name), key);
+            assert_eq!(kept, Some(Place::Absent), "{key:?}");
+            places.forget(&subtree(name), key);
+            assert_eq!(places.get(lease, &subtree(name), key), None, "{key:?}");
+            assert_eq!(places.len(), keys.len() - at - 1);
+        }
+        assert_eq!(places.get(lease, &subtree(1), b"b"), None);
+        places.forget(&subtree(1), b"b");
+
+        // A key that was forgotten is kept again in its entry.
+        places.put_absent(lease, subtree(1), b"a");
+        places.put_absent(lease, subtree(2), b"ab");
+        assert_eq!(places.len(), 2);
+        assert_eq!(places.get(lease, &subtree(1), b"a"), Some(Place::Absent));
+        assert_eq!(places.get(lease, &subtree(1), b"ab"), None);
+        places.forget_subtree(&subtree(2));
+        assert_eq!(places.len(), 1);
+        assert_eq!(places.get(lease, &subtree(2), b"ab"), None);
     }
 }
