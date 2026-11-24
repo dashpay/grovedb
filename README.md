@@ -154,10 +154,13 @@ directly or match exhaustively on these enums:
   Other rusqlite users in the same build must move to 0.41 as well.
 
 The referrer list of a bidirectional-reference target is no longer part of
-any node hash, in every Grove version. A database that has never stored an
-element with backward references needs no migration. One that stored such an
-element with an earlier build holds value hashes this build does not
-reproduce.
+any node hash, in every Grove version, so naming an earlier `GroveVersion`
+does not keep the old hashes. A database that has never stored an
+`ItemWithBackwardsReferences`, a `SumItemWithBackwardsReferences`, an
+`ItemWithSumItemWithBackwardsReferences` or a `BidirectionalReference` needs
+no migration. One that stored any of them with an earlier build, even with no
+referrer ever registered, holds value hashes this build does not reproduce:
+`verify_grovedb` reports those elements and their proofs do not verify.
 
 See the [changelog](CHANGELOG.md) for every change and the version slot that
 gates it.
