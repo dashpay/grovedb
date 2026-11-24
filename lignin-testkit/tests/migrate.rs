@@ -16,11 +16,15 @@
 //!    issues on both, and the migrator has verified the target with the
 //!    physical invariant checker and Merk's hash rules.
 //! 3. **The history goes on the same.** The rest of the stream is applied
-//!    to the RocksDB grove and to the migrated one, and every step is
+//!    to the RocksDB grove and to the migrated one, and each step is
 //!    compared as the pair runner compares it: the answer, the error, the
-//!    cost, the root hash and the proof. At the end what both store is
-//!    listed and compared again, and the migrated grove is closed, which
-//!    in a debug build checks its store with Merk's rules.
+//!    cost, the root hash and the proof. A stream ends where the pair
+//!    runner ends one: at its last step, or at a step at which neither
+//!    engine can be observed. No stream of the quick form ends at such a
+//!    step, which the quick form asserts, and the long form says how many
+//!    of its cuts did. At the end what both store is listed and compared
+//!    again, and the migrated grove is closed, which in a debug build
+//!    checks its store with Merk's rules.
 //!
 //! A cut is made where the stream has committed and holds no snapshot: a
 //! migration is of a database at rest.
@@ -54,7 +58,10 @@ use grovedb_storage::{
     flat::pending_prefix_drops_namespace, prefix::build_prefix, Storage, StorageContext,
 };
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
-use lignin_io::sim::{CrashPoint, SimConfig, SimVfs};
+use lignin_io::{
+    sim::{CrashPoint, Fault, FaultRule, OpKind, SimConfig, SimVfs},
+    Vfs,
+};
 use lignin_store::wal::SyncPolicy;
 use lignin_testkit::{
     diff::{
@@ -68,7 +75,7 @@ use lignin_testkit::{
     workload::{Op, StreamEngine},
 };
 use lignin_tools::{
-    migrate::{migrate, work_dir, Migration, Unreachable, WORK_DATABASE, WORK_MARK},
+    migrate::{migrate, work_dir, Migration, Unreachable, MARK_TEXT, WORK_DATABASE, WORK_MARK},
     Outcome,
 };
 use lignindb::{
@@ -228,7 +235,7 @@ fn gone_on(
     let out = migrated(&rocks_dir, &lignin_dir, batch)?;
     assert!(
         !work_dir(&lignin_dir).unwrap().exists(),
-        "the work directory is renamed"
+        "the work directory is removed"
     );
     let survey = |name| word(&out, "migrate: survey", name);
     let mut went = Went {
@@ -297,7 +304,8 @@ fn gone_on(
                 let (was, is) = (text(was), text(is));
                 // Engines that cannot be observed in the same way did the
                 // same, and the stream ends there, as in the pair runner:
-                // what follows is counted as not applied.
+                // that step and what follows it are counted as not
+                // compared.
                 match was == is {
                     true => {
                         went.unobserved = (trace.ops.len() - step) as u64;
@@ -432,7 +440,7 @@ const KINDS: [&str; 6] = [
     "ReconcileIndexed",
 ];
 
-fn checked(traces: &[Trace], plan: &[(usize, usize)], batch: usize) {
+fn checked(traces: &[Trace], plan: &[(usize, usize)], batch: usize) -> usize {
     let ended = run(traces, plan, batch);
     let mut sum = Went::default();
     let (mut went_on, mut failed) = (0usize, Vec::new());
@@ -474,8 +482,8 @@ fn checked(traces: &[Trace], plan: &[(usize, usize)], batch: usize) {
     }
     println!(
         "{} cuts of {} traces: {went_on} went on the same, {} did not; {ended_early} of them \
-         ended at a step that neither engine could be observed at, with {} operations not \
-         applied; {} compared no step after the cut; {sum:?}",
+         ended at a step that neither engine could be observed at, with {} operations from \
+         such a step on that were not compared; {} compared no step after the cut; {sum:?}",
         plan.len(),
         traces.len(),
         failed.len(),
@@ -492,9 +500,11 @@ fn checked(traces: &[Trace], plan: &[(usize, usize)], batch: usize) {
         sum.steps > 0 && sum.nodes > 0 && sum.compared > sum.nodes,
         "{sum:?}"
     );
+    ended_early
 }
 
-/// Every trace of the corpus, cut once near its middle.
+/// Every trace of the corpus, cut once near its middle. Each stream is
+/// compared to its last step.
 #[test]
 fn the_corpus_goes_on_the_same_after_a_migration_at_its_middle() {
     let traces = corpus();
@@ -502,7 +512,8 @@ fn the_corpus_goes_on_the_same_after_a_migration_at_its_middle() {
     let plan: Vec<(usize, usize)> = (0..traces.len())
         .map(|trace| (trace, traces[trace].ops.len() / 2))
         .collect();
-    checked(&traces, &plan, 64 << 20);
+    let ended_early = checked(&traces, &plan, 64 << 20);
+    assert_eq!(ended_early, 0, "a stream ended before its last step");
 }
 
 /// Every trace of the corpus, cut at three places over its length and
@@ -520,6 +531,8 @@ fn the_corpus_goes_on_the_same_after_a_migration_at_every_kind_of_place() {
                 .map(|wanted| (at, wanted)),
         );
     }
+    // How many of the cuts ended before the last step of their stream is
+    // in the line that `checked` prints.
     checked(&traces, &plan, 1 << 20);
 }
 
@@ -976,21 +989,35 @@ fn a_target_that_holds_something_is_refused_and_an_empty_directory_is_taken() {
         "the source's directory is as it was"
     );
 
-    // A work directory that someone put a file into is not taken for the
-    // work of a migration, and is left as it is.
-    let other = dir.path().join("other");
-    let work = work_dir(&other).unwrap();
-    std::fs::create_dir(&work).expect("a directory");
-    std::fs::write(work.join("README"), b"of someone").expect("a file");
-    let (outcome, out) = ran(&migration(&source, &other));
-    let refused = outcome.expect_err("a work directory of someone else is refused");
+    // A target that is a file, and one that is a link to a directory
+    // with nothing in it: neither is a directory a database is put at.
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("a directory");
+    let (file, link) = (dir.path().join("a file"), dir.path().join("a link"));
+    std::fs::write(&file, b"of someone").expect("a file");
+    std::os::unix::fs::symlink(&elsewhere, &link).expect("a link");
+    for taken in [&file, &link] {
+        let before = held(taken);
+        let (outcome, out) = ran(&migration(&source, taken));
+        let refused = outcome.expect_err("a target that is no directory is refused");
+        assert!(
+            refused.contains("is there and is no directory"),
+            "{refused}\n{out}"
+        );
+        assert_eq!(held(taken), before);
+        assert!(!work_dir(taken).unwrap().exists());
+    }
+    assert_eq!(held(&elsewhere), Vec::<String>::new());
+
+    // The directory a target is to be in is not made.
+    let below = dir.path().join("no such directory");
+    let (outcome, out) = ran(&migration(&source, &below.join("lignindb")));
+    let refused = outcome.expect_err("a target in no directory is refused");
     assert!(
-        refused.contains("is not the work of a migration"),
+        refused.contains("is not there: make it first"),
         "{refused}\n{out}"
     );
-    let left: Vec<_> = std::fs::read_dir(&work).expect("the directory").collect();
-    assert_eq!(left.len(), 1, "the file alone is there");
-    assert!(!other.exists());
+    assert!(!below.exists());
 
     // A grove with nothing in it is a source as any other.
     let (empty, of_empty) = (dir.path().join("empty"), dir.path().join("of-empty"));
@@ -1004,6 +1031,363 @@ fn a_target_that_holds_something_is_refused_and_an_empty_directory_is_taken() {
     );
     let (outcome, _) = ran(&migration(&dir.path().join("nothing"), &target));
     assert!(outcome.is_err(), "a source that is not there is refused");
+}
+
+/// What is at `path`, without following a link: a link with where it
+/// leads, a file with its bytes, or a directory with what its entries
+/// are.
+fn held(path: &Path) -> Vec<String> {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return vec!["nothing".to_owned()];
+    };
+    if metadata.is_symlink() {
+        let leads = std::fs::read_link(path).expect("where the link leads");
+        return vec![format!("a link to {leads:?}")];
+    }
+    if metadata.is_file() {
+        let bytes = std::fs::read(path).expect("the bytes of the file");
+        return vec![format!("a file of {bytes:?}")];
+    }
+    let entries = std::fs::read_dir(path).expect("a directory");
+    let mut entries: Vec<String> = entries
+        .map(|entry| {
+            let entry = entry.expect("an entry");
+            format!("{:?}: {:?}", entry.file_name(), held(&entry.path()))
+        })
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// What is at the path of the work directory and is not the command's is
+/// refused, and nothing there is changed, followed or removed: a
+/// directory with another entry than the two the command makes, with the
+/// name of its file on something else, with other bytes in that file, or
+/// with a database and no file; a link; and a file.
+#[test]
+fn what_is_at_the_work_directory_and_is_not_the_commands_is_refused_untouched() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let source = dir.path().join("rocksdb");
+    small(&source);
+    let target = dir.path().join("lignindb");
+    let work = work_dir(&target).unwrap();
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("a directory");
+    let made = |work: &Path| std::fs::create_dir(work).expect("a directory");
+    let file =
+        |path: std::path::PathBuf, bytes: &[u8]| std::fs::write(path, bytes).expect("a file");
+    let link = |to: &Path, at: std::path::PathBuf| {
+        std::os::unix::fs::symlink(to, at).expect("a link");
+    };
+    let longer = [MARK_TEXT, b"and more"].concat();
+    type Put<'a> = (&'a str, Box<dyn Fn(&Path) + 'a>);
+    let foreign: Vec<Put<'_>> = vec![
+        (
+            "a file of someone",
+            Box::new(|work| {
+                made(work);
+                file(work.join("README"), b"of someone");
+            }),
+        ),
+        (
+            "a directory with the name of the file",
+            Box::new(|work| {
+                made(work);
+                made(&work.join(WORK_MARK));
+            }),
+        ),
+        (
+            "a file of that name with other bytes",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK), b"of someone");
+            }),
+        ),
+        (
+            "a file of that name with more bytes",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK), &longer);
+            }),
+        ),
+        (
+            "the command's file and a file beside it",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK), MARK_TEXT);
+                file(work.join("README"), b"of someone");
+            }),
+        ),
+        (
+            "a database and no file",
+            Box::new(|work| {
+                made(work);
+                made(&work.join(WORK_DATABASE));
+            }),
+        ),
+        (
+            "a database beside a file that was cut short",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK), &MARK_TEXT[..7]);
+                made(&work.join(WORK_DATABASE));
+            }),
+        ),
+        (
+            "a link with the name of the database",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK), MARK_TEXT);
+                link(&elsewhere, work.join(WORK_DATABASE));
+            }),
+        ),
+        (
+            "a link to a directory",
+            Box::new(|work| link(&elsewhere, work.to_path_buf())),
+        ),
+        (
+            "a file",
+            Box::new(|work| file(work.to_path_buf(), b"of someone")),
+        ),
+    ];
+    for (what, put) in &foreign {
+        put(&work);
+        let before = held(&work);
+        let (outcome, out) = ran(&migration(&source, &target));
+        let refused = outcome.expect_err(what);
+        assert!(
+            refused.contains("is not the work of a migration"),
+            "{what}: {refused}\n{out}"
+        );
+        assert_eq!(held(&work), before, "{what}: it is as it was");
+        assert_eq!(held(&elsewhere), Vec::<String>::new(), "{what}");
+        assert!(!target.exists(), "{what}");
+        match std::fs::symlink_metadata(&work)
+            .expect("it is there")
+            .is_dir()
+        {
+            true => std::fs::remove_dir_all(&work).expect("the directory is removed"),
+            false => std::fs::remove_file(&work).expect("the file is removed"),
+        }
+    }
+}
+
+/// What a stop leaves while the work directory is made is the command's:
+/// a directory with nothing in it, one with its file and no byte of it or
+/// its first bytes, and one with its whole file and no database. Each is
+/// gone on with.
+#[test]
+fn a_work_directory_that_a_stop_left_at_its_making_is_taken() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let source = dir.path().join("rocksdb");
+    let root = small(&source);
+    let left: [Option<&[u8]>; 4] = [None, Some(b""), Some(&MARK_TEXT[..10]), Some(MARK_TEXT)];
+    for (number, file) in left.into_iter().enumerate() {
+        let target = dir.path().join(format!("lignindb-{number}"));
+        let work = work_dir(&target).unwrap();
+        std::fs::create_dir(&work).expect("the work directory");
+        if let Some(bytes) = file {
+            std::fs::write(work.join(WORK_MARK), bytes).expect("its file");
+        }
+        let (outcome, out) = ran(&migration(&source, &target));
+        assert_eq!(outcome, Ok(Outcome::Done), "{file:?}: {out}");
+        assert!(!work.exists(), "{file:?}");
+        assert_eq!(
+            root_of(&Lignin::open_with_engine(&target).expect("the target")),
+            root
+        );
+    }
+}
+
+/// What a migration writes, with something done once a line that holds
+/// `at` was written, the first time: what it does is how that write
+/// ends.
+struct AtLine<'a> {
+    at: &'static str,
+    then: Option<Box<dyn FnOnce() -> io::Result<()> + 'a>>,
+    out: Vec<u8>,
+}
+
+impl Write for AtLine<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.out.extend_from_slice(bytes);
+        if bytes.ends_with(b"\n") {
+            let whole = &self.out[..self.out.len() - 1];
+            let from = whole
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |at| at + 1);
+            let met = String::from_utf8_lossy(&whole[from..]).contains(self.at);
+            if let Some(then) = self.then.take_if(|_| met) {
+                then()?;
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// An error of the report is none of the device that the database is on:
+/// a writer that says it is full fails the run, with the status of a
+/// failure and no word of a full device, and the same command goes on.
+#[test]
+fn a_report_that_cannot_be_written_is_no_full_device() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
+    let root = small(&source);
+    let migration = migration(&source, &target);
+    let mut out = AtLine {
+        at: "the load needs about",
+        then: Some(Box::new(|| {
+            Err(io::Error::from(io::ErrorKind::StorageFull))
+        })),
+        out: Vec::new(),
+    };
+    let failed = migrate(&migration, &mut out).expect_err("the writer failed");
+    let said = String::from_utf8_lossy(&out.out).into_owned();
+    assert_eq!(failed.status(), 1, "{failed}");
+    assert!(!said.contains("IS FULL"), "{said}");
+    assert!(!target.exists());
+
+    let (outcome, out) = ran(&migration);
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert_eq!(
+        root_of(&Lignin::open_with_engine(&target).expect("the target")),
+        root
+    );
+}
+
+/// A writer of the report that panics ends the call with its panic: the
+/// migration does not wait for a write that is never made, and what it
+/// left is gone on with.
+#[test]
+fn a_writer_that_panics_ends_the_migration() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
+    let root = small(&source);
+    let migration = migration(&source, &target);
+    let mut out = AtLine {
+        at: "the load needs about",
+        then: Some(Box::new(|| -> io::Result<()> {
+            panic!("the writer of the report panics")
+        })),
+        out: Vec::new(),
+    };
+    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        migrate(&migration, &mut out).map_err(|error| error.to_string())
+    }));
+    let panic = ended.expect_err("the panic of the writer");
+    assert_eq!(
+        panic.downcast_ref::<&str>().copied(),
+        Some("the writer of the report panics")
+    );
+    drop(out);
+
+    let (outcome, out) = ran(&migration);
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert_eq!(
+        root_of(&Lignin::open_with_engine(&target).expect("the target")),
+        root
+    );
+}
+
+/// A load is complete where its database holds a record and no journal,
+/// also where every record it holds is in the namespace that no element
+/// hosts: a grove with nothing in it, and a record of a root key under a
+/// prefix of no tree. Such a store is compared with its source as it is
+/// now, and is not loaded again over what it holds.
+#[test]
+fn a_complete_load_with_records_in_the_namespace_alone_is_compared() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
+    drop(rocks(&source));
+    let of_no_tree = [0x77; 32];
+    raw(&source, of_no_tree, 'r', b"r", Some(b"a key"));
+    let (outcome, out) = ran(&migration(&source, &target));
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert_eq!(word(&out, "migrate: loaded", "root_keys"), 1, "{out}");
+
+    unnamed(&target);
+    let (outcome, out) = ran(&migration(&source, &target));
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert!(!out.contains("migrate: loaded"), "{out}");
+
+    unnamed(&target);
+    raw(&source, of_no_tree, 'r', b"r", Some(b"another key"));
+    let (outcome, out) = ran(&migration(&source, &target));
+    assert_eq!(outcome, Ok(Outcome::NotSound), "{out}");
+    assert!(!out.contains("migrate: loaded"), "{out}");
+    assert!(out.contains("DIFFERS: the record of the root key"), "{out}");
+}
+
+/// A sync that fails once the database has its name ends the run with
+/// what is at the target: the database, under a name that is not durable.
+/// It is the status of a failure, also where the device says that it is
+/// full. The same command then makes the syncs, removes the work
+/// directory, and refuses the target as one that is there; a power cut
+/// after it leaves the database at its name.
+#[test]
+fn a_sync_that_fails_after_the_rename_is_said_and_made_by_the_next_run() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let source = dir.path().join("rocksdb");
+    let root = small(&source);
+    let work = work_dir(Path::new(ON_DEVICE)).unwrap();
+    let failing = [
+        (work.as_path(), Fault::Eio),
+        (Path::new("/"), Fault::Eio),
+        (work.as_path(), Fault::Enospc),
+        (Path::new("/"), Fault::Enospc),
+    ];
+    for (number, (at, fault)) in failing.into_iter().enumerate() {
+        let device = SimVfs::new(SimConfig::new(number as u64));
+        let migration = on(
+            &device,
+            &source,
+            Unreachable::Refuse,
+            SyncPolicy::EveryCommit,
+        );
+        let mut out = AtLine {
+            at: "migrate: verified",
+            then: Some(Box::new(|| {
+                device.add_rule(FaultRule::new(fault).on(OpKind::SyncDir).at(at));
+                Ok(())
+            })),
+            out: Vec::new(),
+        };
+        let failed = migrate(&migration, &mut out).expect_err("a sync failed");
+        let said = String::from_utf8_lossy(&out.out).into_owned();
+        drop(out);
+        assert_eq!(failed.status(), 1, "{failed}");
+        let failed = failed.to_string();
+        assert!(
+            failed.contains("could not be made durable"),
+            "{failed}\n{said}"
+        );
+        assert!(
+            !said.contains("IS FULL") && !said.contains("migrate: done"),
+            "{said}"
+        );
+        device.clear_rules();
+        assert_eq!(root_of(&grove_on(&device)), root, "{at:?} {fault}");
+        let left = device.read_dir(&work).expect("the work directory");
+        assert_eq!(left.len(), 1, "{left:?}");
+
+        let (outcome, said) = ran(&migration);
+        let refused = outcome.expect_err("the target is there");
+        assert!(
+            refused.contains("a database that a migration left at the target is whole"),
+            "{refused}\n{said}"
+        );
+        let gone = device.read_dir(&work).expect_err("the work directory");
+        assert_eq!(gone.kind(), io::ErrorKind::NotFound);
+        // What no sync made durable is lost: the name is not.
+        let image = device.crash_image();
+        let cut = image.recover(&image.lose_all()).expect("a device");
+        assert_eq!(root_of(&grove_on(&cut)), root, "{at:?} {fault}");
+    }
 }
 
 /// What a migration writes, which turns the power of the device off once
@@ -1215,7 +1599,7 @@ fn power_cuts_at_any_change_leave_a_load_that_goes_on() {
                 break;
             }
             // The power went off inside the run, or after its last
-            // change, which is the sync that makes the name durable. A
+            // change, which is the removal of the work directory. A
             // check that could not read the store it checks says that
             // the store is not sound, and gives it no name.
             let ended = matches!(outcome, Err(_) | Ok(Outcome::Done) | Ok(Outcome::NotSound));
@@ -1292,6 +1676,43 @@ fn a_full_device_stops_a_load_that_goes_on_once_there_is_room() {
         assert_eq!(root_of(&grove_on(&device)), root, "{capacity}");
     }
     assert!(stopped >= 4, "{stopped} devices were full");
+
+    // A device that fills at each step of the migration of a grove with
+    // nothing in it, the making of the work directory and the first
+    // commit of the database among them: up to the rename a full device
+    // is never another failure, and after it the run says what is at the
+    // target.
+    let empty = dir.path().join("empty");
+    drop(rocks(&empty));
+    let whole = SimVfs::new(SimConfig::new(0));
+    let (outcome, out) = ran(&on(&whole, &empty, refuse, SyncPolicy::Never));
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    let used = whole.used_bytes();
+    let mut stopped = 0;
+    for capacity in (0..=used).step_by((used / 96).max(1) as usize) {
+        let device = SimVfs::new(SimConfig::new(capacity));
+        device.set_capacity(Some(capacity));
+        let (outcome, out) = ran(&on(&device, &empty, refuse, SyncPolicy::Never));
+        match outcome {
+            Ok(Outcome::IncompleteMigration) => {
+                assert!(out.contains("IS FULL"), "{out}");
+                stopped += 1;
+            }
+            Ok(Outcome::Done) => {}
+            Err(named) if named.contains("could not be made durable") => {}
+            other => panic!("a device of {capacity} bytes: {other:?}\n{out}"),
+        }
+        device.set_capacity(None);
+        let (outcome, out) = ran(&on(&device, &empty, refuse, SyncPolicy::Never));
+        let whole = "a database that a migration left at the target is whole";
+        match outcome {
+            Ok(Outcome::Done) => {}
+            Err(refused) if refused.contains(whole) => {}
+            other => panic!("after a device of {capacity} bytes: {other:?}\n{out}"),
+        }
+        assert_eq!(root_of(&grove_on(&device)), [0; 32], "{capacity}");
+    }
+    assert!(stopped >= 24, "{stopped} devices were full");
 }
 
 /// A load goes on from the source it was begun on, in the state it was
@@ -1688,6 +2109,57 @@ fn a_keyed_child_under_a_tree_of_flat_records_refuses_the_source() {
     }
 }
 
+/// A flat record is taken for a keyed child where its bytes are those of
+/// a Merk node of the key it lies under, with an element for its value.
+/// The bytes of a node of another key, which a tree was given for a
+/// value, are a flat record as any other, and are carried. A value that
+/// is the node of its own slot is not told from a keyed child, and
+/// refuses the source.
+#[test]
+fn a_flat_record_is_a_keyed_child_as_the_node_of_its_own_key_alone() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    // The first value of a dense tree lies under the key of two zero
+    // bytes.
+    let keys: [(&[u8], bool); 2] = [(b"another key", false), (&[0, 0], true)];
+    for (number, (key, taken)) in keys.into_iter().enumerate() {
+        let source = dir.path().join(format!("rocksdb-{number}"));
+        let target = dir.path().join(format!("lignindb-{number}"));
+        {
+            let db = rocks(&source);
+            put(&db, ROOT, b"t", Element::empty_tree());
+            put(&db, &[b"t"], key, Element::new_item(b"an item".to_vec()));
+            put(&db, ROOT, b"dense", Element::empty_dense_tree(3));
+        }
+        let node = raw_record(&source, prefix_of(&[b"t"]), key);
+        {
+            let db = rocks(&source);
+            let inserted = db.dense_tree_insert(ROOT, b"dense", node.clone(), None, v);
+            let (_, position) = inserted.unwrap().expect("a value of the dense tree");
+            assert_eq!(position, 0);
+        }
+        assert_eq!(raw_record(&source, prefix_of(&[b"dense"]), &[0, 0]), node);
+
+        let (outcome, out) = ran(&migration(&source, &target));
+        let children = word(&out, "migrate: survey", "keyed_children");
+        assert_eq!(children, u64::from(taken), "{out}");
+        match taken {
+            false => {
+                assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+                alike(&source, &target);
+            }
+            true => {
+                let refused = outcome.expect_err("the source is refused");
+                assert!(
+                    refused.contains("holds what a migration does not carry"),
+                    "{refused}"
+                );
+                assert!(!target.exists() && !work_dir(&target).unwrap().exists());
+            }
+        }
+    }
+}
+
 /// A source that holds what a migration does not carry is refused by the
 /// survey, with what was found, before anything is made.
 #[test]
@@ -1871,7 +2343,7 @@ fn a_database_of_the_environment_is_migrated_and_read_alike() {
 fn unnamed(target: &Path) -> std::path::PathBuf {
     let work = work_dir(target).unwrap();
     std::fs::create_dir(&work).expect("the work directory");
-    std::fs::write(work.join(WORK_MARK), b"").expect("its mark");
+    std::fs::write(work.join(WORK_MARK), MARK_TEXT).expect("its mark");
     let database = work.join(WORK_DATABASE);
     std::fs::rename(target, &database).expect("the database");
     database
