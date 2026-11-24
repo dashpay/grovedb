@@ -535,6 +535,9 @@ pub(crate) struct WriteSet {
     left: u64,
     /// The moves among the entries, oldest first.
     moved: Vec<EntryId>,
+    /// The prefixes that the moves took a subtree from, each with how
+    /// many of the moves' pairs name it so ([`Self::took_from`]).
+    sources: HashMap<Subtree, u32>,
     arena: Arena,
     /// The copies of committed values that entries kept. They are not taken
     /// out with a mark: an entry from before the mark can have its copy
@@ -805,6 +808,15 @@ impl WriteSet {
             if self.moved.last() == Some(&id) {
                 self.moved.pop();
                 self.left += 1;
+                for source in Names::of(self.arena.get(entry.key)).sources {
+                    let source = Subtree::new(*source);
+                    let named = self.sources.get_mut(&source);
+                    let named = named.expect("a source of a move is counted");
+                    *named -= 1;
+                    if *named == 0 {
+                        self.sources.remove(&source);
+                    }
+                }
             }
         }
         self.ops.truncate(mark.ops);
@@ -827,6 +839,7 @@ impl WriteSet {
         self.taking.clear();
         self.left += 1;
         self.moved.clear();
+        self.sources.clear();
         self.arena.clear();
         self.kept.clear();
         self.units.clear();
@@ -1050,6 +1063,9 @@ impl WriteSet {
             let id = self.push(Unit::data(first.from), &names, Kind::Moved, first_write);
             self.moved.push(id);
             self.left += 1;
+            for source in moves.iter().flat_map(Moving::sources) {
+                *self.sources.entry(source).or_default() += 1;
+            }
         }
         let first = self.entries.len() as EntryId;
         let mut stored = stored.iter().peekable();
@@ -1605,6 +1621,12 @@ impl WriteSet {
     /// it out as one that left with it.
     pub(crate) fn moves(&self, subtree: &Subtree) -> bool {
         (self.moved.iter()).any(|id| self.names(*id).place(subtree).is_some())
+    }
+
+    /// Whether a move of the set took a subtree from `prefix`: whether
+    /// [`Self::moved_from`] has it, asked with one lookup.
+    pub(crate) fn took_from(&self, prefix: &Subtree) -> bool {
+        self.sources.contains_key(prefix)
     }
 
     /// The prefixes that the moves of the set took a subtree from.

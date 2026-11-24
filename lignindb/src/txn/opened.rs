@@ -258,6 +258,10 @@ impl Opened {
     /// not laid out (`transactions.md` MV2); it left with the move where
     /// the move was stated, or a commit beside the transaction entered
     /// it there since.
+    ///
+    /// It is asked of the subtree's own hosts ([`Self::below_a_source`]),
+    /// which costs a lookup for each Merk the subtree is below, however
+    /// many subtrees the transaction moved.
     pub(crate) fn leaves_with_a_move<'s>(
         &mut self,
         path: &WritePath<'s>,
@@ -268,7 +272,64 @@ impl Opened {
         if !set.has_moves() || set.moves(subtree) {
             return Ok(false);
         }
-        self.below_one_of(path, guard, &set.moved_from(), subtree)
+        let by_hosts = self.below_a_source(path, guard, set, subtree)?;
+        #[cfg(test)]
+        self.held_to_every_source(path, guard, set, subtree, by_hosts)?;
+        match by_hosts {
+            Some(leaves) => Ok(leaves),
+            // The directory does not have the Merks above the subtree
+            // where its entry names them: every prefix is opened.
+            None => self.below_one_of(path, guard, &set.moved_from(), subtree),
+        }
+    }
+
+    /// Whether `subtree` is below a subtree that this version has under a
+    /// prefix which a move of `set` took a subtree from
+    /// ([`WriteSet::took_from`]), asked of the Merks the subtree is below.
+    ///
+    /// The entry of a Merk in use names the element that hosts it by the
+    /// prefix of the Merk that element is in, and has the ids of the Merks
+    /// it is below, the last of them that Merk's; the entry under that
+    /// prefix is of that Merk, and says the same of the Merk above it
+    /// (`lignin_tree::directory`, "Ids", and what its check holds). So
+    /// the Merks that `subtree` is below are found from its entry, one
+    /// lookup each, each with the prefix it is entered under: the subtree
+    /// is below a subtree under one of the prefixes exactly where one of
+    /// those prefixes is among them, since no two entries have one id.
+    ///
+    /// `None` where the walk does not find, under the prefix that an
+    /// entry names for its host's Merk, the Merk whose id the entry has
+    /// for it: nothing is answered from such a directory here.
+    fn below_a_source<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+    ) -> Result<Option<bool>, TxnError> {
+        self.open(path, guard, subtree)?;
+        let Some(entry) = &self.entries[subtree] else {
+            return Ok(Some(false));
+        };
+        // The Merks the subtree is below, the nearest first.
+        let above: Vec<MerkId> = entry.lineage().rev().collect();
+        let mut host = entry.host().map(|host| Subtree::new(*host.parent));
+        for id in above {
+            let Some(parent) = host else {
+                return Ok(None);
+            };
+            self.open(path, guard, &parent)?;
+            let Some(entry) = (self.entries[&parent].as_ref()).filter(|entry| entry.id() == id)
+            else {
+                return Ok(None);
+            };
+            if set.took_from(&parent) {
+                return Ok(Some(true));
+            }
+            host = entry.host().map(|host| Subtree::new(*host.parent));
+        }
+        // The outermost Merk has no host.
+        Ok(host.is_none().then_some(false))
     }
 
     /// The nearest subtree after `from` in the order of the prefixes, or
@@ -348,5 +409,108 @@ impl Opened {
         }
         self.open(path, guard, subtree)?;
         Ok(self.entries[subtree].as_ref())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod held {
+    //! What [`Opened::leaves_with_a_move`] answers is held, in a test
+    //! build and at every call, to the answer it was made with before
+    //! the subtree's own hosts were asked: every prefix that a move of
+    //! the transaction took a subtree from is opened, and the entry under
+    //! each is looked for among the Merks the subtree is below.
+
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// How often the two answers were compared on this thread.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Compared {
+        /// The subtree leaves with a move.
+        pub(crate) leaves: u64,
+        /// It does not, and is entered.
+        pub(crate) stays: u64,
+        /// It does not: this version has no such subtree.
+        pub(crate) absent: u64,
+        /// The walk up the hosts gave no answer.
+        pub(crate) unanswered: u64,
+        /// The most Merks that a subtree which was asked for is below.
+        pub(crate) deepest: usize,
+    }
+
+    thread_local! {
+        static COMPARED: Cell<Compared> = const {
+            Cell::new(Compared { leaves: 0, stays: 0, absent: 0, unanswered: 0, deepest: 0 })
+        };
+    }
+
+    /// What was compared on this thread since this was last asked.
+    pub(crate) fn compared() -> Compared {
+        COMPARED.replace(Compared::default())
+    }
+
+    impl Opened {
+        /// The answer as it was made: by opening every source.
+        fn leaves_by_every_source<'s>(
+            &mut self,
+            path: &WritePath<'s>,
+            guard: &OperationGuard<'s>,
+            set: &WriteSet,
+            subtree: &Subtree,
+        ) -> Result<bool, TxnError> {
+            self.below_one_of(path, guard, &set.moved_from(), subtree)
+        }
+
+        /// Holds `by_hosts`, what the walk up the hosts of `subtree`
+        /// answered, to the answer by every source, and what the write
+        /// set says it took a subtree from to the list of its sources.
+        pub(super) fn held_to_every_source<'s>(
+            &mut self,
+            path: &WritePath<'s>,
+            guard: &OperationGuard<'s>,
+            set: &WriteSet,
+            subtree: &Subtree,
+            by_hosts: Option<bool>,
+        ) -> Result<(), TxnError> {
+            let sources = set.moved_from();
+            for source in &sources {
+                assert!(set.took_from(source), "{source:?} is a source of a move");
+            }
+            let entry = self.entries[subtree].as_ref();
+            let depth = entry.map_or(0, Entry::depth);
+            let mut above = entry.and_then(|entry| {
+                let host = entry.host()?;
+                Some(Subtree::new(*host.parent))
+            });
+            while let Some(prefix) = above {
+                assert_eq!(
+                    set.took_from(&prefix),
+                    sources.contains(&prefix),
+                    "{prefix:?}"
+                );
+                self.open(path, guard, &prefix)?;
+                let host = self.entries[&prefix].as_ref().and_then(Entry::host);
+                above = host.map(|host| Subtree::new(*host.parent));
+            }
+            let entered = self.entries[subtree].is_some();
+            let by_every_source = self.leaves_by_every_source(path, guard, set, subtree)?;
+            if let Some(by_hosts) = by_hosts {
+                assert_eq!(
+                    by_hosts, by_every_source,
+                    "whether {subtree:?} leaves with a move"
+                );
+            }
+            let mut compared = COMPARED.get();
+            match (by_hosts, entered) {
+                (None, _) => compared.unanswered += 1,
+                (Some(true), _) => compared.leaves += 1,
+                (Some(false), true) => compared.stays += 1,
+                (Some(false), false) => compared.absent += 1,
+            }
+            compared.deepest = compared.deepest.max(depth);
+            COMPARED.set(compared);
+            Ok(())
+        }
     }
 }
