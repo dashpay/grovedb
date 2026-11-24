@@ -778,7 +778,10 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 || known.family_of_refused_write(op, reference, candidate, &parts, unchanged);
             // The reference took a write into a subtree that it opened by
             // a record it kept.
-            let taken_write = || Known::family_of_taken_write(&no_element, reference, candidate);
+            let taken_write = || {
+                let said = &is.remarks;
+                Known::family_of_taken_write(op, &no_element, reference, candidate, said)
+            };
             let family = refusal
                 .or_else(root_key)
                 .or_else(cost)
@@ -851,11 +854,13 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             was.step.root_hash.or(roots.0),
             is.step.root_hash.or(roots.1),
         );
-        // Whatever the engines answered, a record that a plain delete
-        // left is no longer one where the operation names its key.
-        known.forgets(op);
+        // A record that a plain delete left is no longer one where the
+        // operation names its key, unless the reference refused the
+        // operation and has the root hash it had.
+        let root_changed = was.step.root_hash.is_some() && roots.0 != before.0;
+        known.forgets(op, !was.step.failed(), root_changed);
         if !was.step.failed() {
-            known.wrote(op, was.step.root_hash.is_some() && roots.0 != before.0);
+            known.wrote(op, root_changed);
             // The trees a plain delete of the batch removed of which the
             // reference still holds a record, as its block sees it now.
             let left = catching(|| {
