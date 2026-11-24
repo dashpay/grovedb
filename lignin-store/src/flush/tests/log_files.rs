@@ -157,3 +157,67 @@ fn a_checkpoint_is_taken_where_the_log_is_when_no_file_can_be_made_for_its_turn(
         db.check_cold();
     }
 }
+
+/// The id of the log file with the highest id in `wal/`.
+fn highest_on_disk(db: &Db) -> FileId {
+    let dir = FileNames::WAL.dir(&db.path);
+    let entries = db.vfs.read_dir(&dir).expect("a listing");
+    let ids = entries.iter().filter_map(|entry| {
+        let id = entry.name.to_str()?.strip_suffix(".log")?.parse().ok()?;
+        FileId::new(id)
+    });
+    ids.max().expect("the log has a file")
+}
+
+/// A roll whose creation of the log's next file could not append the
+/// file's header, and could not remove what it had made, fails and leaves
+/// a file under the id it asked for. The roll after it meets no fault and
+/// does not fail: it leaves that file as it is and makes the log's next
+/// file under the id after it, in the same call. The next open removes
+/// the file that no manifest names.
+#[test]
+fn a_roll_passes_over_the_file_that_a_failed_creation_could_not_remove() {
+    let log = LogOptions {
+        target_file_len: 300,
+        ..LogOptions::default()
+    };
+    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), log);
+    let wb = db.wb();
+    db.commit(&[insert((1, 1), b"a", inline(&noise(1, 400)))]);
+    assert!(db.log.is_due());
+    let asked = FileId::new(highest_on_disk(&db).get() + 1).expect("an id");
+    let path = FileNames::WAL.path(&db.path, asked);
+    let refused = FaultRule::new(Fault::Eio).on(OpKind::Append).at(&path);
+    fs.add_rule(refused.torn_append(false).times(1));
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpKind::RemoveFile)
+            .at(&path)
+            .times(1),
+    );
+    let error = wb.roll_log().expect_err("the creation is refused");
+    assert!(error.to_string().contains("cannot append to"), "{error}");
+    assert_eq!(highest_on_disk(&db), asked, "the file is left");
+    assert!(!log_files(&db).contains(&asked));
+
+    // No fault from here on. The log is due again, and has no file to
+    // turn to but the one the roll makes.
+    db.commit(&[insert((2, 1), b"b", inline(&noise(2, 400)))]);
+    assert!(db.log.is_due());
+    assert!(wb.roll_log().expect("a roll that meets no fault"));
+    let after = FileId::new(asked.get() + 1).expect("an id");
+    assert!(file_of_the_end(&db) >= after, "{:?}", file_of_the_end(&db));
+    assert!(log_files(&db).contains(&after) && !log_files(&db).contains(&asked));
+    assert!(db.vfs.open(&path, lignin_io::OpenMode::Read).is_ok());
+    db.commit(&[hash((1, 1), 9)]);
+    wb.pass().expect("a pass");
+    db.check_cold();
+
+    let db = db.reopen();
+    let gone = db.vfs.open(&path, lignin_io::OpenMode::Read).err();
+    assert_eq!(
+        gone.map(|error| error.kind()),
+        Some(std::io::ErrorKind::NotFound)
+    );
+    db.check_cold();
+}
