@@ -1340,8 +1340,7 @@ fn a_batch_refused_at_a_kept_record_by_lignindb_and_further_on_by_rocksdb_is_pas
         assert_eq!(run.passed_refusals.len(), 1, "grove version {number}");
         let refused = &run.passed_refusals[0];
         assert_eq!(refused.step, REFUSED, "grove version {number}");
-        let all = |part: &Part| matches!(part, Part::Cost | Part::Error);
-        assert!(refused.parts.iter().all(all), "{refused:?}");
+        assert_eq!(refused.parts, [Part::Cost], "{refused:?}");
         let said = |lines: &[String]| {
             let mut failed = lines.iter().filter(|line| line.starts_with("# failed"));
             failed.next().cloned().expect("the words of a refusal")
@@ -1528,7 +1527,7 @@ fn a_write_that_rocksdb_alone_takes_below_a_plain_delete_ends_the_case_counted_a
             false,
             [&beside[..], &[Op::Commit, into_it.clone()][..]].concat(),
             0,
-            Some(true),
+            true,
         ),
         // With `u` as it is the check does not pass; with `u` repaired
         // in the block of the write, and not committed, it finds
@@ -1537,13 +1536,13 @@ fn a_write_that_rocksdb_alone_takes_below_a_plain_delete_ends_the_case_counted_a
             true,
             [&beside[..], &[Op::Commit, into_it.clone()][..]].concat(),
             0,
-            Some(false),
+            false,
         ),
         (
             true,
             [&beside[..], &[Op::Commit, repair, into_it.clone()][..]].concat(),
             0,
-            Some(true),
+            true,
         ),
         (
             false,
@@ -1553,9 +1552,9 @@ fn a_write_that_rocksdb_alone_takes_below_a_plain_delete_ends_the_case_counted_a
             ]
             .concat(),
             1,
-            None,
+            true,
         ),
-        (false, vec![Op::Commit, removal], 0, None),
+        (false, vec![Op::Commit, removal], 0, true),
     ];
     for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
         let number = number + 1;
@@ -1604,9 +1603,7 @@ fn a_write_that_rocksdb_alone_takes_below_a_plain_delete_ends_the_case_counted_a
             assert_eq!(run.tally.closes.checked, 1, "{what}");
             let check = run.reference_check.expect("the reference's own check");
             let found_nothing = check == lignin_testkit::diff::ReferenceCheck::Nothing;
-            if let Some(nothing) = nothing {
-                assert_eq!(found_nothing, *nothing, "{what}: {check:?}");
-            }
+            assert_eq!(found_nothing, *nothing, "{what}: {check:?}");
         }
     }
 }

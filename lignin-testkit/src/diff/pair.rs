@@ -712,7 +712,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             let kept = known.kept_below_a_removed_tree((db, block), candidate, op, version);
             let no_element =
                 known.named_by_a_kept_record_alone((db, block), candidate, op, version);
-            let under_a_left_record = known.under_a_left_record((db, block), candidate, op);
+            let under_a_left_record =
+                known.under_a_left_record((db, block), candidate, op, version);
             let plain_deletes = Known::trees_under_a_plain_delete(db, block, op, version);
             let below_plain_deletes = Known::records_below(db, block, &plain_deletes, version);
             (
@@ -779,8 +780,15 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 roots.0.is_some() && was.step.root_hash == roots.0 && is.step.root_hash == roots.1;
             let refused_write = || {
                 let (left, said) = (&under_a_left_record, &is.remarks);
+                // The reference read what the candidate did not: it
+                // was charged more bytes loaded, and no fewer seeks and
+                // hash calls.
+                let (more, less) = (&was.step.cost, &is.step.cost);
+                let read_more = more.storage_loaded_bytes > less.storage_loaded_bytes
+                    && more.seek_count >= less.seek_count
+                    && more.hash_node_calls >= less.hash_node_calls;
                 known.family_of_refused_write(
-                    op, reference, candidate, &parts, unchanged, left, said,
+                    op, reference, candidate, &parts, unchanged, left, said, read_more,
                 )
             };
             // The reference took a write into a subtree that it opened by
