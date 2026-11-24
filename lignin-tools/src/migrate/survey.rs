@@ -65,14 +65,14 @@ const AXIS_TAGS: [u8; 3] = [0, 1, 2];
 /// About the bytes the process holds for each node of a Merk while that
 /// Merk is handed over, beside the node's key and value.
 ///
-/// It is a measurement of this command as it is at this commit, and of
-/// the engine it writes through (LigninDB task OPS-02). A migration whose
-/// largest Merk has 760,101 nodes with 33 bytes of key and value each
-/// held 1.49 GB at its peak: with 384 MiB of it counted as the floor, 1.40
-/// KB a node, which is rounded up here. A migration whose largest Merk
-/// has 1,000,000 nodes with 474 bytes of key and value each held less
-/// than this projects. A change of what the load or the engine holds for
-/// a node changes the figure.
+/// It is a measurement of this command and of the engine it writes
+/// through (LigninDB task OPS-02), taken before a commit counted its
+/// nodes: a migration whose largest Merk has 760,101 nodes with 33 bytes
+/// of key and value each held 1.49 GB at its peak then, 1.40 KB a node
+/// above a floor of 384 MiB, which is rounded up here. As the command is
+/// at this commit that migration holds 1.29 GB, and one whose largest
+/// Merk has 1,000,000 nodes holds 2.20 GB: less than this projects. A
+/// change of what the load or the engine holds for a node changes it.
 pub(crate) const PEAK_A_NODE: u64 = 1_500;
 
 /// How many times the bytes of an aux or a meta record are counted where

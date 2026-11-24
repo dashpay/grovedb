@@ -474,10 +474,10 @@ impl<'t> Load<'t> {
         }
         // The nodes that were handed over are let go of once the commit
         // is made. The transaction has its own of every record by now,
-        // and letting go of them before the commit would take a tenth off
-        // the most a run holds for a large Merk; but every later commit
-        // of the run was measured to be slower for it, by more than a
-        // tenth of a load in all (LigninDB task OPS-02).
+        // and letting go of them before the commit was measured: it took
+        // a hundredth off the most a run holds for a Merk of a million
+        // nodes, and every later commit of the run was slower for it, by
+        // more than a tenth of a load in all (LigninDB task OPS-02).
         let committed = self.db.commit(&txn, &mut NoStaleHashes)?;
         drop(pending);
         match committed {
