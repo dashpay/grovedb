@@ -46,10 +46,16 @@ struct Account {
     brought: BTreeSet<u8>,
 }
 
+/// A change of the items of one Merk.
+type Edit = Box<dyn FnOnce(&mut Items)>;
+
+/// What a batch does to the account of its run, once it is applied.
+type Noted = Box<dyn FnOnce(&mut Account)>;
+
 /// What one batch changes in the Merks of a run, by Merk.
 #[derive(Default)]
 struct Changes {
-    edits: BTreeMap<u8, Vec<Box<dyn FnOnce(&mut Items)>>>,
+    edits: BTreeMap<u8, Vec<Edit>>,
     /// The subtree that the node under a key of a Merk hosts once the
     /// batch is applied, where the batch says so.
     hosted: BTreeMap<(u8, Vec<u8>), u8>,
@@ -185,7 +191,7 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
         let mut changes = Changes::default();
         // What the account holds once the batch is applied, made after
         // the change sets are: they are of the Merks as they are before.
-        let mut after: Option<Box<dyn FnOnce(&mut Account)>> = None;
+        let mut after: Option<Noted> = None;
         let mut counted = Made::default();
         let stamp = step as u8;
         let mut what = match live.is_empty() {
