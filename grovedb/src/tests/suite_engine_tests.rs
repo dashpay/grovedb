@@ -29,6 +29,7 @@ fn engine_type(name: &str) -> Option<&'static str> {
         "rocksdb" => Some("RocksDbEngine"),
         "pinned-reads" => Some("PinnedReads"),
         "lignin" => Some("LigninEngine"),
+        "either-rocksdb" | "either-lignin" => Some("EitherEngine"),
         _ => None,
     }
 }
@@ -139,6 +140,30 @@ fn a_database_of_the_fixtures_pins_its_reads() {
     assert_eq!(engine.writes_started.load(Ordering::Relaxed), writes);
 }
 
+/// On the engine that is one of the two, a database of the fixtures is on
+/// the engine the run is named for.
+#[cfg(any(
+    grovedb_test_engine = "either-rocksdb",
+    grovedb_test_engine = "either-lignin"
+))]
+#[test]
+fn a_database_of_the_fixtures_holds_the_engine_the_run_is_named_for() {
+    use crate::engine::EngineKind;
+
+    let expected = match selected() {
+        "either-rocksdb" => EngineKind::RocksDb,
+        "either-lignin" => EngineKind::Lignin,
+        other => panic!("{other} is no run of the engine that is one of the two"),
+    };
+    let grove_version = GroveVersion::latest();
+    assert_eq!(make_test_grovedb(grove_version).engine().kind(), expected);
+    assert_eq!(make_empty_grovedb().engine().kind(), expected);
+    assert_eq!(
+        make_test_grovedb(grove_version).engine().lignin().is_some(),
+        expected == EngineKind::Lignin
+    );
+}
+
 /// On this engine a database is checked when it is closed in a debug
 /// build: the physical checker reads every page of it and makes the stored
 /// hashes of the nodes of every Merk in use again by Merk's rules
@@ -150,7 +175,10 @@ fn a_database_of_the_fixtures_pins_its_reads() {
 /// Shown on a database of the fixtures: a node of the root Merk is written
 /// with a key-value hash that is not its own, through the engine's handle,
 /// which breaks no rule of the layout. The close panics with the finding.
-#[cfg(all(grovedb_test_engine = "lignin", debug_assertions))]
+#[cfg(all(
+    any(grovedb_test_engine = "lignin", grovedb_test_engine = "either-lignin"),
+    debug_assertions
+))]
 #[test]
 fn a_database_of_the_fixtures_is_checked_by_merks_rules_when_it_is_closed() {
     use std::panic::{catch_unwind, AssertUnwindSafe};

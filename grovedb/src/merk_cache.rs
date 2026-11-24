@@ -902,7 +902,7 @@ mod tests {
 
         // An engine whose batch counts its operations shows the propagation
         // as more of them. LigninDB's batch gives no count.
-        #[cfg(not(grovedb_test_engine = "lignin"))]
+        #[cfg(any(grovedb_test_engine = "rocksdb", grovedb_test_engine = "pinned-reads"))]
         let no_propagation_ops_count = {
             let batch = SuiteBatch::default();
 
@@ -932,7 +932,7 @@ mod tests {
         drop(merk);
 
         let batch = cache.into_batch().unwrap().unwrap();
-        #[cfg(not(grovedb_test_engine = "lignin"))]
+        #[cfg(any(grovedb_test_engine = "rocksdb", grovedb_test_engine = "pinned-reads"))]
         assert!(batch.len() > no_propagation_ops_count);
 
         // On every engine the batch holds the writes up to the root: applied,

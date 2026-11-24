@@ -210,6 +210,8 @@ pub use engine::LigninEngine;
 use engine::NoEngine;
 #[cfg(feature = "rocksdb_storage")]
 pub use engine::RocksDbEngine;
+#[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
+pub use engine::{EitherEngine, EngineChoice, EngineKind};
 #[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_bulk_append_tree::RangePage;
 #[cfg(feature = "engine_generic")]

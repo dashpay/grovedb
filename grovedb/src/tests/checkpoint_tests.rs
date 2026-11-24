@@ -229,7 +229,10 @@ mod tests {
     /// copies the WAL to the checkpoint, which will be replayed on open.
     ///
     /// It reads RocksDB's own files, so it is a test of that engine alone.
-    #[cfg(grovedb_test_engine = "rocksdb")]
+    #[cfg(any(
+        grovedb_test_engine = "rocksdb",
+        grovedb_test_engine = "either-rocksdb"
+    ))]
     #[test]
     fn test_checkpoint_wal_under_threshold_is_preserved() {
         use std::fs;
@@ -327,7 +330,10 @@ mod tests {
     ///
     /// Re-enable this test when <https://github.com/facebook/rocksdb/pull/14193>
     /// is merged and released.
-    #[cfg(grovedb_test_engine = "rocksdb")]
+    #[cfg(any(
+        grovedb_test_engine = "rocksdb",
+        grovedb_test_engine = "either-rocksdb"
+    ))]
     #[test]
     #[ignore]
     fn test_checkpoint_wal_over_threshold_is_flushed() {

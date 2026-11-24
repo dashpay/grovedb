@@ -584,6 +584,20 @@ pub struct LigninWriteScope<'db> {
     view: LigninTransaction<'db>,
 }
 
+#[cfg(feature = "rocksdb_storage")]
+impl<'db> LigninWriteScope<'db> {
+    /// The scope as the transaction that shows it. Dropped, it is rolled
+    /// back, as the scope is.
+    pub(super) fn into_view(self) -> LigninTransaction<'db> {
+        self.view
+    }
+
+    /// The scope of the transaction that [`Self::into_view`] gave.
+    pub(super) fn from_view(view: LigninTransaction<'db>) -> Self {
+        Self { view }
+    }
+}
+
 impl std::fmt::Debug for LigninWriteScope<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LigninWriteScope").finish_non_exhaustive()
