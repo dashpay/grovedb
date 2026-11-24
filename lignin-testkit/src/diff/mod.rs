@@ -101,6 +101,7 @@ pub mod close;
 pub mod engines;
 pub mod families;
 pub mod fuzz;
+pub mod history;
 pub mod pair;
 pub mod shrink;
 pub mod state;
