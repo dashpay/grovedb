@@ -28,15 +28,35 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
   dump      DIR (SUBTREE | --all) FILE
                                      a subtree with every subtree below it, or every subtree, to FILE
   load      DIR FILE                 a dump, into a database that has none of its subtrees
+  migrate   SOURCE TARGET [--batch MIB] [--leave-unreachable]
+                                     a RocksDB GroveDB in SOURCE (the directory of a stopped node,
+                                     or a checkpoint) into a new LigninDB database at TARGET. The
+                                     source is read and never written. The work is done in
+                                     TARGET.migrating, which becomes TARGET once every record was
+                                     compared and the store verified; run again to go on after a
+                                     stop. --batch is how much of the source one commit takes
+                                     (64 MiB unless given). A source that holds records under a
+                                     prefix that no element leads to is refused, unless
+                                     --leave-unreachable says that those records are left behind
+  migrate   SOURCE --survey [--leave-unreachable]
+                                     what SOURCE holds and whether it can be migrated; writes
+                                     nothing
   help                               this text
 
 Every subcommand that opens DIR takes --cache MIB, the buffer pool (64 MiB unless given).
 A SUBTREE is its 32 bytes in hex, as `lignin directory` prints them.
 Nothing opens a directory that a process has open: run on a stopped node or on a checkpoint.
+migrate is in a build with the Cargo feature `migrate`. Its exit status: 0 migrated and verified,
+1 failed or refused, 3 the migrated store differs from the source or is not sound, 4 stopped
+before the end in a state that the same command goes on from.
 ";
 
 /// The buffer pool of an open unless `--cache` says another size.
 pub const DEFAULT_CACHE: usize = 64 << 20;
+
+/// How much of the source one commit of `migrate` takes unless `--batch`
+/// says: the bytes of the records it reads.
+pub const DEFAULT_MIGRATE_BATCH: usize = 64 << 20;
 
 /// How long `compact` works at most unless `--timeout` says.
 pub const DEFAULT_COMPACT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -130,6 +150,21 @@ pub enum Command {
         /// The dump.
         file: PathBuf,
     },
+    /// `migrate`.
+    Migrate {
+        /// The directory of the RocksDB GroveDB.
+        source: PathBuf,
+        /// The directory the LigninDB database is to be at, or `None` for
+        /// `--survey`, which writes nothing.
+        target: Option<PathBuf>,
+        /// The bytes of the buffer pool of the target.
+        cache_size: usize,
+        /// The bytes of source records one commit takes.
+        batch_bytes: usize,
+        /// Whether records under a prefix that no element leads to are
+        /// left behind, where the source is refused for them otherwise.
+        leave_unreachable: bool,
+    },
 }
 
 fn usage(what: impl Into<String>) -> ToolError {
@@ -181,6 +216,13 @@ pub fn parse(args: &[OsString]) -> Result<Command, ToolError> {
             "--no-hashes" => flags.no_hashes = true,
             "--beside-background" => flags.beside_background = true,
             "--all" => flags.all = true,
+            "--survey" => flags.survey = true,
+            "--leave-unreachable" => flags.leave_unreachable = true,
+            "--batch" => {
+                let mib: usize = number(value(word)?, "a size in MiB")?;
+                let bytes = mib.checked_mul(1 << 20).filter(|&bytes| bytes > 0);
+                flags.batch = Some(bytes.ok_or_else(|| usage("--batch takes 1 MiB or more"))?);
+            }
             "--cache" => {
                 let mib: usize = number(value(word)?, "a size in MiB")?;
                 let bytes = mib.checked_mul(1 << 20).filter(|&bytes| bytes > 0);
@@ -205,6 +247,9 @@ struct Flags {
     no_hashes: bool,
     beside_background: bool,
     all: bool,
+    survey: bool,
+    leave_unreachable: bool,
+    batch: Option<usize>,
     cache: Option<usize>,
     timeout: Option<Duration>,
 }
@@ -225,6 +270,12 @@ impl Flags {
                 self.beside_background && name != "verify",
             ),
             ("--all", self.all && name != "dump"),
+            ("--survey", self.survey && name != "migrate"),
+            (
+                "--leave-unreachable",
+                self.leave_unreachable && name != "migrate",
+            ),
+            ("--batch", self.batch.is_some() && name != "migrate"),
             ("--cache", self.cache.is_some() && !opens),
             ("--timeout", self.timeout.is_some() && name != "compact"),
         ];
@@ -296,6 +347,25 @@ impl Flags {
                 },
                 _ => return Err(usage("load takes DIR and FILE")),
             },
+            "migrate" => {
+                let (source, target) = match (self.survey, operands) {
+                    (true, [source]) if self.batch.is_none() && self.cache.is_none() => {
+                        (*source, None)
+                    }
+                    (false, [source, target]) => (*source, Some(PathBuf::from(target))),
+                    (true, _) => {
+                        return Err(usage("migrate --survey takes SOURCE and no other argument"));
+                    }
+                    (false, _) => return Err(usage("migrate takes SOURCE and TARGET")),
+                };
+                Command::Migrate {
+                    source: PathBuf::from(source),
+                    target,
+                    cache_size: self.cache.unwrap_or(DEFAULT_CACHE),
+                    batch_bytes: self.batch.unwrap_or(DEFAULT_MIGRATE_BATCH),
+                    leave_unreachable: self.leave_unreachable,
+                }
+            }
             other => return Err(usage(format!("no subcommand {other:?}"))),
         })
     }

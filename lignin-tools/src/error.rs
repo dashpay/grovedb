@@ -52,6 +52,17 @@ pub enum ToolError {
     /// The background work of `compact` failed: its report is written,
     /// and the error is the last one.
     Background(String),
+    /// A migration from RocksDB stopped: the source is not one the
+    /// migrator carries, the target is not one it writes, or a step of it
+    /// failed. The words say which, and what the operator can do.
+    Migrate(String),
+    /// The subcommand is not in this build of the command.
+    NotBuilt {
+        /// The subcommand.
+        subcommand: &'static str,
+        /// The Cargo feature that compiles it.
+        feature: &'static str,
+    },
     /// The file layer failed: writing the report, or a dump.
     Io(io::Error),
 }
@@ -87,6 +98,15 @@ impl fmt::Display for ToolError {
             Self::Db(error) => write!(f, "{error}"),
             Self::Dump(what) => write!(f, "the dump: {what}"),
             Self::Background(what) => write!(f, "the background work failed: {what}"),
+            Self::Migrate(what) => write!(f, "the migration: {what}"),
+            Self::NotBuilt {
+                subcommand,
+                feature,
+            } => write!(
+                f,
+                "this build of lignin has no {subcommand}: build lignin-tools with the Cargo \
+                 feature {feature}"
+            ),
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -95,9 +115,12 @@ impl fmt::Display for ToolError {
 impl Error for ToolError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Usage(_) | Self::Dump(_) | Self::Background(_) | Self::NotADatabase { .. } => {
-                None
-            }
+            Self::Usage(_)
+            | Self::Dump(_)
+            | Self::Background(_)
+            | Self::Migrate(_)
+            | Self::NotBuilt { .. }
+            | Self::NotADatabase { .. } => None,
             Self::Open(error) => Some(error),
             Self::Files(error) => Some(error),
             Self::Format { source, .. } => Some(source),

@@ -19,7 +19,14 @@
 //! lignin dump      DIR (SUBTREE | --all) FILE
 //!                                       a subtree, with every subtree below it, to a file
 //! lignin load      DIR FILE             a dump, into a database that does not have its subtrees
+//! lignin migrate   SOURCE TARGET [--batch MIB] [--leave-unreachable]
+//!                                       a RocksDB GroveDB into a new LigninDB database
+//! lignin migrate   SOURCE --survey [--leave-unreachable]
+//!                                       what a RocksDB GroveDB holds, and whether it migrates
 //! ```
+//!
+//! `migrate` is in a build with the Cargo feature `migrate`, which compiles
+//! RocksDB: the module `migrate` has its documentation.
 //!
 //! Every subcommand that opens the database (all but `manifest` and
 //! `segments`) also takes `--cache MIB`, the buffer pool of the open
@@ -34,6 +41,7 @@
 //! | `pages`, `directory`, `stats`, `verify`, `dump` | yes ([`lignindb::Db::open`]) | what any open writes: the recovery starts the session's log file and replaces the manifest, and the close writes back and takes a table checkpoint |
 //! | `compact` | yes, with a cleaner that leaves no dead byte it can move | the cleaner's copies, then what a close writes |
 //! | `load` | yes | the subtrees of the dump, in one commit |
+//! | `migrate` | no database at its target: it makes one beside it | the source: nothing. The target: a new database in `TARGET.migrating`, which is given the name `TARGET` at the end |
 //!
 //! **A database that a process has open is not opened again**: the open
 //! takes the directory's lock and fails with
@@ -62,8 +70,8 @@
 //! | 0 | done; for `verify`, the store is sound |
 //! | 1 | the subcommand failed: the error is printed |
 //! | 2 | the arguments are not a subcommand |
-//! | 3 | `verify`: a rule of the store does not hold |
-//! | 4 | `verify`: the database holds the mark of a state-sync restore that did not finish ([`verify`]) |
+//! | 3 | `verify`: a rule of the store does not hold. `migrate`: the migrated store differs from its source, or a rule of it does not hold |
+//! | 4 | `verify`: the database holds the mark of a state-sync restore that did not finish ([`verify`]). `migrate`: it stopped before its end, in a state that the same command goes on from |
 //!
 //! # Choices made here that the plan left open
 //!
@@ -88,6 +96,8 @@ pub mod directory;
 pub mod dump;
 mod error;
 pub mod manifest;
+#[cfg(feature = "migrate")]
+pub mod migrate;
 mod open;
 pub mod pages;
 pub mod segments;
@@ -109,6 +119,9 @@ pub enum Outcome {
     NotSound,
     /// `verify` found the mark of a restore that did not finish.
     IncompleteRestore,
+    /// `migrate` stopped before its end, in a state that the same command
+    /// goes on from.
+    IncompleteMigration,
 }
 
 impl Outcome {
@@ -117,7 +130,7 @@ impl Outcome {
         match self {
             Self::Done => 0,
             Self::NotSound => 3,
-            Self::IncompleteRestore => 4,
+            Self::IncompleteRestore | Self::IncompleteMigration => 4,
         }
     }
 }
@@ -147,6 +160,31 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> Result<Outcome, ToolError>
         Command::Compact { common, timeout } => compact::run(&common, timeout, out),
         Command::Dump { common, what, file } => dump::dump(&common, &what, &file, out),
         Command::Load { common, file } => dump::load(&common, &file, out),
+        #[cfg(feature = "migrate")]
+        Command::Migrate {
+            source,
+            target,
+            cache_size,
+            batch_bytes,
+            leave_unreachable,
+        } => {
+            let migration = migrate::Migration {
+                source,
+                target,
+                options: lignindb::Options {
+                    cache_size,
+                    ..lignindb::Options::default()
+                },
+                batch_bytes,
+                leave_unreachable,
+            };
+            migrate::migrate(&migration, out)
+        }
+        #[cfg(not(feature = "migrate"))]
+        Command::Migrate { .. } => Err(ToolError::NotBuilt {
+            subcommand: "migrate",
+            feature: "migrate",
+        }),
     }
 }
 

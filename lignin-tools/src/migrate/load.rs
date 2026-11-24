@@ -1,0 +1,519 @@
+//! The load of a migration: the writes that make the target, a commit at a
+//! time.
+//!
+//! # What a commit holds
+//!
+//! One write transaction of the target's database, in two operations:
+//!
+//! 1. The subtrees that the walk entered since the last commit
+//!    (`SubtreeWrite::Enter`, each under its element at its position and
+//!    with its tree type, a subtree after the one its element is in); the
+//!    Merks it left, each as one change set that is its whole Merk
+//!    (`MerkWrite::whole`, a load of `transactions.md` LD1), with the
+//!    Merks that each node's element hosts stated in the node's put; the
+//!    flat, aux and meta records it handed over; and the journal as the
+//!    walk stands after them.
+//! 2. The node records that no tree links, each as a put that the root of
+//!    its Merk does not reach, which the engine keeps as an unlinked
+//!    record. They are an operation of their own because a change set
+//!    that is its whole Merk holds the tree and nothing else.
+//!
+//! No commit drops or clears a subtree: by key a batch with a load beside
+//! one is refused (`BatchError::LoadBeside`).
+//!
+//! **A Merk is handed over after the Merks its nodes host.** So each node
+//! is written once, with the place of every pointer it has: the cell of a
+//! tree's element points at the root of each Merk the element hosts from
+//! the load of its own Merk on, and nothing names a Merk afterwards. A
+//! Merk whose host's Merk is not in the same commit is written anchored:
+//! its root waits for that load.
+//!
+//! # What a stop leaves
+//!
+//! A commit is whole or not there, and holds the journal of its own end
+//! ([`super::journal`]). A Merk is one change set of one commit, so it is
+//! in the target whole or not at all, and a load that goes on hands over
+//! no Merk a second time: the journal says which were left. Flat, aux and
+//! meta records and the records of root keys are puts, and a put of a
+//! record that is there with the same value leaves it as it is: a subtree
+//! of flat records whose load was cut is handed over from its first
+//! record again.
+
+use std::{
+    collections::HashSet,
+    io::Write,
+    time::{Duration, Instant},
+};
+
+use grovedb::{Engine, LigninEngine};
+use grovedb_merk::{
+    cost_model::Keyspace as MerkKeyspace,
+    store::lignin::{keeps_flat_records, left_behind_key, tree_type_bytes},
+};
+use grovedb_storage::flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord};
+use lignin_tree::hash::Stale;
+use lignindb::{
+    commit::{Committed, NoStaleHashes},
+    txn::{
+        Batch, Column, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, Subtree,
+        SubtreeWrite, ValuePut,
+    },
+    Db,
+};
+
+use super::{
+    grove::{Link, Node},
+    journal::{Journal, Phase, JOURNAL_KEY},
+    source::{Keyspace, Prefix, Source},
+    walk::{short_key, Chunk, Found, Frame, MerkHeld, Place, Visit, ROOT, ROOT_KEY},
+};
+use crate::ToolError;
+
+/// How often the load says where it stands.
+const SAID_EVERY: Duration = Duration::from_secs(5);
+
+/// A subtree to enter.
+struct Entered {
+    subtree: Subtree,
+    tree_type: Vec<u8>,
+    host: Option<(Subtree, Vec<u8>, u8)>,
+}
+
+/// A Merk to hand over.
+struct Handed {
+    subtree: Subtree,
+    /// The subtree of the Merk its host is a node of.
+    host: Option<Subtree>,
+    merk: MerkHeld,
+}
+
+/// What the next commit writes.
+#[derive(Default)]
+struct Pending {
+    enters: Vec<Entered>,
+    merks: Vec<Handed>,
+    records: Vec<(Column, Subtree, Vec<u8>, Vec<u8>)>,
+    /// The bytes of the keys and values of all of it.
+    bytes: usize,
+}
+
+fn link(link: &Option<Link>) -> Option<LinkPut<'_>> {
+    link.as_ref().map(|link| LinkPut {
+        key: &link.key,
+        hash: &link.hash,
+        heights: link.heights,
+        aggregate: &link.aggregate,
+    })
+}
+
+/// The put of `node`, which hosts `hosted`.
+fn put<'a>(node: &'a Node, hosted: &'a [Subtree]) -> NodePut<'a> {
+    NodePut {
+        key: &node.key,
+        feature: &node.feature,
+        value_hash: &node.value_hash,
+        kv_hash: &node.kv_hash,
+        left: link(&node.left),
+        right: link(&node.right),
+        hosted: Hosted::Set(hosted),
+        value: ValuePut::Value(&node.value),
+        stale: Stale::NONE,
+        at: None,
+    }
+}
+
+/// The column of the target that a keyspace of the source is.
+pub(crate) const fn column(keyspace: Keyspace) -> Column {
+    match keyspace {
+        Keyspace::Data => Column::Data,
+        Keyspace::Aux => Column::Aux,
+        Keyspace::Roots => Column::Roots,
+        Keyspace::Meta => Column::Meta,
+    }
+}
+
+/// The key of the mark that stands for what a flat drop left under
+/// `prefix` in `keyspace`, in the aux keyspace of the namespace of the
+/// pending-drop records.
+pub(crate) fn mark_key(keyspace: Keyspace, prefix: &Prefix) -> Option<Vec<u8>> {
+    let keyspace = match keyspace {
+        Keyspace::Data => MerkKeyspace::Data,
+        Keyspace::Aux => MerkKeyspace::Aux,
+        Keyspace::Meta => MerkKeyspace::Meta,
+        Keyspace::Roots => MerkKeyspace::Roots,
+    };
+    left_behind_key(keyspace, prefix)
+}
+
+/// Whether the latest version of `db` has the subtree `prefix` entered.
+pub(crate) fn is_entered(db: &Db, prefix: &Prefix) -> Result<bool, ToolError> {
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    Ok(operation.open(Subtree::new(*prefix))?.is_some())
+}
+
+/// The pending-drop records of `source` as they are stored, each with the
+/// marks it leaves: one for each keyspace of each prefix it names that is
+/// not `live` and that the source holds a record under.
+pub(crate) fn pending_drops(
+    source: &Source,
+    mut live: impl FnMut(&Prefix) -> Result<bool, ToolError>,
+) -> Result<Vec<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)>, ToolError> {
+    let mut stored = Vec::new();
+    source.subtree(
+        Keyspace::Meta,
+        pending_prefix_drops_namespace(),
+        |key, value| {
+            stored.push((key.to_vec(), value.to_vec()));
+            Ok(())
+        },
+    )?;
+    let mut drops = Vec::new();
+    for (key, value) in stored {
+        let record = PendingPrefixDropRecord::decode(&key, &value).map_err(|error| {
+            ToolError::Migrate(format!(
+                "the source {}: a pending-drop record: {error}",
+                source.dir().display()
+            ))
+        })?;
+        let mut marks = Vec::new();
+        for prefix in &record.doomed_prefixes {
+            if live(prefix)? {
+                continue;
+            }
+            for keyspace in [Keyspace::Data, Keyspace::Aux, Keyspace::Meta] {
+                if source.holds(keyspace, prefix)? {
+                    marks.extend(mark_key(keyspace, prefix));
+                }
+            }
+        }
+        drops.push((key, value, marks));
+    }
+    Ok(drops)
+}
+
+/// The load of one target.
+pub(crate) struct Load<'t> {
+    db: &'t Db,
+    journal: Journal,
+    budget: usize,
+    pending: Pending,
+    out: &'t mut dyn Write,
+    began: Instant,
+    said: Instant,
+    /// The commits this run made.
+    pub(crate) commits: u64,
+}
+
+impl<'t> Load<'t> {
+    /// A load into `db` that goes on from `journal`, which one commit
+    /// takes about `budget` bytes of records at a time. It says where it
+    /// stands to `out`.
+    pub(crate) fn new(db: &'t Db, journal: Journal, budget: usize, out: &'t mut dyn Write) -> Self {
+        let now = Instant::now();
+        Self {
+            db,
+            journal,
+            budget,
+            pending: Pending::default(),
+            out,
+            began: now,
+            said: now,
+            commits: 0,
+        }
+    }
+
+    /// Where the load stands.
+    pub(crate) fn journal(&self) -> &Journal {
+        &self.journal
+    }
+
+    fn record(&mut self, column: Column, subtree: Subtree, key: Vec<u8>, value: Vec<u8>) {
+        self.pending.bytes += key.len() + value.len();
+        self.journal.carried.bytes += (key.len() + value.len()) as u64;
+        self.pending.records.push((column, subtree, key, value));
+    }
+
+    fn say(&mut self, always: bool) -> Result<(), ToolError> {
+        if !always && self.said.elapsed() < SAID_EVERY {
+            return Ok(());
+        }
+        self.said = Instant::now();
+        let carried = &self.journal.carried;
+        writeln!(
+            self.out,
+            "migrate: phase={} subtrees={} merks={} nodes={} records={} bytes={} commits={} \
+             seconds={:.1}",
+            match self.journal.phase {
+                Phase::Grove => "grove",
+                Phase::Roots => "root-keys",
+                Phase::Drops => "pending-drops",
+            },
+            carried.subtrees,
+            carried.merks,
+            carried.nodes,
+            carried.records(),
+            carried.bytes,
+            self.commits,
+            self.began.elapsed().as_secs_f64()
+        )?;
+        Ok(())
+    }
+
+    /// Commits what is pending with the journal as it stands, or, as the
+    /// `last` commit of the load, without it.
+    fn commit(&mut self, last: bool) -> Result<(), ToolError> {
+        let pending = std::mem::take(&mut self.pending);
+        let journal = self.journal.encode();
+        let root = Subtree::new(ROOT);
+        let mut records: Vec<RecordWrite<'_>> = (pending.records.iter())
+            .map(|(column, subtree, key, value)| RecordWrite::put(*column, *subtree, key, value))
+            .collect();
+        records.push(match last {
+            true => RecordWrite::delete(Column::Aux, root, JOURNAL_KEY),
+            false => RecordWrite::put(Column::Aux, root, JOURNAL_KEY, &journal),
+        });
+        let enters: Vec<SubtreeWrite<'_>> = (pending.enters.iter())
+            .map(|entered| SubtreeWrite::Enter {
+                subtree: entered.subtree,
+                tree_type: &entered.tree_type,
+                host: entered
+                    .host
+                    .as_ref()
+                    .map(|(subtree, key, position)| HostPut {
+                        subtree: *subtree,
+                        key,
+                        position: *position,
+                    }),
+            })
+            .collect();
+
+        let with_nodes = |handed: &&Handed| !handed.merk.nodes.is_empty();
+        let here: HashSet<Subtree> = (pending.merks.iter())
+            .filter(with_nodes)
+            .map(|handed| handed.subtree)
+            .collect();
+        let puts: Vec<Vec<NodePut<'_>>> = (pending.merks.iter())
+            .filter(with_nodes)
+            .map(|handed| {
+                let nodes = handed.merk.nodes.iter();
+                nodes.map(|node| put(node, &node.hosted)).collect()
+            })
+            .collect();
+        let loads: Vec<MerkWrite<'_>> = (pending.merks.iter().filter(with_nodes))
+            .zip(&puts)
+            .map(|(handed, nodes)| MerkWrite {
+                subtree: handed.subtree,
+                nodes,
+                removed: &[],
+                root: RootPut::Set(handed.merk.root.as_deref()),
+                // The Merk of the host comes after the Merks it hosts:
+                // where it is of a later commit, the root waits for it.
+                anchored: handed.host.is_some_and(|host| !here.contains(&host)),
+                whole: true,
+            })
+            .collect();
+
+        let unlinked_of = |handed: &&Handed| !handed.merk.unlinked.is_empty();
+        let left: Vec<Vec<NodePut<'_>>> = (pending.merks.iter())
+            .filter(unlinked_of)
+            .map(|handed| {
+                let records = handed.merk.unlinked.iter();
+                records.map(|node| put(node, &[])).collect()
+            })
+            .collect();
+        let unlinked: Vec<MerkWrite<'_>> = (pending.merks.iter().filter(unlinked_of))
+            .zip(&left)
+            .map(|(handed, nodes)| MerkWrite {
+                subtree: handed.subtree,
+                nodes,
+                removed: &[],
+                root: RootPut::Keep,
+                anchored: handed.host.is_some(),
+                whole: false,
+            })
+            .collect();
+
+        let txn = self.db.begin();
+        let scope = txn.scope()?;
+        let first = Batch {
+            records: &records,
+            merks: &loads,
+            subtrees: &enters,
+        };
+        scope.apply_by_kind(&first, keeps_flat_records)?;
+        if !unlinked.is_empty() {
+            let second = Batch {
+                merks: &unlinked,
+                ..Batch::default()
+            };
+            scope.apply_by_kind(&second, keeps_flat_records)?;
+        }
+        scope.merge();
+        match self.db.commit(&txn, &mut NoStaleHashes)? {
+            Committed::Published(_) => self.commits += 1,
+            // The journal is written or removed by every commit, so only
+            // the removal of one that is not there writes nothing.
+            Committed::Empty => {}
+        }
+        self.say(last)
+    }
+
+    /// Commits what is pending if it has reached the budget of a commit.
+    fn commit_if_due(&mut self) -> Result<(), ToolError> {
+        match self.pending.bytes >= self.budget {
+            true => self.commit(false),
+            false => Ok(()),
+        }
+    }
+
+    /// Carries the records of root keys of `source`, from where the
+    /// journal says: each to where a handle of `engine` keeps the record
+    /// of its prefix, also under a prefix with no tree.
+    pub(crate) fn roots(
+        &mut self,
+        source: &Source,
+        engine: &LigninEngine,
+    ) -> Result<(), ToolError> {
+        debug_assert_eq!(self.journal.phase, Phase::Roots);
+        let mut records = source.records(Keyspace::Roots);
+        if let Some(done) = self.journal.roots.clone() {
+            records.seek(&done);
+            if records.current()?.is_some_and(|(stored, _)| stored == done) {
+                records.next();
+            }
+        }
+        loop {
+            {
+                let transaction = engine.start_read_transaction();
+                while let Some((stored, value)) = records.current()? {
+                    let Some((prefix, key)) = stored.split_first_chunk::<32>() else {
+                        return Err(short_key(source, Keyspace::Roots, stored));
+                    };
+                    if key != ROOT_KEY {
+                        return Err(ToolError::Migrate(format!(
+                            "the source {}: a record of the roots keyspace is no record of a \
+                             root key",
+                            source.dir().display()
+                        )));
+                    }
+                    let handle = engine.subtree_by_prefix(*prefix, None, &transaction).value;
+                    let (home, kept_under) = handle.root_key_place();
+                    let (stored, value) = (stored.to_vec(), value.to_vec());
+                    self.journal.carried.roots += 1;
+                    self.record(Column::Roots, Subtree::new(home), kept_under, value);
+                    self.journal.roots = Some(stored);
+                    records.next();
+                    if self.pending.bytes >= self.budget {
+                        break;
+                    }
+                }
+            }
+            if records.current()?.is_none() {
+                break;
+            }
+            self.commit(false)?;
+        }
+        self.journal.phase = Phase::Drops;
+        self.journal.roots = None;
+        self.commit(false)
+    }
+
+    /// Carries the pending-drop records of `source` with the marks of what
+    /// they left, and ends the load: the commit removes the journal.
+    pub(crate) fn drops(&mut self, source: &Source) -> Result<(), ToolError> {
+        debug_assert_eq!(self.journal.phase, Phase::Drops);
+        let namespace = Subtree::new(*pending_prefix_drops_namespace());
+        let db = self.db;
+        for (key, value, marks) in pending_drops(source, |prefix| is_entered(db, prefix))? {
+            self.journal.carried.meta += 1;
+            self.record(Column::Meta, namespace, key, value);
+            for mark in marks {
+                self.journal.carried.marks += 1;
+                self.record(Column::Aux, namespace, mark, Vec::new());
+            }
+        }
+        self.commit(true)
+    }
+}
+
+impl Visit for Load<'_> {
+    fn takes_records(&self) -> bool {
+        true
+    }
+
+    fn enter(&mut self, place: &Place, at: &[Frame]) -> Result<(), ToolError> {
+        self.journal.frames = at.to_vec();
+        // The engine entered the root Merk when it made the database.
+        if let Some(host) = &place.host {
+            self.journal.carried.subtrees += 1;
+            self.pending.enters.push(Entered {
+                subtree: Subtree::new(place.prefix),
+                tree_type: tree_type_bytes(place.tree_type),
+                host: Some((Subtree::new(host.parent), host.key.clone(), host.position)),
+            });
+            self.pending.bytes += host.key.len() + 96;
+        }
+        self.commit_if_due()
+    }
+
+    fn found(&mut self, place: &Place, found: &Found) -> Result<(), ToolError> {
+        match found.faults.first() {
+            None => Ok(()),
+            Some(fault) => Err(ToolError::Migrate(format!(
+                "the source is not what its survey found: {}: {fault}",
+                place.named()
+            ))),
+        }
+    }
+
+    fn records(
+        &mut self,
+        place: &Place,
+        keyspace: Keyspace,
+        records: Chunk,
+        at: &[Frame],
+    ) -> Result<(), ToolError> {
+        self.journal.frames = at.to_vec();
+        let subtree = Subtree::new(place.prefix);
+        let count = records.len() as u64;
+        let carried = &mut self.journal.carried;
+        match keyspace {
+            Keyspace::Data => carried.flat += count,
+            Keyspace::Aux => carried.aux += count,
+            Keyspace::Meta => carried.meta += count,
+            Keyspace::Roots => carried.roots += count,
+        }
+        for (key, value) in records {
+            self.record(column(keyspace), subtree, key, value);
+        }
+        self.commit_if_due()
+    }
+
+    fn merk(&mut self, place: &Place, merk: MerkHeld) -> Result<(), ToolError> {
+        let carried = &mut self.journal.carried;
+        carried.merks += u64::from(!merk.nodes.is_empty());
+        carried.nodes += merk.nodes.len() as u64;
+        carried.unlinked += merk.unlinked.len() as u64;
+        let held = merk.nodes.iter().chain(&merk.unlinked);
+        let bytes: usize = held.map(|node| node.key.len() + node.value.len()).sum();
+        carried.bytes += bytes as u64;
+        self.pending.bytes += bytes;
+        self.pending.merks.push(Handed {
+            subtree: Subtree::new(place.prefix),
+            host: place.host.as_ref().map(|host| Subtree::new(host.parent)),
+            merk,
+        });
+        Ok(())
+    }
+
+    fn leave(&mut self, place: &Place, at: &[Frame]) -> Result<(), ToolError> {
+        self.journal.frames = at.to_vec();
+        if place.host.is_none() {
+            // The root Merk is left last: the grove is carried.
+            self.journal.phase = Phase::Roots;
+            return self.commit(false);
+        }
+        self.commit_if_due()
+    }
+}
