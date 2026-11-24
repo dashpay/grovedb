@@ -6,7 +6,8 @@
 //! refused.
 //!
 //! It counts the transactions it starts, for
-//! `one_transaction_per_operation_tests`. It is also a registered engine of
+//! `one_transaction_per_operation_tests`, and the write scopes it is asked
+//! for. It is also a registered engine of
 //! the suite (`pinned-reads` in `test-engines.txt`): its handles and
 //! transactions are RocksDB's, and the engine itself is a type of its own
 //! that gives no way to the storage underneath.
@@ -30,6 +31,8 @@ pub struct PinnedReads {
     pub(crate) reads_started: AtomicUsize,
     pub(crate) writes_started: AtomicUsize,
     pub(crate) snapshots_started: AtomicUsize,
+    /// How many times a write scope was asked for.
+    pub(crate) scopes_opened: AtomicUsize,
 }
 
 impl PinnedReads {
@@ -39,6 +42,7 @@ impl PinnedReads {
             reads_started: AtomicUsize::new(0),
             writes_started: AtomicUsize::new(0),
             snapshots_started: AtomicUsize::new(0),
+            scopes_opened: AtomicUsize::new(0),
         }
     }
 }
@@ -135,6 +139,7 @@ impl Engine for PinnedReads {
         &'a self,
         transaction: &'a Self::Transaction<'_>,
     ) -> Result<Self::WriteScope<'a>, StorageError> {
+        self.scopes_opened.fetch_add(1, Ordering::Relaxed);
         self.engine.open_write_scope(transaction)
     }
 
@@ -225,5 +230,61 @@ impl Engine for PinnedReads {
         transaction: &'a Self::Transaction<'_>,
     ) -> CostContext<Self::SubtreeMove<'a>> {
         self.engine.move_subtree(from, to, batch, transaction)
+    }
+}
+
+/// The count of write scopes, and what `GroveDb` asks this engine for.
+mod scopes {
+    use std::sync::atomic::Ordering;
+
+    use grovedb_version::version::GROVE_VERSIONS;
+
+    use super::PinnedReads;
+    use crate::{Element, Engine, GroveDb};
+
+    /// A dedicated insert into an indexed tree over a child that is a tree
+    /// undoes its sweep by a write scope where the engine rolls one back.
+    /// RocksDB rolls none back, and this engine answers as RocksDB does: the
+    /// insert asks it for no scope, where its put is refused and where it
+    /// is made. So the one scope of the RocksDB engine is free for every
+    /// transaction all through the call.
+    #[test]
+    fn a_dedicated_insert_over_a_tree_asks_this_engine_for_no_write_scope() {
+        const TOP: &[u8] = b"indexed";
+        const INDEX: &[&[u8]] = &[TOP, b"by"];
+        for v in GROVE_VERSIONS.iter() {
+            let dir = tempfile::tempdir().expect("a directory");
+            let db = GroveDb::<PinnedReads>::open_with_engine(dir.path()).expect("a database");
+            assert!(!db.engine().rolls_back_write_scopes());
+            let tx = db.start_transaction();
+            let t = Some(&tx);
+            let root: &[&[u8]] = &[];
+            let (tree, index) = (
+                Element::empty_tree(),
+                Element::empty_provable_sum_indexed_tree(),
+            );
+            (db.insert(root, TOP, tree, None, t, v).unwrap()).expect("a tree");
+            (db.insert(&[TOP], b"by", index, None, t, v).unwrap()).expect("an indexed tree");
+            let over = |key: &[u8]| {
+                let branch = Element::empty_sum_tree();
+                db.insert_into_provable_sum_indexed_tree(INDEX, key, branch, t, v)
+                    .unwrap()
+            };
+            // Three sum trees whose sums are in range together, and are
+            // not without the negative one.
+            for (key, sum) in [(b"g", -10), (b"a", i64::MAX - 5), (b"z", 8)] {
+                over(key.as_slice()).expect("a sum tree");
+                let item = Element::new_sum_item(sum);
+                let put = db.insert(&[TOP, b"by", key.as_slice()], b"n", item, None, t, v);
+                put.unwrap().expect("a sum item in it");
+            }
+            over(b"g".as_slice())
+                .expect_err("the sum overflows without the tree that is written over");
+            over(b"z".as_slice()).expect("the insert over a tree is made");
+            assert_eq!(db.engine().scopes_opened.load(Ordering::Relaxed), 0);
+            // The count is of every scope that is asked for.
+            drop(db.engine().open_write_scope(&tx).expect("a scope"));
+            assert_eq!(db.engine().scopes_opened.load(Ordering::Relaxed), 1);
+        }
     }
 }

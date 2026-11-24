@@ -38,6 +38,8 @@ mod moves;
 mod nested;
 mod over;
 mod queries;
+#[cfg(feature = "rocksdb_storage")]
+mod refused;
 mod restore;
 mod root_keys;
 mod scopes;
