@@ -375,6 +375,41 @@ fn a_move_whose_records_are_not_there_is_damage() {
     );
 }
 
+/// A directory made by hand in which a rootless Merk hosts itself (a
+/// child record of its own id that names its own prefix and id) makes the
+/// walk of a move reach that Merk a second time. `Directory::check`
+/// refuses such a record ("a Merk in use hosts a Merk that has no
+/// entry"); `plan_rekey` would otherwise walk it without end and grow its
+/// plan without bound. It is refused as damage.
+#[test]
+fn a_move_over_a_merk_that_hosts_itself_is_refused_not_walked_forever() {
+    use super::super::record::{child_key, encode_child};
+
+    let mut grove = Grove::new();
+    grove.add(&["a"]);
+    // `a/r` is entered with no root of its own: a hosted Merk that holds
+    // no element, an ordinary state.
+    let r = grove.add(&["a", "r"]);
+    assert!(grove.entry(&["a", "r"]).root().is_none());
+    let prefix_r = prefix_of(&path(&["a", "r"]));
+
+    // Plant one child record: `r` hosts `r`.
+    let tree = *grove.directory.tree();
+    let key = child_key(r, 7, b"loop");
+    let value = encode_child(&prefix_r, r);
+    tree.put(&mut grove.pages, &key, &value)
+        .expect("the record is planted");
+
+    let error = grove
+        .plan(&[pairs(&["a"], "z", &[])], &|_| false)
+        .expect_err("damage");
+    assert!(
+        matches!(&error, DirectoryError::Damaged { what, .. }
+            if *what == "a Merk is reached twice walking the Merks a move covers"),
+        "{error}"
+    );
+}
+
 /// One move by pairs: the Merk at a path goes to another key of the Merk
 /// that hosts it, and the Merks below it that are named go with it.
 struct Pairs {

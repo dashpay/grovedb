@@ -313,6 +313,19 @@ impl Directory {
                 child: child_key(parent, host.position, rekey.key),
                 was: entry.clone(),
             });
+            // The Merks below a moved one form a tree: each has one host,
+            // so the walk reaches each once. A directory made by hand can
+            // give a Merk a child record that leads back to it or to one
+            // already walked, which `Directory::check` refuses ("a Merk in
+            // use hosts a Merk that has no entry" and the host rules); the
+            // walk would otherwise not end. A Merk reached a second time is
+            // refused here, so the walk is at most as long as the directory
+            // has Merks.
+            let mut walked_ids = HashSet::new();
+            let twice = "a Merk is reached twice walking the Merks a move covers";
+            if !walked_ids.insert(entry.id()) {
+                return Err(damaged(&entry_key(rekey.from), twice));
+            }
             let mut walked = vec![Walked {
                 children: self.children(entry.id()),
                 id: entry.id(),
@@ -330,6 +343,9 @@ impl Directory {
                 let nested = nested.filter(|nested| nested.id() == child.id);
                 let what = "a Merk in use hosts a Merk that has no entry";
                 let nested = nested.ok_or_else(|| damaged(&old, what))?;
+                if !walked_ids.insert(nested.id()) {
+                    return Err(damaged(&old, twice));
+                }
                 let named = (rekey.below.iter()).find(|(from, _)| *from == child.prefix);
                 let to = match (parent_to, named) {
                     (Some(parent_to), Some((_, to))) => {
