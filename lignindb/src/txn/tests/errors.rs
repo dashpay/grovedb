@@ -966,9 +966,12 @@ fn every_error_says_what_it_is() {
         TxnError::Directory(lignin_tree::directory::DirectoryError::TooDeep),
         TxnError::PageFreed { page },
         TxnError::Damaged("a page"),
+        TxnError::NodeAsRecord {
+            unit: Unit::data(subtree),
+        },
         TxnError::TreeValue(lignin_tree::value::ValueError::TooLong { len: 1 << 40 }),
     ];
-    let sourceless = [1usize, 11, 12];
+    let sourceless = [1usize, 11, 12, 13];
     for (at, error) in errors.iter().enumerate() {
         assert_eq!(
             error.source().is_none(),

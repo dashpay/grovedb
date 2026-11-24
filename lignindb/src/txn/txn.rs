@@ -1824,7 +1824,7 @@ impl<'s> WriteTxn<'s> {
                 return Ok(Ok(true));
             }
             Own::Deleted => return Ok(Ok(false)),
-            Own::Node(_) => return Err(TxnError::Damaged("a Merk node under a cursor of records")),
+            Own::Node(_) => return Err(TxnError::NodeAsRecord { unit }),
             Own::Unwritten => {}
         }
         let side = self.sided(state, opened, guard, at, seen, unit.subtree)?;

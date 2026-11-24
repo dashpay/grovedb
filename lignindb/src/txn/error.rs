@@ -875,6 +875,15 @@ pub enum TxnError {
     /// The subtree directory did not answer, or refused a write
     /// (`lignin_tree::directory`).
     Directory(DirectoryError),
+    /// A cursor of flat records was asked for the value under a key
+    /// where the newest write of its transaction is a node of the
+    /// subtree's Merk (`transactions.md` ST1). The cursor stands on such a
+    /// key and shows no value there: a node is read as a node. Nothing is
+    /// damaged, and the cursor is where it was.
+    NodeAsRecord {
+        /// The unit the cursor reads.
+        unit: Unit,
+    },
     /// A tree page that the transaction freed was asked for again.
     PageFreed {
         /// The page.
@@ -904,6 +913,11 @@ impl fmt::Display for TxnError {
             Self::TreeValue(error) => write!(f, "node value: {error}"),
             Self::Format(error) => write!(f, "format: {error}"),
             Self::Directory(error) => write!(f, "subtree directory: {error}"),
+            Self::NodeAsRecord { unit } => write!(
+                f,
+                "a cursor of flat records of {unit} stands on a key under which the \
+                 transaction wrote a Merk node, and shows no value there"
+            ),
             Self::PageFreed { page } => write!(f, "{page} was freed by the transaction"),
             Self::Damaged(what) => write!(f, "damaged pages: {what}"),
         }
@@ -928,6 +942,7 @@ impl Error for TxnError {
             Self::ScopeOpen
             | Self::ScopeOverlap { .. }
             | Self::NotFinalized
+            | Self::NodeAsRecord { .. }
             | Self::PageFreed { .. }
             | Self::Damaged(_) => None,
         }

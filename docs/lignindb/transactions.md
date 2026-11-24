@@ -161,7 +161,10 @@ tree's entries. For that case one batch is not refused:
 - **Which keys a cursor of flat entries stands on** is decided as it
   was, by no tree type: where the newest write under a key that it reads
   of its transaction (WT6) is a node, the cursor stands on the key, and a
-  read of the value there is refused, under every tree type. Whether a
+  read of the value there is refused, under every tree type
+  (`TxnError::NodeAsRecord`): nothing is damaged, and the cursor is where
+  it was. So it is for a cursor that stood on the key of a flat entry
+  before its transaction wrote the node. Whether a
   call of the cursor is refused before it reads is for the other rules
   to say: by MV7 it can be given the refusal that stopped a layout, one
   of the first point among them.
