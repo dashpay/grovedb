@@ -888,7 +888,10 @@ enum End {
     /// The session asked for more than [`REQUESTS`] times what a session
     /// against the source asks for.
     Endless,
-    /// The session had asked for nothing more and was not completed.
+    /// The session had asked for nothing more and was not completed. This
+    /// is an allowed end: `is_sync_completed` is false, so the caller does
+    /// not commit, and the oracle holds the database to what it was before
+    /// the session (nothing that lasts was applied).
     Stopped,
     /// Every request was answered and the commit was refused.
     CommitRefused,
@@ -1141,6 +1144,16 @@ fn modes() -> Vec<(&'static str, RestoreCommitMode)> {
     modes
 }
 
+/// The two alterations that send a node of a family foreign to the tree
+/// (MERK-07's named input: a chunk that hashes right but is refused at a
+/// node). A session that takes one must end `Failed` — the refusal comes as
+/// the chunk is applied — never `Stopped`; pinned so a regression to a quiet
+/// stop is caught.
+fn foreign_family(name: &str) -> bool {
+    name.starts_with("an item as a node of a tree with sums")
+        || name.starts_with("a node of a tree with sums as one of a plain tree")
+}
+
 /// Every case on LigninDB, synced from LigninDB: what is asked of an
 /// engine holds, and the alterations of the list do not all end one way.
 #[test]
@@ -1156,6 +1169,12 @@ fn a_session_with_a_peer_that_alters_a_payload_ends_on_lignindb() {
             let went = caught::<Lignin, Lignin>(&honest, case, commits, v);
             println!("CASE {mode}: {}: {}", case.name, went.in_short());
             *ends.entry(format!("{:?}", went.end)).or_default() += 1;
+            if foreign_family(&case.name) && !matches!(went.end, End::Failed) {
+                broken.push(format!(
+                    "{mode}: {}: a foreign-family chunk ended {:?}, not Failed",
+                    case.name, went.end
+                ));
+            }
             for what in &went.broken {
                 broken.push(format!("{mode}: {}: {what}", case.name));
             }
@@ -1194,6 +1213,12 @@ fn both_engines_answer_a_peer_that_alters_a_payload_alike() {
             let lignin = caught::<Rocks, Lignin>(&honest, case, commits, v);
             println!("CASE {mode}: {}: {}", case.name, lignin.in_short());
             *ends.entry(format!("{:?}", lignin.end)).or_default() += 1;
+            if foreign_family(&case.name) && !matches!(lignin.end, End::Failed) {
+                broken.push(format!(
+                    "{mode}: {} on LigninDB: a foreign-family chunk ended {:?}, not Failed",
+                    case.name, lignin.end
+                ));
+            }
             for (engine, went) in [("RocksDB", &rocks), ("LigninDB", &lignin)] {
                 for what in &went.broken {
                     broken.push(format!("{mode}: {} on {engine}: {what}", case.name));

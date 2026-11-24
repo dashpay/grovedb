@@ -567,8 +567,9 @@ struct Tally {
     /// Every drill run handed in, a case or not.
     takes: usize,
     cases: usize,
-    /// The cases in which the checker's first step called the store
-    /// unsound: the damage is one the checker reports.
+    /// The cases in which the drill's first step — the checker — returned
+    /// and called the store unsound: the damage is one the initial checker
+    /// reports, not a later checker after the writes or drops.
     reported: usize,
     /// The steps that a fixture refused, by the place of its expectation.
     refused: BTreeMap<String, usize>,
@@ -579,7 +580,14 @@ impl Tally {
     fn take(&mut self, drilled: Drilled) {
         self.takes += 1;
         self.cases += usize::from(!drilled.ends.is_empty());
-        self.reported += usize::from(drilled.sound.first() == Some(&false));
+        // The first drill step is the checker; require it to have returned
+        // (so `sound.first()` is that initial checker's own report, not a
+        // later checker's after the writes or drops) and to have called the
+        // store unsound.
+        self.reported += usize::from(
+            matches!(drilled.ends.first(), Some(End::Returned))
+                && drilled.sound.first() == Some(&false),
+        );
         for end in &drilled.ends {
             if let End::Refused(raised) = end {
                 let at = format!("{}:{}", raised.file, raised.line);

@@ -903,6 +903,9 @@ mod tests {
 
     use super::{order, Entered, Host};
 
+    type Entries = BTreeMap<Subtree, Entered>;
+    type Children = HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>>;
+
     fn subtree(n: u8) -> Subtree {
         Subtree::new([n; 32])
     }
@@ -920,14 +923,9 @@ mod tests {
         }
     }
 
-    fn maps(
-        all: &[Entered],
-    ) -> (
-        BTreeMap<Subtree, Entered>,
-        HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>>,
-    ) {
-        let mut entries = BTreeMap::new();
-        let mut children: HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>> = HashMap::new();
+    fn maps(all: &[Entered]) -> (Entries, Children) {
+        let mut entries = Entries::new();
+        let mut children = Children::new();
         for e in all {
             if let Some(host) = &e.host {
                 (children.entry(host.parent).or_default()).push((
@@ -951,32 +949,30 @@ mod tests {
         assert_eq!(got, vec![subtree(1), subtree(2), subtree(3)]);
     }
 
-    /// A top that reaches a host cycle below it is refused, not walked into
-    /// a second visit (which would panic on the second `remove`). Both the
-    /// whole-database tops and a selected top reach the cycle.
+    /// A selected subtree that is a member of a host cycle is refused, not
+    /// walked into a second visit (which would panic on the second
+    /// `remove`). With one host per live entry a cycle has no hostless top,
+    /// so `--all` leaves it out rather than walking it; only selecting a
+    /// member reaches it. The child map is built the way `subtrees` builds
+    /// it (`maps`), from one host per entry, not by hand.
     #[test]
-    fn order_refuses_a_host_cycle_rather_than_panicking() {
-        // `1` hosts `2`; `2` and `3` host each other.
-        let all = [entered(1, None), entered(2, Some(1)), entered(3, Some(2))];
-        let mut all: Vec<Entered> = all.into_iter().collect();
-        all[2].host = Some(Host {
-            parent: subtree(2),
-            key: vec![3],
-            position: 1,
-        });
-        // `2`'s node hosts both `3` (position 0, from its own host) and a
-        // record that `3` hosts `2` back: build children by hand to hold
-        // the cycle `2 -> 3 -> 2`.
-        let mut entries = BTreeMap::new();
-        let mut children: HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>> = HashMap::new();
-        for e in &all {
-            entries.insert(e.subtree, e.clone());
-        }
-        children.insert(subtree(1), vec![(vec![2], 0, subtree(2))]);
-        children.insert(subtree(2), vec![(vec![3], 0, subtree(3))]);
-        children.insert(subtree(3), vec![(vec![2], 0, subtree(2))]);
+    fn order_refuses_a_selected_subtree_in_a_host_cycle() {
+        // `2` and `3` host each other: a cycle with no hostless top.
+        let all = [entered(2, Some(3)), entered(3, Some(2))];
+        let (entries, children) = maps(&all);
 
-        for top in [subtree(1), subtree(2)] {
+        // `--all`'s tops are the hostless entries; a cycle has none, so
+        // nothing is walked and the cycle is left out of the dump.
+        let tops: Vec<Subtree> = (all.iter())
+            .filter(|e| e.host.is_none())
+            .map(|e| e.subtree)
+            .collect();
+        assert!(tops.is_empty());
+        let out = order(entries.clone(), children.clone(), tops).expect("nothing to walk");
+        assert!(out.is_empty());
+
+        // Selecting a member reaches the cycle and is refused, not a panic.
+        for top in [subtree(2), subtree(3)] {
             let error = order(entries.clone(), children.clone(), vec![top])
                 .expect_err("the cycle is refused");
             assert!(error.to_string().contains("lead in a cycle"), "{error}");
