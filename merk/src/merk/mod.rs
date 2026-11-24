@@ -67,7 +67,7 @@ use std::{
     fmt,
 };
 
-use committer::{MerkCommitter, NodeUpdate};
+use committer::{MerkCommitter, NodeUpdate, NodeUpdates};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
@@ -514,7 +514,7 @@ where
                     change_set.delete_root_key(cost);
                 }
 
-                Ok(vec![])
+                Ok(NodeUpdates::new())
             }
             .wrap_with_cost(inner_cost)
         });
@@ -523,18 +523,17 @@ where
 
         // TODO: move this to MerkCommitter impl?
         for (key, storage_cost) in key_updates.deleted_keys {
-            to_batch.push((key, NodeUpdate::Remove(storage_cost)));
+            to_batch.push(&key, NodeUpdate::Remove(storage_cost));
         }
-        to_batch.sort_by(|a, b| a.0.cmp(&b.0));
+        let (keys, to_batch) = to_batch.into_sorted();
         for (key, update) in to_batch {
+            let key = &keys[key];
             match update {
                 NodeUpdate::Write(node, write_cost) => cost_return_on_error_no_add!(
                     cost,
-                    change_set.put_node(&key, node, Some(write_cost))
+                    change_set.put_node(key, node, Some(write_cost))
                 ),
-                NodeUpdate::Remove(storage_cost) => {
-                    change_set.delete_node(&key, Some(storage_cost))
-                }
+                NodeUpdate::Remove(storage_cost) => change_set.delete_node(key, Some(storage_cost)),
             }
         }
 

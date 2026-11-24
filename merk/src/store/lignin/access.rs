@@ -7,6 +7,7 @@
 //! through [`Access`].
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -588,13 +589,88 @@ fn stored_link(link: LinkView<'_>) -> Result<StoredLink, Error> {
     })
 }
 
+thread_local! {
+    /// The memory that the reads of this thread use for a value that is
+    /// not in its cell ([`ValueBuf`]), kept from one read to the next. It
+    /// grows to the longest value that was read with it, and a value
+    /// longer than [`KEPT_VALUE_LEN`] is read with memory of its own.
+    static VALUE_BUF: RefCell<ValueBuf> = RefCell::new(ValueBuf::new());
+}
+
+/// Calls `read` with the buffer of the thread, or with one of its own
+/// where the thread has none to lend: the buffer is in use further up the
+/// stack, or the thread is ending and has dropped it.
+fn with_value_buf<R>(read: impl Fn(&mut ValueBuf) -> R) -> R {
+    let lent =
+        VALUE_BUF.try_with(|kept| kept.try_borrow_mut().ok().map(|mut kept| read(&mut kept)));
+    match lent {
+        Ok(Some(answer)) => answer,
+        Ok(None) | Err(_) => read(&mut ValueBuf::new()),
+    }
+}
+
+#[cfg(test)]
+mod value_buf {
+    use std::{cell::RefCell, sync::mpsc};
+
+    use super::{with_value_buf, VALUE_BUF};
+
+    /// Reads once more when its thread ends.
+    struct AtTheEnd(mpsc::Sender<bool>);
+
+    impl Drop for AtTheEnd {
+        fn drop(&mut self) {
+            let _ = self.0.send(with_value_buf(|_| true));
+        }
+    }
+
+    thread_local! {
+        static HELD: RefCell<Option<AtTheEnd>> = const { RefCell::new(None) };
+    }
+
+    #[test]
+    fn a_read_has_a_buffer_of_its_own_where_the_thread_lends_none() {
+        let (sender, read_at_the_end) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            // What is held is dropped with the thread. Where a thread
+            // drops what it holds in the reverse of the order it was made
+            // in, the buffer, which is made later, is gone by then.
+            HELD.with(|held| *held.borrow_mut() = Some(AtTheEnd(sender)));
+            let place = || with_value_buf(|buf| std::ptr::from_mut(buf) as usize);
+            // One read after the other is lent the buffer of the thread.
+            let lent = VALUE_BUF.with(|kept| kept.as_ptr() as usize);
+            assert_eq!((place(), place()), (lent, lent));
+            // A read from inside a read finds that buffer in use, and has
+            // another.
+            let (outer, inner) = with_value_buf(|buf| (std::ptr::from_mut(buf) as usize, place()));
+            assert_eq!(outer, lent);
+            assert_ne!(inner, lent);
+        });
+        thread.join().expect("a thread that ends");
+        assert_eq!(read_at_the_end.recv(), Ok(true));
+    }
+}
+
+/// The longest value whose read keeps its memory for the next read of
+/// its thread.
+const KEPT_VALUE_LEN: u32 = 64 * 1024;
+
+/// A copy of the value of the node `view` shows.
+fn value_of(view: &NodeView<'_>) -> Result<Vec<u8>, Error> {
+    let read = |buf: &mut ValueBuf| Ok(view.value(buf).map_err(fault)?.to_vec());
+    if view.value_len() > KEPT_VALUE_LEN {
+        return read(&mut ValueBuf::new());
+    }
+    with_value_buf(read)
+}
+
 pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Error> {
     if let Some(record) = view.flat_record() {
         return Ok(StoredNode::flat(record.to_vec()));
     }
     let value = match with_value {
         false => None,
-        true => Some(view.value(&mut ValueBuf::new()).map_err(fault)?.to_vec()),
+        true => Some(value_of(view)?),
     };
     Ok(StoredNode {
         feature: decode_feature(view.feature())?,

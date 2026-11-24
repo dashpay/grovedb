@@ -437,6 +437,17 @@ fn record_len(node: &StoredNode) -> Result<usize, Error> {
     )
 }
 
+/// Takes in that the cell of the node under `key` was seen at `location`.
+/// The key is copied only where the handle has seen no cell of the node.
+fn seen_at(hints: &mut HashMap<Vec<u8>, Location>, key: &[u8], location: Location) {
+    match hints.get_mut(key) {
+        Some(at) => *at = location,
+        None => {
+            hints.insert(key.to_vec(), location);
+        }
+    }
+}
+
 fn reference(link: Option<StoredLink>) -> Result<Option<Link>, Error> {
     link.map(|link| {
         Ok(Link::Reference {
@@ -619,8 +630,10 @@ impl<'db> LigninNodeStore<'db> {
     fn left_at(&self, key: &[u8], location: Option<Location>) {
         let mut hints = self.hints.borrow_mut();
         match location {
-            Some(location) => hints.insert(key.to_vec(), location),
-            None => hints.remove(key),
+            Some(location) => seen_at(&mut hints, key, location),
+            None => {
+                hints.remove(key);
+            }
         };
         self.loose.set(key, location.is_none());
     }
@@ -675,8 +688,11 @@ impl<'db> LigninNodeStore<'db> {
             }
             hash::refuse_stale(node.stale)?;
             hint = None;
-            let mut found = Vec::new();
-            for (left, link) in [(true, &mut node.left), (false, &mut node.right)] {
+            // Where the cell of each child is, of a child whose key was
+            // read from that cell.
+            let mut found = [None, None];
+            let sides = [(true, &mut node.left), (false, &mut node.right)];
+            for ((left, link), found) in sides.into_iter().zip(&mut found) {
                 let Some(link) = link.as_mut().filter(|link| link.key.is_none()) else {
                     continue;
                 };
@@ -688,20 +704,29 @@ impl<'db> LigninNodeStore<'db> {
                     Child::ByKey => return Err(access::read_by_key()),
                     Child::Missing => return Err(refused("a link leads to no node")),
                     Child::Found { key, location } => {
-                        found.extend(location.map(|location| (key.clone(), location)));
+                        *found = location;
                         link.key = Some(key);
                     }
                 }
             }
             let mut hints = self.hints.borrow_mut();
-            hints.extend(found);
+            for (link, found) in [&node.left, &node.right].into_iter().zip(found) {
+                let child = link.as_ref().and_then(|link| link.key.as_deref());
+                if let (Some(child), Some(location)) = (child, found) {
+                    seen_at(&mut hints, child, location);
+                }
+            }
             match node.location {
-                Some(location) => hints.insert(key.to_vec(), location),
-                None => hints.remove(key),
+                Some(location) => seen_at(&mut hints, key, location),
+                None => {
+                    hints.remove(key);
+                }
             };
             self.loose.set(key, node.unlinked);
             let mut reads = self.reads.borrow_mut();
-            reads.entry(key.to_vec()).or_insert(node.location);
+            if !reads.contains_key(key) {
+                reads.insert(key.to_vec(), node.location);
+            }
             self.note_tree(key, node.value.as_deref());
             return Ok(Some(node));
         }

@@ -177,6 +177,9 @@ impl fmt::Debug for LigninChangeSet {
     }
 }
 
+/// The nodes a change set is given room for with its first.
+const FIRST_NODES: usize = 48;
+
 fn stored_key_len(key: &[u8]) -> usize {
     MODEL.stored_key_len(key.len())
 }
@@ -461,7 +464,9 @@ impl NodeChangeSet for LigninChangeSet {
     ) -> Result<(), Error> {
         let (mut node, record_len) = prepared.0?;
         // The record key of the write is the key Merk puts the node under.
-        node.key = key.to_vec();
+        if node.key != key {
+            node.key = key.to_vec();
+        }
         let (children, cost) = match cost {
             Some(cost) => (
                 Some((cost.feature, cost.left_child, cost.right_child)),
@@ -493,6 +498,9 @@ impl NodeChangeSet for LigninChangeSet {
                 cost,
             },
         };
+        if self.nodes.capacity() == 0 {
+            self.nodes.reserve(FIRST_NODES);
+        }
         self.nodes.push((node, sizes));
         Ok(())
     }
