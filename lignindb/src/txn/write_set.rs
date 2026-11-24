@@ -975,6 +975,7 @@ impl WriteSet {
         stored: &[(u32, StoredValue)],
         took: &[Subtree],
     ) -> EntryId {
+        let took: HashSet<Subtree> = took.iter().copied().collect();
         self.serial += 1;
         self.ops.push(Op {
             entries: self.entries.len() as EntryId,

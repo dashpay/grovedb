@@ -1074,18 +1074,19 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             };
             subtrees.push(laid);
         }
-        let ids: Vec<MerkId> = found.iter().map(|(_, entry)| entry.id()).collect();
-        let before = took;
+        // The Merks that take what is below them: those of `above`, and
+        // those that were found.
+        let taking: HashSet<MerkId> = (above.iter().copied())
+            .chain(found.iter().map(|(_, entry)| entry.id()))
+            .collect();
+        let before: Option<HashSet<Subtree>> = took.map(|took| took.iter().copied().collect());
         let mut took = Vec::new();
         for (place, entry) in &found {
-            if entry
-                .lineage()
-                .any(|id| above.contains(&id) || ids.contains(&id))
-            {
+            if entry.lineage().any(|id| taking.contains(&id)) {
                 continue;
             }
             let subtree = batch.subtrees[*place].subtree();
-            if before.is_some_and(|before| !before.contains(&subtree)) {
+            if (before.as_ref()).is_some_and(|before| !before.contains(&subtree)) {
                 return Err(BatchError::EnteredSince { subtree }.into());
             }
             subtrees[*place] = Some(SubtreeWrite::Drop { subtree });
@@ -1099,10 +1100,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 subtrees: &subtrees,
                 ..Batch::default()
             })?;
-            let mut absent = Vec::new();
+            let mut absent = HashSet::new();
             for subtree in batch.removing_if_entered() {
                 if self.entered(&view, &subtree)?.is_none() {
-                    absent.push(subtree);
+                    absent.insert(subtree);
                 }
             }
             kept = (merks.iter())
@@ -1178,9 +1179,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         }
         // A drop takes the Merks below with it: none of them is named,
         // also below a Merk that has no node.
+        let leaving: HashSet<MerkId> = (view.leaving.iter()).map(|left| left.entry.id()).collect();
         for left in &view.leaving {
-            let above = |id: MerkId| view.leaving.iter().any(|left| left.entry.id() == id);
-            if left.entry.lineage().any(above) {
+            if left.entry.lineage().any(|id| leaving.contains(&id)) {
                 let subtree = left.subtree;
                 return Err(BatchError::NotEntered { subtree }.into());
             }
