@@ -893,7 +893,7 @@ fn a_snapshot_reads_one_version_and_refuses_every_write() {
         engine.start_read_transaction(),
     ] {
         assert!(snapshot.is_snapshot_read());
-        assert!(snapshot.write_transaction().is_none());
+        assert!(snapshot.with_write_transaction(|_| ()).is_none());
         assert_eq!(format!("{snapshot:?}"), "LigninTransaction(snapshot)");
         let root = engine.subtree(ROOT, None, &snapshot).unwrap();
         let aux = root.aux();
@@ -973,12 +973,86 @@ fn a_snapshot_reads_one_version_and_refuses_every_write() {
     }
 }
 
+/// A caller holds a transaction beside a borrow of the database that is
+/// shorter than the one the transaction was begun with, and gives both to
+/// a call that takes them with one lifetime. So what a caller holds
+/// across a call takes a shorter lifetime: a transaction, the argument
+/// that `GroveDb` takes one as, a write scope and a handle. Each line of
+/// `shortens` compiles only if its type does.
+///
+/// A transaction and a write scope go to another thread and are not
+/// shared between threads, as before the engine kept its write
+/// transaction behind a trait.
+#[test]
+fn what_a_caller_holds_across_a_call_takes_a_shorter_lifetime() {
+    type Transaction<'db> = <LigninEngine as Engine>::Transaction<'db>;
+    type WriteScope<'db> = <LigninEngine as Engine>::WriteScope<'db>;
+    type Handle<'db> = <LigninEngine as Engine>::Subtree<'db>;
+    type Immediate<'db> = <LigninEngine as Engine>::ImmediateSubtree<'db>;
+    type Argument<'db, 'a> = TransactionArg<'db, 'a, LigninEngine>;
+
+    #[allow(clippy::type_complexity)]
+    fn shortens<'long: 'short, 'short, 'a>(
+        held: (
+            Transaction<'long>,
+            &'a Transaction<'long>,
+            Argument<'long, 'a>,
+            WriteScope<'long>,
+            Handle<'long>,
+            Immediate<'long>,
+        ),
+    ) -> (
+        Transaction<'short>,
+        &'a Transaction<'short>,
+        Argument<'short, 'a>,
+        WriteScope<'short>,
+        Handle<'short>,
+        Immediate<'short>,
+    ) {
+        held
+    }
+
+    /// A function with one lifetime for the database and the transaction,
+    /// as every operation of `GroveDb` is.
+    fn one_lifetime<'db>(db: &'db Lignin, transaction: Argument<'db, '_>) -> bool {
+        db.is_empty_tree(ROOT, transaction, version())
+            .unwrap()
+            .expect("a read")
+    }
+    /// A function of a caller, whose two lifetimes are unrelated.
+    fn two_lifetimes(db: &Lignin, transaction: Argument) -> bool {
+        one_lifetime(db, transaction)
+    }
+
+    fn sent<T: Send>() {}
+    sent::<Transaction<'static>>();
+    sent::<WriteScope<'static>>();
+    // Not `Sync`: with it, both of these would apply and the call below
+    // would not say which.
+    trait NotShared<Which> {
+        fn holds() {}
+    }
+    impl<T: ?Sized> NotShared<()> for T {}
+    impl<T: ?Sized + Sync> NotShared<u8> for T {}
+    <Transaction<'static> as NotShared<_>>::holds();
+    <WriteScope<'static> as NotShared<_>>::holds();
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = Lignin::open_with_engine(dir.path()).expect("a database");
+    let _ = shortens;
+    let transaction = db.start_transaction();
+    let snapshot = db.start_snapshot_read_transaction();
+    assert!(two_lifetimes(&db, Some(&transaction)));
+    assert!(two_lifetimes(&db, Some(&snapshot)));
+    assert!(two_lifetimes(&db, None));
+}
+
 #[test]
 fn a_write_scope_is_one_writers_part_of_its_transaction() {
     let (_dir, engine) = engine();
     let tx = engine.start_transaction();
     assert_eq!(format!("{tx:?}"), "LigninTransaction(write)");
-    assert!(!tx.is_snapshot_read() && tx.write_transaction().is_some());
+    assert!(!tx.is_snapshot_read() && tx.with_write_transaction(|_| ()).is_some());
     let put = |through: &<LigninEngine as Engine>::Transaction<'_>, key: &[u8]| {
         let root = engine.immediate_subtree(ROOT, through).unwrap();
         root.aux().put(key, b"v", None).unwrap()
@@ -994,7 +1068,7 @@ fn a_write_scope_is_one_writers_part_of_its_transaction() {
     assert!(format!("{scope:?}").starts_with("LigninWriteScope"));
     let view = LigninEngine::scope_transaction(&scope);
     assert_eq!(format!("{view:?}"), "LigninTransaction(write scope)");
-    assert!(!view.is_snapshot_read() && view.write_transaction().is_none());
+    assert!(!view.is_snapshot_read() && view.with_write_transaction(|_| ()).is_none());
     put(view, b"merged").expect("a put through the scope");
     assert!(has(view, b"merged").expect("a read"));
     assert!(has(view, b"before").expect("a read"));
@@ -2439,8 +2513,7 @@ fn a_subtree_that_is_named_as_its_own_host_is_answered_after_one_application() {
             hosted: vec![ring],
         }),
     };
-    let view = tx.write_transaction().expect("a write transaction");
-    let handle = LigninNodeStore::deferred(view, named, Some(&batch));
+    let handle = LigninNodeStore::deferred(tx.view(), named, Some(&batch));
     let mut merk = Merk::open_base(handle, TreeType::NormalTree, NO_COST, v)
         .unwrap()
         .expect("a Merk with no node");
@@ -2517,8 +2590,8 @@ fn a_refusal_for_an_entry_is_answered_where_no_commit_was_published() {
     engine.set_savepoint(&tx).expect("a savepoint");
     put(&tx, b"own").expect("a batch that enters the keyspace");
     let back: super::Between = Box::new(|tx| {
-        let tx = tx.write_transaction().expect("a write transaction");
-        tx.rollback_to_savepoint().expect("a rollback");
+        tx.with_write_transaction(|tx| tx.rollback_to_savepoint().expect("a rollback"))
+            .expect("a write transaction");
     });
     super::REFUSED.take();
     super::AFTER_A_LOOK.set([back].into());

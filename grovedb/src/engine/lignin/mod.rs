@@ -392,8 +392,72 @@ impl ScopeView for LigninWriter<'_, '_> {
     }
 }
 
+/// A write transaction of the database, as the engine keeps it: with the
+/// lifetime of its borrow alone, as it keeps a write scope
+/// ([`ScopeView`]).
+///
+/// [`WriteTxn`] keeps its state behind a lock, and what is behind a lock
+/// is given no shorter lifetime than the one it was made with. A
+/// transaction of the engine that held a `WriteTxn<'db>` by its type
+/// could therefore not be given a shorter `'db` either, and a caller
+/// needs that: it holds a transaction beside a borrow of the database
+/// that is shorter than the one the transaction was begun with, and
+/// gives both to one call of `GroveDb`, which takes them with one
+/// lifetime. A boxed trait object is given the shorter lifetime whatever
+/// it holds. Each operation of the engine on a write transaction is one
+/// call through this trait.
+trait WriteView: Send + Sync {
+    fn view(&self) -> LigninView<'_>;
+
+    fn commit(&self, db: &Db) -> Result<(), Error>;
+
+    fn rollback(&self, db: &Db) -> Result<(), Error>;
+
+    fn set_savepoint(&self) -> Result<(), Error>;
+
+    fn rollback_to_savepoint(&self) -> Result<(), Error>;
+
+    fn scope(&self) -> Result<Box<dyn ScopeView + '_>, Error>;
+
+    /// Has `to` look at the transaction, once.
+    fn lend(&self, to: &mut dyn FnMut(&WriteTxn<'_>));
+}
+
+impl WriteView for WriteTxn<'_> {
+    fn view(&self) -> LigninView<'_> {
+        self.into()
+    }
+
+    fn commit(&self, db: &Db) -> Result<(), Error> {
+        (db.commit(self, &mut NoStaleHashes))
+            .map(|_| ())
+            .map_err(write_error)
+    }
+
+    fn rollback(&self, db: &Db) -> Result<(), Error> {
+        db.rollback(self).map_err(txn_error)
+    }
+
+    fn set_savepoint(&self) -> Result<(), Error> {
+        WriteTxn::set_savepoint(self).map_err(error::savepoint_error)
+    }
+
+    fn rollback_to_savepoint(&self) -> Result<(), Error> {
+        WriteTxn::rollback_to_savepoint(self).map_err(error::savepoint_error)
+    }
+
+    fn scope(&self) -> Result<Box<dyn ScopeView + '_>, Error> {
+        let scope = WriteTxn::scope(self).map_err(txn_error)?;
+        Ok(Box::new(LigninWriter::new(scope)))
+    }
+
+    fn lend(&self, to: &mut dyn FnMut(&WriteTxn<'_>)) {
+        to(self)
+    }
+}
+
 enum Kind<'db> {
-    Write(Box<WriteTxn<'db>>),
+    Write(Box<dyn WriteView + 'db>),
     /// A snapshot, with how many savepoints were set on it: it has nothing
     /// to undo, and keeps the count that a transaction's stack has.
     Snapshot(Box<LigninSnapshot<'db>>, AtomicUsize),
@@ -402,6 +466,11 @@ enum Kind<'db> {
 
 /// A transaction of the LigninDB engine: a write transaction, a snapshot,
 /// or the view of a write scope.
+///
+/// It can be given a shorter lifetime than the one it was begun with, as
+/// a reference can: a function that takes `&GroveDb<LigninEngine>` and a
+/// transaction, each with a lifetime of its own, gives both to a call
+/// that takes them with one.
 pub struct LigninTransaction<'db> {
     kind: Kind<'db>,
     /// The database of the engine that began it.
@@ -427,7 +496,7 @@ impl<'db> LigninTransaction<'db> {
 
     fn view(&self) -> LigninView<'_> {
         match &self.kind {
-            Kind::Write(transaction) => (&**transaction).into(),
+            Kind::Write(transaction) => transaction.view(),
             Kind::Snapshot(snapshot, _) => (&**snapshot).into(),
             Kind::Scope(scope) => scope.view(),
         }
@@ -439,13 +508,26 @@ impl<'db> LigninTransaction<'db> {
         matches!(self.kind, Kind::Snapshot(..))
     }
 
-    /// The write transaction of the database underneath, for a transaction
-    /// that is one.
-    pub fn write_transaction(&self) -> Option<&WriteTxn<'db>> {
-        match &self.kind {
-            Kind::Write(transaction) => Some(transaction),
-            Kind::Snapshot(..) | Kind::Scope(_) => None,
-        }
+    /// Has `with` look at the write transaction of the database
+    /// underneath, and returns what it answers. For a transaction that is
+    /// no write transaction, a snapshot or the view of a write scope,
+    /// `with` is not called and the answer is `None`.
+    ///
+    /// The write transaction is lent for the call and not handed out: the
+    /// engine keeps it with the lifetime of its borrow alone, so it has
+    /// no `WriteTxn<'db>` to name.
+    pub fn with_write_transaction<T>(&self, with: impl FnOnce(&WriteTxn<'_>) -> T) -> Option<T> {
+        let Kind::Write(transaction) = &self.kind else {
+            return None;
+        };
+        let mut with = Some(with);
+        let mut answer = None;
+        transaction.lend(&mut |transaction| {
+            if let Some(with) = with.take() {
+                answer = Some(with(transaction));
+            }
+        });
+        answer
     }
 }
 
@@ -880,9 +962,7 @@ impl Engine for LigninEngine {
 
     fn commit_transaction(&self, transaction: LigninTransaction<'_>) -> CostResult<(), Error> {
         let committed = match &transaction.kind {
-            Kind::Write(transaction) => (self.db.commit(transaction, &mut NoStaleHashes))
-                .map(|_| ())
-                .map_err(write_error),
+            Kind::Write(transaction) => transaction.commit(&self.db),
             Kind::Snapshot(..) => Err(Error::SnapshotReadOnlyTransaction("commit")),
             Kind::Scope(_) => Err(Error::WriteScope(WriteScopeError::ScopesOpen)),
         };
@@ -894,7 +974,7 @@ impl Engine for LigninEngine {
 
     fn rollback_transaction(&self, transaction: &LigninTransaction<'_>) -> Result<(), Error> {
         match &transaction.kind {
-            Kind::Write(transaction) => self.db.rollback(transaction).map_err(txn_error),
+            Kind::Write(transaction) => transaction.rollback(&self.db),
             Kind::Snapshot(..) => Ok(()),
             Kind::Scope(_) => Err(Error::WriteScope(WriteScopeError::ScopesOpen)),
         }
@@ -902,7 +982,7 @@ impl Engine for LigninEngine {
 
     fn set_savepoint(&self, transaction: &LigninTransaction<'_>) -> Result<(), Error> {
         match &transaction.kind {
-            Kind::Write(transaction) => transaction.set_savepoint().map_err(error::savepoint_error),
+            Kind::Write(transaction) => transaction.set_savepoint(),
             Kind::Snapshot(_, savepoints) => {
                 savepoints.fetch_add(1, Ordering::Relaxed);
                 Ok(())
@@ -913,9 +993,7 @@ impl Engine for LigninEngine {
 
     fn rollback_to_savepoint(&self, transaction: &LigninTransaction<'_>) -> Result<(), Error> {
         match &transaction.kind {
-            Kind::Write(transaction) => transaction
-                .rollback_to_savepoint()
-                .map_err(error::savepoint_error),
+            Kind::Write(transaction) => transaction.rollback_to_savepoint(),
             Kind::Snapshot(_, savepoints) => savepoints
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |set| {
                     set.checked_sub(1)
@@ -935,8 +1013,7 @@ impl Engine for LigninEngine {
         let db = transaction.db;
         match &transaction.kind {
             Kind::Write(transaction) => {
-                let scope = transaction.scope().map_err(txn_error)?;
-                let writer: Box<dyn ScopeView + 'a> = Box::new(LigninWriter::new(scope));
+                let writer: Box<dyn ScopeView + 'a> = transaction.scope()?;
                 Ok(LigninWriteScope {
                     view: LigninTransaction {
                         kind: Kind::Scope(writer),

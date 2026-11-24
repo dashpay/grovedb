@@ -2321,8 +2321,8 @@ fn a_merk_is_named_by_a_write_that_holds_its_element() {
     let engine = target.engine();
     let transaction = target.start_transaction();
     let writes = || {
-        let write = transaction.write_transaction();
-        write.expect("a write transaction").stats().writes
+        let stats = transaction.with_write_transaction(|write| write.stats());
+        stats.expect("a write transaction").writes
     };
     handed_over(&source, &target, &transaction, &[], v);
     let (tree, inner): (&[&[u8]], &[&[u8]]) = (&[b"tree"], &[b"tree", b"in"]);

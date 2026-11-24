@@ -370,11 +370,28 @@ A test that needs a database needs an engine for the suite, not RocksDB by name:
 
 ### Lifetimes
 
-`E::Transaction<'db>` is an associated type with a lifetime parameter. The compiler cannot shorten that lifetime in generic code, as it does for the concrete `Tx<'db>`. Three conventions in GroveDB's generic code follow from it. A caller that names a concrete engine sees none of them: for it `Tx<'db>` still shortens.
+`E::Transaction<'db>` is an associated type with a lifetime parameter. The compiler cannot shorten that lifetime in generic code, as it does for the concrete `Tx<'db>`. Three conventions in GroveDB's generic code follow from it. A caller that names a concrete engine sees none of them: for it the transaction of that engine still shortens, `Tx<'db>` of the RocksDB engine and `LigninTransaction<'db>` of the LigninDB engine alike ([What a caller holds takes a shorter lifetime](#what-a-caller-holds-takes-a-shorter-lifetime)).
 
 - A method that takes a transaction ties it to `self`: `fn get<'db>(&'db self, .., transaction: TransactionArg<'db, '_, E>, ..)`. A transaction the method starts itself borrows `self`, so both must be one type.
 - A function that returns a handle or a Merk has a lifetime of its own for the borrow: `fn open<'a, 'db: 'a>(&'db self, tx: &'a Transaction<'db, E>, batch: Option<&'a E::Batch>) -> Merk<E::Subtree<'a>>`. The methods of `Engine` that open handles have this shape.
 - A handle of an engine may have a destructor, so GroveDB drops a handle, or a Merk on one, before it moves the batch or the transaction the handle borrows.
+
+#### What a caller holds takes a shorter lifetime
+
+A caller of `GroveDb` that names its engine writes `fn f(&self, transaction: TransactionArg)`: the borrow of the database and the lifetime of the transaction are two lifetimes of its function, and the transaction was begun with a longer borrow than the one `f` has. It gives both to a method of `GroveDb`, which takes them with one. That compiles where the compiler may give the transaction the shorter lifetime, which it may for a type that holds its borrows plainly and may not for one that holds them behind a lock or a cell.
+
+| What a caller holds | RocksDB engine | LigninDB engine |
+| --- | --- | --- |
+| `Transaction<'db>`, `&Transaction<'db>`, `TransactionArg<'db, '_>` | shortens | shortens |
+| `Engine::Subtree<'db>`, `Engine::ImmediateSubtree<'db>` | shortens | shortens |
+| `Engine::WriteScope<'db>` | shortens | shortens |
+| the cursor of a handle (`SubtreeCursor<'db, E>`) | shortens | does not: the cursor keeps its walk in a cell |
+| `Engine::SubtreeMove<'db>` | does not | does not |
+| `MultiStateSyncSession<'db, E>` | does not | does not |
+
+`lignindb::txn::WriteTxn<'db>` keeps its state behind a lock, so it does not shorten, and a transaction of the engine that held one by its type would not either: code written for the RocksDB engine in the form above would not compile on the LigninDB engine. The engine therefore keeps its write transaction as it keeps a write scope, as a boxed trait object with the lifetime of its borrow alone (`WriteView` in `grovedb/src/engine/lignin/mod.rs`), and a boxed trait object shortens whatever it holds. What it costs is one indirect call for each operation of the engine on a write transaction: the view that a handle is opened with, the commit, the rollback, a savepoint, the rollback to one, and the opening of a scope. The test `what_a_caller_holds_across_a_call_takes_a_shorter_lifetime` holds the rows that shorten on the LigninDB engine at compile time, and that a transaction and a write scope of that engine go to another thread and are not shared between threads, as before.
+
+So the engine has no `WriteTxn<'db>` to hand out: `LigninTransaction::with_write_transaction` lends the write transaction to a closure for one call, and returns what the closure answers.
 
 One change outside GroveDB follows from the same fact: `ChunkProducer::new` in Merk took `&'db Merk<S>` with `S: NodeStore<'db>`, one lifetime for the borrow of the Merk and for what its store borrows. A generic handle cannot meet that. The two are separate lifetimes now.
 
@@ -416,7 +433,7 @@ Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, a
 
 | Associated type | On LigninDB |
 | --- | --- |
-| `Transaction<'db>` | `LigninTransaction<'db>`: a write transaction (`lignindb::txn::WriteTxn`), a snapshot (`lignindb::snapshot::Snapshot`), or the view of a write scope |
+| `Transaction<'db>` | `LigninTransaction<'db>`: a write transaction (`lignindb::txn::WriteTxn`, kept as a boxed trait object: [What a caller holds takes a shorter lifetime](#what-a-caller-holds-takes-a-shorter-lifetime)), a snapshot (`lignindb::snapshot::Snapshot`), or the view of a write scope |
 | `Batch` | `LigninBatch` of `merk::store::lignin`, which is `lignindb::batch::StagedBatch` with what each write is charged |
 | `WriteGroup` | `LigninWriteGroup`: the settled batches (`LigninSettled`) in the order they were settled |
 | `Applied` | `LigninApplied`: where the written nodes are (`tree-layout.md` P5), for a handle that stays open (`LigninNodeStore::take_locations`) |

@@ -856,8 +856,7 @@ fn a_count_and_sum_indexed_tree_in_another_answers_on_lignindb_as_on_rocksdb() {
 
 pub(super) fn entry(db: &Lignin, prefix: [u8; 32]) -> Option<LigninEntry> {
     let tx = db.start_transaction();
-    let view = tx.write_transaction().expect("a write transaction");
-    let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
+    let handle = LigninNodeStore::read_only(tx.view(), LigninSubtree::alone(prefix));
     handle.entry().expect("a read of the directory")
 }
 
@@ -1221,8 +1220,8 @@ fn a_conversion_beside_a_commit_that_takes_its_tree_is_refused_after_one_look() 
         assert_eq!(REFUSED.take().len(), 1);
         assert_eq!(AFTER_A_LOOK.take().len(), 1, "one look");
         // The caller's transaction holds no write of the refused group.
-        let written = tx.write_transaction().expect("a write transaction");
-        assert_eq!(written.stats().writes, 0);
+        let written = tx.with_write_transaction(|written| written.stats());
+        assert_eq!(written.expect("a write transaction").writes, 0);
         drop(tx);
 
         // The grove is as the delete left it.
@@ -2443,8 +2442,7 @@ fn handles_that_name_two_elements_for_one_subtree_are_refused() {
                 hosted: vec![own],
             }),
         };
-        let view = tx.write_transaction().expect("a write transaction");
-        let handle = LigninNodeStore::deferred(view, subtree, Some(batch));
+        let handle = LigninNodeStore::deferred(tx.view(), subtree, Some(batch));
         (handle.aux().put(b"z", b"v", None).unwrap()).expect("staging");
     };
     let wrong = |batch: &<LigninEngine as Engine>::Batch| misnamed(batch, secondary, secondary);
@@ -3304,8 +3302,8 @@ fn a_statement_anew_of_merks_that_a_commit_took_since_the_look_is_a_conflict() {
         assert_eq!(REFUSED.take().len(), 1);
         assert_eq!(AFTER_A_LOOK.take().len(), 1, "one look");
         // The caller's transaction holds no write of the refused group.
-        let held = tx.write_transaction().expect("a write transaction");
-        assert_eq!(held.stats().writes, 0);
+        let held = tx.with_write_transaction(|held| held.stats());
+        assert_eq!(held.expect("a write transaction").writes, 0);
         drop(tx);
 
         // The grove is as the commit beside the transaction left it, and
