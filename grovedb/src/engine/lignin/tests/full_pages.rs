@@ -92,6 +92,12 @@ const PAD: usize = 4;
 /// The key of the element that each grown tree is made with.
 const FIRST: [u8; 8] = [0; 8];
 
+/// How many times at most the last item beside the trees is made longer
+/// before one partial batch of a history that keeps its page full
+/// ([`Pads`]). A growth that is still taken alone then is left so, and
+/// the history makes the item longer for no later batch.
+const MOST_PADS: usize = 128;
+
 /// How the first segments grow the roots.
 #[derive(Clone, Copy, Debug)]
 enum Grows {
@@ -566,6 +572,53 @@ enum Others {
     /// It writes an item over each tree: what the trees held leaves
     /// with the first segment, and the second writes their elements.
     WrittenOver,
+    /// It deletes each tree with what it holds: what the trees held
+    /// leaves with the second segment, which removes their elements.
+    Deleted,
+    /// It writes an empty sum tree over each tree, which is a tree of
+    /// another kind than any of them.
+    OtherKind,
+    /// It writes an empty tree that keeps flat records and no Merk over
+    /// each tree.
+    FlatRecords,
+    /// It writes an empty tree of the same kind over each tree and puts
+    /// an item into the new tree, another one than the tree held: the
+    /// first segment writes the Merk of the new tree, which is entered
+    /// again there in the place of the one that leaves, and the second
+    /// writes its element.
+    WrittenInto,
+}
+
+/// How many times the last item beside the trees is made longer, by
+/// [`PAD`] bytes each time, before each partial batch of a history that
+/// keeps its page full: no time where the growth is refused as it is.
+enum Pads<'a> {
+    /// Until the growth of the batch is refused as a write of its Merk
+    /// alone ([`alone`]), and [`MOST_PADS`] times at most, after which
+    /// the item is made longer for no later batch: found on LigninDB,
+    /// and kept here for each batch.
+    Found(&'a mut Vec<usize>),
+    /// As many times as another run found.
+    Given(&'a [usize]),
+}
+
+/// Where a history that keeps its page full calls what it is given
+/// ([`Kept::between`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Point {
+    /// Before the last item is made longer for a partial batch, and after
+    /// each tree is made again.
+    Settled,
+    /// Right before a partial batch.
+    Before,
+    /// Right after it.
+    After,
+}
+
+/// What makes a history keep the page of its trees full.
+struct Kept<'a, E: Engine> {
+    pads: Pads<'a>,
+    between: &'a dyn Fn(&GroveDb<E>, Point),
 }
 
 /// The history of `shape`, whose roots grow by their values, with
@@ -574,54 +627,133 @@ enum Others {
 /// `others` to every other tree under their parent. The element of one
 /// of those is the node above the element of the grown tree in the
 /// Merk of the parent, unless the grown tree's is the root of that
-/// Merk. After each batch the other trees are made again as they were
-/// made. With the answers, how many of the growths the tree pages
-/// refused as a write of the Merk alone.
+/// Merk, and as the trees are made the elements of two of them hang
+/// below the element of the second tree that is grown. After each batch
+/// the other trees are made again as they were made, where the batch
+/// did not make them again itself. With the answers, the numbers of the
+/// trees whose growth the tree pages refused as a write of the Merk
+/// alone.
+///
+/// With `kept`, the page is kept full as far as its [`Pads`] go: before
+/// each batch the last item beside the trees is made longer by them, and
+/// `kept.between` is called at each [`Point`].
 fn grown_beside<E: Engine>(
     db: &GroveDb<E>,
     v: &GroveVersion,
     shape: Shape,
     fill: Fill,
     others: Others,
-) -> (Vec<Answer>, usize) {
+    kept: Option<Kept<'_, E>>,
+) -> (Vec<Answer>, Vec<u8>) {
+    use crate::{batch::SubelementsDeletionBehavior::DeleteChildren, TreeType};
+
     let mut h = History::new(db, v);
     let trees = made(&mut h, shape);
     filled(&mut h, &trees, fill);
-    let child = &KINDS[shape.child % made_by(v)];
-    let mut full = 0;
+    let kind = shape.child % made_by(v);
+    let child = &KINDS[kind];
+    let child_type = match kind {
+        3 => TreeType::CountTree,
+        _ => TreeType::NormalTree,
+    };
+    let (mut pads, between) = match kept {
+        Some(kept) => (Some(kept.pads), Some(kept.between)),
+        None => (None, None),
+    };
+    let at = |point: Point| {
+        if let Some(between) = between {
+            between(db, point);
+        }
+    };
+    let mut full = Vec::new();
+    let mut padded = fill.pads;
+    let mut in_reach = true;
     for n in 0..TREES {
         let step = step(v, shape, &trees, 1, n);
-        full += usize::from(step.refused_alone(db, v));
+        at(Point::Settled);
+        let given = match pads.as_mut() {
+            None => 0,
+            Some(Pads::Given(given)) => given[usize::from(n)],
+            Some(Pads::Found(found)) => {
+                let mut more = 0;
+                while in_reach && !step.refused_alone(db, v) {
+                    more += 1;
+                    pad(&mut h, &trees, padded + more);
+                    in_reach = more < MOST_PADS;
+                }
+                found.push(more);
+                padded += more;
+                0
+            }
+        };
+        for _ in 0..given {
+            padded += 1;
+            pad(&mut h, &trees, padded);
+        }
+        if step.refused_alone(db, v) {
+            full.push(n);
+        }
         // The other trees: the key of each under the parent, how it was
-        // made, and the item it was made with.
+        // made, its tree type, and the item it was made with.
         let grown = (0..TREES).filter(|m| *m != n);
-        let grown = grown.map(|m| (vec![b'o', m], (child.make)(), Element::new_item(vec![m; 8])));
+        let grown = grown.map(|m| {
+            let first = Element::new_item(vec![m; 8]);
+            (vec![b'o', m], (child.make)(), child_type, first)
+        });
         let beside = (
             b"x".to_vec(),
             Element::empty_tree(),
+            TreeType::NormalTree,
             Element::new_item(vec![0; 8]),
         );
         let beside: Vec<_> = grown.chain([beside]).collect();
         let under = |key: &[u8]| [trees.docs.clone(), vec![key.to_vec()]].concat();
-        let to_others = beside.iter().map(|(key, ..)| match others {
-            Others::Emptied => Op::delete_op(under(key), FIRST.to_vec()),
-            Others::WrittenOver => {
-                let item = Element::new_item(b"no tree".to_vec());
-                Op::insert_or_replace_op(trees.docs.clone(), key.clone(), item)
-            }
+        let over = |key: &[u8], element: Element| {
+            Op::insert_or_replace_op(trees.docs.clone(), key.to_vec(), element)
+        };
+        let to_others = beside.iter().flat_map(|(key, tree, tree_type, _)| {
+            let one = match others {
+                Others::Emptied => Op::delete_op(under(key), FIRST.to_vec()),
+                Others::WrittenOver => over(key, Element::new_item(b"no tree".to_vec())),
+                Others::Deleted => {
+                    Op::delete_tree_op(trees.docs.clone(), key.clone(), *tree_type, DeleteChildren)
+                }
+                Others::OtherKind => over(key, Element::empty_sum_tree()),
+                Others::FlatRecords => over(key, Element::empty_mmr_tree()),
+                Others::WrittenInto => over(key, tree.clone()),
+            };
+            // The item of a tree that the batch makes again names the
+            // batch: the tree that left held another.
+            let again = Element::new_item(vec![key[key.len() - 1], n]);
+            let item = matches!(others, Others::WrittenInto)
+                .then(|| Op::insert_or_replace_op(under(key), FIRST.to_vec(), again));
+            [one].into_iter().chain(item)
         });
         let ops = [step.op].into_iter().chain(to_others).collect();
         let name = format!("tree {n}");
+        at(Point::Before);
         partial(&mut h, &name, ops, step.at.len(), None, |_| Vec::new());
-        for (key, tree, first) in beside {
-            if matches!(others, Others::WrittenOver) {
-                let at = segments(&trees.docs);
-                let inserted = db.insert(at.as_slice(), &key, tree, None, None, v);
-                h.write("a tree again", inserted);
+        at(Point::After);
+        for (key, tree, _, first) in beside {
+            match others {
+                Others::Emptied => {}
+                Others::WrittenOver | Others::Deleted => {
+                    let at = segments(&trees.docs);
+                    let inserted = db.insert(at.as_slice(), &key, tree, None, None, v);
+                    h.write("a tree again", inserted);
+                }
+                // A tree is there, which an insert does not write over.
+                Others::OtherKind | Others::FlatRecords => {
+                    let again = vec![over(&key, tree)];
+                    h.write("a tree again", db.apply_batch(again, None, None, v));
+                }
+                // The batch left the tree there with its item.
+                Others::WrittenInto => continue,
             }
-            let at = under(&key);
-            let inserted = db.insert(segments(&at).as_slice(), &FIRST, first, None, None, v);
+            let under = under(&key);
+            let inserted = db.insert(segments(&under).as_slice(), &FIRST, first, None, None, v);
             h.write("its item again", inserted);
+            at(Point::Settled);
         }
     }
     read(&mut h, shape, &trees);
@@ -646,17 +778,211 @@ fn alike_beside(others: Others) {
             );
             let fill = Fill::found(v, shape);
             let (on_lignin, full) =
-                on::<LigninEngine, _>(v, true, |db| grown_beside(db, v, shape, fill, others));
-            held(&on_lignin, full, &what);
+                on::<LigninEngine, _>(v, true, |db| grown_beside(db, v, shape, fill, others, None));
+            held(&on_lignin, full.len(), &what);
             #[cfg(feature = "rocksdb_storage")]
             {
                 let (on_rocksdb, _) = on::<crate::RocksDbEngine, _>(v, false, |db| {
-                    grown_beside(db, v, shape, fill, others)
+                    grown_beside(db, v, shape, fill, others, None)
                 });
                 same(&on_lignin, &on_rocksdb, &what);
             }
         }
     }
+}
+
+/// The physical checker reads the open database of `db`, which it has
+/// to find sound.
+fn sound_now(db: &GroveDb<LigninEngine>, v: &GroveVersion, when: &str) {
+    let mut rules = MerkHashRules::for_check(v);
+    let report = db.engine().database().verify(Some(&mut rules));
+    assert!(report.is_sound(), "{when}: {:#?}", report.findings);
+}
+
+/// Makes rounds of the reclaiming of `db` until nothing waits, whichever
+/// thread took it out: the engine's own reclaimer runs beside these
+/// calls. What is left when a round can do no more waits for something,
+/// as a page does that would be freed with the version it was born
+/// with, which waits for the next commit: a commit that writes a record
+/// of no tree is made, and the rounds are made again. No call of the
+/// reclaimer has failed by then, and no reclaiming was given up.
+fn reclaimed(db: &GroveDb<LigninEngine>) {
+    let database = db.engine().database();
+    for _ in 0..64 {
+        let mut round = database.reclaim();
+        for _ in 0..10_000 {
+            if !round.more {
+                break;
+            }
+            round = database.reclaim();
+        }
+        if round.waiting == 0 && !round.more {
+            let stats = database.stats();
+            let failed = (stats.background.reclaim_errors, stats.reclaimed.given_up);
+            assert_eq!(failed, (0, 0), "{:?}", stats.background.last_error);
+            return;
+        }
+        (db.put_aux(b"reclaimed", b"", None, None).unwrap()).expect("a commit");
+    }
+    panic!("the reclaiming did not come to an end");
+}
+
+/// Runs [`grown_beside`] with `others` in a page that is kept full, on
+/// LigninDB and on RocksDB on every grove version, for trees and for
+/// count trees under a tree.
+///
+/// On LigninDB the pace of the reclaimer's thread does not decide how
+/// full the page is at a batch: nothing waits to be reclaimed where the
+/// room is measured ([`reclaimed`]), and the last item beside the trees
+/// is then made longer until the growth of the batch is refused as a
+/// write of its Merk alone ([`Pads`]). Nothing is dropped between that
+/// and the batch. A growth that is still taken alone after
+/// [`MOST_PADS`] times goes to its batch so, and the item is made
+/// longer for no later batch: a later growth that is taken alone goes
+/// to its batch as it is. The history is held to have met a refusal for
+/// each tree of `full_first`. A snapshot holds what each batch dropped
+/// in its pages until the physical checker has read the open database
+/// after the batch, and the checker reads it again once nothing waits.
+/// Where the batch writes over the trees, as many Merks as it wrote
+/// over have left and are reclaimed by then, at least.
+///
+/// What the tree pages send away in such a batch, and that the root of
+/// a Merk which the batch drops stays behind, is not seen from here:
+/// the tests of `lignin_tree::drop` hold the tree pages to it. These
+/// histories hold the engine to its answers where it is so.
+///
+/// RocksDB is given the calls of the history, the writes that make the
+/// item longer among them, and the one probe of each growth before its
+/// batch, which it takes and rolls back. The search for how long the
+/// item has to be, the snapshot, the checker, the rounds of the
+/// reclaiming and their commits of a record of no tree are made on
+/// LigninDB alone.
+fn alike_beside_full(others: Others, full_first: &[u8]) {
+    for (number, v) in GROVE_VERSIONS.iter().enumerate() {
+        for child in [0, 3] {
+            let shape = Shape {
+                grows: Grows::Values,
+                ..Shape::of(0, child)
+            };
+            if child >= made_by(v) {
+                continue;
+            }
+            let what = format!(
+                "{others:?} in a page kept full beside {shape:?} on grove version {}",
+                number + 1
+            );
+            let fill = Fill::found(v, shape);
+            let mut pads = Vec::new();
+            let writes_over = !matches!(others, Others::Deleted);
+            let (on_lignin, full) = on::<LigninEngine, _>(v, true, |db| {
+                let held = RefCell::new(None);
+                let gone = std::cell::Cell::new(0);
+                // How many dropped and cleared Merks are reclaimed in full.
+                let left =
+                    |db: &GroveDb<LigninEngine>| db.engine().database().stats().reclaimed.merks;
+                let between = |_: &GroveDb<LigninEngine>, point: Point| match point {
+                    Point::Settled => reclaimed(db),
+                    Point::Before => {
+                        gone.set(left(db));
+                        *held.borrow_mut() = Some(db.engine().database().snapshot());
+                    }
+                    Point::After => {
+                        sound_now(db, v, "with what the batch dropped in its pages");
+                        held.borrow_mut().take();
+                        reclaimed(db);
+                        // A batch that writes over the trees beside the
+                        // grown one drops the Merk of each, and of the
+                        // tree with one item beside them.
+                        let gone = left(db) - gone.get();
+                        assert!(
+                            !writes_over || gone >= u64::from(TREES),
+                            "{what}: {gone} Merks left with a batch"
+                        );
+                        sound_now(db, v, "with what the batch dropped reclaimed");
+                    }
+                };
+                let kept = Kept {
+                    pads: Pads::Found(&mut pads),
+                    between: &between,
+                };
+                grown_beside(db, v, shape, fill, others, Some(kept))
+            });
+            held(&on_lignin, full.len(), &what);
+            assert!(
+                full_first.iter().all(|n| full.contains(n)),
+                "{what}: the growths of {full:?} met a page with no room: {pads:?}"
+            );
+            #[cfg(feature = "rocksdb_storage")]
+            {
+                let (on_rocksdb, _) = on::<crate::RocksDbEngine, _>(v, false, |db| {
+                    let kept = Kept {
+                        pads: Pads::Given(&pads),
+                        between: &|_, _| (),
+                    };
+                    grown_beside(db, v, shape, fill, others, Some(kept))
+                });
+                same(&on_lignin, &on_rocksdb, &what);
+            }
+        }
+    }
+}
+
+/// The trees whose growth meets a page with no room in a history that
+/// keeps its page full and leaves the elements of the trees beside the
+/// grown one under their keys, as nodes that are written over and not
+/// removed: the first, and the second, whose element has the elements
+/// of two other trees below it.
+const BOTH_FIRST: &[u8] = &[0, 1];
+
+/// The tree whose growth meets a page with no room in a history whose
+/// batches remove the nodes of the elements beside the grown one, or
+/// give the trees beside it new roots.
+const THE_FIRST: &[u8] = &[0];
+
+/// [`grown_beside`] in a page that is kept full, with an item written
+/// over every tree beside the grown one. The first segment drops the
+/// Merks of those trees and does not write their elements. The second
+/// tree that is grown has the elements of two of them below its own, and
+/// its growth is refused as a write of its Merk alone.
+#[test]
+fn a_first_segment_grows_a_root_in_a_page_kept_full_beside_trees_that_are_written_over() {
+    alike_beside_full(Others::WrittenOver, BOTH_FIRST);
+}
+
+/// The same with every tree beside the grown one deleted with what it
+/// holds: the subtrees leave with the second segment, which removes the
+/// nodes of their elements. The first growth alone is held to meet a
+/// page with no room.
+#[test]
+fn a_first_segment_grows_a_root_in_a_page_kept_full_beside_trees_that_are_deleted() {
+    alike_beside_full(Others::Deleted, THE_FIRST);
+}
+
+/// The same with a tree of another kind written over every tree beside
+/// the grown one.
+#[test]
+fn a_first_segment_grows_a_root_in_a_page_kept_full_beside_trees_of_another_kind_written_over_them()
+{
+    alike_beside_full(Others::OtherKind, BOTH_FIRST);
+}
+
+/// The same with a tree that keeps flat records written over every tree
+/// beside the grown one.
+#[test]
+fn a_first_segment_grows_a_root_in_a_page_kept_full_beside_trees_of_flat_records_written_over_them()
+{
+    alike_beside_full(Others::FlatRecords, BOTH_FIRST);
+}
+
+/// The same with a tree of the same kind written over every tree beside
+/// the grown one and written into by the same batch: the first segment
+/// writes the Merk of each new tree, which takes the place of the one
+/// that leaves there, and the element still points at the root that
+/// left until the second segment writes it. The first growth alone is
+/// held to meet a page with no room.
+#[test]
+fn a_first_segment_grows_a_root_in_a_page_kept_full_beside_trees_that_are_made_again() {
+    alike_beside_full(Others::WrittenInto, THE_FIRST);
 }
 
 /// A first segment that grows the root of one tree and removes the one

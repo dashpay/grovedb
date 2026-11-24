@@ -6,7 +6,10 @@ use lignin_format::{tree_page::Side, CellAddress, PageId};
 use lignin_store::{alloc::PageState, load::LoadBuffers};
 
 use super::*;
-use crate::node::{Lease, NodeReader};
+use crate::{
+    fragment::{Layout, LayoutParams},
+    node::{Lease, NodeReader},
+};
 
 fn key(n: usize) -> Vec<u8> {
     format!("key-{n:06}").into_bytes()
@@ -327,6 +330,115 @@ fn a_dropped_merk_whose_host_is_deleted_is_reclaimed() {
     db.tick();
     let done = reclaim_all(&db, &grove);
     assert_eq!(done[0].cells as usize, grove.left_behind());
+    check_reclaimed(&db, &grove);
+}
+
+/// A write that drops a Merk, or clears it, and does not write its host,
+/// as the first batch of a group does whose next batch writes the
+/// element, while the same write fills the page: the host hangs below a
+/// node that the write holds, with the Merk in its page, and is sent away
+/// with what hangs below it. The root that the write lets go of stays
+/// where it is (`tree-layout.md` D1, D4): the record that the directory
+/// leaves names it there, and the reclaimer finds every cell from it.
+#[test]
+fn a_dropped_root_stays_where_a_full_page_sends_its_host_away() {
+    a_host_is_sent_away_from_what_it_hosted(false);
+}
+
+/// The same with the Merk cleared: it stays entered, with no node.
+#[test]
+fn a_cleared_root_stays_where_a_full_page_sends_its_host_away() {
+    a_host_is_sent_away_from_what_it_hosted(true);
+}
+
+fn a_host_is_sent_away_from_what_it_hosted(clear: bool) {
+    let db = Db::new();
+    let mut txn = db.begin();
+    let mut grove = Grove::new(&db, &mut txn);
+    let layout = Layout::new(db.size, LayoutParams::default()).expect("a layout");
+    let capacity = layout.capacity();
+
+    // One page: the root `m`, its left child `c`, which hosts a Merk that
+    // comes to take most of the page, and nodes to the right of `m`.
+    grove.put(0, b"m", &bytes(1, 24));
+    let host = grove.put(0, b"c", &bytes(2, 24));
+    let hosted = grove.host(host);
+    let root = grove.put(hosted, &key(500), &bytes(3, 24));
+    grove.flush(&mut txn);
+    let page = grove.nodes[host].at.expect("placed").page();
+    let used = |grove: &mut Grove| grove.fragments.hints_mut().used(page).expect("a page");
+    let mut inside = 0;
+    while used(&mut grove) * 100 < capacity * 62 {
+        inside += 1;
+        let low = inside % 2 == 0;
+        let n = if low { 500 - inside } else { 500 + inside };
+        grove.put(hosted, &key(n), &bytes(n as u64, 24));
+        grove.flush(&mut txn);
+    }
+    let mut beside = 0;
+    let right = |n: usize| format!("x-{n:04}").into_bytes();
+    while used(&mut grove) * 100 < capacity * 93 {
+        beside += 1;
+        grove.put(0, &right(beside), &bytes(beside as u64, 24));
+        grove.flush(&mut txn);
+    }
+    db.commit(txn);
+    grove.check(&db);
+    let in_page = |grove: &Grove, node: usize| grove.nodes[node].at.expect("placed").page();
+    let below = grove.below(hosted);
+    assert!(below.len() > 20 && below.iter().all(|node| in_page(&grove, *node) == page));
+    assert_eq!(in_page(&grove, host), page);
+    let (host_at, root_at) = (grove.nodes[host].at, grove.nodes[root].at);
+    assert_eq!(grove.merks[hosted].root, Some(root));
+    let cells = db.cells();
+
+    // The write: more nodes to the right of `m` than the page has room
+    // for, and the Merk is dropped or cleared. Its host is not written.
+    let mut txn = db.begin();
+    for n in 0..8 {
+        grove.put(0, &right(1_000 + n), &bytes(n as u64, 24));
+    }
+    let (report, left) = grove.drop_before_hosts(&mut txn, &[hosted], clear);
+    assert!(!report.created.is_empty(), "the page was full");
+    let carried_host = report
+        .carried
+        .iter()
+        .find(|cell| Some(cell.from) == host_at);
+    let carried_host = carried_host.expect("the host was sent away");
+    assert_eq!((carried_host.node, carried_host.hosted_by), (None, None));
+    assert_ne!(carried_host.to.address().page(), page);
+    assert!(report.carried.iter().all(|cell| cell.hosted_by.is_none()));
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].root, root_at);
+
+    // The host keeps the pointer's bytes, and the root has its mark.
+    let root_at = root_at.expect("placed");
+    let host_now = grove.nodes[host].at.expect("placed");
+    let pointers = txn.tree.read(host_now.page(), |view| {
+        let node = view.node(host_now.slot()).expect("the host");
+        node.hosted_roots().collect::<Vec<_>>()
+    });
+    assert_eq!(pointers.expect("the page"), [Some(root_at)]);
+    let marked = txn.tree.read(root_at.page(), |view| {
+        let node = view
+            .node(root_at.slot())
+            .expect("the root stays in its cell");
+        node.is_fragment_root()
+    });
+    assert!(marked.expect("the page"));
+
+    // The next write writes the host, whose cell names no root any more:
+    // a Merk that was dropped is hosted no more, and one that was cleared
+    // is entered under the host with no root.
+    grove.flush(&mut txn);
+    db.commit(txn);
+    assert_eq!(db.cells(), cells + 8);
+    assert_eq!(grove.left_behind(), below.len());
+    grove.check(&db);
+    db.tick();
+    let done = reclaim_all(&db, &grove);
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0].cells as usize, below.len());
     check_reclaimed(&db, &grove);
 }
 
