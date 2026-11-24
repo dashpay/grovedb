@@ -195,10 +195,10 @@ pub(crate) fn doomed(source: &Source) -> Result<BTreeSet<Prefix>, ToolError> {
 /// they are, with the tree type their features name: `None` where the
 /// prefix has no data record. The inner error says why they are not the
 /// nodes of one tree type, each as Merk encodes it.
-pub(crate) fn nodes(
-    source: &Source,
-    prefix: &Prefix,
-) -> Result<Result<(Option<TreeType>, Vec<Node>), String>, ToolError> {
+///
+/// With `keep` unset no node is kept, and the list is empty: the tree
+/// type alone is asked for.
+pub(crate) fn nodes(source: &Source, prefix: &Prefix, keep: bool) -> Result<NodesOf, ToolError> {
     let mut nodes = Vec::new();
     let mut tree_type = None;
     let mut other = None;
@@ -233,7 +233,9 @@ pub(crate) fn nodes(
             return Ok(());
         }
         tree_type = Some(of);
-        nodes.push(Node::of(&decoded, Vec::new()));
+        if keep {
+            nodes.push(Node::of(&decoded, Vec::new()));
+        }
         Ok(())
     })?;
     Ok(match other {
@@ -242,12 +244,16 @@ pub(crate) fn nodes(
     })
 }
 
+/// The tree type that the nodes under a prefix name, with the nodes, or
+/// why the records there are not the nodes of one tree type.
+pub(crate) type NodesOf = Result<(Option<TreeType>, Vec<Node>), String>;
+
 /// Looks at the records under the prefix of `orphan`: what its data
 /// records are, the first of them in words, and the key that its record
 /// of a root key names.
 pub(crate) fn inspect(source: &Source, orphan: &mut Orphan) -> Result<(), ToolError> {
     orphan.root_key = source.get(Keyspace::Roots, &orphan.prefix, ROOT_KEY)?;
-    orphan.held = match nodes(source, &orphan.prefix)? {
+    orphan.held = match nodes(source, &orphan.prefix, false)? {
         Ok((None, _)) => Held::NoData,
         Ok((Some(tree_type), _)) => Held::Nodes(tree_type),
         Err(other) => Held::Other(other),

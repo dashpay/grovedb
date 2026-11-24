@@ -25,6 +25,14 @@
 //! once more when it has compared the target ([`Source::unchanged`]); one
 //! that comes after that look is not seen.
 //!
+//! **A `LOCK` file that is replaced while a writer runs says nothing of
+//! that writer**: its lock is on the file that was there, and RocksDB
+//! itself would start a second writer on such a directory. So the node
+//! is stopped, and nothing else touches the source during the run. The
+//! probe holds the name to the file it locked, once it has the lock and
+//! again once the database is open, and what such a writer changes is
+//! found as it is for a directory with no `LOCK` file.
+//!
 //! **Whose the lock is.** RocksDB's lock is its process's: the system
 //! gives a process one such lock on a file, whichever descriptor asked
 //! for it, and takes it away when the process closes any descriptor of
@@ -33,9 +41,11 @@
 //! description lock). A writer's lock keeps it out and it keeps a writer
 //! out, also where the two are in one process, and two [`Source`]s of one
 //! process each keep a lock of their own. A descriptor whose lock was
-//! refused is not closed while the process lives, since its close would
-//! give up the lock of a writer in the same process; the next probe of
-//! that file asks through the same descriptor.
+//! refused is not closed then, since its close would give up the lock of
+//! a writer in the same process: it is kept, and the next probe of that
+//! file asks through it. Where that probe gets the lock, the descriptor
+//! is the [`Source`]'s and is closed with it; no writer of the process
+//! holds a lock on the file by then, since this lock kept it out.
 //!
 //! On a system other than Linux the migrator's lock is its process's
 //! too. There a caller of the library must not have the source open in
@@ -76,6 +86,9 @@ use crate::ToolError;
 
 /// The bytes of a subtree's prefix.
 pub(crate) const PREFIX_LEN: usize = 32;
+
+/// A record as a cursor shows it: its stored key and its value.
+pub(crate) type Record<'a> = (&'a [u8], &'a [u8]);
 
 /// The prefix of a subtree.
 pub(crate) type Prefix = [u8; PREFIX_LEN];
@@ -176,12 +189,12 @@ pub(crate) fn file_identity(metadata: &std::fs::Metadata) -> (u64, u64) {
 /// The `LOCK` files whose lock this process was refused, each by what the
 /// file is, with the descriptor that asked.
 ///
-/// A descriptor here is not closed while the process lives. The system
-/// takes the lock that RocksDB holds on a file away from its process when
-/// the process closes any descriptor of the file, and the holder that
-/// refused the lock may be this process. The next probe of the file asks
-/// through the descriptor that is here, so that a file has one of them
-/// however often it is refused.
+/// A descriptor is not closed while it is here. The system takes the
+/// lock that RocksDB holds on a file away from its process when the
+/// process closes any descriptor of the file, and the holder that refused
+/// the lock may be this process. The next probe of the file takes the
+/// descriptor from here and asks through it, so that a file has one of
+/// them however often it is refused.
 static REFUSED_LOCKS: Mutex<Vec<((u64, u64), File)>> = Mutex::new(Vec::new());
 
 /// Asks for a shared lock on the whole of `file`, and does not wait for
@@ -212,12 +225,27 @@ fn lock_shared(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-/// Fails where `dir` has a `LOCK` file though the open found none to
-/// lock: a process came to write the directory since.
+/// Whether `path` names the file that `file` is an open of: a name can
+/// be given to another file between two looks at it.
+fn still_named(path: &Path, file: &File) -> bool {
+    match (std::fs::metadata(path), file.metadata()) {
+        (Ok(named), Ok(open)) => file_identity(&named) == file_identity(&open),
+        _ => false,
+    }
+}
+
+/// Fails where the `LOCK` file of `dir` is not what the probe found: a
+/// file where it found none, or another file than the one it locked. A
+/// process came to write the directory since.
 fn no_writer_came(dir: &Path, lock: &Option<File>) -> Result<(), ToolError> {
-    match lock.is_none() && dir.join("LOCK").exists() {
-        false => Ok(()),
-        true => Err(source_error(
+    let path = dir.join("LOCK");
+    let as_found = match lock {
+        None => !path.exists(),
+        Some(lock) => still_named(&path, lock),
+    };
+    match as_found {
+        true => Ok(()),
+        false => Err(source_error(
             dir,
             "a process opened it for writing while this command began to read it. A migration \
              is made offline: stop the node, or migrate a checkpoint that nothing opens",
@@ -311,22 +339,40 @@ impl Source {
         // One probe at a time in the process: a file whose lock was
         // refused has one descriptor, and no second is opened beside it.
         let mut refused = REFUSED_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        // RocksDB's lock file is a file. Anything else of that name is not
+        // opened: the open of a pipe waits for its other end, with every
+        // other probe of the process behind it.
+        let no_file = || source_error(dir, "its LOCK is no file: it is no RocksDB database");
         let identity = match std::fs::metadata(&path) {
-            Ok(metadata) => file_identity(&metadata),
+            Ok(metadata) if metadata.is_file() => file_identity(&metadata),
+            Ok(_) => return Err(no_file()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(failed(error)),
         };
         let kept = refused.iter().position(|(kept, _)| *kept == identity);
         let file = match kept {
             Some(kept) => refused.swap_remove(kept).1,
-            None => match File::open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(failed(error)),
-            },
+            None => {
+                // The name can be given to something else since the look
+                // at what it names: an open that does not wait.
+                use std::os::unix::fs::OpenOptionsExt;
+                let no_wait = rustix::fs::OFlags::NONBLOCK.bits() as i32;
+                let mut options = std::fs::OpenOptions::new();
+                match options.read(true).custom_flags(no_wait).open(&path) {
+                    Ok(file) if file.metadata().is_ok_and(|opened| opened.is_file()) => file,
+                    Ok(_) => return Err(no_file()),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(failed(error)),
+                }
+            }
         };
         let error = match lock_shared(&file) {
-            Ok(()) => return Ok(Some(file)),
+            // The lock is on the file that was opened, or that was kept
+            // from an earlier probe. Where the name was given to another
+            // file since the look at what it names, that file is the one
+            // a writer locks.
+            Ok(()) if still_named(&path, &file) => return Ok(Some(file)),
+            Ok(()) => io::Error::from(io::ErrorKind::WouldBlock),
             Err(error) => error,
         };
         // The descriptor is kept, whatever refused the lock: its close
@@ -489,7 +535,7 @@ impl Records<'_> {
     /// The stored key and the value of the record the walk stands on, or
     /// `None` past the last one. A walk that RocksDB ended with an error
     /// fails here.
-    pub(crate) fn current(&self) -> Result<Option<(&[u8], &[u8])>, ToolError> {
+    pub(crate) fn current(&self) -> Result<Option<Record<'_>>, ToolError> {
         match (self.cursor.key(), self.cursor.value()) {
             (Some(key), Some(value)) => Ok(Some((key, value))),
             _ => {
@@ -798,9 +844,10 @@ mod tests {
             said.contains(REFUSED),
             "the second reader's lock holds: {said}"
         );
-        let refused = open_for_writing(&dir)
-            .err()
-            .expect("a writer in this process");
+        let refused = match open_for_writing(&dir) {
+            Err(refused) => refused,
+            Ok(_) => panic!("a writer of this process opened {}", dir.display()),
+        };
         assert!(refused.to_string().contains("LOCK"), "{refused}");
         let said = another_process_opens(&dir);
         assert!(
@@ -813,16 +860,78 @@ mod tests {
         assert!(said.contains(OPENED), "{said}");
     }
 
-    /// A lock file that is there once a source with none was opened says
-    /// that a process came to write it.
+    /// A pipe with the name of the lock file is not opened, which would
+    /// wait for its other end: the source is refused.
+    #[cfg(unix)]
     #[test]
-    fn a_lock_file_that_appears_refuses_the_source() {
+    fn a_lock_that_is_no_file_refuses_the_source() {
         let dir = tempfile::tempdir().expect("a directory");
+        let dir = dir.path().join("rocksdb");
+        drop(open_for_writing(&dir).expect("a database"));
+        std::fs::remove_file(dir.join("LOCK")).expect("the lock file is removed");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            dir.join("LOCK"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .expect("a pipe");
+        let refused = match Source::open(&dir) {
+            Err(refused) => refused.to_string(),
+            Ok(_) => panic!("{} opened", dir.display()),
+        };
+        assert!(refused.contains("its LOCK is no file"), "{refused}");
+    }
+
+    /// A lock file that is there once a source with none was opened says
+    /// that a process came to write it, and so does a lock file that is
+    /// another file than the one that was locked.
+    #[test]
+    fn a_lock_file_that_appears_or_is_another_refuses_the_source() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().join("LOCK");
         no_writer_came(dir.path(), &None).expect("no lock file is there");
-        std::fs::write(dir.path().join("LOCK"), b"").expect("a lock file");
+        std::fs::write(&path, b"").expect("a lock file");
         let refused = no_writer_came(dir.path(), &None).expect_err("a writer came");
         assert!(refused.to_string().contains("opened it for writing while"));
-        let lock = File::open(dir.path().join("LOCK")).expect("the lock file");
-        no_writer_came(dir.path(), &Some(lock)).expect("the lock that was taken is the file");
+        let lock = Some(File::open(&path).expect("the lock file"));
+        no_writer_came(dir.path(), &lock).expect("the lock that was taken is the file");
+
+        // The name is given to another file: the one that was locked is
+        // not the one a writer locks.
+        std::fs::rename(&path, dir.path().join("the file that was locked")).expect("a rename");
+        std::fs::write(&path, b"").expect("another lock file");
+        assert!(!still_named(&path, lock.as_ref().unwrap()));
+        let refused = no_writer_came(dir.path(), &lock).expect_err("a writer came");
+        assert!(refused.to_string().contains("opened it for writing while"));
+        std::fs::remove_file(&path).expect("the file is removed");
+        assert!(!still_named(&path, lock.as_ref().unwrap()));
+    }
+
+    /// A probe that finds the name of the lock file on another file than
+    /// the one it kept from an earlier refusal locks the file that is
+    /// named, and a source whose lock file is replaced while it is opened
+    /// is refused.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_lock_file_that_is_replaced_is_not_taken_for_the_one_that_was_kept() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let dir = dir.path().join("rocksdb");
+        let path = dir.join("LOCK");
+        let writer = open_for_writing(&dir).expect("a database");
+        assert!(Source::open(&dir).is_err(), "the writer has it open");
+        drop(writer);
+        // The descriptor of the refusal is kept. The name goes to another
+        // file, as where a database is made again in the directory.
+        let kept = file_identity(&std::fs::metadata(&path).unwrap());
+        std::fs::rename(&path, dir.join("LOCK.before")).expect("a rename");
+        std::fs::write(&path, b"").expect("another lock file");
+        let lock = Source::probe(&dir).expect("the probe").expect("a lock");
+        assert!(still_named(&path, &lock));
+        assert_ne!(file_identity(&lock.metadata().unwrap()), kept);
+        drop(lock);
+        let said = another_process_opens(&dir);
+        assert!(said.contains(OPENED), "{said}");
     }
 }

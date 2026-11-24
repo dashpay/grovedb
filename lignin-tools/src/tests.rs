@@ -516,10 +516,11 @@ fn the_arguments_of_migrate() {
             batch_bytes: 2 << 20,
             progress: Duration::ZERO,
             unreachable: Unreachable::Carry,
+            memory_limit: None,
         }
     );
     assert_eq!(
-        parse("migrate s --survey --unreachable leave").unwrap(),
+        parse("migrate s --survey --unreachable leave --memory-limit 7").unwrap(),
         Command::Migrate {
             source: "s".into(),
             target: None,
@@ -527,8 +528,18 @@ fn the_arguments_of_migrate() {
             batch_bytes: args::DEFAULT_MIGRATE_BATCH,
             progress: args::DEFAULT_MIGRATE_PROGRESS,
             unreachable: Unreachable::Leave,
+            memory_limit: Some(7 << 20),
         }
     );
+    assert!(matches!(
+        parse("migrate s t --memory-limit 5").unwrap(),
+        Command::Migrate {
+            memory_limit: Some(limit),
+            ..
+        } if limit == 5 << 20
+    ));
+    assert!(parse("migrate s t --memory-limit 0").is_err());
+    assert!(parse("stats d --memory-limit 5").is_err());
     assert!(matches!(
         parse("migrate s t").unwrap(),
         Command::Migrate {

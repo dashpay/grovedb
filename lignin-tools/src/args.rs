@@ -29,6 +29,7 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      a subtree with every subtree below it, or every subtree, to FILE
   load      DIR FILE                 a dump, into a database that has none of its subtrees
   migrate   SOURCE TARGET [--batch MIB] [--progress SECS] [--unreachable refuse|leave|carry]
+            [--memory-limit MIB]
                                      a RocksDB GroveDB in SOURCE (the directory of a stopped node,
                                      or a checkpoint) into a new LigninDB database at TARGET. The
                                      source is read and never written. The work is done in the
@@ -57,8 +58,14 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      node of a Merk beside the tree's records, and this command
                                      does not make that Merk from what RocksDB holds. A record
                                      that such a tree was given itself with the very bytes of
-                                     such a node is taken for one
-  migrate   SOURCE --survey [--unreachable refuse|leave|carry]
+                                     such a node is taken for one.
+                                     A Merk is handed over whole, so the largest decides how
+                                     much memory a run holds: the run says what peak it
+                                     projects, and refuses a SOURCE that projects more than
+                                     --memory-limit before it writes anything (half of the
+                                     machine's memory unless given). Such a source needs the
+                                     load of one Merk in parts, which is not built
+  migrate   SOURCE --survey [--unreachable refuse|leave|carry] [--memory-limit MIB]
                                      what SOURCE holds and whether it can be migrated; writes
                                      nothing
   help                               this text
@@ -67,10 +74,14 @@ Every subcommand that opens DIR takes --cache MIB, the buffer pool (64 MiB unles
 A SUBTREE is its 32 bytes in hex, as `lignin directory` prints them.
 No subcommand opens a database that a process has open for writing: run on a stopped node or on a
 checkpoint. migrate reads its SOURCE beside other readers, and where SOURCE has a LOCK file it
-keeps a node from starting on it while it runs.
+keeps a node from starting on it while it runs. The node is stopped and nothing else touches
+SOURCE during the run: a LOCK file that is replaced while a writer runs says nothing of that
+writer (RocksDB itself would start a second writer on such a directory). TARGET is held apart
+from SOURCE by their names with links followed and by what each directory is on both paths and
+inside SOURCE; what a file system shows as two directories otherwise is not seen.
 migrate is in a build with the Cargo feature `migrate`. Its exit status: 0 migrated and verified
-(with --survey: SOURCE can be migrated), 1 failed or refused (nothing is at TARGET, unless the
-error says that the database is there under a name that could not be made durable),
+(with --survey: SOURCE can be migrated), 1 failed or refused (the run put nothing at TARGET,
+unless its error says that the database got that name and the name could not be made durable),
 2 the arguments are not a subcommand, 3 the migrated store differs from the source or is not
 sound, 4 the device of TARGET is full: the same command goes on once there is room.
 ";
@@ -194,6 +205,9 @@ pub enum Command {
         /// What becomes of records under a prefix that no element leads
         /// to.
         unreachable: Unreachable,
+        /// The most memory the run may project to hold at its peak, in
+        /// bytes: `None` for half of the machine's.
+        memory_limit: Option<u64>,
     },
 }
 
@@ -288,6 +302,12 @@ pub fn parse(args: &[OsString]) -> Result<Command, ToolError> {
                     choice.ok_or_else(|| usage("--unreachable takes refuse, leave or carry"))?;
                 flags.unreachable = Some(choice);
             }
+            "--memory-limit" => {
+                let mib: u64 = number(value(word)?, "a size in MiB")?;
+                let bytes = mib.checked_mul(1 << 20).filter(|&bytes| bytes > 0);
+                let bytes = bytes.ok_or_else(|| usage("--memory-limit takes 1 MiB or more"))?;
+                flags.memory_limit = Some(bytes);
+            }
             "--batch" => {
                 let mib: usize = number(value(word)?, "a size in MiB")?;
                 let bytes = mib.checked_mul(1 << 20).filter(|&bytes| bytes > 0);
@@ -323,6 +343,7 @@ struct Flags {
     all: bool,
     survey: bool,
     unreachable: Option<Unreachable>,
+    memory_limit: Option<u64>,
     batch: Option<usize>,
     cache: Option<usize>,
     timeout: Option<Duration>,
@@ -351,6 +372,10 @@ impl Flags {
                 self.unreachable.is_some() && name != "migrate",
             ),
             ("--batch", self.batch.is_some() && name != "migrate"),
+            (
+                "--memory-limit",
+                self.memory_limit.is_some() && name != "migrate",
+            ),
             ("--progress", self.progress.is_some() && name != "migrate"),
             ("--cache", self.cache.is_some() && !opens),
             ("--timeout", self.timeout.is_some() && name != "compact"),
@@ -445,6 +470,7 @@ impl Flags {
                     batch_bytes: self.batch.unwrap_or(DEFAULT_MIGRATE_BATCH),
                     progress: self.progress.unwrap_or(DEFAULT_MIGRATE_PROGRESS),
                     unreachable: self.unreachable.unwrap_or_default(),
+                    memory_limit: self.memory_limit,
                 }
             }
             other => return Err(usage(format!("no subcommand {other:?}"))),

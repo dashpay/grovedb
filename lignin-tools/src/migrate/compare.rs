@@ -137,7 +137,7 @@ impl<'t> Comparing<'t, '_> {
         named: &str,
         keyspace: Keyspace,
     ) -> Result<u64, ToolError> {
-        cursor.seek_to_first().value;
+        let _ = cursor.seek_to_first();
         let (mut same, mut differs) = (0, None);
         self.source.subtree(keyspace, prefix, |key, value| {
             if differs.is_some() {
@@ -146,7 +146,7 @@ impl<'t> Comparing<'t, '_> {
             let (found_key, found_value) = (cursor.key().value, cursor.value().value);
             if (found_key, found_value) == (Some(key), Some(value)) {
                 same += 1;
-                cursor.next().value;
+                let _ = cursor.next();
                 return Ok(());
             }
             differs = Some(match found_key {
@@ -333,7 +333,7 @@ pub(crate) fn compare(
         comparing.compared.unreachable_carried += 1;
         carried.push(prefix);
         // The tree type the load gave the entry: the one the nodes name.
-        let stated = nodes(source, &prefix)?
+        let stated = nodes(source, &prefix, false)?
             .ok()
             .map(|(tree_type, _)| tree_type_bytes(tree_type.unwrap_or(TreeType::NormalTree)));
         if entry.host.is_some() || entry.root_key.is_some() || Some(entry.tree_type) != stated {

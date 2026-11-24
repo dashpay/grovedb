@@ -175,6 +175,7 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> Result<Outcome, ToolError>
             batch_bytes,
             progress,
             unreachable,
+            memory_limit,
         } => {
             let migration = migrate::Migration {
                 source,
@@ -186,6 +187,7 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> Result<Outcome, ToolError>
                 batch_bytes,
                 progress,
                 unreachable,
+                memory_limit,
             };
             migrate::migrate(&migration, out)
         }

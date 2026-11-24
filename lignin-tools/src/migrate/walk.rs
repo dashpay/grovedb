@@ -181,7 +181,8 @@ pub(crate) struct Found {
     pub(crate) trees: u64,
     /// How many node values are the bytes of no element.
     pub(crate) no_element: u64,
-    /// About the bytes its Merk takes in memory when it is handed over.
+    /// The bytes of the keys and values of the nodes of its Merk, linked
+    /// or not, and [`HELD_A_NODE`] for each.
     pub(crate) held: u64,
     /// Whether its Merk has nodes and the record of its root key, which
     /// its root is read from, does not name its root (GroveDB #1065).
@@ -307,6 +308,10 @@ pub(crate) fn short_key(source: &Source, keyspace: Keyspace, key: &[u8]) -> Tool
         crate::hex(key)
     ))
 }
+
+/// What a node counts for beside its key and its value where a Merk is
+/// sized by what it holds ([`Found::held`]).
+pub(crate) const HELD_A_NODE: u64 = 300;
 
 /// Whether `hosted` is the subtree of a tree that keeps its data as flat
 /// records.
@@ -586,7 +591,7 @@ impl<'s, V: Visit> Walk<'s, V> {
                     dangling.push(keys.len());
                 }
             }
-            found.held += (key.len() + value.len() + 300) as u64;
+            found.held += (key.len() + value.len()) as u64 + HELD_A_NODE;
             if let Some(nodes) = &mut nodes {
                 nodes.push(Node::of(&decoded, Vec::new()));
             }

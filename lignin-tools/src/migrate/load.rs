@@ -211,13 +211,17 @@ fn is_hosted(db: &Db, prefix: &Prefix) -> Result<bool, ToolError> {
     Ok(opened.is_some_and(|opened| opened.entry().host().is_some()))
 }
 
+/// A pending-drop record as it is stored, its key and its value, with the
+/// marks it leaves.
+pub(crate) type Dropped = (Vec<u8>, Vec<u8>, Vec<Vec<u8>>);
+
 /// The pending-drop records of `source` as they are stored, each with the
 /// marks it leaves: one for each keyspace of each prefix it names that is
 /// not `live` and that the source holds a record under.
 pub(crate) fn pending_drops(
     source: &Source,
     mut live: impl FnMut(&Prefix) -> Result<bool, ToolError>,
-) -> Result<Vec<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)>, ToolError> {
+) -> Result<Vec<Dropped>, ToolError> {
     let mut stored = Vec::new();
     source.subtree(
         Keyspace::Meta,
@@ -341,92 +345,101 @@ impl<'t> Load<'t> {
             self.journal.carried.add(&within);
         }
         let pending = std::mem::take(&mut self.pending);
-        let journal = self.journal.encode();
-        let root = Subtree::new(ROOT);
-        let mut records: Vec<RecordWrite<'_>> = (pending.records.iter())
-            .map(|(column, subtree, key, value)| RecordWrite::put(*column, *subtree, key, value))
-            .collect();
-        records.push(match last {
-            true => RecordWrite::delete(Column::Aux, root, JOURNAL_KEY),
-            false => RecordWrite::put(Column::Aux, root, JOURNAL_KEY, &journal),
-        });
-        let enters: Vec<SubtreeWrite<'_>> = (pending.enters.iter())
-            .map(|entered| SubtreeWrite::Enter {
-                subtree: entered.subtree,
-                tree_type: &entered.tree_type,
-                host: entered
-                    .host
-                    .as_ref()
-                    .map(|(subtree, key, position)| HostPut {
-                        subtree: *subtree,
-                        key,
-                        position: *position,
-                    }),
-            })
-            .collect();
-
-        let with_nodes = |handed: &&Handed| !handed.merk.nodes.is_empty();
-        let here: HashSet<Subtree> = (pending.merks.iter())
-            .filter(with_nodes)
-            .map(|handed| handed.subtree)
-            .collect();
-        let puts: Vec<Vec<NodePut<'_>>> = (pending.merks.iter())
-            .filter(with_nodes)
-            .map(|handed| {
-                let nodes = handed.merk.nodes.iter();
-                nodes.map(|node| put(node, &node.hosted)).collect()
-            })
-            .collect();
-        let loads: Vec<MerkWrite<'_>> = (pending.merks.iter().filter(with_nodes))
-            .zip(&puts)
-            .map(|(handed, nodes)| MerkWrite {
-                subtree: handed.subtree,
-                nodes,
-                removed: &[],
-                root: RootPut::Set(handed.merk.root.as_deref()),
-                // The Merk of the host comes after the Merks it hosts:
-                // where it is of a later commit, the root waits for it.
-                anchored: handed.host.is_some_and(|host| !here.contains(&host)),
-                whole: true,
-            })
-            .collect();
-
-        let unlinked_of = |handed: &&Handed| !handed.merk.unlinked.is_empty();
-        let left: Vec<Vec<NodePut<'_>>> = (pending.merks.iter())
-            .filter(unlinked_of)
-            .map(|handed| {
-                let records = handed.merk.unlinked.iter();
-                records.map(|node| put(node, &[])).collect()
-            })
-            .collect();
-        let unlinked: Vec<MerkWrite<'_>> = (pending.merks.iter().filter(unlinked_of))
-            .zip(&left)
-            .map(|(handed, nodes)| MerkWrite {
-                subtree: handed.subtree,
-                nodes,
-                removed: &[],
-                root: RootPut::Keep,
-                anchored: handed.host.is_some(),
-                whole: false,
-            })
-            .collect();
-
         let txn = self.db.begin();
-        let scope = txn.scope()?;
-        let first = Batch {
-            records: &records,
-            merks: &loads,
-            subtrees: &enters,
-        };
-        scope.apply_by_kind(&first, keeps_flat_records)?;
-        if !unlinked.is_empty() {
-            let second = Batch {
-                merks: &unlinked,
-                ..Batch::default()
+        {
+            let journal = self.journal.encode();
+            let root = Subtree::new(ROOT);
+            let mut records: Vec<RecordWrite<'_>> = (pending.records.iter())
+                .map(|(column, subtree, key, value)| {
+                    RecordWrite::put(*column, *subtree, key, value)
+                })
+                .collect();
+            records.push(match last {
+                true => RecordWrite::delete(Column::Aux, root, JOURNAL_KEY),
+                false => RecordWrite::put(Column::Aux, root, JOURNAL_KEY, &journal),
+            });
+            let enters: Vec<SubtreeWrite<'_>> = (pending.enters.iter())
+                .map(|entered| SubtreeWrite::Enter {
+                    subtree: entered.subtree,
+                    tree_type: &entered.tree_type,
+                    host: entered
+                        .host
+                        .as_ref()
+                        .map(|(subtree, key, position)| HostPut {
+                            subtree: *subtree,
+                            key,
+                            position: *position,
+                        }),
+                })
+                .collect();
+
+            let with_nodes = |handed: &&Handed| !handed.merk.nodes.is_empty();
+            let here: HashSet<Subtree> = (pending.merks.iter())
+                .filter(with_nodes)
+                .map(|handed| handed.subtree)
+                .collect();
+            let puts: Vec<Vec<NodePut<'_>>> = (pending.merks.iter())
+                .filter(with_nodes)
+                .map(|handed| {
+                    let nodes = handed.merk.nodes.iter();
+                    nodes.map(|node| put(node, &node.hosted)).collect()
+                })
+                .collect();
+            let loads: Vec<MerkWrite<'_>> = (pending.merks.iter().filter(with_nodes))
+                .zip(&puts)
+                .map(|(handed, nodes)| MerkWrite {
+                    subtree: handed.subtree,
+                    nodes,
+                    removed: &[],
+                    root: RootPut::Set(handed.merk.root.as_deref()),
+                    // The Merk of the host comes after the Merks it hosts:
+                    // where it is of a later commit, the root waits for it.
+                    anchored: handed.host.is_some_and(|host| !here.contains(&host)),
+                    whole: true,
+                })
+                .collect();
+
+            let unlinked_of = |handed: &&Handed| !handed.merk.unlinked.is_empty();
+            let left: Vec<Vec<NodePut<'_>>> = (pending.merks.iter())
+                .filter(unlinked_of)
+                .map(|handed| {
+                    let records = handed.merk.unlinked.iter();
+                    records.map(|node| put(node, &[])).collect()
+                })
+                .collect();
+            let unlinked: Vec<MerkWrite<'_>> = (pending.merks.iter().filter(unlinked_of))
+                .zip(&left)
+                .map(|(handed, nodes)| MerkWrite {
+                    subtree: handed.subtree,
+                    nodes,
+                    removed: &[],
+                    root: RootPut::Keep,
+                    anchored: handed.host.is_some(),
+                    whole: false,
+                })
+                .collect();
+
+            let scope = txn.scope()?;
+            let first = Batch {
+                records: &records,
+                merks: &loads,
+                subtrees: &enters,
             };
-            scope.apply_by_kind(&second, keeps_flat_records)?;
+            scope.apply_by_kind(&first, keeps_flat_records)?;
+            if !unlinked.is_empty() {
+                let second = Batch {
+                    merks: &unlinked,
+                    ..Batch::default()
+                };
+                scope.apply_by_kind(&second, keeps_flat_records)?;
+            }
+            scope.merge();
         }
-        scope.merge();
+        // The transaction has its own of every record. The nodes that
+        // were handed over, and the puts that named them, are let go of
+        // before the commit makes its log group, which is as large as
+        // they are for a Merk of many nodes.
+        drop(pending);
         match self.db.commit(&txn, &mut NoStaleHashes)? {
             Committed::Published(_) => self.commits += 1,
             // The journal is written or removed by every commit, so only
@@ -501,7 +514,7 @@ impl<'t> Load<'t> {
     /// records are records that no tree links, and its aux and meta
     /// records are as they are.
     fn unreachable(&mut self, source: &Source, prefix: Prefix) -> Result<(), ToolError> {
-        let (tree_type, nodes) = nodes(source, &prefix)?.map_err(|other| {
+        let (tree_type, nodes) = nodes(source, &prefix, true)?.map_err(|other| {
             ToolError::Migrate(format!(
                 "the source {}: the records under the prefix {}, which nothing leads to, are \
                  not carried: {other}",
