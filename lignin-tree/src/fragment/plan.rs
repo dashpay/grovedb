@@ -10,6 +10,7 @@
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
+    hash::{BuildHasherDefault, Hasher},
 };
 
 use lignin_format::{
@@ -28,6 +29,61 @@ use super::{
 /// The page of a cell that is in none: a node the write creates and has not
 /// placed yet, or a node it deletes.
 pub(super) const NOWHERE: usize = usize::MAX;
+
+/// The hasher of the planner's maps. Their keys are a page id, or a page
+/// id with a slot: small integers, which are mixed word by word and not
+/// hashed as bytes. A map of the planner is asked for a key and never
+/// walked, so nothing of a plan follows from the order of one.
+#[derive(Debug, Default, Clone, Copy)]
+struct Mixed(u64);
+
+impl Mixed {
+    fn mix(&mut self, word: u64) {
+        self.0 = self
+            .0
+            .wrapping_add(word)
+            .wrapping_mul(0xF135_7AEA_2E62_A9C5);
+    }
+}
+
+impl Hasher for Mixed {
+    /// A product has its best bits on top, and a table takes the place of
+    /// a key from the low ones.
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.mix(u64::from(*byte));
+        }
+    }
+
+    fn write_u16(&mut self, word: u16) {
+        self.mix(u64::from(word));
+    }
+
+    fn write_u32(&mut self, word: u32) {
+        self.mix(u64::from(word));
+    }
+}
+
+type Mixing = BuildHasherDefault<Mixed>;
+
+/// How many cells a plan comes to know for each cell its write names, as
+/// the first size of its map of them: a write reads the fragments of the
+/// cells it names. More than this costs the map a growth, and nothing
+/// else.
+const KNOWN_FOR_ONE: usize = 16;
+
+/// The same for the pages of those cells.
+const PAGES_FOR_ONE: usize = 4;
+
+/// The most cells of a write that its plan's maps are sized for before
+/// the plan is made. A write that names more starts with maps of this
+/// size, which grow: what a write names is not held to be true before it
+/// is planned, and a size made of it must not be one that cannot be had.
+const SIZED_FOR: usize = 1 << 16;
 
 const SLOT: usize = TreePage::SLOT_LEN;
 
@@ -256,9 +312,9 @@ pub(super) struct Plan<'w> {
     /// for nothing else: the cell that pointed at them was a host that is
     /// behind (T3).
     pub unmarked: Vec<CellAddress>,
-    known: HashMap<CellAddress, usize>,
-    page_of: HashMap<PageId, usize>,
-    removed: HashSet<CellAddress>,
+    known: HashMap<CellAddress, usize, Mixing>,
+    page_of: HashMap<PageId, usize, Mixing>,
+    removed: HashSet<CellAddress, Mixing>,
 }
 
 struct Planner<'p, 'w, P> {
@@ -280,7 +336,7 @@ struct Planner<'p, 'w, P> {
     /// Whether the write met a host that is behind (T3).
     met_behind: bool,
     /// The roots the write lets go of ([`Write::dropped`]).
-    dropped: HashSet<CellAddress>,
+    dropped: HashSet<CellAddress, Mixing>,
 }
 
 /// Plans `write` on the pages as they are.
@@ -290,6 +346,7 @@ pub(super) fn plan<'w, P: Pages>(
     pages: &mut P,
     write: &'w Write<'w>,
 ) -> Result<Plan<'w>, FragmentError> {
+    let named = (write.nodes.len() + write.removed.len()).min(SIZED_FOR);
     let mut planner = Planner {
         layout: *layout,
         hints,
@@ -302,9 +359,12 @@ pub(super) fn plan<'w, P: Pages>(
             roots: Vec::new(),
             unpointed: Vec::new(),
             unmarked: Vec::new(),
-            known: HashMap::new(),
-            page_of: HashMap::new(),
-            removed: HashSet::new(),
+            known: HashMap::with_capacity_and_hasher(KNOWN_FOR_ONE * named, Mixing::default()),
+            page_of: HashMap::with_capacity_and_hasher(PAGES_FOR_ONE * named, Mixing::default()),
+            removed: HashSet::with_capacity_and_hasher(
+                write.removed.len().min(SIZED_FOR),
+                Mixing::default(),
+            ),
         },
         held: Vec::new(),
         shrunk: Vec::new(),
@@ -1356,6 +1416,59 @@ mod tests {
             _ => Via::Hosted(cell as u8),
         };
         Kid { cell, via }
+    }
+
+    fn hash_of(key: impl std::hash::Hash) -> u64 {
+        let mut hasher = Mixed::default();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The keys of the planner's maps, the cells of many pages and the
+    /// pages themselves, get hashes of their own, and a table of any size
+    /// up to a thousand places finds them spread over its places: none
+    /// holds more than a few times its share.
+    #[test]
+    fn the_keys_of_the_planners_maps_are_spread() {
+        let page = |raw: u32| PageId::new(raw).expect("not zero");
+        let slot = |raw: u16| SlotId::new(raw).expect("not zero");
+        let mut hashes = HashSet::new();
+        for places in [16usize, 128, 1024] {
+            let mut cells = vec![0u32; places];
+            let mut pages = vec![0u32; places];
+            for raw in 1..=400u32 {
+                pages[hash_of(page(raw)) as usize % places] += 1;
+                hashes.insert(hash_of(page(raw)));
+                for at in 1..=64u16 {
+                    let address = CellAddress::new(page(raw), slot(at));
+                    cells[hash_of(address) as usize % places] += 1;
+                    hashes.insert(hash_of(address));
+                }
+            }
+            let share = |keys: usize| (keys / places).max(1) as u32;
+            let most = |counts: &[u32]| counts.iter().copied().max().unwrap_or(0);
+            assert!(
+                most(&cells) <= 3 * share(400 * 64),
+                "{places}: {}",
+                most(&cells)
+            );
+            assert!(most(&pages) <= 8 * share(400), "{places}: {}", most(&pages));
+            // The tag of a key is taken from the top of its hash.
+            let mut tags = [0u32; 128];
+            for raw in 1..=400u32 {
+                tags[(hash_of(page(raw)) >> 57) as usize] += 1;
+            }
+            assert!(most(&tags) <= 16, "{}", most(&tags));
+        }
+        assert_eq!(hashes.len(), 400 + 400 * 64);
+        // A key of bytes is mixed byte by byte.
+        let bytes = |key: &[u8]| {
+            let mut hasher = Mixed::default();
+            hasher.write(key);
+            hasher.finish()
+        };
+        assert_ne!(bytes(b"ab"), bytes(b"ba"));
+        assert_ne!(bytes(b"a"), bytes(b""));
     }
 
     /// A cell's kids are the slice of what was pushed, in that order,
