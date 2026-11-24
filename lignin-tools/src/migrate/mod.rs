@@ -138,7 +138,7 @@
 //! that nothing leads to are read whole too by a load that carries them,
 //! which puts each such prefix into one commit, its nodes with its aux
 //! and meta records. Beside it the migrator holds what one commit takes
-//! (`--batch`: for each node about 1.3 KB with its key and value, for
+//! (`--batch`: for each node about 1.5 KB with its key and value, for
 //! each record that is no node the same with three times its key and
 //! value, and a page of the store for each Merk it hands over; a commit
 //! ends after the Merk that fills it), and the buffer pool of the target
@@ -146,7 +146,7 @@
 //!
 //! **The run says what peak it projects, before it writes anything**: a
 //! floor (256 MiB, `--batch` and `--cache`), and for each node of the
-//! heaviest Merk it hands over about 1.3 KB with the node's key and
+//! heaviest Merk it hands over about 1.5 KB with the node's key and
 //! value. An aux or a meta record that is read whole with a carried
 //! prefix is counted as a node, with three times its bytes. The figure a
 //! node is a measurement of this command as it is at this commit; the

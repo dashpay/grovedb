@@ -39,7 +39,7 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      directory that TARGET is to be in has to be there, and
                                      nothing else is to open TARGET.migrating meanwhile.
                                      --batch is about how much one commit of the load
-                                     holds in memory (64 MiB unless given: about 1.3 KB with
+                                     holds in memory (160 MiB unless given: about 1.5 KB with
                                      its key and value for each node, the same with three
                                      times its key and value for each other record, and a
                                      page for each Merk), and --progress how
@@ -98,7 +98,7 @@ pub const DEFAULT_CACHE: usize = 64 << 20;
 /// what a node is measured to take with its key and value for each node,
 /// the same with three times its key and value for each other record, and
 /// a page of the store for each Merk.
-pub const DEFAULT_MIGRATE_BATCH: usize = 64 << 20;
+pub const DEFAULT_MIGRATE_BATCH: usize = 160 << 20;
 
 /// How often a load of `migrate` says where it stands, unless `--progress`
 /// says otherwise.

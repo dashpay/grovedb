@@ -24,10 +24,10 @@
 //! **How much a commit takes** is counted as the projection of a run
 //! counts it. For each node of a Merk: its key and value, and what a node
 //! is measured to take beside them (`survey::PEAK_A_NODE`). That figure
-//! is the most the process holds for a node over the steps of a commit:
-//! the migrator's nodes are held until the transaction has taken them,
-//! and the transaction's records and the encoded changes of their pages
-//! until the commit is made. For each record that is no node: the same
+//! is what the process holds for a node when a commit is made: the
+//! migrator's node, the transaction's record of it, and the encoded
+//! changes of its pages, once in the transaction and once in the log
+//! group of the commit. For each record that is no node: the same
 //! figure, and its key and value `survey::COPIES_OF_A_RECORD` times. For
 //! each Merk: a page of the store, since the loads of a batch are laid
 //! out in pages of their own. So a grove of many small Merks is committed
@@ -472,12 +472,15 @@ impl<'t> Load<'t> {
             }
             scope.merge();
         }
-        // The transaction has its own of every record. The nodes that
-        // were handed over, and the puts that named them, are let go of
-        // before the commit makes its log group, which is as large as
-        // they are for a Merk of many nodes.
+        // The nodes that were handed over are let go of once the commit
+        // is made. The transaction has its own of every record by now,
+        // and letting go of them before the commit would take a tenth off
+        // the most a run holds for a large Merk; but every later commit
+        // of the run was measured to be slower for it, by more than a
+        // tenth of a load in all (LigninDB task OPS-02).
+        let committed = self.db.commit(&txn, &mut NoStaleHashes)?;
         drop(pending);
-        match self.db.commit(&txn, &mut NoStaleHashes)? {
+        match committed {
             Committed::Published(_) => self.commits += 1,
             // The journal is written or removed by every commit, so only
             // the removal of one that is not there writes nothing.

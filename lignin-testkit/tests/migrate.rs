@@ -2766,7 +2766,8 @@ fn a_database_of_the_environment_is_migrated_and_read_alike() {
         source: source.to_path_buf(),
         target: Some(target.clone()),
         options: Options::default(),
-        batch_bytes: 64 << 20,
+        // What a commit of the command takes unless it is told.
+        batch_bytes: lignin_tools::args::DEFAULT_MIGRATE_BATCH,
         progress: Duration::from_secs(5),
         unreachable,
         memory_limit: None,

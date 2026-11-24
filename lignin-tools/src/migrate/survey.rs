@@ -68,11 +68,12 @@ const AXIS_TAGS: [u8; 3] = [0, 1, 2];
 /// It is a measurement of this command as it is at this commit, and of
 /// the engine it writes through (LigninDB task OPS-02). A migration whose
 /// largest Merk has 760,101 nodes with 33 bytes of key and value each
-/// held 1.35 GB at its peak: with 384 MiB of it counted as the floor, 1.21
-/// KB a node, which is rounded up here. A Merk of 400,000 nodes with 474
-/// bytes of key and value each held less than this projects. A change of
-/// what the load or the engine holds for a node changes the figure.
-pub(crate) const PEAK_A_NODE: u64 = 1_300;
+/// held 1.49 GB at its peak: with 384 MiB of it counted as the floor, 1.40
+/// KB a node, which is rounded up here. A migration whose largest Merk
+/// has 1,000,000 nodes with 474 bytes of key and value each held less
+/// than this projects. A change of what the load or the engine holds for
+/// a node changes the figure.
+pub(crate) const PEAK_A_NODE: u64 = 1_500;
 
 /// How many times the bytes of an aux or a meta record are counted where
 /// a load reads the records of a prefix whole: the loader's copy, the
