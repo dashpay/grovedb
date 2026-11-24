@@ -17,7 +17,7 @@ Today every LigninDB crate has `publish = false`. The plan, for the first releas
 | `lignin-testkit` | never | the plan's crate table: workloads, corpus, fuzzer and benchmarks are the project's tools, and it depends on RocksDB |
 | `lignin-format/fuzz` | never | not a workspace member, `publish = false` |
 
-The five libraries take the version of the GroveDB crates (6.1.1 today) and move with it, and the crates that name them ask for that version. (Not every crate of a release has it: the imported `grovedb-bincode` and `grovedb-bincode-derive` are at 2.1.0.) On 19 November 2026 none of the seven names was taken on crates.io.
+The five libraries take the version of the GroveDB crates (7.0.0 today) and move with it, and the crates that name them ask for that version. (Not every crate of a release has it: the imported `grovedb-bincode` and `grovedb-bincode-derive` are at 2.1.0.) On 19 November 2026 none of the seven names was taken on crates.io.
 
 ## Why the first release after the merge has to publish them
 
