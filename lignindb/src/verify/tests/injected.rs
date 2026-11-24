@@ -8,6 +8,8 @@
 //! among the findings. Most give others too, because one damage breaks
 //! several rules at once.
 
+mod hostile;
+
 use lignin_format::{
     delta::{Delta, DeltaRunWriter},
     flat_page::{common_prefix_len, FlatBranchBuilder, FlatLeafBuilder, FlatPage, FlatValue},
