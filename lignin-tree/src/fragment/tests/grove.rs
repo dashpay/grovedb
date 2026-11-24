@@ -95,7 +95,7 @@ pub(crate) struct Grove {
     orphans: Vec<CellAddress>,
 }
 
-fn digest(parts: &[&[u8]]) -> Hash {
+pub(super) fn digest(parts: &[&[u8]]) -> Hash {
     let mut lanes = [
         0x243F_6A88_85A3_08D3u64,
         0x1319_8A2E_0370_7344,
