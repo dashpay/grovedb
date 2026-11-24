@@ -86,6 +86,16 @@ fn a_commit_is_counted_by_its_records_and_its_bytes() {
     assert_eq!(checkpointed.log_bytes, checkpointed.log.bytes());
     assert_eq!(checkpointed.watch.log_held, 0);
     assert!(checkpointed.watch.log_held_by().is_empty());
+
+    // A pass and a checkpoint that a caller makes are no turns. A turn is
+    // counted when it begins and again when it has ended.
+    let watch = &checkpointed.watch;
+    assert_eq!((watch.turns_begun, watch.turns_ended), (0, 0));
+    db.wb().tick().expect("a turn");
+    db.wb().tick().expect("a turn");
+    let watch = read(&db, &stats).watch;
+    assert_eq!((watch.turns_begun, watch.turns_ended), (2, 2));
+    assert_eq!(db.state.turns_begun(), 2);
 }
 
 /// Reads of the pool are counted as hits and as reads from storage, and

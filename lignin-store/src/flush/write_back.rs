@@ -801,6 +801,7 @@ impl<'s> WriteBack<'s> {
             return Ok(0);
         };
         let writer = self.value_writer(&mut files.values)?;
+        let began = writer.end();
         let mut cover = |writer: &mut ValueWriter| -> Result<(), FlushError> {
             writer.sync()?;
             values.commit(&mut *self.manifest()?)?;
@@ -808,6 +809,11 @@ impl<'s> WriteBack<'s> {
         };
         let mut moved = Ok(0);
         versions.guarded(&mut || moved = page_values.regroup(page, writer, &mut cover));
+        // The copies are in the file whatever became of the regrouping.
+        count(
+            &self.state.counters.regroup_stored_bytes,
+            writer.end().saturating_sub(began),
+        );
         match moved {
             Ok(moved) => {
                 count(&self.state.counters.values_regrouped, moved);

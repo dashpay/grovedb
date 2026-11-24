@@ -90,6 +90,16 @@ fn the_values_of_a_page_are_regrouped_before_its_base_image_is_written() {
     assert_eq!(db.shape(page(1)), "B");
     assert_eq!(after.consolidations, before.0.consolidations + 1);
     assert_eq!(after.values_regrouped, 3);
+    // The three copies are counted with their record headers: they are
+    // bytes write-back wrote.
+    assert_eq!(before.0.regroup_stored_bytes, 0);
+    let copies: u64 = [1000, 1100, 1200]
+        .iter()
+        .map(|&len| {
+            lignin_format::value_log::extent_len(len, lignin_format::FormatVersion::CURRENT)
+        })
+        .sum();
+    assert_eq!(after.regroup_stored_bytes, copies);
     let pointers = in_key_order(&db, page(1));
     assert!(is_one_run(&pointers), "{pointers:?}");
     assert!(pointers.iter().all(|pointer| !before.2.contains(pointer)));

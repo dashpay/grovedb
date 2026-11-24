@@ -164,6 +164,11 @@ pub struct FlushStats {
     /// Values that were appended again and repointed when the values of
     /// their page were regrouped.
     pub values_regrouped: u64,
+    /// The bytes that regroupings appended to the value log, frames
+    /// included: the copies of the values counted in `values_regrouped`,
+    /// and those of a regrouping that failed or whose page could not take
+    /// the new pointers, which are dead space.
+    pub regroup_stored_bytes: u64,
     /// Page steps that were put off because a write transaction held a
     /// private copy of the page.
     pub steps_put_off: u64,
@@ -241,6 +246,7 @@ pub(super) struct Counters {
     pub(super) values_given_up: AtomicU64,
     pub(super) value_files_given_up: AtomicU64,
     pub(super) values_regrouped: AtomicU64,
+    pub(super) regroup_stored_bytes: AtomicU64,
     pub(super) steps_put_off: AtomicU64,
     pub(super) held_for_readers: AtomicU64,
     pub(super) links_refused: AtomicU64,
@@ -284,6 +290,7 @@ impl Counters {
             values_given_up: read(&self.values_given_up),
             value_files_given_up: read(&self.value_files_given_up),
             values_regrouped: read(&self.values_regrouped),
+            regroup_stored_bytes: read(&self.regroup_stored_bytes),
             steps_put_off: read(&self.steps_put_off),
             held_for_readers: read(&self.held_for_readers),
             links_refused: read(&self.links_refused),

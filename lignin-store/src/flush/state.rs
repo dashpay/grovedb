@@ -440,6 +440,14 @@ impl FlushState {
         lock(&self.turns).ended
     }
 
+    /// How many turns have begun. A turn whose number, as
+    /// [`Self::turns`] gives it once the turn has ended, is above what
+    /// this returned began after the call, and so has seen every commit
+    /// that was published before the call.
+    pub fn turns_begun(&self) -> u64 {
+        lock(&self.turns).begun
+    }
+
     /// The blocks of each segment that a trim took out of every chain:
     /// after write-back had put a newer base image in front of them, or
     /// when whoever cleans segments had the chains trimmed

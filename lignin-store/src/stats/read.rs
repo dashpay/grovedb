@@ -27,8 +27,8 @@ pub struct StoreStats {
     pub other_records: u64,
     /// Their bytes.
     pub other_record_bytes: u64,
-    /// Bytes write-back wrote: blocks and values as stored, and
-    /// table-checkpoint files.
+    /// Bytes write-back wrote: blocks and values as stored, the copies
+    /// of regrouped values among them, and table-checkpoint files.
     pub flush_bytes: u64,
     /// Bytes the cleaners wrote.
     pub cleaner_bytes: u64,
@@ -96,6 +96,15 @@ pub struct Watch {
     /// Whether a segment's sync failed in this session, so that no table
     /// checkpoint is installed until the store is opened again.
     pub segments_not_durable: bool,
+    /// Turns of write-back that have begun
+    /// ([`FlushState::turns_begun`](crate::flush::FlushState::turns_begun)).
+    pub turns_begun: u64,
+    /// The number of the turn of write-back that ended last
+    /// ([`FlushState::turns`](crate::flush::FlushState::turns)). Whoever
+    /// waits for write-back to have seen a commit reads
+    /// [`Self::turns_begun`] once the commit is published and waits for
+    /// this to pass it.
+    pub turns_ended: u64,
 }
 
 /// Why the log is held ([`Watch::log_held_by`]).
@@ -224,6 +233,8 @@ impl Stats {
             room_waited: flush.room_waited,
             segment_syncs_failed: flush.segment_syncs_failed,
             segments_not_durable: state.segments_not_durable(),
+            turns_begun: state.turns_begun(),
+            turns_ended: state.turns(),
         };
         StoreStats {
             log_bytes: log.bytes(),
@@ -232,7 +243,10 @@ impl Stats {
             node_record_bytes: flush.node_record_bytes,
             other_records: flush.other_records,
             other_record_bytes: flush.other_record_bytes,
-            flush_bytes: flush.stored_bytes + flush.value_stored_bytes + flush.checkpoint_bytes,
+            flush_bytes: flush.stored_bytes
+                + flush.value_stored_bytes
+                + flush.regroup_stored_bytes
+                + flush.checkpoint_bytes,
             cleaner_bytes: self.cleaner_bytes(),
             page_reads: pool.misses,
             cache_hits: pool.hits,
