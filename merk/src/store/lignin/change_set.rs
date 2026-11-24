@@ -24,8 +24,8 @@ use lignindb::{
 use super::{
     access::{
         column, fault, kept_key, link_of, own_key, Access, BatchPart, LigninEntryRefused,
-        LinkWrite, Location, MerkChange, NodeWrite, Prefix, RecordChange, RootWrite, SubtreeChange,
-        ValueWrite, Write, Written, WrittenKey,
+        LinkWrite, Location, MerkChange, NodeKey, NodeWrite, Prefix, RecordChange, RootWrite,
+        SubtreeChange, ValueWrite, Write, Written,
     },
     feature::{encode_aggregate, encode_feature},
     hash::{held_link, stale_hashes, HeldLink},
@@ -55,7 +55,7 @@ pub struct PreparedNode(Result<(NodeWrite, usize), Error>);
 fn link_write(link: &Link) -> Result<(LinkWrite, HeldLink), Error> {
     let held = held_link(link)?;
     let write = LinkWrite {
-        key: WrittenKey::new(link.key()),
+        key: NodeKey::new(link.key()),
         hash: held.hash.unwrap_or(NULL_HASH),
         heights: held.heights,
         aggregate: encode_aggregate(&held.aggregate),
@@ -96,7 +96,7 @@ fn prepare(node: &TreeNode, change: NodeChange) -> Result<(NodeWrite, usize), Er
     };
     Ok((
         NodeWrite {
-            key: WrittenKey::new(node.key()),
+            key: NodeKey::new(node.key()),
             feature: encode_feature(&node.feature_type()),
             value_hash: *node.value_hash(),
             kv_hash: *node.kv_hash(),
@@ -271,8 +271,8 @@ impl LigninChangeSet {
     /// value was read with from `reads`.
     pub(super) fn hint(
         &mut self,
-        hints: &HashMap<Vec<u8>, Location>,
-        reads: &HashMap<Vec<u8>, Option<Location>>,
+        hints: &HashMap<NodeKey, Location>,
+        reads: &HashMap<NodeKey, Option<Location>>,
     ) {
         for (node, _) in &mut self.nodes {
             node.hint = hints.get(node.key.as_slice()).copied();
@@ -311,8 +311,8 @@ impl LigninChangeSet {
     /// at that read ([`LigninSettled::move_as`]).
     pub(super) fn note_trees(
         &mut self,
-        trees: &HashSet<Vec<u8>>,
-        reads: &HashMap<Vec<u8>, Option<Location>>,
+        trees: &HashSet<NodeKey>,
+        reads: &HashMap<NodeKey, Option<Location>>,
     ) {
         let stated = |node: &NodeWrite| matches!(node.value, ValueWrite::Stated(_));
         let over = self.nodes.iter().map(|(node, _)| node);
@@ -465,7 +465,7 @@ impl NodeChangeSet for LigninChangeSet {
         let (mut node, record_len) = prepared.0?;
         // The record key of the write is the key Merk puts the node under.
         if node.key.as_slice() != key {
-            node.key = WrittenKey::new(key);
+            node.key = NodeKey::new(key);
         }
         let (children, cost) = match cost {
             Some(cost) => (

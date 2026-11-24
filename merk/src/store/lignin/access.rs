@@ -146,15 +146,17 @@ pub(super) fn read_by_key() -> Error {
     ))
 }
 
-/// The key of a written node, or of the child of one of its links. A key
-/// of up to 38 bytes is kept in place, so a written node asks for no
-/// memory for it; a longer one is behind a box.
-pub(super) type WrittenKey = InlineBytes<38>;
+/// The key of a node as the store holds it beside the node's tree: in a
+/// written node, in a link of one, and in what a handle remembers of the
+/// nodes it loaded. A key of up to 38 bytes is kept in place, so the store
+/// asks for no memory for it; a longer one is behind a box. It reads, is
+/// compared and is hashed as the slice of its bytes.
+pub(super) type NodeKey = InlineBytes<38>;
 
 /// A link of a written node: the child is named by its key.
 #[derive(Clone, Debug)]
 pub(super) struct LinkWrite {
-    pub(super) key: WrittenKey,
+    pub(super) key: NodeKey,
     /// The child's hash. Where the write leaves it stale
     /// ([`NodeWrite::stale`]) these bytes are no hash, and the bytes the
     /// transaction holds in that link are written in their place.
@@ -176,7 +178,7 @@ pub(super) enum ValueWrite {
 /// One written node: every part, as Merk hands the record to storage.
 #[derive(Clone, Debug)]
 pub(super) struct NodeWrite {
-    pub(super) key: WrittenKey,
+    pub(super) key: NodeKey,
     pub(super) feature: Tp12,
     pub(super) value_hash: CryptoHash,
     pub(super) kv_hash: CryptoHash,
@@ -1554,7 +1556,7 @@ fn as_it_is(reads: &impl Reads, subtree: Subtree, key: &[u8]) -> Result<Option<N
     let [on_the_left, on_the_right] = children;
     let link = |link: &Option<StoredLink>, child: Option<Vec<u8>>| match (link, child) {
         (Some(link), Some(key)) => Ok(Some(LinkWrite {
-            key: WrittenKey::new(&key),
+            key: NodeKey::new(&key),
             hash: link.hash,
             heights: link.heights,
             aggregate: encode_aggregate(&link.aggregate),
@@ -1565,7 +1567,7 @@ fn as_it_is(reads: &impl Reads, subtree: Subtree, key: &[u8]) -> Result<Option<N
     let left = link(&stored.left, on_the_left)?;
     let right = link(&stored.right, on_the_right)?;
     Ok(Some(NodeWrite {
-        key: WrittenKey::new(key),
+        key: NodeKey::new(key),
         feature: encode_feature(&stored.feature),
         value_hash: stored.value_hash,
         kv_hash: stored.kv_hash,
