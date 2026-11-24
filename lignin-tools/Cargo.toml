@@ -22,6 +22,7 @@ migrate = [
     "dep:grovedb-path",
     "dep:grovedb-storage",
     "dep:rustix",
+    "dep:nix",
 ]
 
 [dependencies]
@@ -43,6 +44,11 @@ grovedb = { version = "7.0.0", path = "../grovedb", default-features = false, fe
 grovedb-path = { version = "7.0.0", path = "../path", optional = true }
 grovedb-storage = { version = "7.0.0", path = "../storage", default-features = false, optional = true }
 rustix = { version = "1", features = ["fs"], optional = true }
+
+# The migrator's lock on its source, on Linux: one that belongs to the open
+# of the file that asked for it, which `rustix` does not ask for.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.32", default-features = false, features = ["fs"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -16,24 +16,32 @@
 //! keeps it until the migration ends, so that no node starts on the source
 //! meanwhile. The lock is shared: two migrations can read one source.
 //!
-//! A directory with no `LOCK` file was never opened for writing since it
-//! was made, which a checkpoint is until something opens it: nothing holds
-//! it, and nothing is there to lock. Where such a file is there once the
-//! source is open, a process came to write between the two looks, and the
-//! source is refused; one that comes later is found by the check that
-//! nothing changed.
+//! A directory with no `LOCK` file has nothing to lock. A checkpoint is
+//! such a directory until a process opens it for writing, which makes the
+//! file. The migrator reads it, and says that nothing keeps a process out
+//! of it. Where the file is there once the source is open, a process came
+//! to write between the two looks, and the source is refused. A process
+//! that comes later changes the directory, which the migration looks at
+//! once more when it has compared the target ([`Source::unchanged`]); one
+//! that comes after that look is not seen.
 //!
-//! **The lock is the process's, not the handle's.** The system gives a
-//! process one lock on a file, whichever descriptor asked for it, and
-//! takes it away when any descriptor of the file is closed. So a process
-//! that has the source open for writing itself, and one that reads it
-//! through a second [`Source`], must not get to the `LOCK` file here: the
-//! probe would turn the writer's lock into a shared one and its end would
-//! release it. On Linux the system lists the locks a process holds
-//! (`/proc/locks`), and a source this process holds a lock on is refused
-//! before its `LOCK` file is opened. On a system with no such list, a
-//! caller of the library that has the source open in its own process is
-//! not told apart, and must not call this.
+//! **Whose the lock is.** RocksDB's lock is its process's: the system
+//! gives a process one such lock on a file, whichever descriptor asked
+//! for it, and takes it away when the process closes any descriptor of
+//! the file. On Linux the migrator's lock is of the other kind, which
+//! belongs to the one open of the file that asked for it (an open file
+//! description lock). A writer's lock keeps it out and it keeps a writer
+//! out, also where the two are in one process, and two [`Source`]s of one
+//! process each keep a lock of their own. A descriptor whose lock was
+//! refused is not closed while the process lives, since its close would
+//! give up the lock of a writer in the same process; the next probe of
+//! that file asks through the same descriptor.
+//!
+//! On a system other than Linux the migrator's lock is its process's
+//! too. There a caller of the library must not have the source open in
+//! its own process, for writing or through a second [`Source`]: the probe
+//! would turn a writer's lock into a shared one, and the end of either
+//! would release the lock of both.
 //!
 //! **A write-ahead log that was not flushed.** A node that was killed, and
 //! one that was stopped, can leave its last commits in the log alone. The
@@ -58,11 +66,11 @@ use std::{
     fs::File,
     io,
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
     time::SystemTime,
 };
 
 use rocksdb::{ColumnFamily, DBRawIterator, Options, ReadOptions, DB};
-use rustix::fs::{fcntl_lock, FlockOperation};
 
 use crate::ToolError;
 
@@ -158,35 +166,50 @@ pub(crate) fn after(prefix: &Prefix) -> Option<Vec<u8>> {
     Some(bound)
 }
 
-/// Whether this process holds a lock on the file `lock`, by the system's
-/// list of the locks of files, or `None` where the system has no such
-/// list or it cannot be read.
-fn held_by_this_process(lock: &Path) -> Option<bool> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let inode = std::fs::metadata(lock).ok()?.ino();
-        let listed = std::fs::read_to_string("/proc/locks").ok()?;
-        let own = std::process::id().to_string();
-        // A line: its number, the class of the lock, whether it is
-        // advisory, its kind, the process, the file as
-        // `major:minor:inode`, and the range.
-        let holds = listed.lines().any(|line| {
-            let mut words = line.split_whitespace().filter(|word| *word != "->");
-            let class = words.nth(1);
-            let process = words.nth(2);
-            let file = words.next().and_then(|file| file.rsplit(':').next());
-            class == Some("POSIX")
-                && process == Some(own.as_str())
-                && file.and_then(|inode| inode.parse::<u64>().ok()) == Some(inode)
-        });
-        Some(holds)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = lock;
-        None
-    }
+/// The device and the number of a file: what a file is, whatever it is
+/// named.
+pub(crate) fn file_identity(metadata: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
+}
+
+/// The `LOCK` files whose lock this process was refused, each by what the
+/// file is, with the descriptor that asked.
+///
+/// A descriptor here is not closed while the process lives. The system
+/// takes the lock that RocksDB holds on a file away from its process when
+/// the process closes any descriptor of the file, and the holder that
+/// refused the lock may be this process. The next probe of the file asks
+/// through the descriptor that is here, so that a file has one of them
+/// however often it is refused.
+static REFUSED_LOCKS: Mutex<Vec<((u64, u64), File)>> = Mutex::new(Vec::new());
+
+/// Asks for a shared lock on the whole of `file`, and does not wait for
+/// it: an open file description lock, which belongs to the open of the
+/// file that `file` is and not to the process.
+#[cfg(target_os = "linux")]
+fn lock_shared(file: &File) -> io::Result<()> {
+    use nix::{
+        fcntl::{fcntl, FcntlArg},
+        libc,
+    };
+    let whole = libc::flock {
+        l_type: libc::F_RDLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    fcntl(file, FcntlArg::F_OFD_SETLK(&whole))?;
+    Ok(())
+}
+
+/// Asks for a shared lock on the whole of `file`, and does not wait for
+/// it: the process's lock, where the system has no other.
+#[cfg(not(target_os = "linux"))]
+fn lock_shared(file: &File) -> io::Result<()> {
+    rustix::fs::fcntl_lock(file, rustix::fs::FlockOperation::NonBlockingLockShared)?;
+    Ok(())
 }
 
 /// Fails where `dir` has a `LOCK` file though the open found none to
@@ -218,7 +241,8 @@ pub(crate) struct Source {
     dir: PathBuf,
     opened_as: Vec<Listed>,
     /// The shared lock on the directory's `LOCK` file, where it has one.
-    /// It is released when the file is closed.
+    /// It is released when the file is closed, which is when the source
+    /// is.
     lock: Option<File>,
 }
 
@@ -282,33 +306,45 @@ impl Source {
     /// that has the database open for writing holds exclusively, and keeps
     /// it. `None` where the directory has no such file.
     fn probe(dir: &Path) -> Result<Option<File>, ToolError> {
-        // Before the file is opened: the end of a descriptor of it gives
-        // up the lock this process has on it.
-        if held_by_this_process(&dir.join("LOCK")) == Some(true) {
-            return Err(source_error(
-                dir,
-                "this process has it open. A migration is made of a database that nothing has \
-                 open: close it, or migrate a checkpoint of it",
-            ));
-        }
-        let file = match File::open(dir.join("LOCK")) {
-            Ok(file) => file,
+        let path = dir.join("LOCK");
+        let failed = |error: io::Error| source_error(dir, format!("its LOCK file: {error}"));
+        // One probe at a time in the process: a file whose lock was
+        // refused has one descriptor, and no second is opened beside it.
+        let mut refused = REFUSED_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        let identity = match std::fs::metadata(&path) {
+            Ok(metadata) => file_identity(&metadata),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(source_error(dir, format!("its LOCK file: {error}"))),
+            Err(error) => return Err(failed(error)),
         };
-        match fcntl_lock(&file, FlockOperation::NonBlockingLockShared) {
-            Ok(()) => Ok(Some(file)),
-            Err(error)
-                if error == rustix::io::Errno::AGAIN || error == rustix::io::Errno::ACCESS =>
-            {
-                Err(source_error(
-                    dir,
-                    "a process has it open. A migration is made offline: stop the node, or \
-                     migrate a checkpoint of it",
-                ))
-            }
-            Err(error) => Err(source_error(dir, format!("its LOCK file: {error}"))),
-        }
+        let kept = refused.iter().position(|(kept, _)| *kept == identity);
+        let file = match kept {
+            Some(kept) => refused.swap_remove(kept).1,
+            None => match File::open(&path) {
+                Ok(file) => file,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(failed(error)),
+            },
+        };
+        let error = match lock_shared(&file) {
+            Ok(()) => return Ok(Some(file)),
+            Err(error) => error,
+        };
+        // The descriptor is kept, whatever refused the lock: its close
+        // would give up a lock that this process holds on the file.
+        let identity = (file.metadata()).map_or(identity, |metadata| file_identity(&metadata));
+        refused.push((identity, file));
+        let held = matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::PermissionDenied
+        );
+        Err(match held {
+            true => source_error(
+                dir,
+                "a process has it open. A migration is made offline: stop the node, or migrate \
+                 a checkpoint of it",
+            ),
+            false => failed(error),
+        })
     }
 
     /// The directory.
@@ -722,13 +758,15 @@ mod tests {
         assert_eq!(met, short.as_slice());
     }
 
-    /// A process that has the source open for writing itself is refused
-    /// before the lock file is touched: its lock is still its own, and
-    /// keeps every other process out. So is a second reader in the
-    /// process, whose end would give up the lock of the first.
+    /// A writer and the readers of one process each keep a lock of their
+    /// own. A process that has the source open for writing itself is
+    /// refused, as often as it asks, and its lock still keeps every other
+    /// process out. Two readers in the process do not share a lock: the
+    /// end of one leaves the other's. And while a reader lives, a writer
+    /// in its own process is kept out as any other is.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_source_that_this_process_has_open_is_refused_with_its_lock_kept() {
+    fn a_writer_and_the_readers_of_one_process_keep_their_own_locks() {
         let dir = tempfile::tempdir().expect("a directory");
         let dir = dir.path().join("rocksdb");
         let message = |dir: &Path| match Source::open(dir) {
@@ -737,17 +775,42 @@ mod tests {
             Err(other) => panic!("{other:?}"),
         };
         let writer = open_for_writing(&dir).expect("a database");
-        assert!(message(&dir).contains("this process has it open"));
-        let said = another_process_opens(&dir);
-        assert!(said.contains(REFUSED), "the writer's lock holds: {said}");
+        for _ in 0..3 {
+            assert!(message(&dir).contains("a process has it open"));
+            let said = another_process_opens(&dir);
+            assert!(said.contains(REFUSED), "the writer's lock holds: {said}");
+        }
+        // The three refusals left one descriptor of that file.
+        let kept = |dir: &Path| {
+            let identity = file_identity(&std::fs::metadata(dir.join("LOCK")).unwrap());
+            let refused = REFUSED_LOCKS.lock().unwrap();
+            refused.iter().filter(|(kept, _)| *kept == identity).count()
+        };
+        assert_eq!(kept(&dir), 1);
         drop(writer);
 
         let first = Source::open(&dir).expect("the source opens");
-        assert!(message(&dir).contains("this process has it open"));
-        let said = another_process_opens(&dir);
-        assert!(said.contains(REFUSED), "the reader's lock holds: {said}");
+        assert_eq!(kept(&dir), 0, "the descriptor that was kept has the lock");
+        let second = Source::open(&dir).expect("a second reader of the process");
         drop(first);
-        drop(Source::open(&dir).expect("the source opens again"));
+        let said = another_process_opens(&dir);
+        assert!(
+            said.contains(REFUSED),
+            "the second reader's lock holds: {said}"
+        );
+        let refused = open_for_writing(&dir)
+            .err()
+            .expect("a writer in this process");
+        assert!(refused.to_string().contains("LOCK"), "{refused}");
+        let said = another_process_opens(&dir);
+        assert!(
+            said.contains(REFUSED),
+            "and holds after that writer: {said}"
+        );
+        second.unchanged().expect("no file of the database changed");
+        drop(second);
+        let said = another_process_opens(&dir);
+        assert!(said.contains(OPENED), "{said}");
     }
 
     /// A lock file that is there once a source with none was opened says

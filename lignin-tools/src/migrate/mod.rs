@@ -20,15 +20,17 @@
 //!    before anything is opened.
 //! 2. **It surveys the source** ([`survey`]): every record of every
 //!    keyspace is counted as what it is, before the run writes anything.
-//!    A source that holds a record the migrator does not carry is refused
-//!    here, with what was found. `--survey` stops after this step. **Every
-//!    run surveys**, also one that goes on with a load or finds one
-//!    complete: what refuses a source is looked for in the source as it
-//!    is when the run reads it.
+//!    The survey says which records are carried and which are left behind
+//!    by a rule: what a pending drop was still to remove, and what
+//!    `--unreachable leave` leaves. A source that holds a record which is
+//!    neither is refused here, with what was found. `--survey` stops
+//!    after this step. **Every run surveys**, also one that goes on with a
+//!    load or finds one complete: what refuses a source is looked for in
+//!    the source as it is when the run reads it.
 //! 3. **It loads the target** ([`load`]) in `TARGET.migrating/database`,
 //!    a commit at a time, each Merk handed to the engine whole through its
-//!    bulk loader. Every commit holds the journal of where the load stands
-//!    ([`journal`]).
+//!    bulk loader. Every commit but the last holds the journal of where
+//!    the load stands ([`journal`]), and the last removes it.
 //! 4. **It compares** ([`compare`]): the source is read once more, and
 //!    every record of it that is carried is held to what the target
 //!    answers through the engine of GroveDB, with the root hash.
@@ -42,33 +44,46 @@
 //!
 //! Nothing is at `TARGET` until step 6: a path that is there and is not an
 //! empty directory is refused. So a node cannot be started on a store that
-//! is not whole, compared and verified.
+//! is not whole, compared and verified. The directory that `TARGET` is to
+//! be in has to be there: the command makes none above its own.
 //!
 //! `TARGET.migrating` holds the work: a file `MIGRATION`, which the
-//! command makes there before anything else and which says that the
-//! directory is its own, and the database in `database`. **A run that is
-//! stopped at any point, by a kill, a power cut or a full device, is gone
-//! on with by the same command**: what the directory holds says where it
-//! stands.
+//! command makes there before anything else and which says by its bytes
+//! that the directory is its own, and the database in the directory
+//! `database`. **A run that is stopped at any point before step 6, by a
+//! kill, a power cut or a full device, is gone on with by the same
+//! command**: what the directory holds says where it stands.
 //!
 //! | `TARGET.migrating` | What the next run does, after its survey |
 //! | --- | --- |
-//! | is not there, or is empty | makes it its own, and begins the load |
-//! | holds something and no file `MIGRATION` | refuses: it is not the work of a migration, and nothing is made beside what someone put there |
-//! | is the command's, with no database or one with nothing in it | begins the load |
+//! | is not there, or is a directory with nothing in it | makes it its own, and begins the load |
+//! | is a directory that holds nothing but a file `MIGRATION` with the first bytes of those the command writes there, or with none | takes it for its own file, which a stop cut short: makes the file again, and begins the load |
+//! | is anything else that is not the command's: no directory, a directory with an entry that is neither the file `MIGRATION` nor the directory `database`, or one whose `MIGRATION` holds other bytes | refuses, and changes nothing there |
+//! | is the command's, with no database or one that holds no record | begins the load |
 //! | is the command's, with a database that has a journal of this source | goes on with the load from the last commit: a Merk that was handed over is not handed over again |
 //! | is the command's, with a database that has a journal of another source, of another state of this one, or of a load that was told otherwise what becomes of the records nothing leads to | refuses: the directory is to be removed, or the run is told what the first was |
-//! | is the command's, with a database that has a grove and no journal | the load is complete: compares, verifies and renames. A run that died between the verification and the rename leaves this, and so does one whose comparison or verification failed |
+//! | is the command's, with a database that holds a record and no journal | the load is complete: compares, verifies and renames. A run that was stopped between the last commit of the load and the rename leaves this, and so does one whose comparison or verification failed |
 //!
-//! A run that died after the rename, before it said that it was done,
-//! leaves the database at `TARGET`, and a work directory with nothing but
-//! its file where it died before removing that. The next run refuses the
-//! target as one that is there, and says that a database which a
-//! migration left there is whole; such a work directory can be removed.
+//! **Step 6** is the rename of `TARGET.migrating/database` to `TARGET`,
+//! the syncs of the two directories the name moved between, and the
+//! removal of the work directory.
 //!
-//! A device that is full ends a run with status 4, at whichever step it
-//! was met, and leaves one of the rows above: the run after room was made
-//! goes on.
+//! | A stop in step 6 | leaves | and the next run |
+//! | --- | --- | --- |
+//! | before the rename | the last row above | compares, verifies and renames |
+//! | after the rename and before both syncs: a kill, or a sync that failed, which the run says and ends on with status 1 | the database at `TARGET` under a name that a power cut can still take back, and the work directory with its file | makes the syncs, removes the work directory, and refuses the target as one that is there: a database that a migration left there is whole |
+//! | the same, and a power cut after it | the database at `TARGET`, or in `TARGET.migrating` again, as the device kept the name | does as the row above, or as the last row of the table above |
+//! | after the syncs | the database at `TARGET`, and of the work directory its file, or nothing, or no directory | removes what is left of the work directory, and refuses the target as one that is there |
+//!
+//! Once the syncs are made the run ends with status 0, whatever becomes
+//! of the removal of the work directory and of the last lines of its
+//! report: a work directory that is left holds nothing of the target, and
+//! a report that could not be written changes nothing of it.
+//!
+//! A device that is full ends a run with status 4, at whichever step from
+//! the making of the work directory to the rename it was met, and leaves
+//! one of the rows of the first table: the run after room was made goes
+//! on.
 //!
 //! **The work directory is the command's alone while it runs.** The lock
 //! of the database keeps every other process out during the load and the
@@ -77,7 +92,8 @@
 //! told by its commit version and refused. After the check the database
 //! is renamed with no lock held, since a close of the database gives its
 //! lock up: a process that opens `TARGET.migrating/database` in that
-//! moment is not kept out.
+//! moment is not kept out. So nothing else is to open `TARGET.migrating`
+//! while the command runs.
 //!
 //! # Records that nothing leads to
 //!
@@ -96,19 +112,23 @@
 //!
 //! A Merk is handed over whole, so every node of the largest Merk of the
 //! source is in memory at once, with the engine's pages of it
-//! (`transactions.md` LD7). The survey says how large that Merk is. Beside
-//! it the migrator holds what one commit takes (`--batch`: the keys and
+//! (`transactions.md` LD7). The survey says how large that Merk is. The
+//! records under a prefix that nothing leads to are read whole as well: by
+//! the survey, whatever is to become of them, and by the load that
+//! carries them, which puts each such prefix into one commit. Beside it
+//! the migrator holds what one commit takes (`--batch`: the keys and
 //! values it carries, and a page of the store for each Merk it hands
-//! over), and the buffer pool of the target (`--cache`).
+//! over; a commit ends after the Merk that fills it), and the buffer pool
+//! of the target (`--cache`).
 //!
 //! # Exit status
 //!
 //! | Status | |
 //! | --- | --- |
-//! | 0 | the target is at `TARGET`: loaded, compared and verified. With `--survey`: the source can be migrated |
-//! | 1 | the migration failed, or the source or the target was refused; the run put nothing at `TARGET` |
+//! | 0 | the target is at `TARGET` under a name that is durable: loaded, compared and verified. With `--survey`: the source can be migrated |
+//! | 1 | the migration failed, or the source or the target was refused. The run put nothing at `TARGET`, but for one failure that its error states: the database got that name, and the name could not be made durable |
 //! | 3 | the migrated store differs from its source, or a rule of it does not hold; it is left in `TARGET.migrating/database` |
-//! | 4 | the device of the target is full, at any step after the survey; the same command goes on once there is room |
+//! | 4 | the device of the target is full, at a step from the making of the work directory to the rename; the same command goes on once there is room |
 
 mod beside;
 mod compare;
@@ -129,8 +149,9 @@ use std::{
 
 use grovedb::{GroveDb, LigninEngine};
 use grovedb_merk::store::lignin::{hash::MerkHashRules, keeps_flat_records};
+use grovedb_storage::flat::pending_prefix_drops_namespace;
 use grovedb_version::version::GroveVersion;
-use lignin_io::{Create, OpenMode, Vfs};
+use lignin_io::{Create, EntryKind, OpenMode, Vfs};
 use lignin_tree::hash::HashRules;
 use lignindb::{
     txn::{Column, Subtree},
@@ -140,7 +161,7 @@ use lignindb::{
 use self::{
     journal::{Carried, Journal, Phase, JOURNAL_KEY},
     load::Load,
-    source::Source,
+    source::{file_identity, Source},
     survey::Survey,
     walk::{Side, Walk, ROOT},
 };
@@ -154,9 +175,14 @@ pub const WORK_SUFFIX: &str = ".migrating";
 pub const WORK_DATABASE: &str = "database";
 
 /// The name of the file that says a directory is the work of a migration.
-/// The command makes it before anything else there, and takes no directory
-/// that holds something and not this file.
+/// The command makes it before anything else there, with the bytes
+/// [`MARK_TEXT`], and takes no directory that holds something and not
+/// this file.
 pub const WORK_MARK: &str = "MIGRATION";
+
+/// What the file [`WORK_MARK`] holds, to the byte.
+pub const MARK_TEXT: &[u8] = b"The work directory of `lignin migrate`. The database it makes is \
+    in `database`, and gets the name of the target once it is compared and verified.\n";
 
 /// A migration to make.
 #[derive(Debug, Clone)]
@@ -217,11 +243,12 @@ fn free_bytes(dir: &Path) -> Option<u64> {
 /// What the target's database holds beside what an engine makes when it
 /// opens a new one: the journal of a load, or records of a grove.
 enum Stands {
-    /// Nothing: no load was begun.
+    /// Nothing: no load was begun, or a load of a source with no record
+    /// was made, which a second load makes again as it is.
     Fresh,
     /// A load that is not complete.
     Loading(Journal),
-    /// No journal, and a grove: the load is complete.
+    /// No journal, and a record: the load is complete.
     Loaded,
 }
 
@@ -240,10 +267,16 @@ fn stands(db: &Db) -> Result<Stands, ToolError> {
         subtrees += u64::from(listed.live);
     }
     let mut holds = root.entry().root().is_some() || subtrees > 2;
-    for column in [Column::Data, Column::Aux, Column::Roots, Column::Meta] {
-        let mut cursor = root.cursor(column);
-        cursor.seek_to_first()?;
-        holds = holds || cursor.key().is_some();
+    // The two subtrees that every grove has: a load can end with records
+    // in the namespace of the pending drops alone, where the records of
+    // root keys are kept too.
+    let namespace = operation.open(Subtree::new(*pending_prefix_drops_namespace()))?;
+    for opened in [Some(&root), namespace.as_ref()].into_iter().flatten() {
+        for column in [Column::Data, Column::Aux, Column::Roots, Column::Meta] {
+            let mut cursor = opened.cursor(column);
+            cursor.seek_to_first()?;
+            holds = holds || cursor.key().is_some();
+        }
     }
     Ok(match holds {
         true => Stands::Loaded,
@@ -307,15 +340,110 @@ fn verify(
 /// Makes the file that says `work` is the work directory of a migration,
 /// and makes it durable with its name.
 fn mark(vfs: &dyn Vfs, work: &Path) -> io::Result<()> {
-    let file = vfs.open(&work.join(WORK_MARK), OpenMode::Append(Create::IfMissing))?;
-    if file.len()? == 0 {
-        file.append(
-            b"The work directory of `lignin migrate`. The database it makes is in `database`, \
-              and gets the name of the target once it is compared and verified.\n",
-        )?;
-    }
+    let file = vfs.open(&work.join(WORK_MARK), OpenMode::Append(Create::New))?;
+    file.append(MARK_TEXT)?;
     file.sync_all()?;
     vfs.sync_dir(work)
+}
+
+/// The directory that `path` is in: the one the process is in for a path
+/// of one name.
+fn above(path: &Path) -> &Path {
+    match path.parent() {
+        Some(above) if !above.as_os_str().is_empty() => above,
+        _ => Path::new("."),
+    }
+}
+
+/// What is at the path of a work directory.
+enum Work {
+    /// Nothing.
+    Absent,
+    /// A directory with nothing in it.
+    Empty,
+    /// A directory that holds nothing but the file [`WORK_MARK`] with the
+    /// first bytes of [`MARK_TEXT`], or with none: the command's file,
+    /// which a stop cut short before anything else was made.
+    CutShort,
+    /// The command's: its file is there, and its database or not yet.
+    Ours {
+        /// Whether the directory [`WORK_DATABASE`] is there.
+        database: bool,
+    },
+    /// Something that is not the command's, in words.
+    Foreign(String),
+}
+
+impl Work {
+    /// Looks at `work`, which the directory above it lists as `kind`, and
+    /// changes nothing.
+    fn looked(vfs: &dyn Vfs, work: &Path, kind: Option<EntryKind>) -> Result<Self, ToolError> {
+        match kind {
+            None => return Ok(Self::Absent),
+            Some(EntryKind::Dir) => {}
+            Some(_) => return Ok(Self::Foreign("it is no directory".to_owned())),
+        }
+        let (mut marked, mut database) = (false, false);
+        for entry in vfs.read_dir(work)? {
+            match (entry.name.to_str(), entry.kind) {
+                (Some(WORK_MARK), EntryKind::File) => marked = true,
+                (Some(WORK_DATABASE), EntryKind::Dir) => database = true,
+                _ => {
+                    return Ok(Self::Foreign(format!(
+                        "it holds {}, which is not what a migration makes there",
+                        entry.name.to_string_lossy()
+                    )));
+                }
+            }
+        }
+        if !marked {
+            return Ok(match database {
+                false => Self::Empty,
+                true => Self::Foreign(format!(
+                    "it holds a directory {WORK_DATABASE} and no file {WORK_MARK}"
+                )),
+            });
+        }
+        let file = vfs.open(&work.join(WORK_MARK), OpenMode::Read)?;
+        // A byte more than the command writes says that the file is
+        // another one.
+        let len = file.len()?.min(MARK_TEXT.len() as u64 + 1);
+        let mut written = vec![0; len as usize];
+        file.read_exact_at(&mut written, 0)?;
+        Ok(match (written == MARK_TEXT, database) {
+            (true, database) => Self::Ours { database },
+            (false, false) if MARK_TEXT.starts_with(&written) => Self::CutShort,
+            _ => Self::Foreign(format!(
+                "its file {WORK_MARK} is not the one a migration writes"
+            )),
+        })
+    }
+}
+
+/// The two syncs that make the name durable which a rename out of `work`
+/// gave, into the directory `above`.
+fn named_durably(vfs: &dyn Vfs, work: &Path, above: &Path) -> io::Result<()> {
+    vfs.sync_dir(work)?;
+    vfs.sync_dir(above)
+}
+
+/// Removes `work`, which has done its work and holds its file alone.
+fn cleared(vfs: &dyn Vfs, work: &Path) -> io::Result<()> {
+    vfs.remove_file(&work.join(WORK_MARK))?;
+    vfs.remove_dir(work)
+}
+
+/// What the directories are that `path` is in, itself among them: those
+/// of them that are there, by what [`file_identity`] says. A directory
+/// can have a second name that no link gives it, as a mount does, and
+/// then no name tells that two paths are one inside the other.
+fn identities(path: &Path) -> Vec<(u64, u64)> {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let there = absolute.ancestors().map(std::fs::metadata);
+    there
+        .flatten()
+        .map(|metadata| file_identity(&metadata))
+        .collect()
 }
 
 /// `path` with the links of the part of it that is there followed, and
@@ -352,9 +480,17 @@ fn placed(source: &Path, target: &Path) -> Result<PathBuf, ToolError> {
         )));
     }
     let read = resolved(source);
+    let is_source = std::fs::metadata(source).map(|source| file_identity(&source));
+    let around_source = identities(source);
     for made in [target, work.as_path()] {
-        let made = resolved(made);
-        if made.starts_with(&read) || read.starts_with(&made) {
+        let named = resolved(made);
+        let by_name = named.starts_with(&read) || read.starts_with(&named);
+        // And by what the directories are.
+        let within = identities(made);
+        let inside = (is_source.as_ref()).is_ok_and(|source| within.contains(source));
+        let around =
+            std::fs::metadata(made).is_ok_and(|made| around_source.contains(&file_identity(&made)));
+        if by_name || inside || around {
             return Err(refused(format!(
                 "the target {} and the source {} are one inside the other: a migration writes \
                  nothing into its source",
@@ -362,6 +498,17 @@ fn placed(source: &Path, target: &Path) -> Result<PathBuf, ToolError> {
                 source.display()
             )));
         }
+    }
+    let one = match (std::fs::metadata(target), std::fs::metadata(&work)) {
+        (Ok(target), Ok(work)) => file_identity(&target) == file_identity(&work),
+        _ => false,
+    };
+    if one {
+        return Err(refused(format!(
+            "the target {} and {}, where its database is made, are one directory",
+            target.display(),
+            work.display()
+        )));
     }
     Ok(work)
 }
@@ -391,52 +538,100 @@ impl Run<'_> {
             work,
             began,
         } = *self;
-        let vfs = &migration.options.vfs;
-        match vfs.read_dir(target) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Ok(entries) if entries.is_empty() => {}
-            Ok(_) => {
+        let vfs = migration.options.vfs.as_ref();
+        // The directory that the target and the work directory are in
+        // says what each of the two is, without following a link.
+        let above = above(target);
+        let listed = match vfs.read_dir(above) {
+            Ok(listed) => listed,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Err(refused(format!(
-                    "the target {} is there and is not empty. A migration makes its database \
-                     in {} and gives it the name of the target at its end, once it was \
-                     compared and verified: a database that a migration left at the target is \
-                     whole",
-                    target.display(),
-                    work.display()
-                )));
-            }
-            Err(error) => {
-                return Err(refused(format!(
-                    "the target {} is no directory this command can make its database at: \
-                     {error}",
+                    "the directory {} that the target {} is to be in is not there: make it \
+                     first",
+                    above.display(),
                     target.display()
                 )));
             }
+            Err(error) => return Err(ToolError::Io(error)),
+        };
+        let kind = |path: &Path| {
+            let name = path.file_name();
+            let named = listed
+                .iter()
+                .find(|entry| Some(entry.name.as_os_str()) == name);
+            named.map(|entry| entry.kind)
+        };
+        let holds = Work::looked(vfs, work, kind(work))?;
+        let taken = match kind(target) {
+            None => None,
+            Some(EntryKind::Dir) if vfs.read_dir(target)?.is_empty() => None,
+            Some(EntryKind::Dir) => Some("is not empty"),
+            Some(_) => Some("is no directory"),
+        };
+        if let Some(taken) = taken {
+            // What a run that was stopped after the rename left: a name
+            // that a power cut can take back, and a work directory that
+            // has done its work. Neither says what is at the target.
+            match holds {
+                Work::Ours { database: false } => {
+                    named_durably(vfs, work, above).map_err(|error| {
+                        refused(format!(
+                            "a run of this command stopped before it made the name of {} \
+                             durable, and the syncs that do so failed now ({error}). Run the \
+                             same command again",
+                            target.display()
+                        ))
+                    })?;
+                    let _ = cleared(vfs, work);
+                }
+                Work::Empty => {
+                    let _ = vfs.remove_dir(work);
+                }
+                _ => {}
+            }
+            return Err(refused(format!(
+                "the target {} is there and {taken}. A migration makes its database in {} and \
+                 gives it the name of the target at its end, once it was compared and \
+                 verified: a database that a migration left at the target is whole",
+                target.display(),
+                work.display()
+            )));
         }
         // The work directory is the command's by the file it makes there
         // first: nothing is made beside what someone else put there.
-        match vfs.read_dir(work) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                vfs.create_dir(work)?;
-                mark(vfs.as_ref(), work)?;
-            }
-            Ok(entries) if entries.is_empty() => mark(vfs.as_ref(), work)?,
-            Ok(entries) if entries.iter().any(|entry| entry.name == WORK_MARK) => {}
-            Ok(_) => {
+        match holds {
+            Work::Foreign(what) => {
                 return Err(refused(format!(
-                    "{} is there and is not the work of a migration: it holds something, and \
-                     no file {WORK_MARK}. Remove it, or give another target",
+                    "{} is there and is not the work of a migration: {what}. Remove it, or \
+                     give another target",
                     work.display()
                 )));
             }
-            Err(error) => return Err(ToolError::Io(error)),
+            Work::Absent => {
+                vfs.create_dir(work)?;
+                mark(vfs, work)?;
+            }
+            Work::Empty => mark(vfs, work)?,
+            Work::CutShort => {
+                vfs.remove_file(&work.join(WORK_MARK))?;
+                mark(vfs, work)?;
+            }
+            Work::Ours { .. } => {}
         }
+        // The name of the work directory is durable before a commit is
+        // made in it, also where a run was stopped between the making of
+        // the directory and this.
+        vfs.sync_dir(above)?;
         let database = work.join(WORK_DATABASE);
         let options = Options {
             create_if_missing: true,
             ..migration.options.clone()
         };
         let db = Db::open(&database, &options)?;
+        // The two subtrees that every grove has. The engine enters them
+        // where they are absent, and says of a write that failed only
+        // words: entered here, a device that is full is known as that.
+        load::base(&db)?;
         let engine = LigninEngine::new(db)
             .map_err(|error| refused(format!("the work directory {}: {error}", work.display())))?;
         // What a load has written so far is no sound store, and a tool
@@ -585,10 +780,9 @@ impl Run<'_> {
             }
             writeln!(
                 out,
-                "THE TARGET IS NOT ITS SOURCE: {} differences in {} records. It is left in {} \
-                 and is not to be used",
+                "THE TARGET IS NOT ITS SOURCE: {} differences. It is left in {} and is not to \
+                 be used",
                 compared.differing,
-                compared.records(),
                 work.display()
             )?;
             return Ok(Outcome::NotSound);
@@ -613,10 +807,14 @@ impl Run<'_> {
         }
         writeln!(
             out,
-            "every record of the source that a migration carries reads the same from the \
-             target ({} records in {} subtrees), and the root hash is {}",
-            compared.records(),
+            "every record of the source that this migration carries reads the same from the \
+             target: {} records, in {} subtrees of the grove{}. The root hash is {}",
+            compared.of_the_source(),
             compared.subtrees,
+            match carried {
+                0 => String::new(),
+                carried => format!(" and under {carried} prefixes that nothing leads to"),
+            },
             hex(&root_hash)
         )?;
         let behind = survey.left_behind.records();
@@ -658,31 +856,37 @@ impl Run<'_> {
             vfs.remove_dir(target)?;
         }
         vfs.rename(&database, target)?;
-        // The two directories the name moved between.
-        vfs.sync_dir(work)?;
-        if let Some(above) = target.parent() {
-            let above = match above.as_os_str().is_empty() {
-                true => Path::new("."),
-                false => above,
-            };
-            vfs.sync_dir(above)?;
+        // The database has its name. The two directories the name moved
+        // between make it durable; where they do not, the error says what
+        // is at the target, and is no error of a full device that a load
+        // goes on from.
+        if let Err(error) = named_durably(vfs, work, above) {
+            return Err(refused(format!(
+                "the database is at {}, loaded, compared and verified, and its name there \
+                 could not be made durable ({error}): a power cut can take the name back and \
+                 leave the database in {}. Run the same command again: it makes the name \
+                 durable, and then refuses the target as one that is there",
+                target.display(),
+                database.display()
+            )));
         }
-        // The work directory has done its work: its file is all it holds.
-        let cleared = (vfs.remove_file(&work.join(WORK_MARK))).and_then(|()| vfs.remove_dir(work));
-        if let Err(error) = cleared {
-            writeln!(
-                out,
+        // From here the migration is made, whatever becomes of the work
+        // directory, which holds its file alone, and of the lines that
+        // say so: a report that cannot be written changes nothing of it.
+        let mut last = String::new();
+        if let Err(error) = cleared(vfs, work) {
+            last.push_str(&format!(
                 "the work directory {} was not removed ({error}): it holds nothing of the \
-                 target, and can be removed",
+                 target, and can be removed\n",
                 work.display()
-            )?;
+            ));
         }
         // The records of the data keyspaces: nodes, records no tree links
         // and flat records.
         let (elements, seconds) = (compared.data, began.elapsed().as_secs_f64());
-        writeln!(
-            out,
-            "migrate: done target={} seconds={seconds:.1} peak_memory_bytes={} elements={elements}{}",
+        last.push_str(&format!(
+            "migrate: done target={} seconds={seconds:.1} peak_memory_bytes={} \
+             elements={elements}{}\n",
             target.display(),
             peak_memory().map_or("unknown".to_owned(), |bytes| bytes.to_string()),
             // The rate of a run that made the whole target: its survey,
@@ -691,14 +895,36 @@ impl Run<'_> {
                 true => format!(" elements_per_second={:.0}", elements as f64 / seconds),
                 false => String::new(),
             }
-        )?;
-        writeln!(
-            out,
-            "migrated {} into {}: loaded, compared and verified",
+        ));
+        last.push_str(&format!(
+            "migrated {} into {}: loaded, compared and verified\n",
             source.dir().display(),
             target.display()
-        )?;
+        ));
+        let _ = out.write_all(last.as_bytes());
         Ok(Outcome::Done)
+    }
+}
+
+/// The writer of a run's report, which keeps whether a write to it
+/// failed: an error of the report is not one of the device that the
+/// database is on.
+struct Report<'w> {
+    to: &'w mut dyn Write,
+    failed: bool,
+}
+
+impl Write for Report<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.to.write(bytes);
+        self.failed = self.failed || written.is_err();
+        written
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let flushed = self.to.flush();
+        self.failed = self.failed || flushed.is_err();
+        flushed
     }
 }
 
@@ -738,13 +964,17 @@ impl Write for Relayed {
 /// ([`STACK_BYTES`]); `out` is written on the caller's thread, each write
 /// before the migration goes on.
 ///
-/// A caller that has the source open in its own process is refused on
-/// Linux, and must not call this on a system that does not list the locks
-/// of a process ([`source`]).
+/// A caller that has the source open for writing in its own process is
+/// refused on Linux, and must not call this on another system
+/// ([`source`]).
 pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError> {
-    let (to, written) = mpsc::channel::<Vec<u8>>();
-    let (wrote, made) = mpsc::channel::<io::Result<()>>();
     thread::scope(|scope| {
+        // The ends of the two channels that this thread holds are of this
+        // block: where the caller's writer panics they are let go of
+        // before the scope waits for the migration, whose next write then
+        // fails and ends it.
+        let (to, written) = mpsc::channel::<Vec<u8>>();
+        let (wrote, made) = mpsc::channel::<io::Result<()>>();
         let worker = thread::Builder::new()
             .name("lignin-migrate".to_owned())
             .stack_size(STACK_BYTES)
@@ -782,7 +1012,11 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         fingerprint.sequence,
         match source.is_locked() {
             true => "no process has it open for writing, and none can open it while this runs",
-            false => "it has no LOCK file: it was not opened for writing since it was made",
+            false => {
+                "it has no LOCK file, so nothing keeps a process from opening it for writing \
+                 while this runs: a file that such a process makes or changes is found before \
+                 the target is checked"
+            }
         }
     )?;
     let side = Side::read(&source)?;
@@ -838,16 +1072,24 @@ fn run(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, ToolError>
         work,
         began,
     };
-    match run.made(out) {
+    let mut report = Report {
+        to: &mut *out,
+        failed: false,
+    };
+    let ended = run.made(&mut report);
+    let reported = !report.failed;
+    match ended {
         // A device that is full, at whichever step: what is in the work
-        // directory is what the next run goes on from.
-        Err(error) if lignindb::space::out_of_space(&error) => {
-            writeln!(
+        // directory is what the next run goes on from. An error of the
+        // report is none of that device.
+        Err(error) if reported && lignindb::space::out_of_space(&error) => {
+            // The status says it, also where the report takes no line.
+            let _ = writeln!(
                 out,
                 "THE DEVICE OF {} IS FULL: the migration stopped ({error}). Make room and run \
                  the same command again: it goes on from where this run stood",
                 work.display()
-            )?;
+            );
             Ok(Outcome::IncompleteMigration)
         }
         ended => ended,

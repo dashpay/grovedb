@@ -10,7 +10,7 @@
 //! | a node of the Merk of a subtree that an element leads to | carried, with its Merk handed over whole |
 //! | a node record under such a prefix that the Merk's tree does not link | carried as an unlinked record |
 //! | a flat record of a tree that keeps flat records | carried as it is |
-//! | the node of a keyed child among the flat records of such a tree (grove versions 1 to 3) | **not carried: the source is refused**. The engine keeps such a child as a node of a Merk under the prefix of the tree, which the tree's element hosts, and what a child that is a tree holds lies under a prefix of its own (`engine.md`, "What differs on grove versions 1 to 3 under a tree that keeps flat records"). Those versions hold the key of a child to nothing, so which records of the prefix are such nodes is not always told by the bytes RocksDB holds |
+//! | the node of a keyed child among the flat records of such a tree (grove versions 1 to 3) | **not carried: the source is refused**. The engine keeps such a child as a node of a Merk under the prefix of the tree, which the tree's element hosts, and what a child that is a tree holds lies under a prefix of its own (`engine.md`, "What differs on grove versions 1 to 3 under a tree that keeps flat records"). Those versions hold the key of a child to nothing, so which records of the prefix are such nodes is not told by where they lie. The survey takes for one every flat record whose bytes are those Merk encodes of a node under that key with an element for its value. A record that the tree was given itself with those very bytes is taken for one too, and refuses the source |
 //! | an aux or a meta record of such a subtree | carried |
 //! | the record of a root key, under any prefix | carried, where the engine keeps it: also under a prefix with no tree |
 //! | a pending-drop record | carried, with a mark for each keyspace of each prefix it names in which the source still holds a record |
@@ -62,7 +62,8 @@ const OWN: [Keyspace; 3] = [Keyspace::Data, Keyspace::Aux, Keyspace::Meta];
 const AXIS_TAGS: [u8; 3] = [0, 1, 2];
 
 /// The largest Merk of a source, by what it takes in memory when it is
-/// handed over.
+/// read whole: by the load that hands it over, and, for the records under
+/// a prefix that nothing leads to, by the survey as well.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Largest {
     /// Its nodes.
@@ -377,6 +378,17 @@ fn beside_the_walk(source: &Source, side: &Side, survey: &mut Survey) -> Result<
             around: (before, places.len() as u64 - before),
         };
         inspect(source, &mut orphan)?;
+        // The data records under the prefix are read whole, by this
+        // survey and by a load that carries them.
+        let data = orphan.counts.of(Keyspace::Data);
+        let held = data.bytes + 300 * data.records;
+        if data.records > 0 && held >= survey.largest.held {
+            survey.largest = Largest {
+                nodes: data.records,
+                held,
+                at: format!("the prefix {}, which nothing leads to", hex(&prefix)),
+            };
+        }
         survey.orphans.push(orphan);
     }
     survey.places = places;
@@ -595,7 +607,7 @@ impl Survey {
             format!("subtrees entered: {}", self.subtrees),
             format!("Merk nodes: {}", self.nodes),
             format!(
-                "largest Merk: {} nodes, about {} MiB in memory when it is handed over, at {}",
+                "largest Merk: {} nodes, about {} MiB in memory when it is read whole, at {}",
                 self.largest.nodes,
                 self.largest.held.div_ceil(1 << 20),
                 match self.largest.at.is_empty() {
@@ -664,7 +676,7 @@ impl Survey {
         for at in &self.stale_roots {
             lines.push(format!(
                 "  AT {at}: THE MERK IS READ AS ITS RECORD NAMES IT, ON ROCKSDB AS HERE, AND \
-                 LIGNINDB TAKES NO FURTHER WRITE OF IT"
+                 LIGNINDB TAKES NO FURTHER WRITE OF A NODE OF IT"
             ));
         }
         if !self.faults.is_empty() {

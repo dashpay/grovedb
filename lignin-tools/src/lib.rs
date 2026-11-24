@@ -28,9 +28,9 @@
 //! `migrate` is in a build with the Cargo feature `migrate`, which compiles
 //! RocksDB: the module `migrate` has its documentation.
 //!
-//! Every subcommand that opens the database (all but `manifest` and
-//! `segments`) also takes `--cache MIB`, the buffer pool of the open
-//! (64 MiB unless given). A subtree is named by its
+//! Every subcommand that opens a LigninDB database (all but `manifest`,
+//! `segments` and `migrate --survey`) also takes `--cache MIB`, the buffer
+//! pool of the open (64 MiB unless given). A subtree is named by its
 //! 32 bytes in hex, as `lignin directory` prints it.
 //!
 //! # What a subcommand does to the directory
@@ -54,10 +54,12 @@
 //! before anything opens a checkpoint that is to be backed up
 //! ([`lignindb::backup`]): an open is a session, which writes.
 //!
-//! No subcommand reads a part of a checkpoint (a path whose final name
-//! ends in `.creating`) or a directory that holds `MANIFEST.deleting` (a
-//! database being removed): each refuses it before it reads anything,
-//! and says what the operator can do.
+//! No subcommand reads a part of a LigninDB checkpoint (a path whose
+//! final name ends in `.creating`) or a directory that holds
+//! `MANIFEST.deleting` (a LigninDB database being removed): each refuses
+//! it before it reads anything, and says what the operator can do. The
+//! source of `migrate` is a RocksDB database, which is neither by its
+//! name or by a file of that name.
 //!
 //! No subcommand but `migrate` makes a database: an open of a directory
 //! that holds none fails
@@ -73,7 +75,7 @@
 //! | Status | |
 //! | --- | --- |
 //! | 0 | done; for `verify`, the store is sound |
-//! | 1 | the subcommand failed: the error is printed |
+//! | 1 | the subcommand failed: the error is printed. `migrate` put nothing at its target, unless the error says that the database is there under a name that could not be made durable |
 //! | 2 | the arguments are not a subcommand |
 //! | 3 | `verify`: a rule of the store does not hold. `migrate`: the migrated store differs from its source, or a rule of it does not hold |
 //! | 4 | `verify`: the database holds the mark of a state-sync restore that did not finish ([`verify`]). `migrate`: the device of its target is full, and the same command goes on once there is room |

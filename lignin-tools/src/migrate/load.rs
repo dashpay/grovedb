@@ -88,6 +88,40 @@ use super::{
 };
 use crate::{args::Unreachable, hex, ToolError};
 
+/// Enters the two subtrees that no element hosts and that every grove
+/// has, where `db` has them not: the root Merk, a normal tree, and the
+/// namespace of the pending-drop records, which keeps no tree. They are
+/// what the engine of GroveDB enters at its making
+/// (`grovedb::LigninEngine::new`), which then finds them.
+pub(crate) fn base(db: &Db) -> Result<(), ToolError> {
+    let normal = tree_type_bytes(TreeType::NormalTree);
+    let none: &[u8] = &[];
+    let namespace = Subtree::new(*pending_prefix_drops_namespace());
+    let mut enters = Vec::new();
+    {
+        let snapshot = db.snapshot();
+        let operation = snapshot.operation();
+        for (subtree, tree_type) in [(Subtree::new(ROOT), &normal[..]), (namespace, none)] {
+            if operation.open(subtree)?.is_none() {
+                enters.push(SubtreeWrite::EnterIfAbsent {
+                    subtree,
+                    tree_type,
+                    host: None,
+                });
+            }
+        }
+    }
+    if enters.is_empty() {
+        return Ok(());
+    }
+    let batch = Batch {
+        subtrees: &enters,
+        ..Batch::default()
+    };
+    db.write(&batch, &mut NoStaleHashes)?;
+    Ok(())
+}
+
 /// A subtree to enter.
 struct Entered {
     subtree: Subtree,

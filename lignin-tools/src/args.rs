@@ -33,8 +33,11 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      or a checkpoint) into a new LigninDB database at TARGET. The
                                      source is read and never written. The work is done in the
                                      directory TARGET.migrating, whose database is given the name
-                                     TARGET once every record was compared and the store verified;
-                                     run again to go on after a stop. --batch is about how much one commit of the load
+                                     TARGET once every record it carries was compared and the
+                                     store verified; run again to go on after a stop. The
+                                     directory that TARGET is to be in has to be there, and
+                                     nothing else is to open TARGET.migrating meanwhile.
+                                     --batch is about how much one commit of the load
                                      holds in memory (64 MiB unless given: the keys and values
                                      it carries, and a page for each Merk), and --progress how
                                      often a line says where the load stands (5 s unless
@@ -52,7 +55,9 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      (an element put below such a tree, which grove versions 1
                                      to 3 take) is refused: LigninDB keeps such a child as a
                                      node of a Merk beside the tree's records, and this command
-                                     does not make that Merk from what RocksDB holds
+                                     does not make that Merk from what RocksDB holds. A record
+                                     that such a tree was given itself with the very bytes of
+                                     such a node is taken for one
   migrate   SOURCE --survey [--unreachable refuse|leave|carry]
                                      what SOURCE holds and whether it can be migrated; writes
                                      nothing
@@ -64,9 +69,10 @@ No subcommand opens a database that a process has open for writing: run on a sto
 checkpoint. migrate reads its SOURCE beside other readers, and where SOURCE has a LOCK file it
 keeps a node from starting on it while it runs.
 migrate is in a build with the Cargo feature `migrate`. Its exit status: 0 migrated and verified
-(with --survey: SOURCE can be migrated), 1 failed or refused, 2 the arguments are not a
-subcommand, 3 the migrated store differs from the source or is not sound, 4 the device of TARGET
-is full: the same command goes on once there is room.
+(with --survey: SOURCE can be migrated), 1 failed or refused (nothing is at TARGET, unless the
+error says that the database is there under a name that could not be made durable),
+2 the arguments are not a subcommand, 3 the migrated store differs from the source or is not
+sound, 4 the device of TARGET is full: the same command goes on once there is room.
 ";
 
 /// The buffer pool of an open unless `--cache` says another size.

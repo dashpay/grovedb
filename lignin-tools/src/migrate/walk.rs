@@ -68,7 +68,9 @@ use grovedb::{
     engine::lignin::{hosted_by_element, HostedSubtree},
     Element,
 };
-use grovedb_merk::{element::tree_type::ElementTreeTypeExtensions, TreeType};
+use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions, tree::kv_digest_to_kv_hash, TreeType,
+};
 use grovedb_path::SubtreePath;
 use grovedb_storage::prefix::build_prefix;
 use grovedb_version::version::GroveVersion;
@@ -790,13 +792,18 @@ impl<'s, V: Visit> Walk<'s, V> {
     }
 }
 
-/// Whether the flat record under `key` is the record of a Merk node whose
-/// value is an element: what a keyed child under a tree of flat records is
-/// on RocksDB (grove versions 1 to 3).
+/// Whether the flat record under `key` is the record of a Merk node of
+/// that key whose value is an element: what a keyed child under a tree of
+/// flat records is on RocksDB (grove versions 1 to 3). Its bytes are
+/// those Merk encodes of a node, its key-value hash is the one of `key`
+/// with its value hash, and its value is an element. A record that the
+/// tree was given itself, with those very bytes under that key, is not
+/// told from one.
 fn is_keyed_child(key: &[u8], value: &[u8]) -> bool {
     let Ok(decoded) = decode(key, value) else {
         return false;
     };
     decoded.encode() == value
+        && kv_digest_to_kv_hash(key, decoded.value_hash()).value == *decoded.kv_hash()
         && Element::deserialize(decoded.value_as_slice(), GroveVersion::latest()).is_ok()
 }

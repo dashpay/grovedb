@@ -49,10 +49,7 @@ use grovedb_merk::{
     },
     CryptoHash, TreeType,
 };
-use grovedb_storage::{
-    flat::{pending_prefix_drops_namespace, PendingPrefixDrops},
-    FlatStore, RawIterator,
-};
+use grovedb_storage::{flat::pending_prefix_drops_namespace, FlatStore, RawIterator};
 use grovedb_version::version::GroveVersion;
 use lignindb::txn::{Column, Subtree};
 
@@ -109,9 +106,9 @@ impl Compared {
         }
     }
 
-    /// Every record that was compared.
-    pub(crate) fn records(&self) -> u64 {
-        self.data + self.aux + self.meta + self.roots + self.marks
+    /// Every record of the source that was compared.
+    pub(crate) fn of_the_source(&self) -> u64 {
+        self.data + self.aux + self.meta + self.roots
     }
 }
 
@@ -400,12 +397,31 @@ pub(crate) fn compare(
     let held = |column| -> Result<Chunk, ToolError> {
         Ok(records_of(engine, namespace, column)?.unwrap_or_default())
     };
-    if records_of(engine, namespace, Column::Data)?.is_none() {
-        compared.differs(
-            "the directory of the target has no entry for the namespace of the pending-drop \
-             records"
-                .to_owned(),
-        );
+    // The namespace is entered as the engine enters it: under no element,
+    // with no tree type and with no Merk.
+    {
+        let prefix = *pending_prefix_drops_namespace();
+        let handle = engine.subtree_by_prefix(prefix, None, &transaction).value;
+        let entry = handle.entry();
+        match entry.map_err(|error| target_error("the directory", error))? {
+            None => compared.differs(
+                "the directory of the target has no entry for the namespace of the \
+                 pending-drop records"
+                    .to_owned(),
+            ),
+            Some(entry) => {
+                let as_entered =
+                    entry.host.is_none() && entry.root_key.is_none() && entry.tree_type.is_empty();
+                if !as_entered {
+                    compared.differs(
+                        "the directory of the target has the namespace of the pending-drop \
+                         records under a host, with a root or with a tree type: the engine \
+                         enters it with none of the three"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
     }
     if let Some((key, _)) = held(Column::Data)?.first() {
         compared.differs(format!(
@@ -433,14 +449,10 @@ pub(crate) fn compare(
         dropped.push((key, value));
         expected_marks.extend(marks);
     }
-    let pending = engine.pending_prefix_drop_records();
-    let pending = pending.map_err(|error| target_error("the pending-drop records", error))?;
-    let mut read_back = Vec::new();
-    for record in &pending {
-        let value = record.encode();
-        let value = value.map_err(|error| target_error("a pending-drop record", error))?;
-        read_back.push((record.primary_prefix.to_vec(), value));
-    }
+    // The records as the target stores them, in the order of their keys
+    // as the source's are: a record there that is no pending-drop record
+    // is a difference, and no read that failed.
+    let read_back = held(Column::Meta)?;
     match read_back == dropped {
         true => compared.meta += dropped.len() as u64,
         false => compared.differs(format!(
