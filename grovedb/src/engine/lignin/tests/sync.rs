@@ -14,6 +14,8 @@
 //! page of it, with every hash of every Merk node made again by Merk's
 //! rules.
 
+mod peers;
+
 use std::{
     collections::{BTreeSet, VecDeque},
     path::Path,
