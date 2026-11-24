@@ -1244,6 +1244,33 @@ fn make<'db, E: Engine>(
                 version()?,
             )))
         }
+        "delete_from_count_indexed_tree"
+        | "delete_from_provable_sum_indexed_tree"
+        | "delete_from_provable_count_provable_sum_indexed_tree" => {
+            let (p, key) = (segments("path")?, hex_of("item_key")?);
+            let version = version()?;
+            answered(with_cost(match method {
+                "delete_from_count_indexed_tree" => {
+                    db.delete_from_count_indexed_tree(subtree!(p), &key, transaction, version)
+                }
+                "delete_from_provable_sum_indexed_tree" => db
+                    .delete_from_provable_sum_indexed_tree(subtree!(p), &key, transaction, version),
+                _ => db.delete_from_provable_count_provable_sum_indexed_tree(
+                    subtree!(p),
+                    &key,
+                    transaction,
+                    version,
+                ),
+            }))
+        }
+        "reconcile_indexed_tree_secondaries" => {
+            let p = segments("path")?;
+            answered(with_cost(db.reconcile_indexed_tree_secondaries(
+                subtree!(p),
+                transaction,
+                version()?,
+            )))
+        }
         "flush_pending_prefix_drops" => {
             answered(answer(db.flush_pending_prefix_drops(version()?), None))
         }

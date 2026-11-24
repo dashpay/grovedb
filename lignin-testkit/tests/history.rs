@@ -540,6 +540,125 @@ fn the_appends_and_the_reads_of_a_commitment_tree_are_made() {
     assert!(summary.sound, "{}", summary.close);
 }
 
+/// Indexed trees as a recorded history has them on grove version 4: batches
+/// make the three kinds and put their children, and the children leave by
+/// the dedicated deletes, one of them after a flat drop of the tree under
+/// it, with the drain after the commit. Every call is made on both engines
+/// and answered alike, and each delete answers what the stream says.
+#[test]
+fn the_dedicated_deletes_of_an_indexed_tree_are_made() {
+    let put = |path: &str, key: &str, element: &str| {
+        format!("op={path}|K{key}|InsertOrReplaceDontCheckForBackwardsReferences|{element}")
+    };
+    let batch = |ops: &[String], tx: u64| {
+        format!(
+            "apply_batch_with_element_flags_update\tops={}\t{}\t{OPTIONS}\tcallbacks=storage-flags\ttx={tx}\tgv=4\t|\tok\tv=()",
+            ops.len(),
+            ops.join("\t")
+        )
+    };
+    let delete = |method: &str, path: &str, key: &str, tx: &str, removed: bool| {
+        format!("{method}\tpath={path}\titem_key={key}\ttx={tx}\tgv=4\t|\tok\tv={removed}")
+    };
+    let has = |path: &str, key: &str, there: bool| {
+        format!("has_raw\tpath={path}\tkey={key}\ttx=-\tgv=4\t|\tok\tv={there}")
+    };
+    const BY_COUNT: &str = "delete_from_count_indexed_tree";
+    const BY_SUM: &str = "delete_from_provable_sum_indexed_tree";
+    const BY_COUNT_AND_SUM: &str = "delete_from_provable_count_provable_sum_indexed_tree";
+    let lines = vec![
+        mark_request(1),
+        "tx_start\ttx=1\tkind=write\t|\tok".into(),
+        "insert\tpath=\tkey=61\telement=020000\toptions=None\ttx=1\tgv=4\t|\tok\tv=()".into(),
+        // An empty tree indexed by count, one by sum and one by both.
+        batch(
+            &[
+                put("/61", "69", "1600000000"),
+                put("/61", "73", "1500000000"),
+                put("/61", "63", "1700000001010000"),
+            ],
+            1,
+        ),
+        // Two children of each: count trees, of which the second holds a
+        // count tree, sum trees and sum items.
+        batch(
+            &[
+                put("/61/69", "6b31", "06000000"),
+                put("/61/69", "6b32", "06000000"),
+                put("/61/69/6b32", "00", "06000000"),
+                put("/61/73", "6b31", "04000000"),
+                put("/61/73", "6b32", "04000000"),
+                put("/61/63", "6b31", "030000"),
+                put("/61/63", "6b32", "030000"),
+            ],
+            1,
+        ),
+        "tx_end\ttx=1\t|\tok".into(),
+        "commit_transaction\ttx=1\t|\tok\tv=()".into(),
+        "flush_pending_prefix_drops\tgv=4\t|\tok".into(),
+        mark_finalized(1),
+        mark_request(2),
+        "tx_start\ttx=2\tkind=write\t|\tok".into(),
+        delete(BY_COUNT, "/61/69", "6b31", "2", true),
+        delete(BY_SUM, "/61/73", "6b31", "2", true),
+        delete(BY_COUNT_AND_SUM, "/61/63", "6b31", "2", true),
+        "reconcile_indexed_tree_secondaries\tpath=/61/69\ttx=2\tgv=4\t|\tok\tv=()".into(),
+        "tx_end\ttx=2\t|\tok".into(),
+        "commit_transaction\ttx=2\t|\tok\tv=()".into(),
+        "flush_pending_prefix_drops\tgv=4\t|\tok".into(),
+        mark_finalized(2),
+        mark_request(3),
+        has("/61/69", "6b31", false),
+        has("/61/69", "6b32", true),
+        has("/61/73", "6b31", false),
+        has("/61/73", "6b32", true),
+        has("/61/63", "6b31", false),
+        has("/61/63", "6b32", true),
+        // A child that is gone, with no transaction.
+        delete(BY_COUNT, "/61/69", "6b31", "-", false),
+        delete(BY_SUM, "/61/73", "6b31", "-", false),
+        delete(BY_COUNT_AND_SUM, "/61/63", "6b31", "-", false),
+        "reconcile_indexed_tree_secondaries\tpath=/61/73\ttx=-\tgv=4\t|\tok\tv=()".into(),
+        "reconcile_indexed_tree_secondaries\tpath=/61/63\ttx=-\tgv=4\t|\tok\tv=()".into(),
+        // The child that holds a tree: the tree under it is dropped flat,
+        // then the child is deleted, and the drain follows the commit.
+        "tx_start\ttx=3\tkind=write\t|\tok".into(),
+        "drop_flat_subtree\tpath=/61/69/6b32\tkey=00\tbackwards_references=DontCheck\ttx=3\tgv=4\t|\tok\tv=()".into(),
+        delete(BY_COUNT, "/61/69", "6b32", "3", true),
+        "tx_end\ttx=3\t|\tok".into(),
+        "commit_transaction\ttx=3\t|\tok\tv=()".into(),
+        "flush_pending_prefix_drops\tgv=4\t|\tok".into(),
+        mark_finalized(3),
+        mark_request(4),
+        has("/61/69", "6b32", false),
+        has("/61", "69", true),
+        mark_finalized(4),
+    ];
+
+    let (summary, report) = replayed(&lines, 1);
+    assert!(summary.alike(), "{report}\n{summary:?}");
+    assert!(summary.not_replayed.is_empty(), "{report}");
+    assert_eq!(summary.roots_alike, 4, "{report}");
+    for (method, calls) in [
+        (BY_COUNT, 3),
+        (BY_SUM, 2),
+        (BY_COUNT_AND_SUM, 2),
+        ("reconcile_indexed_tree_secondaries", 3),
+        ("drop_flat_subtree", 1),
+        ("has_raw", 8),
+        ("apply_batch_with_element_flags_update", 2),
+        ("commit_transaction", 3),
+    ] {
+        let made = &summary.by_method[method];
+        assert_eq!(
+            (made.calls, made.alike, made.other_outcome),
+            (calls, calls, 0),
+            "{method}: every call alike and answered as the stream says: {report}"
+        );
+    }
+    assert!(summary.sound, "{}", summary.close);
+}
+
 /// The proof of a query is held against the recorded one as the recorder
 /// wrote it: the `Debug` text of its bytes, by a hash where it is long.
 #[test]
