@@ -3,11 +3,16 @@
 //! The lists of `injected` ask the checker for the finding of each
 //! corruption. The tests here ask the other readers and writers of the
 //! engine a weaker thing, of the same stores and of stores that are damaged
-//! at random: that every call returns. An error is an answer. What is none:
+//! at random: that every call returns, and that no walk runs past a step
+//! bound. An error is an answer, and the answers need not be right: the
+//! store is damaged, so a read may return anything an error does not. What
+//! is a finding:
 //!
 //! - a panic that is raised in the engine's code,
-//! - a cursor that shows more records than the store holds,
-//! - a call that does not return.
+//! - a cursor or any walk that takes more steps than [`WALK_LIMIT`], far
+//!   beyond what the planted store's size calls for (a walk that does not
+//!   end in practice),
+//! - a call that does not return within [`CASE_LIMIT`].
 //!
 //! The damage is a page step, as in `injected`: a changed copy of a page in
 //! the place of its current version. A page that is damaged at random is one
@@ -446,8 +451,25 @@ fn drilled(case: &str, damage: impl FnOnce(&Planted) -> bool) -> Drilled {
     planted.db.unchecked();
     let mut made = false;
     let damaged = ended(|| made = damage(&planted));
-    if !made || !matches!(damaged, End::Returned) {
-        return Drilled::default();
+    match damaged {
+        // The damage was made: the drill runs.
+        End::Returned if made => {}
+        // The damage did not apply to this store: no case (a random change
+        // that a load would not take, or a link that is not there).
+        End::Returned => return Drilled::default(),
+        // Making the damage itself panicked or did not return: a finding,
+        // so a mandatory injection that stops applying is not passed over
+        // as "no case".
+        end => {
+            return Drilled {
+                found: Some(Found {
+                    case: case.to_owned(),
+                    step: "making the damage",
+                    end,
+                }),
+                ..Drilled::default()
+            };
+        }
     }
     let mut world = World::new(&planted.db, &planted.versions);
     world.model = model;
@@ -542,6 +564,8 @@ fn a_panic_is_told_by_where_it_was_raised() {
 /// What the cases of one test came to.
 #[derive(Default)]
 struct Tally {
+    /// Every drill run handed in, a case or not.
+    takes: usize,
     cases: usize,
     /// The cases in which the checker's first step called the store
     /// unsound: the damage is one the checker reports.
@@ -553,6 +577,7 @@ struct Tally {
 
 impl Tally {
     fn take(&mut self, drilled: Drilled) {
+        self.takes += 1;
         self.cases += usize::from(!drilled.ends.is_empty());
         self.reported += usize::from(drilled.sound.first() == Some(&false));
         for end in &drilled.ends {
@@ -565,7 +590,9 @@ impl Tally {
     }
 
     /// Prints the tally and requires that no case ended in no answer.
-    fn close(self) {
+    /// With `every`, also that every run made a case the checker reported
+    /// unsound, so no mandatory injection was passed over.
+    fn close(self, every: bool) {
         println!(
             "{} cases, {} that the checker reported, {} steps that a fixture refused, {} findings",
             self.cases,
@@ -580,6 +607,13 @@ impl Tally {
             println!("FOUND {one}");
         }
         assert!(self.found.is_empty(), "{} findings", self.found.len());
+        if every {
+            assert_eq!(self.cases, self.takes, "an injection made no case");
+            assert_eq!(
+                self.reported, self.takes,
+                "an injection was not reported unsound"
+            );
+        }
     }
 }
 
@@ -602,7 +636,7 @@ fn the_engine_answers_on_every_corruption_of_the_lists() {
             true
         }));
     }
-    tally.close();
+    tally.close(true);
 }
 
 /// The cells of the Merk `name` with the cell above each, the root first.
@@ -690,7 +724,7 @@ fn the_engine_answers_where_links_lead_back() {
             true
         }));
     }
-    tally.close();
+    tally.close(false);
 }
 
 /// Whether a load takes `image` as the page `page`: the checks of
@@ -785,5 +819,5 @@ fn the_engine_answers_on_pages_damaged_at_random() {
             damage_at_random(planted, seed)
         }));
     }
-    tally.close();
+    tally.close(false);
 }

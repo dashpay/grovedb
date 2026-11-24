@@ -770,7 +770,10 @@ impl<S: Side> Honest<S> {
         let dir = tempfile::tempdir().expect("a directory");
         let target = open::<S>(dir.path());
         let (served, _) = whole(&source.db, &target, RestoreCommitMode::Atomic, v);
-        let records = records(&target, &source.shape);
+        // The honest sync above proves the source is restorable; the
+        // records a committed case must match are the source's own.
+        drop(target);
+        let records = records(&source.db, &source.shape);
         Self {
             source,
             served,
@@ -827,7 +830,8 @@ impl<S: Side> Honest<S> {
     fn at_random(&self, seed: u64) -> Case {
         let mut rng = Rng(seed);
         let step = rng.below(self.served.len());
-        let mut payload = self.served[step].1.clone();
+        let honest = self.served[step].1.clone();
+        let mut payload = honest.clone();
         let whole = rng.below(4) == 0;
         if whole {
             change(&mut payload, &mut rng);
@@ -842,6 +846,14 @@ impl<S: Side> Honest<S> {
             change(&mut chunks[chunk], &mut rng);
             parts[at] = pack_nested_bytes(chunks).expect("a part is packed");
             payload = pack_nested_bytes(parts).expect("a payload is packed");
+        }
+        // A change that happened to make the same bytes would test
+        // nothing, so a difference is guaranteed.
+        if payload == honest {
+            match payload.last_mut() {
+                Some(byte) => *byte ^= 1,
+                None => payload.push(1),
+            }
         }
         Case {
             name: format!("seed {seed}, request {step}"),
@@ -995,9 +1007,16 @@ fn went<S: Side, T: Side>(
                 went.end = End::Failed;
                 drop(session);
             } else {
-                // Resumable: it is dropped, and the checks below hold it
-                // to the database it had (nothing was applied).
+                // The honest retry was accepted: the refusal came before
+                // the altered payload was applied, so the session is where
+                // it was before the call and takes the source's own
+                // payload. It is dropped here (the observation is that the
+                // retry was accepted, not that the session is driven to a
+                // finish); the checks below hold the database to what it
+                // was, bar an intermediate commit the retry itself made,
+                // which the commit count is re-read for.
                 went.end = End::Resumable;
+                went.commits = session.intermediate_commits();
                 drop(session);
             }
         } else if !matches!(went.end, End::Failed) {
@@ -1050,6 +1069,11 @@ fn went<S: Side, T: Side>(
         }
     } else {
         T::check(dir.path(), v);
+    }
+    if matches!(went.end, End::Endless) {
+        (went.broken).push(format!(
+            "the session asked for more than {REQUESTS} times the source's requests"
+        ));
     }
     went
 }
@@ -1142,10 +1166,13 @@ fn a_session_with_a_peer_that_alters_a_payload_ends_on_lignindb() {
         println!("BROKEN {what}");
     }
     assert!(broken.is_empty(), "{} cases did not hold", broken.len());
-    assert!(
-        ends.contains_key("Failed") && ends.contains_key("Committed"),
-        "{ends:?}"
-    );
+    // The mix holds over the whole set; a shard may hold one outcome.
+    if std::env::var_os("LIGNIN_HOSTILE_PEER_SHARD").is_none() {
+        assert!(
+            ends.contains_key("Failed") && ends.contains_key("Committed"),
+            "{ends:?}"
+        );
+    }
 }
 
 /// Every case on both engines, synced from RocksDB: what is asked of an
@@ -1201,8 +1228,10 @@ fn both_engines_answer_a_peer_that_alters_a_payload_alike() {
         "{} cases are answered otherwise",
         differ.len()
     );
-    assert!(
-        ends.contains_key("Failed") && ends.contains_key("Committed"),
-        "{ends:?}"
-    );
+    if std::env::var_os("LIGNIN_HOSTILE_PEER_SHARD").is_none() {
+        assert!(
+            ends.contains_key("Failed") && ends.contains_key("Committed"),
+            "{ends:?}"
+        );
+    }
 }

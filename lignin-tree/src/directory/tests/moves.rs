@@ -378,9 +378,9 @@ fn a_move_whose_records_are_not_there_is_damage() {
 /// A directory made by hand in which a rootless Merk hosts itself (a
 /// child record of its own id that names its own prefix and id) makes the
 /// walk of a move reach that Merk a second time. `Directory::check`
-/// refuses such a record ("a Merk in use hosts a Merk that has no
-/// entry"); `plan_rekey` would otherwise walk it without end and grow its
-/// plan without bound. It is refused as damage.
+/// refuses such a record ("a Merk with no node hosts a Merk");
+/// `plan_rekey` would otherwise walk it without end and grow its plan
+/// without bound. It is refused as damage.
 #[test]
 fn a_move_over_a_merk_that_hosts_itself_is_refused_not_walked_forever() {
     use super::super::record::{child_key, encode_child};
