@@ -704,6 +704,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             kept,
             no_element,
             below_plain_deletes,
+            under_a_left_record,
         ) = catching(|| {
             let (db, version) = (reference_db, case.grove_version);
             let block = reference_runner.transactions().block();
@@ -711,6 +712,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             let kept = known.kept_below_a_removed_tree((db, block), candidate, op, version);
             let no_element =
                 known.named_by_a_kept_record_alone((db, block), candidate, op, version);
+            let under_a_left_record = known.under_a_left_record((db, block), candidate, op);
             let plain_deletes = Known::trees_under_a_plain_delete(db, block, op, version);
             let below_plain_deletes = Known::records_below(db, block, &plain_deletes, version);
             (
@@ -722,6 +724,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 kept,
                 no_element,
                 below_plain_deletes,
+                under_a_left_record,
             )
         })
         .unwrap_or_default();
@@ -774,8 +777,12 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             // each has the root hash it had before.
             let unchanged =
                 roots.0.is_some() && was.step.root_hash == roots.0 && is.step.root_hash == roots.1;
-            let refused_write =
-                || known.family_of_refused_write(op, reference, candidate, &parts, unchanged);
+            let refused_write = || {
+                let (left, said) = (&under_a_left_record, &is.remarks);
+                known.family_of_refused_write(
+                    op, reference, candidate, &parts, unchanged, left, said,
+                )
+            };
             // The reference took a write into a subtree that it opened by
             // a record it kept.
             let taken_write = || {

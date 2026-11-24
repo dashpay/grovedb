@@ -1265,6 +1265,102 @@ fn the_cost_of_a_plain_delete_over_a_kept_tree_differs_by_the_hash_of_its_path()
     }
 }
 
+/// A batch that writes below a tree that a plain delete removed and
+/// also into a tree that was never made, which both engines refuse:
+/// LigninDB at the subtree under the record that the delete left, which
+/// it does not hold, and RocksDB, which opens that subtree by the kept
+/// record, at the tree that was never made. On grove versions 1 to 3
+/// the step is counted apart and passed over, and the case goes on; on
+/// grove versions 4 and 5 both engines refuse the batch alike, before
+/// either opens a subtree. The same batch with only the tree that was
+/// never made is refused alike by both on every grove version.
+#[test]
+fn a_batch_refused_at_a_kept_record_by_lignindb_and_further_on_by_rocksdb_is_passed_over() {
+    use lignin_testkit::{
+        diff::{Case, Family},
+        workload::{BatchOp, Op, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let put = |at: &[&[u8]], key: &[u8], element: grovedb::Element| BatchOp::InsertOrReplace {
+        path: path(at),
+        key: key.to_vec(),
+        element,
+    };
+    let delete = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+        path: path(at),
+        key: key.to_vec(),
+    };
+    let tree = grovedb::Element::empty_tree;
+    let ops = vec![
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"p".to_vec(),
+            element: tree(),
+        }),
+        Op::Batch(vec![
+            put(&[b"p"], b"t", tree()),
+            put(&[b"p", b"t"], &[1], grovedb::Element::empty_sum_tree()),
+        ]),
+        Op::Commit,
+        Op::Batch(vec![delete(&[b"p"], b"t")]),
+        Op::Commit,
+        // Into the tree that was never made alone: refused alike.
+        Op::Batch(vec![delete(&[b"p", b"never"], &[1])]),
+        // With a delete below the old key of the removed tree.
+        Op::Batch(vec![
+            delete(&[b"p", b"never"], &[1]),
+            delete(&[b"p", b"t", &[1]], b"k"),
+        ]),
+        Op::Batch(vec![put(&[b"p"], b"t", tree())]),
+        Op::Commit,
+    ];
+    const ALIKE: usize = 5;
+    const REFUSED: usize = 6;
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let case = Case::of(37, grove_version, ops.clone());
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(run.ended_at, None, "grove version {number}");
+        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        let families = run.tally.families;
+        if number >= 4 {
+            assert_eq!(run.failed_steps, [ALIKE, REFUSED], "grove version {number}");
+            assert!(run.passed_refusals.is_empty(), "grove version {number}");
+            assert_eq!(families.answers[9], 0, "grove version {number}");
+            continue;
+        }
+        assert_eq!(run.failed_steps, [ALIKE], "grove version {number}");
+        assert_eq!(run.passed_refusals.len(), 1, "grove version {number}");
+        let refused = &run.passed_refusals[0];
+        assert_eq!(refused.step, REFUSED, "grove version {number}");
+        let all = |part: &Part| matches!(part, Part::Cost | Part::Error);
+        assert!(refused.parts.iter().all(all), "{refused:?}");
+        let said = |lines: &[String]| {
+            let mut failed = lines.iter().filter(|line| line.starts_with("# failed"));
+            failed.next().cloned().expect("the words of a refusal")
+        };
+        let (reference, candidate) = (said(&refused.reference), said(&refused.candidate));
+        println!("grove version {number}: {reference} | {candidate}");
+        assert!(
+            reference.ends_with("at path [p] for key never"),
+            "{reference}"
+        );
+        assert!(
+            candidate.ends_with("at path [p/t] for key 0x01"),
+            "{candidate}"
+        );
+        assert_eq!(families.answers[9], 1, "grove version {number}");
+        assert!(!Family::RefusedBelowPlainDelete.ends_a_case());
+    }
+}
+
 /// A write into a subtree below a tree that a plain delete removed,
 /// which both engines refuse: RocksDB gets further before it refuses,
 /// for the records it kept, so the cost of the refusal differs, and on
