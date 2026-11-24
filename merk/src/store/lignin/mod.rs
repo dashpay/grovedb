@@ -837,8 +837,33 @@ impl<'db> LigninNodeStore<'db> {
         what: &str,
         is_commit: bool,
     ) -> CostResult<(), Error> {
-        change_set.hint(&self.hints.borrow(), &self.reads.borrow());
-        change_set.note_trees(&self.trees.borrow(), &self.reads.borrow());
+        // What a handle knows is of its own subtree: where its nodes
+        // are, which of them it read as the element of a tree and where
+        // it read those, the path it was opened by, and how its writer
+        // began. A location does not say which Merk its cell is in, and
+        // a key says nothing of another Merk's node: a change set of
+        // another subtree gets none of it from this handle, and decides
+        // nothing of it.
+        let own = change_set.is_of(&self.subtree.prefix);
+        if own {
+            change_set.hint(&self.hints.borrow(), &self.reads.borrow());
+            change_set.note_trees(&self.trees.borrow(), &self.reads.borrow());
+        }
+        if own && !matches!(self.mode, Mode::ReadOnly | Mode::Deferred(None)) {
+            // A removed node is named by its key alone where the write is
+            // applied. The handle tells where it last saw the node
+            // (`Access::place`). A transaction takes that as a hint for
+            // the write, which follows it while it is good and then
+            // looks for no key; the writer of a write scope takes
+            // nothing that is told. A write that has no good place of
+            // the node, told or kept, looks for the key.
+            let hints = self.hints.borrow();
+            for key in change_set.removed_keys() {
+                if let Some(location) = hints.get(key) {
+                    self.access.place(&self.subtree.prefix, key, *location);
+                }
+            }
+        }
         match self.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused(&format!("{what} through a handle that only reads")))
@@ -847,12 +872,13 @@ impl<'db> LigninNodeStore<'db> {
             Mode::Deferred(Some(batch)) => {
                 let staged = change_set.check_stale();
                 let writes_nodes = change_set.writes_nodes();
-                let began_empty = writes_nodes && self.began_empty(&change_set);
-                let staged = staged
-                    .and_then(|()| batch.stage(change_set, began_empty, self.path.as_deref()));
-                // The first change set of nodes that is staged decides
-                // what the handle's writer began with.
-                if staged.is_ok() && writes_nodes && self.began.get().is_none() {
+                let began_empty = own && writes_nodes && self.began_empty(&change_set);
+                let path = self.path.as_deref().filter(|_| own);
+                let staged = staged.and_then(|()| batch.stage(change_set, began_empty, path));
+                // The first change set of nodes of the handle's subtree
+                // that is staged decides what the handle's writer began
+                // with.
+                if own && staged.is_ok() && writes_nodes && self.began.get().is_none() {
                     self.began.set(Some(began_empty));
                 }
                 staged.wrap_with_cost(MODEL.staged_write())
@@ -875,11 +901,16 @@ impl<'db> LigninNodeStore<'db> {
         }
     }
 
-    /// Applies a write of this subtree to the transaction and takes in
-    /// where its nodes are now.
+    /// Applies a write to the transaction and takes in where the nodes of
+    /// this subtree are now. Of a Merk of another subtree it takes in
+    /// nothing: the handle names its locations by key, for its own
+    /// subtree.
     fn apply(&self, write: &access::Write) -> Result<(), Error> {
         let written = self.access.apply(write)?;
         for (merk, locations) in write.merks.iter().zip(&written.locations) {
+            if merk.subtree != self.subtree.prefix {
+                continue;
+            }
             for key in &merk.removed {
                 self.hints.borrow_mut().remove(key.as_slice());
                 self.loose.set(key, false);

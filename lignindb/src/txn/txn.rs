@@ -961,6 +961,41 @@ impl<'s> WriteTxn<'s> {
         }
     }
 
+    /// Tells the transaction where the node under `key` of the Merk
+    /// `subtree` is: `handle`, which the transaction showed the node with
+    /// when the caller read it for that Merk. It is for a caller that
+    /// will name the node by its key alone in a later write, as the
+    /// delete of a node does: where the place is taken and is good still
+    /// at that write, the write does not look for the key
+    /// (`super::places`, "What a told place is good for").
+    ///
+    /// What is told is a hint for that write and nothing more. It is
+    /// checked before it is followed, as the handle of a put is
+    /// ([`NodePut::at`](super::NodePut::at)): by its lease, by the cells
+    /// that left its page, and by the key of the cell. A place that fails
+    /// the check costs the search it was told to spare. No read is
+    /// answered from a told place, and it changes nothing the transaction
+    /// found or wrote under the key. It is dropped, with no effect, where
+    /// the handle is of another lease than the transaction reads under,
+    /// where the transaction keeps a place of the key already, and where
+    /// the key is new to a table that has taken as many keys as it
+    /// takes. The call does not say whether the place was taken.
+    ///
+    /// As with every handle a caller names, a cell does not say which
+    /// Merk it is in: a good handle of another Merk whose node has the
+    /// same key would be followed.
+    pub fn place(&self, subtree: Subtree, key: &[u8], handle: NodeHandle) {
+        let mut state = self.lock();
+        let state = &mut *state;
+        match state.frames.as_mut() {
+            Some(frames) => {
+                let lease = frames.tree.lease();
+                frames.seen.tell(lease, subtree, key, handle);
+            }
+            None => state.seen.tell(state.lease, subtree, key, handle),
+        }
+    }
+
     /// How many keys the transaction keeps a place of
     /// (`super::places`): beside its frames, and with them.
     #[cfg(all(test, not(loom)))]
@@ -2974,7 +3009,8 @@ impl<'s> WriteTxn<'s> {
         let kept = match kept {
             Some(Place::At(handle)) => follow(&mut pages, lease, handle, key).map(Some),
             Some(Place::Absent) => Some(None),
-            None => None,
+            // No read is answered from what a caller told.
+            Some(Place::Told(_)) | None => None,
         };
         let at = match (followed, kept) {
             (Some(at), _) => {

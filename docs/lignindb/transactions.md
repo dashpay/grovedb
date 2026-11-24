@@ -799,9 +799,20 @@ find the record by its key (RD5) instead. One way: the transaction counts
 the commits it has observed and its own rebases and rollbacks, a location
 carries the count at which it was issued, and a mismatch means "resolve by
 key". TXN-03 and MERK-01 choose the mechanism. As built, a write
-transaction also keeps such locations itself, of the nodes it searched for
-by key, through its own writes of them, and follows them under the same
-check (`lignindb::txn`, "Locations that are kept").
+transaction also keeps such locations itself, of the nodes that its reads
+searched for by key, through its own writes of them, and follows them under
+the same check (`lignindb::txn`, "Locations that are kept").
+
+A caller can tell a write transaction a location too, for a node that it
+will name by its key alone in a later write, as the delete of a Merk node
+does (`WriteTxn::place`). A told location is a location the caller holds,
+and this rule is the whole of what it is good for: that write follows it
+after the check, and finds the node by its key where the check fails. It
+is the answer to no read, it takes the place of nothing the transaction
+found or wrote under the key, and it ends with the lease it was told
+under. The caller may assume of it what it may assume of a handle it names
+in a put, and no more: the handle must be one it was shown for a node of
+that Merk, because a cell does not say which Merk it is in.
 
 ## 6. Page versions
 
@@ -3922,7 +3933,8 @@ are listed so the owner can overrule one before code depends on it.
     that the read rule is exactly as fine-grained as RocksDB's.
 21. **A location kept between operations must be checked before it is
     followed** (PN8). This binds the locations a write transaction keeps
-    of the nodes it searched for by key, and the scope caches of GROVE-12.
+    of the nodes its reads searched for by key, and the scope caches of
+    GROVE-12.
 22. **The log decides whether a commit happened** (CM9): the engine applies
     recovery's own test to the group. A group that passes is published even
     if the call that wrote it reported an error, and a commit reported as

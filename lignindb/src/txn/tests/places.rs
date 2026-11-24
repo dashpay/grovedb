@@ -1,10 +1,19 @@
 //! Where a transaction last saw its nodes (`crate::txn::places`,
-//! `transactions.md` PN8): a node that was searched for by its key is read
-//! and written again with no search from the root of its Merk, through the
-//! writes of it, a key that was found to have no cell is not searched for
-//! again, and neither is taken across what ends a lease. A node that was
-//! written and never searched for is not kept. Every read gives what the
-//! read rule names.
+//! `transactions.md` PN8): a node that a read searched for by its key is
+//! read and written again with no search from the root of its Merk,
+//! through the writes of it, a key that a read found to have no cell is
+//! not searched for again, and neither is taken across what ends a
+//! lease. A node that was written under a key that no read searched for
+//! and nothing was told of is not kept. Every read gives what the read
+//! rule names.
+//!
+//! And what a caller tells of a node's place ([`WriteTxn::place`]): a
+//! hint for the write that names the key and no handle. The cases of
+//! `told_and_not` are run twice, with the telling and without it, on
+//! stores that are otherwise the same: the two end with the same records
+//! and the same counts of the transaction, and differ by the searches
+//! the place spared. The cases of what a table takes of a told place
+//! are run once.
 
 use lignin_format::tree_page::Side;
 use lignin_tree::node::NodeHandle;
@@ -493,6 +502,350 @@ fn a_merk_that_is_emptied_cleared_or_loaded_keeps_nothing_of_its_keys() {
         assert!(served.0 <= 1 && !served.1, "{served:?}");
         assert_eq!(read_checked(&world, &tx, 2, found), (0, true));
     }
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+}
+
+/// The handle of the node under `key` of the Merk `name` as a writer has
+/// it that walks the tree ([`walk`]).
+fn walked(world: &World<'_>, tx: &Tx<'_>, name: u8, key: &[u8]) -> NodeHandle {
+    walk(world, tx, name, key).last().expect("the node").1
+}
+
+/// A key of the Merk `name` that is not its root, and not `but`.
+fn below_the_root(world: &World<'_>, tx: &Tx<'_>, name: u8, but: &[u8]) -> Vec<u8> {
+    let top = root(world, tx, name);
+    let keys = (0..60).map(key);
+    let mut keys = keys.filter(|key| *key != top && key[..] != *but);
+    keys.next().expect("a Merk of many nodes")
+}
+
+/// One store with the Merks 1 and 2, sixty nodes each, and a transaction
+/// that has read every node of both by its key but `gone`, a node of the
+/// Merk 1 below its root: with frames, where `framed` says so. `between`
+/// is run then, and is given whether to tell what it has to tell. Then
+/// the node under `gone` is removed, by its key and with no handle.
+///
+/// Returns the searches that the removal made and what the transaction
+/// held after it. What the transaction reads is checked against the
+/// model afterwards: a check before it would read `gone` by its key.
+fn removal<F>(framed: bool, tell: bool, between: F) -> (u64, TxnStats)
+where
+    F: for<'s> FnOnce(&mut World<'s>, &Tx<'s>, &[u8], bool),
+{
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(61);
+    fill(&mut world, &mut rng, 1, 60);
+    fill(&mut world, &mut rng, 2, 60);
+    let tx = world.begin();
+    if framed {
+        world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+    }
+    let gone = below_the_root(&world, &tx, 1, b"");
+    for name in [1, 2] {
+        for key in (0..60).map(key).filter(|key| (name, key) != (1, &gone)) {
+            read(&tx, name, &key).expect("a node");
+        }
+    }
+    between(&mut world, &tx, &gone, tell);
+    let before = searches(&world);
+    world.edit(&tx, 1, |items| drop(items.remove(&gone)));
+    let made = searches(&world) - before;
+    world.check(&tx);
+    assert_eq!(read(&tx, 1, &gone), None);
+    (made, tx.txn.stats())
+}
+
+/// Runs a case with the telling and without it. The two end with the same
+/// counts of the transaction. Returns the searches of the removal in the
+/// two.
+fn told_and_not<F>(framed: bool, between: F) -> (u64, u64)
+where
+    F: for<'s> Fn(&mut World<'s>, &Tx<'s>, &[u8], bool),
+{
+    let (told, with) = removal(framed, true, &between);
+    let (untold, without) = removal(framed, false, &between);
+    assert_eq!(with, without, "the transaction holds the same either way");
+    (told, untold)
+}
+
+fn merk(name: u8) -> Subtree {
+    model::subtree(name)
+}
+
+#[test]
+fn a_told_place_spares_the_search_for_a_node_that_is_removed() {
+    for framed in [true, false] {
+        // The node is where its writer saw it: the removal looks for no
+        // key. With no frames yet, the first write takes what was told
+        // with the lease it was told under.
+        let right = told_and_not(framed, |world, tx, gone, tell| {
+            let handle = walked(world, tx, 1, gone);
+            let before = tx.txn.places();
+            if tell {
+                tx.txn.place(merk(1), gone, handle);
+                let kept = tx.txn.places();
+                assert_eq!(kept.0 + kept.1, before.0 + before.1 + 1);
+                // The same place told again, and another for the key:
+                // the first stands.
+                let other = below_the_root(world, tx, 1, gone);
+                tx.txn.place(merk(1), gone, handle);
+                tx.txn.place(merk(1), gone, walked(world, tx, 1, &other));
+                assert_eq!(tx.txn.places(), kept);
+            } else {
+                walked(world, tx, 1, &below_the_root(world, tx, 1, gone));
+            }
+        });
+        assert_eq!(right, (0, 1), "{framed}");
+    }
+}
+
+/// A told key is a key of the table. A write that puts the node under it
+/// follows the told place, and keeps where it leaves the node: a read by
+/// key is answered there from then on. With nothing told the write
+/// searches for the key and keeps nothing, and the first read by key
+/// searches once more.
+#[test]
+fn a_write_keeps_the_place_of_a_node_under_a_told_key() {
+    for tell in [true, false] {
+        let (db, versions) = Db::new(256);
+        let mut world = World::new(&db, &versions);
+        let mut rng = Rng::new(62);
+        fill(&mut world, &mut rng, 1, 60);
+        let tx = world.begin();
+        world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+        let there = below_the_root(&world, &tx, 1, b"");
+        for key in (0..60).map(key).filter(|key| *key != there) {
+            read(&tx, 1, &key).expect("a node");
+        }
+        let handle = walked(&world, &tx, 1, &there);
+        if tell {
+            tx.txn.place(merk(1), &there, handle);
+        }
+        let kept = tx.txn.places();
+        let before = searches(&world);
+        world.edit(&tx, 1, |items| {
+            items.insert(there.clone(), b"put again".to_vec());
+        });
+        assert_eq!(searches(&world) - before, u64::from(!tell), "{tell}");
+        assert_eq!(tx.txn.places(), kept, "{tell}");
+        let first = read_checked(&world, &tx, 1, &there);
+        assert_eq!(first, (u64::from(!tell), tell), "{tell}");
+        assert_eq!(read_checked(&world, &tx, 1, &there), (0, true), "{tell}");
+        world.check(&tx);
+        assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+        world.check_committed();
+    }
+}
+
+#[test]
+fn a_told_place_that_is_wrong_ends_as_the_search_ends() {
+    // The cell of another node of the Merk: its key is another.
+    let wrong = told_and_not(true, |world, tx, gone, tell| {
+        let other = below_the_root(world, tx, 1, gone);
+        let handle = walked(world, tx, 1, &other);
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+    });
+    assert_eq!(wrong, (1, 1));
+
+    // A cell of another Merk, under another key.
+    let elsewhere = told_and_not(true, |world, tx, gone, tell| {
+        let other = below_the_root(world, tx, 2, gone);
+        let handle = walked(world, tx, 2, &other);
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+    });
+    assert_eq!(elsewhere, (1, 1));
+
+    // A wrong place first and the right one after it: the first stands.
+    let first = told_and_not(true, |world, tx, gone, tell| {
+        let other = below_the_root(world, tx, 1, gone);
+        let (wrong, right) = (walked(world, tx, 1, &other), walked(world, tx, 1, gone));
+        if tell {
+            tx.txn.place(merk(1), gone, wrong);
+            tx.txn.place(merk(1), gone, right);
+        }
+    });
+    assert_eq!(first, (1, 1));
+
+    // A place that is told for a key the transaction keeps a place of
+    // changes nothing: the node of that key is read where it was found.
+    let kept = told_and_not(true, |world, tx, gone, tell| {
+        let other = below_the_root(world, tx, 1, gone);
+        let handle = walked(world, tx, 1, gone);
+        if tell {
+            tx.txn.place(merk(1), &other, handle);
+        }
+        assert_eq!(read_checked(world, tx, 1, &other), (0, true));
+    });
+    assert_eq!(kept, (1, 1));
+}
+
+#[test]
+fn a_told_place_ends_with_its_cell_and_with_its_lease() {
+    // A cell leaves the page of the told cell before the removal: another
+    // node of the page is removed. The place is good no more.
+    let left = told_and_not(true, |world, tx, gone, tell| {
+        let handle = walked(world, tx, 1, gone);
+        let top = root(world, tx, 1);
+        let beside = (0..60).rev().map(key).find(|key| {
+            *key != top && key[..] != *gone && walked(world, tx, 1, key).page() == handle.page()
+        });
+        let beside = beside.expect("another node in the page");
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+        world.edit(tx, 1, |items| drop(items.remove(&beside)));
+    });
+    assert!(left.0 == left.1 && left.1 > 0, "{left:?}");
+
+    // A commit beside the transaction: its frames are made again, under
+    // another lease, and nothing that was told is taken over.
+    let rebased = told_and_not(true, |world, tx, gone, tell| {
+        let handle = walked(world, tx, 1, gone);
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+        world.edit_outside(
+            2,
+            |items| drop(items.insert(key(900), b"beside".to_vec())),
+            &[tx],
+        );
+        read(tx, 2, &key(900)).expect("the node of the commit");
+        assert_eq!(tx.txn.stats().rebuilds, 1);
+    });
+    assert!(rebased.0 == rebased.1 && rebased.1 > 0, "{rebased:?}");
+
+    // A handle of a lease that has ended is told: it is dropped.
+    let late = told_and_not(true, |world, tx, gone, tell| {
+        let handle = walked(world, tx, 1, gone);
+        world.edit_outside(
+            2,
+            |items| drop(items.insert(key(900), b"beside".to_vec())),
+            &[tx],
+        );
+        read(tx, 2, &key(900)).expect("the node of the commit");
+        let before = tx.txn.places();
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+        assert_eq!(tx.txn.places(), before);
+    });
+    assert!(late.0 == late.1 && late.1 > 0, "{late:?}");
+
+    // A write scope that is rolled back: the frames are made again.
+    let rolled = told_and_not(true, |world, tx, gone, tell| {
+        let handle = walked(world, tx, 1, gone);
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+        let scope = tx.txn.scope().expect("a scope");
+        let batch = OwnedBatch {
+            records: vec![put(model::unit(Column::Aux, 9), b"rolled", b"back")],
+            ..OwnedBatch::default()
+        };
+        batch.with(|batch| scope.apply(batch)).expect("a write");
+        scope.rollback();
+        let _ = world;
+    });
+    assert!(rolled.0 == rolled.1 && rolled.1 > 0, "{rolled:?}");
+}
+
+#[test]
+fn no_read_is_answered_from_a_told_place() {
+    // The node is told and then read by its key: the read searches, as it
+    // does with nothing told, and from then on the node is where the read
+    // found it.
+    let read_first = told_and_not(true, |world, tx, gone, tell| {
+        let handle = walked(world, tx, 1, gone);
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+        assert_eq!(read_checked(world, tx, 1, gone), (1, false));
+        assert_eq!(read_checked(world, tx, 1, gone), (0, true));
+    });
+    assert_eq!(read_first, (0, 0));
+
+    // Before the first write too, where the committed pages are read.
+    let committed = told_and_not(false, |world, tx, gone, tell| {
+        let handle = walked(world, tx, 1, gone);
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+        assert_eq!(read_checked(world, tx, 1, gone), (1, false));
+    });
+    assert_eq!(committed, (0, 0));
+}
+
+#[test]
+fn a_full_table_takes_no_told_place() {
+    let full = told_and_not(true, |world, tx, gone, tell| {
+        let handle = walked(world, tx, 1, gone);
+        let mut absent = 0u32;
+        while tx.txn.places().1 < crate::txn::places::KEPT_PLACES {
+            absent += 1;
+            assert!(absent as usize <= crate::txn::places::KEPT_PLACES);
+            let key = [&b"z"[..], &absent.to_be_bytes()].concat();
+            assert_eq!(read(tx, 2, &key), None);
+        }
+        let before = tx.txn.places();
+        if tell {
+            tx.txn.place(merk(1), gone, handle);
+        }
+        assert_eq!(tx.txn.places(), before);
+        let _ = world;
+    });
+    assert_eq!(full, (1, 1));
+}
+
+/// A full table has room for a place that is told of a key it has
+/// already with nothing kept of it. The node under a key that a read
+/// searched for is removed, and the table is filled. A place that is
+/// told then of a key that is new to the table is dropped, and the
+/// handle of the removed node, told after it, goes to the entry of its
+/// key. Neither changes what a read finds, since no read is answered
+/// from a told place: the removed key is searched for, has no cell, and
+/// is not searched for again, and the read of the key that was new
+/// follows no place. What a write does with a told place is in the
+/// cases of `told_and_not`.
+#[test]
+fn a_full_table_takes_a_place_told_of_a_key_it_has() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(63);
+    fill(&mut world, &mut rng, 1, 60);
+    fill(&mut world, &mut rng, 2, 60);
+    let tx = world.begin();
+    world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+    let gone = below_the_root(&world, &tx, 1, b"");
+    let (_, handle) = read(&tx, 1, &gone).expect("a node");
+    let handle = handle.expect("a handle");
+    world.edit(&tx, 1, |items| drop(items.remove(&gone)));
+    let unasked = below_the_root(&world, &tx, 2, b"");
+    let other = walked(&world, &tx, 2, &unasked);
+
+    // Every entry but that of the removed node keeps something.
+    let mut absent = 0u32;
+    while tx.txn.places().1 < crate::txn::places::KEPT_PLACES - 1 {
+        absent += 1;
+        assert!(absent as usize <= crate::txn::places::KEPT_PLACES);
+        let key = [&b"z"[..], &absent.to_be_bytes()].concat();
+        assert_eq!(read(&tx, 2, &key), None);
+    }
+    let full = tx.txn.places();
+    tx.txn.place(merk(2), &unasked, other);
+    assert_eq!(tx.txn.places(), full, "a key that is new to it");
+    tx.txn.place(merk(1), &gone, handle);
+    assert_eq!(tx.txn.places(), (0, full.1 + 1), "a key it has");
+
+    assert_eq!(read_checked(&world, &tx, 1, &gone), (1, false));
+    assert_eq!(read_checked(&world, &tx, 1, &gone), (0, false));
+    assert!(!read_checked(&world, &tx, 2, &unasked).1);
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();

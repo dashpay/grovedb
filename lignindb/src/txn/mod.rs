@@ -415,20 +415,30 @@
 //!
 //! **The transaction keeps where it saw nodes** (`places`). GroveDB opens
 //! the Merks of a path anew for every batch of a block, and reads the
-//! element that hosts each by its key, with no handle: a node that the
-//! batch before wrote. So, for the lease it reads under, the transaction
-//! keeps the handle of every node that a search by key found, under its
-//! subtree and its key, and a write that puts a node under such a key
-//! keeps where it leaves the node ([`Applied::nodes`]). A node that a
-//! write put under a key that was not searched for is not kept: it is
-//! searched for the first time it is asked for by its key. A read by key
-//! with no handle, or with one that has ended, and a write that names a
-//! node with no good hint go there first. Such a handle is followed like
-//! any other, while it is good, so one that has ended costs the search it
-//! was kept to spare.
+//! element that hosts each by its key, with no handle, again in every
+//! batch whose path goes through that Merk; a batch in between may have
+//! written the node. So, for the lease it reads under, the transaction
+//! keeps the handle of each node that a read by key searched for and
+//! found, under its subtree and its key, while its table has the key
+//! (`places`, "What is kept"), and a write that puts a node under a key
+//! the table has keeps where it leaves the node ([`Applied::nodes`]). A
+//! node that a write put under a key the table does not have, as one is
+//! that no read searched for and no place was taken of (below), is not
+//! kept. A read by key with no handle, or with one that has ended, and a
+//! write that names a node with no good hint go there first. Such a
+//! handle is followed like any other, while it is good, so one that has
+//! ended costs the search it was kept to spare.
 //!
-//! It also keeps the keys under which a search found no cell, and those
-//! are not hints: a key that has none is not searched for again. That is
+//! A caller can tell the transaction a place as well
+//! ([`WriteTxn::place`]), for a node it will name by its key alone in a
+//! later write, as the delete of a node does. What is told is a hint for
+//! that write: it is checked like a handle the write names, it takes the
+//! place of nothing the transaction found or wrote, and no read is
+//! answered from it (`places`, "What a told place is good for").
+//!
+//! It also keeps the keys under which such a read found no cell, and
+//! those are not hints: a key that has none is not searched for again
+//! while the table has it. That is
 //! kept right as follows. A cell comes to be under a key of a Merk by a
 //! write of the transaction that puts the node, which puts its place
 //! where the key was, or by a load of the whole Merk, which forgets what
@@ -611,9 +621,11 @@
 //! - **Page ids** of the pages it made, until its commit publishes them or
 //!   its frames are given up (ID1).
 //! - **Where it saw nodes** ("Locations that are kept"): a handle or a
-//!   mark for each key it searched for or wrote under its lease, at most
-//!   65,536 of them. One more empties the table, and the keys are
-//!   searched for again as they are come back to.
+//!   mark for each key that a read searched for under its lease, or that
+//!   it took a told place of, at most 65,536 of them. A key of a read
+//!   that is one more empties the table first, and the keys are searched
+//!   for again as they are come back to; a told place of a key that is
+//!   one more is dropped.
 //! - **A watch on the key sets of commits** ([`Commits`]), from its first
 //!   write, from the first read that shows it a node, or from the first
 //!   cursor it opens over a Merk, whichever comes first. A cursor watches

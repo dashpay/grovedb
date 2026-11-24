@@ -5,28 +5,41 @@
 //! has ended, is found from the root of its Merk, one cell for each level
 //! ([`find`](super::pages::find)). GroveDB opens the Merks of a path anew
 //! for every batch of a block, and reads the element that hosts each by
-//! its key: a node that the batch before wrote. So the transaction keeps,
-//! for each key it searched for, the handle it last had of the node,
-//! through its own writes of that node, and follows that handle where a
-//! read or a write names the key and no handle that is good
-//! (`tree-layout.md` P5, `transactions.md` PN8).
+//! its key, again in every batch whose path goes through that Merk, and
+//! a batch in between may have written the node. So the transaction
+//! keeps, for each key that a read searched for, the handle it last had
+//! of the node, through its own writes of that node, and follows that
+//! handle where a read or a write names the key and no handle that is
+//! good (`tree-layout.md` P5, `transactions.md` PN8).
 //!
 //! # What is kept
 //!
-//! - **A node that a search found**: the handle of the cell it found.
-//! - **A key under which a search found no cell.**
+//! - **A node that a read by its key searched for and found**: the
+//!   handle of the cell it found.
+//! - **A key under which such a read found no cell**, in a Merk that
+//!   has a root.
 //! - **A node that a write of the transaction put under a key the table
 //!   has**, where the write left it: the handle that the write reports
-//!   ([`Applied::nodes`]). The table has a key from the first search for
-//!   it under the table's lease until the table is emptied, whatever was
-//!   forgotten of the key since.
+//!   ([`Applied::nodes`]). The table has a key from the first read of
+//!   the node under it that searched for it under the table's lease, as
+//!   `WriteTxn::node` does with no handle or with one that has ended,
+//!   and a cursor that stands on a key the transaction wrote, or from
+//!   the first place told of it that the table took, until the table is
+//!   emptied, whatever was forgotten of the key since. The search that
+//!   a write or a commit makes for a key it names gives the table no
+//!   key, and neither does one in pages that are read under another
+//!   lease, as a committed read's is.
+//! - **A node whose place a caller told** ([`WriteTxn::place`]): the
+//!   handle it named, for a write that names the key and no handle. See
+//!   "What a told place is good for".
 //!
 //! A node that a write put under a key the table does not have is not
-//! kept ([`Places::renew`]): a write keeps nothing for a key that nothing
-//! searched for. Such a node is searched for the first time it is asked
-//! for by its key, as a node the transaction never wrote is, and is kept
-//! from then on. A node that is reached from its parent needs no place
-//! here: the cell of the parent says where it is.
+//! kept ([`Places::renew`]): a write keeps nothing for a key that no
+//! read searched for and no place was taken of. Such a node is found by
+//! a search where it is asked for by its key, as a node the transaction
+//! never wrote is, until the table has a place of it. A node that is
+//! reached from its parent needs no place here: the cell of the parent
+//! says where it is.
 //!
 //! # What a place is good for
 //!
@@ -39,6 +52,29 @@
 //! A cell does not say which Merk it is in, so a place is kept under the
 //! subtree whose read or write gave it, and is asked for under that
 //! subtree alone.
+//!
+//! # What a told place is good for
+//!
+//! A caller that was shown a node with a handle, and that will name the
+//! node by its key alone in a later write, as the delete of a node does,
+//! can tell the transaction the handle. A told place is the caller's word
+//! and nothing the transaction found:
+//!
+//! - it is taken only where the table has nothing of the key, so it
+//!   changes nothing that a search or a write put there, and of two that
+//!   are told for one key the first stands;
+//! - it is not taken where the handle is of another lease than the pages
+//!   are read under, or where the table is full and the key is new to
+//!   it: it is dropped, and nothing else changes. A full table has room
+//!   for it where it has the key already with nothing kept of it: a key
+//!   that it searched for or was told of, and has forgotten since;
+//! - **a write** that names the key with no good handle follows it as it
+//!   follows a handle the write names itself, after the same check, and
+//!   one that puts the node keeps where it leaves it, as under a key
+//!   that was searched for: that place is the write's, and answers a
+//!   read;
+//! - **no read is answered from it**: a read by key searches, and what it
+//!   finds takes the told place's entry.
 //!
 //! # What a key with no cell is good for
 //!
@@ -62,6 +98,7 @@
 //!
 //! [`Applied::nodes`]: super::Applied::nodes
 //! [`NodePut::at`]: super::NodePut::at
+//! [`WriteTxn::place`]: super::WriteTxn::place
 
 use std::{
     collections::HashMap,
@@ -86,6 +123,9 @@ pub(crate) enum Place {
     At(NodeHandle),
     /// No cell is under the key.
     Absent,
+    /// The handle a caller told for the node under the key: a hint for a
+    /// write, and nothing for a read.
+    Told(NodeHandle),
 }
 
 /// One key of a table.
@@ -155,6 +195,49 @@ impl<S: BuildHasher> Places<S> {
         self.set(lease, subtree, key, Place::Absent);
     }
 
+    /// Takes `handle` as where a caller says the node under `key` of
+    /// `subtree` is, for the pages that are read under `lease`: only if
+    /// the handle is of that lease, the table has nothing of the key, and
+    /// it has the key already or has room for a new one. A table of a
+    /// lease that has ended holds nothing that answers, and starts anew.
+    pub(crate) fn tell(&mut self, lease: Lease, subtree: Subtree, key: &[u8], handle: NodeHandle) {
+        if handle.lease() != lease {
+            return;
+        }
+        if self.lease != Some(lease) {
+            self.clear();
+            self.lease = Some(lease);
+        }
+        let hash = self.hash(&subtree, key);
+        match self.entry(hash, &subtree, key) {
+            Some(entry) => {
+                let place = &mut self.entries[entry].place;
+                if place.is_none() {
+                    *place = Some(Place::Told(handle));
+                    self.len += 1;
+                }
+            }
+            None if self.entries.len() < KEPT_PLACES => {
+                self.push(hash, subtree, key, Place::Told(handle));
+            }
+            None => {}
+        }
+    }
+
+    /// A new entry, for a key the table has none of.
+    fn push(&mut self, hash: u64, subtree: Subtree, key: &[u8], place: Place) {
+        let entry = self.entries.len() as u32;
+        let before = self.newest.insert(hash, entry).unwrap_or(u32::MAX);
+        self.entries.push(Entry {
+            subtree,
+            key: (self.keys.len() as u32, key.len() as u32),
+            place: Some(place),
+            before,
+        });
+        self.keys.extend_from_slice(key);
+        self.len += 1;
+    }
+
     fn hash(&self, subtree: &Subtree, key: &[u8]) -> u64 {
         let mut hasher = self.hashes.build_hasher();
         hasher.write(subtree.as_bytes());
@@ -191,16 +274,7 @@ impl<S: BuildHasher> Places<S> {
             self.clear();
             self.lease = Some(lease);
         }
-        let entry = self.entries.len() as u32;
-        let before = self.newest.insert(hash, entry).unwrap_or(u32::MAX);
-        self.entries.push(Entry {
-            subtree,
-            key: (self.keys.len() as u32, key.len() as u32),
-            place: Some(place),
-            before,
-        });
-        self.keys.extend_from_slice(key);
-        self.len += 1;
+        self.push(hash, subtree, key, place);
     }
 
     /// Forgets what is kept of `key` in `subtree`.

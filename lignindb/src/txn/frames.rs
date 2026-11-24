@@ -751,7 +751,9 @@ impl Resolver<'_> {
     ) -> Result<Option<CellAddress>, TxnError> {
         let lease = tree.lease();
         match seen.get(lease, &self.merks[merk].subtree, key) {
-            Some(Place::At(handle)) => {
+            // What a caller told is followed by a write as a handle that
+            // the write names is.
+            Some(Place::At(handle) | Place::Told(handle)) => {
                 if let Some(at) = follow(tree, lease, handle, key) {
                     return Ok(Some(at));
                 }
@@ -1753,7 +1755,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 }
             }
             Some(Place::Absent) => return Ok((None, true)),
-            None => {}
+            // No read is answered from what a caller told.
+            Some(Place::Told(_)) | None => {}
         }
         let found = find(&mut self.tree, root, key)?;
         match found {
