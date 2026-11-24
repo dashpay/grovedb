@@ -42,8 +42,8 @@ Add both crates to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-grovedb = "6.1.1"
-grovedb-version = "6.1.1"
+grovedb = "7.0.0"
+grovedb-version = "7.0.0"
 ```
 
 Save the following as `src/main.rs` and run `cargo run`. It creates a tree,
@@ -116,13 +116,54 @@ Applications that only verify proofs can disable the default storage features:
 
 ```toml
 [dependencies]
-grovedb = { version = "6.1.1", default-features = false, features = ["verify"] }
-grovedb-version = "6.1.1"
+grovedb = { version = "7.0.0", default-features = false, features = ["verify"] }
+grovedb-version = "7.0.0"
 ```
 
 Verification checks a proof against the requested query and returns its root
 hash. Compare that hash with an independently trusted root before accepting the
 results. This build supports verification without opening a RocksDB database.
+
+## Upgrading to 7.0
+
+GroveDB 7.0 adds `GROVE_V5`, and `GroveVersion::latest()` now selects it.
+Changes to what a write stores or costs, and to the proofs a prover produces,
+are gated on `GROVE_V5`, apart from the backward-reference change below. So
+consensus and replay code that names `GROVE_V1` to `GROVE_V4` explicitly keeps
+its 6.1.1 results, and code that calls `GroveVersion::latest()` picks up the
+V5 behavior on upgrade. Some verifiers are stricter in every Grove version:
+they refuse proofs and sync requests an honest prover or peer never sends.
+A prover and a verifier must run the same Grove version: a `GROVE_V4`
+verifier refuses some proofs a `GROVE_V5` prover produces.
+
+The public API changes since 6.1.1. Update callers that build these structs
+directly or match exhaustively on these enums:
+
+- `Element`, `ElementType`, `TreeType`, `TreeFeatureType`, `AggregateData`,
+  `Node`, `ProofNodeType`, `IndexAxis`, `AxisEntries` and `AxisKeys` gain
+  variants for the trees with a 128-bit sum.
+- `Query` adds `offset`, `QueryOptions` adds `include_parent_tree_on_subquery`
+  and `QueryBudget` adds `rows`.
+- The version tables in `grovedb-version` gain slots. Code that builds a
+  `GroveVersion` by hand must set them.
+- `QualifiedGroveDbOp::verify_consistency_of_operations` takes a
+  `&GroveVersion` and returns a `Result`.
+- `Node::KVBackwardsReferencesValueHash` and
+  `ProofNodeType::KvBackwardsReferencesValueHash` are removed.
+- With the `sqlite` feature, `grovedb-commitment-tree` uses rusqlite 0.41.
+  Other rusqlite users in the same build must move to 0.41 as well.
+
+The referrer list of a bidirectional-reference target is no longer part of
+any node hash, in every Grove version, so naming an earlier `GroveVersion`
+does not keep the old hashes. A database that has never stored an
+`ItemWithBackwardsReferences`, a `SumItemWithBackwardsReferences`, an
+`ItemWithSumItemWithBackwardsReferences` or a `BidirectionalReference` needs
+no migration. One that stored any of them with an earlier build, even with no
+referrer ever registered, holds value hashes this build does not reproduce:
+`verify_grovedb` reports those elements and their proofs do not verify.
+
+See the [changelog](CHANGELOG.md) for every change and the version slot that
+gates it.
 
 ## Upgrading to 6.0
 
