@@ -28,17 +28,22 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
   dump      DIR (SUBTREE | --all) FILE
                                      a subtree with every subtree below it, or every subtree, to FILE
   load      DIR FILE                 a dump, into a database that has none of its subtrees
-  migrate   SOURCE TARGET [--batch MIB] [--leave-unreachable]
+  migrate   SOURCE TARGET [--batch MIB] [--progress SECS] [--unreachable refuse|leave|carry]
                                      a RocksDB GroveDB in SOURCE (the directory of a stopped node,
                                      or a checkpoint) into a new LigninDB database at TARGET. The
                                      source is read and never written. The work is done in
                                      TARGET.migrating, which becomes TARGET once every record was
                                      compared and the store verified; run again to go on after a
                                      stop. --batch is how much of the source one commit takes
-                                     (64 MiB unless given). A source that holds records under a
-                                     prefix that no element leads to is refused, unless
-                                     --leave-unreachable says that those records are left behind
-  migrate   SOURCE --survey [--leave-unreachable]
+                                     (64 MiB unless given), and --progress how often a line
+                                     says where the load stands (5 s unless given; 0 is after
+                                     every commit). A source that a node left without
+                                     stopping is migrated as the state that node would recover
+                                     to. --unreachable says what becomes of records under a
+                                     prefix that no element leads to: the source is refused
+                                     (unless given), they are left behind, or they are carried
+                                     as records that no tree links
+  migrate   SOURCE --survey [--unreachable refuse|leave|carry]
                                      what SOURCE holds and whether it can be migrated; writes
                                      nothing
   help                               this text
@@ -57,6 +62,10 @@ pub const DEFAULT_CACHE: usize = 64 << 20;
 /// How much of the source one commit of `migrate` takes unless `--batch`
 /// says: the bytes of the records it reads.
 pub const DEFAULT_MIGRATE_BATCH: usize = 64 << 20;
+
+/// How often a load of `migrate` says where it stands, unless `--progress`
+/// says otherwise.
+pub const DEFAULT_MIGRATE_PROGRESS: Duration = Duration::from_secs(5);
 
 /// How long `compact` works at most unless `--timeout` says.
 pub const DEFAULT_COMPACT_TIMEOUT: Duration = Duration::from_secs(600);
@@ -161,10 +170,45 @@ pub enum Command {
         cache_size: usize,
         /// The bytes of source records one commit takes.
         batch_bytes: usize,
-        /// Whether records under a prefix that no element leads to are
-        /// left behind, where the source is refused for them otherwise.
-        leave_unreachable: bool,
+        /// How often the load says where it stands.
+        progress: Duration,
+        /// What becomes of records under a prefix that no element leads
+        /// to.
+        unreachable: Unreachable,
     },
+}
+
+/// What `migrate` does with the records under a prefix that no element
+/// leads to and no pending-drop record names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Unreachable {
+    /// A source that holds any is refused, before anything is written.
+    #[default]
+    Refuse = 0,
+    /// They are left behind: the target holds none of them.
+    Leave = 1,
+    /// They are carried, as records that no tree links under a subtree
+    /// with no host.
+    Carry = 2,
+}
+
+impl Unreachable {
+    /// Every choice.
+    pub const ALL: [Self; 3] = [Self::Refuse, Self::Leave, Self::Carry];
+
+    /// The word of the choice on the command line.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Refuse => "refuse",
+            Self::Leave => "leave",
+            Self::Carry => "carry",
+        }
+    }
+
+    /// The choice that `name` is the word of.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|choice| choice.name() == name)
+    }
 }
 
 fn usage(what: impl Into<String>) -> ToolError {
@@ -217,7 +261,12 @@ pub fn parse(args: &[OsString]) -> Result<Command, ToolError> {
             "--beside-background" => flags.beside_background = true,
             "--all" => flags.all = true,
             "--survey" => flags.survey = true,
-            "--leave-unreachable" => flags.leave_unreachable = true,
+            "--unreachable" => {
+                let choice = Unreachable::named(value(word)?);
+                let choice =
+                    choice.ok_or_else(|| usage("--unreachable takes refuse, leave or carry"))?;
+                flags.unreachable = Some(choice);
+            }
             "--batch" => {
                 let mib: usize = number(value(word)?, "a size in MiB")?;
                 let bytes = mib.checked_mul(1 << 20).filter(|&bytes| bytes > 0);
@@ -231,6 +280,10 @@ pub fn parse(args: &[OsString]) -> Result<Command, ToolError> {
             "--timeout" => {
                 let seconds: u64 = number(value(word)?, "a number of seconds")?;
                 flags.timeout = Some(Duration::from_secs(seconds));
+            }
+            "--progress" => {
+                let seconds: u64 = number(value(word)?, "a number of seconds")?;
+                flags.progress = Some(Duration::from_secs(seconds));
             }
             flag if flag.starts_with("--") => return Err(usage(format!("no option {flag}"))),
             operand => operands.push(operand),
@@ -248,10 +301,11 @@ struct Flags {
     beside_background: bool,
     all: bool,
     survey: bool,
-    leave_unreachable: bool,
+    unreachable: Option<Unreachable>,
     batch: Option<usize>,
     cache: Option<usize>,
     timeout: Option<Duration>,
+    progress: Option<Duration>,
 }
 
 impl Flags {
@@ -272,10 +326,11 @@ impl Flags {
             ("--all", self.all && name != "dump"),
             ("--survey", self.survey && name != "migrate"),
             (
-                "--leave-unreachable",
-                self.leave_unreachable && name != "migrate",
+                "--unreachable",
+                self.unreachable.is_some() && name != "migrate",
             ),
             ("--batch", self.batch.is_some() && name != "migrate"),
+            ("--progress", self.progress.is_some() && name != "migrate"),
             ("--cache", self.cache.is_some() && !opens),
             ("--timeout", self.timeout.is_some() && name != "compact"),
         ];
@@ -349,7 +404,11 @@ impl Flags {
             },
             "migrate" => {
                 let (source, target) = match (self.survey, operands) {
-                    (true, [source]) if self.batch.is_none() && self.cache.is_none() => {
+                    (true, [source])
+                        if self.batch.is_none()
+                            && self.cache.is_none()
+                            && self.progress.is_none() =>
+                    {
                         (*source, None)
                     }
                     (false, [source, target]) => (*source, Some(PathBuf::from(target))),
@@ -363,7 +422,8 @@ impl Flags {
                     target,
                     cache_size: self.cache.unwrap_or(DEFAULT_CACHE),
                     batch_bytes: self.batch.unwrap_or(DEFAULT_MIGRATE_BATCH),
-                    leave_unreachable: self.leave_unreachable,
+                    progress: self.progress.unwrap_or(DEFAULT_MIGRATE_PROGRESS),
+                    unreachable: self.unreachable.unwrap_or_default(),
                 }
             }
             other => return Err(usage(format!("no subcommand {other:?}"))),

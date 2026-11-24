@@ -19,7 +19,6 @@ path = "src/main.rs"
 migrate = [
     "dep:rocksdb",
     "dep:grovedb",
-    "dep:grovedb-element",
     "dep:grovedb-path",
     "dep:grovedb-storage",
     "dep:rustix",
@@ -37,11 +36,10 @@ grovedb-merk = { version = "7.0.0", path = "../merk", default-features = false, 
 grovedb-version = { version = "7.0.0", path = "../grovedb-version" }
 # The migrator alone: the source's files through RocksDB's read-only open,
 # the LigninDB engine of GroveDB for what an element hosts and where a
-# root-key record is kept, elements, paths and prefixes, and the lock probe
+# root-key record is kept, paths and prefixes, and the lock probe
 # of the source.
 rocksdb = { version = "0.25.0", optional = true }
 grovedb = { version = "7.0.0", path = "../grovedb", default-features = false, features = ["lignin_storage"], optional = true }
-grovedb-element = { version = "7.0.0", path = "../grovedb-element", optional = true }
 grovedb-path = { version = "7.0.0", path = "../path", optional = true }
 grovedb-storage = { version = "7.0.0", path = "../storage", default-features = false, optional = true }
 rustix = { version = "1", features = ["fs"], optional = true }

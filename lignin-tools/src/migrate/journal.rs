@@ -20,6 +20,8 @@
 //! ```text
 //! magic     "LIGNMIGR" and the format, one byte: 1
 //! source    identity (bytes), sequence number (8), root hash (32)
+//! choice    1: what becomes of the records under a prefix that nothing
+//!           leads to: 0 none are there, 1 left behind, 2 carried
 //! phase     1: 0 the grove, 1 the root-key records, 2 the pending drops
 //! frames    count (4), then for each subtree that is entered and not left,
 //!           from the root Merk down: key (bytes), position (1), and the last
@@ -27,13 +29,13 @@
 //!           position (1)
 //! roots     0, or 1 and the stored key (bytes) of the last root-key record
 //!           that was carried
-//! carried   ten counts (8 each), in the order of the fields of `Carried`
+//! carried   eleven counts (8 each), in the order of the fields of `Carried`
 //! ```
 
 use lignin_format::tree_page::Hash;
 
 use super::walk::Frame;
-use crate::ToolError;
+use crate::{args::Unreachable, ToolError};
 
 /// The key of the journal, in the aux keyspace of the target's root
 /// subtree.
@@ -52,6 +54,17 @@ pub(crate) enum Phase {
     Roots,
     /// The pending-drop records, with the marks of what they left.
     Drops,
+}
+
+impl Phase {
+    /// The word of the phase in the lines of a load.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Grove => "grove",
+            Self::Roots => "root-keys",
+            Self::Drops => "pending-drops",
+        }
+    }
 }
 
 /// What a load has carried so far.
@@ -77,10 +90,13 @@ pub(crate) struct Carried {
     pub(crate) marks: u64,
     /// The bytes of the keys and values of all of these.
     pub(crate) bytes: u64,
+    /// The prefixes that nothing leads to whose records were carried:
+    /// subtrees that were entered with no host.
+    pub(crate) unreachable: u64,
 }
 
 impl Carried {
-    fn fields(&self) -> [u64; 10] {
+    fn fields(&self) -> [u64; 11] {
         [
             self.subtrees,
             self.merks,
@@ -92,7 +108,23 @@ impl Carried {
             self.roots,
             self.marks,
             self.bytes,
+            self.unreachable,
         ]
+    }
+
+    /// Adds what `other` counts.
+    pub(crate) fn add(&mut self, other: &Self) {
+        self.subtrees += other.subtrees;
+        self.merks += other.merks;
+        self.nodes += other.nodes;
+        self.unlinked += other.unlinked;
+        self.flat += other.flat;
+        self.aux += other.aux;
+        self.meta += other.meta;
+        self.roots += other.roots;
+        self.marks += other.marks;
+        self.bytes += other.bytes;
+        self.unreachable += other.unreachable;
     }
 
     /// Every record that was carried, of every kind.
@@ -110,6 +142,8 @@ pub(crate) struct Journal {
     pub(crate) sequence: u64,
     /// The root hash of the source's grove.
     pub(crate) root_hash: Hash,
+    /// What becomes of the records under a prefix that nothing leads to.
+    pub(crate) unreachable: Unreachable,
     /// The part that is under way.
     pub(crate) phase: Phase,
     /// The place of the walk of the grove.
@@ -168,6 +202,7 @@ impl Journal {
         put_bytes(&mut out, &self.identity);
         out.extend_from_slice(&self.sequence.to_le_bytes());
         out.extend_from_slice(&self.root_hash);
+        out.push(self.unreachable as u8);
         out.push(self.phase as u8);
         out.extend_from_slice(&(self.frames.len() as u32).to_le_bytes());
         for frame in &self.frames {
@@ -199,6 +234,8 @@ impl Journal {
         let identity = record.bytes()?;
         let sequence = record.number()?;
         let root_hash = record.array()?;
+        let choice = record.byte()?;
+        let unreachable = (Unreachable::ALL.into_iter()).find(|of| *of as u8 == choice)?;
         let phase = match record.byte()? {
             0 => Phase::Grove,
             1 => Phase::Roots,
@@ -223,16 +260,17 @@ impl Journal {
             false => None,
             true => Some(record.bytes()?),
         };
-        let mut counts = [0; 10];
+        let mut counts = [0; 11];
         for count in &mut counts {
             *count = record.number()?;
         }
-        let [subtrees, merks, nodes, unlinked, flat, aux, meta, roots_carried, marks, bytes] =
+        let [subtrees, merks, nodes, unlinked, flat, aux, meta, roots_carried, marks, bytes, beside] =
             counts;
         Some(Self {
             identity,
             sequence,
             root_hash,
+            unreachable,
             phase,
             frames,
             roots,
@@ -247,6 +285,7 @@ impl Journal {
                 roots: roots_carried,
                 marks,
                 bytes,
+                unreachable: beside,
             },
         })
     }
@@ -289,6 +328,7 @@ mod tests {
             identity: b"an identity".to_vec(),
             sequence: 0x0102_0304_0506_0708,
             root_hash: [7; 32],
+            unreachable: Unreachable::Leave,
             phase: Phase::Roots,
             frames: vec![
                 Frame {
@@ -314,6 +354,7 @@ mod tests {
                 roots: 8,
                 marks: 9,
                 bytes: 10,
+                unreachable: 11,
             },
         }
     }
@@ -323,9 +364,16 @@ mod tests {
         let journal = journal();
         assert_eq!(Journal::decode(&journal.encode()).unwrap(), journal);
         assert_eq!(journal.carried.records(), 3 + 4 + 5 + 6 + 7 + 8 + 9);
-        for phase in [Phase::Grove, Phase::Drops] {
+        let mut twice = journal.carried;
+        twice.add(&journal.carried);
+        assert_eq!(twice.fields(), [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]);
+        for (phase, unreachable) in [
+            (Phase::Grove, Unreachable::Refuse),
+            (Phase::Drops, Unreachable::Carry),
+        ] {
             let other = Journal {
                 phase,
+                unreachable,
                 frames: Vec::new(),
                 roots: None,
                 ..journal.clone()
@@ -352,8 +400,12 @@ mod tests {
         let mut other_format = record.clone();
         other_format[8] = 2;
         assert!(message(&other_format).contains("has the format 2"));
-        // A phase and a flag that are none.
-        let phase_at = 9 + 4 + b"an identity".len() + 8 + 32;
+        // A choice, a phase and a flag that are none.
+        let choice_at = 9 + 4 + b"an identity".len() + 8 + 32;
+        let mut no_choice = record.clone();
+        no_choice[choice_at] = 3;
+        assert!(message(&no_choice).contains("is cut short"));
+        let phase_at = choice_at + 1;
         let mut no_phase = record.clone();
         no_phase[phase_at] = 3;
         assert!(message(&no_phase).contains("is cut short"));

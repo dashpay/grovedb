@@ -19,9 +19,9 @@
 //! lignin dump      DIR (SUBTREE | --all) FILE
 //!                                       a subtree, with every subtree below it, to a file
 //! lignin load      DIR FILE             a dump, into a database that does not have its subtrees
-//! lignin migrate   SOURCE TARGET [--batch MIB] [--leave-unreachable]
+//! lignin migrate   SOURCE TARGET [--batch MIB] [--progress SECS] [--unreachable refuse|leave|carry]
 //!                                       a RocksDB GroveDB into a new LigninDB database
-//! lignin migrate   SOURCE --survey [--leave-unreachable]
+//! lignin migrate   SOURCE --survey [--unreachable refuse|leave|carry]
 //!                                       what a RocksDB GroveDB holds, and whether it migrates
 //! ```
 //!
@@ -166,7 +166,8 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> Result<Outcome, ToolError>
             target,
             cache_size,
             batch_bytes,
-            leave_unreachable,
+            progress,
+            unreachable,
         } => {
             let migration = migrate::Migration {
                 source,
@@ -176,7 +177,8 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> Result<Outcome, ToolError>
                     ..lignindb::Options::default()
                 },
                 batch_bytes,
-                leave_unreachable,
+                progress,
+                unreachable,
             };
             migrate::migrate(&migration, out)
         }

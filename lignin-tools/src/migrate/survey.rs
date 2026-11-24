@@ -14,7 +14,7 @@
 //! | the record of a root key, under any prefix | carried, where the engine keeps it: also under a prefix with no tree |
 //! | a pending-drop record | carried, with a mark for each keyspace of each prefix it names in which the source still holds a record |
 //! | a record under a prefix that a pending-drop record names and no element leads to | left: the engine dropped that subtree with its element, and the mark stands for what RocksDB still holds |
-//! | a data, aux or meta record under any other prefix | **not carried: the source is refused** ([`Orphan`]) |
+//! | a data, aux or meta record under any other prefix | as the migration is told ([`Unreachable`]): **the source is refused**, the record is left behind, or it is carried ([`super::beside`]) |
 //!
 //! A source is also refused for a Merk whose records are not one tree
 //! under the root that is named for it, a record that Merk does not decode
@@ -35,14 +35,18 @@ use grovedb_storage::{
 use grovedb_version::version::GroveVersion;
 
 use super::{
+    beside::{beside, inspect, Held, Orphan},
     grove::decode,
     journal::JOURNAL_KEY,
-    source::{after, Count, Counts, Keyspace, Prefix, Source},
+    source::{Count, Counts, Keyspace, Prefix, Source},
     walk::{
         named, short_key, Chunk, Found, Frame, MerkHeld, Place, Side, Visit, Walk, ROOT, ROOT_KEY,
     },
 };
-use crate::{hex, ToolError};
+use crate::{args::Unreachable, hex, ToolError};
+
+/// How many prefixes that nothing leads to a report describes.
+const DESCRIBED: usize = 1000;
 
 /// The keyspaces that a subtree's own records are in: the roots keyspace
 /// holds the records of root keys, which are carried apart.
@@ -84,21 +88,6 @@ pub(crate) struct Pending {
     pub(crate) record: PendingPrefixDropRecord,
     /// The prefixes it names.
     pub(crate) doomed: Vec<Doomed>,
-}
-
-/// Records under a prefix that no element leads to and no pending-drop
-/// record names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Orphan {
-    /// The prefix.
-    pub(crate) prefix: Prefix,
-    /// What the source holds under it in the data, the aux and the meta
-    /// keyspace.
-    pub(crate) counts: Counts,
-    /// The path the prefix is of, where it was found.
-    pub(crate) path: Option<String>,
-    /// Whether an element that is a tree stands at that path today.
-    pub(crate) tree_stands: Option<bool>,
 }
 
 /// The records of root keys of a source.
@@ -156,9 +145,14 @@ pub(crate) struct Survey {
 pub(crate) type Mark = (Keyspace, Prefix);
 
 impl Survey {
-    /// Whether every record of the source is carried.
-    pub(crate) fn is_carried(&self) -> bool {
-        self.faults.is_empty() && self.orphans.is_empty()
+    /// Whether a migration that is told `unreachable` takes the source.
+    pub(crate) fn is_taken(&self, unreachable: Unreachable) -> bool {
+        self.faults.is_empty()
+            && match unreachable {
+                Unreachable::Refuse => self.orphans.is_empty(),
+                Unreachable::Leave => true,
+                Unreachable::Carry => self.orphans.iter().all(Orphan::is_carried),
+            }
     }
 
     /// The marks a migration states: one for each keyspace of each prefix
@@ -327,71 +321,42 @@ fn root_keys(source: &Source, survey: &mut Survey) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// What the source holds under `prefix` in `keyspace`, counted record by
-/// record.
-fn counted(source: &Source, keyspace: Keyspace, prefix: &Prefix) -> Result<Count, ToolError> {
-    let mut count = Count::default();
-    source.subtree(keyspace, prefix, |key, value| {
-        count.add(key, value);
-        Ok(())
-    })?;
-    Ok(count)
-}
-
-/// Every prefix that holds a record in the data, the aux or the meta
-/// keyspace and that the walk did not come to, with what it holds: the
-/// prefixes of pending drops are counted as what is left behind, the
-/// namespace of the pending-drop records is passed over, and the others
-/// are the orphans.
+/// What the source holds beside the subtrees the walk came to: under the
+/// prefixes of pending drops it is counted as what is left behind, and
+/// the other prefixes are the orphans.
 fn beside_the_walk(source: &Source, side: &Side, survey: &mut Survey) -> Result<(), ToolError> {
-    let namespace = *pending_prefix_drops_namespace();
-    let mut beside: BTreeMap<Prefix, Counts> = BTreeMap::new();
-    // The data keyspace is the large one: the prefixes that the walk came
-    // to are skipped by a seek, not read.
-    let mut records = source.records(Keyspace::Data);
-    while let Some((stored, _)) = records.current()? {
-        let Some((prefix, _)) = stored.split_first_chunk::<32>() else {
-            return Err(short_key(source, Keyspace::Data, stored));
-        };
-        let prefix = *prefix;
-        if !survey.is_place(&prefix) && prefix != namespace {
-            let count = counted(source, Keyspace::Data, &prefix)?;
-            *beside.entry(prefix).or_default().of_mut(Keyspace::Data) = count;
-        }
-        match after(&prefix) {
-            Some(next) => records.seek(&next),
-            None => break,
-        }
-    }
-    for keyspace in [Keyspace::Aux, Keyspace::Meta] {
-        for (prefix, count) in side.prefixes(keyspace) {
-            if !survey.is_place(prefix) && *prefix != namespace {
-                *beside.entry(*prefix).or_default().of_mut(keyspace) = *count;
-            }
-        }
-    }
+    let places = std::mem::take(&mut survey.places);
+    let mut held = beside(source, side, |prefix| {
+        Ok(places.binary_search(prefix).is_ok())
+    })?;
     // What a pending drop names is live where the walk came to it, and
     // is left behind otherwise.
-    let places = std::mem::take(&mut survey.places);
     for doomed in (survey.pending.iter_mut()).flat_map(|pending| &mut pending.doomed) {
         doomed.live = places.binary_search(&doomed.prefix).is_ok();
-        if let Some(counts) = beside.remove(&doomed.prefix) {
+        if let Some(counts) = held.remove(&doomed.prefix) {
             doomed.counts = counts;
             survey.left_behind.merge(&counts);
         }
     }
-    survey.places = places;
-    let orphans = beside
-        .into_iter()
-        .filter(|(prefix, _)| !survey.doomed(prefix));
-    survey.orphans = orphans
-        .map(|(prefix, counts)| Orphan {
+    for (prefix, counts) in held {
+        if survey.doomed(&prefix) {
+            continue;
+        }
+        let before = places.partition_point(|place| *place < prefix) as u64;
+        let mut orphan = Orphan {
             prefix,
             counts,
+            held: Held::NoData,
+            records: Vec::new(),
+            root_key: None,
             path: None,
             tree_stands: None,
-        })
-        .collect();
+            around: (before, places.len() as u64 - before),
+        };
+        inspect(source, &mut orphan)?;
+        survey.orphans.push(orphan);
+    }
+    survey.places = places;
     Ok(())
 }
 
@@ -568,9 +533,13 @@ pub(crate) fn survey(source: &Source, side: &Side) -> Result<Survey, ToolError> 
     Walk::new(source, side, counting, true).run()?;
     survey.places.sort_unstable();
     root_keys(source, &mut survey)?;
-    beside_the_walk(source, side, &mut survey)?;
-    if !survey.orphans.is_empty() {
-        explain(source, side, &mut survey)?;
+    // A walk that met what is not carried went no further there: what is
+    // beside it is not known.
+    if survey.faults.is_empty() {
+        beside_the_walk(source, side, &mut survey)?;
+        if !survey.orphans.is_empty() {
+            explain(source, side, &mut survey)?;
+        }
     }
     Ok(survey)
 }
@@ -581,8 +550,10 @@ fn count(count: Count) -> String {
 
 impl Survey {
     /// The report of the survey, for a reader: one line for each kind of
-    /// record, and after them everything that refuses the source.
-    pub(crate) fn report(&self) -> Vec<String> {
+    /// record, with what a migration that is told `unreachable` does with
+    /// the records nothing leads to, and after them everything that
+    /// refuses the source.
+    pub(crate) fn report(&self, unreachable: Unreachable) -> Vec<String> {
         let mut lines = vec![
             format!("root hash: {}", hex(&self.root_hash)),
             format!("subtrees entered: {}", self.subtrees),
@@ -652,6 +623,13 @@ impl Survey {
                  LIGNINDB TAKES NO FURTHER WRITE OF IT"
             ));
         }
+        if !self.faults.is_empty() {
+            lines.push(
+                "the walk of the grove stopped at what is not carried: what is beside the \
+                 grove was not looked for"
+                    .to_owned(),
+            );
+        }
         lines.push(format!(
             "prefixes that nothing leads to: {}, with {} records ({} bytes)",
             self.orphans.len(),
@@ -664,7 +642,7 @@ impl Survey {
                 .map(|orphan| orphan.counts.bytes())
                 .sum::<u64>(),
         ));
-        for orphan in self.orphans.iter().take(50) {
+        for orphan in self.orphans.iter().take(DESCRIBED) {
             let held: Vec<String> = (OWN.iter())
                 .map(|keyspace| {
                     let held = orphan.counts.of(*keyspace);
@@ -676,20 +654,42 @@ impl Survey {
                     )
                 })
                 .collect();
+            let becomes = match (unreachable, &orphan.held) {
+                (Unreachable::Refuse, _) => "NOT CARRIED",
+                (Unreachable::Leave, _) => "LEFT BEHIND",
+                (Unreachable::Carry, Held::Other(_)) => "NOT CARRIED",
+                (Unreachable::Carry, _) => "CARRIED AS RECORDS NO TREE LINKS",
+            };
             lines.push(format!(
-                "  NOT CARRIED: prefix {}, {}; path {}; a tree stands there today: {}",
+                "  {becomes}: prefix {}, {}; its data records are {}; its root-key record {}; \
+                 path {}; a tree stands there today: {}; {} prefixes of the grove come before \
+                 it and {} after it",
                 hex(&orphan.prefix),
                 held.join(", "),
+                match &orphan.held {
+                    Held::NoData => "none".to_owned(),
+                    Held::Nodes(tree_type) => format!("the nodes of a {tree_type}"),
+                    Held::Other(other) => format!("not the nodes of one Merk ({other})"),
+                },
+                match &orphan.root_key {
+                    Some(key) => format!("names the key {}", hex(key)),
+                    None => "is not there".to_owned(),
+                },
                 orphan.path.as_deref().unwrap_or("not found"),
                 match orphan.tree_stands {
                     Some(true) => "yes",
                     Some(false) => "no",
                     None => "not known",
-                }
+                },
+                orphan.around.0,
+                orphan.around.1,
             ));
+            for record in &orphan.records {
+                lines.push(format!("    {record}"));
+            }
         }
-        if self.orphans.len() > 50 {
-            lines.push(format!("  and {} more", self.orphans.len() - 50));
+        if self.orphans.len() > DESCRIBED {
+            lines.push(format!("  and {} more", self.orphans.len() - DESCRIBED));
         }
         for fault in &self.faults {
             lines.push(format!("  NOT CARRIED: {fault}"));
@@ -708,7 +708,7 @@ impl Survey {
             "subtrees={} nodes={} largest_merk_nodes={} largest_merk_bytes={} data_bytes={} \
              flat={} aux={} meta={} root_keys={} root_keys_where_no_tree={} unlinked={} \
              keyed_children={} pending_drops={} left_behind={} marks={} stale_roots={} \
-             orphan_prefixes={} orphan_records={} faults={}",
+             orphan_prefixes={} orphan_records={} orphan_bytes={} faults={}",
             self.subtrees,
             self.nodes,
             self.largest.nodes,
@@ -727,6 +727,9 @@ impl Survey {
             self.stale_roots.len(),
             self.orphans.len(),
             orphaned,
+            (self.orphans.iter())
+                .map(|orphan| orphan.counts.bytes())
+                .sum::<u64>(),
             self.faults.len(),
         )
     }

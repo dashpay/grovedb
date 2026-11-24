@@ -50,8 +50,23 @@
 //! | holds a database with a journal of another source, or of another state of this one | refuses: the directory is to be removed |
 //! | holds a database with no journal | the load is complete: compares, verifies and renames. A run that died between the verification and the rename leaves this, and so does one whose comparison or verification failed |
 //!
+//! A run that died after the rename, before it said that it was done,
+//! leaves the database at `TARGET` and no work directory. The next run
+//! refuses the target as one that is there, and says that a database
+//! which a migration left there is whole.
+//!
 //! A device that is full ends a run with status 4 and leaves the second
 //! row: the run after room was made goes on.
+//!
+//! # Records that nothing leads to
+//!
+//! RocksDB can hold records under a prefix that no element leads to and no
+//! pending-drop record names ([`beside`]). The survey says of each such
+//! prefix what it holds. `--unreachable` says what becomes of them: the
+//! source is refused, which is what happens unless the option is given;
+//! they are left behind (`leave`); or they are carried (`carry`). A run
+//! that goes on with a work directory is given the choice that the run
+//! which began it was given.
 //!
 //! # Memory
 //!
@@ -70,6 +85,7 @@
 //! | 3 | the migrated store differs from its source, or a rule of it does not hold; it is left in `TARGET.migrating` |
 //! | 4 | the device of the target is full; the same command goes on once there is room |
 
+mod beside;
 mod compare;
 mod grove;
 mod journal;
@@ -81,7 +97,7 @@ mod walk;
 use std::{
     io::{self, Write},
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use grovedb::{GroveDb, LigninEngine};
@@ -100,6 +116,7 @@ use self::{
     survey::Survey,
     walk::{Side, Walk, ROOT},
 };
+pub use crate::args::Unreachable;
 use crate::{hex, verify::left_hashes, Outcome, ToolError};
 
 /// What the name of the directory a migration works in ends with.
@@ -119,10 +136,12 @@ pub struct Migration {
     pub options: Options,
     /// About how many bytes of the source's records one commit takes.
     pub batch_bytes: usize,
-    /// Whether the records under a prefix that no element leads to and no
-    /// pending-drop record names are left behind. Without, a source that
-    /// holds any is refused ([`survey`]).
-    pub leave_unreachable: bool,
+    /// How often the load says where it stands, at the commit it has come
+    /// to: with no time, after every commit.
+    pub progress: Duration,
+    /// What becomes of the records under a prefix that no element leads
+    /// to and no pending-drop record names ([`beside`]).
+    pub unreachable: Unreachable,
 }
 
 fn refused(what: impl Into<String>) -> ToolError {
@@ -195,9 +214,9 @@ fn stands(db: &Db) -> Result<Stands, ToolError> {
     })
 }
 
-fn write_survey(survey: &Survey, out: &mut dyn Write) -> io::Result<()> {
+fn write_survey(survey: &Survey, told: Unreachable, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "the source holds:")?;
-    for line in survey.report() {
+    for line in survey.report(told) {
         writeln!(out, "  {line}")?;
     }
     writeln!(out, "migrate: survey {}", survey.line())
@@ -213,6 +232,8 @@ fn verify(dir: &Path, options: &Options, out: &mut dyn Write) -> Result<bool, To
     let db = Db::open(dir, &options)?;
     db.unchecked_at_close();
     db.check_kinds_by(keeps_flat_records);
+    // What this open wrote is durable before the directory gets its name.
+    db.flush()?;
     let mut rules = MerkHashRules::for_check(GroveVersion::latest()).naming_left_hashes();
     let report = db.close_and_verify(Some(&mut rules as &mut dyn HashRules))?;
     writeln!(
@@ -254,7 +275,7 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
     let surveyed = |out: &mut dyn Write| -> Result<Survey, ToolError> {
         let began = Instant::now();
         let survey = survey::survey(&source, &side)?;
-        write_survey(&survey, out)?;
+        write_survey(&survey, migration.unreachable, out)?;
         writeln!(
             out,
             "migrate: surveyed seconds={:.1}",
@@ -263,23 +284,27 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
         let unreachable: u64 = (survey.orphans.iter())
             .map(|orphan| orphan.counts.records())
             .sum();
-        if survey.faults.is_empty() && unreachable > 0 && migration.leave_unreachable {
-            writeln!(
-                out,
-                "LEFT BEHIND, AS --leave-unreachable SAYS: {unreachable} records under {} \
-                 prefixes that no element leads to",
-                survey.orphans.len()
-            )?;
-            return Ok(survey);
-        }
-        match survey.is_carried() {
-            true => Ok(survey),
-            false => Err(refused(format!(
+        if !survey.is_taken(migration.unreachable) {
+            return Err(refused(format!(
                 "the source {} holds what a migration does not carry (the lines NOT CARRIED \
                  above): nothing was written",
                 source.dir().display()
-            ))),
+            )));
         }
+        if unreachable > 0 {
+            writeln!(
+                out,
+                "{}, AS --unreachable {} SAYS: {unreachable} records under {} prefixes that no \
+                 element leads to",
+                match migration.unreachable {
+                    Unreachable::Carry => "CARRIED AS RECORDS NO TREE LINKS",
+                    _ => "LEFT BEHIND",
+                },
+                migration.unreachable.name(),
+                survey.orphans.len()
+            )?;
+        }
+        Ok(survey)
     };
     let Some(target) = &migration.target else {
         surveyed(out)?;
@@ -296,7 +321,8 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
         Ok(_) => {
             return Err(refused(format!(
                 "the target {} is there and is not empty. A migration makes its database in \
-                 {} and gives it the name of the target at its end",
+                 {} and gives it the name of the target at its end, once it was compared and \
+                 verified: a database that a migration left at the target is whole",
                 target.display(),
                 work.display()
             )));
@@ -350,10 +376,27 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
                     hex(&journal.root_hash)
                 )));
             }
+            // A journal that names no choice is of a source that holds
+            // nothing beside its grove: no choice is made for it.
+            let chosen = journal.unreachable;
+            if chosen != Unreachable::Refuse && chosen != migration.unreachable {
+                return Err(refused(format!(
+                    "the load in {} was begun with --unreachable {}, and goes on with that \
+                     alone. Give it, or remove that directory to migrate anew",
+                    work.display(),
+                    chosen.name()
+                )));
+            }
             writeln!(
                 out,
                 "going on with the load in {}: {} records were carried",
                 work.display(),
+                journal.carried.records()
+            )?;
+            writeln!(
+                out,
+                "migrate: resumed phase={} records={}",
+                journal.phase.name(),
                 journal.carried.records()
             )?;
             Some(journal)
@@ -362,10 +405,18 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
             if survey.is_none() {
                 survey = Some(surveyed(out)?);
             }
+            // The choice is kept where there is something to choose for.
+            let holds = survey
+                .as_ref()
+                .is_some_and(|survey| !survey.orphans.is_empty());
             Some(Journal {
                 identity: fingerprint.identity.clone(),
                 sequence: fingerprint.sequence,
                 root_hash,
+                unreachable: match holds {
+                    true => migration.unreachable,
+                    false => Unreachable::Refuse,
+                },
                 phase: Phase::Grove,
                 frames: Vec::new(),
                 roots: None,
@@ -391,7 +442,8 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
     if let Some(journal) = journal {
         let loaded = (|| -> Result<Carried, ToolError> {
             let loading = Instant::now();
-            let mut load = Load::new(db, journal, migration.batch_bytes, out);
+            let every = migration.progress;
+            let mut load = Load::new(db, journal, migration.batch_bytes, every, out);
             if load.journal().phase == Phase::Grove {
                 let frames = load.journal().frames.clone();
                 load = Walk::resumed(&source, &side, load, false, frames).run()?;
@@ -399,13 +451,13 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
             if load.journal().phase == Phase::Roots {
                 load.roots(&source, engine)?;
             }
-            load.drops(&source)?;
+            load.drops(&source, &side)?;
             let (carried, commits) = (load.journal().carried, load.commits);
             db.flush()?;
             writeln!(
                 out,
                 "migrate: loaded subtrees={} merks={} nodes={} unlinked={} flat={} aux={} \
-                 meta={} root_keys={} marks={} bytes={} commits={} seconds={:.1}",
+                 meta={} root_keys={} marks={} unreachable={} bytes={} commits={} seconds={:.1}",
                 carried.subtrees,
                 carried.merks,
                 carried.nodes,
@@ -415,6 +467,7 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
                 carried.meta,
                 carried.roots,
                 carried.marks,
+                carried.unreachable,
                 carried.bytes,
                 commits,
                 loading.elapsed().as_secs_f64()
@@ -441,13 +494,15 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
     writeln!(
         out,
         "migrate: compared subtrees={} data={} aux={} meta={} root_keys={} marks={} \
-         differing={} root_hash={} seconds={:.1}",
+         unreachable_carried={} unreachable_left={} differing={} root_hash={} seconds={:.1}",
         compared.subtrees,
         compared.data,
         compared.aux,
         compared.meta,
         compared.roots,
         compared.marks,
+        compared.unreachable_carried,
+        compared.unreachable_left,
         compared.differing,
         hex(&root_hash),
         comparing.elapsed().as_secs_f64()
@@ -466,9 +521,33 @@ pub fn migrate(migration: &Migration, out: &mut dyn Write) -> Result<Outcome, To
         )?;
         return Ok(Outcome::NotSound);
     }
+    // What the target has of the records nothing leads to is what this run
+    // is told becomes of them: a run that ends a load another run made is
+    // told what that run was.
+    let (carried, left) = (compared.unreachable_carried, compared.unreachable_left);
+    let fits = match migration.unreachable {
+        Unreachable::Refuse => carried == 0 && left == 0,
+        Unreachable::Leave => carried == 0,
+        Unreachable::Carry => left == 0,
+    };
+    if !fits {
+        return Err(refused(format!(
+            "of the prefixes of the source that nothing leads to, {} has {carried} carried \
+             and nothing of {left}, and this run was told --unreachable {}. Give what the \
+             run that loaded it was given, or remove that directory to migrate anew",
+            work.display(),
+            migration.unreachable.name()
+        )));
+    }
+    let but = match left {
+        0 => String::new(),
+        _ => format!(
+            " but those under {left} prefixes that nothing leads to, which are left behind,"
+        ),
+    };
     writeln!(
         out,
-        "every record of the source reads the same from the target ({} records in {} \
+        "every record of the source{but} reads the same from the target ({} records in {} \
          subtrees), and the root hash is {}",
         compared.records(),
         compared.subtrees,

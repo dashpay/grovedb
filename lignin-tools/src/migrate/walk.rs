@@ -453,7 +453,8 @@ impl<'s, V: Visit> Walk<'s, V> {
             None => self.flat(place)?,
             Some(read) => {
                 self.side_records(place)?;
-                if self.visitor.takes_records() {
+                // Nothing of a Merk that is not carried is handed over.
+                if self.visitor.takes_records() && read.found.faults.is_empty() {
                     let merk = self.held(place, read)?;
                     self.visitor.merk(place, merk)?;
                 }
@@ -511,6 +512,9 @@ impl<'s, V: Visit> Walk<'s, V> {
         // The subtrees each record's element would host, by the record's
         // place, where one of them holds a record.
         let mut hosting: BTreeMap<usize, Vec<HostedSubtree>> = BTreeMap::new();
+        // The records whose element names a root for a subtree that holds
+        // no record, by their places.
+        let mut dangling: Vec<usize> = Vec::new();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         let (source, side, surveying) = (self.source, self.side, self.surveying);
         let path = &mut self.path;
@@ -559,6 +563,8 @@ impl<'s, V: Visit> Walk<'s, V> {
                     // The Merk has subtrees below it: it is read again
                     // when the walk comes back.
                     nodes = None;
+                } else if hosted.iter().any(|hosted| hosted.root_key.is_some()) {
+                    dangling.push(keys.len());
                 }
             }
             found.held += (key.len() + value.len() + 300) as u64;
@@ -580,6 +586,21 @@ impl<'s, V: Visit> Walk<'s, V> {
                 Shape::default()
             }
         };
+        let mut in_tree = vec![false; keys.len()];
+        for at in &shape.order {
+            in_tree[*at] = true;
+        }
+        // An element of the tree that names a root which the source does
+        // not hold is read by GroveDB as a tree that cannot be opened.
+        for at in dangling {
+            if in_tree[at] {
+                found.faults.push(format!(
+                    "the element under the key {} names a root, and no record is under the \
+                     prefix of its subtree",
+                    crate::hex(&keys[at].key)
+                ));
+            }
+        }
         if !found.faults.is_empty() {
             // Nothing of a Merk that is not carried is walked.
             return Ok(Read {
@@ -594,10 +615,6 @@ impl<'s, V: Visit> Walk<'s, V> {
         found.nodes = shape.order.len() as u64;
         found.root = shape.root.map(|root| keys[root].key.clone());
         found.stale_root = shape.stale;
-        let mut in_tree = vec![false; keys.len()];
-        for at in &shape.order {
-            in_tree[*at] = true;
-        }
         for at in &shape.unlinked {
             found.unlinked.records += 1;
             found.unlinked.bytes += lens[*at];

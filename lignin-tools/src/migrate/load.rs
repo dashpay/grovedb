@@ -49,6 +49,7 @@ use grovedb::{Engine, LigninEngine};
 use grovedb_merk::{
     cost_model::Keyspace as MerkKeyspace,
     store::lignin::{keeps_flat_records, left_behind_key, tree_type_bytes},
+    TreeType,
 };
 use grovedb_storage::flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord};
 use lignin_tree::hash::Stale;
@@ -62,15 +63,13 @@ use lignindb::{
 };
 
 use super::{
+    beside::{beside, doomed, nodes},
     grove::{Link, Node},
-    journal::{Journal, Phase, JOURNAL_KEY},
+    journal::{Carried, Journal, Phase, JOURNAL_KEY},
     source::{Keyspace, Prefix, Source},
-    walk::{short_key, Chunk, Found, Frame, MerkHeld, Place, Visit, ROOT, ROOT_KEY},
+    walk::{short_key, Chunk, Found, Frame, MerkHeld, Place, Side, Visit, ROOT, ROOT_KEY},
 };
-use crate::ToolError;
-
-/// How often the load says where it stands.
-const SAID_EVERY: Duration = Duration::from_secs(5);
+use crate::{args::Unreachable, hex, ToolError};
 
 /// A subtree to enter.
 struct Entered {
@@ -152,6 +151,15 @@ pub(crate) fn is_entered(db: &Db, prefix: &Prefix) -> Result<bool, ToolError> {
     Ok(operation.open(Subtree::new(*prefix))?.is_some())
 }
 
+/// Whether the latest version of `db` has the subtree `prefix` entered
+/// under a host: every subtree of the grove is, but its root Merk.
+fn is_hosted(db: &Db, prefix: &Prefix) -> Result<bool, ToolError> {
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    let opened = operation.open(Subtree::new(*prefix))?;
+    Ok(opened.is_some_and(|opened| opened.entry().host().is_some()))
+}
+
 /// The pending-drop records of `source` as they are stored, each with the
 /// marks it leaves: one for each keyspace of each prefix it names that is
 /// not `live` and that the source holds a record under.
@@ -198,7 +206,14 @@ pub(crate) struct Load<'t> {
     journal: Journal,
     budget: usize,
     pending: Pending,
+    /// What was carried of the subtree the walk of the grove is in. The
+    /// journal counts it once the subtree is left: a subtree that a stop
+    /// comes into is carried again from its first record, and is counted
+    /// once.
+    within: Carried,
     out: &'t mut dyn Write,
+    /// How often the load says where it stands.
+    every: Duration,
     began: Instant,
     said: Instant,
     /// The commits this run made.
@@ -208,15 +223,23 @@ pub(crate) struct Load<'t> {
 impl<'t> Load<'t> {
     /// A load into `db` that goes on from `journal`, which one commit
     /// takes about `budget` bytes of records at a time. It says where it
-    /// stands to `out`.
-    pub(crate) fn new(db: &'t Db, journal: Journal, budget: usize, out: &'t mut dyn Write) -> Self {
+    /// stands to `out`, at the commits that are `every` apart or more.
+    pub(crate) fn new(
+        db: &'t Db,
+        journal: Journal,
+        budget: usize,
+        every: Duration,
+        out: &'t mut dyn Write,
+    ) -> Self {
         let now = Instant::now();
         Self {
             db,
             journal,
             budget,
             pending: Pending::default(),
+            within: Carried::default(),
             out,
+            every,
             began: now,
             said: now,
             commits: 0,
@@ -230,25 +253,22 @@ impl<'t> Load<'t> {
 
     fn record(&mut self, column: Column, subtree: Subtree, key: Vec<u8>, value: Vec<u8>) {
         self.pending.bytes += key.len() + value.len();
-        self.journal.carried.bytes += (key.len() + value.len()) as u64;
+        self.within.bytes += (key.len() + value.len()) as u64;
         self.pending.records.push((column, subtree, key, value));
     }
 
     fn say(&mut self, always: bool) -> Result<(), ToolError> {
-        if !always && self.said.elapsed() < SAID_EVERY {
+        if !always && self.said.elapsed() < self.every {
             return Ok(());
         }
         self.said = Instant::now();
-        let carried = &self.journal.carried;
+        let mut carried = self.journal.carried;
+        carried.add(&self.within);
         writeln!(
             self.out,
             "migrate: phase={} subtrees={} merks={} nodes={} records={} bytes={} commits={} \
              seconds={:.1}",
-            match self.journal.phase {
-                Phase::Grove => "grove",
-                Phase::Roots => "root-keys",
-                Phase::Drops => "pending-drops",
-            },
+            self.journal.phase.name(),
             carried.subtrees,
             carried.merks,
             carried.nodes,
@@ -263,6 +283,12 @@ impl<'t> Load<'t> {
     /// Commits what is pending with the journal as it stands, or, as the
     /// `last` commit of the load, without it.
     fn commit(&mut self, last: bool) -> Result<(), ToolError> {
+        if self.journal.phase != Phase::Grove {
+            // After the grove, the journal says for each record whether
+            // it was carried.
+            let within = std::mem::take(&mut self.within);
+            self.journal.carried.add(&within);
+        }
         let pending = std::mem::take(&mut self.pending);
         let journal = self.journal.encode();
         let root = Subtree::new(ROOT);
@@ -419,12 +445,83 @@ impl<'t> Load<'t> {
         self.commit(false)
     }
 
-    /// Carries the pending-drop records of `source` with the marks of what
-    /// they left, and ends the load: the commit removes the journal.
-    pub(crate) fn drops(&mut self, source: &Source) -> Result<(), ToolError> {
+    /// Carries what `source` holds under the prefix `prefix`, which
+    /// nothing leads to: its subtree is entered with no host, its data
+    /// records are records that no tree links, and its aux and meta
+    /// records are as they are.
+    fn unreachable(&mut self, source: &Source, prefix: Prefix) -> Result<(), ToolError> {
+        let (tree_type, nodes) = nodes(source, &prefix)?.map_err(|other| {
+            ToolError::Migrate(format!(
+                "the source {}: the records under the prefix {}, which nothing leads to, are \
+                 not carried: {other}",
+                source.dir().display(),
+                hex(&prefix)
+            ))
+        })?;
+        let subtree = Subtree::new(prefix);
+        let held = nodes.iter();
+        let bytes: usize = held.map(|node| node.key.len() + node.value.len()).sum();
+        let carried = &mut self.journal.carried;
+        carried.unreachable += 1;
+        carried.unlinked += nodes.len() as u64;
+        carried.bytes += bytes as u64;
+        self.pending.bytes += bytes + 96;
+        self.pending.enters.push(Entered {
+            subtree,
+            tree_type: tree_type_bytes(tree_type.unwrap_or(TreeType::NormalTree)),
+            host: None,
+        });
+        self.pending.merks.push(Handed {
+            subtree,
+            host: None,
+            merk: MerkHeld {
+                root: None,
+                nodes: Vec::new(),
+                unlinked: nodes,
+            },
+        });
+        for keyspace in [Keyspace::Aux, Keyspace::Meta] {
+            let mut records = Vec::new();
+            source.subtree(keyspace, &prefix, |key, value| {
+                records.push((key.to_vec(), value.to_vec()));
+                Ok(())
+            })?;
+            let carried = &mut self.journal.carried;
+            match keyspace {
+                Keyspace::Aux => carried.aux += records.len() as u64,
+                _ => carried.meta += records.len() as u64,
+            }
+            for (key, value) in records {
+                self.record(column(keyspace), subtree, key, value);
+            }
+        }
+        Ok(())
+    }
+
+    /// Carries what `source` holds beside its grove, where the journal
+    /// says that it is carried, and the pending-drop records with the
+    /// marks of what they left, and ends the load: the last commit
+    /// removes the journal. `side` is the source's aux and meta keyspaces.
+    pub(crate) fn drops(&mut self, source: &Source, side: &Side) -> Result<(), ToolError> {
         debug_assert_eq!(self.journal.phase, Phase::Drops);
         let namespace = Subtree::new(*pending_prefix_drops_namespace());
         let db = self.db;
+        if self.journal.unreachable == Unreachable::Carry {
+            let doomed = doomed(source)?;
+            let held = beside(source, side, |prefix| {
+                Ok(*prefix == ROOT || is_hosted(db, prefix)?)
+            })?;
+            for prefix in held.into_keys().filter(|prefix| !doomed.contains(prefix)) {
+                // A prefix is carried by one commit, whole: one that is
+                // entered was carried by a run before this one, and the
+                // journal of that commit counts it.
+                if is_entered(db, &prefix)? {
+                    continue;
+                }
+                self.unreachable(source, prefix)?;
+                self.commit_if_due()?;
+            }
+        }
         for (key, value, marks) in pending_drops(source, |prefix| is_entered(db, prefix))? {
             self.journal.carried.meta += 1;
             self.record(Column::Meta, namespace, key, value);
@@ -477,7 +574,7 @@ impl Visit for Load<'_> {
         self.journal.frames = at.to_vec();
         let subtree = Subtree::new(place.prefix);
         let count = records.len() as u64;
-        let carried = &mut self.journal.carried;
+        let carried = &mut self.within;
         match keyspace {
             Keyspace::Data => carried.flat += count,
             Keyspace::Aux => carried.aux += count,
@@ -491,7 +588,7 @@ impl Visit for Load<'_> {
     }
 
     fn merk(&mut self, place: &Place, merk: MerkHeld) -> Result<(), ToolError> {
-        let carried = &mut self.journal.carried;
+        let carried = &mut self.within;
         carried.merks += u64::from(!merk.nodes.is_empty());
         carried.nodes += merk.nodes.len() as u64;
         carried.unlinked += merk.unlinked.len() as u64;
@@ -509,6 +606,8 @@ impl Visit for Load<'_> {
 
     fn leave(&mut self, place: &Place, at: &[Frame]) -> Result<(), ToolError> {
         self.journal.frames = at.to_vec();
+        let within = std::mem::take(&mut self.within);
+        self.journal.carried.add(&within);
         if place.host.is_none() {
             // The root Merk is left last: the grove is carried.
             self.journal.phase = Phase::Roots;
