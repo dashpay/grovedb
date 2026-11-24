@@ -21,10 +21,14 @@ use lignin_format::{
     CommitVersion,
 };
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
-use lignindb::txn::{
-    Batch, BatchError, ChildKeys, Column, Entering, HostPut, Hosted, LinkPut, LinkView, MerkCursor,
-    MerkSide, MerkWrite, NodePut, NodeView, ParkedCursor, RecordWrite, Resumed, RootPut, Scope,
-    StandIns, Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
+use lignindb::{
+    batch::InlineBytes,
+    txn::{
+        Batch, BatchError, ChildKeys, Column, Entering, HostPut, Hosted, LinkPut, LinkView,
+        MerkCursor, MerkSide, MerkWrite, NodePut, NodeView, ParkedCursor, RecordWrite, Resumed,
+        RootPut, Scope, StandIns, Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut,
+        WriteTxn,
+    },
 };
 
 use super::{
@@ -142,10 +146,15 @@ pub(super) fn read_by_key() -> Error {
     ))
 }
 
+/// The key of a written node, or of the child of one of its links. A key
+/// of up to 38 bytes is kept in place, so a written node asks for no
+/// memory for it; a longer one is behind a box.
+pub(super) type WrittenKey = InlineBytes<38>;
+
 /// A link of a written node: the child is named by its key.
 #[derive(Clone, Debug)]
 pub(super) struct LinkWrite {
-    pub(super) key: Vec<u8>,
+    pub(super) key: WrittenKey,
     /// The child's hash. Where the write leaves it stale
     /// ([`NodeWrite::stale`]) these bytes are no hash, and the bytes the
     /// transaction holds in that link are written in their place.
@@ -167,7 +176,7 @@ pub(super) enum ValueWrite {
 /// One written node: every part, as Merk hands the record to storage.
 #[derive(Clone, Debug)]
 pub(super) struct NodeWrite {
-    pub(super) key: Vec<u8>,
+    pub(super) key: WrittenKey,
     pub(super) feature: Tp12,
     pub(super) value_hash: CryptoHash,
     pub(super) kv_hash: CryptoHash,
@@ -1545,7 +1554,7 @@ fn as_it_is(reads: &impl Reads, subtree: Subtree, key: &[u8]) -> Result<Option<N
     let [on_the_left, on_the_right] = children;
     let link = |link: &Option<StoredLink>, child: Option<Vec<u8>>| match (link, child) {
         (Some(link), Some(key)) => Ok(Some(LinkWrite {
-            key,
+            key: WrittenKey::new(&key),
             hash: link.hash,
             heights: link.heights,
             aggregate: encode_aggregate(&link.aggregate),
@@ -1556,7 +1565,7 @@ fn as_it_is(reads: &impl Reads, subtree: Subtree, key: &[u8]) -> Result<Option<N
     let left = link(&stored.left, on_the_left)?;
     let right = link(&stored.right, on_the_right)?;
     Ok(Some(NodeWrite {
-        key: key.to_vec(),
+        key: WrittenKey::new(key),
         feature: encode_feature(&stored.feature),
         value_hash: stored.value_hash,
         kv_hash: stored.kv_hash,
@@ -1678,7 +1687,7 @@ fn way_to(
     for _ in 0..LONGEST_WAY {
         let put = own.and_then(|merk| merk.nodes.iter().find(|node| node.key == at));
         let held = (again.iter())
-            .find(|held| held.subtree == above && held.node.key == at)
+            .find(|held| held.subtree == above && held.node.key.as_slice() == at)
             .map(|held| &held.node);
         let left = match host.key.as_slice().cmp(&at) {
             std::cmp::Ordering::Less => true,
@@ -1736,7 +1745,7 @@ fn way_to(
             }
             (None, Some(held)) => {
                 let link = if left { &held.left } else { &held.right };
-                link.as_ref().map(|link| link.key.clone())
+                link.as_ref().map(|link| link.key.to_vec())
             }
             (None, None) => match linked(reads, above, &at, [left, !left])? {
                 Some((_, [on_the_left, on_the_right])) => match left {
@@ -1886,7 +1895,7 @@ fn held_elements(
             *anchored &= !hosted.contains(added);
         }
         let node = (held.again.iter_mut())
-            .find(|again| again.subtree == above && again.node.key == host.key)
+            .find(|again| again.subtree == above && again.node.key.as_slice() == host.key)
             .ok_or_else(|| refused("the node of a held element was not read"))?;
         node.hosted = Some(hosted);
         let written = batch.merks.iter().any(|merk| merk.subtree == above);
