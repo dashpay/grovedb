@@ -323,12 +323,33 @@ fn subtrees(listed: Vec<Listed>, what: DumpWhat) -> Result<Vec<Entered>, ToolErr
             )));
         }
     };
+    order(entries, children, tops)
+}
+
+/// The subtrees in the order a dump loads them: each top, then the
+/// subtrees it hosts, depth first, each after its host. `children` maps a
+/// host's subtree to the `(key, position, subtree)` of each subtree it
+/// hosts.
+///
+/// A subtree reached a second time is a directory made by hand in which
+/// the hosts lead in a cycle, or that names one subtree twice (a directory
+/// `Directory::check` refuses, "a Merk with no node hosts a Merk"). It is
+/// refused as an error, which lets the dump reach its cleanup, where the
+/// panic a second `remove` of one key would raise does not.
+fn order(
+    mut entries: BTreeMap<Subtree, Entered>,
+    mut children: HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>>,
+    tops: Vec<Subtree>,
+) -> Result<Vec<Entered>, ToolError> {
     let mut order = Vec::new();
     let mut stack: Vec<(Subtree, bool)> = tops.into_iter().rev().map(|top| (top, true)).collect();
     while let Some((subtree, top)) = stack.pop() {
-        let mut entered = entries
-            .remove(&subtree)
-            .expect("each subtree is hosted once");
+        let Some(mut entered) = entries.remove(&subtree) else {
+            return Err(dump_error(format!(
+                "the directory names {} twice, or its hosts lead in a cycle",
+                hex(subtree.as_bytes())
+            )));
+        };
         if top {
             entered.host = None;
         }
@@ -872,4 +893,93 @@ pub fn load(common: &Common, file: &Path, out: &mut dyn Write) -> Result<Outcome
         file.display()
     )?;
     Ok(Outcome::Done)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use lignindb::txn::Subtree;
+
+    use super::{order, Entered, Host};
+
+    fn subtree(n: u8) -> Subtree {
+        Subtree::new([n; 32])
+    }
+
+    fn entered(n: u8, host: Option<u8>) -> Entered {
+        Entered {
+            subtree: subtree(n),
+            tree_type: b"tree".to_vec(),
+            host: host.map(|h| Host {
+                parent: subtree(h),
+                key: vec![n],
+                position: 0,
+            }),
+            root: Some(vec![1]),
+        }
+    }
+
+    fn maps(
+        all: &[Entered],
+    ) -> (
+        BTreeMap<Subtree, Entered>,
+        HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>>,
+    ) {
+        let mut entries = BTreeMap::new();
+        let mut children: HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>> = HashMap::new();
+        for e in all {
+            if let Some(host) = &e.host {
+                (children.entry(host.parent).or_default()).push((
+                    host.key.clone(),
+                    host.position,
+                    e.subtree,
+                ));
+            }
+            entries.insert(e.subtree, e.clone());
+        }
+        (entries, children)
+    }
+
+    /// A top with the subtrees it hosts, depth first, each after its host.
+    #[test]
+    fn order_lists_a_sound_tree_top_first() {
+        let all = [entered(1, None), entered(2, Some(1)), entered(3, Some(2))];
+        let (entries, children) = maps(&all);
+        let out = order(entries, children, vec![subtree(1)]).expect("a sound tree");
+        let got: Vec<_> = out.iter().map(|e| e.subtree).collect();
+        assert_eq!(got, vec![subtree(1), subtree(2), subtree(3)]);
+    }
+
+    /// A top that reaches a host cycle below it is refused, not walked into
+    /// a second visit (which would panic on the second `remove`). Both the
+    /// whole-database tops and a selected top reach the cycle.
+    #[test]
+    fn order_refuses_a_host_cycle_rather_than_panicking() {
+        // `1` hosts `2`; `2` and `3` host each other.
+        let all = [entered(1, None), entered(2, Some(1)), entered(3, Some(2))];
+        let mut all: Vec<Entered> = all.into_iter().collect();
+        all[2].host = Some(Host {
+            parent: subtree(2),
+            key: vec![3],
+            position: 1,
+        });
+        // `2`'s node hosts both `3` (position 0, from its own host) and a
+        // record that `3` hosts `2` back: build children by hand to hold
+        // the cycle `2 -> 3 -> 2`.
+        let mut entries = BTreeMap::new();
+        let mut children: HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>> = HashMap::new();
+        for e in &all {
+            entries.insert(e.subtree, e.clone());
+        }
+        children.insert(subtree(1), vec![(vec![2], 0, subtree(2))]);
+        children.insert(subtree(2), vec![(vec![3], 0, subtree(3))]);
+        children.insert(subtree(3), vec![(vec![2], 0, subtree(2))]);
+
+        for top in [subtree(1), subtree(2)] {
+            let error = order(entries.clone(), children.clone(), vec![top])
+                .expect_err("the cycle is refused");
+            assert!(error.to_string().contains("lead in a cycle"), "{error}");
+        }
+    }
 }
