@@ -7,7 +7,7 @@
 //! through [`Access`].
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
@@ -2049,18 +2049,25 @@ pub(super) fn shown_in_a_group<R: Reader>(
 /// anew, and then the enters by how many subtrees above each are entered
 /// here too, so that a subtree comes after the one its host is in, and in
 /// the order they came where that number is the same.
-fn with_enters<'a>(own: &[SubtreeWrite<'a>], enters: &[SubtreeWrite<'a>]) -> Vec<SubtreeWrite<'a>> {
+pub(super) fn with_enters<'a>(
+    own: &[SubtreeWrite<'a>],
+    enters: &[SubtreeWrite<'a>],
+) -> Vec<SubtreeWrite<'a>> {
     let (mut ordered, entered): (Vec<_>, Vec<_>) =
         (own.iter().chain(enters).copied()).partition(|write| !write.enters());
+    // For each subtree that is entered here, the subtree of the host that
+    // the first enter of it with a host names.
+    let mut hosts: HashMap<Subtree, Option<Subtree>> = HashMap::with_capacity(entered.len());
+    for enter in entered.iter().filter_map(SubtreeWrite::entering) {
+        let host = enter.host.map(|host| host.subtree);
+        let known = hosts.entry(enter.subtree).or_insert(host);
+        *known = known.or(host);
+    }
     // The subtree that the host of an entered subtree is in, if that one
     // is entered here too.
     let above = |subtree: &Subtree| {
-        let host = entered.iter().find_map(|write| match write.entering() {
-            Some(enter) if enter.subtree == *subtree => enter.host.map(|host| host.subtree),
-            _ => None,
-        })?;
-        let enters_it = |write: &SubtreeWrite<'_>| write.subtree() == host;
-        entered.iter().any(enters_it).then_some(host)
+        let host = (*hosts.get(subtree)?)?;
+        hosts.contains_key(&host).then_some(host)
     };
     let depth = |write: &SubtreeWrite<'_>| match write.entering() {
         Some(enter) => {
