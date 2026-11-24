@@ -19,7 +19,9 @@
 #   lignin-ci.sh features            the feature sets that must build apart:
 #                                    GroveDB with no engine and on each engine
 #                                    alone, Merk on each engine alone, the
-#                                    engine crates on their own
+#                                    engine crates on their own; and the cfg
+#                                    of GroveDB's default engine across
+#                                    GroveDB's feature sets
 #   lignin-ci.sh docs                rustdoc with warnings denied, for the
 #                                    crates whose documentation builds clean
 #   lignin-ci.sh loom                the loom models
@@ -353,6 +355,52 @@ features)
     build_of normal,build grovedb-merk --no-default-features --features rocksdb_storage |
         refuse '^lignin' "LigninDB is among the crates of Merk on RocksDB"
     cargo check -p grovedb-merk --no-default-features --features rocksdb_storage
+
+    say "The engine chosen at the open as GroveDB's default: by the cfg, and only with both engines"
+    # The cfg is to change nothing and warn of nothing where the two engines
+    # are not both compiled in. `default_engine` asserts which engine a
+    # `GroveDb` that names none is on in the build it is compiled in.
+    the_cfg_is_silent() {
+        local said
+        said=$("$@" 2>&1) || fail "$* failed:"$'\n'"$said"
+        if grep -q 'grovedb_default_engine' <<<"$said"; then
+            fail "$* names the cfg in its output:"$'\n'"$(grep -B2 -A8 'grovedb_default_engine' <<<"$said")"
+        fi
+    }
+    export GROVEDB_DEFAULT_ENGINE=either
+    the_cfg_is_silent cargo check -p grovedb --no-default-features --features verify
+    the_cfg_is_silent cargo check -p grovedb --no-default-features --features engine_generic
+    the_cfg_is_silent cargo test -p grovedb --no-default-features --features rocksdb_storage --test default_engine
+    the_cfg_is_silent cargo test -p grovedb --no-default-features --features lignin_storage --test default_engine
+    # Which default the test of the default engine was built for is asked
+    # of the names of its tests, apart from the cfg they are compiled under.
+    built_for() {
+        cargo test -p grovedb --features lignin_storage --test default_engine -- --list |
+            grep -q "^$1: test\$" || fail "default_engine has no test $1 in this build"
+    }
+    # With both engines it is in force: the integration tests and the doc
+    # tests are built with the engine chosen at the open as the default.
+    built_for chosen_at_the_open::with_no_engine_named_a_database_is_on_the_engine_that_is_chosen_at_the_open
+    cargo test -p grovedb --features lignin_storage --test '*'
+    cargo test -p grovedb --features lignin_storage --doc
+    unset GROVEDB_DEFAULT_ENGINE
+    # With neither the variable nor a cfg handed to the compiler, the
+    # default engine of a build with both engines is RocksDB.
+    built_for with_no_engine_named_a_database_is_on_rocksdb
+    cargo test -p grovedb --features lignin_storage --test default_engine
+    # The cfg handed to the compiler reaches every crate of a build, which
+    # none but grovedb reads.
+    RUSTFLAGS="${RUSTFLAGS:-} --cfg grovedb_default_engine=\"either\"" \
+        the_cfg_is_silent cargo check -p grovedb --no-default-features --features verify
+    # The value `other`, of the variable and of the cfg among the flags
+    # of the build, is an error of the build and not silence.
+    if GROVEDB_DEFAULT_ENGINE=other cargo check -p grovedb --no-default-features --features verify 2>/dev/null; then
+        fail "GROVEDB_DEFAULT_ENGINE=other built: the variable is either, empty or not set"
+    fi
+    if RUSTFLAGS="${RUSTFLAGS:-} --cfg grovedb_default_engine=\"other\"" \
+        cargo check -p grovedb --no-default-features --features verify 2>/dev/null; then
+        fail "--cfg grovedb_default_engine=\"other\" built: the one value of the cfg is either"
+    fi
 
     say "The LigninDB crates that have features, with none and with every one"
     names=$(listed crates '.features | length > 0')

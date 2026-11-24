@@ -51,7 +51,10 @@ mod tests {
     /// which the three tests that name this constant assert for the
     /// engine they run on. Everything else of a flat drop and its drain
     /// is asserted alike.
-    const KEPT_UNTIL_THE_DRAIN: bool = !cfg!(grovedb_test_engine = "lignin");
+    const KEPT_UNTIL_THE_DRAIN: bool = !cfg!(any(
+        grovedb_test_engine = "lignin",
+        grovedb_test_engine = "either-lignin"
+    ));
 
     /// Number of keys physically present in the data namespace under
     /// `prefix` (committed state).

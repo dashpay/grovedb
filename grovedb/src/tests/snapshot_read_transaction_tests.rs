@@ -112,12 +112,12 @@ mod tests {
         assert!(!plain_transaction.is_snapshot_read());
         // How long a snapshot has been held is a question to RocksDB's
         // transaction, which the seam does not ask an engine.
-        #[cfg(not(grovedb_test_engine = "lignin"))]
+        #[cfg(any(grovedb_test_engine = "rocksdb", grovedb_test_engine = "pinned-reads"))]
         assert_eq!(plain_transaction.snapshot_age(), None);
 
         let snapshot_transaction = db.start_snapshot_read_transaction();
         assert!(snapshot_transaction.is_snapshot_read());
-        #[cfg(not(grovedb_test_engine = "lignin"))]
+        #[cfg(any(grovedb_test_engine = "rocksdb", grovedb_test_engine = "pinned-reads"))]
         {
             let first = snapshot_transaction
                 .snapshot_age()

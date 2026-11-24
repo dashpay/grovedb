@@ -217,6 +217,15 @@ pub type SuiteEngine = crate::RocksDbEngine;
 pub type SuiteEngine = pinned_reads::PinnedReads;
 #[cfg(grovedb_test_engine = "lignin")]
 pub type SuiteEngine = crate::LigninEngine;
+/// The engine that is one of the two. Which it holds in a database of the
+/// fixtures is said by the name: an open that names no engine makes
+/// RocksDB's database in a directory that holds none, and LigninDB's in the
+/// run that is registered as `either-lignin`.
+#[cfg(any(
+    grovedb_test_engine = "either-rocksdb",
+    grovedb_test_engine = "either-lignin"
+))]
+pub type SuiteEngine = crate::EitherEngine;
 
 /// The batch of the suite's engine.
 pub type SuiteBatch = <SuiteEngine as Engine>::Batch;

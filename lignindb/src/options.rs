@@ -4,11 +4,14 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use lignin_format::PageSize;
 use lignin_io::{StdVfs, Vfs};
+/// When a commit makes the log durable: the type of [`Options::sync`],
+/// which is the store's.
+pub use lignin_store::wal::SyncPolicy;
 use lignin_store::{
     cleaner::CleanerConfig,
     flush::FlushConfig,
     recovery::{RecoveryOptions, DEFAULT_POOL_CAPACITY},
-    wal::{LogOptions, SyncPolicy},
+    wal::LogOptions,
 };
 
 /// How a database is opened ([`Db::open`](crate::Db::open)).

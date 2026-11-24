@@ -8,7 +8,12 @@
 //! `RocksDbEngine` is compiled with the `rocksdb_storage` feature, and
 //! `LigninEngine` with `lignin_storage`. With the second and without the
 //! first, `GroveDb` with no engine named is on LigninDB. With neither it is
-//! on `NoEngine`, which is none.
+//! on `NoEngine`, which is none. With both, `EitherEngine` is compiled: the
+//! engine that is one of the two, chosen when the database is opened.
+//! `GroveDb` with no engine named is on RocksDB there too, and on
+//! `EitherEngine` in a build that sets the cfg
+//! `grovedb_default_engine = "either"`. In the unit tests of this crate
+//! it is on the engine of the suite in either case.
 //!
 //! A subtree handle is a [`SubtreeHandle`]: the `NodeStore` a Merk runs on,
 //! the `FlatStore` of the subtree's data keyspace, and the handles of its aux
@@ -16,6 +21,8 @@
 //!
 //! The contract is written out in `docs/lignindb/engine.md`.
 
+#[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
+pub mod either;
 #[cfg(feature = "lignin_storage")]
 pub mod lignin;
 #[cfg(feature = "rocksdb_storage")]
@@ -41,6 +48,8 @@ use grovedb_storage::{
     Error, FlatStore,
 };
 
+#[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
+pub use self::either::{EitherEngine, EngineChoice, EngineKind};
 #[cfg(feature = "lignin_storage")]
 pub use self::lignin::LigninEngine;
 #[cfg(feature = "rocksdb_storage")]
@@ -63,8 +72,23 @@ pub enum NoEngine {}
 /// It is [`RocksDbEngine`]. In GroveDB's own unit tests it is the engine the
 /// suite was built for, so that the tests, which name no engine, run on each
 /// engine in turn (`grovedb/test-engines.txt`).
-#[cfg(all(feature = "rocksdb_storage", not(test)))]
+#[cfg(all(
+    feature = "rocksdb_storage",
+    not(test),
+    not(all(grovedb_default_engine = "either", feature = "lignin_storage"))
+))]
 pub type DefaultEngine = RocksDbEngine;
+/// The engine [`GroveDb`](crate::GroveDb) runs on where none is named, in
+/// a build that has both engines and sets the cfg
+/// `grovedb_default_engine = "either"`: the engine that is chosen when the
+/// database is opened.
+#[cfg(all(
+    grovedb_default_engine = "either",
+    feature = "rocksdb_storage",
+    feature = "lignin_storage",
+    not(test)
+))]
+pub type DefaultEngine = EitherEngine;
 /// The engine the test suite of this build runs on.
 #[cfg(all(feature = "rocksdb_storage", test))]
 pub type DefaultEngine = crate::tests::SuiteEngine;

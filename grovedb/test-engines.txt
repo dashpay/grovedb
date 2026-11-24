@@ -1,14 +1,18 @@
 # The engines GroveDB's test suite runs on, one a line: its name, then the
-# Cargo feature of `grovedb` that compiles the engine.
+# Cargo feature of `grovedb` that compiles the engine, or its features with
+# commas between them and no space.
 #
 # `cargo test -p grovedb` runs the suite on the first. Another is selected by
 # name: `GROVEDB_TEST_ENGINE=pinned-reads cargo test -p grovedb`. CI runs the
 # suite once for every line (`.github/workflows/grovedb.yml`). In a build
-# without the feature of the selected engine the suite has no engine, and the
-# tests that need one are left out.
+# without a feature of the first engine, and with none selected, the suite
+# has no engine, and the tests that need one are left out. An engine that is
+# selected by name in a build without a feature of its own fails the build.
 #
 # A name is given its engine type in `src/tests/mod.rs` (`SuiteEngine`).
 # `docs/lignindb/test-engines.md` says what registering an engine takes.
 rocksdb       rocksdb_storage
 pinned-reads  rocksdb_storage
 lignin        lignin_storage
+either-rocksdb  rocksdb_storage,lignin_storage
+either-lignin   rocksdb_storage,lignin_storage

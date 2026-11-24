@@ -17,7 +17,8 @@
 #
 # A suite is a package, the variable that selects its engine and its
 # registry: a file with one engine a line, its name and then the Cargo
-# feature of the package that compiles it, and the default engine first.
+# feature of the package that compiles it, or its features with commas
+# between them, and the default engine first.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -33,7 +34,8 @@ engines() {
     grep -vE '^[[:space:]]*(#|$)' "$repo/$1" | awk '{ print $1 }'
 }
 
-# The Cargo feature that compiles the engine $2 of the registry $1.
+# The Cargo features that compile the engine $2 of the registry $1, as
+# `cargo --features` takes them.
 feature() {
     grep -vE '^[[:space:]]*(#|$)' "$repo/$1" | awk -v engine="$2" '$1 == engine { print $2 }'
 }
