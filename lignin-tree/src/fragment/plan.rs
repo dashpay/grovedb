@@ -219,6 +219,8 @@ struct Planner<'p, 'w, P> {
     stated: Vec<usize>,
     /// Whether the write met a host that is behind (T3).
     met_behind: bool,
+    /// The roots the write lets go of ([`Write::dropped`]).
+    dropped: HashSet<CellAddress>,
 }
 
 /// Plans `write` on the pages as they are.
@@ -250,6 +252,7 @@ pub(super) fn plan<'w, P: Pages>(
         stuck: Vec::new(),
         stated: Vec::new(),
         met_behind: false,
+        dropped: write.dropped.iter().copied().collect(),
     };
     let (order, lens, takes, let_go) = planner.build()?;
     planner.place(&order, &lens, takes)?;
@@ -744,6 +747,10 @@ impl<P: Pages> Planner<'_, '_, P> {
 
     /// Reads a cell the write does not write: its length and what it points
     /// at.
+    ///
+    /// A hosted root that the write lets go of is not among that: it stays
+    /// in its page (D1), so the pointer of a host that the write does not
+    /// write names nothing here, and keeps its bytes.
     fn read(&mut self, cell: usize) -> Result<(), FragmentError> {
         if self.plan.cells[cell].read {
             return Ok(());
@@ -762,7 +769,7 @@ impl<P: Pages> Planner<'_, '_, P> {
             }
         }
         for (position, root) in stored.roots.iter().enumerate() {
-            if let Some(root) = *root {
+            if let Some(root) = root.filter(|root| !self.dropped.contains(root)) {
                 let kid = self.existing(root)?;
                 self.adopt(cell, kid, Via::Hosted(position as u8))?;
             }

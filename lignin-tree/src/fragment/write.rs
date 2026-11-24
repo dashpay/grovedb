@@ -119,9 +119,25 @@ pub struct Write<'a> {
     /// The cells of the nodes the write deletes, by their address.
     pub removed: &'a [CellAddress],
     /// The roots of the Merks the write drops or clears, by their address
-    /// (`tree-layout.md` D1, D4). No link or pointer names them afterwards.
-    /// Their cells, and all that hangs below them, stay in their pages for
-    /// the reclaimer.
+    /// (`tree-layout.md` D1, D4). A link or a pointer of a node of the
+    /// write that names one of them is refused
+    /// ([`WriteError::Dropped`](super::WriteError::Dropped)). The
+    /// pointers of a host that is behind are no names to the plan
+    /// ([`Pages::host_is_behind`](super::Pages::host_is_behind)): where
+    /// the write keeps them ([`HostedWrite::Keep`]), their bytes stay as
+    /// they are, whatever cell they name. The cells of these Merks, and
+    /// all that hangs below their roots, stay in their pages for the
+    /// reclaimer.
+    ///
+    /// A cell that the write does not write may still host one of them:
+    /// the bytes of its hosted-root pointer name the root until a write
+    /// names what the cell hosts ([`HostedWrite::Set`]) or removes the
+    /// cell. The plan of this write does not follow that pointer. The
+    /// cell keeps the pointer's bytes wherever the write carries it, and
+    /// the root is not carried with it. A later write that reaches the
+    /// cell follows the pointer where the cell is not behind then and
+    /// that write does not name the root as dropped as well: the caller
+    /// ends the pointer before it makes such a write.
     ///
     /// No host inside a dropped Merk is behind
     /// ([`Pages::host_is_behind`](super::Pages::host_is_behind)): its

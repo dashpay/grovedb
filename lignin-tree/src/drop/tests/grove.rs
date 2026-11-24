@@ -275,6 +275,27 @@ impl Grove {
         self.write(txn, merks, clear).1
     }
 
+    /// Drops the Merks `merks`, or clears them, in a write that does not
+    /// write their hosts, with what else changed: the first batch of a
+    /// group whose next batch writes the elements. Each host keeps its
+    /// pointer until the next write, which writes it.
+    pub fn drop_before_hosts(
+        &mut self,
+        txn: &mut Txn<'_>,
+        merks: &[usize],
+        clear: bool,
+    ) -> (Report, Vec<Dropped>) {
+        let hosted = merks.iter().map(|merk| self.merks[*merk].host);
+        let hosts: Vec<usize> = hosted.map(|host| host.expect("a hosted Merk").0).collect();
+        let unwritten = hosts.iter().all(|host| !self.dirty.contains(host));
+        assert!(unwritten, "the write does not write the hosts");
+        let done = self.write(txn, merks, clear);
+        for host in hosts {
+            self.mark(host);
+        }
+        done
+    }
+
     /// Drops every Merk that the leaf `host` hosts, and deletes the leaf.
     pub fn drop_with_host(&mut self, txn: &mut Txn<'_>, host: usize) -> Vec<Dropped> {
         let node = self.nodes[host].clone();
@@ -475,10 +496,22 @@ impl Grove {
             (done.report, done.left)
         };
 
+        // A carried cell that is no node in use is one that a drop left.
+        // The root of a hosted Merk among them is stated as a transaction
+        // states every carried root of a hosted Merk, and the directory
+        // refuses it: no Merk has its root there.
+        let left_over = |from: &CellAddress| !self.by_address.contains_key(from);
+        let carried_left_over = report
+            .carried
+            .iter()
+            .filter(|carried| carried.node.is_none() && left_over(&carried.from));
+        let strays = carried_left_over.clone().count();
+        let stray_roots: Vec<RootChange<'_>> =
+            carried_left_over.filter_map(RootChange::carried).collect();
         let others: Vec<(usize, CellAddress)> = report
             .carried
             .iter()
-            .filter(|carried| carried.node.is_none())
+            .filter(|carried| carried.node.is_none() && !left_over(&carried.from))
             .map(|carried| (self.by_address[&carried.from], carried.to.address()))
             .collect();
         for (index, handle) in report.nodes.iter().enumerate() {
@@ -508,7 +541,7 @@ impl Grove {
                 moved.push((index, merk.root, now));
             }
         }
-        let changes: Vec<RootChange<'_>> = moved
+        let mut changes: Vec<RootChange<'_>> = moved
             .iter()
             .map(|&(merk, root, now)| RootChange::Named {
                 prefix: &self.merks[merk].prefix,
@@ -518,9 +551,11 @@ impl Grove {
                 }),
             })
             .collect();
+        changes.extend(stray_roots);
         self.directory
             .set_roots(&mut txn.flat, &changes)
             .expect("the roots are stated");
+        assert_eq!(strays, 0, "a cell that a drop left was carried");
         for (merk, _, now) in moved {
             self.merks[merk].named = now;
         }

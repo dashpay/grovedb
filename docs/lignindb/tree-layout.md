@@ -727,6 +727,24 @@ every pointer it finds. That is at least one page for each such host, and
 it is bounded by what the transaction wrote, not by the size of the
 subtree. On existing GroveVersions no host is behind.
 
+As built (`lignin-tree::fragment`), the write that drops a Merk need not be
+the one that writes its host: in a group of batches one batch can drop the
+Merk and the next write the element (node-store.md, "A batch that stops
+below an element"), and until then the host's cell points at the dropped
+root. The write that names a root as dropped does not follow that pointer
+from a host it does not write. Where it sends the host away from a full
+page (6.2), the root and what hangs below it do not go with the host, as
+the cells below a host in its page otherwise do: the record that the
+directory leaves names the root's cell where it is. The pointer ends with
+the write that names what the host hosts, or that removes the host. That
+write is the caller's to make before any other that would follow the
+pointer, which is one that reaches the host while the host is not behind
+(T3) and that does not name the root as dropped itself. `fragment` holds
+no write to it. The two batches that
+GroveDB's partial batch is applied as keep to it: they are applied one
+after the other with no write between them, and the second writes the
+element where the first has not.
+
 As built, the directory's part is at most four records: the entry goes,
 with the record of the root if the Merk has a root and the record of the
 host if it has a host, and a record of the dropped Merk takes their place

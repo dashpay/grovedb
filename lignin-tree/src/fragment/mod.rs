@@ -38,6 +38,18 @@
 //! does not name as dropped. The cells of a dropped Merk stay in their
 //! pages (D1), and its root is marked as the root of its fragment.
 //!
+//! The host of such a root need not be a node of the write: the batch
+//! that drops a Merk can come before the one that writes its host
+//! (`node-store.md`, "A batch that stops below an element"). The plan
+//! does not follow the hosted-root pointer of a cell that it only reaches
+//! to a root that this write lets go of. Where a rule sends the host
+//! away, the root is no part of what goes, and the host's cell keeps the
+//! bytes of the pointer. Each write is planned by what it names itself:
+//! a later write that reaches the host follows the pointer again, unless
+//! it names the root as dropped as well or the host is behind (below). So
+//! the caller ends the pointer first, by a write that names what the
+//! host hosts ([`HostedWrite::Set`]) or that removes the host.
+//!
 //! A write is applied in two steps.
 //!
 //! 1. **The plan.** The cells the write names are read, and the rules are
