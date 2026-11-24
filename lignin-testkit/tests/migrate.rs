@@ -34,7 +34,7 @@
 #![cfg(grovedb_engine_seam)]
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     io::{self, BufRead, BufReader, Read, Write},
     path::Path,
@@ -47,10 +47,12 @@ use std::{
 };
 
 use grovedb::{
-    batch::QualifiedGroveDbOp, BackwardsReferences, Element, GroveDb, LigninEngine, RocksDbEngine,
+    batch::QualifiedGroveDbOp, AxisQuery, BackwardsReferences, Element, GroveDb, LigninEngine,
+    PathQuery, RocksDbEngine,
 };
 use grovedb_merk::{
     cost_model::Keyspace as MerkKeyspace,
+    proofs::query::{AggregateFold, IndexAxis},
     store::lignin::{keeps_flat_records, left_behind_key, tree_type_bytes},
     TreeType,
 };
@@ -71,8 +73,9 @@ use lignin_testkit::{
     golden::{
         plan,
         run::{Runner, STACK_BYTES},
+        step::Outcome as Answered,
     },
-    workload::{Op, StreamEngine},
+    workload::{Op, Read as ReadOp, StreamEngine},
 };
 use lignin_tools::{
     migrate::{
@@ -155,7 +158,8 @@ fn word(out: &str, line: &str, name: &str) -> u64 {
 }
 
 /// What both groves store, listed through the seam and compared, with
-/// the answers of the trees that keep flat records ([`flat_reads`]): how
+/// the answers of the trees that keep flat records ([`flat_reads`]) and
+/// the reads of the indexed trees by their axes ([`axis_reads`]): how
 /// many records both store.
 fn same_stored<A: StreamEngine, B: StreamEngine>(
     rocks: &GroveDb<A>,
@@ -163,18 +167,41 @@ fn same_stored<A: StreamEngine, B: StreamEngine>(
     version: &GroveVersion,
     when: &str,
 ) -> Result<u64, String> {
-    same_stored_and_read(rocks, lignin, version, when).map(|(records, _)| records)
+    same_stored_and_read(rocks, lignin, version, when).map(|alike| alike.records)
+}
+
+/// What two groves were found alike in through the seam.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Alike {
+    /// The records both store.
+    records: u64,
+    /// The trees that keep flat records.
+    flat_trees: u64,
+    /// The answers of their calls.
+    flat_answers: u64,
+    /// The indexed trees.
+    indexed_trees: u64,
+    /// The reads by their axes: each alike on both engines in what it
+    /// returned or failed with, in its cost and in its proof.
+    axis_reads: u64,
+    /// Those of the reads that returned an answer. The others failed with
+    /// the same error on both engines, or are counted in the next.
+    axis_answers: u64,
+    /// Those of the reads that neither engine could be observed at, in
+    /// the same words.
+    axis_unobserved: u64,
 }
 
 /// [`same_stored`], with how many trees that keep flat records both
-/// groves have and how many answers of their calls were alike. A tree
-/// that is not asked on an engine is an error, and is counted as nothing.
+/// groves have and how many answers of their calls were alike, and how
+/// many indexed trees and how many reads by their axes. A tree that is
+/// not asked on an engine is an error, and is counted as nothing.
 fn same_stored_and_read<A: StreamEngine, B: StreamEngine>(
     rocks: &GroveDb<A>,
     lignin: &GroveDb<B>,
     version: &GroveVersion,
     when: &str,
-) -> Result<(u64, (u64, u64)), String> {
+) -> Result<Alike, String> {
     let before = BTreeSet::new();
     let (reference, candidate) = {
         let (was, is) = (rocks.start_transaction(), lignin.start_transaction());
@@ -220,7 +247,144 @@ fn same_stored_and_read<A: StreamEngine, B: StreamEngine>(
         trees += 1;
         answers += was.len() as u64;
     }
-    Ok((reference.records.len() as u64, (trees, answers)))
+    let mut alike = Alike {
+        records: reference.records.len() as u64,
+        flat_trees: trees,
+        flat_answers: answers,
+        ..Alike::default()
+    };
+
+    // Each indexed tree is read by each of its axes on both engines, as
+    // the traces of the corpus read one: what a read returned or failed
+    // with, its cost and its proof are compared.
+    let indexed: BTreeSet<&Vec<Vec<u8>>> = (reference.places.iter())
+        .filter(|place| place.secondary.is_some())
+        .map(|place| &place.path)
+        .collect();
+    if indexed.is_empty() {
+        return Ok(alike);
+    }
+    // A key of each tree's own Merk, for the read of a rank.
+    let mut keys: BTreeMap<&Vec<Vec<u8>>, &Vec<u8>> = BTreeMap::new();
+    let nodes = (reference.records.iter())
+        .filter(|record| record.secondary.is_none() && record.keyspace == Listed::Nodes);
+    for record in nodes.filter(|record| !record.left_behind) {
+        if let Some(path) = indexed.get(&record.path) {
+            keys.entry(*path).or_insert(&record.key);
+        }
+    }
+    let unseen = |error: lignin_testkit::golden::Error| error.to_string();
+    let mut on_rocks = Runner::new(rocks, version).map_err(unseen)?;
+    let mut on_lignin = Runner::new(lignin, version).map_err(unseen)?;
+    for path in indexed {
+        let named = || {
+            let path: Vec<String> = path.iter().map(hex::encode).collect();
+            path.join("/")
+        };
+        let (key, above) = path
+            .split_last()
+            .ok_or_else(|| "the root tree is no indexed tree".to_owned())?;
+        let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+        let element = rocks.get_raw(above.as_slice().into(), key, None, version);
+        let element = element.unwrap().map_err(|error| {
+            format!(
+                "{when}, the element of the indexed tree at /{} is not read: {error}",
+                named()
+            )
+        })?;
+        for op in axis_reads(path, &element, keys.get(path).copied()) {
+            let shown = |text: String| text.chars().take(1_500).collect::<String>();
+            match (on_rocks.step(&op), on_lignin.step(&op)) {
+                (Ok(was), Ok(is)) => {
+                    let parts = differences(&was.step, &is.step);
+                    if !parts.is_empty() {
+                        return Err(format!(
+                            "{when}, a read by an axis of the indexed tree at /{} differs in \
+                             {parts:?}: {}\n  RocksDB:  {}\n  LigninDB: {}",
+                            named(),
+                            shown(format!("{op:?}")),
+                            shown(format!("{:?} {:?}", was.step, was.remarks)),
+                            shown(format!("{:?} {:?}", is.step, is.remarks)),
+                        ));
+                    }
+                    if matches!(was.step.outcome, Answered::Returned(_)) {
+                        alike.axis_answers += 1;
+                    }
+                }
+                (was, is) => {
+                    let text = |seen: Result<_, lignin_testkit::golden::Error>| match seen {
+                        Ok(_) => "answered".to_owned(),
+                        Err(error) => error.to_string(),
+                    };
+                    let (was, is) = (text(was), text(is));
+                    if was != is {
+                        return Err(format!(
+                            "{when}, a read by an axis of the indexed tree at /{} was not \
+                             observed alike: {}\n  RocksDB:  {was}\n  LigninDB: {is}",
+                            named(),
+                            shown(format!("{op:?}")),
+                        ));
+                    }
+                    alike.axis_unobserved += 1;
+                }
+            }
+            alike.axis_reads += 1;
+        }
+        alike.indexed_trees += 1;
+    }
+    Ok(alike)
+}
+
+/// How many entries a read by an axis asks for.
+const AXIS_PAGE: u16 = 16;
+
+/// The reads of the indexed tree `element` at `path` by each of its axes,
+/// as the traces of the corpus read such a tree: the first entries from
+/// either end, the first keys alone, the entries in the whole range of
+/// the axis, the rank of `key` where the tree's own Merk has one, and
+/// both folds over that range. Each is run and proven as a trace's read
+/// is. A read that an axis does not take fails, on both engines alike.
+fn axis_reads(path: &[Vec<u8>], element: &Element, key: Option<&Vec<u8>>) -> Vec<Op> {
+    let axes: Vec<IndexAxis> = match element.underlying() {
+        Element::ProvableCountIndexedTree(..) => vec![IndexAxis::Count],
+        Element::ProvableSumIndexedTree(..) => vec![IndexAxis::Sum],
+        Element::ProvableBigSumIndexedTree(..) => vec![IndexAxis::BigSum],
+        other => (other.axes().unwrap_or_default().iter())
+            .filter_map(|(tag, _)| IndexAxis::try_from_tag(*tag).ok())
+            .collect(),
+    };
+    let proven = |query: PathQuery| {
+        Op::Read(ReadOp::PathQuery {
+            query: Box::new(query),
+            proven: true,
+        })
+    };
+    let mut ops = Vec::new();
+    for axis in axes {
+        let at = || path.to_vec();
+        let (low, high) = match axis {
+            IndexAxis::BigSum => (i128::MIN, i128::MAX),
+            _ => (i128::from(i64::MIN), i128::from(i64::MAX)),
+        };
+        for descending in [true, false] {
+            let page = PathQuery::new_axis_top_k(at(), axis, AXIS_PAGE, 0, descending);
+            ops.push(proven(page));
+        }
+        let keys = AxisQuery::bottom_k(axis, AXIS_PAGE, 0).keys_only();
+        ops.push(proven(PathQuery::new_axis(at(), keys)));
+        let bounded = PathQuery::new_axis_bounded(at(), axis, low, high, AXIS_PAGE, true);
+        ops.push(proven(bounded));
+        if let Some(key) = key {
+            let rank = PathQuery::new_axis_rank_of_key(at(), axis, key.clone(), true);
+            ops.push(proven(rank));
+        }
+        for fold in [AggregateFold::Population, AggregateFold::Total] {
+            let folded =
+                PathQuery::new_axis_aggregate_over_value_range(at(), axis, low, high, fold);
+            ops.push(proven(folded));
+        }
+    }
+    ops
 }
 
 /// What the calls of a tree that keeps flat records answer for the tree
@@ -913,8 +1077,8 @@ fn alike(source: &Path, target: &Path) -> u64 {
         rocks(source),
         Lignin::open_with_engine(target).expect("the target"),
     );
-    let (records, _) =
-        same_stored_and_read(&rocks, &lignin, v, "after the migration").expect("the same");
+    let alike = same_stored_and_read(&rocks, &lignin, v, "after the migration");
+    let records = alike.expect("the same").records;
     let checked = |issues: Result<_, grovedb::Error>| issues.map_err(|error| error.to_string());
     let was = checked(rocks.verify_grovedb(None, true, false, v));
     let is = checked(lignin.verify_grovedb(None, true, false, v));
@@ -2757,9 +2921,10 @@ const REAL_TARGET: &str = "LIGNIN_MIGRATE_TARGET";
 
 /// A RocksDB GroveDB that the environment names is migrated, and the two
 /// groves are then read through the seam: what both store is listed and
-/// compared, `verify_grovedb` reports the same on both, and its issues
-/// are the hashes the physical checker names with the trees that have no
-/// node.
+/// compared, each tree that keeps flat records is asked through its own
+/// calls and each indexed tree is read by each of its axes on both,
+/// `verify_grovedb` reports the same on both, and its issues are the
+/// hashes the physical checker names with the trees that have no node.
 ///
 /// | Variable | |
 /// | --- | --- |
@@ -2820,12 +2985,22 @@ fn a_database_of_the_environment_is_migrated_and_read_alike() {
             .spawn_scoped(scope, || {
                 let rocks = rocks(source);
                 let lignin = Lignin::open_with_engine(&target).expect("the target");
-                let listed = same_stored_and_read(&rocks, &lignin, version, "after the migration");
-                let (listed, (flat_trees, flat_answers)) =
-                    listed.expect("the groves store the same");
+                let alike = same_stored_and_read(&rocks, &lignin, version, "after the migration");
+                let alike = alike.expect("the groves store the same");
+                let listed = alike.records;
                 println!(
-                    "trees that keep flat records: {flat_trees}, asked through their own calls \
-                     on both engines: {flat_answers} answers alike"
+                    "trees that keep flat records: {}, asked through their own calls on both \
+                     engines: {} answers alike",
+                    alike.flat_trees, alike.flat_answers
+                );
+                println!(
+                    "indexed trees: {}, read by each of their axes on both engines: {} reads \
+                     alike in what they returned or failed with, in cost and in proof; {} of \
+                     them returned an answer, and {} could be observed on neither engine",
+                    alike.indexed_trees,
+                    alike.axis_reads,
+                    alike.axis_answers,
+                    alike.axis_unobserved
                 );
                 let checked =
                     |issues: Result<_, grovedb::Error>| issues.map_err(|error| error.to_string());
