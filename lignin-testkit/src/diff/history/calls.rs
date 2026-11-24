@@ -116,9 +116,6 @@ pub const READS_NOT_MADE: &[&str] = &[
     "bulk_get_range",
     "bulk_get_value",
     "check_subtree_exists_invalid_path",
-    "commitment_tree_anchor",
-    "commitment_tree_count",
-    "commitment_tree_get_range",
     "commitment_tree_get_value",
     "dense_tree_count",
     "dense_tree_get",
@@ -127,7 +124,6 @@ pub const READS_NOT_MADE: &[&str] = &[
     "find_subtrees",
     "follow_reference",
     "follow_reference_as_stored",
-    "get_aux_by_key_prefix",
     "get_proved_path_query",
     "get_raw_optional_caching_optional",
     "has_incomplete_restore",
@@ -1396,6 +1392,45 @@ fn make<'db, E: Engine>(
         }
         "root_hash" => answered(with_cost(db.root_hash(transaction, version()?))),
         "get_aux" => answered(with_cost(db.get_aux(hex_of("key")?, transaction))),
+        "get_aux_by_key_prefix" => answered(with_cost(
+            db.get_aux_by_key_prefix(hex_of("key_prefix")?, transaction),
+        )),
+        "commitment_tree_anchor" => {
+            let (p, key) = (segments("path")?, hex_of("key")?);
+            answered(with_cost(db.commitment_tree_anchor(
+                subtree!(p),
+                &key,
+                transaction,
+                version()?,
+            )))
+        }
+        "commitment_tree_count" => {
+            let (p, key) = (segments("path")?, hex_of("key")?);
+            answered(with_cost(db.commitment_tree_count(
+                subtree!(p),
+                &key,
+                transaction,
+                version()?,
+            )))
+        }
+        "commitment_tree_get_range" => {
+            let (p, key) = (segments("path")?, hex_of("key")?);
+            let number = |name: &str| -> Result<u64, String> {
+                let text = call.required(name)?;
+                text.parse()
+                    .map_err(|_| format!("`{name}` is `{text}`, no number"))
+            };
+            let limit = u16::try_from(number("limit")?)
+                .map_err(|_| "a limit of more than 16 bits".to_string())?;
+            answered(with_cost(db.commitment_tree_get_range(
+                subtree!(p),
+                &key,
+                number("start")?,
+                limit,
+                transaction,
+                version()?,
+            )))
+        }
         "query" | "query_raw" => {
             let query = read_query!();
             let flags = (
@@ -1575,13 +1610,14 @@ pub enum Held {
 /// What is held against the recording node's answer, by method. The two
 /// reads that make delete operations were given other operations there
 /// ([`apply`]). An aux value too long for the recorder is written as other
-/// bytes of its length, so of a read of aux the cost is held, and the value
-/// only where a replay knows that the key was not written so.
+/// bytes of its length, so of a read of aux, by its key or by a prefix of
+/// keys, the cost is held, and the value only where a replay knows that no
+/// key it reads was written so.
 pub fn held_against_the_recording(method: &str) -> Held {
     match method {
         "delete_operation_for_delete_internal"
         | "delete_operations_for_delete_up_tree_while_empty" => Held::Neither,
-        "get_aux" => Held::Cost,
+        "get_aux" | "get_aux_by_key_prefix" => Held::Cost,
         _ => Held::OutcomeAndCost,
     }
 }
@@ -1860,6 +1896,20 @@ mod tests {
             Held::Cost,
             "an aux value may be a stand-in"
         );
+        assert_eq!(
+            held_against_the_recording("get_aux_by_key_prefix"),
+            Held::Cost
+        );
         assert_eq!(held_against_the_recording("get"), Held::OutcomeAndCost);
+        // What a recorded history has of the trees that keep flat records
+        // is made: none of their reads is in the list of reads left out.
+        for made in [
+            "commitment_tree_anchor",
+            "commitment_tree_count",
+            "commitment_tree_get_range",
+            "get_aux_by_key_prefix",
+        ] {
+            assert!(!READS_NOT_MADE.contains(&made), "{made}");
+        }
     }
 }

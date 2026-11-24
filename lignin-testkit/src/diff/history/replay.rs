@@ -567,13 +567,7 @@ pub fn replay(settings: &Settings, out: &mut dyn Write) -> Result<Summary, Strin
             }
         }
         let held = match held_against_the_recording(&call.method) {
-            Held::Cost
-                if call
-                    .peek("key")
-                    .is_some_and(|key| !stand_in_keys.contains(key)) =>
-            {
-                Held::OutcomeAndCost
-            }
+            Held::Cost if !reads_a_stand_in(&call, &stand_in_keys) => Held::OutcomeAndCost,
             held => held,
         };
         let (outcome, cost) = against_recording(&call, &of_reference, held);
@@ -684,6 +678,16 @@ fn with_notes(answer: &Answer) -> String {
         answer.line()
     } else {
         format!("{} [{}]", answer.line(), answer.notes.join("; "))
+    }
+}
+
+/// Whether a read of aux, by its key or by a prefix of keys, may return a
+/// value that was written as a stand-in.
+fn reads_a_stand_in(call: &Call, stand_in_keys: &HashSet<String>) -> bool {
+    match (call.peek("key"), call.peek("key_prefix")) {
+        (Some(key), _) => stand_in_keys.contains(key),
+        (None, Some(prefix)) => stand_in_keys.iter().any(|key| key.starts_with(prefix)),
+        (None, None) => true,
     }
 }
 

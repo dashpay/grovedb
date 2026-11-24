@@ -352,6 +352,8 @@ fn a_call_made_with_a_stand_in_and_a_read_that_is_not_made_are_counted_apart() {
         "get_aux\tkey=6b\ttx=-\t|\tok\tv=Some([1, 2, 3])".into(),
         "get_aux\tkey=6c\ttx=-\t|\tok\tv=Some([1, 2])".into(),
         "get_aux\tkey=6d\ttx=-\t|\tok\tv=Some([1, 2])".into(),
+        "get_aux_by_key_prefix\tkey_prefix=6b\ttx=-\t|\tok\tv=[([107], [1, 2, 3])]".into(),
+        "get_aux_by_key_prefix\tkey_prefix=6c\ttx=-\t|\tok\tv=[([108], [1, 2])]".into(),
         "delete_operation_for_delete_internal\tpath=/61\tkey=64\toptions=DeleteOptions { \
          allow_deleting_non_empty_trees: false, deleting_non_empty_trees_returns_error: true, \
          base_root_storage_is_free: true, validate_tree_at_path_exists: false, \
@@ -382,6 +384,17 @@ fn a_call_made_with_a_stand_in_and_a_read_that_is_not_made_are_counted_apart() {
         "the value under the key written with a stand-in is not held against the recording, \
          the value under the other key that was written is the recorded one, and the key \
          that was never written has none: {report}"
+    );
+    let by_prefix = &summary.by_method["get_aux_by_key_prefix"];
+    assert_eq!(
+        (
+            by_prefix.calls,
+            by_prefix.outcome_not_held,
+            by_prefix.other_outcome
+        ),
+        (2, 1, 0),
+        "of two reads by a prefix, the one that reads the stand-in is not held against the \
+         recording and the other answers what was recorded: {report}"
     );
     let planned = &summary.by_method["delete_operation_for_delete_internal"];
     assert_eq!(
@@ -431,6 +444,100 @@ fn the_recorded_callbacks_a_failed_batch_did_not_come_to_are_noted() {
         ),
         "{report}"
     );
+}
+
+/// A tree that keeps flat records, as a recorded history has one: it is made,
+/// two batches append to it, and its anchor, its count and a range of it
+/// are read between them, with a transaction and with none. Every call is
+/// made on both engines and answered alike. The two appends are operations
+/// a caller recorded.
+#[test]
+fn the_appends_and_the_reads_of_a_commitment_tree_are_made() {
+    const FIRST: [&str; 4] = [
+        "c737cc07007de7faf11102921f72cc2aa78c764084b77b67bd5ba97bc5736133",
+        "7f826385e888a51a3eb12cf9bd6ffc77d75af749987fa06db37c62e6d173f501",
+        "e0c3cd0f3726ee12d3a869e642f81aec17a98eb55e54751f661d20460a513c8b",
+        "9420ddef26bcbbc20c4f5208b61d62fe94461798de7889e59da0184e53d54a04affb67cfe60ca3a2af51dfb354341db2cd74f2d9a6fbd6a6912e97fcebd9c7c324a3243e45b8b68352eb89b4e168772bbc61f597fc483657b816e73ad90ffe1c8131d542a3769906b77c4e4221394d8fdff2b3bfb77db6a26f5ded339348437e40ab4844f4ddd90242a89e587d6caf6a68f18b9bc6263b17df8b21e24c528148c47f296c66c7c39fdd41b2e42573ae16a4c5ad453b18fe7a3b09a66904f4a9380ff057cf7235d4c0e6a8551a96927877b9a0dcf8b8e62836",
+    ];
+    const SECOND: [&str; 4] = [
+        "c7c1f328c84c98d1ddca83b38f8ad3737736ab74c0b4f2abc32c19b43c26e424",
+        "7a5c42e9ed99f9910ef447527928032c77502edfa1a1886927ccd59ffd98a93d",
+        "063ffff21e739fef33715efe9bd234ea9f37c9aea287345c9e24b7173021b93e",
+        "cdbd0fef8e22d27193e0bc568247ee4063afc4f9bdce84e0621ae801bac1b6a31d114e067b732283fdf55d8f119a39891463c9c9747535209b2614f86dba38b5724cf700bf69601fcb1c6ae14b8ee8b3dd5f04eeea66caa69ef70b9b0a63c013c520f5c2d183fa6ef9c0a8387a4c0882830da6edf4e5c6be49cc78948a9000875bab70baa78dd065740740a78fbccf3e64680918559906e7690e8b7a4a359cdbd51b6a875da93fc2c641617482a68f64339726c6ae5433a951ec56feea840e751e34925914a725bbf47da814e93a343e3f379f140beff509",
+    ];
+    let append = |fields: &[&str; 4], tx: u64| {
+        format!(
+            "apply_batch_with_element_flags_update\tops=1\top=/34/4d/80|-|CommitmentTreeInsert|{}\t{OPTIONS}\tcallbacks=storage-flags\ttx={tx}\tgv=3\t|\tok\tv=()",
+            fields.join("|")
+        )
+    };
+    let reads = |tx: &str, count: u64| {
+        vec![
+            format!("commitment_tree_anchor\tpath=/34/4d\tkey=80\ttx={tx}\tgv=3\t|\tok"),
+            format!(
+                "commitment_tree_count\tpath=/34/4d\tkey=80\ttx={tx}\tgv=3\t|\tok\tv={count}"
+            ),
+            format!(
+                "commitment_tree_get_range\tpath=/34/4d\tkey=80\tstart=0\tlimit=2048\ttx={tx}\tgv=3\t|\tok"
+            ),
+        ]
+    };
+    let mut lines = vec![
+        mark_request(1),
+        "tx_start\ttx=1\tkind=write\t|\tok".into(),
+        "insert_if_not_exists\tpath=\tkey=34\telement=04000000\ttx=1\tgv=3\t|\tok\tv=true".into(),
+        "insert_if_not_exists\tpath=/34\tkey=4d\telement=04000000\ttx=1\tgv=3\t|\tok\tv=true"
+            .into(),
+        "insert_if_not_exists\tpath=/34/4d\tkey=80\telement=0b000b00\ttx=1\tgv=3\t|\tok\tv=true"
+            .into(),
+    ];
+    lines.extend(reads("1", 0));
+    lines.push(append(&FIRST, 1));
+    lines.extend(reads("1", 1));
+    lines.extend([
+        "tx_end\ttx=1\t|\tok".into(),
+        "commit_transaction\ttx=1\t|\tok\tv=()".into(),
+        mark_finalized(1),
+        mark_request(2),
+    ]);
+    lines.extend(reads("-", 1));
+    lines.extend([
+        "tx_start\ttx=2\tkind=write\t|\tok".into(),
+        append(&SECOND, 2),
+    ]);
+    lines.extend(reads("2", 2));
+    lines.extend([
+        "tx_end\ttx=2\t|\tok".into(),
+        "commit_transaction\ttx=2\t|\tok\tv=()".into(),
+        mark_finalized(2),
+        mark_request(3),
+    ]);
+    lines.extend(reads("-", 2));
+    lines.push(mark_finalized(3));
+
+    let (summary, report) = replayed(&lines, 1);
+    assert!(summary.alike(), "{report}\n{summary:?}");
+    assert!(summary.not_replayed.is_empty(), "{report}");
+    assert_eq!(summary.roots_alike, 3, "{report}");
+    let batches = &summary.by_method["apply_batch_with_element_flags_update"];
+    assert_eq!(
+        (batches.calls, batches.alike, batches.other_outcome),
+        (2, 2, 0),
+        "{report}"
+    );
+    for method in [
+        "commitment_tree_anchor",
+        "commitment_tree_count",
+        "commitment_tree_get_range",
+    ] {
+        let read = &summary.by_method[method];
+        assert_eq!((read.calls, read.alike), (5, 5), "{method}: {report}");
+    }
+    assert_eq!(
+        summary.by_method["commitment_tree_count"].other_outcome, 0,
+        "the count is what the stream says after each append: {report}"
+    );
+    assert!(summary.sound, "{}", summary.close);
 }
 
 /// The proof of a query is held against the recorded one as the recorder
