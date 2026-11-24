@@ -812,6 +812,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 .or_else(cost)
                 .or_else(refused_write)
                 .or_else(taken_write)
+                .or_else(|| known.family_of_commit(op, reference, candidate))
                 .or_else(|| known.family_of_answer(op, taken, &parts))
                 .or_else(through_a_proof);
             let Some(family) = family else {
@@ -884,6 +885,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         // operation and has the root hash it had.
         let root_changed = was.step.root_hash.is_some() && roots.0 != before.0;
         known.forgets(op, !was.step.failed(), root_changed);
+        known.in_the_block(op, !was.step.failed());
         if !was.step.failed() {
             known.wrote(op, root_changed);
             // The trees a plain delete of the batch removed of which the
@@ -902,11 +904,15 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         // are held against the records as they were before it. Where the
         // reference cannot be read, none is pending.
         if known.dropped_flat() {
+            let had_a_record = known.pending_paths().to_vec();
             let pending = catching(|| {
                 let block = reference_runner.transactions().block();
                 pending_drop_paths(reference_db, block)
             });
             known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
+            // A drain writes beside the open block: the trees whose
+            // record it reclaimed after the block wrote into them.
+            known.drained(op, &had_a_record);
             // Those of them at which the reference reads a tree again.
             let standing = catching(|| {
                 let block = reference_runner.transactions().block();

@@ -370,6 +370,147 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
     assert_eq!(families.answer_seed[2], Some(case.seed));
 }
 
+/// A tree is dropped flat and the drop committed. The next block makes
+/// the tree again at the dropped path and writes into it, and a drain is
+/// called before the block commits. The drain reads committed state,
+/// finds no element at the path and reclaims the record of the drop.
+/// RocksDB's deletes the range of the dropped prefix beside the block,
+/// over the keys the block wrote under it, and answers the block's
+/// commit with a conflict; LigninDB dropped the subtree with the commit
+/// of the drop, its drain writes no key of the block, and it takes the
+/// commit. It is the open difference of a dropped tree until its drain:
+/// the case ends at the commit, counted for the family, on grove
+/// versions 4 and 5, and is no divergence. Grove versions 1 to 3 have no
+/// flat drop: both engines refuse it, and the case runs to its end.
+///
+/// With the drain after the block's commit, which finds the path live
+/// and leaves the record, and with a block that puts the tree's element
+/// and writes nothing into the tree, both engines take the commit and
+/// the case runs to its end.
+#[test]
+fn a_commit_that_rocksdb_refuses_after_a_drain_beside_a_tree_made_again_ends_the_case() {
+    use lignin_testkit::{
+        diff::{Case, Family},
+        workload::{BatchOp, Op, Read, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let only = |at: &[&[u8]], key: &[u8], element: grovedb::Element| BatchOp::InsertOnly {
+        path: path(at),
+        key: key.to_vec(),
+        element,
+    };
+    let tree = grovedb::Element::empty_tree;
+    let item = || grovedb::Element::new_item(vec![7; 8]);
+    let made = || {
+        Op::Batch(vec![
+            only(&[b"a"], b"t", tree()),
+            only(&[b"a", b"t"], b"k", item()),
+        ])
+    };
+    let read = || {
+        Op::Read(Read::Get {
+            path: path(&[b"a", b"t"]),
+            key: b"k".to_vec(),
+        })
+    };
+    let dropped = [
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"a".to_vec(),
+            element: tree(),
+        }),
+        made(),
+        Op::Write(Write::DropFlat {
+            path: path(&[b"a"]),
+            key: b"t".to_vec(),
+        }),
+        Op::Commit,
+    ];
+    const DROP: usize = 2;
+    const COMMIT: usize = 6;
+    let beside = [made(), Op::FlushPendingDrops, Op::Commit, read()];
+    let after = [
+        made(),
+        Op::Commit,
+        Op::FlushPendingDrops,
+        read(),
+        Op::Commit,
+    ];
+    let element_alone = [
+        Op::Batch(vec![only(&[b"a"], b"t", tree())]),
+        Op::FlushPendingDrops,
+        Op::Commit,
+        Op::Read(Read::IsEmptyTree {
+            path: path(&[b"a", b"t"]),
+        }),
+    ];
+    let failed = |lines: &[String]| {
+        let mut failed = lines.iter().filter(|line| line.starts_with("failed "));
+        failed.next().cloned()
+    };
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let ops: Vec<Op> = dropped.iter().chain(&beside).cloned().collect();
+        let case = Case::of(43, grove_version, ops);
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        if number < 4 {
+            assert_eq!(run.failed_steps, [DROP], "grove version {number}");
+            assert_eq!(run.ended_at, None, "grove version {number}");
+            assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+            assert_eq!(run.tally.families.answers, [0; 11], "{number}");
+            continue;
+        }
+        assert_eq!(run.ended_at, Some(Family::DroppedTree), "{number}");
+        let ended = run.ended_with.as_ref().expect("the answers it ended with");
+        assert_eq!(ended.step, COMMIT, "grove version {number}");
+        assert_eq!(run.tally.steps as usize, COMMIT + 1, "{number}");
+        assert_eq!(case.ops[COMMIT], Op::Commit);
+        assert!(ended.parts.contains(&Part::Error), "{ended:?}");
+        let conflict = Some("failed Commit::Conflict".to_string());
+        assert_eq!(failed(&ended.reference), conflict, "{ended:?}");
+        assert_eq!(failed(&ended.candidate), None, "{ended:?}");
+        println!(
+            "grove version {number}: the commit differs in {:?}\n  RocksDB: {:?}\n  LigninDB: {:?}",
+            ended.parts, ended.reference, ended.candidate
+        );
+        let families = run.tally.families;
+        assert_eq!(families.answers, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(families.answer_seed[2], Some(case.seed));
+
+        for (what, block) in [
+            ("the drain after", &after[..]),
+            ("the element alone", &element_alone[..]),
+        ] {
+            let ops: Vec<Op> = dropped.iter().chain(block).cloned().collect();
+            let case = Case::of(44, grove_version, ops);
+            let run = ran(&case);
+            if let Some(divergence) = &run.divergence {
+                let report = divergence.report(&case, "RocksDB", "LigninDB");
+                panic!("{what} on grove version {number}:\n{}", report.join("\n"));
+            }
+            assert_eq!(run.ended_at, None, "{what} on grove version {number}");
+            assert_eq!(
+                run.tally.steps as usize,
+                case.ops.len(),
+                "{what} on {number}"
+            );
+            assert!(
+                run.failed_steps.is_empty(),
+                "{what}: {:?}",
+                run.failed_steps
+            );
+            assert_eq!(run.tally.families.answers, [0; 11], "{what} on {number}");
+        }
+    }
+}
+
 /// Two cases the fuzzer reported on grove versions 2 and 3: a batch puts
 /// an empty indexed tree at a key that holds an indexed tree with a row,
 /// which RocksDB takes and LigninDB refuses as not supported, since those
