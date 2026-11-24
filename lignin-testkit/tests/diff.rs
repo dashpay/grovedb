@@ -1265,6 +1265,94 @@ fn the_cost_of_a_plain_delete_over_a_kept_tree_differs_by_the_hash_of_its_path()
     }
 }
 
+/// A checked batch that removes a tree made again over a record that
+/// RocksDB kept, and that both engines refuse for another operation it
+/// lists, a delete in a tree that was never made. On grove versions 4
+/// and 5 a batch looks through the trees it removes before it applies
+/// any operation, so RocksDB has read the kept record, and opened the
+/// subtree under it, before the batch is refused: the refusal differs
+/// in the cost alone, and is counted with the costs of such batches
+/// and passed over. On grove versions 1 to 3 the batch is refused alike.
+#[test]
+fn the_cost_of_a_refused_batch_that_looked_through_a_tree_over_a_kept_record_is_passed_over() {
+    use lignin_testkit::{
+        diff::Case,
+        workload::{BatchOp, Op, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let put = |at: &[&[u8]], key: &[u8], element: grovedb::Element| {
+        Op::Batch(vec![BatchOp::InsertOrReplace {
+            path: path(at),
+            key: key.to_vec(),
+            element,
+        }])
+    };
+    let delete = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+        path: path(at),
+        key: key.to_vec(),
+    };
+    let tree = grovedb::Element::empty_tree;
+    let ops = vec![
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"p".to_vec(),
+            element: tree(),
+        }),
+        put(&[b"p"], b"t", tree()),
+        put(&[b"p", b"t"], &[1], grovedb::Element::empty_sum_tree()),
+        Op::Batch(vec![delete(&[b"p"], b"t")]),
+        put(&[b"p"], b"t", tree()),
+        put(&[b"p", b"t"], &[2], grovedb::Element::new_item(vec![7; 8])),
+        Op::Batch(vec![delete(&[b"p"], b"t"), delete(&[b"p", b"never"], &[1])]),
+        Op::Commit,
+    ];
+    const REFUSED: usize = 6;
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let case = Case::of(41, grove_version, ops.clone());
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(run.ended_at, None, "grove version {number}");
+        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        let families = run.tally.families;
+        if number < 4 {
+            assert_eq!(run.failed_steps, [REFUSED], "grove version {number}");
+            assert!(run.passed_costs.is_empty(), "grove version {number}");
+            assert_eq!(families.answers[8], 0, "grove version {number}");
+            continue;
+        }
+        assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
+        assert_eq!(run.passed_costs.len(), 1, "grove version {number}");
+        let cost = &run.passed_costs[0];
+        assert_eq!(cost.step, REFUSED, "grove version {number}");
+        assert_eq!(cost.parts, [Part::Cost], "grove version {number}");
+        let failed = |lines: &[String]| {
+            let mut failed = lines.iter().filter(|line| line.starts_with("failed "));
+            failed.next().cloned()
+        };
+        let refused = Some("failed InvalidPath".to_string());
+        assert_eq!(failed(&cost.reference), refused, "{cost:?}");
+        assert_eq!(failed(&cost.candidate), refused, "{cost:?}");
+        let (reference, candidate) = (cost_of(&cost.reference), cost_of(&cost.candidate));
+        println!("refused batch on grove version {number}: {reference} | {candidate}");
+        assert_eq!(reference, REFUSED_ON_ROCKSDB, "grove version {number}");
+        assert_eq!(candidate, REFUSED_ON_LIGNINDB, "grove version {number}");
+        assert_eq!(families.answers[8], 1, "grove version {number}");
+    }
+}
+
+/// The whole costs of the refused batch of the test above.
+const REFUSED_ON_ROCKSDB: &str =
+    "cost seeks=7 loaded=1070 added=0 replaced=0 removed=- hashes=5 sinsemilla=0";
+const REFUSED_ON_LIGNINDB: &str =
+    "cost seeks=5 loaded=612 added=0 replaced=0 removed=- hashes=4 sinsemilla=0";
+
 /// A batch that writes below a tree that a plain delete removed and
 /// also into a tree that was never made, which both engines refuse:
 /// LigninDB at the subtree under the record that the delete left, which

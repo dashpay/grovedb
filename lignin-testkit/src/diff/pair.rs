@@ -773,11 +773,10 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 || known.family_of_root_key_refusal(op, reference, candidate, &is.remarks);
             // The reference was charged for reading the records it kept
             // below a tree that the batch removes.
-            let cost = || Known::family_of_cost(&kept, &was.step, &is.step, &parts);
-            // Both engines refused a write below a plain delete, and
-            // each has the root hash it had before.
+            // Whether each engine has the root hash it had before.
             let unchanged =
                 roots.0.is_some() && was.step.root_hash == roots.0 && is.step.root_hash == roots.1;
+            let cost = || Known::family_of_cost(&kept, &was.step, &is.step, &parts, unchanged);
             let refused_write = || {
                 // The reference read what the candidate did not: it
                 // was charged more bytes loaded, and no fewer seeks and

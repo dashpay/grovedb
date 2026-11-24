@@ -179,7 +179,8 @@
 //!   within which a count that is off by another cause passes.
 //!   The batch is a whole batch of checked
 //!   operations ([`Op::Batch`] that lists no flat drop) which both
-//!   engines took, the candidate reads at the path, before it, a tree
+//!   engines took, or both refused with the same error and their root
+//!   hashes as they were, the candidate reads at the path, before it, a tree
 //!   that keeps a Merk and whose element names a root, which is the
 //!   tree GroveDB looks through, and every record that the reference
 //!   holds more is in a subtree at or below such a place, on the walk
@@ -1292,7 +1293,11 @@ impl Known {
     /// trees `kept` ([`Known::kept_below_a_removed_tree`]), which the
     /// engines answered with `reference` and `candidate` and differently
     /// in `parts`: [`Family::KeptRecordsCost`] where there is such a
-    /// tree, both engines took the batch, they differ in the cost and in
+    /// tree, both engines took the batch, or both refused it with the
+    /// same error and with `unchanged` each has the root hash it had (a
+    /// batch looks through the trees it removes before it applies any
+    /// operation, so a batch that is refused further on has looked),
+    /// they differ in the cost and in
     /// no other part, and the costs differ in the seeks, the bytes
     /// loaded and the hash calls alone, the reference's being no smaller
     /// in any, and its hash calls the larger by no more than the paths
@@ -1304,6 +1309,7 @@ impl Known {
         reference: &Step,
         candidate: &Step,
         parts: &[Part],
+        unchanged: bool,
     ) -> Option<Family> {
         let (was, is) = (&reference.cost, &candidate.cost);
         let read_alone = OperationCost {
@@ -1316,9 +1322,12 @@ impl Known {
             was.seek_count >= is.seek_count && was.storage_loaded_bytes >= is.storage_loaded_bytes;
         let opened = was.hash_node_calls.checked_sub(is.hash_node_calls);
         let opened = opened.is_some_and(|hashes| u64::from(hashes) <= kept.path_hashes);
-        let taken = matches!(reference.outcome, Outcome::Returned(_))
-            && matches!(candidate.outcome, Outcome::Returned(_));
-        (!kept.trees.is_empty() && taken && parts == [Part::Cost] && read_alone && more && opened)
+        let alike = match (&reference.outcome, &candidate.outcome) {
+            (Outcome::Returned(_), Outcome::Returned(_)) => true,
+            (Outcome::Failed(was), Outcome::Failed(is)) => was == is && unchanged,
+            _ => false,
+        };
+        (!kept.trees.is_empty() && alike && parts == [Part::Cost] && read_alone && more && opened)
             .then_some(Family::KeptRecordsCost)
     }
 
@@ -3897,13 +3906,13 @@ mod tests {
             step(11, 966, 8, 142),
             step(10, 967, 8, 142),
         ] {
-            assert_eq!(Known::family_of_cost(&kept, &was, &is, &cost), family);
+            assert_eq!(Known::family_of_cost(&kept, &was, &is, &cost, true), family);
         }
         let was = step(11, 1147, 8, 142);
         // No such tree, another part, another field of the cost, and a
         // candidate that was charged more.
         let none = KeptBelow::default();
-        assert_eq!(Known::family_of_cost(&none, &was, &is, &cost), None);
+        assert_eq!(Known::family_of_cost(&none, &was, &is, &cost, true), None);
         // A hash call for each subtree that the reference alone opens:
         // one more than those, and fewer than the candidate's, are of
         // no family.
@@ -3913,39 +3922,47 @@ mod tests {
         };
         for hashes in [8, 9, 10] {
             let was = step(12, 1400, hashes, 142);
-            assert_eq!(Known::family_of_cost(&two, &was, &is, &cost), family);
+            assert_eq!(Known::family_of_cost(&two, &was, &is, &cost, true), family);
         }
         for hashes in [7, 11] {
             let was = step(12, 1400, hashes, 142);
-            assert_eq!(Known::family_of_cost(&two, &was, &is, &cost), None);
+            assert_eq!(Known::family_of_cost(&two, &was, &is, &cost, true), None);
         }
         let hashes_alone = step(10, 966, 9, 142);
         assert_eq!(
-            Known::family_of_cost(&two, &hashes_alone, &is, &cost),
+            Known::family_of_cost(&two, &hashes_alone, &is, &cost, true),
             family
         );
         let parts = [Part::Cost, Part::RootHash];
-        assert_eq!(Known::family_of_cost(&kept, &was, &is, &parts), None);
+        assert_eq!(Known::family_of_cost(&kept, &was, &is, &parts, true), None);
         assert_eq!(
-            Known::family_of_cost(&kept, &was, &is, &[Part::Result]),
+            Known::family_of_cost(&kept, &was, &is, &[Part::Result], true),
             None
         );
         for other in [step(11, 1147, 9, 142), step(11, 1147, 8, 215)] {
-            assert_eq!(Known::family_of_cost(&kept, &other, &is, &cost), None);
+            assert_eq!(Known::family_of_cost(&kept, &other, &is, &cost, true), None);
         }
         for less in [step(9, 1147, 8, 142), step(11, 900, 8, 142)] {
-            assert_eq!(Known::family_of_cost(&kept, &less, &is, &cost), None);
+            assert_eq!(Known::family_of_cost(&kept, &less, &is, &cost, true), None);
         }
-        // A batch that both engines refuse alike.
-        let refused = |mut step: Step| {
-            step.outcome = Outcome::Failed("InvalidBatchOperation".to_string());
+        // A batch that both engines refuse with the same error and
+        // their root hashes as they were has looked through the tree
+        // before it was refused; one that they refuse with different
+        // errors, or with a root hash that changed, is of no family.
+        let refused = |mut step: Step, error: &str| {
+            step.outcome = Outcome::Failed(error.to_string());
             step
         };
-        let (was_refused, is_refused) = (refused(was.clone()), refused(is.clone()));
-        assert_eq!(
-            Known::family_of_cost(&kept, &was_refused, &is_refused, &cost),
-            None
-        );
+        let invalid = "InvalidPath";
+        let (was_refused, is_refused) =
+            (refused(was.clone(), invalid), refused(is.clone(), invalid));
+        let of = Known::family_of_cost;
+        assert_eq!(of(&kept, &was_refused, &is_refused, &cost, true), family);
+        assert_eq!(of(&kept, &was_refused, &is_refused, &cost, false), None);
+        let otherwise = refused(is.clone(), "PathKeyNotFound");
+        assert_eq!(of(&kept, &was_refused, &otherwise, &cost, true), None);
+        assert_eq!(of(&kept, &was_refused, &is, &cost, true), None);
+        assert_eq!(of(&kept, &was, &is_refused, &cost, true), None);
         let mut known = Known::default();
         known.passed_an_answer(Family::KeptRecordsCost, 5);
         assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
