@@ -208,6 +208,9 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
         // the change sets are: they are of the Merks as they are before.
         let mut after: Option<Noted> = None;
         let mut counted = Made::default();
+        // The subtree above what this step takes out of the
+        // transaction, which the next step moves if this one is kept.
+        let mut left_under: Option<u8> = None;
         let stamp = step as u8;
         let mut what = match live.is_empty() {
             true => 0,
@@ -323,7 +326,7 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
                     continue;
                 }
                 let (name, above) = under_a_host[rng.below(under_a_host.len())];
-                to_move = Some(above);
+                left_under = Some(above);
                 counted.left_below = 1;
                 if rng.chance(50) {
                     batch.subtrees.push(OwnedSubtree::Clear(sub(above)));
@@ -498,8 +501,9 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
                 (true, false) => made.scopes_rolled_back += 1,
                 (false, _) => made.refused += 1,
             }
-            if !kept {
-                account = before;
+            match kept {
+                true => to_move = left_under,
+                false => account = before,
             }
         }
         // Every prefix is read, in two columns: what is under it on the
@@ -523,7 +527,13 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
                 let mut value = Vec::new();
                 let read = by_key.get(aux(name), b"x", &mut value);
                 made.reads_of_a_scope += 1;
-                made.refused_by_a_move += usize::from(read.is_err());
+                match read {
+                    Ok(_) => {}
+                    Err(TxnError::Batch(BatchError::MoveBeside { .. })) => {
+                        made.refused_by_a_move += 1;
+                    }
+                    Err(other) => panic!("a scope beside a move is refused otherwise: {other}"),
+                }
             }
             by_key.rollback();
             laid_out.rollback();
@@ -553,6 +563,7 @@ fn assert_made(made: &Made, compared: &Compared) {
         "the hosts answer in every sound directory"
     );
     assert!(compared.leaves > 250 && compared.stays > 5_000 && compared.absent > 50_000);
+    assert!(compared.unasked > 150_000);
     assert!(compared.deepest >= 3);
     // What the transaction took with a subtree above, by a drop or a
     // clear that says so and by a clear of which the version says, and
