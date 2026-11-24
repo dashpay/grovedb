@@ -312,8 +312,9 @@ fn gone_on(
 }
 
 /// [`gone_on`] at the first place at or after `wanted` where the stream
-/// can be cut, on a thread with the stack GroveDB's recursion takes. A
-/// panic is what the cut came to.
+/// can be cut, or, where it has none there, at the last place before it,
+/// on a thread with the stack GroveDB's recursion takes. A panic is what
+/// the cut came to.
 fn cut_at(
     trace: &Trace,
     wanted: usize,
@@ -321,8 +322,9 @@ fn cut_at(
     batch: usize,
 ) -> Result<(usize, Went), String> {
     let places = boundaries(&trace.ops);
-    let places = places.into_iter().filter(|place| *place >= wanted);
-    for cut in places {
+    let after = places.iter().filter(|place| **place >= wanted);
+    let before = places.iter().rev().filter(|place| **place < wanted);
+    for cut in after.chain(before).copied() {
         let run = std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .stack_size(STACK_BYTES)
@@ -344,9 +346,7 @@ fn cut_at(
             }
         }
     }
-    Err(format!(
-        "the stream has no place to cut at or after {wanted}"
-    ))
+    Err("the stream has no place to cut at".to_owned())
 }
 
 /// The places a trace is cut at: `spread` places over its length, and
@@ -669,7 +669,11 @@ fn copy_dir(from: &Path, to: &Path) {
 /// The groves in `source` and in `target` store the same and are checked
 /// alike by GroveDB: how many records both hold.
 fn alike(source: &Path, target: &Path) -> u64 {
-    let v = GroveVersion::latest();
+    alike_on(source, target, GroveVersion::latest())
+}
+
+/// [`alike`] for groves of the grove version `v`.
+fn alike_on(source: &Path, target: &Path, v: &GroveVersion) -> u64 {
     let (rocks, lignin) = (
         rocks(source),
         Lignin::open_with_engine(target).expect("the target"),
@@ -679,7 +683,11 @@ fn alike(source: &Path, target: &Path) -> u64 {
     let was = checked(rocks.verify_grovedb(None, true, false, v));
     let is = checked(lignin.verify_grovedb(None, true, false, v));
     assert_eq!(was, is, "verify_grovedb");
-    assert_eq!(root_of(&rocks), root_of(&lignin));
+    let roots = (
+        rocks.root_hash(None, v).unwrap(),
+        lignin.root_hash(None, v).unwrap(),
+    );
+    assert_eq!(roots.0.expect("a root hash"), roots.1.expect("a root hash"));
     records
 }
 
@@ -1464,6 +1472,61 @@ fn records_no_tree_links_and_a_root_key_that_names_no_root_are_carried() {
     assert!(alike(&stale, &target) > 0);
 }
 
+/// On the grove versions 1 to 3 a tree that keeps flat records can hold a
+/// keyed child, whose node lies among the flat records of the tree. It is
+/// carried as the record it is and counted, and the two groves go on
+/// alike.
+#[test]
+fn a_keyed_child_under_a_tree_of_flat_records_is_carried() {
+    for version in GROVE_VERSIONS.iter().take(3) {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
+        {
+            let db = rocks(&source);
+            let tree = Element::empty_mmr_tree();
+            let made = QualifiedGroveDbOp::insert_or_replace_op(vec![], b"mmr".to_vec(), tree);
+            let item = Element::new_item(b"a keyed child".to_vec());
+            let under = vec![b"mmr".to_vec()];
+            let child = QualifiedGroveDbOp::insert_or_replace_op(under, b"child".to_vec(), item);
+            let applied = db.apply_batch(vec![made, child], None, None, version);
+            applied.unwrap().expect("the batch is taken");
+            for n in 0..3u8 {
+                let appended = db.mmr_tree_append(ROOT, b"mmr", vec![n; 40], None, version);
+                appended.unwrap().expect("an append");
+            }
+        }
+        let (outcome, out) = ran(&migration(&source, &target));
+        assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+        assert_eq!(word(&out, "migrate: survey", "keyed_children"), 1, "{out}");
+        assert!(word(&out, "migrate: survey", "flat") > 1, "{out}");
+        assert!(alike_on(&source, &target, version) > 0);
+
+        let lignin = Lignin::open_with_engine(&target).expect("the target");
+        let rocks = rocks(&source);
+        let was = rocks.mmr_tree_append(ROOT, b"mmr", vec![9; 40], None, version);
+        let is = lignin.mmr_tree_append(ROOT, b"mmr", vec![9; 40], None, version);
+        assert_eq!(format!("{:?}", was.unwrap()), format!("{:?}", is.unwrap()));
+        let read = |path: &[&[u8]], key: &[u8]| {
+            let was = rocks.get(path, key, None, version).unwrap();
+            let is = lignin.get(path, key, None, version).unwrap();
+            assert_eq!(format!("{was:?}"), format!("{is:?}"));
+        };
+        read(ROOT, b"mmr");
+        read(&[b"mmr"], b"child");
+        let roots = (
+            rocks
+                .root_hash(None, version)
+                .unwrap()
+                .expect("a root hash"),
+            lignin
+                .root_hash(None, version)
+                .unwrap()
+                .expect("a root hash"),
+        );
+        assert_eq!(roots.0, roots.1);
+    }
+}
+
 /// A source that holds what a migration does not carry is refused by the
 /// survey, with what was found, before anything is made.
 #[test]
@@ -1528,4 +1591,110 @@ fn a_source_that_is_not_carried_is_refused_before_anything_is_made() {
             }
         }
     }
+}
+
+/// The names of the variables of
+/// [`a_database_of_the_environment_is_migrated_and_read_alike`].
+const REAL_SOURCE: &str = "LIGNIN_MIGRATE_SOURCE";
+const REAL_VERSION: &str = "LIGNIN_MIGRATE_GROVE_VERSION";
+const REAL_UNREACHABLE: &str = "LIGNIN_MIGRATE_UNREACHABLE";
+const REAL_TARGET: &str = "LIGNIN_MIGRATE_TARGET";
+
+/// A RocksDB GroveDB that the environment names is migrated, and the two
+/// groves are then read through the seam: what both store is listed and
+/// compared, `verify_grovedb` reports the same on both, and its issues
+/// are the hashes the physical checker names with the trees that have no
+/// node.
+///
+/// | Variable | |
+/// | --- | --- |
+/// | `LIGNIN_MIGRATE_SOURCE` | the directory of the RocksDB GroveDB. **A copy**: the migration writes nothing there, and the test then opens it as a node does, which does |
+/// | `LIGNIN_MIGRATE_GROVE_VERSION` | the grove version its chain is on, 1 to 5 |
+/// | `LIGNIN_MIGRATE_UNREACHABLE` | `refuse` unless given: `leave` or `carry` |
+/// | `LIGNIN_MIGRATE_TARGET` | where the LigninDB database is made: a path that is not there. A temporary directory unless given |
+#[test]
+#[ignore = "takes a RocksDB GroveDB that the environment names"]
+fn a_database_of_the_environment_is_migrated_and_read_alike() {
+    let variable = |name: &str| std::env::var(name).ok();
+    let source = variable(REAL_SOURCE).expect("LIGNIN_MIGRATE_SOURCE names a directory");
+    let source = Path::new(&source);
+    let number = variable(REAL_VERSION).expect("LIGNIN_MIGRATE_GROVE_VERSION is given");
+    let number: usize = number.parse().expect("a grove version");
+    let version = &GROVE_VERSIONS[number - 1];
+    let unreachable = variable(REAL_UNREACHABLE).map_or(Unreachable::Refuse, |name| {
+        Unreachable::named(&name).expect("refuse, leave or carry")
+    });
+    let scratch = tempfile::tempdir().expect("a directory");
+    let target = variable(REAL_TARGET).map_or(scratch.path().join("lignindb"), Into::into);
+
+    let listing = |dir: &Path| -> Vec<(OsString, u64, SystemTime)> {
+        let mut listing = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("a directory") {
+            let entry = entry.expect("an entry");
+            let metadata = entry.metadata().expect("its metadata");
+            let modified = metadata.modified().expect("its time");
+            listing.push((entry.file_name(), metadata.len(), modified));
+        }
+        listing.sort();
+        listing
+    };
+    let before = listing(source);
+    let migration = Migration {
+        source: source.to_path_buf(),
+        target: Some(target.clone()),
+        options: Options::default(),
+        batch_bytes: 64 << 20,
+        progress: Duration::from_secs(5),
+        unreachable,
+    };
+    let (outcome, out) = ran(&migration);
+    for line in out.lines().filter(|line| line.starts_with("migrate:")) {
+        println!("{line}");
+    }
+    assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+    assert!(
+        listing(source) == before,
+        "the source's directory is as it was"
+    );
+
+    let read = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn_scoped(scope, || {
+                let rocks = rocks(source);
+                let lignin = Lignin::open_with_engine(&target).expect("the target");
+                let listed = same_stored(&rocks, &lignin, version, "after the migration");
+                let listed = listed.expect("the groves store the same");
+                let checked =
+                    |issues: Result<_, grovedb::Error>| issues.map_err(|error| error.to_string());
+                let was = checked(rocks.verify_grovedb(None, true, false, version));
+                let is = checked(lignin.verify_grovedb(None, true, false, version));
+                assert_eq!(was, is, "verify_grovedb");
+                let issues = was.expect("verify_grovedb answers");
+                let emptied = issues.values().filter(|(root, ..)| *root == [0; 32]);
+                let roots = (
+                    rocks
+                        .root_hash(None, version)
+                        .unwrap()
+                        .expect("a root hash"),
+                    lignin
+                        .root_hash(None, version)
+                        .unwrap()
+                        .expect("a root hash"),
+                );
+                assert_eq!(roots.0, roots.1);
+                (listed, issues.len() as u64, emptied.count() as u64, roots.0)
+            })
+            .expect("a thread")
+            .join()
+    });
+    let (listed, issues, emptied, root) = read.expect("the groves are read");
+    let named = word(&out, "migrate: verify", "left_hashes");
+    println!(
+        "read alike through the seam: {listed} records listed on both, root hash {}; \
+         verify_grovedb reports {issues} issues on both, {emptied} of them of trees with no \
+         node; the physical checker names {named} hashes a delete left",
+        hex::encode(root)
+    );
+    assert_eq!(issues, named + emptied);
 }
