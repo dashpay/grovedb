@@ -767,6 +767,14 @@ pub struct Known {
     /// element leading to them, by what the case did and not by what an
     /// engine holds now.
     left_records: BTreeSet<NodeKey>,
+    /// `left_records` as it was at the last commit that the reference
+    /// took, and nothing before the first: what a rollback of the block
+    /// returns the case to ([`Known::forgets`]).
+    left_at_commit: BTreeSet<NodeKey>,
+    /// Every path at which an operation of the case, whatever it was
+    /// answered, drops a tree flat: where a drain may delete the
+    /// records that RocksDB kept ([`Known::forgets`]).
+    asked_to_drop_flat: Vec<Path>,
     /// Whether an operation of the case has carried an element that
     /// takes part in backward references (an item that keeps them, or
     /// a bidirectional reference), whatever it was answered. From
@@ -1982,10 +1990,26 @@ impl Known {
     /// the operation can have put an element under its key, so that a
     /// record written since is never taken for one that was left.
     ///
-    /// - A rollback of the block, which can undo the delete itself,
-    ///   forgets every record, whatever it was answered, and so does a
-    ///   commit that the reference refused, after which the runner
-    ///   begins a new block on the committed state.
+    /// - A commit that the reference took keeps the records as they
+    ///   are then, for a rollback.
+    /// - A rollback of the block and an abandoned block, whatever they
+    ///   are answered, return the case to the committed state: the
+    ///   records are again those of the last commit that the reference
+    ///   took, and none where it took none. What the block added, a
+    ///   delete of the block left; what it forgot, it wrote in a block
+    ///   that is gone.
+    /// - A rollback to a savepoint, which can undo the delete itself,
+    ///   forgets every record, whatever it was answered; a later
+    ///   rollback of the block still returns those of the last commit.
+    /// - A commit that the reference refused, after which the runner
+    ///   begins a new block on the committed state, forgets every
+    ///   record, also those of the last commit.
+    /// - A drain writes beside the block, also into what a rollback
+    ///   returns to: whatever it is answered, it forgets, among the
+    ///   records and among those of the last commit, every record at or
+    ///   below a path at which an operation of the case, whatever it
+    ///   was answered, drops a tree flat. RocksDB's drain deletes the
+    ///   range under the prefix of such a tree, with what it kept there.
     /// - A write that the reference refused and that left its root hash
     ///   as it was put no element that an element leads to, and forgets
     ///   nothing.
@@ -2009,17 +2033,36 @@ impl Known {
         if op.elements().iter().any(takes_part) {
             self.backward_references = true;
         }
+        if let Op::Write(Write::DropFlat { path, key }) = op {
+            self.asked_to_drop_flat.push(joined(path, key));
+        }
+        for batch_op in op.batch_ops() {
+            if let BatchOp::DropFlat { path, key, .. } = batch_op {
+                self.asked_to_drop_flat.push(joined(path, key));
+            }
+        }
+        match op {
+            Op::Commit if taken => self.left_at_commit = self.left_records.clone(),
+            Op::Commit => {
+                self.left_records.clear();
+                self.left_at_commit.clear();
+            }
+            Op::Transaction(TransactionOp::Rollback | TransactionOp::Abandon) => {
+                self.left_records = self.left_at_commit.clone();
+            }
+            Op::FlushPendingDrops => {
+                for tree in &self.asked_to_drop_flat {
+                    at_or_below(&mut self.left_records, tree);
+                    at_or_below(&mut self.left_at_commit, tree);
+                }
+            }
+            _ => {}
+        }
         let records = &mut self.left_records;
         let wrote = taken || root_changed;
         match op {
-            Op::Read(_) | Op::FlushPendingDrops => {}
-            Op::Commit if taken => {}
-            Op::Commit => records.clear(),
-            Op::Transaction(
-                TransactionOp::Rollback
-                | TransactionOp::Abandon
-                | TransactionOp::RollbackToSavepoint,
-            ) => records.clear(),
+            Op::Read(_) | Op::FlushPendingDrops | Op::Commit => {}
+            Op::Transaction(TransactionOp::RollbackToSavepoint) => records.clear(),
             Op::Transaction(_) => {}
             _ if !wrote => {}
             Op::Write(Write::Insert { path, key, .. }) => {
@@ -5113,6 +5156,175 @@ mod tests {
             assert!(asked_of(&met, &below).is_empty());
             assert_eq!(asked_of(&known, &below).len(), 1);
         }
+    }
+
+    /// A rollback of the block and an abandoned block return the
+    /// records that a plain delete left to those the case knew at the
+    /// last commit the reference took: a record that a commit made
+    /// durable is remembered, also where the block wrote under its key,
+    /// and one that a delete of the block left is forgotten. A write
+    /// that was committed stays forgotten. With no commit taken before,
+    /// nothing is remembered. A commit that the reference refused
+    /// forgets every record, also for a rollback after it; a rollback
+    /// to a savepoint forgets every record, and a rollback of the block
+    /// after it returns those of the last commit. A drain forgets,
+    /// also for a rollback after it, the records at or below a path at
+    /// which the case came to a flat drop, whatever that was answered,
+    /// and no other.
+    #[test]
+    fn a_rollback_returns_the_records_a_plain_delete_left_to_those_of_the_last_commit_taken() {
+        let durable: NodeKey = (path(&[b"p", b"t"]), b"k".to_vec());
+        let of_the_block: NodeKey = (path(&[b"p", b"u"]), b"k".to_vec());
+        let both = [durable.clone(), of_the_block.clone()];
+        let alone = vec![durable.clone()];
+        let rollback = Op::Transaction(TransactionOp::Rollback);
+        let abandon = Op::Transaction(TransactionOp::Abandon);
+        let back = Op::Transaction(TransactionOp::RollbackToSavepoint);
+        let insert_at = |record: &NodeKey| {
+            Op::Write(Write::Insert {
+                path: record.0.clone(),
+                key: record.1.clone(),
+                element: Element::new_item(vec![1]),
+            })
+        };
+        let left = |known: &Known| known.left_records.iter().cloned().collect::<Vec<_>>();
+        let places = || vec![path(&[b"p", b"t"]), path(&[b"p", b"u"])];
+        // A case in which a plain delete left `durable` before a commit
+        // that the reference took.
+        let committed = || {
+            let mut known = Known {
+                plain_deletes: places(),
+                ..Known::default()
+            };
+            known.left_records(vec![durable.clone()]);
+            known.forgets(&Op::Commit, true, false);
+            known
+        };
+        for (end, taken) in [
+            (&rollback, true),
+            (&rollback, false),
+            (&abandon, true),
+            (&abandon, false),
+        ] {
+            // Made durable before the block: remembered. Left by a
+            // delete of the block: forgotten.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            assert_eq!(left(&known), both);
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), alone, "{end:?}");
+
+            // A write of the block under the key of the durable record
+            // goes with the block.
+            let mut known = committed();
+            known.forgets(&insert_at(&durable), true, true);
+            assert!(left(&known).is_empty());
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), alone, "{end:?}");
+
+            // A write that was committed stays.
+            let mut known = committed();
+            known.forgets(&insert_at(&durable), true, true);
+            known.forgets(&Op::Commit, true, true);
+            known.forgets(end, taken, false);
+            assert!(left(&known).is_empty(), "{end:?}");
+
+            // A record of a block that was committed is durable too.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&Op::Commit, true, true);
+            known.forgets(&insert_at(&of_the_block), true, true);
+            assert_eq!(left(&known), alone);
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), both, "{end:?}");
+
+            // No commit taken before: nothing is remembered.
+            let mut known = Known {
+                plain_deletes: places(),
+                ..Known::default()
+            };
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(end, taken, false);
+            assert!(left(&known).is_empty(), "{end:?}");
+
+            // A commit that the reference refused forgets every record,
+            // also for a rollback after it.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&Op::Commit, false, false);
+            assert!(left(&known).is_empty());
+            known.forgets(end, taken, false);
+            assert!(left(&known).is_empty(), "{end:?}");
+
+            // A rollback to a savepoint forgets every record; a commit
+            // after it keeps none, and a rollback of the block after it
+            // returns those of the last commit.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&back, taken, false);
+            assert!(left(&known).is_empty());
+            let mut then_committed = known.clone();
+            then_committed.forgets(&Op::Commit, true, false);
+            then_committed.forgets(end, taken, false);
+            assert!(left(&then_committed).is_empty(), "{end:?}");
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), alone, "{end:?}");
+        }
+
+        // A drain forgets the records at or below a path at which the
+        // case came to a flat drop, among those of the last commit too.
+        let drop_flat = |above: &[u8]| {
+            Op::Write(Write::DropFlat {
+                path: path(&[above]),
+                key: b"t".to_vec(),
+            })
+        };
+        let in_a_batch = Op::Batch(vec![BatchOp::DropFlat {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+            tree_type: grovedb::TreeType::NormalTree,
+        }]);
+        let added_last = Op::PartialBatch(PartialBatch {
+            ops: Vec::new(),
+            add_on: vec![BatchOp::DropFlat {
+                path: path(&[b"p"]),
+                key: b"t".to_vec(),
+                tree_type: grovedb::TreeType::NormalTree,
+            }],
+            pause_height: None,
+        });
+        let above = Op::Batch(vec![BatchOp::DropFlat {
+            path: Vec::new(),
+            key: b"p".to_vec(),
+            tree_type: grovedb::TreeType::NormalTree,
+        }]);
+        let drain = Op::FlushPendingDrops;
+        for (drop, taken, kept) in [
+            (&in_a_batch, true, vec![of_the_block.clone()]),
+            (&in_a_batch, false, vec![of_the_block.clone()]),
+            (&added_last, false, vec![of_the_block.clone()]),
+            (&drop_flat(b"p"), false, vec![of_the_block.clone()]),
+            (&above, false, Vec::new()),
+            (&drop_flat(b"q"), false, both.to_vec()),
+        ] {
+            for drained in [true, false] {
+                let mut known = committed();
+                known.left_records(vec![of_the_block.clone()]);
+                known.forgets(&Op::Commit, true, false);
+                known.forgets(drop, taken, false);
+                assert_eq!(left(&known), both, "{drop:?}");
+                known.forgets(&drain, drained, false);
+                assert_eq!(left(&known), kept, "{drop:?}");
+                known.forgets(&rollback, true, false);
+                assert_eq!(left(&known), kept, "{drop:?}");
+            }
+        }
+        // A drain in a case with no flat drop forgets nothing.
+        let mut known = committed();
+        known.forgets(&drain, true, false);
+        assert_eq!(left(&known), alone);
+        known.forgets(&rollback, true, false);
+        assert_eq!(left(&known), alone);
     }
 
     /// The trees a batch removes by a plain delete, or replaces by a
