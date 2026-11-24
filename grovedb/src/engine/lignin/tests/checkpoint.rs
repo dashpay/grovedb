@@ -193,8 +193,13 @@ fn put<E: Engine>(db: &GroveDb<E>, key: &[u8], element: Element, v: &GroveVersio
 /// `E`: in a directory inside the directory of the live database, opened
 /// by the open of any database with a file of Platform's beside the
 /// engine's, and removed by the removal of the directory while a handle
-/// has the checkpoint open. Returns what was answered, for another engine
-/// to be held to.
+/// has the checkpoint open. That handle has only read, as Platform's
+/// handles on its checkpoints do: a session that was asked for a commit
+/// goes on making files in its directory, and a removal of the directory
+/// beside one of them can fail (`lignindb::db`, "Background work"). The
+/// checkpoint that is written, and that a checkpoint is made of, is
+/// another, closed before it is deleted. Returns what was answered, for
+/// another engine to be held to.
 fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
     let mut told = Vec::new();
     let dir = tempfile::tempdir().expect("a directory");
@@ -236,22 +241,15 @@ fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
     assert_eq!(root_of(&checkpoint, v), root_7);
     told.push(format!("7: {}", hex::encode(root_7)));
 
-    // A second checkpoint beside the first, which is open, and a
-    // checkpoint of the checkpoint.
+    // A second checkpoint beside the first, which is open.
     let second = kept.join("8");
     let root_8 = root_of(&db, v);
     assert_ne!(root_8, root_7);
     db.create_checkpoint(&second).expect("a second checkpoint");
-    put(&checkpoint, b"into 7", item(70), v);
-    let root_7_written = root_of(&checkpoint, v);
-    let of_the_checkpoint = kept.join("of 7");
-    (checkpoint.create_checkpoint(&of_the_checkpoint)).expect("a checkpoint of a checkpoint");
-    {
+    let of_the_checkpoint = kept.join("of 8");
+    let root_8_written = {
         let second = open::<E>(&second);
         assert_eq!(root_of(&second, v), root_8);
-        let third = GroveDb::<E>::open_checkpoint_with_engine(&of_the_checkpoint);
-        let third = third.expect("the checkpoint of the checkpoint opens");
-        assert_eq!(root_of(&third, v), root_7_written);
         let query = crate::PathQuery::new_unsized(vec![b"tree".to_vec()], {
             let mut query = grovedb_merk::proofs::Query::new();
             query.insert_all();
@@ -270,8 +268,21 @@ fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
         let chunks = chunk_proofs(&second, v);
         assert_eq!(chunks, chunk_proofs(&db, v));
         told.extend(chunks);
-    }
-    told.push(format!("7 written: {}", hex::encode(root_7_written)));
+
+        // The second is written, and a checkpoint is made of it. The
+        // first and the live database are as they were.
+        put(&second, b"into 8", item(80), v);
+        let root_8_written = root_of(&second, v);
+        assert_ne!(root_8_written, root_8);
+        (second.create_checkpoint(&of_the_checkpoint)).expect("a checkpoint of a checkpoint");
+        let third = GroveDb::<E>::open_checkpoint_with_engine(&of_the_checkpoint);
+        let third = third.expect("the checkpoint of the checkpoint opens");
+        assert_eq!(root_of(&third, v), root_8_written);
+        assert_eq!(root_of(&checkpoint, v), root_7);
+        assert_eq!(root_of(&db, v), root_8);
+        root_8_written
+    };
+    told.push(format!("8 written: {}", hex::encode(root_8_written)));
 
     // The live database is closed and opened again with the checkpoints
     // in its directory, and the file beside the first is as it was.
@@ -283,11 +294,11 @@ fn kept_as_platform_keeps_them<E: Side>(v: &GroveVersion) -> Vec<String> {
     let state = fs::read(first.join("platform_state.bin")).expect("the file");
     assert_eq!(state, b"the state");
 
-    // The directory of the first is removed while its handle is open.
-    // The handle reads on and is closed, nothing is made at the path
-    // again, and the live database is as it was.
+    // The directory of the first is removed while its handle is open:
+    // the handle has only read. It reads on and is closed, nothing is
+    // made at the path again, and the live database is as it was.
     fs::remove_dir_all(&first).expect("the directory is removed");
-    assert_eq!(root_of(&checkpoint, v), root_7_written);
+    assert_eq!(root_of(&checkpoint, v), root_7);
     let read = checkpoint.get([&b"tree"[..]].as_ref(), &[3], None, v);
     assert_eq!(read.unwrap().expect("an item"), item(3));
     drop(checkpoint);
