@@ -17,6 +17,7 @@ grovedb-merk = { version = "7.0.0", path = "../merk" }
 grovedb-path = { version = "7.0.0", path = "../path" }
 grovedb-storage = { version = "7.0.0", path = "../storage", features = ["rocksdb_storage"] }
 grovedb-version = { version = "7.0.0", path = "../grovedb-version" }
+bincode = { workspace = true }
 blake3 = { workspace = true }
 hex = { workspace = true }
 lignin-format = { version = "7.0.0", path = "../lignin-format" }
