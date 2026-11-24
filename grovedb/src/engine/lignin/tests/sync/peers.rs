@@ -26,10 +26,21 @@
 //! And of the two engines, where both are compiled in: each case is taken
 //! or refused by both at the same request, with the same requests asked
 //! after it and the same end.
+//!
+//! The tests run the alterations of the list and a few seeds against the
+//! grove of the sync tests. A campaign is the same tests under
+//! `LIGNIN_HOSTILE_PEERS=seeds`, which leaves the list out, with a range
+//! of seeds (`LIGNIN_HOSTILE_PEER_SEEDS=first..end`), an end by the clock
+//! (`LIGNIN_HOSTILE_PEER_SECONDS`), sessions that commit in parts
+//! (`LIGNIN_HOSTILE_PEER_MODE=parts`) and a grove of another shape to sync
+//! from (`LIGNIN_HOSTILE_PEER_SHAPE`, see [`Plan`]). Each test ends with a
+//! line `PEERS` that says what its cases came to.
 
 use std::{
     collections::{BTreeMap, VecDeque},
+    ops::Range,
     panic::{self, AssertUnwindSafe},
+    time::{Duration, Instant},
 };
 
 use grovedb_merk::{
@@ -39,7 +50,15 @@ use grovedb_merk::{
 };
 use grovedb_version::version::GroveVersion;
 
-use super::{begin, open, records, whole, Made, Served, Side, PARTS, VERSION};
+use super::{
+    super::{
+        append_only::{Appended, Bulk, Commitment, Dense, Mmr, Private},
+        indexed::{BigSum, Count, CountBigSum, CountSum, Indexed, Sum, SumAndAverage},
+        nested::{made_by, number, KINDS},
+        queries::path,
+    },
+    begin, must_put, open, put, records, row, whole, Made, Served, Shape, Side, PARTS, VERSION,
+};
 use crate::{
     replication::{
         indexed_sync::{is_indexed_header_request, IndexedHeader},
@@ -747,6 +766,282 @@ fn change(bytes: &mut Vec<u8>, rng: &mut Rng) {
     }
 }
 
+/// How much a grove that a campaign syncs from holds of each thing. The
+/// grove of the sync tests has one size of each; a session against it has
+/// the same requests every time. These groves have a tree of every kind
+/// too, an append-only tree of every kind and an indexed tree of every
+/// kind, with as much in each as the plan says: Merks of one chunk and of
+/// many, values in a node and out of line, trees one deep and twenty
+/// deep, append-only trees with nothing and past their first boundary,
+/// indexed trees with no child and with many.
+#[derive(Clone, Copy, Debug)]
+struct Plan {
+    /// The rows of a tree of each kind whose data is one Merk.
+    rows: usize,
+    /// The bytes of the value of an item, in the trees that take items.
+    value_len: usize,
+    /// How deep trees are in trees.
+    depth: usize,
+    /// The values appended to a tree of each append-only kind, as far as
+    /// the kind takes them.
+    appended: usize,
+    /// The children of an indexed tree of each kind, beside its child
+    /// tree.
+    children: usize,
+}
+
+impl Plan {
+    /// The plan of the shape `shape`, which is 1 or more: each size is one
+    /// of a few, chosen by the shape's number.
+    fn of(shape: u64) -> Self {
+        let mut rng = Rng(shape.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut one_of = |sizes: &[usize]| sizes[rng.below(sizes.len())];
+        Self {
+            rows: one_of(&[1, 6, 23, 70, 160]),
+            value_len: one_of(&[0, 9, 60, 700, 2600]),
+            depth: one_of(&[1, 3, 9, 20]),
+            appended: one_of(&[0, 2, 12, 40]),
+            children: one_of(&[0, 3, 7, 30, 90]),
+        }
+    }
+}
+
+const PLANNED_KINDS: &[u8] = b"kinds";
+const PLANNED_DEEP: &[u8] = b"deep";
+const PLANNED_APPENDED: &[u8] = b"appended";
+const PLANNED_INDEXED: &[u8] = b"indexed";
+
+/// A tree of an append-only kind with the plan's values in it, where the
+/// grove version makes the kind. A kind that is full takes no more.
+fn planned_appended<T: Appended, E: Engine>(
+    db: &GroveDb<E>,
+    plan: &Plan,
+    v: &GroveVersion,
+    shape: &mut Shape,
+) {
+    let name = T::NAME.as_bytes();
+    if !put(db, &path(&[PLANNED_APPENDED]), name, T::empty(None), v) {
+        return;
+    }
+    for n in 0..plan.appended {
+        let appended = T::append(db, &[PLANNED_APPENDED], name, n, None, v);
+        if appended.unwrap().is_err() {
+            break;
+        }
+    }
+    shape.flats.push(path(&[PLANNED_APPENDED, name]));
+}
+
+/// An indexed tree of one kind with the plan's children and a child that
+/// is a tree with elements of its own, where the grove version makes the
+/// kind.
+fn planned_indexed<I: Indexed, E: Engine>(
+    db: &GroveDb<E>,
+    plan: &Plan,
+    v: &GroveVersion,
+    shape: &mut Shape,
+) {
+    let name = I::NAME.as_bytes();
+    if !put(db, &path(&[PLANNED_INDEXED]), name, I::empty(), v) {
+        return;
+    }
+    let at: [&[u8]; 2] = [PLANNED_INDEXED, name];
+    for n in 0..plan.children {
+        let inserted = I::insert(db, &at, &row(n), I::leaf(n), None, v);
+        inserted.unwrap().expect("a child");
+    }
+    let inserted = I::insert(db, &at, b"branch", I::branch(), None, v);
+    inserted.unwrap().expect("a child that is a tree");
+    let branch = path(&[PLANNED_INDEXED, name, b"branch"]);
+    for n in 0..3 {
+        must_put(db, &branch, &row(n), I::in_branch(n), v);
+    }
+    shape.indexed.push((path(&at), I::axes()));
+    shape.merks.push((branch, I::in_branch(0).is_sum_item()));
+}
+
+/// A grove of `plan` on the engine `E`.
+fn planned<E: Side>(plan: &Plan, v: &GroveVersion) -> Made<E> {
+    let dir = tempfile::tempdir().expect("a directory");
+    let db = open::<E>(dir.path());
+    let mut shape = Shape::default();
+    shape.merks.push((Vec::new(), false));
+    for top in [
+        PLANNED_KINDS,
+        PLANNED_DEEP,
+        PLANNED_APPENDED,
+        PLANNED_INDEXED,
+    ] {
+        must_put(&db, &[], top, Element::empty_tree(), v);
+        shape.merks.push((path(&[top]), false));
+    }
+
+    for kind in &KINDS[..made_by(v)] {
+        let at = path(&[PLANNED_KINDS, kind.name.as_bytes()]);
+        must_put(&db, &at[..1], &at[1], (kind.make)(), v);
+        for n in 0..plan.rows {
+            let element = match kind.sums {
+                true => number(true, n as i64 * 3 - 20),
+                false => Element::new_item(vec![n as u8; plan.value_len]),
+            };
+            must_put(&db, &at, &row(n), element, v);
+        }
+        shape.merks.push((at, kind.sums));
+    }
+
+    let mut at = path(&[PLANNED_DEEP]);
+    for level in 0..plan.depth {
+        let (name, tree, sums) = match level % 3 {
+            0 => (b"plain".as_slice(), Element::empty_tree(), false),
+            1 => (b"sums".as_slice(), Element::empty_sum_tree(), true),
+            _ => (b"counts".as_slice(), Element::empty_count_tree(), false),
+        };
+        must_put(&db, &at, name, tree, v);
+        at.push(name.to_vec());
+        for n in 0..3 {
+            must_put(&db, &at, &row(n), number(sums, n as i64 - 1), v);
+        }
+        shape.merks.push((at.clone(), sums));
+    }
+
+    planned_appended::<Mmr, E>(&db, plan, v, &mut shape);
+    planned_appended::<Bulk, E>(&db, plan, v, &mut shape);
+    planned_appended::<Dense, E>(&db, plan, v, &mut shape);
+    planned_appended::<Commitment, E>(&db, plan, v, &mut shape);
+    planned_appended::<Private, E>(&db, plan, v, &mut shape);
+
+    planned_indexed::<Count, E>(&db, plan, v, &mut shape);
+    planned_indexed::<Sum, E>(&db, plan, v, &mut shape);
+    planned_indexed::<CountSum, E>(&db, plan, v, &mut shape);
+    planned_indexed::<SumAndAverage, E>(&db, plan, v, &mut shape);
+    planned_indexed::<BigSum, E>(&db, plan, v, &mut shape);
+    planned_indexed::<CountBigSum, E>(&db, plan, v, &mut shape);
+
+    let root = db.root_hash(None, v).unwrap().expect("a root hash");
+    Made {
+        db,
+        dir,
+        shape,
+        root,
+    }
+}
+
+/// What the environment asks of a run of these tests.
+struct Asked {
+    /// The grove the sessions sync from: 0 is the grove of the sync
+    /// tests, and any other number the grove of that shape ([`Plan::of`]).
+    shape: u64,
+    /// `LIGNIN_HOSTILE_PEERS=wide`: the alterations of the list at every
+    /// part they can be made on, and sessions that commit in parts beside
+    /// those that commit once.
+    wide: bool,
+    /// `LIGNIN_HOSTILE_PEERS=seeds`: the cases of the seeds alone.
+    seeds_alone: bool,
+    /// `LIGNIN_HOSTILE_PEER_SEEDS=first..end`, or a short range.
+    seeds: Range<u64>,
+    /// `LIGNIN_HOSTILE_PEER_SHARD=i/n`: every `n`th case, from the `i`th
+    /// on.
+    shard: Option<(usize, usize)>,
+    /// `LIGNIN_HOSTILE_PEER_MODE=parts`, with the seeds alone: sessions
+    /// that commit in parts, and not once.
+    in_parts: bool,
+    /// When `LIGNIN_HOSTILE_PEER_SECONDS` are over.
+    until: Option<Instant>,
+}
+
+impl Asked {
+    fn read() -> Self {
+        let said = |name: &str| std::env::var(name).ok();
+        let peers = said("LIGNIN_HOSTILE_PEERS");
+        let seeds = match said("LIGNIN_HOSTILE_PEER_SEEDS") {
+            Some(named) => {
+                let (first, end) = named.split_once("..").expect("first..end");
+                first.parse().expect("a seed")..end.parse().expect("a seed")
+            }
+            None => 0..12,
+        };
+        let shard = said("LIGNIN_HOSTILE_PEER_SHARD").map(|shard| {
+            let (index, of) = shard.split_once('/').expect("i/n");
+            (index.parse().expect("i"), of.parse().expect("n"))
+        });
+        let seconds = said("LIGNIN_HOSTILE_PEER_SECONDS")
+            .map(|seconds| Duration::from_secs(seconds.parse().expect("seconds")));
+        Self {
+            shape: said("LIGNIN_HOSTILE_PEER_SHAPE")
+                .map_or(0, |shape| shape.parse().expect("a shape")),
+            wide: peers.as_deref() == Some("wide"),
+            seeds_alone: peers.as_deref() == Some("seeds"),
+            seeds,
+            shard,
+            in_parts: said("LIGNIN_HOSTILE_PEER_MODE").as_deref() == Some("parts"),
+            until: seconds.map(|seconds| Instant::now() + seconds),
+        }
+    }
+
+    /// Whether the run is to end by the clock.
+    fn is_over(&self) -> bool {
+        self.until.is_some_and(|until| Instant::now() >= until)
+    }
+
+    /// The grove the sessions sync from, on the engine `S`.
+    fn source<S: Side>(&self, v: &GroveVersion) -> Made<S> {
+        match self.shape {
+            0 => Made::new(v),
+            shape => planned(&Plan::of(shape), v),
+        }
+    }
+
+    /// The cases of a run: those of the list, unless the seeds run
+    /// alone, and those of the seeds.
+    fn cases<'a, S: Side>(
+        &'a self,
+        honest: &'a Honest<S>,
+        v: &GroveVersion,
+    ) -> impl Iterator<Item = Case> + 'a {
+        let listed = match self.seeds_alone {
+            true => Vec::new(),
+            false => honest.altered(self.wide, v),
+        };
+        let seeded = self.seeds.clone().map(|seed| honest.at_random(seed));
+        (listed.into_iter().chain(seeded).enumerate())
+            .filter(|(at, _)| self.shard.is_none_or(|(index, of)| at % of == index))
+            .map(|(_, case)| case)
+    }
+
+    /// The modes a run makes its cases in: a session that commits once,
+    /// and with `wide` also one that commits in parts. The seeds alone run
+    /// in the one mode that is asked for.
+    fn modes(&self) -> Vec<(&'static str, RestoreCommitMode)> {
+        let (once, parts) = (("once", RestoreCommitMode::Atomic), ("in parts", PARTS));
+        match (self.seeds_alone, self.in_parts, self.wide) {
+            (true, true, _) => vec![parts],
+            (true, false, _) | (false, _, false) => vec![once],
+            (false, _, true) => vec![once, parts],
+        }
+    }
+
+    /// Whether the run holds the whole list, whose cases do not all end
+    /// one way.
+    fn holds_the_list(&self) -> bool {
+        !self.seeds_alone && self.shard.is_none() && self.until.is_none()
+    }
+
+    /// The line that says what the cases of a run came to.
+    fn tell(&self, engines: &str, cases: usize, ends: &BTreeMap<String, usize>, wrong: usize) {
+        let Self { shape, seeds, .. } = self;
+        let plan = match shape {
+            0 => "the grove of the sync tests".to_owned(),
+            shape => format!("{:?}", Plan::of(*shape)),
+        };
+        let modes: Vec<&str> = self.modes().iter().map(|(mode, _)| *mode).collect();
+        println!(
+            "PEERS {engines} shape={shape} ({plan}) modes={modes:?} seeds={}..{} cases={cases} \
+             ends={ends:?} wrong={wrong}",
+            seeds.start, seeds.end
+        );
+    }
+}
+
 /// One session with one altered payload.
 struct Case {
     name: String,
@@ -765,11 +1060,13 @@ struct Honest<S: Engine> {
 }
 
 impl<S: Side> Honest<S> {
-    fn new(v: &GroveVersion) -> Self {
-        let source = Made::<S>::new(v);
+    /// The session against `source` in the mode `mode`: a session that
+    /// commits in parts need not make its requests in the order of one
+    /// that commits once.
+    fn new(source: Made<S>, mode: RestoreCommitMode, v: &GroveVersion) -> Self {
         let dir = tempfile::tempdir().expect("a directory");
         let target = open::<S>(dir.path());
-        let (served, _) = whole(&source.db, &target, RestoreCommitMode::Atomic, v);
+        let (served, _) = whole(&source.db, &target, mode, v);
         // The honest sync above proves the source is restorable; the
         // records a committed case must match are the source's own.
         drop(target);
@@ -1107,44 +1404,6 @@ fn caught<S: Side, T: Side>(
     })
 }
 
-/// The cases a test runs: those of the list, and those of the seeds that
-/// `LIGNIN_HOSTILE_PEER_SEEDS` names as `first..end`, or of a short range.
-/// With `LIGNIN_HOSTILE_PEERS=wide` the alterations of the list are made
-/// at every part they can be made on. `LIGNIN_HOSTILE_PEER_SHARD=i/n`
-/// keeps every `n`th case, from the `i`th on.
-fn cases<S: Side>(honest: &Honest<S>, v: &GroveVersion) -> Vec<Case> {
-    let wide = std::env::var("LIGNIN_HOSTILE_PEERS").is_ok_and(|said| said == "wide");
-    let seeds = match std::env::var("LIGNIN_HOSTILE_PEER_SEEDS") {
-        Ok(named) => {
-            let (first, end) = named.split_once("..").expect("first..end");
-            first.parse().expect("a seed")..end.parse().expect("a seed")
-        }
-        Err(_) => 0..12,
-    };
-    let mut cases = honest.altered(wide, v);
-    cases.extend(seeds.map(|seed| honest.at_random(seed)));
-    if let Ok(shard) = std::env::var("LIGNIN_HOSTILE_PEER_SHARD") {
-        let (index, of) = shard.split_once('/').expect("i/n");
-        let (index, of): (usize, usize) = (index.parse().expect("i"), of.parse().expect("n"));
-        let mut at = 0;
-        cases.retain(|_| {
-            at += 1;
-            (at - 1) % of == index
-        });
-    }
-    cases
-}
-
-/// The modes a test runs its cases in: a session that commits once, and
-/// with `LIGNIN_HOSTILE_PEERS=wide` also one that commits in parts.
-fn modes() -> Vec<(&'static str, RestoreCommitMode)> {
-    let mut modes = vec![("once", RestoreCommitMode::Atomic)];
-    if std::env::var("LIGNIN_HOSTILE_PEERS").is_ok_and(|said| said == "wide") {
-        modes.push(("in parts", PARTS));
-    }
-    modes
-}
-
 /// The two alterations that send a node of a family foreign to the tree
 /// (MERK-07's named input: a chunk that hashes right but is refused at a
 /// node). A session that takes one must end `Failed` — the refusal comes as
@@ -1161,14 +1420,22 @@ fn foreign_family(name: &str) -> bool {
 fn a_session_with_a_peer_that_alters_a_payload_ends_on_lignindb() {
     type Lignin = super::LigninEngine;
     let v = GroveVersion::latest();
-    let honest = Honest::<Lignin>::new(v);
-    let cases = cases(&honest, v);
+    let asked = Asked::read();
+    let began = Instant::now();
     let mut ends: BTreeMap<String, usize> = BTreeMap::new();
     let mut broken = Vec::new();
-    for (mode, commits) in modes() {
-        for case in &cases {
-            let went = caught::<Lignin, Lignin>(&honest, case, commits, v);
-            println!("CASE {mode}: {}: {}", case.name, went.in_short());
+    let mut count = 0;
+    for (mode, commits) in asked.modes() {
+        let honest = Honest::<Lignin>::new(asked.source(v), commits, v);
+        for case in asked.cases(&honest, v) {
+            if asked.is_over() {
+                break;
+            }
+            count += 1;
+            let went = caught::<Lignin, Lignin>(&honest, &case, commits, v);
+            if !asked.seeds_alone {
+                println!("CASE {mode}: {}: {}", case.name, went.in_short());
+            }
             *ends.entry(format!("{:?}", went.end)).or_default() += 1;
             if foreign_family(&case.name) && !matches!(went.end, End::Failed) {
                 broken.push(format!(
@@ -1181,13 +1448,13 @@ fn a_session_with_a_peer_that_alters_a_payload_ends_on_lignindb() {
             }
         }
     }
-    println!("{} cases: {ends:?}", cases.len());
     for what in &broken {
         println!("BROKEN {what}");
     }
+    asked.tell("from LigninDB to LigninDB", count, &ends, broken.len());
+    println!("SECONDS {}", began.elapsed().as_secs());
     assert!(broken.is_empty(), "{} cases did not hold", broken.len());
-    // The mix holds over the whole set; a shard may hold one outcome.
-    if std::env::var_os("LIGNIN_HOSTILE_PEER_SHARD").is_none() {
+    if asked.holds_the_list() {
         assert!(
             ends.contains_key("Failed") && ends.contains_key("Committed"),
             "{ends:?}"
@@ -1203,16 +1470,24 @@ fn both_engines_answer_a_peer_that_alters_a_payload_alike() {
     type Lignin = super::LigninEngine;
     type Rocks = crate::RocksDbEngine;
     let v = GroveVersion::latest();
-    let honest = Honest::<Rocks>::new(v);
-    let cases = cases(&honest, v);
+    let asked = Asked::read();
+    let began = Instant::now();
     let mut ends: BTreeMap<String, usize> = BTreeMap::new();
     let (mut broken, mut differ) = (Vec::new(), Vec::new());
     let mut said: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for (mode, commits) in modes() {
-        for case in &cases {
-            let rocks = caught::<Rocks, Rocks>(&honest, case, commits, v);
-            let lignin = caught::<Rocks, Lignin>(&honest, case, commits, v);
-            println!("CASE {mode}: {}: {}", case.name, lignin.in_short());
+    let mut count = 0;
+    for (mode, commits) in asked.modes() {
+        let honest = Honest::<Rocks>::new(asked.source(v), commits, v);
+        for case in asked.cases(&honest, v) {
+            if asked.is_over() {
+                break;
+            }
+            count += 1;
+            let rocks = caught::<Rocks, Rocks>(&honest, &case, commits, v);
+            let lignin = caught::<Rocks, Lignin>(&honest, &case, commits, v);
+            if !asked.seeds_alone {
+                println!("CASE {mode}: {}: {}", case.name, lignin.in_short());
+            }
             *ends.entry(format!("{:?}", lignin.end)).or_default() += 1;
             if foreign_family(&case.name) && !matches!(lignin.end, End::Failed) {
                 broken.push(format!(
@@ -1238,7 +1513,6 @@ fn both_engines_answer_a_peer_that_alters_a_payload_alike() {
             }
         }
     }
-    println!("{} cases: {ends:?}", cases.len());
     for ((rocks, lignin), cases) in &said {
         println!("SAID in {cases} cases:\n    RocksDB:  {rocks}\n    LigninDB: {lignin}");
     }
@@ -1248,13 +1522,21 @@ fn both_engines_answer_a_peer_that_alters_a_payload_alike() {
     for what in &differ {
         println!("DIFFER {what}");
     }
+    let wrong = broken.len() + differ.len();
+    asked.tell(
+        "from RocksDB to RocksDB and to LigninDB",
+        count,
+        &ends,
+        wrong,
+    );
+    println!("SECONDS {}", began.elapsed().as_secs());
     assert!(broken.is_empty(), "{} cases did not hold", broken.len());
     assert!(
         differ.is_empty(),
         "{} cases are answered otherwise",
         differ.len()
     );
-    if std::env::var_os("LIGNIN_HOSTILE_PEER_SHARD").is_none() {
+    if asked.holds_the_list() {
         assert!(
             ends.contains_key("Failed") && ends.contains_key("Committed"),
             "{ends:?}"
