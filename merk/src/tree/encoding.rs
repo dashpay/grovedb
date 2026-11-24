@@ -5,7 +5,7 @@ use ed::{Decode, Encode};
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]
-use super::{TreeNode, VALUE_ABSENT};
+use super::{Baseline, TreeNode, VALUE_ABSENT};
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::{
@@ -44,7 +44,7 @@ impl TreeNode {
         inner.kv.key = key;
         Ok(TreeNode {
             inner: Box::new(inner),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         })
     }
@@ -105,6 +105,7 @@ impl TreeNode {
             tree_inner.kv.value_defined_cost =
                 value_defined_cost_fn(tree_inner.kv.value.as_slice(), grove_version);
         }
+        self.keep_old_value();
         *self.inner = tree_inner;
         Ok(())
     }

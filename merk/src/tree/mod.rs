@@ -201,11 +201,77 @@ impl Terminated for Box<TreeNodeInner> {}
 /// Trees' inner fields are stored on the heap so that nodes can recursively
 /// link to each other, and so we can detach nodes from their parents, then
 /// reattach without allocating or freeing heap memory.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
-    pub(crate) old_value: Option<Vec<u8>>,
+    pub(crate) baseline: Baseline,
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
+}
+
+#[cfg(feature = "minimal")]
+impl PartialEq for TreeNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner
+            && self.old_value() == other.old_value()
+            && self.known_storage_cost == other.known_storage_cost
+    }
+}
+
+#[cfg(feature = "minimal")]
+/// The mutation baseline of a node: the value a commit bills the node
+/// against ([`TreeNode::old_value`]), where what made the node gave it one.
+/// A load that makes its node with [`TreeNode::new_with_tree_inner`] gives
+/// the value it was loaded with; a put, a move or a conversion can leave
+/// its value to bill against. A node that has none is billed as new.
+///
+/// While that value is the node's own, the baseline says so, and a release
+/// build keeps no copy of it. Whatever replaces the value of such a node,
+/// or hands it out to be changed, keeps a copy first
+/// ([`TreeNode::keep_old_value`]), whether or not the bytes then change.
+#[derive(Clone, Debug)]
+pub(crate) enum Baseline {
+    /// The node has no value to be billed against: it is billed as new.
+    None,
+    /// The node is billed against the value it has.
+    Value {
+        /// A copy of that value, which a debug build holds a read and a
+        /// keep of the baseline to: either fails where the value of the
+        /// node is no longer this copy.
+        #[cfg(debug_assertions)]
+        copy: Box<[u8]>,
+    },
+    /// The node is billed against this value, which it had when the
+    /// copy was kept.
+    Was(Vec<u8>),
+}
+
+#[cfg(feature = "minimal")]
+impl Baseline {
+    /// The baseline of a node that holds `_value` and is billed against it.
+    #[inline]
+    pub(crate) fn value(_value: &[u8]) -> Self {
+        Self::Value {
+            #[cfg(debug_assertions)]
+            copy: _value.into(),
+        }
+    }
+
+    /// The value the node is billed against, of a node whose own value is
+    /// `value`.
+    #[inline]
+    pub(crate) fn get<'a>(&'a self, value: &'a Vec<u8>) -> Option<&'a Vec<u8>> {
+        match self {
+            Self::None => None,
+            Self::Value { .. } => {
+                #[cfg(debug_assertions)]
+                if let Self::Value { copy } = self {
+                    assert_eq!(**copy, **value, "a node's value changed under its baseline");
+                }
+                Some(value)
+            }
+            Self::Was(stored) => Some(stored),
+        }
+    }
 }
 
 #[cfg(feature = "minimal")]
@@ -254,19 +320,53 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         })
     }
 
     /// Creates a new `Tree` given an inner tree
     pub fn new_with_tree_inner(inner_tree: TreeNodeInner) -> Self {
-        let old_value = inner_tree.kv.value.clone();
+        let baseline = Baseline::value(&inner_tree.kv.value);
         Self {
             inner: Box::new(inner_tree),
-            old_value: Some(old_value),
+            baseline,
             known_storage_cost: None,
         }
+    }
+
+    /// The value a commit bills the node against, or `None` where the
+    /// node has none ([`Baseline`]).
+    #[inline]
+    pub(crate) fn old_value(&self) -> Option<&Vec<u8>> {
+        self.baseline.get(&self.inner.kv.value)
+    }
+
+    /// Whether the node has a value that a commit bills it against.
+    #[inline]
+    pub(crate) fn has_old_value(&self) -> bool {
+        !matches!(self.baseline, Baseline::None)
+    }
+
+    /// Keeps a copy of the value the node is billed against where that is
+    /// the node's own, so that the node's value can change. Whatever gives
+    /// a node another value, or hands its value out to be changed, calls
+    /// this first.
+    #[inline]
+    pub(crate) fn keep_old_value(&mut self) {
+        if matches!(self.baseline, Baseline::Value { .. }) {
+            // Read as every reader reads it: a debug build fails here too
+            // where the value changed before this call.
+            if let Some(stored) = self.baseline.get(&self.inner.kv.value).cloned() {
+                self.baseline = Baseline::Was(stored);
+            }
+        }
+    }
+
+    /// States that the node is billed against the value it has now.
+    #[inline]
+    pub(crate) fn value_is_stored(&mut self) {
+        self.baseline = Baseline::value(&self.inner.kv.value);
     }
 
     /// A node that was read without its value, for a walk that only reads
@@ -295,7 +395,7 @@ impl TreeNode {
                 right,
                 kv: KV::from_fields(key, Vec::new(), kv_hash, value_hash, feature_type),
             }),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         }
     }
@@ -333,6 +433,7 @@ impl TreeNode {
     /// read for it.
     #[cfg(any(feature = "lignin_storage", test))]
     pub(crate) fn put_read_value(&mut self, value: Vec<u8>) {
+        self.keep_old_value();
         self.inner.kv.value = value;
         self.inner.marks.value_absent = false;
     }
@@ -385,7 +486,7 @@ impl TreeNode {
         let key_value_storage_cost = KeyValueStorageCost {
             key_storage_cost, // the key storage cost is added later
             value_storage_cost,
-            new_node: self.old_value.is_none(),
+            new_node: !self.has_old_value(),
             needs_value_verification: self.inner.kv.value_defined_cost.is_none(),
             prepaid: false,
         };
@@ -402,7 +503,7 @@ impl TreeNode {
     ) -> Result<(u32, KeyValueStorageCost), Error> {
         let current_value_byte_cost = self.value_encoding_length_with_parent_to_child_reference();
 
-        let old_cost = if let Some(old_value) = self.old_value.as_ref() {
+        let old_cost = if let Some(old_value) = self.old_value() {
             old_tree_cost(self.key_as_ref(), old_value)
         } else {
             Ok(0) // there was no old value, hence old cost would be 0
@@ -441,7 +542,7 @@ impl TreeNode {
             self.inner.kv.value_byte_cost_size()
         };
 
-        let old_cost = if let Some(old_value) = self.old_value.as_ref() {
+        let old_cost = if let Some(old_value) = self.old_value() {
             old_tree_cost(self.key_as_ref(), old_value)
         } else {
             Ok(0) // there was no old value, hence old cost would be 0
@@ -470,7 +571,7 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         })
     }
@@ -491,7 +592,7 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         })
     }
@@ -514,7 +615,7 @@ impl TreeNode {
                     left: None,
                     right: None,
                 }),
-                old_value: None,
+                baseline: Baseline::None,
                 known_storage_cost: None,
             },
         )
@@ -551,7 +652,7 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         };
         let storage_cost = cost_return_on_error_no_add!(
@@ -561,7 +662,7 @@ impl TreeNode {
         node.known_storage_cost = Some(storage_cost);
         // The bytes were stored before the move: a later write to this node
         // through the same Merk replaces them, as it would after a reopen.
-        node.old_value = Some(node.value_ref().clone());
+        node.value_is_stored();
         Ok(node).wrap_with_cost(cost)
     }
 
@@ -586,6 +687,7 @@ impl TreeNode {
         >,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
+        self.keep_old_value();
         self.inner.kv = self.inner.kv.put_ordinary_value_no_update_of_hashes(value);
         self.inner.kv.value_defined_cost = value_defined_cost;
         self.inner.kv.feature_type = feature_type;
@@ -599,7 +701,7 @@ impl TreeNode {
             self.moved_storage_cost(moved_from_key_len, section_removal_bytes)
         );
         self.known_storage_cost = Some(storage_cost);
-        self.old_value = Some(self.value_ref().clone());
+        self.value_is_stored();
         Ok(self).wrap_with_cost(cost)
     }
 
@@ -681,7 +783,7 @@ impl TreeNode {
                 left: None,
                 right: None,
             }),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         })
     }
@@ -703,7 +805,7 @@ impl TreeNode {
                 left,
                 right,
             }),
-            old_value: None,
+            baseline: Baseline::None,
             known_storage_cost: None,
         })
     }
@@ -746,6 +848,7 @@ impl TreeNode {
 
     /// Set value of Tree
     pub fn set_value(&mut self, value: Vec<u8>) {
+        self.keep_old_value();
         self.inner.kv.value = value;
     }
 
@@ -767,6 +870,7 @@ impl TreeNode {
     #[inline]
     pub fn value_mut_ref(&mut self) -> &mut Vec<u8> {
         debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
+        self.keep_old_value();
         &mut self.inner.kv.value
     }
 
@@ -1747,10 +1851,13 @@ impl TreeNode {
     pub(crate) fn take_node_change(&mut self, value_put: bool) -> NodeChange {
         let children_changed = std::mem::take(&mut self.inner.marks.children_changed);
         let feature_type_changed = std::mem::take(&mut self.inner.marks.feature_type_changed);
-        if self.old_value.is_none() || value_put || feature_type_changed {
+        if !self.has_old_value() || value_put || feature_type_changed {
             return NodeChange::ValueWritten;
         }
-        debug_assert_eq!(self.old_value.as_deref(), Some(self.value_as_slice()));
+        debug_assert_eq!(
+            self.old_value().map(Vec::as_slice),
+            Some(self.value_as_slice())
+        );
         if children_changed {
             NodeChange::StructureChanged
         } else {
@@ -1809,13 +1916,14 @@ impl TreeNode {
         grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
+        self.keep_old_value();
         self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
             value,
             SpecializedValueDefinedCost(value_fixed_cost),
         );
         self.inner.kv.feature_type = feature_type;
 
-        if self.old_value.is_some() {
+        if self.has_old_value() {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
@@ -1880,11 +1988,12 @@ impl TreeNode {
         // they carry no value-defined cost: a cost inherited from a
         // specialized predecessor (a sum item, a tree) would size the new
         // element wrongly (issue #908's twin).
+        self.keep_old_value();
         self.inner.kv = self.inner.kv.put_ordinary_value_no_update_of_hashes(value);
         self.inner.kv.feature_type = feature_type;
 
         let mut value_hash = value_hash;
-        if self.old_value.is_some() {
+        if self.has_old_value() {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
@@ -2034,13 +2143,14 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
+        self.keep_old_value();
         self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
             value,
             LayeredValueDefinedCost(value_cost),
         );
         self.inner.kv.feature_type = feature_type;
 
-        if self.old_value.is_some() {
+        if self.has_old_value() {
             cost_return_on_error_no_add!(
                 cost,
                 self.just_in_time_tree_node_value_update(
@@ -2095,13 +2205,14 @@ impl TreeNode {
     ) -> CostResult<Self, Error> {
         let mut cost = OperationCost::default();
 
+        self.keep_old_value();
         self.inner.kv = self.inner.kv.put_value_with_fixed_cost_no_update_of_hashes(
             value,
             LayeredValueDefinedCost(value_cost),
         );
         self.inner.kv.feature_type = feature_type;
 
-        if self.old_value.is_some() {
+        if self.has_old_value() {
             // we are replacing a value
             // in this case there is a possibility that the client would want to update the
             // element flags based on the change of values
@@ -2428,6 +2539,90 @@ mod test {
             .unwrap();
         parent.inner.marks.children_changed = false;
         parent
+    }
+
+    #[test]
+    fn a_node_that_was_loaded_is_billed_against_the_value_it_was_loaded_with() {
+        let new = leaf(vec![5]);
+        assert_eq!(new.old_value(), None);
+        assert!(!new.has_old_value());
+
+        let loaded = stored(&new);
+        assert!(loaded.has_old_value());
+        assert_eq!(loaded.old_value(), Some(&vec![7]));
+
+        // Whatever gives the node another value keeps the stored one.
+        let mut set = loaded.clone();
+        set.set_value(vec![8, 8]);
+        assert_eq!(set.value_as_slice(), [8, 8]);
+        assert_eq!(set.old_value(), Some(&vec![7]));
+
+        let mut changed = loaded.clone();
+        changed.value_mut_ref().push(9);
+        assert_eq!(changed.value_as_slice(), [7, 9]);
+        assert_eq!(changed.old_value(), Some(&vec![7]));
+
+        let mut decoded = loaded.clone();
+        let other = TreeNode::new(vec![5], vec![1, 2, 3], None, BasicMerkNode).unwrap();
+        let no_cost = None::<fn(&[u8], &grovedb_version::version::GroveVersion) -> Option<_>>;
+        let grove_version = grovedb_version::version::GroveVersion::latest();
+        decoded
+            .decode_into(vec![5], &other.encode(), no_cost, grove_version)
+            .unwrap();
+        assert_eq!(decoded.value_as_slice(), [1, 2, 3]);
+        assert_eq!(decoded.old_value(), Some(&vec![7]));
+
+        // A node that holds another value than the stored one is told so,
+        // and a new node stays one.
+        set.value_is_stored();
+        assert_eq!(set.old_value(), Some(&vec![8, 8]));
+        let mut still_new = new.clone();
+        still_new.set_value(vec![1]);
+        still_new.value_mut_ref().push(1);
+        still_new.keep_old_value();
+        assert_eq!(still_new.old_value(), None);
+    }
+
+    #[test]
+    fn two_nodes_are_equal_by_the_value_they_are_billed_against() {
+        let loaded = stored(&leaf(vec![5]));
+        // The stored value kept apart is the baseline it was.
+        let mut kept = loaded.clone();
+        kept.keep_old_value();
+        assert!(matches!(kept.baseline, super::Baseline::Was(_)));
+        assert!(kept == loaded);
+
+        let mut put = loaded.clone();
+        put.set_value(vec![9]);
+        let mut told = put.clone();
+        told.value_is_stored();
+        assert!(put != told);
+        assert!(put != loaded);
+        assert!(leaf(vec![5]) != loaded);
+    }
+
+    #[test]
+    fn the_baseline_is_no_wider_than_a_value_that_may_be_absent() {
+        // Also in a debug build, where it holds the copy it is held to.
+        assert_eq!(size_of::<super::Baseline>(), size_of::<Option<Vec<u8>>>());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a node's value changed under its baseline")]
+    fn a_debug_build_fails_where_a_value_changed_and_the_stored_one_was_not_kept() {
+        let mut loaded = stored(&leaf(vec![5]));
+        loaded.inner.kv.value = vec![8];
+        let _ = loaded.old_value();
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a node's value changed under its baseline")]
+    fn a_debug_build_fails_where_a_value_is_kept_after_it_changed() {
+        let mut loaded = stored(&leaf(vec![5]));
+        loaded.inner.kv.value = vec![8];
+        loaded.keep_old_value();
     }
 
     #[test]

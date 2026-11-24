@@ -56,9 +56,10 @@ impl TreeNode {
         // still holds the stored value as its old value, and the refusal is
         // this version's way out of the loop. Any other outcome is version 1's
         // own.
-        let (Some(value_defined_cost), Some(old_value)) =
-            (replacement_value_defined_cost, self.old_value.as_ref())
-        else {
+        let (Some(value_defined_cost), Some(old_value)) = (
+            replacement_value_defined_cost,
+            self.baseline.get(&self.inner.kv.value),
+        ) else {
             return outcome;
         };
         self.inner.kv.value_defined_cost = value_defined_cost;
@@ -68,7 +69,7 @@ impl TreeNode {
             old_value_bytes,
             section_removal_bytes,
         )?);
-        self.old_value = Some(self.value_ref().clone());
+        self.value_is_stored();
         Ok(())
     }
 }

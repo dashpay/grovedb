@@ -242,9 +242,7 @@ where
     // The commit bills a node against its old value. A node this handle
     // wrote itself has none, or the one it replaced: what is stored is the
     // value it holds now, which the conversion keeps.
-    if node.old_value.as_ref() != Some(node.value_ref()) {
-        node.old_value = Some(node.value_ref().clone());
-    }
+    node.value_is_stored();
     node.known_storage_cost = None;
     node.set_feature_type(widened);
 
