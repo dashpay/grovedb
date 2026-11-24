@@ -287,6 +287,10 @@ impl Engine for RocksDbEngine {
         Err(Error::WriteScope(WriteScopeError::RollbackUnsupported))
     }
 
+    fn rolls_back_write_scopes(&self) -> bool {
+        false
+    }
+
     fn subtree<'a, 'b, B>(
         &'a self,
         path: SubtreePath<'b, B>,

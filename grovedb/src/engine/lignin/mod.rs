@@ -969,6 +969,10 @@ impl Engine for LigninEngine {
         Ok(())
     }
 
+    fn rolls_back_write_scopes(&self) -> bool {
+        true
+    }
+
     fn subtree<'a, 'b, B>(
         &'a self,
         path: SubtreePath<'b, B>,
