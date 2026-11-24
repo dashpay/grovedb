@@ -1,6 +1,6 @@
 # Test engines: the suites run once on every registered engine
 
-LigninDB task SEAM-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)). MERK-08 registered LigninDB for Merk's suite ([Merk on LigninDB](#merk-on-lignindb)), and GROVE-10 for GroveDB's ([GroveDB on LigninDB](#grovedb-on-lignindb)).
+LigninDB task SEAM-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)). MERK-08 registered LigninDB for Merk's suite ([Merk on LigninDB](#merk-on-lignindb)), and GROVE-10 for GroveDB's ([GroveDB on LigninDB](#grovedb-on-lignindb)). OPS-03 registered the engine that is chosen at the open for GroveDB's, once holding each engine ([GroveDB on the engine chosen at the open](#grovedb-on-the-engine-chosen-at-the-open)).
 
 GroveDB's and Merk's test suites name no storage engine. Each is built for one engine at a time, and run once for every engine registered for it. This document says how an engine is selected, what a test may name, which tests are about one engine, and what registering an engine takes. It builds on [`engine.md`](engine.md) and [`node-store.md`](node-store.md).
 
@@ -11,6 +11,7 @@ GroveDB's and Merk's test suites name no storage engine. Each is built for one e
 | `cargo test -p grovedb` | GroveDB's suite on the first engine of `grovedb/test-engines.txt` |
 | `GROVEDB_TEST_ENGINE=pinned-reads cargo test -p grovedb` | the same suite on the engine of that name |
 | `GROVEDB_TEST_ENGINE=lignin cargo test -p grovedb --features lignin_storage --lib` | GroveDB's suite on LigninDB, whose feature is not among the crate's defaults |
+| `GROVEDB_TEST_ENGINE=either-rocksdb cargo test -p grovedb --features lignin_storage --lib`, and the same with `either-lignin` | GroveDB's suite on the engine that is chosen at the open, holding RocksDB and holding LigninDB. It is compiled where both engines are, so the command has LigninDB's feature beside the defaults. |
 | `cargo test -p grovedb-merk` | Merk's suite on the first engine of `merk/test-engines.txt` |
 | `MERK_TEST_ENGINE=node-store-only cargo test -p grovedb-merk` | the same suite on the engine of that name |
 | `MERK_TEST_ENGINE=lignin cargo test -p grovedb-merk --features lignin_storage --lib` | Merk's suite on LigninDB, whose feature is not among the crate's defaults |
@@ -24,14 +25,14 @@ The engine is a property of the build, not of the run: one test binary holds the
 
 ## The registry
 
-A suite has a registry: a text file with one engine a line, the default first. A line is the engine's name and the Cargo feature of the crate that compiles the engine.
+A suite has a registry: a text file with one engine a line, the default first. A line is the engine's name and the Cargo feature of the crate that compiles the engine. In GroveDB's registry an engine that needs more than one feature names them with commas between them and no space (`rocksdb_storage,lignin_storage`), which is also what `cargo --features` takes.
 
 | Suite | Registry | Variable | cfg | The type of a name |
 | --- | --- | --- | --- | --- |
 | GroveDB | `grovedb/test-engines.txt` | `GROVEDB_TEST_ENGINE` | `grovedb_test_engine` | `SuiteEngine` in `grovedb/src/tests/mod.rs` |
 | Merk | `merk/test-engines.txt` | `MERK_TEST_ENGINE` | `merk_test_engine` | `SuiteEngine` in `merk/src/test_utils/engine/suite.rs` |
 
-The crate's build script reads the registry and the variable. If the feature of the selected engine is on, it sets the cfg twice: with no value, which says that the suite has an engine, and with the selected name. It declares every registered name as a value of the cfg, so a `#[cfg(grovedb_test_engine = "..")]` with a name that is not registered is a warning, and an error under `-D warnings`.
+The crate's build script reads the registry and the variable. If the feature of the selected engine is on, and every one of them where it names several, it sets the cfg twice: with no value, which says that the suite has an engine, and with the selected name. It declares every registered name as a value of the cfg, so a `#[cfg(grovedb_test_engine = "..")]` with a name that is not registered is a warning, and an error under `-D warnings`.
 
 If the feature is off and the variable is not set, the cfg is not set and the suite has no engine. A registry line whose feature the crate does not have fails every build of the crate, whichever engine is selected. That is the build with no engine compiled in ([`engine.md`](engine.md#features-and-engines)): `cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests` and `cargo test -p grovedb-merk --no-default-features --features minimal --lib` run the tests that open no database. A test that opens one is under the cfg, not under the feature of an engine:
 
@@ -51,6 +52,7 @@ The engines registered today:
 | GroveDB | `rocksdb` | `RocksDbEngine` |
 | GroveDB | `pinned-reads` | `PinnedReads` (`grovedb/src/tests/pinned_reads.rs`): the RocksDB engine, except that the transaction of a read that was given none is a read-only snapshot, as on LigninDB (RD2 of [`transactions.md`](transactions.md)). A read that wrote would be refused, and a read that started a second transaction could read another state. The engine is a type of its own and gives no way to the storage underneath. |
 | GroveDB | `lignin` | `LigninEngine` (feature `lignin_storage`): a database of `lignindb` ([GroveDB on LigninDB](#grovedb-on-lignindb)) |
+| GroveDB | `either-rocksdb`, `either-lignin` | `EitherEngine` (features `rocksdb_storage` and `lignin_storage`), holding RocksDB and holding LigninDB ([GroveDB on the engine chosen at the open](#grovedb-on-the-engine-chosen-at-the-open)) |
 | Merk | `rocksdb` | `RocksDbTestEngine`: a handle is the RocksDB storage context of its subtree |
 | Merk | `node-store-only` | `NodeStoreOnlyEngine`: RocksDB behind handles that are a `NodeStore` and nothing else |
 | Merk | `lignin` | `LigninTestEngine` (feature `lignin_storage`): a database of `lignindb`, whose handles are the store of `merk::store::lignin` on a write transaction ([Merk on LigninDB](#merk-on-lignindb)) |
@@ -140,6 +142,18 @@ What LigninDB needs of the tests that are not run once for every engine, and why
 | The doc tests | all, in the same build | `cargo test -p grovedb --no-default-features --features lignin_storage,estimated_costs --doc`: they open the engine the crate exports. |
 | The benches | none | Each has `required-features = ["rocksdb_storage"]` and measures RocksDB through GroveDB as it is released. LigninDB's numbers are the benchmark suite's (`lignin-bench`, PERF-01), on the reference machine. |
 | The suite with LigninDB as the only engine | the unit tests build and run | `GROVEDB_TEST_ENGINE=lignin cargo test -p grovedb --no-default-features --features lignin_storage,estimated_costs --lib`: the build a node without RocksDB has. The tests that compare the two engines side by side (`engine/lignin/tests`) are written to run their LigninDB half there; the five of `side_by_side.rs` do. |
+
+### GroveDB on the engine chosen at the open
+
+OPS-03. `either-rocksdb` and `either-lignin` are the fourth and the fifth engine of GroveDB's registry. The type of both is `EitherEngine` ([`engine.md`](engine.md#an-engine-chosen-at-the-open)), which is compiled where both engines are, so each line names two features. The suite runs on the type twice so that the tests that take a fixture, or make a database with no engine named, go through the type to the engine the run is named for.
+
+- **Which engine a run holds.** The fixtures open a database with `GroveDb::open`, which names no engine, in a directory they made. On this type that calls an engine to make the database where no entry of the directory says one: RocksDB, and in the unit tests built for `either-lignin` LigninDB (`WHERE_NONE_IS_SAID` in `grovedb/src/engine/either.rs`). So a database of a fixture is on the engine the run is named for. In either run, a successful unnamed open of a marked directory uses the detected engine. `suite_engine_tests::a_database_of_the_fixtures_holds_the_engine_the_run_is_named_for`, compiled for the two runs, holds a database of the fixtures to the engine of its run.
+- **The two runs also differ** in the answers between a flat drop and its drain (`KEPT_UNTIL_THE_DRAIN`), in the test that plants a wrong hash through a handle of the suite's engine and requires the close to panic ([GroveDB on LigninDB](#grovedb-on-lignindb)), which is compiled for `lignin` and `either-lignin` in a debug build, and in the two tests of a checkpoint's log files of the next point.
+- **Tests that are compiled for the engine `rocksdb` alone** ([RocksDB-only tests](#rocksdb-only-tests-of-grovedb)) take the storage of the suite's engine by `RocksDbEngine::storage()` or use RocksDB's own types on it, and are in neither run, as they are not in the run on `pinned-reads`. Two tests of `checkpoint_tests.rs` that look at the log files of a checkpoint RocksDB made go through `GroveDb` alone, and are compiled for `rocksdb` and `either-rocksdb`.
+- **Two parts of tests ask RocksDB's own types what the seam does not** (how long a snapshot has been held, and how many operations a storage batch holds). They are compiled for `rocksdb` and `pinned-reads`, whose transaction and batch are RocksDB's, and for no other engine.
+- **A test that names its engine runs on that engine in every run** whose build compiles it, whichever engine the suite is on. The tests of the type itself (`grovedb/src/engine/either/tests.rs`) are such tests: they are in every run of a build that has both engines, and the test of the one answer of RocksDB that the type changes ([`engine.md`](engine.md#the-write-scope-of-rocksdb)) is among them. No test asks the suite's engine for a write scope in the run on `either-rocksdb`: `GroveDb` asks only an engine that rolls a scope back.
+
+Two runs are compared test for test only where they are built with the same features: a run of `cargo test -p grovedb` with the default features has no test that needs `lignin_storage`.
 
 ## Merk
 
@@ -270,7 +284,7 @@ The streams of the golden corpus of the standard scale (430 traces; the five of 
 
 ## Registering an engine
 
-1. Add its name to the registry of the suite, with the Cargo feature of the crate that compiles it. The first line stays the default.
+1. Add its name to the registry of the suite, with the Cargo feature of the crate that compiles it, or in GroveDB's registry its features with commas between them. The first line stays the default.
 2. Give the name its type: a `#[cfg(grovedb_test_engine = "name")] pub type SuiteEngine = ..;` in `grovedb/src/tests/mod.rs`, or the same with `merk_test_engine` in `merk/src/test_utils/engine/suite.rs`, where the type implements `TestEngine`.
 3. Run the suite on it. A test that does not compile, or fails, either found a difference the engine has to remove, or is about the records of another engine and gets that engine's `#[cfg]`.
 

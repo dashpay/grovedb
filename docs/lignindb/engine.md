@@ -2,7 +2,7 @@
 
 LigninDB task SEAM-04 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)).
 
-`Engine` is everything `GroveDb` asks of a storage engine. It lives in `grovedb/src/engine/mod.rs`. `GroveDb<E: Engine = RocksDbEngine>` is generic over it. It has two implementations: `RocksDbEngine` (`grovedb/src/engine/rocksdb.rs`), which is `grovedb-storage` behind the trait, and `LigninEngine` (`grovedb/src/engine/lignin`, GROVE-01), which is `lignindb` behind it: [The LigninDB engine](#the-lignindb-engine). GroveDB builds with no engine at all: [Features and engines](#features-and-engines) (SEAM-07).
+`Engine` is everything `GroveDb` asks of a storage engine. It lives in `grovedb/src/engine/mod.rs`. `GroveDb<E: Engine = RocksDbEngine>` is generic over it. It has two implementations: `RocksDbEngine` (`grovedb/src/engine/rocksdb.rs`), which is `grovedb-storage` behind the trait, and `LigninEngine` (`grovedb/src/engine/lignin`, GROVE-01), which is `lignindb` behind it: [The LigninDB engine](#the-lignindb-engine). A third engine is one of those two, chosen when the database is opened: [An engine chosen at the open](#an-engine-chosen-at-the-open) (OPS-03). GroveDB builds with no engine at all: [Features and engines](#features-and-engines) (SEAM-07).
 
 This document states the contract of the trait, how the RocksDB engine meets it, what `GroveDb<E>` looks like to its callers, and the choices the plan left to this task. It builds on the two seams below it, [`NodeStore`](node-store.md) and [`FlatStore`](flat-store.md), and on the transaction rules of [`transactions.md`](transactions.md).
 
@@ -346,6 +346,8 @@ GroveDB's Cargo features separate what is written for any engine from the engine
 | `full` | `minimal` and Merk's `full`: its test helpers and coloured `Debug` output | yes |
 
 The default is `full` and `estimated_costs`.
+
+With `rocksdb_storage` and `lignin_storage` both on, `EitherEngine` is compiled as well: the engine that is one of the two, chosen when the database is opened. It has no feature of its own, and outside the unit tests of the crate the default engine of such a build stays `RocksDbEngine` unless the build sets a cfg: [The default engine](#the-default-engine).
 
 - In the sources of `grovedb`, code is under `#[cfg(feature = "engine_generic")]` where it was under `minimal`, and what needs RocksDB is under `rocksdb_storage`. Nothing in `grovedb` is gated on `minimal` any more. Upstream writes `minimal`: after a merge of `develop`, a gate it added has to be renamed, or the item is missing from the build with no engine. `sed -i 's/feature = "minimal"/feature = "engine_generic"/g'` over `grovedb/src` is the whole change this task made to those gates. The benches and the integration tests under `grovedb/tests` open a database, so there the same `sed` wrote `rocksdb_storage`, and each bench has `required-features = ["rocksdb_storage"]`: a feature set that has the engine and not `minimal` by name, such as `rocksdb_storage` alone, builds and runs them, and one with no engine leaves the benches out.
 - Merk's `minimal` compiles no engine either. Its code under that feature never named one. The feature only switched `grovedb-storage/rocksdb_storage` on, which Merk's own `rocksdb_storage` does now, and with it `test_utils` (for `TempMerk`, which opens a RocksDB storage) and `full`. Merk's own tests that open a store are under the cfg of Merk's suite, `merk_test_engine` ([`test-engines.md`](test-engines.md), SEAM-06), which is set where the engine of that suite is compiled in. `cargo test -p grovedb-merk --no-default-features --features minimal --lib` builds and runs the others.
@@ -1129,6 +1131,158 @@ GROVE-08. `verify_grovedb`, `visualize_verify_grovedb`, the visualization of a g
 | `a_transaction_with_the_delete_and_a_refused_write_is_rolled_back_or_committed`, `a_rollback_to_a_savepoint_before_the_delete_ends_the_refusal_in_its_transaction`, `a_root_merk_that_the_delete_left_with_no_node_takes_writes`, `a_wipe_takes_the_record_that_was_left_behind` | The delete and the refused write in one transaction: rolled back or dropped, the grove is as before the delete and takes three writes; committed, the delete alone is committed and the next write of the root Merk is refused; rolled back to a savepoint from before the delete, the same transaction takes two writes and is committed. A delete that leaves the root Merk with no node, and a wipe of a grove whose record was left behind, are followed by writes with RocksDB's answers. |
 | `a_refused_dedicated_insert_over_a_tree_keeps_the_tree_on_lignindb`, `the_scope_of_the_insert_changes_no_answer_and_no_cost`, `an_engine_says_whether_it_rolls_a_write_scope_back`, `a_scope_of_the_caller_in_which_the_insert_was_refused_is_rolled_back`, `an_append_refused_after_its_records_leaves_a_sound_store` (`tests/refused.rs`) | [A dedicated insert over a tree that is refused after its removal](#a-dedicated-insert-over-a-tree-that-is-refused-after-its-removal). The insert over a tree after a delete at the root path that left the root-key record behind, refused on grove versions 1 to 3 and made on 4 and 5, and the insert that leaves a sum out of range, refused on every grove version, each in a transaction that is committed, on both engines: where the insert is refused after it removed the storage of the tree, LigninDB keeps the tree and what it held and its store is sound, and RocksDB keeps the element with its subtree gone. The insert in a caller's transaction against the insert with none, made and refused: the same answer and cost on each engine, which are RocksDB's at the base. What each engine and each wrapper of the tests answers to `rolls_back_write_scopes`. The same insert refused through the view of a caller's scope on LigninDB, the scope rolled back ([A scope in which a call was refused](#a-scope-in-which-a-call-was-refused)). An append to a tree of flat records whose element is not written after its records were: the records are committed, both engines answer alike, and LigninDB's store is sound. |
 
+## An engine chosen at the open
+
+OPS-03. `EitherEngine` (`grovedb/src/engine/either.rs`) is an `Engine` that holds a `RocksDbEngine` or a `LigninEngine`, by an enum. Which one is said when the database is opened. An application that is to run on either engine names `GroveDb<EitherEngine>`, or sets the cfg that makes it the engine of a `GroveDb` that names none ([The default engine](#the-default-engine)), and is otherwise written as for one engine. The type is compiled where both `rocksdb_storage` and `lignin_storage` are on, and has no feature of its own.
+
+A call that reads or writes a database, given what is of the engine that is held, is that engine's call: it returns that engine's answer, error, proof and `OperationCost`. Four things are the type's own, and none of them is charged:
+
+- Named RocksDB opens reject a reserved name before listing. Other opens and path-only removals classify the directory before calling an engine. Only RocksDB checkpoint creation has a wrapper preflight, on the supplied name ([The choice at the open](#the-choice-at-the-open), [Calls that name no engine](#calls-that-name-no-engine)).
+- What is of the other engine is refused by the type ([What is of the other engine](#what-is-of-the-other-engine)).
+- The type opens no write scope of RocksDB ([The write scope of RocksDB](#the-write-scope-of-rocksdb)).
+- A batch is a batch of each engine. `next_operation` and `take_pending` use both parts. A compatible merge merges both parts ([Its types](#its-types)).
+
+### Its types
+
+`OneOf<R, L>` is a plain enum of a thing of the RocksDB engine and the same thing of the LigninDB engine. It is a `NodeStore`, a `FlatStore`, a `SubtreeHandle`, a cursor (`RawIterator`), a `NodeChangeSet` or a `SubtreeMove` where both of its arms are. Its methods hand what is of the same engine on to the arm, the provided methods of those traits among them.
+
+| Associated type | On `EitherEngine` |
+| --- | --- |
+| `Transaction<'db>` | `EitherTransaction<'db>`, which is `OneOf<Tx<'db>, LigninTransaction<'db>>` |
+| `Subtree<'db>`, `ImmediateSubtree<'db>` | `OneOf` of the two engines' handles. Its cursors, its change set and its aux and meta keyspaces are `OneOf` of theirs. |
+| `SubtreeMove<'db>`, `Applied` | `OneOf` of the two engines' |
+| `Batch` | `EitherBatch`: a batch of each engine. A batch is made with no engine in hand (`Default`), so it cannot be one of the two. A default batch starts unbound. A handle, move, or merge from a bound batch binds it. `take_pending` copies the binding. A handle stages its writes in the part of the engine the batch is bound to. |
+| `WriteGroup` | `EitherWriteGroup`: the group of the engine that a settle of a batch into it was first handed to, whether or not that settle succeeded. A settle that the type refuses is handed to no engine. Before that the group is of none: its pending cost is no cost, and applied it is the held engine's application of a group of its own that nothing was settled into. |
+| `WriteScope<'db>` | `EitherWriteScope<'db>`: a scope of LigninDB, kept as the transaction that shows it. |
+
+The type dispatches by `match` on which engine is held. A choice of LigninDB lists its directory through the file system of its options, which is a trait object (`Options::vfs`).
+
+### The choice at the open
+
+`EngineChoice` names the engine and carries its options: `EngineChoice::RocksDb`, which has none, as `RocksDbEngine::open` takes none, and `EngineChoice::Lignin(lignindb::Options)`. `grovedb::engine::either::lignindb` is the `lignindb` crate, and `grovedb::engine::either::SyncPolicy` the type of `Options::sync` (`lignindb::options::SyncPolicy`), so a caller sets the cache size, the sync policy and the reserve of a database with no dependency of its own on a LigninDB crate.
+
+| Call | What it does |
+| --- | --- |
+| `EitherEngine::open_with(path, &choice)` | Opens the database at `path` on the chosen engine: `RocksDbEngine::open(path)`, or `LigninEngine::open_with(path, &options)` with the options as they are given, `create_if_missing` among them. |
+| `EitherEngine::open_checkpoint_with(path, &choice)` | Opens a checkpoint: `RocksDbEngine::open_checkpoint(path)`, or `LigninEngine::open_with` with the options of the choice and `create_if_missing` taken as off. |
+| `EitherEngine::from(engine)` | Holds a `RocksDbEngine` or a `LigninEngine` that its caller opened. Nothing is listed. |
+| `kind()`, `rocksdb()`, `lignin()` | Which engine is held, as `EngineKind`, and the engine itself, as an `Option`, where it is the one asked for. On the engine that `lignin()` gives, `database()` is the `lignindb::Db`, and on the one that `rocksdb()` gives, `storage()` is the `RocksDbStorage`. |
+
+**A directory whose entries say the other engine is refused before the chosen engine is called.** `open_with` and `open_checkpoint_with` list the directory, for RocksDB after the check of its name below. A listing whose entries say the other engine and not the chosen one fails the call with `Error::NotSupported`, whose words name the directory, the engine that was found, one such entry and the engine that was chosen. A listing with entries of both engines fails it with `Error::NotSupported` that names one entry of each, and no chosen engine. In both cases the chosen engine is not called. For a choice of RocksDB the directory is listed on the file system of the process, and for a choice of LigninDB on the file system of its options (`Options::vfs`).
+
+`EitherEngine::found_at(path)` is that listing for a caller: `Ok(Some(kind))`, `Ok(None)` or an error. It lists the directory on the file system of the process, and opens, reads and changes no entry of it. It looks at the names that are UTF-8, whatever kind of entry has them, and at nothing an entry holds.
+
+| The listing | `found_at` |
+| --- | --- |
+| has a name `CURRENT` or `IDENTITY`, one that starts with `MANIFEST-` or `OPTIONS-`, or one that ends in `.sst`, and none of the next row | `Some(EngineKind::RocksDb)`. These are the names by which `lignindb::db` refuses a directory of RocksDB. |
+| has a name `MANIFEST`, `MANIFEST.deleting`, `wal`, `seg`, `val` or `table`, and none of the row above | `Some(EngineKind::Lignin)`: the names of LigninDB's manifest, of what a removal renames it to ([The names the engine keeps](#the-names-the-engine-keeps)), and of the four directories LigninDB keeps its files in. |
+| has names of both rows | `Error::NotSupported`, which names one entry of each |
+| has no name of either row, or there is no directory | `None`. Both engines keep a lock file named `LOCK`, which says nothing. |
+| fails, otherwise than for a directory that is not there | `Error::StorageError`, as for a path that leads to a file |
+
+A name is all the listing goes by. An entry of such a name that an engine did not make is taken for that engine's: a file `OPTIONS-..` that a caller keeps says RocksDB, and a file named `MANIFEST` that is no manifest says LigninDB. What the entry is, is then the called engine's to find. The test `a_directory_is_told_by_the_names_each_engine_gives_its_entries` holds the two lists to a database and a checkpoint that each engine makes: each has an entry that says its engine and none that says the other, and every directory of LigninDB's is one of the four.
+
+Where no entry says an engine, the chosen engine is called, and its own rules for such a directory hold: RocksDB makes a database, and LigninDB makes one unless its options say not to (`create_if_missing`), and refuses some directories and names itself (`lignindb::db`).
+
+**A path whose last name ends in `.creating`.** RocksDB opens for the caller and checkpoint creation reject this suffix, ignoring ASCII case, with `Error::NotSupported`: `open_with` and `open_checkpoint_with` for RocksDB, before the directory is listed; an open of a database or of a checkpoint that names no engine, where the path would go to RocksDB; and `create_checkpoint` where RocksDB is held. LigninDB builds the checkpoint at `p` at the literal sibling `p.creating`, and takes a directory of that name which is there for what an earlier creation left ([The names the engine keeps](#the-names-the-engine-keeps)). An unnamed or RocksDB deletion accepts a RocksDB-only listing even at a reserved name, and RocksDB's removal opens the directory itself. A database that RocksDB's own engine made at such a name, outside the type, is not kept from LigninDB by the type: what LigninDB does with the directory beside a checkpoint is LigninDB's rule.
+
+The listing and the call of the engine are two steps. A refusal is of what the directory held when it was listed: a database that is put there between the two is not seen by the type.
+
+### Calls that name no engine
+
+Three calls of the seam are given a path and nothing else. They go by the engine that the entries of the directory say.
+
+| Call | An entry says an engine | None does |
+| --- | --- | --- |
+| `Engine::open(path)`, so `GroveDb::<EitherEngine>::open_with_engine` | that engine opens the database, with its default options | RocksDB is selected; in the unit tests of the crate that are built for the suite engine `either-lignin`, LigninDB is ([`test-engines.md`](test-engines.md#grovedb-on-the-engine-chosen-at-the-open)) |
+| `Engine::open_checkpoint(path)` | that engine's `open_checkpoint` | refused by the type with `Error::StorageError`; no engine is called |
+| `Engine::delete_checkpoint(path)` | that engine's `delete_checkpoint` | refused by the type with `Error::StorageError`; no engine is called |
+
+The table is of a path whose last name does not end in `.creating` (above). A listing with entries of both engines is refused by all three, with the error of the listing.
+
+Where no entry says an engine, the two calls on a checkpoint call none. The RocksDB engine opens a checkpoint as a database that is there, for reads and writes, and makes none: where it finds no database, the open fails, and can leave the directory, a `LOCK` and a `LOG` behind. That is RocksDB's own, and unchanged for `GroveDb<RocksDbEngine>`. An admitted RocksDB-only listing selects the native checkpoint open, which can write files before failing.
+
+LigninDB's removal does more than remove a database ([Checkpoints](#checkpoints)): it finishes a removal that was cut short after the last name of the database was gone, and takes what a creation left beside a checkpoint that is not there. In such a directory no entry says LigninDB. `EitherEngine::delete_checkpoint_of(EngineKind::Lignin, path)` hands it to LigninDB's removal for a caller that knows which engine made the checkpoint, and refuses a directory in which an entry says RocksDB. With `EngineKind::RocksDb` it is RocksDB's removal where an entry says RocksDB, and a refusal of the type anywhere else. Like `found_at`, a removal through the type lists and removes on the file system of the process: a checkpoint of LigninDB on another one (`Options::vfs`) is removed with `lignindb::checkpoint::delete` and that file system.
+
+`create_checkpoint` is the held engine's, so a checkpoint is of the engine its source is on. Where RocksDB is held, the type refuses a path of the name above.
+
+### The write scope of RocksDB
+
+`RocksDbEngine` grants one write scope at a time, which writes straight to its transaction and cannot be rolled back ([Write scopes](#write-scopes)). `EitherEngine` that holds RocksDB grants none: `open_write_scope` fails with `Error::NotSupported` on a write transaction, and with `SnapshotReadOnlyTransaction`, RocksDB's own refusal, on a snapshot read transaction. The engine inside is asked for no scope, so the refusal leaves its one scope as it was.
+
+The reason is in the types. `scope_transaction` hands out the scope's view as a `&Transaction`. RocksDB's scope shows its transaction by a shared reference, and `Tx` goes to another thread and is not shared between threads. A transaction of `EitherEngine` that could be such a view would hold a `&Tx`, and then no transaction of the type could go to another thread, whichever engine is held. The type keeps the transaction as it is on both engines and gives up the scope.
+
+No call of `GroveDb` meets the refusal: `rolls_back_write_scopes()` is the held engine's answer, which is `false` on RocksDB, and `GroveDb` opens a scope of its own only on an engine that answers `true`. A caller that opens a scope itself, on an engine that rolls none back, is the one that sees it.
+
+Where LigninDB is held, a scope is LigninDB's: it is opened, merged and rolled back by `LigninEngine`, a scope that is dropped is rolled back, and `scope_transaction` gives its view.
+
+### What is of the other engine
+
+Two `EitherEngine`s in one process can hold different engines, and their transactions, batches, write groups and scopes are of one type. The compiler does not keep them apart. The engine does:
+
+| Handed to an engine that holds the other | Answer |
+| --- | --- |
+| a transaction, to a call that can fail: commit, rollback, savepoint, rollback to a savepoint, `open_write_scope`, `adopt_restored_subtrees`, `apply_batch`, `apply_write_group` | `Error::NotSupported`, charged nothing. A transaction that was lent is usable as before. A commit takes its transaction, and a commit that is refused ends it, as every commit does. |
+| a transaction, to a call that opens a handle or starts a move and returns no `Result`: `subtree`, `subtree_by_prefix`, `subtree_beside`, `immediate_subtree`, `immediate_subtree_by_prefix`, `move_subtree` | a panic, with the same words |
+| a batch of the other engine, to `settle_batch` or `apply_batch` | `Error::NotSupported`, charged nothing: its writes are staged in the other engine's part, and settling this engine's part would drop them. The write group it was to be settled into is as it was. |
+| a batch of the other engine, to a call that opens a handle or starts a move with it | a panic |
+| a write group of the other engine, to `settle_batch` or `apply_write_group` | `Error::NotSupported`, charged nothing |
+| a write scope, to `merge_write_scope` or `rollback_write_scope` | `Error::NotSupported`. The scope ends as one that is dropped: rolled back. Only LigninDB opens a scope, so this is a scope of LigninDB handed to an engine that holds RocksDB. |
+| a change set or a prepared node of a handle of the other engine, to a handle's `commit` or a change set's `put_node` | `grovedb_merk::Error::StorageError` of a `NotSupported` |
+
+A batch of one engine that is merged into a batch of the other (`merge_overwriting`, which returns nothing) is a panic. Merged into a batch that is of neither yet, it makes that batch its engine's.
+
+A cursor is retargeted by the engine it is of (`retarget_cursor` takes no engine).
+
+### Threads and lifetimes
+
+| | `EitherEngine` |
+| --- | --- |
+| The engine, `GroveDb<EitherEngine>` | `Send + Sync`, as both engines are |
+| `Transaction<'static>` | `Send`, as on both engines |
+| `WriteScope<'static>` | `Send`: it holds a transaction of LigninDB |
+| A handle | not `Send`: one arm is RocksDB's storage context, which is not ([Threads](#threads)). So the bound that a scope sent to a worker asks of the handles opened in it (GROVE-12) is not met by this type. |
+
+A transaction, a `TransactionArg`, a handle and a write scope of the type take a shorter lifetime of their database, as those of each engine do ([What a caller holds takes a shorter lifetime](#what-a-caller-holds-takes-a-shorter-lifetime)). The type holds no borrow of its database behind a lock or a cell, so each of its types shortens where both of its arms do. A cursor and a `SubtreeMove` do not, as LigninDB's do not. `EitherTransaction` names its arms by their types and not as `<RocksDbEngine as Engine>::Transaction<'db>`: a type that holds a transaction by that name, as the write scope does, keeps the lifetime as it was given.
+
+The compiler checks the first three rows of the table, and that a transaction, a handle and a write scope are reborrowed with a shorter lifetime, in the tests of the type (`the_engine_is_shared_between_threads_and_its_transaction_moves_to_another`, the module `shortened`). Nothing checks what the type is not: the row of the handle, and the cursor and the move, follow from the types of the arms.
+
+### The default engine
+
+The cfg `grovedb_default_engine = "either"` changes `DefaultEngine` in one kind of build: a build of the crate with both engine features that is not its unit tests. There `DefaultEngine` is `RocksDbEngine` without the cfg, as with `rocksdb_storage` alone, and `EitherEngine` with it. `GroveDb`, `Transaction`, `TransactionArg` and `MultiStateSyncSession` with no engine named are on `DefaultEngine`, and so are the associated functions of `impl GroveDb` (rule 2 of [GroveDb<E>](#grovedbe)), among them `GroveDb::open`, `open_checkpoint`, `delete_checkpoint`, `open_with_cidx_integrity_check`, the proof verifiers and the estimated costs. The verifiers and the estimates take no database and answer as on any engine.
+
+Outside unit tests, when the cfg selects `EitherEngine`, `GroveDb::open(path)` is `Engine::open` of the type, above. On an unmarked ordinary path, `EitherEngine::open` selects RocksDB except in the `either-lignin` unit suite, which selects LigninDB. An application chooses LigninDB with `GroveDb::from_engine(EitherEngine::open_with(path, &choice)?)`.
+
+- **How it is set.** In one of two ways, or in both. By the environment variable `GROVEDB_DEFAULT_ENGINE=either` in the build, which `grovedb/build.rs` reads and which reaches this crate alone: the script is run again when the variable changes. Or by handing the compiler `--cfg 'grovedb_default_engine="either"'`, as through `RUSTFLAGS`, which reaches every crate of the build and is read by this one. The cfg has the one value, so the two ways cannot say different things. A variable that is not set, or is set to nothing, sets no cfg; set to anything else but `either`, it fails the build in the build script. So does the cfg, set to anything but `either` among the flags that Cargo tells the build script of (`RUSTFLAGS`, `build.rustflags`). A flag that is given to one invocation of the compiler alone, as by `cargo rustc -- --cfg ..`, is not among those: the script does not see it.
+- **It is a cfg and not a Cargo feature.** Cargo unifies the features of a dependency across the crates of a build, and a feature is on in a build with `--all-features`: the default engine of this repository's own targets would move with it.
+- **Where both engines are not compiled in, it changes no item of the crate and warns of nothing.** The build script declares the cfg and holds it to its value in every build, and the crate reads it only together with both engine features. A build with `verify` alone, with one engine or with none has the items it has without the cfg.
+- **In the unit tests of the crate** `DefaultEngine` is the engine of the suite where the RocksDB engine is compiled in, and `LigninEngine` where LigninDB alone is, with or without the cfg ([`test-engines.md`](test-engines.md)).
+- **The two hatches of the RocksDB engine**, `raw_storage` and `ingest_subtree_sst` (feature `unsafe-dump-load`), are methods of `GroveDb<RocksDbEngine>` ([Dump and load](#dump-and-load)). They are not methods of `GroveDb` where `DefaultEngine` is `EitherEngine`. Where RocksDB is held, `db.engine().rocksdb()` is `Some` of the engine, whose `storage()` is the storage those two reach.
+
+`grovedb/tests/default_engine.rs` holds this as a dependent of the crate sees it, in the builds it is compiled in. Without the cfg, with `rocksdb_storage` and with or without `lignin_storage`: the four names with no engine are RocksDB's. With the cfg and both features (`GROVEDB_DEFAULT_ENGINE=either cargo test -p grovedb --features lignin_storage --test default_engine`): they are `EitherEngine`'s, `GroveDb::open` makes RocksDB's database where no entry says an engine and opens a database of either engine, a function that takes `&GroveDb` and a `TransactionArg` with lifetimes of their own compiles, and each of the 29 public proof verifiers of `impl GroveDb` resolves as `GroveDb::verify_..` with no engine named. With the cfg and one engine: the names are that engine's.
+
+### How the type is checked
+
+`grovedb/src/engine/either/tests.rs`, compiled where both engines are:
+
+| Test | What it holds |
+| --- | --- |
+| `every_answer_and_cost_is_that_of_the_engine_it_holds` | One history on every grove version, on each engine alone and through the type holding it: writes, reads, transactions with a savepoint and a rollback, a snapshot, a batch, a move, deletes, a flat drop and its drain, a query with its proof, aux records and an append-only tree. The answer and the cost of each call it takes in are equal, call for call, and so is the root hash that follows each call that writes, read through the transaction the call wrote through. The answers are compared as their `Debug` text, the rows of the query as their `Display` text, and the issues of `verify_grovedb` in full. |
+| `a_directory_of_the_other_engine_is_refused_and_left_byte_for_byte_as_it_was` | A database of each engine, opened through the other choice, as a database, as a checkpoint and for removal: refused in words, and after each refusal every entry below the directory has its path, its kind and its bytes, or where it leads if it is a link. It then opens by the right choice and by an open that names none. |
+| `a_directory_is_told_by_the_names_each_engine_gives_its_entries`, `a_directory_with_entries_of_both_engines_is_opened_as_neither`, `a_path_that_cannot_be_listed_is_an_error_and_no_database_is_made`, `a_choice_of_lignindb_looks_at_the_file_system_of_its_options` | The listing. |
+| `an_open_of_lignindb_is_given_the_options_of_the_choice` | `create_if_missing`, the cache size and the reserve of a database and of a checkpoint, and, with a sync policy of every commit, one sync or more asked of the file system for each write that is made with no transaction. |
+| `an_open_that_names_no_engine_goes_by_what_the_directory_holds`, `a_checkpoint_is_made_opened_and_removed_by_the_engine_that_is_held`, `a_directory_that_holds_no_database_is_no_checkpoint_and_stays_as_it_is`, `rocksdb_opens_for_the_caller_and_checkpoint_creation_refuse_reserved_names` | The opens, the checkpoints and the names ending in `.creating`. |
+| `rocksdbs_write_scope_is_the_one_answer_the_type_changes`, `a_write_scope_of_lignindb_is_lignindbs` | The scope: RocksDB's own answer beside the type's, and merge, rollback and drop on LigninDB. |
+| `what_is_of_the_other_engine_is_refused_in_words` | The rows of [What is of the other engine](#what-is-of-the-other-engine), on both engines where what is handed over can be made: only LigninDB opens a scope. Every refusal that carries a cost is held to no cost, and a transaction that was lent to the write it held before. |
+| `a_write_group_is_settled_and_applied_as_by_the_engine_that_is_held` | A group that nothing was settled into, applied to a write transaction and to a snapshot, and a group that two batches are settled into: the call through the type and the same call on the engine inside, on the same database, return the same success or error and the same immediate and pending costs, and the two records that were staged are read after the application. |
+| `a_handle_a_cursor_and_a_batch_are_those_of_the_engine_that_is_held` | Calls of a handle, a cursor and a batch that `GroveDb` reaches only in part: both directions of a cursor, a retarget, the aux and meta keyspaces, a batch taken and merged, a group settled and applied. |
+
+GroveDB's suite runs on the type twice, holding each engine ([`test-engines.md`](test-engines.md#grovedb-on-the-engine-chosen-at-the-open)).
+
+### It goes with RocksDB
+
+The type is for the time in which a node runs on one engine or the other by its configuration. OPS-10 removes the RocksDB engine, and this type, `EngineChoice`, `EngineKind`, the cfg and the two suite engines with it: `GroveDb` with no engine named is then `GroveDb<LigninEngine>`, and an application that opened through `EitherEngine::open_with` opens with `LigninEngine::open_with`.
+
 ## What later tasks get
 
 | Task | What it builds on |
@@ -1145,6 +1299,7 @@ GROVE-08. `verify_grovedb`, `visualize_verify_grovedb`, the visualization of a g
 | GROVE-09 | Done: see [Dump and load](#dump-and-load). `raw_storage` and `ingest_subtree_sst` are on the RocksDB engine only, and Platform compiles against them until OPS-03. |
 | GROVE-12 | The root-key records of all subtrees but the root Merk's are in one unit of exclusion: [The root-key record of a subtree](#the-root-key-record-of-a-subtree). `open_write_scope` and `scope_transaction`: an operation runs in a scope when it is given the scope's view. The `Send` bounds are asked for where a scope is sent. |
 | PERF-03 | `Applied`, returned by the application of a batch. |
+| OPS-10 | `EitherEngine` goes with the RocksDB engine: [It goes with RocksDB](#it-goes-with-rocksdb). |
 | OPS-03 | `grovedb::Error::is_commit_conflict()` in place of the match on `rocksdb::ErrorKind::Busy`. `GroveDb::set_savepoint` and `rollback_to_savepoint` in place of the methods of `Tx`. The devnet snapshot on `dump_subtree`, `load_subtree` and `subtree_root_as`: [Dump and load](#dump-and-load), "What Platform's port calls". |
 
 ## Choices this task made
