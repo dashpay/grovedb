@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use lignin_tree::node::NodeHandle;
 
-use super::node::StagedNode;
+use super::node::{StagedKey, StagedNode};
 use crate::txn::{BatchError, Column, Differs, Hosted, NodePut, Subtree, Unit};
 
 /// The columns in the order a batch is iterated in, and so charged in
@@ -37,6 +37,12 @@ pub(super) enum Under {
 }
 
 /// The one outcome a batch holds for a key.
+///
+/// A node is held in the outcome itself, with its keys, its feature and
+/// its links' aggregates in place where they fit ([`StagedKey`],
+/// `StagedFeature`): such an outcome owns memory outside itself only for
+/// a value the node states.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Write {
     /// A put of a flat record.
     Record(Box<[u8]>),
@@ -44,7 +50,7 @@ pub(super) enum Write {
     /// whether it keeps the value of a node that an earlier operation
     /// removed, which has none.
     Node {
-        node: Box<StagedNode>,
+        node: StagedNode,
         stated: u64,
         lost: bool,
     },
@@ -58,7 +64,7 @@ pub(super) struct Entry<C> {
     pub(super) tag: C,
 }
 
-pub(super) type Keys<C> = BTreeMap<Box<[u8]>, Entry<C>>;
+pub(super) type Keys<C> = BTreeMap<StagedKey, Entry<C>>;
 
 /// How a subtree leaves: with its entry, or with what it holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,7 +371,7 @@ impl<C> Staged<C> {
         self.order
     }
 
-    fn insert(&mut self, unit: Unit, key: Box<[u8]>, write: Write, tag: C) {
+    fn insert(&mut self, unit: Unit, key: StagedKey, write: Write, tag: C) {
         let generation = self.generation;
         let entry = Entry {
             generation,
@@ -433,7 +439,7 @@ impl<C> Staged<C> {
         {
             hosts.remove(&*node.key);
         }
-        let (key, node) = (node.key.clone(), Box::new(node));
+        let key = node.key.clone();
         let write = Write::Node { node, stated, lost };
         self.insert(Unit::data(subtree), key, write, tag);
     }
@@ -861,7 +867,7 @@ impl<C> Staged<C> {
                 for (key, entry) in keys {
                     match entry.write {
                         Write::Record(value) => self.put(unit, &key, &value, entry.tag),
-                        Write::Node { node, .. } => self.put_staged(subtree, *node, entry.tag),
+                        Write::Node { node, .. } => self.put_staged(subtree, node, entry.tag),
                         Write::Remove { node, .. } => self.delete(unit, &key, node, entry.tag),
                     }
                 }
