@@ -92,21 +92,19 @@ where
                 }
             }
         } else {
-            let link = self.tree.take_link(left, lend);
-            match link {
-                Some(Link::Reference { .. }) => (),
-                _ => {
-                    return Err(Error::CorruptedState(
-                        "expected Link::Reference but found other variant or None",
-                    ))
-                    .wrap_with_cost(cost);
-                }
+            let Some(link @ Link::Reference { .. }) = self.tree.take_link(left, lend) else {
+                return Err(Error::CorruptedState(
+                    "expected Link::Reference but found other variant or None",
+                ))
+                .wrap_with_cost(cost);
+            };
+            let fetched = self
+                .source
+                .fetch(&link, value_defined_cost_fn, grove_version);
+            if let Link::Reference { key, .. } = link {
+                super::spare::give(key);
             }
-            cost_return_on_error!(
-                &mut cost,
-                self.source
-                    .fetch(&link.unwrap(), value_defined_cost_fn, grove_version)
-            )
+            cost_return_on_error!(&mut cost, fetched)
         };
 
         child.inner.marks.on_loan = lend;

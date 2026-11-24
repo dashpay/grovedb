@@ -208,7 +208,7 @@ use crate::{
     merk::defaults::ROOT_KEY_KEY,
     tree::{
         kv::{ValueDefinedCostType, KV},
-        TreeNode, TreeNodeInner,
+        spare, TreeNode, TreeNodeInner,
     },
     Error, Link, TreeType,
 };
@@ -923,13 +923,13 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
                     return Ok(None);
                 };
                 if let Some(record) = node.record.take() {
-                    let key = key.to_vec();
+                    let key = spare::bytes(key);
                     let cost_fn = value_defined_cost_fn;
                     let mut node = TreeNode::decode_raw(&record, key, cost_fn, grove_version)?;
                     node.mark_from_flat_record();
                     return Ok(Some(node));
                 }
-                let mut inner = node_inner(key.to_vec(), node)?;
+                let mut inner = node_inner(spare::bytes(key), node)?;
                 if let Some(value_defined_cost_fn) = &value_defined_cost_fn {
                     inner.kv.value_defined_cost =
                         value_defined_cost_fn(inner.kv.value_as_slice(), grove_version);
@@ -969,11 +969,11 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
                 if let Some(record) = node.record.take() {
                     let no_cost = None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
                     let mut node =
-                        TreeNode::decode_raw(&record, key.to_vec(), no_cost, grove_version)?;
+                        TreeNode::decode_raw(&record, spare::bytes(key), no_cost, grove_version)?;
                     node.mark_from_flat_record();
                     return Ok(node);
                 }
-                node_without_value(key.to_vec(), node)
+                node_without_value(spare::bytes(key), node)
             })
             .flatten()
     }

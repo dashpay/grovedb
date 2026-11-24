@@ -661,7 +661,7 @@ impl Link {
     #[inline]
     fn default_reference() -> Self {
         Self::Reference {
-            key: Vec::with_capacity(64),
+            key: Vec::new(),
             hash: Default::default(),
             aggregate_data: AggregateData::NoAggregateData,
             child_heights: (0, 0),
@@ -695,6 +695,13 @@ impl Decode for Link {
         {
             let length = read_u8(&mut input)? as usize;
 
+            if key.capacity() < length {
+                // The bytes the key had go with it, as when it grew where
+                // it was.
+                let mut room = super::spare::buffer(length);
+                room.extend_from_slice(key);
+                *key = room;
+            }
             key.resize(length, 0);
             input.read_exact(key.as_mut())?;
 
@@ -787,6 +794,36 @@ mod test {
         *,
     };
     use crate::TreeFeatureType::BasicMerkNode;
+
+    #[test]
+    fn a_decode_that_fails_over_a_reference_leaves_in_its_key_what_was_read() {
+        /// Gives its bytes one at a time, and then no more.
+        struct Short(Vec<u8>);
+
+        impl Read for Short {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.0.is_empty() || buf.is_empty() {
+                    return Ok(0);
+                }
+                buf[0] = self.0.remove(0);
+                Ok(1)
+            }
+        }
+
+        let mut link = Link::Reference {
+            hash: NULL_HASH,
+            child_heights: (0, 0),
+            key: vec![9],
+            aggregate_data: AggregateData::NoAggregateData,
+        };
+        // The key is to grow from one byte to two, and none of them comes:
+        // it has the byte it had, and a zero.
+        assert!(link.decode_into(Short(vec![2])).is_err());
+        assert_eq!(link.key(), &[9, 0]);
+        // Both bytes of the key come, and no hash: the key is the new one.
+        assert!(link.decode_into(Short(vec![2, 7, 8])).is_err());
+        assert_eq!(link.key(), &[7, 8]);
+    }
 
     #[test]
     fn from_modified_tree() {

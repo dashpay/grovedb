@@ -43,7 +43,7 @@ impl TreeNode {
         let mut inner = TreeNode::decode_raw_for_read(bytes)?;
         inner.kv.key = key;
         Ok(TreeNode {
-            inner: Box::new(inner),
+            inner: super::spare::boxed(inner),
             baseline: Baseline::None,
             known_storage_cost: None,
         })

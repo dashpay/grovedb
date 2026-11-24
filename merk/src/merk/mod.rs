@@ -65,6 +65,7 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
     fmt,
+    ops::Deref,
 };
 
 use committer::{MerkCommitter, NodeUpdate, NodeUpdates};
@@ -303,7 +304,7 @@ pub struct Merk<S> {
     /// The in-memory root of the AVL tree, or `None` if the tree is empty.
     /// Wrapped in a `Cell` so it can be temporarily taken out for traversal
     /// and mutation (see `use_tree`, `walk`) without requiring `&mut self`.
-    pub(crate) tree: Cell<Option<TreeNode>>,
+    pub(crate) tree: TreeCell,
     /// The key under which the root `TreeNode` is stored, or `None` for an
     /// empty tree. For standalone/base Merks this is read from the
     /// `ROOT_KEY_KEY` metadata entry; for layered Merks it is supplied by
@@ -353,6 +354,28 @@ where
         }
     }
     Ok(()).wrap_with_cost(cost)
+}
+
+/// The cell of a Merk's tree. When it is dropped, with its Merk, the
+/// memory of the tree it holds is given to the thread
+/// ([`crate::tree::spare`]).
+#[derive(Default)]
+pub(crate) struct TreeCell(Cell<Option<TreeNode>>);
+
+impl Deref for TreeCell {
+    type Target = Cell<Option<TreeNode>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for TreeCell {
+    fn drop(&mut self) {
+        if let Some(tree) = self.0.take() {
+            crate::tree::spare::give_tree(tree);
+        }
+    }
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -686,7 +709,7 @@ where
                         if let Some(t) = tree.as_ref() {
                             self.root_tree_key = Cell::new(Some(t.key().to_vec()));
                         }
-                        self.tree = Cell::new(tree);
+                        self.tree.set(tree);
                         self.paid_nodes.clear();
                     })
             } else {
@@ -712,7 +735,7 @@ where
             self.storage
                 .get_node(tree_root_key, value_defined_cost_fn, grove_version)
                 .map_ok(|tree| {
-                    self.tree = Cell::new(tree);
+                    self.tree.set(tree);
                     self.paid_nodes.clear();
                 })
         } else {

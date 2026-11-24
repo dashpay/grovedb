@@ -37,7 +37,11 @@ use super::{
     feature::{decode_aggregate, decode_feature, encode_aggregate, encode_feature, Tp12},
     refused, LigninEntry, LigninHost, LigninHosted,
 };
-use crate::{cost_model::Keyspace, tree::AggregateData, CryptoHash, Error, TreeFeatureType};
+use crate::{
+    cost_model::Keyspace,
+    tree::{spare, AggregateData},
+    CryptoHash, Error, TreeFeatureType,
+};
 
 /// The 32 bytes that name a subtree.
 pub(super) type Prefix = [u8; 32];
@@ -595,7 +599,7 @@ fn stored_link(link: LinkView<'_>) -> Result<StoredLink, Error> {
         hash: *link.hash,
         heights: link.heights,
         key_len: link.child_key_len,
-        key: link.key.map(<[u8]>::to_vec),
+        key: link.key.map(spare::bytes),
         aggregate: decode_aggregate(link.aggregate)?,
     })
 }
@@ -668,7 +672,7 @@ const KEPT_VALUE_LEN: u32 = 64 * 1024;
 
 /// A copy of the value of the node `view` shows.
 fn value_of(view: &NodeView<'_>) -> Result<Vec<u8>, Error> {
-    let read = |buf: &mut ValueBuf| Ok(view.value(buf).map_err(fault)?.to_vec());
+    let read = |buf: &mut ValueBuf| Ok(spare::bytes(view.value(buf).map_err(fault)?));
     if view.value_len() > KEPT_VALUE_LEN {
         return read(&mut ValueBuf::new());
     }
@@ -987,7 +991,7 @@ fn read_child(
     let child = reads
         .child(Subtree::new(*subtree), parent, side(left), |view| {
             view.map(|view| Child::Found {
-                key: view.key().to_vec(),
+                key: spare::bytes(view.key()),
                 location: view.handle().map(Location),
             })
         })

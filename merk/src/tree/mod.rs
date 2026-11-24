@@ -24,6 +24,8 @@ mod link;
 mod ops;
 #[cfg(feature = "minimal")]
 mod put_value;
+#[cfg(feature = "minimal")]
+pub(crate) mod spare;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 pub mod tree_feature_type;
 #[cfg(feature = "minimal")]
@@ -314,7 +316,7 @@ impl TreeNode {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new(key, value, value_defined_cost, feature_type).map(|kv| Self {
-            inner: Box::new(TreeNodeInner {
+            inner: spare::boxed(TreeNodeInner {
                 marks: NodeMarks::default(),
                 kv,
                 left: None,
@@ -329,7 +331,7 @@ impl TreeNode {
     pub fn new_with_tree_inner(inner_tree: TreeNodeInner) -> Self {
         let baseline = Baseline::value(&inner_tree.kv.value);
         Self {
-            inner: Box::new(inner_tree),
+            inner: spare::boxed(inner_tree),
             baseline,
             known_storage_cost: None,
         }
@@ -386,7 +388,7 @@ impl TreeNode {
         right: Option<Link>,
     ) -> Self {
         Self {
-            inner: Box::new(TreeNodeInner {
+            inner: spare::boxed(TreeNodeInner {
                 marks: NodeMarks {
                     value_absent: true,
                     ..NodeMarks::default()
@@ -565,7 +567,7 @@ impl TreeNode {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
-            inner: Box::new(TreeNodeInner {
+            inner: spare::boxed(TreeNodeInner {
                 marks: NodeMarks::default(),
                 kv,
                 left: None,
@@ -586,7 +588,7 @@ impl TreeNode {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         KV::new_with_combined_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
-            inner: Box::new(TreeNodeInner {
+            inner: spare::boxed(TreeNodeInner {
                 marks: NodeMarks::default(),
                 kv,
                 left: None,
@@ -609,7 +611,7 @@ impl TreeNode {
     ) -> CostContext<Self> {
         KV::new_with_layered_value_hash(key, value, value_cost, value_hash, feature_type).map(
             |kv| Self {
-                inner: Box::new(TreeNodeInner {
+                inner: spare::boxed(TreeNodeInner {
                     marks: NodeMarks::default(),
                     kv,
                     left: None,
@@ -646,7 +648,7 @@ impl TreeNode {
             .unwrap_add_cost(&mut cost);
         kv.value_defined_cost = value_defined_cost;
         let mut node = Self {
-            inner: Box::new(TreeNodeInner {
+            inner: spare::boxed(TreeNodeInner {
                 marks: NodeMarks::default(),
                 kv,
                 left: None,
@@ -777,7 +779,7 @@ impl TreeNode {
             feature_type,
         )
         .map(|kv| Self {
-            inner: Box::new(TreeNodeInner {
+            inner: spare::boxed(TreeNodeInner {
                 marks: NodeMarks::default(),
                 kv,
                 left: None,
@@ -799,7 +801,7 @@ impl TreeNode {
         feature_type: TreeFeatureType,
     ) -> CostContext<Self> {
         value_hash(value.as_slice()).map(|vh| Self {
-            inner: Box::new(TreeNodeInner {
+            inner: spare::boxed(TreeNodeInner {
                 marks: NodeMarks::default(),
                 kv: KV::from_fields(key, value, kv_hash, vh, feature_type),
                 left,
@@ -2478,12 +2480,15 @@ impl TreeNode {
             ));
         };
         debug_assert_eq!(tree.key(), key.as_slice());
-        *self.slot_mut(left) = Some(Link::Loaded {
+        let loaded = Link::Loaded {
             tree,
             hash,
             child_heights,
             aggregate_data,
-        });
+        };
+        if let Some(Link::Reference { key, .. }) = self.slot_mut(left).replace(loaded) {
+            spare::give(key);
+        }
         Ok(())
     }
 }
