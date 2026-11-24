@@ -13,6 +13,7 @@ mod enters;
 mod filling;
 mod full;
 mod guards;
+mod held;
 mod kept;
 mod listed;
 mod load;
@@ -90,6 +91,10 @@ pub(super) struct Counts {
     holding: Mutex<Option<u64>>,
     released: Condvar,
     held: AtomicU64,
+    /// The syncs that wait from their first on, if any are to.
+    holding_syncs: Mutex<Option<SyncOf>>,
+    syncs_released: Condvar,
+    syncs_held: AtomicU64,
     /// What is run, once, when a lock is asked for, before it is taken,
     /// and whether only a lock that makes its file counts.
     at_lock: Mutex<Option<(bool, Change)>>,
@@ -164,6 +169,7 @@ impl Watched {
         sync: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<T> {
         self.changed();
+        self.wait_at_the_sync_gate(what, path);
         let began = Instant::now();
         let synced = sync();
         let took = began.elapsed();
@@ -196,6 +202,43 @@ impl Watched {
     /// written and its link not pushed.
     pub(super) fn hold_segment_appends_after(&self, through: u64) {
         *self.0.holding.lock().expect("the gate") = Some(through);
+    }
+
+    /// From here on every sync of `of` waits until
+    /// [`Self::release_syncs`], whoever makes it.
+    pub(super) fn hold_syncs(&self, of: SyncOf) {
+        *self.0.holding_syncs.lock().expect("the gate") = Some(of);
+    }
+
+    /// Lets the syncs that wait go on, and holds none any more.
+    pub(super) fn release_syncs(&self) {
+        *self.0.holding_syncs.lock().expect("the gate") = None;
+        self.0.syncs_released.notify_all();
+    }
+
+    /// How many syncs wait at the gate or have waited there.
+    pub(super) fn syncs_held(&self) -> u64 {
+        self.0.syncs_held.load(Ordering::Acquire)
+    }
+
+    /// How many syncs the thread `by` has made that have ended.
+    pub(super) fn syncs_by(&self, by: ThreadId) -> usize {
+        let synced = self.0.synced.lock().expect("the list");
+        synced
+            .iter()
+            .filter(|(_, _, thread, _)| *thread == by)
+            .count()
+    }
+
+    fn wait_at_the_sync_gate(&self, what: Synced, path: &Path) {
+        let mut holding = self.0.holding_syncs.lock().expect("the gate");
+        if !holding.is_some_and(|of| of.is(what, path)) {
+            return;
+        }
+        self.0.syncs_held.fetch_add(1, Ordering::AcqRel);
+        while holding.is_some() {
+            holding = self.0.syncs_released.wait(holding).expect("the gate");
+        }
     }
 
     /// Lets the append that waits go on, and holds none any more.
@@ -362,6 +405,33 @@ impl Watched {
         let mine = synced.into_iter().filter(|(_, _, by, _)| *by == here);
         mine.map(|(what, path, _, took)| (what, path, took))
             .collect()
+    }
+}
+
+/// The syncs that a [`Watched`] file layer holds ([`Watched::hold_syncs`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SyncOf {
+    /// A file in the directory of this name below the database's: `wal`,
+    /// `seg`, `val` or `table`.
+    FileIn(&'static str),
+    /// The temporary file of a manifest.
+    Manifest,
+    /// The names in a directory.
+    Names,
+}
+
+impl SyncOf {
+    fn is(self, what: Synced, path: &Path) -> bool {
+        let named = |name: &str| path.file_name().is_some_and(|last| last == name);
+        let within = |dir: &str| {
+            let parent = path.parent().and_then(Path::file_name);
+            parent.is_some_and(|parent| parent == dir)
+        };
+        match self {
+            Self::FileIn(dir) => what != Synced::Dir && within(dir),
+            Self::Manifest => what != Synced::Dir && named("MANIFEST.tmp"),
+            Self::Names => what == Synced::Dir,
+        }
     }
 }
 
