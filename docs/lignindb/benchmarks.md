@@ -29,8 +29,15 @@ Times on the project's machines:
 - Linux x86_64 box (strixbox): one to two hours, because its CPU weight is
   deliberately low and its I/O is shared.
 
-`--perf` attaches `perf stat -e instructions:u` to the measuring thread, where
-`perf` works.
+`--perf` attaches `perf stat -e instructions:u` to the measuring thread: a time
+row that is measured under it carries its instructions per sample, and a row
+during which `perf` failed keeps its time and has no count. Where `perf` counts
+nothing for a thread when the run starts (it is not installed, or the kernel
+does not allow it), a run with `--perf` is refused. A run without `--perf`
+counts no instructions. A table says under its first line when no row of it has
+a count: that the run counted none, or, where the report says that `perf` was
+counting, that `perf` gave none. A gate that compares instructions passes the
+option.
 
 Smaller runs take `--documents`, `--owners`, `--creates`, `--updates`,
 `--deletes` and the sample counts (`--point-reads`, `--reference-reads`,

@@ -149,6 +149,26 @@ fn percent(fraction: Option<f64>) -> String {
     )
 }
 
+/// What a table says under its first line where no row of it has a count
+/// of instructions, so that the empty column is not read as a machine
+/// without a counter: for a report that says its run counted none, and
+/// for one that says `perf` was counting.
+const NOT_COUNTED: &str =
+    "instr/sample is empty: the run counted no instructions (`run --perf` counts them)";
+const NOT_GIVEN: &str =
+    "instr/sample is empty: the run asked for instructions (--perf) and `perf` gave no count";
+
+fn no_counts(report: &Report) -> Option<&'static str> {
+    let mut rows = report.engines.iter().flat_map(|engine| &engine.rows);
+    if rows.any(|row| row.instructions_per_sample.is_some()) {
+        return None;
+    }
+    Some(match report.method.perf_instructions {
+        false => NOT_COUNTED,
+        true => NOT_GIVEN,
+    })
+}
+
 /// The rows of `report`, one line each, beside the plan's recorded values.
 pub fn table(report: &Report) -> String {
     let mut out = String::new();
@@ -167,6 +187,9 @@ pub fn table(report: &Report) -> String {
         report.load_average_before,
         report.load_average_after,
     );
+    if let Some(no_counts) = no_counts(report) {
+        let _ = writeln!(out, "{no_counts}");
+    }
     for engine in &report.engines {
         let _ = writeln!(
             out,
