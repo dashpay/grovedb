@@ -144,8 +144,9 @@ fi
 # The recording builds the test kit alone. Of the LigninDB crates, the
 # worktree's workspace lists only lignin-testkit as a member; the others are
 # in it as the test kit's path dependencies, or not at all. A LigninDB crate
-# the test kit does not depend on may ask of the pinned engine what it does
-# not have, as lignin-tools asks Merk for `lignin_storage`.
+# the test kit does not depend on there may ask of the pinned engine what it
+# does not have, as lignin-tools asks Merk for `lignin_storage`: the one line
+# by which the test kit asks for lignin-tools is taken out below.
 list=$(printf '"%s", ' "${kept[@]}")
 awk -v list="${list%, }" '
     !done && /^[[:space:]]*members[[:space:]]*=[[:space:]]*\[/ {
@@ -166,15 +167,21 @@ mv "$worktree/Cargo.toml.pinned" "$worktree/Cargo.toml"
 # through the LigninDB node store (tests/merk_store.rs) asks Merk for it, and
 # the engine crash campaign (src/crash/engine) asks both: in a table of its
 # own, [target.'cfg(all())'.dependencies], so that each asking is a line that
-# can go. Cargo resolves every dependency of a member whatever is built.
+# can go. The tests of the migrator (tests/migrate.rs) ask for lignin-tools
+# with its feature `migrate`, and with that feature the tool asks GroveDB for
+# `lignin_storage`. Cargo resolves every dependency of a member whatever is
+# built.
 asks='/^\[/ { section = $0 }
-    { asked = (section == "[dev-dependencies]" || section == "[target.'"'"'cfg(all())'"'"'.dependencies]") &&
-        /^grovedb(-merk)?[ =]/ && /"lignin_storage"/ }'
+    { asked = ((section == "[dev-dependencies]" || section == "[target.'"'"'cfg(all())'"'"'.dependencies]") &&
+        /^grovedb(-merk)?[ =]/ && /"lignin_storage"/) ||
+        (section == "[dev-dependencies]" && /^lignin-tools[ =]/ && /"migrate"/) }'
 found=$(awk "$asks asked { found++ } END { print found + 0 }" "$worktree/$testkit")
-[ "$found" = 3 ] || fail \
-    "expected three lines of $testkit that ask for the feature \`lignin_storage\`, which the pinned" \
-    "engine does not have: grovedb-merk under [dev-dependencies], and grovedb and grovedb-merk under" \
-    "[target.'cfg(all())'.dependencies]. Found $found." \
+[ "$found" = 4 ] || fail \
+    "expected four lines of $testkit that ask of the pinned engine what it does not have. Three ask" \
+    "for the feature \`lignin_storage\`: grovedb-merk under [dev-dependencies], and grovedb and" \
+    "grovedb-merk under [target.'cfg(all())'.dependencies]. One asks for lignin-tools with its feature" \
+    "\`migrate\`, under [dev-dependencies]: with it the tool asks grovedb for \`lignin_storage\`." \
+    "Found $found." \
     "The manifest has changed: see what it asks of the pinned engine now, and bring this script" \
     "and the section of the README that names it up to date."
 awk "$asks !asked" "$worktree/$testkit" > "$worktree/$testkit.pinned"
@@ -194,8 +201,9 @@ if ! unresolved=$(cargo metadata --format-version 1 2>&1 >/dev/null); then
     fail "the workspace does not resolve against the pinned engine $pin." \
         "The dependency Cargo could not resolve: ${dependency:-see below}." \
         "This script lists only lignin-testkit among the LigninDB members and takes out of the pinned" \
-        "copy of $testkit only the lines that ask grovedb and grovedb-merk for \`lignin_storage\`; what else" \
-        "the pinned engine cannot give has to be added to it." \
+        "copy of $testkit only the lines that ask grovedb and grovedb-merk for \`lignin_storage\` and the" \
+        "line that asks for lignin-tools with \`migrate\`; what else the pinned engine cannot give has to" \
+        "be added to it." \
         "Cargo said:" "$unresolved"
 fi
 
