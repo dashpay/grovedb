@@ -404,8 +404,8 @@ impl ScopeView for LigninWriter<'_, '_> {
 /// that is shorter than the one the transaction was begun with, and
 /// gives both to one call of `GroveDb`, which takes them with one
 /// lifetime. A boxed trait object is given the shorter lifetime whatever
-/// it holds. Each operation of the engine on a write transaction is one
-/// call through this trait.
+/// it holds. Each operation of the engine on the write transaction of a
+/// [`LigninTransaction`] is one call through this trait.
 trait WriteView: Send + Sync {
     fn view(&self) -> LigninView<'_>;
 
