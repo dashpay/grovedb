@@ -8,6 +8,7 @@ mod check;
 mod checkpoints;
 mod clean;
 mod counted;
+mod damaged;
 mod ended;
 mod enters;
 mod filling;
