@@ -360,6 +360,17 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
     /// them.
     fn rollback_write_scope(&self, scope: Self::WriteScope<'_>) -> Result<(), Error>;
 
+    /// Whether [`Self::rollback_write_scope`] removes the writes of a scope
+    /// from its transaction. Where it does not, that call fails with
+    /// [`WriteScopeError::RollbackUnsupported`] and the writes stay.
+    ///
+    /// A call of `GroveDb` that undoes a part of what it wrote by a scope
+    /// of its own opens that scope only on an engine that answers `true`,
+    /// and no scope on one that answers `false`. The trait provides no
+    /// answer: an engine that wraps another gives the answer of the engine
+    /// it wraps.
+    fn rolls_back_write_scopes(&self) -> bool;
+
     /// A deferred handle of the subtree at `path`.
     fn subtree<'a, 'b, B>(
         &'a self,

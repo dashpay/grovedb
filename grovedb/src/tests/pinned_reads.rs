@@ -150,6 +150,10 @@ impl Engine for PinnedReads {
         self.engine.rollback_write_scope(scope)
     }
 
+    fn rolls_back_write_scopes(&self) -> bool {
+        self.engine.rolls_back_write_scopes()
+    }
+
     fn subtree<'a, 'b, B>(
         &'a self,
         path: SubtreePath<'b, B>,

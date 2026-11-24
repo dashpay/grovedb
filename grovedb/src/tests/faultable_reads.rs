@@ -741,6 +741,10 @@ impl<E: Engine> Engine for RefusedReads<E> {
         self.0.rollback_write_scope(scope)
     }
 
+    fn rolls_back_write_scopes(&self) -> bool {
+        self.0.rolls_back_write_scopes()
+    }
+
     fn subtree<'a, 'b, B>(
         &'a self,
         path: SubtreePath<'b, B>,
