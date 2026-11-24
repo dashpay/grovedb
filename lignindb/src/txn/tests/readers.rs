@@ -309,7 +309,8 @@ fn a_reader_knows_the_drops_of_its_version_however_late_it_opens() {
     {
         let path = db.path(&versions);
         let guard = versions.guard();
-        let frames = crate::txn::frames::Awake::new(&path, &guard, dropped_at);
+        let lease = lignin_tree::node::Lease::take();
+        let frames = crate::txn::frames::Awake::new(&path, &guard, dropped_at, lease);
         let frames = frames.expect("the frames of a pinned version");
         assert_eq!(frames.root(&below).expect("a lookup"), None);
         let mut slot = None;

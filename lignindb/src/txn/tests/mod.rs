@@ -19,6 +19,7 @@ pub(crate) mod load;
 mod looks;
 mod moves;
 mod parked;
+mod places;
 pub(crate) mod random;
 mod readers;
 mod reads;
@@ -296,6 +297,7 @@ impl<'s> World<'s> {
         let held = TxnStats {
             rebuilds: 0,
             handles_followed: 0,
+            places_followed: 0,
             keyed_reads: 0,
             below_opened: 0,
             ..stats

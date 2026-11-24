@@ -383,10 +383,14 @@ A Merk that is kept open across writes has two ways to stay right. It can
 take that report and correct the links it holds, and then it follows no link
 by key. Or it can drop the location of what it wrote and find each such
 node by key the first time it follows the link again, which costs one keyed
-descent for each created or carried node it comes back to. PERF-03 asks for
-no keyed lookup on the write path, which needs the first. MERK-01 and
-PERF-03 choose; either is safe, because a kept location is checked before it
-is used (S6).
+descent for each created or carried node it comes back to. Either is safe,
+because a kept location is checked before it is used (S6). As built, the
+write transaction takes the report itself: it keeps the address of every
+node a write of it put, by subtree and key, and reads and writes such a
+node there when it is named by its key (`lignindb::txn`, "Locations that
+are kept"). A kept address ends when a cell leaves its page (S6): a node
+that a write did not put, in a page the write carried a cell out of, is
+found by its key the next time it is named by key.
 
 Without P2, with every Merk laid out on pages of its own, the first 300,000
 transitions of the reference workload dirty 12.1 pages each against 6.9, and
@@ -1334,7 +1338,7 @@ records and the moves.
 | GROVE-05 Deletes and drops | D1 for a deleted tree, D4 for a cleared one. D6: a Merk is entered through `drop::enter` and dropped or cleared through `drop::unlink`, with every flat column; a clear keeps the cleared Merk's own flat records. GroveDB's pending-drop records are the same idea at the level of storage prefixes. | The mapping. |
 | TREE-10 Bulk loader | F5: any placement is valid, so a loader may fill pages to 90% with fragments of its choice. To leave a tree that later writes treat well, a loaded page should hold whole fragments of at most the largest size, and the roots above them should be together in the pages above. | The loader. |
 | MERK-01 LigninNodeStore | A node is placed when its write is applied, not at `prepare_node` or `put_node` (P5), and the write is all change sets of the operation. The address of a written node comes back from there. The location in a `Link` is a page id and a slot, a hint that is checked before use (S6). | The mapping from `Link` to cell addresses, and how the addresses come back (P5). |
-| PERF-03 Pointer write path | A write changes the address of the cells it creates and carries, and of no other (P5). Taking the tree layer's report of them keeps every kept link exact, so no link is followed by key. | The path cache. |
+| PERF-03 Pointer write path | A write changes the address of the cells it creates and carries, and of no other (P5). As built: the write transaction takes the tree layer's report of what a write put and keeps those addresses by subtree and key, and a write follows a link to a child it does not write through the cell of the parent, which the write is at. | Where the locations are kept: in the transaction (`lignindb::txn`, "Locations that are kept"). |
 | SEAM-04, TXN-08 | The application of an operation's batch is where pages are chosen and where addresses come back from (P5). | The batch across subtrees. |
 | TXN-01, TXN-09 | Section 10: cells of several Merks share pages; a scope moves only cells it holds or that travel with them; rules are a pure function of pages and change set, so a second application is well defined. | Claims, private copies, reconciliation. |
 | VER-07 Physical invariant checker | C1, S1, F1, F3, C5 and X1 as invariants: every node has one cell; every stored address names the cell it means; the fragment-root table equals what the links imply; no cell has two stored addresses besides the directory; every value pointer leads to a record owned by the cell's page. | The checker. The policy rules are not invariants (F5). |
@@ -1480,9 +1484,9 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     operation: the change sets of all its Merks together, because a root is
     placed beside a host that is in another change set. So a location
     cannot come back through `prepare_node`, and on a batch not through
-    `NodeStore::commit`. The tree layer can report the addresses of what a
-    write created and carried, and PERF-03's "no keyed lookup on the write
-    path" needs that report to reach the Merks that are kept open.
+    `NodeStore::commit`. The tree layer reports the addresses of what a
+    write put, and the write transaction keeps them, so that a node which
+    is named by its key afterwards is read where the write left it.
 23. **A location in memory is checked by more than the key** (S6). The
     proposal of one count for each page, of the cells that left it, is a
     recommendation to TREE-02 and FMT-02, not a rule of the layout.

@@ -1612,6 +1612,52 @@ fn a_handle_that_a_met_write_reported_dates_no_read() {
     }
 }
 
+/// A write that is met ends no read that was made before it. It is made
+/// under a lease of its own, and what the transaction read before it, of
+/// the committed pages its frames are then made over or through frames it
+/// had, is dated as it was. Once a rollback has taken the met write out, a
+/// keep by the handles of such a read is answered from the commits since
+/// that read, and the transaction commits.
+#[test]
+fn a_read_from_before_a_met_write_is_dated_as_it_was_once_the_write_is_out() {
+    for framed in [false, true] {
+        bed(Stored::InCell, |bed| {
+            let node = bed.node.clone();
+            let tx = bed.world.begin();
+            let own = usize::from(framed);
+            // The read that a commit outside meets.
+            let (batch, kept) = adding(&bed.world, &tx, bed.len);
+            assert!(kept.contains(&node));
+            let early = read_now(&tx, &batch);
+            bed.rewrite_outside(&[&tx]);
+            if framed {
+                bed.world.write(&tx, vec![put(aux(7), b"own", b"1")]);
+            }
+
+            // The same change read again, at the version the met write is
+            // made at: of the committed pages, by a transaction that has
+            // no frames yet, or through its frames.
+            let (batch, kept) = adding(&bed.world, &tx, bed.len);
+            assert!(kept.contains(&node));
+            let late = read_now(&tx, &batch);
+            assert_eq!(tx.txn.stats().base.is_some(), framed);
+            tx.txn.set_savepoint().expect("no scope is open");
+
+            // The write by the early read is met, and is taken back.
+            bed.keep(&tx, &early, std::slice::from_ref(&node));
+            tx.txn.rollback_to_savepoint().expect("a savepoint is set");
+            tx.model.borrow_mut().writes.truncate(own);
+            let stats = tx.txn.stats();
+            assert_eq!((stats.writes, stats.overlapped), (own, 0), "{framed}");
+
+            // The write by the later read: no commit wrote a key of it
+            // since, and nothing is met.
+            bed.keep(&tx, &late, &[]);
+            assert!(matches!(bed.end(tx), Outcome::Committed(_)), "{framed}");
+        });
+    }
+}
+
 /// The transaction goes on watching when a rollback takes its last write
 /// out, while it remembers a lease: the key sets of the commits after that
 /// are what a keep by an earlier handle is answered from.

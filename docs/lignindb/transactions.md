@@ -798,7 +798,10 @@ good: an operation that is handed one must be able to tell, and must then
 find the record by its key (RD5) instead. One way: the transaction counts
 the commits it has observed and its own rebases and rollbacks, a location
 carries the count at which it was issued, and a mismatch means "resolve by
-key". TXN-03 and MERK-01 choose the mechanism.
+key". TXN-03 and MERK-01 choose the mechanism. As built, a write
+transaction also keeps such locations itself, of the nodes it found by key
+and of those it wrote, and follows them under the same check
+(`lignindb::txn`, "Locations that are kept").
 
 ## 6. Page versions
 
@@ -3918,8 +3921,8 @@ are listed so the owner can overrule one before code depends on it.
 20. **An operation is the size of one storage call** (section 1, RD4), so
     that the read rule is exactly as fine-grained as RocksDB's.
 21. **A location kept between operations must be checked before it is
-    followed** (PN8). This binds the path cache of PERF-03 and the scope
-    caches of GROVE-12.
+    followed** (PN8). This binds the locations a write transaction keeps
+    of the nodes it found and wrote, and the scope caches of GROVE-12.
 22. **The log decides whether a commit happened** (CM9): the engine applies
     recovery's own test to the group. A group that passes is published even
     if the call that wrote it reported an error, and a commit reported as

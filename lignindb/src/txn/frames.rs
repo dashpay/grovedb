@@ -36,8 +36,9 @@ use super::{
         entry_firsts, is_load, load_error, load_order, stated_hashes, LoadPages, Loaded, Placing,
         Source, Stated, StoredValue,
     },
-    pages::{find, follow, NodePages, TreePages},
+    pages::{find, follow, handle_at, linked_child, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
+    places::{Place, Places},
     unlinked,
     view::FlatKinds,
     write::{
@@ -351,6 +352,10 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// ([`Self::below`], `super::below`). It is of the directory of these
     /// frames, so it is made again with them, and starts empty.
     pub(crate) written_below: Below,
+    /// Where the cells of the nodes are that a search of these frames
+    /// found or that a write applied to them put, under the lease the
+    /// frames are read under (`super::places`).
+    pub(crate) seen: Places,
 }
 
 /// A batch as these frames lay it out ([`Frames::lay`]): with a plain drop
@@ -718,10 +723,12 @@ impl Resolver<'_> {
     }
 
     /// The node under `key` in the Merk `merk`: a node of the batch, or a
-    /// cell that is there.
+    /// cell that is there, which is found where `seen` has it or by the
+    /// key.
     fn node(
         &self,
         tree: &mut TreePages<'_>,
+        seen: &Places,
         merk: usize,
         key: &[u8],
     ) -> Result<Option<Target>, TxnError> {
@@ -729,7 +736,31 @@ impl Resolver<'_> {
             // A node that the batch leaves unlinked is no node of a tree.
             return Ok(self.places[self.offsets[merk] + node].map(Target::Node));
         }
-        Ok(find(tree, self.roots[merk], key)?.map(Target::At))
+        Ok(self.cell(tree, seen, merk, key)?.map(Target::At))
+    }
+
+    /// The cell of the node under `key` in the Merk `merk` as the pages
+    /// have it before the batch: where `seen` has it, while that place is
+    /// good, and otherwise where the key leads to from the root.
+    fn cell(
+        &self,
+        tree: &mut TreePages<'_>,
+        seen: &Places,
+        merk: usize,
+        key: &[u8],
+    ) -> Result<Option<CellAddress>, TxnError> {
+        let lease = tree.lease();
+        match seen.get(lease, &self.merks[merk].subtree, key) {
+            Some(Place::At(handle)) => {
+                if let Some(at) = follow(tree, lease, handle, key) {
+                    return Ok(Some(at));
+                }
+            }
+            // A Merk with no root has no cell, whatever was found of it.
+            Some(Place::Absent) if self.roots[merk].is_some() => return Ok(None),
+            _ => {}
+        }
+        find(tree, self.roots[merk], key)
     }
 
     /// The node of the Merk `merk` that the batch writes under `key`, by
@@ -745,7 +776,12 @@ impl Resolver<'_> {
     }
 
     /// The root of the Merk `merk` after the batch.
-    fn root(&self, tree: &mut TreePages<'_>, merk: usize) -> Result<Option<Target>, TxnError> {
+    fn root(
+        &self,
+        tree: &mut TreePages<'_>,
+        seen: &Places,
+        merk: usize,
+    ) -> Result<Option<Target>, TxnError> {
         if let Some(root) = self.loaded(merk) {
             return Ok(Some(Target::At(root)));
         }
@@ -754,20 +790,44 @@ impl Resolver<'_> {
             RootPut::Set(None) => Ok(None),
             RootPut::Set(Some(key)) => {
                 let subtree = self.merks[merk].subtree;
-                let root = self.node(tree, merk, key)?;
+                let root = self.node(tree, seen, merk, key)?;
                 Ok(Some(root.ok_or(BatchError::NoRoot { subtree })?))
             }
         }
     }
 
+    /// The link `link` of a node of the Merk `merk`, with the child it
+    /// names. A child that the batch does not write is a cell. Where
+    /// `parent` gives the cell of the linking node and the side of the
+    /// link, and that cell has a child on that side with the child's key,
+    /// that child is the cell: it is a cell of this Merk under that key,
+    /// which is the one the key leads to from the root. A link that the
+    /// write leaves as it was leads there, and Merk writes every node
+    /// that it links anew. Any other child is where `seen` has it, or
+    /// where its key leads to ([`Self::cell`]).
     fn link<'l>(
         &self,
         tree: &mut TreePages<'_>,
+        seen: &Places,
         merk: usize,
+        parent: Option<(CellAddress, Side)>,
         link: &LinkPut<'l>,
     ) -> Result<LinkWrite<'l>, TxnError> {
         let subtree = self.merks[merk].subtree;
-        let child = self.node(tree, merk, link.key)?;
+        let child = match self.written[merk].get(link.key) {
+            // A node that the batch leaves unlinked is no node of a tree.
+            Some(node) => self.places[self.offsets[merk] + node].map(Target::Node),
+            None => {
+                let beside = match parent {
+                    Some((parent, side)) => linked_child(tree, parent, side, link.key)?,
+                    None => None,
+                };
+                match beside {
+                    Some(at) => Some(Target::At(at)),
+                    None => self.cell(tree, seen, merk, link.key)?.map(Target::At),
+                }
+            }
+        };
         Ok(LinkWrite {
             child: child.ok_or(BatchError::NoChild { subtree })?,
             hash: link.hash,
@@ -865,6 +925,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             stored: self.stored,
             took: self.took,
             written_below: self.written_below,
+            seen: self.seen,
         }
     }
 }
@@ -877,13 +938,18 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// engine keeps for `at` ([`WritePath::directory_at`]), so frames that
     /// are made again have it as their pages do: after a commit of another
     /// landed, and after a rollback.
+    ///
+    /// The frames are read and changed under `lease`. It is one that no
+    /// frames were made under before: a new one, or the one that the
+    /// committed pages of `at` were read under, whose handles name the
+    /// cells of these frames for as long as no cell leaves their pages.
     pub(crate) fn new(
         path: &WritePath<'s>,
         guard: &'g OperationGuard<'s>,
         at: CommitVersion,
+        lease: Lease,
     ) -> Result<Self, TxnError> {
         let owner = WritePath::next_owner();
-        let lease = Lease::take();
         let size = path.layout.page_size();
         let flat = FlatWriter::new(path.committed(guard, at), path.pool, owner, path.ids);
         Ok(Self {
@@ -911,6 +977,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             stored: Vec::new(),
             took: Vec::new(),
             written_below: Below::default(),
+            seen: Places::default(),
             base: at,
         })
     }
@@ -957,6 +1024,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// frames (PN8).
     pub(crate) fn lease(&self) -> Lease {
         self.tree.lease()
+    }
+
+    /// Ends every handle that was issued under the lease of the frames:
+    /// their nodes are read and written under a new one from here on.
+    pub(crate) fn end_handles(&mut self) {
+        self.tree.set_lease(Lease::take());
     }
 
     /// The root cell of the Merk `subtree`, as the transaction sees it:
@@ -1656,6 +1729,41 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     pub(crate) fn follow(&mut self, handle: NodeHandle, key: &[u8]) -> Option<CellAddress> {
         let lease = self.lease();
         follow(&mut self.tree, lease, handle, key)
+    }
+
+    /// The cell of the node under `key` in the Merk `subtree`, whose root
+    /// cell is at `root`: where these frames last saw it, while that place
+    /// is good, and otherwise where the key leads to from the root
+    /// (`super::places`). What a search finds is kept. The second answer
+    /// is whether the cell was found with no search.
+    pub(crate) fn sought(
+        &mut self,
+        subtree: &Subtree,
+        root: Option<CellAddress>,
+        key: &[u8],
+    ) -> Result<(Option<CellAddress>, bool), TxnError> {
+        if root.is_none() {
+            return Ok((None, true));
+        }
+        let lease = self.lease();
+        match self.seen.get(lease, subtree, key) {
+            Some(Place::At(handle)) => {
+                if let Some(at) = follow(&mut self.tree, lease, handle, key) {
+                    return Ok((Some(at), true));
+                }
+            }
+            Some(Place::Absent) => return Ok((None, true)),
+            None => {}
+        }
+        let found = find(&mut self.tree, root, key)?;
+        match found {
+            Some(at) => {
+                let handle = handle_at(&mut self.tree, at)?;
+                self.seen.put(*subtree, key, handle);
+            }
+            None => self.seen.put_absent(lease, *subtree, key),
+        }
+        Ok((found, false))
     }
 
     /// Whether the data column holds a record under `subtree` in these
@@ -2527,6 +2635,31 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 nodes
             }
         };
+        // Where each node of the write is now is kept for the reads and
+        // the writes that name its key and no handle (`super::places`):
+        // not for the nodes of a load, which are a whole Merk.
+        let mut placed = nodes.iter();
+        for (merk, offset) in merks.iter().zip(&resolver.offsets) {
+            let subtree = merk.subtree;
+            let linked = &reach.linked[*offset..offset + merk.nodes.len()];
+            if is_load(merk) {
+                // Every node of a load has a handle, and the Merk has the
+                // nodes of the load and no others.
+                placed.by_ref().take(merk.nodes.len()).for_each(drop);
+                self.seen.forget_subtree(&subtree);
+                continue;
+            }
+            for (put, linked) in merk.nodes.iter().zip(linked) {
+                match linked.then(|| placed.next()).flatten() {
+                    Some(handle) => self.seen.put(subtree, put.key, *handle),
+                    // A node that is in no tree has no cell.
+                    None => self.seen.forget(&subtree, put.key),
+                }
+            }
+            for key in merk.removed {
+                self.seen.forget(&subtree, key);
+            }
+        }
         let applied = Applied {
             carried: (report.carried.iter())
                 .map(|carried| (carried.from, carried.to))
@@ -2864,7 +2997,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 let hinted = hint.and_then(|handle| self.follow(handle, put.key));
                 ats.push(match hinted {
                     Some(at) => Some(at),
-                    None => find(&mut self.tree, resolver.roots[merk], put.key)?,
+                    // Nor is a place of the frames, which is such a handle.
+                    None if view.ends_handles() => {
+                        find(&mut self.tree, resolver.roots[merk], put.key)?
+                    }
+                    None => resolver.cell(&mut self.tree, &self.seen, merk, put.key)?,
                 });
             }
             linked.resize(offset + nodes.len(), false);
@@ -3106,7 +3243,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let merks = resolver.merks;
         let mut root_targets = Vec::with_capacity(merks.len());
         for merk in 0..merks.len() {
-            root_targets.push(resolver.root(&mut self.tree, merk)?);
+            root_targets.push(resolver.root(&mut self.tree, &self.seen, merk)?);
         }
         let mut nodes = Vec::with_capacity(reach.linked.len());
         let mut hosted: Vec<Vec<Option<Target>>> = Vec::new();
@@ -3138,13 +3275,15 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     removed.extend(at);
                     continue;
                 }
-                let link = |tree: &mut TreePages<'_>, link: &Option<LinkPut<'a>>| {
+                let (tree, seen) = (&mut self.tree, &self.seen);
+                let mut link = |side: Side, link: &Option<LinkPut<'a>>| {
+                    let parent = at.map(|at| (at, side));
                     (link.as_ref())
-                        .map(|link| resolver.link(tree, merk, link))
+                        .map(|link| resolver.link(tree, seen, merk, parent, link))
                         .transpose()
                 };
-                let left = link(&mut self.tree, &put.left)?;
-                let right = link(&mut self.tree, &put.right)?;
+                let left = link(Side::Left, &put.left)?;
+                let right = link(Side::Right, &put.right)?;
                 let hosts = match put.hosted {
                     Hosted::Keep => {
                         // A host and the Merk it hosts are two Merks.
@@ -3202,7 +3341,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             for key in write.removed {
                 // A delete of a key with no node is a write of the key and
                 // changes no page (ST5).
-                removed.extend(find(&mut self.tree, resolver.roots[merk], key)?);
+                removed.extend(resolver.cell(&mut self.tree, &self.seen, merk, key)?);
             }
         }
         // The root of a Merk that no node of the batch hosts is named by a

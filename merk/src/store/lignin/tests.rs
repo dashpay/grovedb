@@ -812,9 +812,15 @@ fn every_node_merk_writes_is_one_write_of_its_key() {
     assert!(kinds.iter().all(|seen| *seen > 20), "{kinds:?}");
 }
 
+/// The reads of a node that the transaction answered by a search or where
+/// it had kept the node, whether they named the node by its key alone or
+/// by a handle that had ended, and those that followed a handle.
 fn reads(transaction: &WriteTxn<'_>) -> (u64, u64) {
     let stats = transaction.stats();
-    (stats.keyed_reads, stats.handles_followed)
+    (
+        stats.keyed_reads + stats.places_followed,
+        stats.handles_followed,
+    )
 }
 
 /// Opens the Merk under `root`, writes `value` at the bottom of it, and
@@ -2599,15 +2605,17 @@ fn a_node_whose_children_its_reader_is_not_shown_is_refused_at_once() {
     first.rollback();
 }
 
-/// What the reader's own transaction does can end a location and give
-/// the next read of the node the same location again. A scope reads a
-/// node. A scope beside it writes a record of another subtree, which
-/// gives the transaction frames of its own, under another lease: the
-/// read of the first child finds the location ended. The scope beside
-/// rolls its write back and the frames go: the node is read at the
-/// location it had. Then a commit of another transaction lands, and the
-/// location ends a second time. Nothing here is damage, and the third
-/// read of the node answers it whole, at the cost of one read.
+/// What the reader's own transaction does can end a location. A scope
+/// reads a node. A scope beside it writes a record of another subtree,
+/// which gives the transaction frames of its own, under the lease the
+/// node was read under: the read of the first child follows the
+/// location. The scope beside rolls its write back, and the frames go
+/// with their lease: the read of the second child finds the location
+/// ended. The node is read again, and the same is done once more: a
+/// scope beside writes, the first child is read through the location,
+/// the scope rolls back, and the location has ended for the second
+/// child. No other transaction commits. Nothing here is damage, and the
+/// third read of the node answers it whole, at the cost of one read.
 #[test]
 fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_whole() {
     let beside = Beside::new();
@@ -2624,8 +2632,8 @@ fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_who
     let sibling = std::sync::Mutex::new(None);
     let reads = AtomicUsize::new(0);
     let between = |gap: Gap| match (gap, reads.load(Ordering::Relaxed)) {
-        (Gap::Read, 0) => {
-            reads.store(1, Ordering::Relaxed);
+        (Gap::Read, done @ (0 | 2)) => {
+            reads.store(done + 1, Ordering::Relaxed);
             let other = LigninWriter::new(transaction.scope().unwrap());
             {
                 let third = LigninSubtree::alone([2; 32]);
@@ -2635,14 +2643,10 @@ fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_who
             }
             *sibling.lock().unwrap() = Some(other);
         }
-        (Gap::Ended, 1) => {
-            reads.store(2, Ordering::Relaxed);
+        (Gap::Found, done @ (1 | 3)) => {
+            reads.store(done + 1, Ordering::Relaxed);
             let other: LigninWriter<'_, '_> = sibling.lock().unwrap().take().expect("a scope");
             other.into_scope().rollback();
-        }
-        (Gap::Read, 2) => {
-            reads.store(3, Ordering::Relaxed);
-            beside.land();
         }
         _ => {}
     };
@@ -2652,14 +2656,19 @@ fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_who
     let node = read.value.unwrap().expect("the root is stored");
     assert_eq!(node.encode(), quiet_node);
     assert_eq!(read.cost, quiet_cost);
-    assert_eq!(reads.load(Ordering::Relaxed), 3);
-    // Three tries: the location of the first ended twice, and the third
-    // read the node under another lease.
-    assert_eq!(view.asked.counts(), [3, 4, 2]);
+    assert_eq!(reads.load(Ordering::Relaxed), 4);
+    assert_eq!(beside.landed.load(Ordering::Relaxed), 0);
+    // Three tries, each under a lease of its own: the first and the
+    // second found one child before their location ended, and the third
+    // both.
+    assert_eq!(view.asked.counts(), [3, 6, 2]);
     let parents = view.asked.parents();
+    assert_eq!(parents.len(), 6);
     assert_eq!(parents[0], parents[1]);
     assert_ne!(parents[1].handle().lease(), parents[2].handle().lease());
     assert_eq!(parents[2], parents[3]);
+    assert_ne!(parents[3].handle().lease(), parents[4].handle().lease());
+    assert_eq!(parents[4], parents[5]);
 }
 
 /// A reader beside a writer that commits as fast as it can. Each commit

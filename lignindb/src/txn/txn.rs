@@ -26,8 +26,9 @@ use super::{
     key::{Column, KeySet, Subtree, Unit},
     load::{cover, is_load, spill, Loaded},
     opened::Opened,
-    pages::{child_keys, find, follow, CommittedPages, NodePages},
+    pages::{child_keys, find, follow, handle_at, CommittedPages, NodePages},
     path::WritePath,
+    places::{Place, Places},
     reads::{Reads, Since},
     unlinked,
     view::{ChildKeys, FlatKinds, NodeView, SubtreeView},
@@ -75,8 +76,14 @@ pub struct TxnStats {
     /// How many reads of a node went through a handle that was still good
     /// (PN8): no keyed lookup was made for them.
     pub handles_followed: u64,
-    /// How many reads of a node found it by its key: in the write set, or
-    /// down from the root of its Merk.
+    /// How many reads of a node that named no handle, or one that had
+    /// ended, went to where the transaction last saw the node: no keyed
+    /// lookup was made for them either.
+    pub places_followed: u64,
+    /// How many reads of a node were answered by its key: in the write
+    /// set, by a search down from the root of its Merk, or, for a key
+    /// that an earlier search found no node under, by what that search
+    /// found.
     pub keyed_reads: u64,
     /// How many entries of the subtree directory the transaction opened to
     /// say what it had written below a Merk that a batch of it drops or
@@ -129,6 +136,11 @@ struct State<'s> {
     /// no frames, and the version it is for (PN8).
     lease: Lease,
     lease_at: Option<CommitVersion>,
+    /// Where the committed nodes are that the transaction found by their
+    /// keys while it had no frames, under [`Self::lease`]
+    /// (`super::places`). Frames that are made under that lease take it
+    /// with them.
+    seen: Places,
     /// The subtree directory of the committed version that was read last,
     /// with the subtrees that were opened through it: for the committed
     /// records the transaction reads beside its own.
@@ -187,6 +199,7 @@ struct State<'s> {
     key: Vec<u8>,
     rebuilds: u64,
     followed: u64,
+    placed: u64,
     keyed: u64,
     /// The entries of the directory that were opened to say what the
     /// transaction wrote below a Merk ([`TxnStats::below_opened`]), over
@@ -856,6 +869,7 @@ impl<'s> WriteTxn<'s> {
                 open: None,
                 lease: Lease::take(),
                 lease_at: None,
+                seen: Places::default(),
                 directory: None,
                 stuck: None,
                 stopped: None,
@@ -875,6 +889,7 @@ impl<'s> WriteTxn<'s> {
                 key: Vec::new(),
                 rebuilds: 0,
                 followed: 0,
+                placed: 0,
                 keyed: 0,
                 below_opened: 0,
             }),
@@ -940,9 +955,19 @@ impl<'s> WriteTxn<'s> {
             stale_nodes: frames.map_or(0, |frames| frames.hashes.len()),
             rebuilds: state.rebuilds,
             handles_followed: state.followed,
+            places_followed: state.placed,
             keyed_reads: state.keyed,
             below_opened: state.below_opened,
         }
+    }
+
+    /// How many keys the transaction keeps a place of
+    /// (`super::places`): beside its frames, and with them.
+    #[cfg(all(test, not(loom)))]
+    pub(crate) fn places(&self) -> (usize, usize) {
+        let state = self.lock();
+        let framed = state.frames.as_ref().map_or(0, |frames| frames.seen.len());
+        (state.seen.len(), framed)
     }
 
     /// Rolls the transaction back (WT9): its write set, its private frames
@@ -1186,18 +1211,35 @@ impl<'s> WriteTxn<'s> {
                 at = pin.version();
                 continue;
             }
+            // Frames over the version that the transaction read last, with
+            // no write of its own, are made under the lease it read the
+            // committed pages of that version under: its pages are those
+            // pages until it changes them, so every handle of that lease
+            // names in the frames the cell it named. The transaction
+            // reads committed pages under another lease from here on.
+            let adopted = state.set.is_empty() && state.lease_at == Some(at);
+            let lease = match adopted {
+                true => std::mem::replace(&mut state.lease, Lease::take()),
+                false => Lease::take(),
+            };
+            let seen = std::mem::take(&mut state.seen);
+            state.lease_at = None;
             let built = Self::build(
                 path,
                 &guard,
                 at,
+                lease,
                 &state.set,
                 &state.scopes,
                 &mut state.loaded,
             );
             match built {
-                Ok(frames) => {
+                Ok(mut frames) => {
                     if !state.set.is_empty() {
                         state.rebuilds += 1;
+                    }
+                    if adopted {
+                        frames.seen = seen;
                     }
                     state.frames = Some(frames);
                     state.base = Some(pin);
@@ -1338,6 +1380,18 @@ impl<'s> WriteTxn<'s> {
             },
             false => Vec::new(),
         };
+        if !kept.met.is_empty() {
+            // The write hands its nodes back by their handles. That of a
+            // met node names bytes its writer never read, under the hashes
+            // it stated, at this write's version: no read of the committed
+            // state. It would pass for one once a rollback has taken the
+            // write out. So the write is made under a lease of its own,
+            // which is not dated: a keep by a handle of it is taken to be
+            // met. What was read before the write, through these frames
+            // or of the committed pages they were made over, is of the
+            // lease that ends here and keeps its date.
+            frames.end_handles();
+        }
         match frames.apply(path, batch, None, &mut state.loaded) {
             Ok(applied) => {
                 let stored = frames.take_stored();
@@ -1352,13 +1406,8 @@ impl<'s> WriteTxn<'s> {
                     for (offset, unit, key) in &kept.met {
                         state.set.meet_kept(first + offset, *unit, key);
                     }
-                    // The write hands its nodes back by their handles. That
-                    // of a met node names bytes its writer never read, under
-                    // the hashes it stated, at this write's version: no
-                    // read of the committed state. It would pass for one
-                    // once a rollback has taken the write out. So the lease
-                    // of these handles is not dated: a keep by one of them
-                    // is taken to be met. The frames go at the next
+                    // The lease the write was made under, which is its
+                    // own, is not dated. The frames go at the next
                     // operation, and show no node before that.
                     state.reads.forget_frames(frames.lease());
                 } else if !applied.nodes.is_empty() || !applied.carried.is_empty() {
@@ -1373,8 +1422,16 @@ impl<'s> WriteTxn<'s> {
                     frames.discard();
                     state.renew_lease();
                     let (set, scopes) = (&state.set, &state.scopes);
-                    let frames =
-                        Self::build(path, &op.guard, op.at, set, scopes, &mut state.loaded);
+                    let lease = Lease::take();
+                    let frames = Self::build(
+                        path,
+                        &op.guard,
+                        op.at,
+                        lease,
+                        set,
+                        scopes,
+                        &mut state.loaded,
+                    );
                     if let Ok(frames) = frames {
                         state.frames = Some(frames);
                         state.rebuilds += 1;
@@ -1575,7 +1632,8 @@ impl<'s> WriteTxn<'s> {
             }
             let mut loaded = Loaded::default();
             let (set, scopes) = (&state.set, &state.scopes);
-            let frames = Self::build(&self.path, guard, at, set, scopes, &mut loaded);
+            let lease = Lease::take();
+            let frames = Self::build(&self.path, guard, at, lease, set, scopes, &mut loaded);
             if let Err(refused) = frames {
                 return refused;
             }
@@ -2793,10 +2851,16 @@ impl<'s> WriteTxn<'s> {
                     Some(at)
                 }
                 None => {
-                    state.keyed += 1;
                     let entry = frames.entry(&subtree)?;
                     let root = entry.as_ref().and_then(|entry| entry.root());
-                    let found = find(&mut frames.tree, root.map(|root| root.address), key)?;
+                    // Where the frames last saw the node, or where its key
+                    // leads to (`super::places`).
+                    let root = root.map(|root| root.address);
+                    let (found, kept) = frames.sought(&subtree, root, key)?;
+                    match kept && found.is_some() {
+                        true => state.placed += 1,
+                        false => state.keyed += 1,
+                    }
                     if found.is_none() && entry.is_some() {
                         // No node of the tree is under the key, which can
                         // hold an unlinked record.
@@ -2900,14 +2964,43 @@ impl<'s> WriteTxn<'s> {
         let mut pages = (self.path).committed_pages(&op.guard, op.at, lease, &mut state.buffers);
         let followed = (hint.filter(|_| root.is_some()))
             .and_then(|handle| follow(&mut pages, lease, handle, key));
-        let at = match followed {
-            Some(at) => {
+        // Where the transaction last saw the committed node under this
+        // lease, or where its key leads to (`super::places`).
+        let kept = match followed {
+            Some(_) => None,
+            None if root.is_none() => None,
+            None => state.seen.get(lease, &subtree, key),
+        };
+        let kept = match kept {
+            Some(Place::At(handle)) => follow(&mut pages, lease, handle, key).map(Some),
+            Some(Place::Absent) => Some(None),
+            None => None,
+        };
+        let at = match (followed, kept) {
+            (Some(at), _) => {
                 state.followed += 1;
                 Some(at)
             }
-            None => {
+            (None, Some(Some(at))) => {
+                state.placed += 1;
+                Some(at)
+            }
+            (None, Some(None)) => {
                 state.keyed += 1;
-                find(&mut pages, root, key)?
+                None
+            }
+            (None, None) => {
+                state.keyed += 1;
+                let found = find(&mut pages, root, key)?;
+                match found {
+                    Some(at) => {
+                        let handle = handle_at(&mut pages, at)?;
+                        state.seen.put(subtree, key, handle);
+                    }
+                    None if root.is_some() => state.seen.put_absent(lease, subtree, key),
+                    None => {}
+                }
+                found
             }
         };
         if at.is_none() {
@@ -3305,7 +3398,16 @@ impl<'s> WriteTxn<'s> {
                 return Err(refused);
             }
             let (set, scopes) = (&state.set, &state.scopes);
-            let built = Self::build(&self.path, &op.guard, op.at, set, scopes, &mut state.loaded);
+            let lease = Lease::take();
+            let built = Self::build(
+                &self.path,
+                &op.guard,
+                op.at,
+                lease,
+                set,
+                scopes,
+                &mut state.loaded,
+            );
             return Err(match built {
                 Err(error) => error,
                 Ok(_) => TxnError::Damaged("frames that could not be made are made"),

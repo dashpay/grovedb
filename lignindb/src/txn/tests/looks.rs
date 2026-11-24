@@ -1029,6 +1029,15 @@ fn the_host_of_a_subtree_entered_if_absent_is_asked_for_at_the_commit() {
     for puts in [true, false] {
         let (db, versions) = Db::new(128);
         let mut world = with_outer(&db, &versions, false);
+        // A node on the other side of the host's key: a search for that
+        // key goes on below the root of the Merk, where the store counts
+        // it.
+        let more = world.edit_outside(
+            OUTER,
+            |items| drop(items.insert(b"a".to_vec(), vec![2; 40])),
+            &[],
+        );
+        assert!(committed(more));
         let tx = world.begin();
         (world.apply(&tx, &entering_if_absent())).expect("the subtree is entered");
         world.check(&tx);

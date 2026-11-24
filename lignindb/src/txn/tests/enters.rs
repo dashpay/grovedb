@@ -229,6 +229,7 @@ fn an_enter_if_absent_of_a_subtree_that_is_entered_otherwise_is_refused_with_bot
     let held = |tx: &Tx<'_>| TxnStats {
         keyed_reads: 0,
         handles_followed: 0,
+        places_followed: 0,
         ..tx.txn.stats()
     };
     let before = held(&tx);

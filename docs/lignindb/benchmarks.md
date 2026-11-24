@@ -100,7 +100,7 @@ only.
 | `bytes_handed_per_transition` | B | engine: key and value bytes of every record written |
 | `bytes_logged_per_transition` | B | engine: bytes appended to the write-ahead log |
 | `physical_bytes_per_transition` | B | engine: log plus flush plus compaction (cleaner) bytes |
-| `keyed_lookups_per_transition` | lookups | engine: searches by key, where it counts them; else `OperationCost::seek_count`, less one per record written |
+| `keyed_lookups_per_transition` | lookups | engine: searches by key that went on below the root of a Merk, where it counts them; else `OperationCost::seek_count`, less one per record written |
 | `seeks_per_transition` | seeks | `OperationCost::seek_count` |
 | `hashes_per_transition` | calls | `OperationCost::hash_node_calls` |
 | `engine_hashes_per_transition` | calls | engine: hashes computed, where it counts them (LigninDB only) |
@@ -115,7 +115,18 @@ GroveDB's storage layer charges one seek for every record it writes. So, for
 an engine that does not count its lookups (RocksDB), `keyed_lookups_per_transition`
 subtracts the records the engine logged, which leaves the lookups. GroveDB's
 charges are the same on every engine, so they cannot show the lookups LigninDB
-saves (PERF-03); LigninDB counts them itself.
+saves; LigninDB counts them itself. It counts a search from the root of a Merk
+that follows a link for the key. A node that is reached through a location
+that was kept, and the root itself, which the subtree directory names by its
+address, are no lookups.
+
+A build of LigninDB from before that rule counted every search by key of a
+Merk that has a node, the ones that its root answered among them. A report of
+such a build names `searches by key` in the source of the row, where a report
+of this one names `searches by key that went on below the root of a Merk`. The
+older row is larger for the same searches, so `lignin-bench compare` of an
+older report with a newer one shows a change of the row that is one of the
+count and not of the work.
 
 ### RocksDB's counters
 
