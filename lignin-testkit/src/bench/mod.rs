@@ -72,6 +72,8 @@
 
 pub mod cli;
 pub mod engine;
+#[cfg(grovedb_engine_seam)]
+pub mod lignindb;
 pub mod machine;
 pub mod report;
 pub mod rocksdb;
@@ -81,6 +83,8 @@ use std::path::PathBuf;
 
 use grovedb_version::version::GroveVersion;
 
+#[cfg(grovedb_engine_seam)]
+pub use self::lignindb::LigninDbEngine;
 pub use self::{
     engine::{Block, Counters, Engine, NodeAnatomy},
     machine::{ColdMethod, Machine},
@@ -145,6 +149,9 @@ impl From<grovedb::Error> for BenchError {
 pub enum EngineChoice {
     /// [`RocksDbEngine`].
     RocksDb,
+    /// [`LigninDbEngine`].
+    #[cfg(grovedb_engine_seam)]
+    LigninDb,
 }
 
 impl EngineChoice {
@@ -152,6 +159,8 @@ impl EngineChoice {
     pub fn named(name: &str) -> Option<EngineChoice> {
         match name {
             RocksDbEngine::NAME => Some(EngineChoice::RocksDb),
+            #[cfg(grovedb_engine_seam)]
+            LigninDbEngine::NAME => Some(EngineChoice::LigninDb),
             _ => None,
         }
     }
@@ -231,6 +240,10 @@ fn run_here(options: &RunOptions) -> Result<Report, BenchError> {
         report.engines.push(match engine {
             EngineChoice::RocksDb => {
                 run::run_engine::<RocksDbEngine>(settings, cold_method, options.grove_version)?
+            }
+            #[cfg(grovedb_engine_seam)]
+            EngineChoice::LigninDb => {
+                run::run_engine::<LigninDbEngine>(settings, cold_method, options.grove_version)?
             }
         });
     }

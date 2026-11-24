@@ -7,8 +7,9 @@
 //! ```
 //!
 //! `run` options: `--out FILE` (default: standard output), `--scratch DIR`
-//! (default: `$TMPDIR/lignin-bench`), `--engine NAME` (repeatable; default
-//! `rocksdb`), `--label TEXT`, `--commit SHA`, `--perf`, `--keep`, and the
+//! (default: `$TMPDIR/lignin-bench`), `--engine NAME` (`rocksdb` or
+//! `lignindb`; repeatable, measured in the order named; default `rocksdb`),
+//! `--label TEXT`, `--commit SHA`, `--perf`, `--keep`, and the
 //! sizes of [`Settings`]: `--seed`, `--documents`, `--owners`, `--creates`,
 //! `--updates`, `--deletes`, `--point-reads`, `--reference-reads`,
 //! `--warmup-reads`, `--cold-reads`, `--checkpoints`, `--reopens`.
@@ -315,6 +316,18 @@ mod tests {
         assert_eq!(out, None);
         assert_eq!(defaults.engines, vec![EngineChoice::RocksDb]);
         assert_eq!(defaults.settings.documents, 1_000_000);
+    }
+
+    #[cfg(grovedb_engine_seam)]
+    #[test]
+    fn engines_are_measured_in_the_order_they_are_named() {
+        let (options, _) = parse_run(&args("--engine rocksdb --engine lignindb")).unwrap();
+        assert_eq!(
+            options.engines,
+            vec![EngineChoice::RocksDb, EngineChoice::LigninDb]
+        );
+        let (alone, _) = parse_run(&args("--engine lignindb")).unwrap();
+        assert_eq!(alone.engines, vec![EngineChoice::LigninDb]);
     }
 
     #[test]

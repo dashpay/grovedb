@@ -257,6 +257,91 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     assert!(comparison.contains("time rows by instructions"));
 }
 
+/// The rows that come from GroveDB's charges and from what the workload
+/// writes: the same on every engine.
+#[cfg(grovedb_engine_seam)]
+const CHARGED_ROWS: [&str; 4] = [
+    "logical_bytes_per_transition",
+    "seeks_per_transition",
+    "hashes_per_transition",
+    "loaded_bytes_per_transition",
+];
+
+#[cfg(grovedb_engine_seam)]
+#[test]
+fn a_run_of_both_engines_gives_one_grove_and_the_same_charges() {
+    let scratch = tempfile::tempdir().unwrap();
+    let mut options = options(scratch.path().join("both"));
+    options.engines.push(EngineChoice::LigninDb);
+    let report = run(&options).unwrap();
+
+    let [rocksdb, lignindb] = &report.engines[..] else {
+        panic!("{} engines were measured", report.engines.len());
+    };
+    assert_eq!(
+        (rocksdb.engine.as_str(), lignindb.engine.as_str()),
+        ("rocksdb", "lignindb")
+    );
+    assert_eq!(rocksdb.root_hash_after_load, lignindb.root_hash_after_load);
+    assert_eq!(rocksdb.root_hash_at_end, lignindb.root_hash_at_end);
+    assert!(
+        !scratch.path().join("both").join("lignindb").exists(),
+        "the database is removed"
+    );
+
+    for phase in ["load", "create", "update", "delete"] {
+        for id in CHARGED_ROWS {
+            let row = lignindb
+                .row(id, phase)
+                .unwrap_or_else(|| panic!("no row {id} in {phase}"));
+            let base = rocksdb.row(id, phase).unwrap();
+            assert_eq!(row.value, base.value, "{id} in {phase}");
+            assert_eq!(row.ratio_to_rocksdb, (base.value != 0.0).then_some(1.0));
+        }
+        let lookups = lignindb.row("keyed_lookups_per_transition", phase).unwrap();
+        assert!(
+            lookups.source.contains("searches by key"),
+            "{}",
+            lookups.source
+        );
+        let wall = lignindb.row("wall_per_transition", phase).unwrap();
+        assert!(wall.value > 0.0 && wall.ratio_to_rocksdb.is_some());
+        assert!(lignindb.row("node_record_value_share", phase).is_none());
+    }
+    for id in ["point_proof_bytes", "references_proof_bytes"] {
+        let row = lignindb.row(id, "warm").unwrap();
+        assert_eq!(row.value, rocksdb.row(id, "warm").unwrap().value, "{id}");
+    }
+    for (id, phase) in [
+        ("point_get", "warm"),
+        ("point_query_proof", "warm"),
+        ("references_proof", "warm"),
+        ("point_get", "cold"),
+        ("checkpoint", "flushed"),
+        ("reopen", "flushed"),
+        ("size_on_disk", "flushed"),
+        ("block_commit", "create"),
+    ] {
+        let row = lignindb
+            .row(id, phase)
+            .unwrap_or_else(|| panic!("no row {id} in {phase}"));
+        assert!(row.value > 0.0, "{id} in {phase} is {}", row.value);
+    }
+
+    let load = &lignindb.phases[0];
+    assert_eq!(
+        (load.phase.as_str(), load.transitions, load.blocks),
+        ("load", 2_000, 100)
+    );
+    assert_eq!(load.counters.log_groups, 100, "one log group per block");
+    assert!(load.node_anatomy.is_none());
+    assert!(load.counters.keyed_lookups.is_some() && load.counters.hashes.is_some());
+    assert!(load.counters.page_reads.is_some() && load.counters.cache_hits.is_some());
+    for row in &lignindb.rows {
+        assert_eq!(row.kind, kind_of(&row.id), "{} in {}", row.id, row.phase);
+    }
+}
+
 #[test]
 fn the_command_writes_a_report() {
     let scratch = tempfile::tempdir().unwrap();
