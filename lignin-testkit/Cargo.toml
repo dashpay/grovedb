@@ -41,6 +41,9 @@ grovedb-merk = { version = "7.0.0", path = "../merk", features = ["lignin_storag
 
 [dev-dependencies]
 grovedb-merk = { version = "7.0.0", path = "../merk", features = ["lignin_storage"] }
+# The migrator from RocksDB, which `tests/migrate.rs` runs on the groves of
+# the corpus.
+lignin-tools = { version = "7.0.0", path = "../lignin-tools", features = ["migrate"] }
 lignindb = { version = "7.0.0", path = "../lignindb", features = ["testing"] }
 rustix = { version = "1", features = ["fs"] }
 syn = { version = "2", features = ["full", "visit"] }
