@@ -4,6 +4,7 @@
 
 mod backup;
 mod beside;
+mod carried;
 mod check;
 mod checkpoints;
 mod clean;
