@@ -1357,10 +1357,13 @@ const REFUSED_ON_LIGNINDB: &str =
 /// also into a tree that was never made, which both engines refuse:
 /// LigninDB at the subtree under the record that the delete left, which
 /// it does not hold, and RocksDB, which opens that subtree by the kept
-/// record, at the tree that was never made. On grove versions 1 to 3
-/// the step is counted apart and passed over, and the case goes on; on
-/// grove versions 4 and 5 both engines refuse the batch alike, before
-/// either opens a subtree. The same batch with only the tree that was
+/// record, at the tree that was never made. On grove versions 1 to 3,
+/// which open the deepest subtree first, the step is counted apart and
+/// passed over in whichever order the batch lists the two, and the case
+/// goes on. Grove versions 4 and 5 look at the operations in the order
+/// listed: with the tree that was never made first, both engines refuse
+/// the batch alike, and with the kept subtree first the step is counted
+/// apart and passed over. The same batch with only the tree that was
 /// never made is refused alike by both on every grove version.
 #[test]
 fn a_batch_refused_at_a_kept_record_by_lignindb_and_further_on_by_rocksdb_is_passed_over() {
@@ -1402,11 +1405,17 @@ fn a_batch_refused_at_a_kept_record_by_lignindb_and_further_on_by_rocksdb_is_pas
             delete(&[b"p", b"never"], &[1]),
             delete(&[b"p", b"t", &[1]], b"k"),
         ]),
+        // The same two, the kept subtree listed first.
+        Op::Batch(vec![
+            delete(&[b"p", b"t", &[1]], b"k"),
+            delete(&[b"p", b"never"], &[1]),
+        ]),
         Op::Batch(vec![put(&[b"p"], b"t", tree())]),
         Op::Commit,
     ];
     const ALIKE: usize = 5;
     const REFUSED: usize = 6;
+    const KEPT_FIRST: usize = 7;
     for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
         let number = number + 1;
         let case = Case::of(37, grove_version, ops.clone());
@@ -1418,31 +1427,34 @@ fn a_batch_refused_at_a_kept_record_by_lignindb_and_further_on_by_rocksdb_is_pas
         assert_eq!(run.ended_at, None, "grove version {number}");
         assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
         let families = run.tally.families;
-        if number >= 4 {
-            assert_eq!(run.failed_steps, [ALIKE, REFUSED], "grove version {number}");
-            assert!(run.passed_refusals.is_empty(), "grove version {number}");
-            assert_eq!(families.answers[9], 0, "grove version {number}");
-            continue;
-        }
-        assert_eq!(run.failed_steps, [ALIKE], "grove version {number}");
-        assert_eq!(run.passed_refusals.len(), 1, "grove version {number}");
-        let refused = &run.passed_refusals[0];
-        assert_eq!(refused.step, REFUSED, "grove version {number}");
-        assert_eq!(refused.parts, [Part::Cost], "{refused:?}");
-        let said = |lines: &[String]| {
-            let mut failed = lines.iter().filter(|line| line.starts_with("# failed"));
-            failed.next().cloned().expect("the words of a refusal")
+        let (alike, passed): (&[usize], &[usize]) = match number {
+            1..=3 => (&[ALIKE], &[REFUSED, KEPT_FIRST]),
+            _ => (&[ALIKE, REFUSED], &[KEPT_FIRST]),
         };
-        let (reference, candidate) = (said(&refused.reference), said(&refused.candidate));
-        println!("grove version {number}: {reference} | {candidate}");
-        assert!(
-            reference.ends_with("at path [p] for key never"),
-            "{reference}"
-        );
-        assert!(
-            candidate.ends_with("at path [p/t] for key 0x01"),
-            "{candidate}"
-        );
+        assert_eq!(run.failed_steps, alike, "grove version {number}");
+        let steps: Vec<usize> = run
+            .passed_refusals
+            .iter()
+            .map(|passed| passed.step)
+            .collect();
+        assert_eq!(steps, passed, "grove version {number}");
+        for refused in &run.passed_refusals {
+            assert_eq!(refused.parts, [Part::Cost], "{refused:?}");
+            let said = |lines: &[String]| {
+                let mut failed = lines.iter().filter(|line| line.starts_with("# failed"));
+                failed.next().cloned().expect("the words of a refusal")
+            };
+            let (reference, candidate) = (said(&refused.reference), said(&refused.candidate));
+            println!("grove version {number}: {reference} | {candidate}");
+            assert!(
+                reference.ends_with("at path [p] for key never"),
+                "{reference}"
+            );
+            assert!(
+                candidate.ends_with("at path [p/t] for key 0x01"),
+                "{candidate}"
+            );
+        }
         assert_eq!(families.answers[9], 1, "grove version {number}");
         assert!(!Family::RefusedBelowPlainDelete.ends_a_case());
     }

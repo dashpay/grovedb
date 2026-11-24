@@ -82,16 +82,19 @@
 //!   the subtrees the write names is at or below such a place, and
 //!   every other is the subtree a removed tree was in, with what the
 //!   caller of a partial batch adds among them; or, for a batch of
-//!   plain deletes that also writes elsewhere, on grove versions 1 to
-//!   3, where a batch opens its subtrees from the deepest level up:
-//!   the deepest subtree of the batch, alone at its depth, is under a
+//!   plain deletes that also writes elsewhere: the subtree that the
+//!   batch opens first (on grove versions 1 to 3 its deepest, alone at
+//!   its depth; from grove version 4 on that of the operation listed
+//!   first, in a case that has met no element with backward
+//!   references) is under a
 //!   record that a plain delete left, which the reference holds as a
 //!   tree that keeps a Merk and LigninDB does not hold
 //!   ([`Known::under_a_left_record`]); both answers are `InvalidPath`;
 //!   LigninDB's remark is GroveDB's words for no element above that
-//!   subtree and the reference's is the same words for another,
-//!   shallower path of the batch, each printed so by no other path of
-//!   the batch; and the reference was charged more bytes loaded than
+//!   subtree and the reference's is the same words for a path that
+//!   the batch opens later (a shallower one, or from grove version 4
+//!   on the subtree of an operation listed later), each printed so by
+//!   no other path of the batch; and the reference was charged more bytes loaded than
 //!   LigninDB and no fewer seeks and hash calls. RocksDB read the kept
 //!   record, opened the subtree by it and refused at a level it came
 //!   to afterwards. At the next walk
@@ -370,6 +373,12 @@ pub struct AtALeftRecord<'a> {
     /// Whether the reference was charged more bytes loaded than the
     /// candidate, and no fewer seeks and hash calls.
     pub reference_read_more: bool,
+    /// Whether the grove version is one on which a batch of plain
+    /// deletes looks at its operations in the order they are listed
+    /// before it applies any ([`Known::looks_in_the_order_listed`]):
+    /// the fourth and later. On the earlier ones it opens its subtrees
+    /// from the deepest level up.
+    pub in_the_order_listed: bool,
 }
 
 /// The paths that a batch `op` opens where it lists nothing but
@@ -1400,14 +1409,18 @@ impl Known {
     /// record that a plain delete left, where `op` is of the one shape
     /// in which the order of its opens is known: none, or one.
     ///
-    /// - The grove version is one of the first three, on which a batch
-    ///   of plain deletes opens its subtrees from the deepest level up,
-    ///   and opens nothing before.
+    /// - On the first three grove versions a batch of plain deletes
+    ///   opens its subtrees from the deepest level up, and opens nothing
+    ///   before: there the subtree is deeper than every other subtree
+    ///   the batch writes into. From the fourth on such a batch looks at
+    ///   its operations in the order they are listed, before it applies
+    ///   any: there the subtree is that of the first operation listed,
+    ///   and the case has met no element that takes part in backward
+    ///   references.
     /// - `op` is a batch or a batch with the flags callbacks that lists
     ///   plain deletes and nothing else: it puts no tree, follows no
     ///   reference, and opens the paths of [`opened_by`] alone.
-    /// - The subtree is deeper than every other subtree the batch
-    ///   writes into, so it is the first that the batch opens.
+    /// - Either way the subtree is the first that the batch opens.
     /// - The record under the subtree's key in the subtree above is one
     ///   the case remembers ([`Known::left_records`],
     ///   [`Known::forgets`]), which `reference` holds as the element of
@@ -1427,10 +1440,8 @@ impl Known {
     ) -> Vec<Path> {
         let deletes_alone = matches!(op, Op::Batch(_) | Op::FlagsBatch(_))
             && (op.batch_ops()).all(|batch_op| matches!(batch_op, BatchOp::Delete { .. }));
-        if self.left_records.is_empty()
-            || !deletes_alone
-            || grove_version.protocol_version >= FIRST_VERSION_THAT_LOOKS_THROUGH_A_REMOVED_TREE
-        {
+        let listed = Self::looks_in_the_order_listed(grove_version);
+        if self.left_records.is_empty() || !deletes_alone || (listed && self.backward_references) {
             return Vec::new();
         }
         let mut subtrees = written_subtrees(op, true);
@@ -1438,12 +1449,17 @@ impl Known {
         subtrees.dedup();
         let deepest = subtrees.iter().map(Vec::len).max().unwrap_or(0);
         let alone = subtrees.iter().filter(|path| path.len() == deepest).count() == 1;
+        let first_listed = op.batch_ops().next().map(BatchOp::path);
         subtrees.retain(|subtree| {
             let Some((key, above)) = subtree.split_last() else {
                 return false;
             };
             let record = (above.to_vec(), key.clone());
-            if !alone || subtree.len() != deepest || !self.left_records.contains(&record) {
+            let opened_first = match listed {
+                true => first_listed == Some(subtree),
+                false => alone && subtree.len() == deepest,
+            };
+            if !opened_first || !self.left_records.contains(&record) {
                 return false;
             }
             let (db, transaction) = reference;
@@ -1453,6 +1469,13 @@ impl Known {
             a_tree && a_node_is_under(candidate.0, candidate.1, above, key) == Ok(false)
         });
         subtrees
+    }
+
+    /// Whether a batch of plain deletes looks at its operations in the
+    /// order they are listed before it applies any, on `grove_version`:
+    /// from the fourth on.
+    pub fn looks_in_the_order_listed(grove_version: &GroveVersion) -> bool {
+        grove_version.protocol_version >= FIRST_VERSION_THAT_LOOKS_THROUGH_A_REMOVED_TREE
     }
 
     /// The family of a differing answer to `op` which the engines
@@ -1470,13 +1493,15 @@ impl Known {
     ///   operation the batch lists, with what the caller of a partial
     ///   batch adds: how far a refused batch came is not known.
     /// - `at` holds ([`AtALeftRecord`]): `op` is a batch of plain
-    ///   deletes on one of the first three grove versions whose deepest
-    ///   subtree, which it opens first, is under a record that a plain
-    ///   delete left ([`Known::under_a_left_record`]); both answers are
-    ///   `InvalidPath`; the candidate's remark is GroveDB's for no
-    ///   element above that subtree, and the reference's is GroveDB's
-    ///   for no element above another, shallower path that the batch
-    ///   opens, each printed so by no other path of the batch
+    ///   deletes whose first opened subtree is under a record that a
+    ///   plain delete left ([`Known::under_a_left_record`]); both
+    ///   answers are `InvalidPath`; the candidate's remark is GroveDB's
+    ///   for no element above that subtree, and the reference's is
+    ///   GroveDB's for no element above a path that the batch opens
+    ///   later (on the first three grove versions another, shallower
+    ///   path; from the fourth on the subtree of an operation that is
+    ///   listed after the first one into that subtree), each printed so
+    ///   by no other path of the batch
     ///   ([`says_no_element_above_alone`]); and the reference was
     ///   charged more bytes loaded than the candidate and no fewer seeks
     ///   and hash calls. The candidate refused at the first subtree the
@@ -1508,11 +1533,15 @@ impl Known {
         let invalid =
             |outcome: &Outcome| matches!(outcome, Outcome::Failed(error) if error == "InvalidPath");
         let at_a_left_record = || {
-            let further_on = |subtree: &Path| {
-                opened_by(op).iter().any(|other| {
-                    other.len() < subtree.len()
-                        && says_no_element_above_alone(op, at.reference_said, other)
-                })
+            let said_of = |other: &Path| says_no_element_above_alone(op, at.reference_said, other);
+            let listed_at =
+                |path: &Path| op.batch_ops().position(|batch_op| batch_op.path() == path);
+            let further_on = |subtree: &Path| match at.in_the_order_listed {
+                false => (opened_by(op).iter())
+                    .any(|other| other.len() < subtree.len() && said_of(other)),
+                true => op.batch_ops().map(BatchOp::path).any(|other| {
+                    other != subtree && listed_at(subtree) < listed_at(other) && said_of(other)
+                }),
             };
             invalid(reference)
                 && invalid(candidate)
@@ -4221,6 +4250,7 @@ mod tests {
             reference_said: &further_on,
             candidate_said: &at_the_record,
             reference_read_more: true,
+            in_the_order_listed: false,
         };
         let (was, is) = (&invalid, &invalid);
         let of_left = |op: &Op, was: &Outcome, is: &Outcome, at: &AtALeftRecord| {
@@ -4271,6 +4301,33 @@ mod tests {
             ..at
         };
         assert_eq!(of_left(&as_deep, was, is, &at_as_deep), None);
+        // From grove version 4 on the order is the one listed: the
+        // reference's refusal is for the subtree of an operation that
+        // is listed after the one into the kept subtree, whatever its
+        // depth; not for one listed before it.
+        let listed = AtALeftRecord {
+            in_the_order_listed: true,
+            ..at
+        };
+        let kept_first = Op::Batch(vec![
+            delete(&[b"p", b"t", &[1]], b"k"),
+            delete(&[b"p", b"never"], &[1]),
+        ]);
+        assert_eq!(of_left(&kept_first, was, is, &listed), family);
+        assert_eq!(of_left(&mixed, was, is, &listed), None);
+        let listed_as_deep = AtALeftRecord {
+            in_the_order_listed: true,
+            ..at_as_deep
+        };
+        let as_deep_kept_first = Op::Batch(vec![
+            delete(&[b"p", b"t", &[1]], b"k"),
+            delete(&[b"p", b"never", &[2]], &[1]),
+        ]);
+        assert_eq!(
+            of_left(&as_deep_kept_first, was, is, &listed_as_deep),
+            family
+        );
+        assert_eq!(of_left(&as_deep, was, is, &listed_as_deep), None);
         // A tree under the one key `p/t` prints as the tree `t` in
         // `p` does: a batch that writes into both says nothing by
         // those words, also where both are under such a record.
@@ -4602,11 +4659,28 @@ mod tests {
                 delete_in(&[b"p", b"never"], b"k"),
                 delete_in(&[b"p", b"t", b"held"], b"k"),
             ]);
-            let expected = match grove_version.protocol_version {
-                1..=3 => vec![path(&[b"p", b"t", b"held"])],
-                _ => Vec::new(),
+            // On grove versions 1 to 3 the deepest subtree of the batch;
+            // from 4 on that of the operation listed first.
+            let kept_first = Op::Batch(vec![
+                delete_in(&[b"p", b"t", b"held"], b"k"),
+                delete_in(&[b"p", b"never"], b"k"),
+            ]);
+            let the_subtree = vec![path(&[b"p", b"t", b"held"])];
+            let listed = Known::looks_in_the_order_listed(grove_version);
+            let (deepest, first) = match listed {
+                true => (Vec::new(), the_subtree.clone()),
+                false => (the_subtree.clone(), the_subtree.clone()),
             };
-            assert_eq!(under(&known, &deletes), expected);
+            assert_eq!(under(&known, &deletes), deepest);
+            assert_eq!(under(&known, &kept_first), first);
+            let mut met = known.clone();
+            let item = Element::new_item_allowing_bidirectional_references(vec![1]);
+            met.forgets(&insert(&[b"p", b"u"], b"j", item), false, false);
+            let with_references = match listed {
+                true => Vec::new(),
+                false => the_subtree.clone(),
+            };
+            assert_eq!(under(&met, &kept_first), with_references);
             assert!(under(&known, &with_another).is_empty());
             assert!(under(&known, &removes_it).is_empty());
             assert!(under(&known, &direct).is_empty());

@@ -797,6 +797,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                     reference_said: &was.remarks,
                     candidate_said: &is.remarks,
                     reference_read_more,
+                    in_the_order_listed: Known::looks_in_the_order_listed(case.grove_version),
                 };
                 known.family_of_refused_write(op, reference, candidate, &parts, unchanged, &at)
             };
