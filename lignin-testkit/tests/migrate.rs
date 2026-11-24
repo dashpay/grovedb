@@ -154,9 +154,9 @@ fn word(out: &str, line: &str, name: &str) -> u64 {
     word.unwrap_or_else(|| panic!("no word {name} in {line:?}"))
 }
 
-/// What both groves store, listed through the seam and compared: how
-/// many records, and how many answers the calls of the trees that keep
-/// flat records gave alike ([`flat_reads`]).
+/// What both groves store, listed through the seam and compared, with
+/// the answers of the trees that keep flat records ([`flat_reads`]): how
+/// many records both store.
 fn same_stored<A: StreamEngine, B: StreamEngine>(
     rocks: &GroveDb<A>,
     lignin: &GroveDb<B>,
@@ -167,7 +167,8 @@ fn same_stored<A: StreamEngine, B: StreamEngine>(
 }
 
 /// [`same_stored`], with how many trees that keep flat records both
-/// groves have and how many answers of their calls were alike.
+/// groves have and how many answers of their calls were alike. A tree
+/// that is not asked on an engine is an error, and is counted as nothing.
 fn same_stored_and_read<A: StreamEngine, B: StreamEngine>(
     rocks: &GroveDb<A>,
     lignin: &GroveDb<B>,
@@ -193,16 +194,25 @@ fn same_stored_and_read<A: StreamEngine, B: StreamEngine>(
     let flat = (reference.places.iter()).filter(|place| place.data == Listed::Flat);
     let (mut trees, mut answers) = (0, 0);
     for place in flat {
-        let (was, is) = (
-            flat_reads(rocks, &place.path, version),
-            flat_reads(lignin, &place.path, version),
-        );
-        if let Some(at) = (0..was.len().max(is.len())).find(|at| was.get(*at) != is.get(*at)) {
+        let named = || {
             let path: Vec<String> = place.path.iter().map(hex::encode).collect();
+            path.join("/")
+        };
+        let asked = |reads: Result<Vec<String>, String>, engine: &str| {
+            reads.map_err(|error| {
+                format!(
+                    "{when}, the tree of flat records at /{} is not asked on {engine}: {error}",
+                    named()
+                )
+            })
+        };
+        let was = asked(flat_reads(rocks, &place.path, version), "RocksDB")?;
+        let is = asked(flat_reads(lignin, &place.path, version), "LigninDB")?;
+        if let Some(at) = (0..was.len().max(is.len())).find(|at| was.get(*at) != is.get(*at)) {
             return Err(format!(
                 "{when}, the tree of flat records at /{} answers otherwise:\n  RocksDB:  \
                  {:?}\n  LigninDB: {:?}",
-                path.join("/"),
+                named(),
                 was.get(at),
                 is.get(at)
             ));
@@ -214,16 +224,21 @@ fn same_stored_and_read<A: StreamEngine, B: StreamEngine>(
 }
 
 /// What the calls of a tree that keeps flat records answer for the tree
-/// at `path`: how many leaves it holds, its root or its anchor, and its
-/// first and its last leaves, each as the call gave it.
+/// at `path`: its state root, how many leaves it holds, its root hash or
+/// its anchor where it has a call for one, and its first and its last
+/// leaves, each as the call gave it. It is an error where the element at
+/// `path` is not read or is no tree that keeps flat records: no call of
+/// such a tree was made then.
 fn flat_reads<E: grovedb::Engine>(
     db: &GroveDb<E>,
     path: &[Vec<u8>],
     v: &GroveVersion,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     /// How many leaves are read at each end of a tree.
     const EDGE: u64 = 48;
-    let (key, above) = path.split_last().expect("a tree below the root");
+    let (key, above) = path
+        .split_last()
+        .ok_or_else(|| "the root tree keeps no flat records".to_owned())?;
     let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
     let above = above.as_slice();
     let mut reads = Vec::new();
@@ -236,9 +251,26 @@ fn flat_reads<E: grovedb::Engine>(
     }
     // The first leaves and the last ones.
     let ends = |count: u64| (0..count.min(EDGE)).chain(count.saturating_sub(EDGE).max(EDGE)..count);
-    let element = answer!(db.get_raw(above.into(), key, None, v));
-    match &element {
-        Ok(Element::CommitmentTree(..)) => {
+    let element = answer!(db.get_raw(above.into(), key, None, v))
+        .map_err(|error| format!("the element of the tree is not read: {error}"))?;
+    // The element as it is, also where it is wrapped as one that is not
+    // counted or not summed.
+    let kind = element.underlying();
+    if !kind.uses_non_merk_data_storage() {
+        return Err(format!(
+            "the element is no tree that keeps flat records: {element:?}"
+        ));
+    }
+    // The state root of a tree of any of the kinds, as `verify_grovedb`
+    // makes it.
+    let root = db.subtree_root_as(above, key, &element, None, v);
+    let root = root.map_err(|error| error.to_string());
+    read(
+        "state root".to_owned(),
+        format!("{:?}", root.map(hex::encode)),
+    );
+    match kind {
+        Element::CommitmentTree(..) => {
             let count = answer!(db.commitment_tree_count(above, key, None, v));
             read("count".to_owned(), format!("{count:?}"));
             let anchor = answer!(db.commitment_tree_anchor(above, key, None, v));
@@ -257,7 +289,7 @@ fn flat_reads<E: grovedb::Engine>(
                 read(format!("leaf {at}"), format!("{:?}", answer!(leaf)));
             }
         }
-        Ok(Element::MmrTree(..)) => {
+        Element::MmrTree(..) => {
             let count = answer!(db.mmr_tree_leaf_count(above, key, None, v));
             read("count".to_owned(), format!("{count:?}"));
             let root = answer!(db.mmr_tree_root_hash(above, key, None, v));
@@ -267,7 +299,7 @@ fn flat_reads<E: grovedb::Engine>(
                 read(format!("leaf {at}"), format!("{:?}", answer!(leaf)));
             }
         }
-        Ok(Element::BulkAppendTree(..)) => {
+        Element::BulkAppendTree(..) => {
             let count = answer!(db.bulk_count(above, key, None, v));
             read("count".to_owned(), format!("{count:?}"));
             let chunks = answer!(db.bulk_chunk_count(above, key, None, v));
@@ -280,7 +312,7 @@ fn flat_reads<E: grovedb::Engine>(
                 );
             }
         }
-        Ok(Element::DenseAppendOnlyFixedSizeTree(..)) => {
+        Element::DenseAppendOnlyFixedSizeTree(..) => {
             let count = answer!(db.dense_tree_count(above, key, None, v));
             read("count".to_owned(), format!("{count:?}"));
             let root = answer!(db.dense_tree_root_hash(above, key, None, v));
@@ -290,7 +322,7 @@ fn flat_reads<E: grovedb::Engine>(
                 read(format!("leaf {at}"), format!("{:?}", answer!(leaf)));
             }
         }
-        Ok(Element::PrivateDocumentStore(..)) => {
+        Element::PrivateDocumentStore(..) => {
             let count = answer!(db.private_document_store_count(above, key, None, v));
             read("count".to_owned(), format!("{count:?}"));
             for from in [0, count.unwrap_or(0).saturating_sub(EDGE)] {
@@ -302,9 +334,13 @@ fn flat_reads<E: grovedb::Engine>(
                 );
             }
         }
-        other => read("no tree of flat records".to_owned(), format!("{other:?}")),
+        other => {
+            return Err(format!(
+                "no call is known here for the tree of flat records {other:?}"
+            ));
+        }
     }
-    reads
+    Ok(reads)
 }
 
 /// What a trace that was cut, migrated and gone on with came to.
@@ -1318,6 +1354,20 @@ fn what_is_at_the_work_directory_and_is_not_the_commands_is_refused_untouched() 
                 made(work);
                 file(work.join(WORK_MARK_NEW), MARK_TEXT);
                 made(&work.join(WORK_DATABASE));
+            }),
+        ),
+        (
+            "a file of the name the command's is made under that is longer than it",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK_NEW), &longer);
+            }),
+        ),
+        (
+            "a file of the name the command's is made under with other bytes",
+            Box::new(|work| {
+                made(work);
+                file(work.join(WORK_MARK_NEW), b"of someone");
             }),
         ),
         (
@@ -2379,42 +2429,82 @@ fn a_flat_record_is_a_keyed_child_as_the_node_of_its_own_key_alone() {
     }
 }
 
-/// A run says what peak of memory it projects from the largest Merk it
-/// hands over, and a source that projects more than the limit is refused
-/// before anything is made, by a run that migrates and by one that only
-/// surveys.
+/// A run says what peak of memory it projects, and a source that projects
+/// more than the limit is refused before anything is made, by a run that
+/// migrates and by one that only surveys. The refusal says what is above
+/// the limit: what a run holds beside any Merk, or the largest of what it
+/// holds whole, which for a prefix that is carried counts the aux and
+/// meta records that are read with it. No sum of the projection wraps.
+/// And a commit ends by the nodes it holds.
 #[test]
 fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
     let dir = tempfile::tempdir().expect("a directory");
     let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
     let root = small(&source);
     let word_of = |out: &str, name: &str| word(out, "migrate: memory", name);
-    // The floor alone is above a megabyte.
+    let nothing_made = || !target.exists() && !work_dir(&target).unwrap().exists();
+    let plain = migration(&source, &target);
+    // The floor: 256 MiB, what a commit takes and the buffer pool.
+    let floor = (256 << 20) + plain.batch_bytes as u64 + plain.options.cache_size as u64;
+    // The largest Merk that is handed over is the tree of forty items.
+    let nodes = 40;
+
+    // A limit below the floor: no Merk is what is above it.
     for surveys in [true, false] {
         let limited = Migration {
             target: (!surveys).then(|| target.clone()),
             memory_limit: Some(1 << 20),
-            ..migration(&source, &target)
+            ..plain.clone()
         };
         let (outcome, out) = ran(&limited);
         let refused = outcome.expect_err("the projection is above the limit");
         assert!(refused.contains("above the limit of 1 MiB"), "{refused}");
-        assert!(refused.contains("is not built"), "{refused}");
+        assert!(
+            refused.contains("A smaller --batch or --cache takes it"),
+            "{refused}"
+        );
+        assert!(!refused.contains("is not built"), "{refused}");
         assert_eq!(word_of(&out, "limit_bytes"), 1 << 20, "{out}");
-        assert!(word_of(&out, "projected_peak_bytes") > 256 << 20, "{out}");
-        assert!(!target.exists() && !work_dir(&target).unwrap().exists());
+        assert!(word_of(&out, "projected_peak_bytes") > floor, "{out}");
+        assert!(nothing_made());
     }
-    // The projection grows with the nodes of the largest Merk that is
-    // handed over: the tree of forty items of this grove.
+    // A limit between the floor and what the largest Merk adds to it.
+    let limited = Migration {
+        memory_limit: Some(floor + 1_000 * nodes),
+        ..plain.clone()
+    };
+    let (outcome, out) = ran(&limited);
+    let refused = outcome.expect_err("the largest Merk is above the limit");
+    assert!(
+        refused.contains("the largest of what it holds whole is 40 nodes"),
+        "{refused}\n{out}"
+    );
+    assert!(refused.contains("is not built"), "{refused}");
+    assert!(nothing_made());
+    // A commit of every size there is: the sum does not wrap, and is
+    // above every limit.
+    let endless = Migration {
+        batch_bytes: usize::MAX,
+        memory_limit: Some(1 << 50),
+        ..plain.clone()
+    };
+    let (outcome, out) = ran(&endless);
+    let refused = outcome.expect_err("the projection is above the limit");
+    assert!(
+        refused.contains("A smaller --batch or --cache takes it"),
+        "{refused}"
+    );
+    assert_eq!(word_of(&out, "projected_peak_bytes"), u64::MAX, "{out}");
+    assert!(nothing_made());
+
+    // The projection of a run that is taken grows with the nodes of the
+    // largest Merk that is handed over.
     let roomy = Migration {
         memory_limit: Some(1 << 40),
-        ..migration(&source, &target)
+        ..plain.clone()
     };
     let (outcome, out) = ran(&roomy);
     assert_eq!(outcome, Ok(Outcome::Done), "{out}");
-    // The floor: 256 MiB, what a commit takes and the buffer pool.
-    let floor = (256 << 20) + roomy.batch_bytes as u64 + roomy.options.cache_size as u64;
-    let nodes = 40;
     let projected = word_of(&out, "projected_peak_bytes");
     assert!(
         projected > floor + 1_000 * nodes && projected < floor + 4_000 * nodes,
@@ -2425,6 +2515,98 @@ fn a_source_that_projects_more_memory_than_the_limit_is_refused() {
         root_of(&Lignin::open_with_engine(&target).expect("the target")),
         root
     );
+
+    // A prefix that nothing leads to is read whole by a load that carries
+    // it, its aux records with it: they count for a run that carries
+    // them, and for no run that leaves them.
+    let (source, target) = (dir.path().join("rocksdb-2"), dir.path().join("lignindb-2"));
+    small(&source);
+    let large = vec![7; 200_000];
+    raw(&source, [0xCD; 32], 'a', b"an aux record", Some(&large));
+    for told in [Unreachable::Leave, Unreachable::Carry] {
+        let limited = Migration {
+            target: None,
+            unreachable: told,
+            memory_limit: Some(floor + 300_000),
+            ..migration(&source, &target)
+        };
+        let (outcome, out) = ran(&limited);
+        if told == Unreachable::Leave {
+            assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+            continue;
+        }
+        let refused = outcome.expect_err("the carried prefix is above the limit");
+        assert!(
+            refused.contains("1 aux and meta records"),
+            "{refused}\n{out}"
+        );
+        // The record counts as a node does, with three times its bytes.
+        let projected = word_of(&out, "projected_peak_bytes");
+        assert!(projected > floor + 600_000, "{projected}: {out}");
+    }
+
+    // A commit ends by the nodes it holds. Two trees of 400 small items
+    // each are in one commit where a commit takes 64 MiB, and in a commit
+    // each where it takes 300,000 bytes, which their keys, their values
+    // and a page each are far below.
+    let source = dir.path().join("rocksdb-3");
+    let into = dir.path().join("lignindb-3");
+    std::fs::create_dir(&into).expect("a directory");
+    {
+        let db = rocks(&source);
+        let mut batch = Vec::new();
+        for tree in [b"x", b"y"] {
+            batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+                vec![],
+                tree.to_vec(),
+                Element::empty_tree(),
+            ));
+            for n in 0..400u16 {
+                batch.push(QualifiedGroveDbOp::insert_or_replace_op(
+                    vec![tree.to_vec()],
+                    n.to_be_bytes().to_vec(),
+                    Element::new_item(vec![1]),
+                ));
+            }
+        }
+        let applied = db.apply_batch(batch, None, None, GroveVersion::latest());
+        applied.unwrap().expect("the batch is taken");
+    }
+    let commits = |batch_bytes: usize| {
+        let sized = Migration {
+            batch_bytes,
+            ..migration(&source, &into.join(batch_bytes.to_string()))
+        };
+        let (outcome, out) = ran(&sized);
+        assert_eq!(outcome, Ok(Outcome::Done), "{out}");
+        word(&out, "migrate: loaded", "commits")
+    };
+    let (few, more) = (commits(64 << 20), commits(300_000));
+    assert!(
+        more >= few + 2,
+        "{few} commits of 64 MiB, {more} of 300,000 bytes"
+    );
+}
+
+/// The database of a work directory is held apart from the source as the
+/// target is: a work directory of the command's whose `database` leads
+/// into the source is refused before anything is opened there.
+#[test]
+fn a_database_that_leads_into_the_source_is_refused() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (source, target) = (dir.path().join("rocksdb"), dir.path().join("lignindb"));
+    small(&source);
+    let inside = source.join("extra");
+    std::fs::create_dir(&inside).expect("a directory in the source");
+    let work = work_dir(&target).unwrap();
+    std::fs::create_dir(&work).expect("the work directory");
+    std::fs::write(work.join(WORK_MARK), MARK_TEXT).expect("its file");
+    std::os::unix::fs::symlink(&inside, work.join(WORK_DATABASE)).expect("a link");
+    let (outcome, out) = ran(&migration(&source, &target));
+    let refused = outcome.expect_err("the database would be made in the source");
+    assert!(refused.contains("one inside the other"), "{refused}\n{out}");
+    assert_eq!(held(&inside), Vec::<String>::new());
+    assert!(!target.exists());
 }
 
 /// A source that holds what a migration does not carry is refused by the
