@@ -652,11 +652,10 @@ impl<'db> LigninNodeStore<'db> {
     /// the read if it does then ([`Child::ByKey`],
     /// [`access::read_by_key`]). It reads the node again if it does not.
     /// For that, what the reader sees changed since the read of the
-    /// cell, or a read of the cell's page failed at the read of the
-    /// child, or the reader read by key at the read of the child and no
+    /// cell, or the reader read by key at the read of the child and no
     /// longer at the question: a further try takes a further such event.
-    /// A page error that lasts fails the next read of the node, if that
-    /// read still needs the page.
+    /// A read of the cell's page that fails at the read of a child is the
+    /// error of the load, and no further try.
     fn load(&self, key: &[u8], with_value: bool) -> Result<Option<StoredNode>, Error> {
         let prefix = &self.subtree.prefix;
         let mut hint = self.hint(key);

@@ -5505,3 +5505,75 @@ fn a_stopped_layout_is_made_again_when_a_scope_is_laid_out() {
     world.check_committed();
     assert_eq!(db.private_ids(), 0);
 }
+
+/// What a commit holds to its host goes with a subtree where a move of
+/// the transaction takes it. A subtree that the transaction entered if
+/// it was absent, under a key of a Merk that holds no node there, and
+/// that a move of the Merk above took to another prefix, refuses the
+/// commit under that prefix. So does a subtree that the transaction
+/// cleared and wrote no node of the host of, where a move of the Merk
+/// above took it. Each commits once the node of its host is written.
+#[test]
+fn what_a_commit_holds_to_its_host_goes_with_a_subtree_that_is_moved() {
+    for cleared in [false, true] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world, b"a", A, A_IN);
+        let tx = world.begin();
+        let (pairs, held): (&[(u8, u8)], u8) = match cleared {
+            true => {
+                let batch = subtrees(vec![OwnedSubtree::Clear(sub(A_IN))]);
+                world.apply(&tx, &batch).expect("a clear");
+                (&[(A, B), (A_IN, B_IN)], B_IN)
+            }
+            false => {
+                let host = (sub(A), b"none".to_vec(), 0);
+                let batch = OwnedBatch {
+                    subtrees: vec![OwnedSubtree::EnterIfAbsent(sub(FREE), Some(host))],
+                    records: vec![put(aux(FREE), b"k", b"v")],
+                    ..OwnedBatch::default()
+                };
+                world.apply(&tx, &batch).expect("the subtree is entered");
+                (&[(A, B), (A_IN, B_IN), (FREE, FREE_IN)], FREE_IN)
+            }
+        };
+        let batch = rename(&world, &tx, b"a", b"b", pairs);
+        world.apply(&tx, &batch).expect("the subtree is moved");
+        world.check(&tx);
+        assert!(shown(&tx, held).is_some(), "{cleared}");
+        let subtree = sub(held);
+        let expected = match cleared {
+            true => BatchError::ClearedAlone { subtree },
+            false => BatchError::HostAbsent { subtree },
+        };
+        for _ in 0..2 {
+            let refused = world.db.commit(world.versions, &tx.txn);
+            assert!(
+                matches!(&refused, Err(TxnError::Batch(error)) if *error == expected),
+                "{cleared}: {refused:?}"
+            );
+            world.check(&tx);
+        }
+        // The node of the host, in the Merk as the move left it.
+        let key: &[u8] = match cleared {
+            true => b"in",
+            false => b"none",
+        };
+        let mut outer = world.merk(&tx, B, |items| {
+            items.insert(key.to_vec(), b"a tree".to_vec());
+        });
+        outer.hosted.insert(key.to_vec(), vec![subtree]);
+        let mut top = world.merk(&tx, TOP, |items| {
+            items.insert(b"b".to_vec(), b"written again".to_vec());
+        });
+        top.hosted.insert(b"b".to_vec(), vec![sub(B)]);
+        let hosting = OwnedBatch {
+            merks: vec![outer, top],
+            ..OwnedBatch::default()
+        };
+        world.apply(&tx, &hosting).expect("the node of the host");
+        world.check(&tx);
+        assert!(committed(world.commit(tx, &[])), "{cleared}");
+        world.check_committed();
+    }
+}

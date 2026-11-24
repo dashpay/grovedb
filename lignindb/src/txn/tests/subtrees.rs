@@ -2089,3 +2089,125 @@ fn a_transaction_with_no_frames_opens_the_subtrees_one_with_frames_opens() {
     println!("{entered} answers of entered subtrees, {gone} of subtrees that are not");
     assert!(entered > 5_000 && gone > 5_000);
 }
+
+/// A clear keeps the host, and the cell of the host loses its pointer
+/// with a write of the host's node that says what the node hosts
+/// (`tree-layout.md` D4). A transaction that clears a hosted Merk which
+/// has a node, and writes no such node, is refused at its commit and
+/// left as it was: so also where an earlier batch of it wrote the host
+/// with the Merk, and where the clearing batch removes the host's node.
+/// It commits once it has put the node, with the cleared Merk or without
+/// it, or has written the Merk and its host again. With the node put in
+/// the batch of the clear nothing is refused.
+#[test]
+fn a_clear_of_a_hosted_merk_with_a_node_is_held_to_a_write_of_its_hosts_node() {
+    /// The node `host` of `OUTER` written again, with `INNER` named as
+    /// what it hosts or with nothing named.
+    fn hosting<'s>(world: &World<'s>, tx: &Tx<'s>, named: bool) -> OwnedMerk {
+        let mut outer = world.merk(tx, OUTER, |items| {
+            items.insert(b"host".to_vec(), b"cleared".to_vec());
+        });
+        let hosted = match named {
+            true => vec![model::subtree(INNER)],
+            false => Vec::new(),
+        };
+        (outer.hosted).insert(b"host".to_vec(), hosted);
+        outer
+    }
+    let subtree = model::subtree(INNER);
+    for set_first in [false, true] {
+        for host in [
+            "names",
+            "names none",
+            "later",
+            "later none",
+            "again",
+            "removed",
+        ] {
+            let case = format!("{host}, {set_first}");
+            let (db, versions) = Db::new(128);
+            let mut world = World::new(&db, &versions);
+            let tx = world.begin();
+            planted(&world, &tx);
+            assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+            let tx = world.begin();
+            if set_first {
+                let set = inner_batch(&world, &tx, |items| {
+                    items.insert(b"three".to_vec(), vec![5; 20]);
+                });
+                world.apply(&tx, &set).expect("the Merk and its host");
+            }
+            // The clear, with the removals of the Merk's nodes as a writer
+            // that walks it states them.
+            let mut batch = subtrees(vec![OwnedSubtree::Clear(subtree)]);
+            (batch.merks).push(world.merk(&tx, INNER, |items| items.clear()));
+            match host {
+                "names" => batch.merks.push(hosting(&world, &tx, true)),
+                "names none" => batch.merks.push(hosting(&world, &tx, false)),
+                "removed" => batch.merks.push(world.merk(&tx, OUTER, |items| {
+                    items.remove(&b"host"[..]);
+                })),
+                _ => {}
+            }
+            (world.apply(&tx, &batch)).unwrap_or_else(|error| panic!("{case}: {error}"));
+            world.check(&tx);
+            if !matches!(host, "names" | "names none") {
+                for _ in 0..2 {
+                    let refused = world.db.commit(world.versions, &tx.txn);
+                    let refused = batch_error(refused.map(|_| Applied::default()));
+                    assert_eq!(refused, BatchError::ClearedAlone { subtree }, "{case}");
+                    assert!(!refused.is_conflict());
+                    world.check(&tx);
+                }
+                let later = match host {
+                    "later" => OwnedBatch {
+                        merks: vec![hosting(&world, &tx, true)],
+                        ..OwnedBatch::default()
+                    },
+                    "later none" => OwnedBatch {
+                        merks: vec![hosting(&world, &tx, false)],
+                        ..OwnedBatch::default()
+                    },
+                    "again" => inner_batch(&world, &tx, |items| {
+                        items.insert(b"four".to_vec(), vec![6; 20]);
+                    }),
+                    // The subtree leaves with the element that is gone.
+                    _ => subtrees(vec![OwnedSubtree::Drop(subtree)]),
+                };
+                (world.apply(&tx, &later)).unwrap_or_else(|error| panic!("{case}: {error}"));
+                world.check(&tx);
+            }
+            let outcome = world.commit(tx, &[]);
+            assert!(matches!(outcome, Outcome::Committed(_)), "{case}");
+            world.check_committed();
+        }
+    }
+}
+
+/// A clear of a Merk with no node takes no root, and its transaction
+/// commits with no write of the host's node: the cell of the host has no
+/// pointer for the Merk.
+#[test]
+fn a_clear_of_a_hosted_merk_with_no_node_is_stated_alone() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    let outer = world.merk(&tx, OUTER, |items| {
+        items.insert(b"host".to_vec(), b"tree".to_vec());
+    });
+    let batch = OwnedBatch {
+        merks: vec![outer],
+        records: vec![put(aux(INNER), b"ia", b"7")],
+        subtrees: vec![enter(OUTER), hosted(INNER, OUTER, b"host")],
+    };
+    world.apply(&tx, &batch).expect("the subtrees are made");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let tx = world.begin();
+    let batch = subtrees(vec![OwnedSubtree::Clear(model::subtree(INNER))]);
+    world.apply(&tx, &batch).expect("a Merk with no node");
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+}

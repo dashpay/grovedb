@@ -982,8 +982,10 @@ fn by_key_one_batch_with_both_is_refused_before_it_claims_anything() {
 
 /// A cursor of records stands on a node that its transaction wrote into
 /// the data column and is refused the node's value, as it was before a
-/// subtree could hold both. Once the node is committed the cursor shows
-/// the flat records alone.
+/// subtree could hold both: with a refusal that says so, and not as
+/// damage. So it is for a cursor that stood on the key of a flat record
+/// before its transaction wrote a node over the record. Once the node is
+/// committed the cursor shows the flat records alone.
 #[test]
 fn a_cursor_of_records_stands_on_the_nodes_of_its_transaction() {
     let (db, versions) = Db::new(128);
@@ -991,20 +993,36 @@ fn a_cursor_of_records_stands_on_the_nodes_of_its_transaction() {
     let tx = world.begin();
     apply(&world, &tx, &record(FLAT, b"k", b"taken"), true).expect("a flat record");
     apply(&world, &tx, &record(FLAT, b"z", b"kept"), true).expect("a flat record");
+    let refused = |cursor: &mut Cursor<'_, '_>| {
+        let mut value = Vec::new();
+        let refused = cursor
+            .value(&mut value)
+            .expect_err("a node of the transaction");
+        assert!(
+            matches!(refused, TxnError::NodeAsRecord { unit } if unit == data(FLAT)),
+            "{refused}"
+        );
+        assert!(value.is_empty() && !refused.is_conflict());
+    };
+    // A cursor that stands on the record when the node is written.
+    let mut standing = tx.txn.cursor(data(FLAT));
+    standing.seek_to_first().expect("a seek");
+    assert_eq!(standing.key(), Some(&b"k"[..]));
+    let mut value = Vec::new();
+    assert!(standing.value(&mut value).expect("a flat record"));
+    assert_eq!(value, b"taken");
     apply(&world, &tx, &node(&world, &tx, FLAT, b"k"), true).expect("the node takes one");
+    assert_eq!(standing.key(), Some(&b"k"[..]));
+    refused(&mut standing);
+    standing.next().expect("a step");
+    assert_eq!(standing.key(), Some(&b"z"[..]));
+    drop(standing);
     apply(&world, &tx, &node(&world, &tx, FLAT, b"m"), true).expect("a node between them");
     let mut cursor = tx.txn.cursor(data(FLAT));
     cursor.seek_to_first().expect("a seek");
     for key in [b"k", b"m"] {
         assert_eq!(cursor.key(), Some(&key[..]));
-        let refused = cursor
-            .value(&mut Vec::new())
-            .expect_err("a node of the transaction")
-            .to_string();
-        assert!(
-            refused.contains("a Merk node under a cursor of records"),
-            "{refused}"
-        );
+        refused(&mut cursor);
         cursor.next().expect("a step");
     }
     assert_eq!(cursor.key(), Some(&b"z"[..]));

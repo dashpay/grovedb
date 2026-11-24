@@ -434,6 +434,16 @@ pub struct HostPut<'a> {
 ///   which has both). The tree types are the same where their bytes are,
 ///   and the hosts where the subtree, the key and the position are.
 ///
+/// A subtree whose entry such a write made under an element is held to
+/// the node of that element where the transaction's writes are laid out
+/// for its commit, under the prefix it has there: the commit is refused
+/// ([`BatchError::HostAbsent`](super::BatchError::HostAbsent)), as a
+/// conflict, where a search of the host's Merk for the host's key finds
+/// no node. The search is left out where the transaction's newest write
+/// under that key is a node which its pages did not keep as an unlinked
+/// record. The batch itself is taken with the node absent: a later
+/// batch can put it.
+///
 /// So of two transactions that each state it for one subtree, with one
 /// tree type and one host, the second to commit finds the subtree that
 /// the first entered when it is laid out over that commit, and its enter
@@ -683,6 +693,20 @@ pub enum SubtreeWrite<'a> {
     },
     /// Clears the subtree: a drop that keeps the host (D4). The subtree
     /// stays entered, with no node, and the same batch may write it.
+    ///
+    /// The clear does not write the cell of the element that hosts the
+    /// subtree. A pointer that the cell has for the Merk stays until a
+    /// write of the element's node says what the node hosts
+    /// ([`Hosted::Set`]), with the cleared Merk or without it. The
+    /// commit of the transaction is refused while a subtree that it
+    /// cleared has no node and the cell of its host has a pointer at the
+    /// subtree's position, or the Merk of its host has no node under the
+    /// host's key
+    /// ([`BatchError::ClearedAlone`](super::BatchError::ClearedAlone)).
+    /// Where the entry of the subtree is one that an enter if absent of
+    /// the transaction made, and a search does not find its host, the
+    /// refusal is
+    /// [`BatchError::HostAbsent`](super::BatchError::HostAbsent).
     Clear {
         /// The subtree.
         subtree: Subtree,

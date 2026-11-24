@@ -5,14 +5,22 @@
 //! returns the record the read rule names, found by its key, also when the
 //! page the handle names was freed and its id given to another page.
 
-use std::sync::atomic::Ordering;
+use std::{
+    path::Path,
+    sync::{atomic::Ordering, Arc},
+};
 
 use lignin_format::tree_page::Side;
+use lignin_io::{
+    sim::{Fault, FaultRule, OpKind, SimConfig, SimVfs},
+    Vfs,
+};
+use lignin_store::{flush::FlushConfig, wal::LogOptions};
 use lignin_tree::node::NodeHandle;
 
 use super::{
     model::{self, records, value, NodeRec, OwnedBatch},
-    store::{Db, Outcome, Rng},
+    store::{Db, Outcome, Rng, SIZE},
     *,
 };
 
@@ -109,6 +117,24 @@ fn descend(world: &World<'_>, tx: &Tx<'_>, name: u8) -> usize {
         "every node is reached from the root"
     );
     reached
+}
+
+/// Reads both children of every kept node of the Merk `name` through the
+/// node's handle. Returns how many of the reads were answered, with a
+/// child or with none, how many said that the handle is no longer good,
+/// and how many failed.
+fn children(tx: &Tx<'_>, name: u8, kept: &Kept) -> (usize, usize, usize) {
+    let (mut answered, mut ended, mut failed) = (0, 0, 0);
+    for (_, handle) in kept {
+        for side in [Side::Left, Side::Right] {
+            match (tx.txn).child(model::subtree(name), *handle, side, |_| ()) {
+                Ok(Some(())) => answered += 1,
+                Ok(None) => ended += 1,
+                Err(_) => failed += 1,
+            }
+        }
+    }
+    (answered, ended, failed)
 }
 
 fn fill(world: &mut World<'_>, rng: &mut Rng, name: u8, from: usize, count: usize) {
@@ -362,4 +388,85 @@ fn an_overlapped_transaction_follows_handles_to_what_it_has_not_written() {
     assert_eq!(stale, None, "the transaction's record is read by its key");
     world.check(&tx);
     assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+}
+
+/// A page that the transaction's own writes freed ends the handles into
+/// it (PN8): the read of a child through one says that the handle is no
+/// longer good, as where the cell left its page, and is no failed read.
+#[test]
+fn a_handle_into_a_page_that_its_transaction_freed_is_no_longer_good() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(47);
+    fill(&mut world, &mut rng, 1, 0, 90);
+    fill(&mut world, &mut rng, 2, 0, 10);
+
+    // The transaction has written, so the handles are of its frames.
+    let tx = world.begin();
+    world.edit(&tx, 2, |items| {
+        items.insert(key(1000), b"a new node".to_vec());
+    });
+    let kept = keep(&world, &tx, 1);
+    assert_eq!(children(&tx, 1, &kept), (180, 0, 0));
+
+    // Every node of the Merk leaves, and the pages that held nothing else
+    // are freed with them.
+    world.edit(&tx, 1, |items| items.clear());
+    assert_eq!(children(&tx, 1, &kept), (0, 180, 0));
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+}
+
+/// A read of the page of the parent's cell that fails is the error of the
+/// read of a child through the parent's handle (PN8): the handle has not
+/// ended, and the same read is answered once the page can be read. So it
+/// is for a transaction that has written nothing, which reads committed
+/// pages, and for one that has frames of its own over them.
+#[test]
+fn a_failed_read_of_the_parents_page_is_the_error_of_the_read_of_a_child() {
+    for written in [false, true] {
+        let fs = SimVfs::new(SimConfig::new(53));
+        fs.create_dir(Path::new("/db")).expect("a directory");
+        let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
+        let (options, flush) = (LogOptions::default(), FlushConfig::new(SIZE));
+        let (db, versions) = Db::on(vfs, Path::new("/db"), 24, options, flush, None);
+        let mut world = World::new(&db, &versions);
+        let mut rng = Rng::new(53);
+        fill(&mut world, &mut rng, 1, 0, 90);
+        for round in 0..8 {
+            fill(&mut world, &mut rng, 2, round * 100, 100);
+        }
+        // The pages are in the segments, so the pool can let them go.
+        let write_back = db.write_back(&versions);
+        while write_back.pass().expect("a pass").progressed() {}
+
+        let tx = world.begin();
+        if written {
+            world.edit(&tx, 2, |items| {
+                items.insert(key(5000), b"a new node".to_vec());
+            });
+            assert!(tx.txn.stats().base.is_some(), "it has frames");
+        }
+        // The reads of the other Merk push the pages of the first out of
+        // the pool, and no read of a file is answered from then on.
+        let kept = keep(&world, &tx, 1);
+        drop(keep(&world, &tx, 2));
+        let missed = db.pool.stats().misses;
+        fs.add_rule(FaultRule::new(Fault::Eio).on(OpKind::Read).forever());
+        let failing = children(&tx, 1, &kept);
+        fs.clear_rules();
+        let (_, ended, failed) = failing;
+        assert_eq!(ended, 0, "no handle has ended: {failing:?}, {written}");
+        assert!(failed > 0, "no page was read from its file: {written}");
+        assert_eq!(fs.stats().faults, failed as u64, "{written}");
+        assert!(db.pool.stats().misses >= missed + failed as u64);
+
+        assert_eq!(children(&tx, 1, &kept), (180, 0, 0), "{written}");
+        world.check(&tx);
+        match written {
+            true => assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_))),
+            false => drop(tx),
+        }
+        world.check_committed();
+    }
 }

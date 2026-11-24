@@ -259,6 +259,24 @@ pub enum BatchError {
         /// The subtree of the hosted Merk.
         subtree: Subtree,
     },
+    /// A subtree that the transaction cleared
+    /// ([`SubtreeWrite::Clear`](super::SubtreeWrite::Clear)) is entered
+    /// with no node, where the transaction's writes are laid out for its
+    /// commit, under an element whose cell has a pointer at the
+    /// subtree's position, or whose Merk has no node under the element's
+    /// key. A clear keeps the host and does not write its cell
+    /// (`tree-layout.md` D4): a pointer that the cell has for the Merk
+    /// stays until a write of the host's node says what the node hosts
+    /// ([`Hosted::Set`](super::Hosted::Set)). It is the refusal of the
+    /// transaction's commit, which leaves the transaction open, and is no
+    /// conflict. Where [`Self::HostAbsent`] applies to the subtree as
+    /// well, that is the refusal.
+    ClearedAlone {
+        /// The cleared subtree, by the prefix it has at the commit:
+        /// another than the clear named where a move of the transaction
+        /// took it since.
+        subtree: Subtree,
+    },
     /// A change set, a drop or a clear names a subtree that is not entered
     /// in the transaction's view, or a subtree is entered whose host is in
     /// one that is not. A subtree is entered by the batch that writes the
@@ -339,6 +357,35 @@ pub enum BatchError {
     /// transaction back and makes its reads and its writes again.
     EnteredSince {
         /// The subtree.
+        subtree: Subtree,
+    },
+    /// A subtree whose entry a write of the transaction made, as an enter
+    /// if absent under an element
+    /// ([`SubtreeWrite::EnterIfAbsent`](super::SubtreeWrite::EnterIfAbsent)),
+    /// is entered, where the transaction's writes are laid out for its
+    /// commit, under a host that a search of the host's Merk for the
+    /// host's key does not find. The search is left out where the
+    /// transaction's newest write under that key is a node which its
+    /// pages did not keep as an unlinked record. It is the refusal of
+    /// the transaction's commit, which leaves the transaction open. It
+    /// says what the layout holds, and not how it came to hold it.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]). A writer that read
+    /// the element before it entered the subtree gets it where a commit
+    /// outside the transaction removed the element since, found nothing
+    /// entered under it in the committed state, and met no write of the
+    /// transaction: that caller rolls the transaction back and makes its
+    /// reads and its writes again. Where such a commit met a write of
+    /// the transaction, the transaction's commit fails with the
+    /// conflict of the key rule and ends it, before this is asked. A
+    /// writer that enters a subtree under a key which never held a node
+    /// gets this refusal at every commit.
+    ///
+    /// The directory has a refusal of its own for a host whose position
+    /// another subtree has (`lignin_tree::directory::DirectoryError::HostTaken`).
+    HostAbsent {
+        /// The subtree, by the prefix it has at the commit: another than
+        /// the enter named where a move of the transaction took it since.
         subtree: Subtree,
     },
     /// A batch states more of a subtree than what it states of the
@@ -663,6 +710,20 @@ impl fmt::Display for BatchError {
                      transaction cannot be taken with it there"
                 )
             }
+            Self::ClearedAlone { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} was cleared by the transaction, and the cell of its \
+                     host was not written without the pointer to it"
+                )
+            }
+            Self::HostAbsent { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} was entered by the transaction under a node that \
+                     is no node of its Merk"
+                )
+            }
             Self::IfEntered { subtree } => {
                 write!(
                     f,
@@ -748,9 +809,9 @@ impl Error for BatchError {}
 
 impl BatchError {
     /// Whether the refusal is [`Self::ValueTaken`], [`Self::MovedByKey`],
-    /// [`Self::BothByKey`], [`Self::MerkTaken`] or [`Self::EnteredSince`]:
-    /// those that a caller
-    /// answers as it answers a commit that fails with a conflict.
+    /// [`Self::BothByKey`], [`Self::MerkTaken`], [`Self::EnteredSince`] or
+    /// [`Self::HostAbsent`]: those that a caller answers as it answers a
+    /// commit that fails with a conflict.
     pub const fn is_conflict(&self) -> bool {
         matches!(
             self,
@@ -759,6 +820,7 @@ impl BatchError {
                 | Self::BothByKey { .. }
                 | Self::MerkTaken { .. }
                 | Self::EnteredSince { .. }
+                | Self::HostAbsent { .. }
         )
     }
 }
@@ -813,6 +875,15 @@ pub enum TxnError {
     /// The subtree directory did not answer, or refused a write
     /// (`lignin_tree::directory`).
     Directory(DirectoryError),
+    /// A cursor of flat records was asked for the value under a key
+    /// where the newest write of its transaction is a node of the
+    /// subtree's Merk (`transactions.md` ST1). The cursor stands on such a
+    /// key and shows no value there: a node is read as a node. Nothing is
+    /// damaged, and the cursor is where it was.
+    NodeAsRecord {
+        /// The unit the cursor reads.
+        unit: Unit,
+    },
     /// A tree page that the transaction freed was asked for again.
     PageFreed {
         /// The page.
@@ -842,6 +913,11 @@ impl fmt::Display for TxnError {
             Self::TreeValue(error) => write!(f, "node value: {error}"),
             Self::Format(error) => write!(f, "format: {error}"),
             Self::Directory(error) => write!(f, "subtree directory: {error}"),
+            Self::NodeAsRecord { unit } => write!(
+                f,
+                "a cursor of flat records of {unit} stands on a key under which the \
+                 transaction wrote a Merk node, and shows no value there"
+            ),
             Self::PageFreed { page } => write!(f, "{page} was freed by the transaction"),
             Self::Damaged(what) => write!(f, "damaged pages: {what}"),
         }
@@ -866,6 +942,7 @@ impl Error for TxnError {
             Self::ScopeOpen
             | Self::ScopeOverlap { .. }
             | Self::NotFinalized
+            | Self::NodeAsRecord { .. }
             | Self::PageFreed { .. }
             | Self::Damaged(_) => None,
         }
