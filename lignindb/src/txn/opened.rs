@@ -273,7 +273,7 @@ impl Opened {
             return Ok(false);
         }
         let by_hosts = self.below_a_source(path, guard, set, subtree)?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "held_reads"))]
         self.held_to_every_source(path, guard, set, subtree, by_hosts)?;
         match by_hosts {
             Some(leaves) => Ok(leaves),
@@ -412,19 +412,24 @@ impl Opened {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "held_reads"))]
 pub(crate) mod held {
-    //! What [`Opened::leaves_with_a_move`] answers is held, in a test
-    //! build and at every call, to the answer it was made with before
-    //! the subtree's own hosts were asked: every prefix that a move of
-    //! the transaction took a subtree from is opened, and the entry under
-    //! each is looked for among the Merks the subtree is below.
+    //! What [`Opened::leaves_with_a_move`] answers is held, at every
+    //! call, to the answer it was made with before the subtree's own
+    //! hosts were asked: every prefix that a move of the transaction
+    //! took a subtree from is opened, and the entry under each is looked
+    //! for among the Merks the subtree is below. That is so in a test
+    //! build of this crate, and in a build with the feature
+    //! `held_reads`, by which the tests of another crate hold the
+    //! answers over their own calls.
 
+    #[cfg(test)]
     use std::cell::Cell;
 
     use super::*;
 
     /// How often the two answers were compared on this thread.
+    #[cfg(test)]
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub(crate) struct Compared {
         /// The subtree leaves with a move.
@@ -439,6 +444,7 @@ pub(crate) mod held {
         pub(crate) deepest: usize,
     }
 
+    #[cfg(test)]
     thread_local! {
         static COMPARED: Cell<Compared> = const {
             Cell::new(Compared { leaves: 0, stays: 0, absent: 0, unanswered: 0, deepest: 0 })
@@ -446,6 +452,7 @@ pub(crate) mod held {
     }
 
     /// What was compared on this thread since this was last asked.
+    #[cfg(test)]
     pub(crate) fn compared() -> Compared {
         COMPARED.replace(Compared::default())
     }
@@ -478,7 +485,6 @@ pub(crate) mod held {
                 assert!(set.took_from(source), "{source:?} is a source of a move");
             }
             let entry = self.entries[subtree].as_ref();
-            let depth = entry.map_or(0, Entry::depth);
             let mut above = entry.and_then(|entry| {
                 let host = entry.host()?;
                 Some(Subtree::new(*host.parent))
@@ -493,7 +499,6 @@ pub(crate) mod held {
                 let host = self.entries[&prefix].as_ref().and_then(Entry::host);
                 above = host.map(|host| Subtree::new(*host.parent));
             }
-            let entered = self.entries[subtree].is_some();
             let by_every_source = self.leaves_by_every_source(path, guard, set, subtree)?;
             if let Some(by_hosts) = by_hosts {
                 assert_eq!(
@@ -501,15 +506,28 @@ pub(crate) mod held {
                     "whether {subtree:?} leaves with a move"
                 );
             }
-            let mut compared = COMPARED.get();
-            match (by_hosts, entered) {
-                (None, _) => compared.unanswered += 1,
-                (Some(true), _) => compared.leaves += 1,
-                (Some(false), true) => compared.stays += 1,
-                (Some(false), false) => compared.absent += 1,
+            // In this crate's tests the walks that gave no answer are
+            // counted, for the tests that hold them to none. Where the
+            // tests of another crate hold the answers, there is nobody
+            // to count for: a walk that gives no answer stops the run.
+            #[cfg(not(test))]
+            assert!(
+                by_hosts.is_some(),
+                "the hosts of {subtree:?} do not say whether it leaves with a move"
+            );
+            #[cfg(test)]
+            {
+                let entry = self.entries[subtree].as_ref();
+                let mut compared = COMPARED.get();
+                match (by_hosts, entry.is_some()) {
+                    (None, _) => compared.unanswered += 1,
+                    (Some(true), _) => compared.leaves += 1,
+                    (Some(false), true) => compared.stays += 1,
+                    (Some(false), false) => compared.absent += 1,
+                }
+                compared.deepest = compared.deepest.max(entry.map_or(0, Entry::depth));
+                COMPARED.set(compared);
             }
-            compared.deepest = compared.deepest.max(depth);
-            COMPARED.set(compared);
             Ok(())
         }
     }
