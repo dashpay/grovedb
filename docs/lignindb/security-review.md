@@ -173,9 +173,11 @@ one of everything the engine keeps, damages it in one way, and runs a
 drill over it: the reads of a transaction and its cursors, a commit into
 every Merk and keyspace, the drop of every subtree, the reclaiming of what
 a drop leaves, write-back, and the checker, before and after each. A panic
-raised in the engine's code, a cursor that shows more records than the
-store holds, and a call that does not return within its time are findings;
-an error is an answer.
+raised in the engine's code, a walk that takes more steps than a bound far
+above what the store's size calls for, and a call that does not return
+within its time are findings; an error is an answer, and the answers need
+not be right — the store is damaged, so the drill does not hold a read on a
+damaged store to a model.
 
 The damage is of three kinds, each a store a directory with valid checksums
 can give the engine: every corruption of the checker's own acceptance list
@@ -184,10 +186,16 @@ that leads nowhere, a directory record that disagrees with the cells, and
 the rest); a child link made to lead back to its own cell, the cell above
 it or the root, and a flat branch made to name itself or one leaf
 throughout; and a page changed at random in a way a load still takes. On a
-sound store every step returns and the checker calls it sound each time.
-Over every damaged store no step panicked, hung or showed a phantom record:
-each step returned, many with an error the fixture expected of a damaged
-store. A longer run of the random case is named by `LIGNIN_HOSTILE_SEEDS`.
+sound store every step returns and the checker calls it sound each time; the
+acceptance-list run requires that every corruption made a case the checker
+reported unsound, so none was passed over. Over every damaged store no step
+panicked or ran past the step bound: each step returned, many with an error
+the fixture expected of a damaged store. In a debug build the engine's own
+close deliberately panics on a store its checker calls unsound
+(`Db::check_at_close`); the drill opens its stores with that close-check
+off (`Db::unchecked`), so the panics it forbids are those raised elsewhere
+in the engine's code, not that deliberate one. A longer run of the random
+case is named by `LIGNIN_HOSTILE_SEEDS`.
 
 ## 4. The per-crate reading
 
@@ -234,29 +242,53 @@ transitive code the decoders reach — `crc32c` and `lz4_flex`, which
 FMT-08's own campaign ran without a sanitizer — on the inputs the corpora
 hold. `lignin-format`, `crc32c` and `lz4_flex` (built with `safe-decode`,
 `safe-encode` and `checked-decode`) carry no `unsafe` the replay reached
-that AddressSanitizer flagged.
+that AddressSanitizer flagged. A replay establishes that the decoders did
+not fault on the bytes the corpora hold, together with FMT-08's 24
+CPU-hours per target; it is not a proof that a decoder cannot fault on some
+byte sequence no run reached. A checksum that a page passes says the bytes
+were written by this engine or re-checksummed by hand, not that they are
+the engine's own.
 
 ## 6. The memory observations
 
 The second question — adversarial keys and values cannot exhaust memory —
-is met: a node key is capped at 255 bytes and a value at the same
-`MAX_VALUE_LEN` the RocksDB engine allows, a long flat key is held in a
-nested tree whose memory is the key's own length, and a transaction's write
-set is the writes the application made, as on the RocksDB engine. One
-operation that splits or merges a page appends again, and holds until the
-commit, the out-of-line values of the cells it carries (the move rule of
-FMT-07); that is bounded by the value-size limit times the cells a page
-holds, and is no more than the RocksDB engine rewrites for the same
-operation, where a value is rewritten on every change. PERF-04 measures it.
+is read as: no operation holds memory that is not bounded by the sizes the
+application supplies and the store already holds, and there is no path
+where a bounded input makes unbounded memory. A node key is capped at 255
+bytes and a value at `MAX_VALUE_LEN` (a format limit, `u32`, not a
+peak-memory budget), a long flat key is held in a nested tree whose memory
+is the key's own length, and a transaction's write set is the writes the
+application made, as on the RocksDB engine.
 
-The memory a file can make the engine take is a different matter, and is
-the disk attacker's, not the user's. The table records where a file's own
-content — the length of a log group, the spread of the page ids in a table
-checkpoint, the number of pages a log names with a value not yet placed —
-decides how much memory an open or a recovery takes. Each is reached only
-by a file the attacker wrote, and each reads the node's own files, where
-integrity is the checker's to attest (`audit-non-issues.md`, "Trust-boundary
-findings"); none is a panic or undefined behaviour.
+**One operation can retain more than the bytes it writes.** When a page
+splits or merges, the cells that move take their out-of-line values with
+them: each such value is read whole from the value log and held until the
+commit (`lignin-tree/src/flat/store.rs`, `value/write.rs`, the move rule of
+FMT-07). So one write of a few bytes can hold, besides its own value, the
+existing values of up to a page's worth of carried cells — the cells' count
+times the per-value size limit. There is no enforced per-operation
+admission budget on this in the LigninDB crates; the bound is the value
+size limit and the cells a page holds. The RocksDB engine's logical update
+for the same operation need not rewrite those neighbours, so this is not
+bounded by a RocksDB comparison. This is application-reachable, through
+whatever the layer above stores out of line, and PERF-04 measures the bytes
+it rewrites; a deployment that must bound an operation's peak sets the
+value size limit of the layer above with that in mind. This review did not
+establish a deployment OOM threshold, and records the shape of the cost
+rather than declaring exhaustion impossible.
+
+A file's own content can also decide how much memory an open or a recovery
+takes: the length of a log group, the spread of the page ids in a table
+checkpoint, the number of pages a log names with a value not yet placed
+(the table). A large but valid commit reaches the same WAL-group path, so
+this is not only a hand-made file. The log reader's window uses
+`try_reserve_exact`, so an allocation the allocator refuses there is an
+error, not an abort; `install_rebuilt` uses `collect`, `Vec::with_capacity`
+and `to_vec`, which abort on an allocation failure rather than return, so
+the clean-failure guarantee holds for the log reader's window and not for
+the rebuilt-page path. None of these is a panic from a decoded value or
+undefined behaviour, and integrity of the node's own files is the checker's
+to attest (`audit-non-issues.md`, "Trust-boundary findings").
 
 ## 7. Findings
 
@@ -275,26 +307,31 @@ No finding is of high severity, and none of high severity is open.
 | id | severity | where | an attacker supplies | what happens | status |
 | --- | --- | --- | --- | --- | --- |
 | VER-10-1 | low | `lignin-tree` `directory/rekey.rs`, `plan_rekey` | a directory with a rootless Merk whose child record names itself, or two rootless Merks that host each other | a move's walk over the Merks below the moved one reads the cycle's records again without end and grows its plan without bound (a hang, then out of memory) | **fixed** (`eb78068a9`): the walk refuses a Merk reached a second time, which `Directory::check` already calls damage. A test plants the cycle and shows the walk does not end before the fix |
-| VER-10-2 | low | `lignin-tree` `flat/cursor.rs`, `next_leaf`/`down` | a directory in which two slots of a flat branch, or two buckets of a leaf, name one lower page (a DAG with valid checksums) | a scan of that keyspace visits the shared pages once per path to them; with an empty leaf below, one `seek`/`next` call does not return. Reached at open (`Directory::load` scans the dropped records) and in any scan of the keyspace. The checker is not affected: it walks pages directly and reports the page named twice | **open (owner)**: the fix is a bound on a scan in the flat cursor, a hot read path and a design choice |
-| VER-10-3 | low | `lignin-store` `table/checkpoint.rs`, `table/chains.rs` | a table checkpoint whose links name page ids far apart (one per 4096-id chunk) | the page table allocates a chunk of 4096 node slots for the first id of each chunk, so a checkpoint of N such links takes about N × 112 KiB at open; the allocator's map grows the same way | **open (owner)**: inherent to the chunked page table; a bound belongs with STORE-03 / the page-table format. Reads the node's own checkpoint file |
+| VER-10-2 | low | `lignin-tree` `flat/cursor.rs`, `next_leaf`/`down` | a directory in which two slots of a flat branch, or two buckets of a leaf, name one lower page (a DAG with valid checksums) | a scan of that keyspace visits the shared pages once per path to them; the work is the product of the fan-outs, which an acyclic shared-page graph of a few pages already drives past any practical deadline (with an empty leaf below, a single `seek`/`next` call). Reached at open (`Directory::load` scans the dropped records) and in any scan of the keyspace. The checker is not affected: it walks pages directly and reports the page named twice | **open (owner)**: the fix is a bound on a scan in the flat cursor, a hot read path and a design choice |
+| VER-10-3 | low | `lignin-store` `table/checkpoint.rs`, `table/chains.rs` | a table checkpoint whose links name page ids far apart (one per 4096-id chunk) | the page table allocates a chunk of 4096 node slots (112 KiB) for the first id of each 4096-id range a link falls in, and the directory of chunk pointers grows with the largest id, so a checkpoint of N spread links takes about N × 112 KiB at open; the allocator's map grows the same way | **open (owner)**: inherent to the chunked page table; a bound belongs with STORE-03 / the page-table format. Reads the node's own checkpoint file |
 | VER-10-4 | low | `lignin-store` `recovery/replay.rs`, `wal/reader.rs` | a log whose groups create many pages that carry a value not yet placed, or one group whose stated length is the file's | recovery holds every page with a pending value to the end of the log, and the log reader holds one whole commit group; the memory of an open is the log's own content, bounded by no option | **accepted**: a recovery reads the node's own files; the reservations go through `try_reserve_exact` and fail as an error, not a panic, where the allocator refuses. Noted for the open's memory bound |
-| VER-10-5 | low | `lignindb` `db/open.rs`; `lignin-store` `segment/store.rs` (`remove_unnamed`), `wal/store.rs`, `values/store.rs`, `table/checkpoint.rs` | a store directory in which the `seg`, `wal`, `val` or `table` subdirectory is a symbolic link to another database's directory, under a manifest that names no file there | the open (`SegmentStore::open` and its peers, reached by `recover`) lists that directory through the link and removes the plain files in it that the manifest does not name, so it deletes the files of the directory the link leads to; it skips an entry that is not a plain file but does not ask whether the subdirectory it lists is itself a link | **open (owner)**: the open should refuse a store subdirectory that is a link, or stat it before it removes within it. Needs an operator to open a directory an attacker supplied |
-| VER-10-6 | low | `lignindb` `backup/mod.rs` (`plan`, `copy`) | a backup's source directory in which a file the manifest names is a symbolic link, or a sparse file whose manifest length is large | the backup opens each file the source's manifest names by its path and copies its bytes, following a link, so a backup of a supplied source can carry bytes the link leads to; a sparse file named with a large length is copied dense | **open (owner)**: the backup should stat each file it copies. Needs an operator to back up a directory an attacker supplied |
-| VER-10-7 | low | `lignindb` `db/open.rs`, `backup/mod.rs`; `space.rs` | a store directory in which `MANIFEST`, or a file the manifest names, or `RESERVE`, is a named pipe | the open, a backup, or a session that keeps a reserve blocks reading the pipe, with no error; every `lignin` subcommand and `Db::open` on such a directory hang | **accepted**: a directory an attacker supplied, opened by an operator; a blocking read of a pipe is not a panic. Noted |
-| VER-10-8 | low | `lignin-tree` `drop/flat.rs`, `drop/merk.rs`, `drop/step.rs` | a directory with a drop record that names a page or a root cell in use | the reclaimer frees the page and everything its branches and buckets name, or removes the cells the root reaches, with no error: data a live tree still names is taken out in the background | **accepted**: whoever writes the drop record has the node's files and could remove the data directly; a `verify` run before the reclaim reports the store as unsound. Noted |
-| VER-10-9 | low | `lignindb` `db/mod.rs`, `Db::wipe`; `lignin-tools` `dump.rs` | a directory whose entries name each other as hosts, or whose host names a prefix with no entry | a wipe drops the subtrees that no other hosts, found by the entry's own host, so entries in a host cycle are left; `lignin dump --all` leaves the same entries out of "the whole database" with no word | **accepted**: a directory an attacker supplied; the result is that a wipe of a damaged directory leaves records and a dump omits unreachable ones. Noted |
-| VER-10-10 | low | `lignin-tools` `segments.rs`, `dump.rs` | a segment file the manifest names as longer than it is on disk (a sparse file), or a value record with a large stated length | `lignin segments` reads a segment whole up to its manifest length, and a sparse file is read dense | **accepted**: a tool run on a directory an attacker supplied; the reads are bounded by the manifest's own lengths. Noted |
+| VER-10-5 | medium | `lignindb` `db/open.rs`; `lignin-store` `segment/store.rs` (`remove_unnamed`), `wal/store.rs`, `values/store.rs`, `table/checkpoint.rs` | a store directory in which the `seg`, `wal`, `val` or `table` subdirectory is a symbolic link to another database's directory, under a manifest that names no plain file there | the open (`SegmentStore::open` and its peers, reached by `recover`) lists that directory through the link and removes the files in it that the manifest does not name, deleting the files of the directory the link leads to — data destruction outside the supplied directory. A file with an id above the manifest's last id is protected by a length or content check first; files at or below it are removed with no check. It skips an entry that is itself not a plain file but does not ask whether the subdirectory it lists is a link | **open (owner)**, medium for the external data destruction: the open should refuse a store subdirectory that is a link, or open it no-follow, before it removes within it. No peer or application route; needs an operator to open a directory an attacker supplied |
+| VER-10-6 | low | `lignindb` `backup/mod.rs` (`plan`, `copy`) | a backup's source directory in which a file the manifest names is a symbolic link, or a sparse file whose manifest length is large | the backup opens each file the source's manifest names by its path and copies its bytes, following a link, so a backup of a supplied source can carry bytes from outside the source (a confidentiality reach); a sparse file named with a large length is copied dense | **open (owner)**: the backup should open copied inputs no-follow (a stat that follows the link would not fix it). Needs an operator to back up a directory an attacker supplied |
+| VER-10-7 | low | `lignindb` `db/open.rs`, `backup/mod.rs`; `space.rs` | a store directory in which `MANIFEST`, or a file the manifest names, or `RESERVE`, is a named pipe | a command that opens the affected path blocks reading the pipe, with no error: the open and a backup read `MANIFEST`, a session that keeps a reserve reads `RESERVE`, and reading a manifest-named file's contents hangs the reads that reach it (listing a file's metadata does not). It is not every subcommand | **accepted**: a directory an attacker supplied, opened by an operator; a blocking read of a pipe is not a panic. Noted |
+| VER-10-8 | low | `lignin-tree` `drop/flat.rs`, `drop/merk.rs`, `drop/step.rs` | a directory with a drop record that names a page or a root cell in use | the reclaimer frees the page and everything its branches and buckets name, or removes the cells the root reaches, with no error: the birth and shape checks it makes are not ownership checks, so data a live tree still names is taken out in the background | **accepted**: whoever writes the drop record has the node's files and could remove the data directly; a `verify` that completes before any background reclaim (not only before an explicit sweep) reports the store as unsound. Noted |
+| VER-10-9 | low | `lignin-tools` `dump.rs` (`order`); `lignindb` `db/mod.rs`, `Db::wipe` | a directory whose entries name each other as hosts (a host cycle), reached from a top of `--all` or from a selected subtree | the dump's walk reached a subtree a second time and panicked on the second `remove`, past the dump's output-file cleanup; `lignin dump --all` and `Db::wipe` also leave the cycle's entries out (a wrong answer on a damaged directory) | **fixed** for the panic (`bac15b357`: the walk returns a `ToolError` on a repeated entry; a test reaches the cycle from both a whole-database and a selected top). **accepted** for the omission and the wipe: a directory an attacker supplied, a wrong answer on it |
+| VER-10-10 | low | `lignin-tools` `segments.rs`, `dump.rs` | a segment file the manifest names as longer than it is on disk (a sparse file), or a value record with a large stated length | `lignin segments` reads a segment whole up to its manifest length (it skips a file shorter than its manifest length first), so holes in a file that is logically long enough are read dense; an ordinary segment of that logical length costs the same | **accepted**: a tool run on a directory an attacker supplied; the reads are bounded by the manifest's own lengths. Noted |
 | VER-10-11 | low | `lignindb` `verify/mod.rs` | a store with very many values out of line or flat records | the checker holds in memory a record per out-of-line value and the key of every flat record of a rooted subtree's data column, with no cap: its memory is proportional to the store's size | **accepted**: by design — the checker is run on a store to judge it, and the store's own size bounds its memory. Noted so an operator knows a checker's run costs memory in proportion to the store |
 | VER-10-12 | low | `lignin-store` `flush/run.rs`, `flush/write_back.rs` | — (not an attacker's input) | a panic in a write-back turn leaves the `running` flag set, so a committer that later waits for room never returns; no file byte was found that makes the turn panic | **accepted**: not reached by any input this review found; a robustness note that a background panic should end the committer's wait rather than hang. Noted |
+| VER-10-13 | low | `lignin-tree` `bulk/load.rs` (`Loader::node`) | a bulk-load feed whose keys are out of order or whose link heights are wrong | the loader stores the heights as stated and does not check its keys' order; such a feed commits a store the checker then flags (`KeyOrder`, `LinkHeights`) | **accepted**: not reached by a peer (a restore hands the loader a hash-verified, finalized Merk, ordered by the proof tree) nor by an application operation (none reaches the loader at this head). Only `lignin load` on a crafted dump reaches it, and the close checker catches it; the loader trusts its caller, whose callers build or verify the order |
 
 ## 8. What is accepted, and what would make it a finding
 
 Every row marked **accepted** or **open (owner)** is a state a directory
 made by hand reaches, with the node's files or an operator who opens a
 supplied directory, except VER-10-11 and VER-10-12, which are a checker's
-memory by design and a robustness note. None is reached by a state-sync
-peer or by an application's user through GroveDB's operations, and none is
-a panic or undefined behaviour. They **become a finding of higher severity
+memory by design and a robustness note, and VER-10-13, which the loader's
+callers never drive out of order. None is reached by a state-sync peer or
+by an application's user through GroveDB's operations. VER-10-5 is medium
+for the data it can destroy outside the supplied directory; the rest are
+low. The one corrupted-directory panic found (the dump of a host cycle,
+VER-10-9) is fixed, and no panic is reached from a peer or an application's
+user. They **become a finding of higher severity
 if**: an application's user or a state-sync peer can bring the engine into
 one of these states — in particular, if a public operation comes to write a
 directory record that cycles (VER-10-1, VER-10-9) or a drop record that
