@@ -594,6 +594,7 @@ fn the_arguments_of_migrate() {
             "is made again at such a path is refused by the engine as",
             "left without stopping is migrated as the state that node",
             "2 the arguments are not a",
+            "A SOURCE with a keyed child under a tree of flat records",
             "keeps a node from starting on it while it runs",
         ],
     );

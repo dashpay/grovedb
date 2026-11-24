@@ -1560,7 +1560,9 @@ fn records_that_nothing_leads_to_are_refused_left_or_carried() {
 /// Shapes that RocksDB holds and no operation of GroveDB makes today are
 /// carried as they are and counted: a node record that no tree links, and
 /// a root Merk whose record of the root key names a node that is not its
-/// root (GroveDB #1065), which is said loudly.
+/// root (GroveDB #1065), which is said loudly. Of such a Merk the engine
+/// takes no further node, where RocksDB goes on with the part of the tree
+/// that the record names.
 #[test]
 fn records_no_tree_links_and_a_root_key_that_names_no_root_are_carried() {
     let dir = tempfile::tempdir().expect("a directory");
@@ -1606,6 +1608,23 @@ fn records_no_tree_links_and_a_root_key_that_names_no_root_are_carried() {
         "{out}"
     );
     assert!(alike(&stale, &target) > 0);
+
+    // The next write of a node of that Merk. RocksDB takes it into the
+    // tree its record names, which is a part of the tree. The engine
+    // takes no node of a Merk whose root-key record does not name its
+    // root, and leaves the store as it was: the close of the grove checks
+    // it.
+    let later = || Element::new_item(b"later".to_vec());
+    let v = GroveVersion::latest();
+    let was = rocks(&stale).insert(ROOT, b"z", later(), None, None, v);
+    was.unwrap().expect("RocksDB takes the write");
+    let lignin = Lignin::open_with_engine(&target).expect("the target");
+    let before = root_of(&lignin);
+    let is = lignin.insert(ROOT, b"z", later(), None, None, v).unwrap();
+    let refused = is.expect_err("the engine refuses the write").to_string();
+    assert!(refused.contains("does not name its root"), "{refused}");
+    assert!(refused.contains("GroveDB #686 and #1065"), "{refused}");
+    assert_eq!(root_of(&lignin), before);
 }
 
 /// On the grove versions 1 to 3 a tree that keeps flat records can hold a

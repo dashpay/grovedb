@@ -48,6 +48,11 @@ usage: lignin SUBCOMMAND DIR [OPTIONS]
                                      In a store that carries them, a write below a tree that
                                      is made again at such a path is refused by the engine as
                                      it stands
+                                     A SOURCE with a keyed child under a tree of flat records
+                                     (an element put below such a tree, which grove versions 1
+                                     to 3 take) is refused: LigninDB keeps such a child as a
+                                     node of a Merk beside the tree's records, and this command
+                                     does not make that Merk from what RocksDB holds
   migrate   SOURCE --survey [--unreachable refuse|leave|carry]
                                      what SOURCE holds and whether it can be migrated; writes
                                      nothing
