@@ -33,10 +33,13 @@
 //! LigninDB holds. Two reads by the path of such a tree answer otherwise
 //! than on RocksDB: a read that asks for no element on the way
 //! (`has_raw`) finds nothing, and a tree that is made again at the path
-//! is empty (`is_empty_tree`). So does a cursor that steps from no key
-//! beside such a prefix, where the prefix is the first or the last of
-//! its keyspace (`flat-store.md`, "A step from no key"): the survey says
-//! how many prefixes of the grove lie before and after each.
+//! is empty (`is_empty_tree`). And a cursor of another subtree that steps
+//! from no key comes to the records that lie beside its subtree in the
+//! keyspace (`flat-store.md`, "A step from no key"), of which the records
+//! under such a prefix are then none: that changes an answer where fewer
+//! records of the grove lie on that side than the cursor steps. The
+//! survey says how many prefixes of the grove lie before and after each
+//! such prefix.
 //!
 //! With the records carried, those reads answer as on RocksDB. **A write
 //! below a tree that is made again at such a path is refused by the engine

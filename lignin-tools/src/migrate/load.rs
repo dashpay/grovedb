@@ -41,9 +41,19 @@
 //! in the target whole or not at all, and a load that goes on hands over
 //! no Merk a second time: the journal says which were left. Flat, aux and
 //! meta records and the records of root keys are puts, and a put of a
-//! record that is there with the same value leaves it as it is: a subtree
-//! of flat records whose load was cut is handed over from its first
-//! record again.
+//! record over itself changes nothing that a read shows: a subtree of flat
+//! records whose load was cut is handed over from its first record again.
+//! What was carried of a subtree is counted when the walk leaves it, so
+//! such a subtree is counted once.
+//!
+//! # After the grove
+//!
+//! The records of root keys are carried next, under every prefix of the
+//! source, with the stored key of the last one in the journal. Then, where
+//! the migration carries what the source holds beside its grove
+//! ([`super::beside`]), each such prefix in one commit, whole: a prefix
+//! that is entered was carried by a run before. The last commit holds the
+//! pending-drop records with their marks, and removes the journal.
 
 use std::{
     collections::HashSet,

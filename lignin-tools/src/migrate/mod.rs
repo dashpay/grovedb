@@ -25,8 +25,8 @@
 //!    loader. Every commit holds the journal of where the load stands
 //!    ([`journal`]).
 //! 4. **It compares** ([`compare`]): the source is read once more, and
-//!    every record of it is held to what the target answers through the
-//!    engine of GroveDB, with the root hash.
+//!    every record of it that is carried is held to what the target
+//!    answers through the engine of GroveDB, with the root hash.
 //! 5. **It verifies** the target with the physical invariant checker,
 //!    every stored hash made again by Merk's rules, as `lignin verify`
 //!    does.
@@ -47,7 +47,7 @@
 //! | --- | --- |
 //! | is not there, or holds a database with nothing in it | surveys, and begins the load |
 //! | holds a database with a journal of this source | goes on with the load from the last commit: a Merk that was handed over is not handed over again |
-//! | holds a database with a journal of another source, or of another state of this one | refuses: the directory is to be removed |
+//! | holds a database with a journal of another source, of another state of this one, or of a load that was told otherwise what becomes of the records nothing leads to | refuses: the directory is to be removed, or the run is told what the first was |
 //! | holds a database with no journal | the load is complete: compares, verifies and renames. A run that died between the verification and the rename leaves this, and so does one whose comparison or verification failed |
 //!
 //! A run that died after the rename, before it said that it was done,
@@ -85,7 +85,7 @@
 //! | Status | |
 //! | --- | --- |
 //! | 0 | the target is at `TARGET`: loaded, compared and verified. With `--survey`: the source can be migrated |
-//! | 1 | the migration failed, or the source or the target was refused; nothing is at `TARGET` |
+//! | 1 | the migration failed, or the source or the target was refused; the run put nothing at `TARGET` |
 //! | 3 | the migrated store differs from its source, or a rule of it does not hold; it is left in `TARGET.migrating` |
 //! | 4 | the device of the target is full; the same command goes on once there is room |
 

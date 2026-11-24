@@ -1,6 +1,6 @@
-//! The comparison of a migrated target with its source: every record of
-//! every keyspace of every prefix, read from the target as GroveDB reads
-//! it.
+//! The comparison of a migrated target with its source: every record that
+//! a migration carries, of every keyspace of every prefix, read from the
+//! target as GroveDB reads it.
 //!
 //! The source is walked a second time ([`super::walk`]), and for each
 //! subtree the records of its three keyspaces are read from the files of
@@ -20,9 +20,14 @@
 //!   those that the source's records leave: one for each keyspace of a
 //!   dropped prefix that no element leads to and that the source still
 //!   holds a record under;
-//! - **the directory** has an entry for each subtree of the walk and for
-//!   the namespace of the pending-drop records, and no other: so nothing
-//!   is held under a prefix that the source has no element for;
+//! - **what the source holds beside its grove** ([`super::beside`]): the
+//!   target has the records of such a prefix, all of them, under a subtree
+//!   with no host and no root, or it has no subtree there. How many
+//!   prefixes are of each kind is counted, and the migration holds the two
+//!   counts to what it was told becomes of such records;
+//! - **the directory** has an entry for each subtree of the walk, for each
+//!   such prefix whose records the target has, and for the namespace of
+//!   the pending-drop records, and no other;
 //! - **the journal** of the migration is gone;
 //! - **the root hash** that GroveDB gives the target is the source's.
 //!

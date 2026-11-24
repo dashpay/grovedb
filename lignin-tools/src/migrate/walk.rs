@@ -1,7 +1,7 @@
 //! The walk of a source grove: every subtree that an element leads to,
 //! from the root Merk down, with what each holds.
 //!
-//! The survey, the load and the comparison of a migration are three
+//! The survey, the load and the comparison of a migration are
 //! [`Visit`]ors of this one walk, so each of them sees the same subtrees,
 //! with the same roots, in the same order.
 //!
@@ -18,7 +18,9 @@
 //! enters (`engine.md`, "The directory of a synced grove"), and what the
 //! engine enters by itself for a tree that nothing was written into: no
 //! subtree. A record of a root key alone enters nothing: the engine keeps
-//! those outside the subtree.
+//! those outside the subtree. An element of a Merk's tree that names a
+//! root for a subtree which holds no record is a tree GroveDB cannot open:
+//! the source is refused for it.
 //!
 //! **The put of a tree's element names the Merks it hosts**, each at its
 //! position: the subtrees that are entered for it whose data is a Merk.

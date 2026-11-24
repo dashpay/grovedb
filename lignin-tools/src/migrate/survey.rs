@@ -18,10 +18,11 @@
 //!
 //! A source is also refused for a Merk whose records are not one tree
 //! under the root that is named for it, a record that Merk does not decode
-//! or encodes otherwise, a record of the roots keyspace that is no record
-//! of a root key, a record under the prefix of the pending-drop records
-//! that is none, and an aux record of the root under the key of the
-//! migrator's journal.
+//! or encodes otherwise, an element that names a root while no record is
+//! under the prefix of its subtree, a record of the roots keyspace that is
+//! no record of a root key, a record under the prefix of the pending-drop
+//! records that is none, and an aux record of the root under the key of
+//! the migrator's journal.
 
 use std::collections::{BTreeMap, BTreeSet};
 

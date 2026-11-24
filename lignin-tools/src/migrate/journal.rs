@@ -9,8 +9,10 @@
 //! it: **a target has a journal exactly while its load is not complete.**
 //!
 //! It names the source it was made from ([`Journal::identity`],
-//! [`Journal::sequence`], [`Journal::root_hash`]): a load goes on only
-//! from the source it was begun on, in the state it was begun on.
+//! [`Journal::sequence`], [`Journal::root_hash`]) and what the load was
+//! told becomes of the records nothing leads to
+//! ([`Journal::unreachable`]): a load goes on only from the source it was
+//! begun on, in the state it was begun on, and as it was begun.
 //!
 //! # The record
 //!
