@@ -383,6 +383,9 @@ fn dropped(_: &Planted, world: &mut World<'_>) {
 
 type Step = for<'s> fn(&'s Planted, &mut World<'s>);
 
+/// A name and a change to the children of a flat branch.
+type BranchChange = (&'static str, fn(PageId, &mut Vec<PageId>));
+
 /// What is asked of a damaged store, in this order. A step that a fixture
 /// refuses is followed by the next all the same: after an error a session
 /// goes on.
@@ -520,10 +523,7 @@ fn every_step_of_the_drill_returns_on_a_sound_store() {
 /// file, and a walk that takes too many steps by its message.
 #[test]
 fn a_panic_is_told_by_where_it_was_raised() {
-    let end = ended(|| {
-        let none: Option<u8> = None;
-        none.expect("a fixture's expectation");
-    });
+    let end = ended(|| panic!("a fixture's expectation"));
     assert!(matches!(end, End::Refused(_)), "{end:?}");
     let end = ended(|| {
         let mut steps = WALK_LIMIT;
@@ -671,7 +671,7 @@ fn the_engine_answers_where_links_lead_back() {
             }
         }
     }
-    let branches: [(&str, fn(PageId, &mut Vec<PageId>)); 3] = [
+    let branches: [BranchChange; 3] = [
         ("a flat branch names itself first", |branch, children| {
             children[0] = branch;
         }),
