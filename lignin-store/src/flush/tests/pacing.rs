@@ -474,7 +474,7 @@ fn a_roll_that_ends_in_vain_fails_a_turn_whose_pass_is_refused_nothing() {
         held_back, turns as u64,
         "the step of each turn was held back"
     );
-    assert_eq!(lock(&db.state.placing).len(), 1, "the value is ready");
+    assert_eq!(db.state.listed(), (0, 1), "the value is ready");
     txn.roll_back();
 }
 

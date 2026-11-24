@@ -1,7 +1,10 @@
 //! Pending values: where a value gets its pointer (`transactions.md` FL7,
 //! PV7; test T-VL5).
 
+use lignin_io::sim::{Fault, FaultRule, OpKind};
+
 use super::*;
+use crate::segment::{tests::sim::db_dir, FileNames};
 
 /// A commit that writes values too long for their cells appends to the log
 /// only. Write-back then appends each value to the value log, has a
@@ -64,13 +67,189 @@ fn a_value_waits_for_a_private_copy_of_its_page_and_is_appended_once() {
     assert_eq!(db.pending(page(1)).len(), 1);
     db.check_warm();
 
+    // The value is listed for the committers, and for no pass.
+    assert_eq!(db.state.listed(), (0, 1));
+
     txn.roll_back();
     assert_eq!(db.wb().place_ready().expect("placed"), 1);
+    assert_eq!(db.state.listed(), (0, 0));
     assert_eq!(db.live_values(), 1);
     let pass = db.wb().pass().expect("a pass");
     assert_eq!((pass.written, pass.placed, pass.waiting), (1, 0, 0));
     assert_eq!(db.stats().values_appended, 1);
     db.check_cold();
+}
+
+/// A committer's call tries the values that a private copy held back, and
+/// no other: a value that no copy holds back is a pass's. Here two values
+/// are ready, the page of one is copied, and the pass that would place the
+/// other is refused the record of its step by the log. The call of the
+/// transaction's end places the first and leaves the second to a pass.
+#[test]
+fn a_committer_places_what_a_private_copy_held_back_and_nothing_else() {
+    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 900)),
+        insert((2, 1), b"b", long(2, 900)),
+    ]);
+    let mut txn = db.begin();
+    txn.copy(page(1));
+    let file = db.log.end().expect("the log has a file").file();
+    let record = FaultRule::new(Fault::Enospc)
+        .on(OpKind::Append)
+        .at(FileNames::WAL.path(db_dir(), file));
+    fs.add_rule(record.torn_append(false));
+    let error = db.wb().pass().expect_err("the log refused the record");
+    assert!(matches!(error, FlushError::Log(_)), "{error}");
+    fs.clear_rules();
+    let stats = db.stats();
+    assert_eq!((stats.values_appended, stats.values_placed), (2, 0));
+    assert_eq!(db.state.listed(), (1, 1));
+
+    // The log takes a record again, and the copy is gone.
+    assert!(db.wb().roll_log().expect("the log is rolled"));
+    txn.roll_back();
+    assert_eq!(db.wb().place_ready().expect("placed"), 1);
+    assert_eq!(db.state.listed(), (1, 0));
+    assert!(db.pending(page(1)).is_empty());
+    assert_eq!(db.pending(page(2)).len(), 1);
+
+    // The other value is placed by the next pass, and nothing was appended
+    // to the value log twice.
+    let pass = db.wb().pass().expect("a pass");
+    assert_eq!((pass.placed, pass.waiting), (1, 0));
+    assert_eq!(db.state.listed(), (0, 0));
+    let stats = db.stats();
+    assert_eq!((stats.values_appended, stats.values_placed), (2, 2));
+    assert_eq!(stats.values_given_up, 0);
+    db.check_cold();
+}
+
+/// A value of the committers' list whose record the log refuses stays in
+/// that list, whoever tried it, and the next call of a committer places
+/// it. A copy holds the value back and a pass lists it, the copy goes, the
+/// log refuses the record to the pass that tries the value next, and the
+/// log is rolled: the call then makes the step, once.
+#[test]
+fn a_held_back_value_whose_record_the_log_refused_is_placed_by_the_next_committer() {
+    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    let mut txn = db.begin();
+    txn.copy(page(1));
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.state.listed(), (0, 1));
+    txn.roll_back();
+
+    let file = db.log.end().expect("the log has a file").file();
+    let record = FaultRule::new(Fault::Enospc)
+        .on(OpKind::Append)
+        .at(FileNames::WAL.path(db_dir(), file));
+    fs.add_rule(record.torn_append(false));
+    let error = db.wb().pass().expect_err("the log refused the record");
+    assert!(matches!(error, FlushError::Log(_)), "{error}");
+    fs.clear_rules();
+    assert_eq!(db.state.listed(), (0, 1));
+    assert_eq!(db.stats().values_placed, 0);
+
+    assert!(db.wb().roll_log().expect("the log is rolled"));
+    assert_eq!(db.wb().place_ready().expect("placed"), 1);
+    assert_eq!(db.state.listed(), (0, 0));
+    let stats = db.stats();
+    assert_eq!(
+        (
+            stats.values_appended,
+            stats.values_placed,
+            stats.values_given_up
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(db.live_values(), 1);
+    let pass = db.wb().pass().expect("a pass");
+    assert_eq!((pass.placed, pass.waiting), (0, 0));
+    db.check_cold();
+}
+
+/// A committer's call does not wait until a pass has gone through its own
+/// placing steps. The pass is stopped inside its walk over the values that
+/// no copy holds back, where the log has refused the record of a step: it
+/// holds the list of those values there. The call of a committer is made
+/// at that moment, on a thread of its own, and returns while the pass is
+/// still stopped.
+#[test]
+fn a_committer_does_not_wait_for_the_placing_steps_of_a_pass() {
+    use std::{cell::Cell, rc::Rc, sync::mpsc, time::Duration};
+
+    use crate::flush::place::AFTER_A_REFUSED_STEP;
+
+    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    let db = Arc::new(db);
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    let file = db.log.end().expect("the log has a file").file();
+    let record = FaultRule::new(Fault::Enospc)
+        .on(OpKind::Append)
+        .at(FileNames::WAL.path(db_dir(), file));
+    fs.add_rule(record.torn_append(false));
+
+    let called = Rc::new(Cell::new(None));
+    AFTER_A_REFUSED_STEP.with(|hook| {
+        let (db, called) = (db.clone(), called.clone());
+        *hook.borrow_mut() = Some(Box::new(move || {
+            assert!(
+                db.state.placing.try_lock().is_err(),
+                "the pass holds the list of its values"
+            );
+            let (done, ended) = mpsc::channel();
+            let committer = db.clone();
+            std::thread::spawn(move || {
+                let _ = done.send(
+                    committer
+                        .wb()
+                        .place_ready()
+                        .map_err(|error| error.to_string()),
+                );
+            });
+            let placed = ended
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the call waited for the pass");
+            called.set(Some(placed.expect("no step is tried")));
+        }));
+    });
+    let error = db.wb().pass().expect_err("the log refused the record");
+    assert!(matches!(error, FlushError::Log(_)), "{error}");
+    assert_eq!(called.get(), Some(0), "the call was made inside the pass");
+    assert_eq!(db.state.listed(), (1, 0));
+}
+
+/// A value that a private copy holds back stays listed for the committers
+/// while the copy is there, whoever tries it, and is given up from that
+/// list when its cell is gone.
+#[test]
+fn a_value_that_is_held_back_stays_listed_until_it_is_placed_or_given_up() {
+    let db = Db::new();
+    db.commit(&[insert((1, 1), b"a", long(1, 2000))]);
+    let mut txn = db.begin();
+    txn.copy(page(1));
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.state.listed(), (0, 1));
+
+    // A call beside the open transaction, as a write with no transaction
+    // makes it, and another pass: the copy is there still.
+    assert_eq!(db.wb().place_ready().expect("no step"), 0);
+    assert_eq!(db.state.listed(), (0, 1));
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.state.listed(), (0, 1));
+    assert_eq!(db.stats().steps_put_off, 3);
+
+    // The transaction removes the cell: the value is given up by the call
+    // of its commit.
+    txn.commit(&[Op::Remove {
+        page: page(1),
+        slot: slot(1),
+    }]);
+    assert_eq!(db.wb().place_ready().expect("no step"), 0);
+    assert_eq!(db.state.listed(), (0, 0));
+    let stats = db.stats();
+    assert_eq!((stats.values_placed, stats.values_given_up), (0, 1));
 }
 
 /// The transaction that held the copy commits. Its commit carries the

@@ -239,6 +239,18 @@ pub(super) struct Ready {
     pub(super) _hold: ValueHold,
 }
 
+#[cfg(test)]
+impl FlushState {
+    /// How many values wait for their page step in the list of the pass,
+    /// and how many in the lists of the values that a private copy held
+    /// back. The two are counted one after the other: for a test that
+    /// looks while nobody moves a value.
+    pub(super) fn listed(&self) -> (usize, usize) {
+        let held_back = lock(&self.held_back).len() + lock(&self.found_held_back).len();
+        (lock(&self.placing).len(), held_back)
+    }
+}
+
 /// A page that got a base image and waits until its chain may be trimmed
 /// at that image's version.
 #[derive(Debug, Clone, Copy)]
@@ -339,9 +351,20 @@ pub struct FlushState {
     pub(super) counters: Counters,
     pub(super) checkpoints: Mutex<Checkpoints>,
     pub(super) files: Mutex<Files>,
-    /// The values that wait for their page step. Its lock makes the
-    /// placing steps of write-back one at a time.
+    /// The values that wait for their page step and that no private copy
+    /// was found to hold back. A pass alone takes this lock, for its
+    /// placing steps.
     pub(super) placing: Mutex<Vec<Ready>>,
+    /// The values whose page step a private copy of their page held back
+    /// when a pass tried it, until the step is made or the value is given
+    /// up. Whoever tries their steps holds this lock for them: a
+    /// committer after its transaction has ended, and a pass.
+    pub(super) held_back: Mutex<Vec<Ready>>,
+    /// The values that a pass has just found held back, on their way to
+    /// `held_back`: a pass puts a value here under the lock of the
+    /// value's page, and whoever tries the steps of `held_back` moves
+    /// them over first. Nothing is taken under this lock.
+    pub(super) found_held_back: Mutex<Vec<Ready>>,
     pub(super) kept: Mutex<Kept>,
     pub(super) turns: Mutex<Turns>,
     pub(super) turned: Condvar,
@@ -378,6 +401,8 @@ impl FlushState {
             checkpoints: Mutex::default(),
             files: Mutex::default(),
             placing: Mutex::default(),
+            held_back: Mutex::default(),
+            found_held_back: Mutex::default(),
             kept: Mutex::default(),
             turns: Mutex::default(),
             turned: Condvar::new(),

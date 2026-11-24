@@ -257,7 +257,9 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
             let stats = db.stats();
             assert_eq!((stats.values_appended, stats.values_placed), (1, 0));
             assert_eq!(db.pending(page(1)).len(), 1);
-            assert_eq!(db.wb().place_ready().expect("put off again"), 0);
+            // No private copy held the value back: it is a pass's to
+            // offer again, and a committer's call tries no step.
+            assert_eq!(db.wb().place_ready().expect("no step is tried"), 0);
         } else {
             assert!(torn);
             passed.expect("a pass");
@@ -295,7 +297,9 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
 /// The log fails the record of a page step and cannot find out what
 /// became of it. The record may be in the log, so nothing is installed,
 /// the value keeps its hold, and the call says that the log takes nothing
-/// more in this session: every call after it says so too.
+/// more in this session: the turn that the test makes after it says so
+/// too. A committer's call, which has no step to try here, is answered
+/// none.
 #[test]
 fn a_page_step_whose_record_is_unsettled_is_reported_and_keeps_its_hold() {
     let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
@@ -325,7 +329,10 @@ fn a_page_step_whose_record_is_unsettled_is_reported_and_keeps_its_hold() {
     assert_eq!(db.shape(page(2)), "B");
     db.check_warm();
 
-    unsettled(db.wb().place_ready());
+    // No private copy held the value back, so it is a pass's to offer
+    // again and no committer's.
+    assert_eq!(db.wb().place_ready().expect("no step is tried"), 0);
+    assert_eq!(db.state.listed(), (1, 0));
     unsettled(db.wb().tick().map(|tick| tick.pass.placed));
     assert_eq!(db.state.placing.lock().expect("what is ready").len(), 1);
     assert_eq!(db.stats().values_given_up, 0);

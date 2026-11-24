@@ -37,9 +37,13 @@ thread_local! {
 enum Step {
     /// The cell holds the pointer, and the value is counted.
     Placed,
-    /// A write transaction holds a private copy of the page, or no
-    /// manifest covers the value. The value stays ready.
+    /// The step cannot be made now, and the value stays in its list: no
+    /// manifest covers it, or a write transaction holds a private copy of
+    /// the page and the value is listed for the committers already.
     PutOff,
+    /// A write transaction holds a private copy of the page, and the
+    /// value has left the list of the pass for the committers' one.
+    HeldBack,
     /// The log refused the record of the step, with what it answered.
     /// Nothing was installed, and the value stays ready.
     Refused(LogError),
@@ -49,7 +53,37 @@ enum Step {
     GivenUp,
 }
 
+/// Which list a value that is tried for its page step is in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Listed {
+    /// The list of the pass: no private copy was found to hold the value
+    /// back yet.
+    ForPasses,
+    /// The list of the values that a private copy held back.
+    ForCommitters,
+}
+
 impl<'s> WriteBack<'s> {
+    /// Every value that waits for its page step, in whichever list.
+    ///
+    /// A pass asks, and a pass alone moves a value out of its own list.
+    /// A committer moves values between the other two while it holds the
+    /// lock of the first of them, under which the keys of both are
+    /// copied here: what a committer waits for meanwhile is that copy,
+    /// and nothing that grows with the list of the pass.
+    fn ready(&self) -> HashSet<(PageId, PendingValue)> {
+        let state = self.state;
+        let key = |ready: &Ready| (ready.page, ready.cell.pending);
+        let held: Vec<_> = {
+            let held_back = lock(&state.held_back);
+            let found = lock(&state.found_held_back);
+            held_back.iter().chain(found.iter()).map(key).collect()
+        };
+        let mut all: HashSet<_> = lock(&state.placing).iter().map(key).collect();
+        all.extend(held);
+        all
+    }
+
     /// Appends the pending values of the current page versions in `owed`
     /// to the value log and has a manifest cover them. They are then ready
     /// for their page steps ([`Self::place_ready`]).
@@ -65,10 +99,7 @@ impl<'s> WriteBack<'s> {
         let Stores {
             pool, page_values, ..
         } = self.stores;
-        let ready: HashSet<(PageId, PendingValue)> = lock(&self.state.placing)
-            .iter()
-            .map(|ready| (ready.page, ready.cell.pending))
-            .collect();
+        let ready = self.ready();
         let mut order = Vec::new();
         let mut fresh = Vec::new();
         let mut ended = Ok(());
@@ -231,20 +262,38 @@ impl<'s> WriteBack<'s> {
         })
     }
 
-    /// Makes the page step of every value that is ready for it and whose
-    /// page no write transaction holds a private copy of. Returns how many
-    /// values were placed.
+    /// Goes through the list of the values that a private copy of their
+    /// page held back from their step, and tries the page step of each
+    /// one it comes to, as a pass tries any value: the step is made where
+    /// the page has no private copy now, a manifest covers the value and
+    /// the log takes the record. It ends at the first step that fails
+    /// with an error, and has not tried the values after that one.
+    /// Returns how many values were placed.
     ///
-    /// A pass calls this. **Whoever commits calls it as well, once its
-    /// commit is published** (after step 8 of CM3) and before the next
-    /// write transaction of its thread copies a page, and so does a
-    /// transaction that has rolled back: that is the moment at which the
-    /// copies that held a step back are gone. A value on a page that every
-    /// block changes is placed there and nowhere else, when blocks are
-    /// applied back to back.
+    /// **Whoever commits calls this once its commit is published** (after
+    /// step 8 of CM3) and before the next write transaction of its thread
+    /// copies a page, and so does a transaction that has rolled back:
+    /// that is the moment at which the copies that held a step back are
+    /// gone. A pass that finds a private copy of a value's page cannot
+    /// place the value, and where blocks are applied back to back a pass
+    /// can find one every time it looks: these calls come when the
+    /// copies of their caller are gone, and so can place such a value.
+    ///
+    /// **The call tries the values of that list and no others.** It
+    /// never takes the lock of the pass's own list, so it does not wait
+    /// for a pass to have gone through the pass's values. For each value
+    /// it tries it takes what any page step takes.
+    ///
+    /// **A value that a pass found held back by a copy is listed for
+    /// these calls before that copy is gone, and stays listed until its
+    /// step is made or it is given up**, by a call or by a pass. The
+    /// pass lists the value under the lock of the value's page, under
+    /// which it saw the copy and under which a copy is installed or
+    /// discarded.
     ///
     /// It touches no file but the log, to which it appends one record for
-    /// each value it places, with no sync. One call runs at a time.
+    /// each value it places. It syncs nothing, but where the log took an
+    /// append back: the log is then settled, which can sync it.
     ///
     /// A step whose record the log answers with
     /// [`LogError::NotAppended`], with [`LogError::NoActiveFile`], or
@@ -252,14 +301,17 @@ impl<'s> WriteBack<'s> {
     /// is put off like one that a private copy holds back, and this call
     /// returns no error for it: the refusal has asked the loop for a
     /// turn, for the cut the log needs, and a pass in which a record is
-    /// refused so ends with an error ([`Self::pass`]).
+    /// refused so ends with an error ([`Self::pass`]). A value stays in
+    /// the list it was in when the log refused its record.
     pub fn place_ready(&self) -> Result<usize, FlushError> {
         let mut placed = 0;
-        self.place_each(&mut placed, &mut None)?;
+        self.place_held_back(&mut placed, &mut None)?;
         Ok(placed)
     }
 
-    /// [`Self::place_ready`] for a pass. `placed` counts the values that
+    /// The placing steps of a pass: the values that a private copy held
+    /// back are tried first, as [`Self::place_ready`] tries them, and then
+    /// every other value that is ready. `placed` counts the values that
     /// were placed, also where the call ends with an error, and `refused`
     /// is given what the log answered the first record that it refused.
     /// Such a step is made again by a later call, so the pass has failed
@@ -270,20 +322,47 @@ impl<'s> WriteBack<'s> {
         refused: &mut Option<LogError>,
     ) -> Result<(), FlushError> {
         let mut placing = lock(&self.state.placing);
+        self.place_held_back(placed, refused)?;
+        self.place_all(&mut placing, Listed::ForPasses, placed, refused)
+    }
+
+    /// Tries the values that a private copy held back, with those that a
+    /// pass has found so since the last call.
+    fn place_held_back(
+        &self,
+        placed: &mut usize,
+        refused: &mut Option<LogError>,
+    ) -> Result<(), FlushError> {
+        let mut held_back = lock(&self.state.held_back);
+        held_back.append(&mut lock(&self.state.found_held_back));
+        self.place_all(&mut held_back, Listed::ForCommitters, placed, refused)
+    }
+
+    /// Tries the values of `list` one after the other, each at most
+    /// once, and ends at the first step that fails with an error.
+    fn place_all(
+        &self,
+        list: &mut Vec<Ready>,
+        listed: Listed,
+        placed: &mut usize,
+        refused: &mut Option<LogError>,
+    ) -> Result<(), FlushError> {
         let counters = &self.state.counters;
         let mut at = 0;
-        while at < placing.len() {
-            match self.place(&placing[at])? {
+        while at < list.len() {
+            match self.place(list, at, listed)? {
                 Step::Placed => {
                     // The hold goes now that the value is counted.
-                    drop(placing.swap_remove(at));
+                    drop(list.swap_remove(at));
                     count(&counters.values_placed, 1);
                     *placed += 1;
                 }
                 Step::GivenUp => {
-                    drop(placing.swap_remove(at));
+                    drop(list.swap_remove(at));
                     count(&counters.values_given_up, 1);
                 }
+                // The value has left the list.
+                Step::HeldBack => {}
                 Step::PutOff => at += 1,
                 Step::Refused(error) => {
                     refused.get_or_insert(error);
@@ -294,17 +373,24 @@ impl<'s> WriteBack<'s> {
         Ok(())
     }
 
-    /// The page step that places one value (`transactions.md` PV7, with
-    /// its three checks).
-    fn place(&self, ready: &Ready) -> Result<Step, FlushError> {
+    /// The page step that places the value `list[at]` (`transactions.md`
+    /// PV7, with its three checks).
+    ///
+    /// A value of the pass's list whose page a write transaction holds a
+    /// private copy of is moved out of `list` here, under the lock of the
+    /// page: the copy is installed or discarded under that lock, so
+    /// whoever looks for held-back values once the copy is gone finds
+    /// this one.
+    fn place(&self, list: &mut Vec<Ready>, at: usize, listed: Listed) -> Result<Step, FlushError> {
         let Stores {
             pool,
             values,
             versions,
             ..
         } = self.stores;
-        let page = ready.page;
-        let Ok(change) = page::placing(page, &ready.cell, ready.pointer) else {
+        let ready = &list[at];
+        let (page, pointer, pending) = (ready.page, ready.pointer, ready.cell.pending.id());
+        let Ok(change) = page::placing(page, &ready.cell, pointer) else {
             return Ok(Step::GivenUp);
         };
         let mut record = Vec::new();
@@ -316,7 +402,7 @@ impl<'s> WriteBack<'s> {
         // the value log says of the pointer is asked before the page's
         // lock is taken, under which only the pool is called.
         let counts = values.step()?;
-        let covered = values.covers(ready.pointer);
+        let covered = values.covers(pointer);
         let step = pool.page_step(page);
         let Some(old) = step.current() else {
             return Ok(Step::GivenUp);
@@ -324,16 +410,25 @@ impl<'s> WriteBack<'s> {
         if !page::is_due(&old, &change).unwrap_or(false) {
             return Ok(Step::GivenUp);
         }
-        if step.private_copies() > 0 || !covered {
+        if !covered {
             count(&self.state.counters.steps_put_off, 1);
             return Ok(Step::PutOff);
+        }
+        if step.private_copies() > 0 {
+            count(&self.state.counters.steps_put_off, 1);
+            if listed == Listed::ForCommitters {
+                return Ok(Step::PutOff);
+            }
+            let held_back = list.swap_remove(at);
+            lock(&self.state.found_held_back).push(held_back);
+            return Ok(Step::HeldBack);
         }
         let mut blank = pool.blank();
         blank.copy_from(&old);
         if page::apply_step(&mut blank, self.size, &change).is_err() {
             return Ok(Step::GivenUp);
         }
-        blank.detach(ready.cell.pending.id());
+        blank.detach(pending);
 
         if let Err(error) = self.append_change(&record) {
             let cause = self.cause_of(&counts, error);
@@ -350,7 +445,7 @@ impl<'s> WriteBack<'s> {
             .map_err(|source| FlushError::StepRefused { page, source })?;
         drop(step);
         let mut acquired = ValueChange::new();
-        acquired.acquire(ready.pointer);
+        acquired.acquire(pointer);
         // The change is applied whatever this returns: an error says that
         // a count was found wrong, and the file is then kept.
         let _ = counts.apply(&acquired, versions.latest());

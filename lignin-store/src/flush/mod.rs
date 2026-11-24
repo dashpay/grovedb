@@ -326,7 +326,18 @@
 //! A step that a private copy keeps from being made is made later: by a
 //! later pass, or by [`WriteBack::place_ready`], which **whoever commits
 //! calls once its commit is published**, when the copies of its
-//! transaction are gone. A value whose cell is gone by then, replaced,
+//! transaction are gone.
+//!
+//! **A committer's call tries values that a pass found held back by a
+//! private copy, and no others.** The pass that finds a value held back
+//! lists it for the committers, under the lock of the value's page, and
+//! keeps the other values in a list of its own. A committer's call takes
+//! the first list alone: it tries no value of the pass's list and does
+//! not take that list's lock. What it tries after a commit is so bounded
+//! by what copies held back, and not by how many values the commits
+//! before it carried.
+//!
+//! A value whose cell is gone by then, replaced,
 //! removed or freed with its page, is given up, and its bytes in the value
 //! log are dead space ([`FlushStats::values_given_up`]). A value that a
 //! commit carried to another page is pending again there, under another
@@ -527,10 +538,12 @@
 //! | 1 | the checkpoints of the session | one table checkpoint |
 //! | 2 | the files write-back appends to | one pass, one consolidation |
 //! | 3 | the manifest (level 3 of LT7) | one replacement, and one roll of the log |
-//! | 4 | the values that are ready for their step | one call that places values |
+//! | 4 | the values that are ready for their step: the list of those that no private copy held back, and then the list of those that one did | the first for the placing steps of one pass, and no committer takes it; the second for the steps of its values, by a committer's call or by a pass |
 //! | 5 | the value counts (level 4a) | one page step, one sample with its mark, one turn of the log |
 //! | 6 | a page's step (level 5) | the checks of one step, the append of its record, and the swap of the frame; or one look at the page's unwritten versions, or at whether it has a current version |
-//! | 7 | what write-back was told and has not written; the log's append lock | a few instructions; nothing is taken under either |
+//! | 7 | what write-back was told and has not written | one call that tells or reads what was told; a table checkpoint that drops log files asks the log for its latest commit under it |
+//! | 7 | the values that a pass has just found held back | a push, or the moving or the copying of what is listed; nothing is taken under it |
+//! | 8 | the log's append lock | one append to the log's file, or one question to the log |
 //!
 //! No file is synced and no manifest is replaced under the lock on the
 //! value counts or under a page's step. [`WriteBack::new`] takes no lock,
