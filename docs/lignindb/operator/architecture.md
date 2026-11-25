@@ -75,8 +75,10 @@ A LigninDB database is one directory:
 
 Each file has a header with the format version, and every block a
 checksum. The manifest is replaced whole (a new file given the name
-`MANIFEST`), and it names each file with the length up to which the file
-is the database's: bytes behind that length are no part of it.
+`MANIFEST`), and it names each file with its valid length. A file that
+the manifest calls closed or sealed is the database's up to that length;
+the log file that the database was writing when its session ended is
+read past it, up to the last group the log holds whole.
 `lignin manifest` prints it, and `lignin segments` the segments it names.
 
 ## A write, from the batch to the disk
@@ -147,8 +149,9 @@ the database at one committed version, in a directory of its own
    the live files and the length of each. The files are synced up to
    those lengths, so the version is durable in the live database too.
 2. The checkpoint is built in `path.creating`: a hard link to each of
-   those files, and a manifest of its own that names them with the
-   recorded lengths. Files are only ever appended to, so neither database
+   those files, or a copy of one that the file system does not link
+   (another file system, or one with no hard links), and a manifest of
+   its own that names them with the recorded lengths. Files are only ever appended to, so neither database
    changes a byte the other has; what the live database appends behind a
    recorded length is no part of the checkpoint.
 3. When everything in it is durable, the directory is given the name
@@ -176,8 +179,8 @@ section 12).
 1. **The lock.** The open takes `LOCK`, so one process at a time has the
    database open, and looks at the directory: it refuses one of another
    engine, of a newer format, without its manifest, and the other cases
-   that [the messages](messages.md#at-an-open) list, before it writes
-   anything.
+   that [the messages](messages.md#at-an-open) list first; those are
+   found before anything is written.
 2. **The manifest** names the table checkpoint in force and every live
    file with its valid length.
 3. **The table checkpoint** is loaded: where each page's blocks are, as
@@ -214,7 +217,8 @@ opened again, which settles what the log holds
   replayed on LigninDB in CI ([ci.md](../ci.md#the-corpus-gate)).
 - **The physical invariant checker** (`lignin verify`, `Db::verify`)
   reads every page and value, holds every rule of the store, and makes
-  every stored hash again by Merk's rules.
+  every stored hash again by Merk's rules but those the rules take as
+  stored (the value hash of a reference).
 - **Crash campaigns** cut the engine at millions of points and recover
   each ([crash-tests.md](../crash-tests.md)); the full device is swept
   at every file operation ([disk-full-and-backup.md](../disk-full-and-backup.md),

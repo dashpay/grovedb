@@ -66,7 +66,7 @@ for a directory that nothing else changes while it is being opened
 | `… lists … as something other than a regular file (a named pipe is not opened and a symbolic link is not followed): no database is opened or made` | `LOCK`, `MANIFEST`, `RESERVE` or a file the manifest names is a link, a pipe or a directory | put the real file back; the engine follows no link | `lignindb/src/db/error.rs` |
 | `… lists … as something other than a directory of its own (a symbolic link is not followed): no database is opened or made beside it` | `wal`, `seg`, `val` or `table` is a link or a file | the four directories are the database's own and cannot be links to elsewhere | `lignindb/src/db/error.rs` |
 | `… was changed while it was being opened: the database that was seen there is gone, or the lock file that was taken is not the one at the path any more. No database is opened or made there` | something removed, replaced or emptied the directory during the open | find what did, and open again | `lignindb/src/db/error.rs` |
-| `… holds an entry named MANIFEST.deleting, the name a removal gives the manifest of what it removes: no database is opened or made beside it` | the directory holds that entry. With no `MANIFEST` beside it, a removal (`GroveDb::delete_checkpoint`) was cut short: a removal renames the manifest to that name before it removes any file. With a `MANIFEST` beside it, no removal left it | with no `MANIFEST`: finish the removal with `GroveDb::delete_checkpoint`. With a `MANIFEST`, if the database is to be kept: remove the entry `MANIFEST.deleting` and nothing else, since `delete_checkpoint` goes by the manifest it finds and would remove the whole database | `lignindb/src/db/error.rs` |
+| `… holds an entry named MANIFEST.deleting, the name a removal gives the manifest of what it removes: no database is opened or made beside it` | the directory holds that entry. With no `MANIFEST` beside it, and the entry a manifest, the deletion of a checkpoint was cut short: a deletion renames the manifest to that name before it removes any file. With a `MANIFEST` beside it, no deletion left it | as [the backup chapter](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves) says: with no `MANIFEST`, the deletion finishes it; with a `MANIFEST`, where the database is to be kept, remove the entry `MANIFEST.deleting` and nothing else, since the deletion goes by the manifest it finds and would remove the whole database | `lignindb/src/db/error.rs` |
 | `… has a final file name with the suffix reserved for checkpoint creation (.creating, ignoring ASCII case): no database was opened or made` | the path is where a checkpoint is built before it gets its name, and is never opened | open the checkpoint's own path once its creation has returned | `lignindb/src/db/error.rs` |
 | `… holds a database and no LOCK file (a copy left it out, or it was removed), and the file is made in no directory that holds a database` | a copy left `LOCK` out | with no process having the directory open, put an empty file `LOCK` there ([backup](backup-and-full-disk.md#check-a-backup-and-restore-one)) | `lignindb/src/db/error.rs` |
 | `… has pages of … bytes, and … were asked for` | the options name a page size the database was not made with | leave `page_size` unset ([tuning](tuning.md)): a database keeps its page size | `lignindb/src/db/error.rs` |
@@ -80,17 +80,23 @@ The rest:
 | `manifest: …` | the manifest could not be read, written or replaced; the words of [the files](#the-files-at-an-open) follow | as those words say | `lignindb/src/db/error.rs` |
 | `recovery: …` | the store could not be recovered; the words of [the recovery](#in-a-recovery) follow | as those words say | `lignindb/src/db/error.rs` |
 | `the first commit of the database (…): …` | the first commit of a new database failed. The next open makes it again | fix what the words after it say, and open again | `lignindb/src/db/error.rs` |
-| `the record of the keyspaces: …` | the record of where the flat keyspaces are could not be read, or is not what this build writes | open with the GroveDB release that wrote the database; if that is this one, the database is damaged: restore from a backup, and report it | `lignindb/src/db/error.rs` |
+| `the record of the keyspaces: …`, or `the record of the keyspaces: …: …` | the record of where the flat keyspaces are could not be read, or is not what this build writes; the words after it say which | where they are the system's, fix what they say and open again; where the record is not what this build writes, open with the GroveDB release that wrote the database, and if that is this one, keep the directory, restore from a backup, and report it | `lignindb/src/db/error.rs` |
 | `cannot start the background work: …` | the system refused a thread | raise the process's thread limit, and open again | `lignindb/src/db/error.rs` |
 | `… was changed while it was being opened, and a lock file may have been made in it: …` | a new database was to be made, and something wrote into the directory meanwhile | find what did; the words after it say what the directory is now | `lignindb/src/db/error.rs` |
 
-Through `EitherEngine`, the engine chosen at the open, two refusals come
-before either engine is called, and change nothing:
+Through `EitherEngine`, the engine chosen at the open, these come before
+either engine is called, and change nothing. GroveDB's own deletion of a
+checkpoint has one more:
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
 | ``the directory … holds a database of … (its entry `…`) and … was chosen for it: it is not opened, and nothing was written to it`` | the configuration chose one engine and the directory holds the other's database | choose the engine the directory holds, or migrate it | `grovedb/src/engine/either.rs` |
 | ``the directory … holds entries of both engines (`…` is …'s and `…` is …'s): it is opened as neither`` | files of both engines in one directory | find out which is the database; nothing opens it as it is | `grovedb/src/engine/either.rs` |
+| `the directory … could not be listed to see which engine's database it holds: …` | the listing failed; the system's words follow | fix what they say (permissions, a path that is no directory) | `grovedb/src/engine/either.rs` |
+| ``the path … ends in `…`; it cannot be used for a RocksDB open for the caller or for checkpoint creation`` | a RocksDB open or a checkpoint creation was given a path whose last name ends in `.creating` | give another path: that name is where LigninDB builds a checkpoint | `grovedb/src/engine/either.rs` |
+| `the directory … has no entry of a database of either engine, so it is no checkpoint: no engine was called for it` | a checkpoint was to be opened or removed at a directory that holds neither engine's database | check the path | `grovedb/src/engine/either.rs` |
+| ``the directory … holds a database of … (its entry `…`) and was to be removed as a checkpoint of …: no engine was called for it`` | the deletion of a checkpoint was given the other engine's database | check the path and the engine; nothing was removed | `grovedb/src/engine/either.rs` |
+| `refusing to delete checkpoint: path too short (safety check)` | GroveDB's deletion of a checkpoint refuses a path of fewer than two components before it asks the engine | give the checkpoint's full path | `grovedb/src/checkpoints.rs` |
 
 ### The files at an open
 
@@ -103,7 +109,7 @@ These follow `manifest: `, `recovery could not go on: ` or
 | `a replacement of the manifest of … did not finish; open it again` | a replacement of the manifest was cut off, and which of the two is in force is found out by an open | open again | `lignin-store/src/segment/error.rs` |
 | `… is … bytes long, shorter than its valid length of …` | a file is shorter than the manifest says it was made durable at: it was cut, or copied in part | restore from a backup | `lignin-store/src/segment/error.rs` |
 | `… has format version …, newer than the manifest's …` | a file of a newer build sits in an older database | restore from a backup | `lignin-store/src/segment/error.rs` |
-| `… is … bytes long, but the manifest does not name it and records no id that high` | a file that this database did not make is in one of its directories | move that file out of the database directory, and open again | `lignin-store/src/segment/error.rs` |
+| `… is … bytes long, but the manifest does not name it and records no id that high` | a file of data is in one of the database's directories, under an id above every id that the manifest records, and the manifest does not name it: the open does not know whose it is. A copy that put an older `MANIFEST` beside newer files leaves this as well | do not move or remove the file to make the open pass, and do not open the directory again until you know where the file came from. A directory that mixes the files of two states is no database: restore it from a backup | `lignin-store/src/segment/error.rs` |
 | `the manifest no longer names …, but it could not be deleted: …` | a file the database let go of could not be removed | fix what the system says (permissions), and open again | `lignin-store/src/segment/error.rs` |
 | `… at offset …: …` | a file does not decode where it should: damage | restore from a backup, and report it | `lignin-store/src/segment/error.rs` |
 | `… is damaged at offset …, below its valid length of …: …` | a log file is damaged inside what was made durable | restore from a backup, and report it | `lignin-store/src/wal/error.rs` |
@@ -198,6 +204,14 @@ A commit that meets the end itself says so in words of its own:
 | `the commit was not made: …` | the commit did not happen and never will; the session goes on | nothing, unless the words say the device is full: then [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
 | `the session takes no commit yet: …` | the session waits for the log to be cut after a failed append, or for a manifest in doubt to be settled; the transaction is whole | make room where the words say the device is full; where they name a directory that was removed or cannot be written, stop the node | `lignindb/src/commit/error.rs` |
 | `the log would give the commit version …, and the latest published version is …` | the log holds a group the session never published: the session has stopped | open again | `lignindb/src/commit/error.rs` |
+| `the log: …` | after `the commit was not made: `: the log refused the commit's group; where its words say the device is full, the session waits for room | [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
+| `the page table: …` | after `the commit was not made: `: the page table refused what the commit was to install | open again; report it if it comes again | `lignindb/src/commit/error.rs` |
+| `a stale hash could not be made: …` | after `the commit was not made: `: a hash that was stale could not be made at the commit | report it with the whole message | `lignindb/src/commit/error.rs` |
+| `the place of the group in the log was taken again and again while the commit held the lock on the value counts` | after `the commit was not made: `: the log gave the group a place and gave it away again, more often than a commit tries; something appends to the log without the lock the commit holds | a defect: report it with the whole message | `lignindb/src/commit/error.rs` |
+| `a commit outside the transaction wrote a key after the transaction first wrote it` | a conflict: the application makes its reads and writes again (GroveDB answers it as `conflict: …`) | nothing | `lignindb/src/commit/error.rs` |
+| `the commit was refused: …` | a write of the transaction was refused at its commit; the words say why, and the transaction is open | nothing for the database; the application's | `lignindb/src/commit/error.rs` |
+| `a scope of the transaction is open` | the application committed a transaction whose write scope it had not ended | nothing for the database; the application's | `lignindb/src/commit/error.rs` |
+| `the transaction has a pending mark left` | the application committed a transaction that a mark of it still waits in | nothing for the database; the application's | `lignindb/src/commit/error.rs` |
 
 ## At a close
 
@@ -213,10 +227,15 @@ A commit that meets the end itself says so in words of its own:
 ## At a checkpoint
 
 A checkpoint is made by `GroveDb::create_checkpoint(path)` and removed by
-`GroveDb::delete_checkpoint(path)`; on LigninDB these are `Db::checkpoint`
-and `lignindb::checkpoint::delete`. A creation that fails has put nothing
-at `path`, with one exception that the message says. Through GroveDB the
-words follow `lignindb: `; a refusal for the name is `not supported: `.
+the deletion of the engine the node runs
+([backup](backup-and-full-disk.md#back-up-a-running-node), step 4); on
+LigninDB these are `Db::checkpoint` and `lignindb::checkpoint::delete`.
+A creation that fails can leave nothing at `path`, or the whole
+checkpoint there where its last steps could not be made durable nor
+undone, and a part of one in `path.creating`: look at both before you
+make it again, since a creation refuses a `path` that is there. Through
+GroveDB the words follow `lignindb: `; a refusal for the name is
+`not supported: `.
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
@@ -226,8 +245,8 @@ words follow `lignindb: `; a refusal for the name is `not supported: `.
 | `… is locked, as a directory that a checkpoint is being built in` | another creation at the same path is running | wait for it | `lignindb/src/checkpoint/error.rs` |
 | `… was not found to be the directory whose lock is held, with what was put into it, and nothing was given the name of the target` | the build directory was replaced during the creation | make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 | `… is not listed as a file, and none was made there: the lock of its directory was not taken` | the lock file of the build directory is no file | remove what is there, and make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
-| `the session takes no commit, and no checkpoint is made of it: …` | the session has ended ([When a session ends](#when-a-session-ends)); through GroveDB it ends `: no checkpoint is made before the database is opened again` | open again | `lignindb/src/checkpoint/error.rs` |
-| `: no checkpoint is made before the database is opened again` | GroveDB's end of the two refusals that need an open | open again | `grovedb/src/engine/lignin/checkpoint.rs` |
+| `the session takes no commit, and no checkpoint is made of it: …` | the session has ended ([When a session ends](#when-a-session-ends)); through GroveDB it ends `…: no checkpoint is made before the database is opened again` | open again | `lignindb/src/checkpoint/error.rs` |
+| `…: no checkpoint is made before the database is opened again` | GroveDB's end of the two refusals that need an open | open again | `grovedb/src/engine/lignin/checkpoint.rs` |
 | `the log could not be made durable: …` | the creation's sync of the log failed: the session has ended | open again | `lignindb/src/checkpoint/error.rs` |
 | `the manifest was in doubt, and settling it answered an error: …` | a replacement of the manifest had not finished, and settling it failed | make the checkpoint again; make room first if the device is full | `lignindb/src/checkpoint/error.rs` |
 | `the manifest could not be read: …` | the manifest was in doubt again when the creation read it | make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
@@ -235,10 +254,11 @@ words follow `lignindb: `; a refusal for the name is `not supported: `.
 | `the checkpoint's log ends at …, and the log is durable …` | the log's sync returned without covering where the checkpoint's log ends | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
 | `log file … …` | a log file before the end of the checkpoint's log is not closed and durable as the checkpoint needs it; the reason follows the file's id | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
 | `the log: …` | the log refused to be held for the checkpoint, or to say what its files are; the log's words follow | as those words say; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
+| `… is not the plain name of a file in the database directory` | a file that the application asked a checkpoint to carry beside the store's is named otherwise than by one plain name | the application's | `lignindb/src/checkpoint/error.rs` |
 | `the manifest of the checkpoint could not be written: …` | the checkpoint's manifest could not be encoded | report it | `lignindb/src/checkpoint/error.rs` |
 | `could not … …: …` | the file layer refused an operation of the creation or the removal; the system's words follow | fix what the system says; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 
-A removal (`GroveDb::delete_checkpoint`) refuses, and removes nothing, with:
+The deletion of a checkpoint refuses, and removes nothing, with:
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
@@ -254,19 +274,26 @@ The tool's own words, besides the engine's above.
 | --- | --- | --- | --- |
 | `the database did not open: …` | the open failed: the words of [At an open](#at-an-open) follow | as they say | `lignin-tools/src/error.rs` |
 | `… is no database: …` | the directory is no database that the tool reads; the reason follows | as the reason says | `lignin-tools/src/error.rs` |
-| `its final name ends in .creating: it is a checkpoint that is being made, or the part of one that a creation cut short left, and it is never opened` | the reason, for a path that ends in `.creating` | run `lignin` on the checkpoint's own path once its creation has returned | `lignin-tools/src/open.rs` |
-| `it holds MANIFEST.deleting: a removal of it is under way, or one was cut short and some of its files may be gone` | the reason, for a directory being removed | as for the open's refusal of the same entry ([At an open](#at-an-open)): decide by whether a `MANIFEST` is beside it | `lignin-tools/src/open.rs` |
+| `its final name ends in .creating: it is a checkpoint that is being made, or the part of one that a creation cut short left, and it is never opened. Run lignin on the checkpoint's target once its creation has returned. The next creation of a checkpoint at that target takes over what a cut creation left, and lignindb::checkpoint::delete removes it` | the reason, for a path that ends in `.creating` | run `lignin` on the checkpoint's own path once its creation has returned | `lignin-tools/src/open.rs` |
+| `it holds MANIFEST.deleting: a removal of it is under way, or one was cut short and some of its files may be gone. lignindb::checkpoint::delete finishes the removal. Where no removal made that entry and the database is to be kept, remove the entry and nothing else` | the reason, for a directory that holds that entry | as for the open's refusal of the same entry ([At an open](#at-an-open)): decide by whether a `MANIFEST` is beside it. The deletion the words name, `lignindb::checkpoint::delete`, is LigninDB's of [step 4](backup-and-full-disk.md#back-up-a-running-node) | `lignin-tools/src/open.rs` |
 | `this build of lignin has no …: build lignin-tools with the Cargo feature …` | `migrate` was asked of a build without the feature `migrate` | build as [the runbook](migration.md#2-set-the-variables) does | `lignin-tools/src/error.rs` |
 | `the background work failed: …` | `lignin compact`: a turn of write-back or the cleaner failed; its report is written | as the words say | `lignin-tools/src/error.rs` |
+| `the migration: …` | the refusals and failures of `lignin migrate`, [below](#lignin-migrate) | as they say | `lignin-tools/src/error.rs` |
+| `… at byte …: …` | `lignin segments` or `pages`: a file the manifest names is not what the manifest says at that byte | damage: restore from a backup, and report it | `lignin-tools/src/error.rs` |
+| `a page: …` | a page could not be read; the store's words follow | as they say; damage where they say a page does not decode | `lignin-tools/src/error.rs` |
+| `a read: …` | a record, a node or an entry could not be read | as the words after it say | `lignin-tools/src/error.rs` |
+| `a write: …` | `lignin load`: the write transaction refused a write of the dump | as the words after it say | `lignin-tools/src/error.rs` |
+| `the commit: …` | `lignin load`: the commit failed; the words of [When a session ends](#when-a-session-ends) follow where it ended the session | as they say | `lignin-tools/src/error.rs` |
+| `the dump: …` | `lignin load`: the file is no dump this build reads, or does not hold what `load` needs | give a dump of this build, into a database that has none of its subtrees | `lignin-tools/src/error.rs` |
 
 `lignin verify` prints the checker's report and exits with 0, 3 or 4:
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
-| `checked …, …` | the first line: where the check ran (`the still store, after the close`, or `beside the background work`) and whether every hash was made again | | `lignin-tools/src/verify.rs` |
+| `checked …, …` | the first line: where the check ran (`the still store, after the close`, or `beside the background work`) and whether the hashes were made again by Merk's rules (all but those the rules take as stored) | | `lignin-tools/src/verify.rs` |
 | `sound: every rule holds` | exit status 0 | nothing | `lignindb/src/verify/report.rs` |
-| `INCOMPLETE RESTORE: the root holds the mark of a state-sync restore that did not finish` | exit status 4: a state sync into this database did not finish, so it is unsound by its own statement | discard the database; sync again or restore from a backup | `lignin-tools/src/verify.rs` |
-| `value hashes of trees are the ones grove versions 1 to 3 left after a delete below them (GroveDB #686), not the ones the rules make` | counted after the report; no damage, and not unsound | nothing | `lignin-tools/src/verify.rs` |
+| `INCOMPLETE RESTORE: the root holds the mark of a state-sync restore that did not finish. Its elements commit to Merks that were not restored, so the database is unsound by its own statement: discard it. No hash was made again.` | exit status 4: a state sync into this database did not finish, so it is unsound by its own statement | discard the database; sync again or restore from a backup | `lignin-tools/src/verify.rs` |
+| `… value hashes of trees are the ones grove versions 1 to 3 left after a delete below them (GroveDB #686), not the ones the rules make` | counted after the report; no damage, and not unsound | nothing | `lignin-tools/src/verify.rs` |
 
 A report with a rule that does not hold (exit status 3) says what does
 not hold, and where. Keep the database as it is, restore from a backup,
@@ -282,7 +309,7 @@ scripts and hold `name=value` words.
 | --- | --- | --- |
 | `the source …: RocksDB identity …, last write …; …` | the first line: the source and its lock | `lignin-tools/src/migrate/mod.rs` |
 | `no process has it open for writing, and none can open it while this runs` | the source's lock is held for the run | `lignin-tools/src/migrate/mod.rs` |
-| `it has no LOCK file, so nothing keeps a process from opening it for writing while this runs` | a source with no `LOCK` file: make sure nothing opens it | `lignin-tools/src/migrate/mod.rs` |
+| `it has no LOCK file, so nothing keeps a process from opening it for writing while this runs: a file that such a process makes or changes before the target was compared is found then, and what it does later is not seen` | a source with no `LOCK` file: make sure nothing opens it | `lignin-tools/src/migrate/mod.rs` |
 | `migrate: survey …` | the counts of the survey | `lignin-tools/src/migrate/mod.rs` |
 | `the migration projects a peak of about … MiB of memory: … MiB for a commit and the buffer pool, and about … bytes with its key and its value for each node of the largest Merk it hands over, which it holds whole (…). …` | the projected peak, and the limit held | `lignin-tools/src/migrate/mod.rs` |
 | `the source can be migrated` | the end of a survey that found nothing to refuse | `lignin-tools/src/migrate/mod.rs` |
@@ -310,31 +337,31 @@ was written to the target unless the words say so.
 | `its LOCK is no file: it is no RocksDB database` | check the path | `lignin-tools/src/migrate/source.rs` |
 | `its LOCK file: …` | the lock could not be probed; the system's words follow | `lignin-tools/src/migrate/source.rs` |
 | `it changed while it was read (…): something wrote it. Nothing of this run is to be used` | something wrote the source during the run: stop it, and run again | `lignin-tools/src/migrate/source.rs` |
-| `the records of … are not what they were when the migration first read them: something wrote the source` | the same | `lignin-tools/src/migrate/walk.rs` |
+| `the source …: the records of … are not what they were when the migration first read them: something wrote the source` | the same | `lignin-tools/src/migrate/walk.rs` |
 | `the source is not what its survey found: …: …` | the same | `lignin-tools/src/migrate/compare.rs` |
-| `holds what a migration does not carry (the lines NOT CARRIED above): nothing was written by this run` | the survey's `NOT CARRIED` lines name it; such a source stays on RocksDB | `lignin-tools/src/migrate/mod.rs` |
-| `projects a peak of about … MiB of memory, above the limit of … MiB (…). Nothing was written by this run: …` | the words after it say whether a larger `--memory-limit`, or a smaller `--batch` or `--cache`, can take it | `lignin-tools/src/migrate/mod.rs` |
+| `the source … holds what a migration does not carry (the lines NOT CARRIED above): nothing was written by this run` | the survey's `NOT CARRIED` lines name it; such a source stays on RocksDB | `lignin-tools/src/migrate/mod.rs` |
+| `the source … projects a peak of about … MiB of memory, above the limit of … MiB (…). Nothing was written by this run: …` | the words after it say whether a larger `--memory-limit`, or a smaller `--batch` or `--cache`, can take it | `lignin-tools/src/migrate/mod.rs` |
 | `the target … has no name of its own` | give a target with a last name | `lignin-tools/src/migrate/mod.rs` |
 | `the target … has a name that ends in .creating, under which LigninDB opens no database: give it another name` | as it says | `lignin-tools/src/migrate/mod.rs` |
 | `the target … and the source … are one inside the other: a migration writes nothing into its source` | put the target outside the source | `lignin-tools/src/migrate/mod.rs` |
 | `the target … and …, where its database is made, are one directory` | give another target | `lignin-tools/src/migrate/mod.rs` |
 | `the directory … that the target … is to be in is not there: make it first` | as it says | `lignin-tools/src/migrate/mod.rs` |
-| `is found by that name, and the directory … does not list it under that name: give the name as the directory has it` | give the target's name in the spelling the directory lists | `lignin-tools/src/migrate/mod.rs` |
+| `… is found by that name, and the directory … does not list it under that name: give the name as the directory has it` | give the target's name in the spelling the directory lists | `lignin-tools/src/migrate/mod.rs` |
 | `the target … is there and …. A migration makes its database in … and gives it the name of the target at its end, once it was compared and verified: a database that a migration left at the target is whole` | a target that is there is never written: give another, or remove it | `lignin-tools/src/migrate/mod.rs` |
 | `… is there and is not the work of a migration: …. Remove it, or give another target` | the work directory beside the target holds something else | `lignin-tools/src/migrate/mod.rs` |
-| `holds a migration of another source, or of another state of this one (RocksDB identity …, last write …, root hash …). Remove that directory to migrate anew` | the work directory is of another run: remove it | `lignin-tools/src/migrate/mod.rs` |
+| `… holds a migration of another source, or of another state of this one (RocksDB identity …, last write …, root hash …). Remove that directory to migrate anew` | the work directory is of another run: remove it | `lignin-tools/src/migrate/mod.rs` |
 | `the load in … was begun with --unreachable …, and goes on with that alone. Give it, or remove that directory to migrate anew` | give the choice the first run had | `lignin-tools/src/migrate/mod.rs` |
-| `of the prefixes of the source that nothing leads to, … has … carried and nothing of …, and this run has --unreachable …` | the same | `lignin-tools/src/migrate/mod.rs` |
-| `the place that the journal of the target states does not fit the source: …` | the work directory was made from another state of the source: remove it | `lignin-tools/src/migrate/walk.rs` |
+| `of the prefixes of the source that nothing leads to, … has … carried and nothing of …, and this run has --unreachable …. Give what the run that loaded it had, or remove that directory to migrate anew` | the same | `lignin-tools/src/migrate/mod.rs` |
+| `the place that the journal of the target states does not fit the source: …. The target was made from another state of the source: remove the directory it is in and migrate anew` | the work directory was made from another state of the source: remove it | `lignin-tools/src/migrate/walk.rs` |
 | `the journal of the target …: the directory was not made by this build of the command, or is damaged. Remove it and migrate anew` | as it says | `lignin-tools/src/migrate/journal.rs` |
 | `the database in … was written after it was compared: something else opened it. Run the command again: it compares anew` | nothing else is to open the work directory | `lignin-tools/src/migrate/mod.rs` |
 | `the target … is there, and … is this command's and holds no database: a run may have given the target its name and stopped before the name was durable. The syncs that make it so failed (…). Run the same command again` | as it says | `lignin-tools/src/migrate/mod.rs` |
-| `the database is at …, loaded, compared and verified, and its name there could not be made durable (…)` | the one failure that leaves the database at `TARGET`: run the same command again, which makes the name durable | `lignin-tools/src/migrate/mod.rs` |
+| `the database is at …, loaded, compared and verified, and its name there could not be made durable (…): a power cut can take the name back and leave the database in …. Run the same command again: it makes the name durable and then refuses the target as one that is there, or, where a power cut took the name back meanwhile, goes on from that directory` | the one failure that leaves the database at `TARGET`: run the same command again, which makes the name durable | `lignin-tools/src/migrate/mod.rs` |
 | `the work directory … was not removed (…): it holds nothing of the target, and can be removed` | a line after a run that succeeded: remove the work directory yourself | `lignin-tools/src/migrate/mod.rs` |
-| `the grove is more than … trees deep at …: this command does not walk it` | the source is deeper than the migrator walks; it stays on RocksDB, and report it | `lignin-tools/src/migrate/walk.rs` |
-| `which is shorter than the prefix of a subtree: it is no GroveDB that this command reads` | a key of the source is no GroveDB key | `lignin-tools/src/migrate/walk.rs` |
-| `the root node of the root Merk is no node of a Merk: …` | the source's root is damaged | `lignin-tools/src/migrate/survey.rs` |
-| `a record of the roots keyspace is no record of a root key` | the source holds a record GroveDB does not write | `lignin-tools/src/migrate/load.rs` |
+| `the source …: the grove is more than … trees deep at …: this command does not walk it` | the source is deeper than the migrator walks; it stays on RocksDB, and report it | `lignin-tools/src/migrate/walk.rs` |
+| `the source …: its … keyspace holds the key …, which is shorter than the prefix of a subtree: it is no GroveDB that this command reads` | a key of the source is no GroveDB key | `lignin-tools/src/migrate/walk.rs` |
+| `the source …: the root node of the root Merk is no node of a Merk: …` | the source's root is damaged | `lignin-tools/src/migrate/survey.rs` |
+| `the source …: a record of the roots keyspace is no record of a root key` | the source holds a record GroveDB does not write | `lignin-tools/src/migrate/load.rs` |
 | `a read of the target, of …: …` | the comparison could not read the target: run again; report it if it stays | `lignin-tools/src/migrate/compare.rs` |
 
 The source's other refusals, which say that it is not a GroveDB the

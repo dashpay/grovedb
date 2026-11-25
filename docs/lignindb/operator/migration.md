@@ -75,17 +75,23 @@ not on your path, the first block installs it with `rustup`, the
 installer the Rust project publishes, for your user alone; the installer
 also adds Cargo to your shell's profile files.
 
+Run the blocks in a shell of their own: start `bash`, and give it the
+first line of the block below, `set -euo pipefail`, before anything
+else. From then on a command that fails, a variable that is not set and
+a pipeline whose first command fails (before its report reaches `tee`)
+end that shell, so that no later command runs on what a failed one left.
+To go on after a failure, start `bash` again, run this first block,
+`export` the variables of steps 2 and 4 again, and go on with the step
+that failed.
+
 ```sh
-set -o pipefail
+set -euo pipefail
 if ! command -v cargo >/dev/null; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
   . "${CARGO_HOME:-$HOME/.cargo}/env"
 fi
 cargo --version
 ```
-
-`set -o pipefail` makes a pipeline fail when the command before `tee`
-fails, so a failed step below is not hidden by the copy of its report.
 
 ## 2. Set the variables
 
@@ -98,14 +104,15 @@ Set two variables before the next block:
   each step. The build takes a few GiB.
 
 The block makes `WORK` absolute, since it changes into the source
-directory to build. Give the paths of step 4 as absolute paths too.
+directory to build, and clones only where no clone is there yet. Give
+the paths of step 4 as absolute paths too.
 
 ```sh
 : "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
 : "${WORK:?set WORK to a directory for the build and the reports}"
 mkdir -p "$WORK/reports"
 WORK=$(cd "$WORK" && pwd)
-git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"
+if [ ! -d "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
 cd "$WORK/grovedb"
 cargo build --release -p lignin-tools --features migrate
 export PATH="$WORK/grovedb/target/release:$PATH"
@@ -171,11 +178,17 @@ each is in can be, and is made below.
 for path in "$TARGET" "$BACKUP" "$RESTORE"; do
   if [ -e "$path" ]; then echo "$path is there already: choose another path"; false; fi
 done
+for path in "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"; do
+  n=$(printf '%s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE" | awk -v p="$path" '$0 == p || index($0, p "/") == 1' | wc -l)
+  if [ "$n" -ne 1 ]; then echo "$path is another of the four paths, or a directory that one of them is in: give four paths apart"; false; fi
+done
 mkdir -p "$(dirname "$TARGET")" "$(dirname "$BACKUP")" "$(dirname "$RESTORE")"
 ```
 
-`TARGET` must not be inside `SOURCE`, and `SOURCE` not inside it: the
-migration refuses that before it opens anything.
+The second loop compares the four paths as they are written: none may be
+another, or lie inside another. The migrator also refuses a `TARGET`
+inside `SOURCE`, or around it, with links followed, before it opens
+anything.
 
 ## 5. Survey the source
 
@@ -193,8 +206,8 @@ Read its report before you go on:
   `no process has it open for writing, and none can open it while this runs`.
   A source with no `LOCK` file is migrated as well, and the line says
   that nothing keeps a writer away.
-- `root hash:` is the root hash of the grove, as GroveDB gives it. Step 7
-  compares the target's with it.
+- `root hash:` is the root hash of the grove, as GroveDB gives it from
+  the source. The migration compares the target's with it (step 7).
 - The counts after it say what is in the source. A line that begins
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
@@ -209,11 +222,25 @@ Read its report before you go on:
   element leads to (a tree that a batch's plain delete removed while it
   held an element leaves them). Unless `--unreachable` says otherwise
   they are left behind (`leave`), and the target is what a database
-  written on LigninDB holds, with the same root hash.
+  written on LigninDB holds, with the same root hash. What can then
+  answer otherwise than on RocksDB is a read by the path of such a tree,
+  a tree made again at that path, and a cursor that steps from no key.
   `--unreachable refuse` refuses such a source; `--unreachable carry`
-  carries them as records that no tree links. The module documentation of
-  `lignin_tools::migrate` ("Records that nothing leads to") says what
-  each choice gives a later operation.
+  carries them as records that no tree links, and the engine then refuses
+  a write below a tree that is made again at such a path. The module
+  documentation of `lignin_tools::migrate` ("Records that nothing leads
+  to") says each in full. Choose before step 6 whether your node can meet
+  any of these.
+- `root-key records that do not name the root of their Merk (GroveDB #1065):`
+  counts the records that keep a Merk's root key and name another node
+  than that Merk's root. Each Merk is named on a line
+  `AT …: THE MERK IS READ AS ITS RECORD NAMES IT, ON ROCKSDB AS HERE, AND LIGNINDB TAKES NO FURTHER WRITE OF A NODE OF IT`.
+  Such a source migrates, compares and verifies, and the target reads
+  that Merk as RocksDB does; **but LigninDB refuses every later write of
+  a node of that Merk, which RocksDB takes**. With a count above 0, do
+  not start the node on the target unless you know that it writes
+  nothing more into those Merks: keep it on RocksDB, and report the
+  survey.
 - `the migration projects a peak of about … MiB of memory`, and the
   limit it holds ("What it takes").
 - The last line is `the source can be migrated` and the exit status is 0.
@@ -226,8 +253,8 @@ lignin migrate "$SOURCE" "$TARGET" | tee "$WORK/reports/migrate.txt"
 
 The run surveys the source again, loads the target a commit at a time,
 compares every record of the source that it carries with what the target
-answers through GroveDB, checks the target with the physical invariant checker, and only
-then gives the database the name `TARGET`. Until that last step it works
+answers through GroveDB, checks the target with the physical invariant
+checker, and only then gives the database the name `TARGET`. Until that last step it works
 in the directory `TARGET.migrating`, so nothing is at `TARGET` that is
 not whole, compared and verified. Lines that begin `migrate:` hold
 `name=value` words for a script; the others are for you. Every five
@@ -237,7 +264,7 @@ seconds (or as `--progress` says) a line says where the load stands:
 | Exit status | What it means | What to do |
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
-| 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, unless the error says the database got that name and the name could not be made durable | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again |
+| 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, unless the error says the database got that name and the name could not be made durable | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again. In the one case where the database got its name and the name could not be made durable, keep this report and send the next run's to another file: that run makes the name durable and then refuses the target as one that is there, with status 1 again, which is what it does with a whole database at `TARGET`. This report has every line that step 7 looks for but the last: run step 7's other commands on it, and `lignin verify` on the target |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
 
@@ -245,8 +272,11 @@ seconds (or as `--progress` says) a line says where the load stands:
 gone on with by the same command, with the same `--unreachable`. What
 `TARGET.migrating` holds says where the run stood, and a load goes on
 from its last commit. To start again from nothing instead, remove
-`TARGET.migrating`. Nothing else is to open `TARGET.migrating` while the
-command runs.
+`TARGET.migrating`, after you have looked into it: the command's work
+directory holds a file `MIGRATION` and a directory `database` and
+nothing else, and a directory of that name that holds anything else is
+not the command's (the command refuses it and leaves it as it is).
+Nothing else is to open `TARGET.migrating` while the command runs.
 
 **The options**, for when the defaults do not fit:
 
@@ -267,14 +297,18 @@ not.
 The migration has checked its own work. Three things in its report say
 so, and the next commands check each of them:
 
-1. The line `migrate: compared subtrees=…` with `differing=0` and
-   `root_hash=…`: every record of the source that the migration carries
-   reads the same from the target, and the root hash that GroveDB gives
-   the target is the source's. It also says so in words:
+1. The line `migrate: compared subtrees=…` with `differing=0`: every
+   record of the source that the migration carries reads the same from
+   the target, and the root hash that GroveDB gives the target is the
+   source's. The comparison reads the target's root hash through
+   GroveDB and counts it among `differing` where it is another; the
+   `root_hash=…` that the line prints is the source's, from the survey.
+   It also says so in words:
    `every record of the source that this migration carries reads the same from the target`.
 2. The line `migrate: verify sound=… left_hashes=…` with `sound=true`:
    the physical invariant checker found every rule of the store to
-   hold, with every stored hash made again by Merk's rules.
+   hold, with every stored hash made again by Merk's rules but those the
+   rules take as they are stored (the value hash of a reference).
 3. The last line, `migrated … into …: loaded, compared and verified`.
 
 ```sh
@@ -287,13 +321,18 @@ if [ -n "$survey_hash" ] && [ "$survey_hash" = "$target_hash" ]; then echo "the 
 ```
 
 Each of these prints the line it found, or fails: `grep` with no line
-found, the last command with the words THE ROOT HASHES DIFFER. Do not start the
-node on a target for which one of them fails.
+found, the last command with the words THE ROOT HASHES DIFFER. The last
+command holds the root hash that the survey of step 5 read from the
+source to the one the migration read from it, so it says that the source
+did not change between the two runs; that the target has that root hash
+is what `differing=0` says. Do not start the node on a target for which
+one of them fails.
 
 Then check the target once more on its own, with the checker of
 `lignin verify`. It opens the database, closes it, and checks the store
 as the close left it: every page, every value, and every stored hash
-made again by Merk's rules. Exit status 0 is a sound store, 3 a store in
+made again by Merk's rules, but those the rules take as stored. Exit
+status 0 is a sound store, 3 a store in
 which a rule does not hold, and 4 a database that holds the mark of a
 state-sync restore that did not finish (the survey refuses a source with
 that mark, so a migration leaves none).
@@ -312,9 +351,11 @@ store unsound.
 Before the node opens the new database for the first time, copy it. The
 database is closed and no process has it open, so a copy of its
 directory is a consistent backup ([backup and full disk](backup-and-full-disk.md)).
-`cp -a` copies every file with the `LOCK` file, which an open needs, and
-`sync` makes the copy durable: `cp` alone returns before its bytes are on
-the device.
+`cp -a` copies every file with the `LOCK` file, which an open needs. `cp`
+returns before its bytes are on the device: on Linux, `sync` returns once
+the system has written them. On macOS `sync` can return before they are
+written, so a copy made there is durable once its device has been
+ejected or the system shut down.
 
 ```sh
 cp -a "$TARGET" "$BACKUP"
@@ -322,8 +363,11 @@ sync
 lignin manifest "$BACKUP"
 ```
 
-`lignin manifest` reads the backup's manifest and the files it names
-without opening the database, and lists them.
+`lignin manifest` reads the backup's manifest without opening the
+database, and lists the files it names with the length the manifest
+gives each; a file that is not there is marked `MISSING`, and one that
+is shorter `SHORT`. It exits 0 either way, and reads no page: step 9 is
+the check of the backup.
 
 ## 9. Restore the backup once, and open it
 
@@ -336,13 +380,12 @@ cp -a "$BACKUP" "$RESTORE"
 sync
 lignin verify "$RESTORE" | tee "$WORK/reports/verify-restore.txt"
 lignin stats "$RESTORE"
-rm -rf "${RESTORE:?}"
 ```
 
 Every open writes to the directory it opens (the recovery starts a log
 file of its own, and the close writes back), so the check is made on the
-restore and not on the backup. The last command removes the restore; the
-backup stays.
+restore and not on the backup. The restore is a copy of the database
+that nothing needs: remove it once you have read the two reports.
 
 ## 10. Start the node on LigninDB
 
@@ -374,8 +417,12 @@ when the node was stopped in step 4.
   and 4, unless the error says otherwise) or left its database in
   `TARGET.migrating` (exit status 3): start the node on `SOURCE` as
   before, and remove `TARGET.migrating` when it is no longer needed for a
-  report.
+  report, after looking into it as step 6 says.
 
 Remove `SOURCE` only when the node has run on LigninDB for as long as you
 want a way back, and after a backup of the LigninDB database
-([backup and full disk](backup-and-full-disk.md)).
+([backup and full disk](backup-and-full-disk.md)). **The migration
+carries GroveDB's records and nothing else**: a file that the
+application keeps in the RocksDB directory beside RocksDB's own is not
+in `TARGET`. Move what the application keeps there before `SOURCE` goes,
+as its documentation says.
