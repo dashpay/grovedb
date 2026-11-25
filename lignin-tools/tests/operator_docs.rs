@@ -67,7 +67,9 @@ const SPEAKERS: [&str; 10] = [
 /// The error types of an open, a recovery, a commit, the end of a
 /// session, a close, a checkpoint and the tool, by the file their
 /// `Display` is in: the messages chapter quotes every message of each.
-const COVERED: [(&str, &[&str]); 23] = [
+const COVERED: [(&str, &[&str]); 25] = [
+    ("lignin-tree/src/flat/error.rs", &["FlatError"]),
+    ("lignin-tree/src/directory/error.rs", &["DirectoryError"]),
     ("lignin-format/src/error.rs", &["FormatError"]),
     ("lignin-format/src/manifest.rs", &["ManifestError"]),
     ("lignin-format/src/wal.rs", &["WalError"]),
@@ -119,7 +121,52 @@ const COVERED: [(&str, &[&str]); 23] = [
 /// literal after each is quoted in a row of the messages chapter that
 /// quotes that message too, so a reason quoted for one message does not
 /// stand for the same word of another.
-const REASONS: [(&str, &str, &str); 12] = [
+const REASONS: [(&str, &str, &str); 25] = [
+    (
+        "lignin-tree/src/directory/check.rs",
+        "damaged(&key, ",
+        DIRECTORY_RECORD,
+    ),
+    (
+        "lignin-tree/src/directory/check.rs",
+        "damaged(&[], ",
+        DIRECTORY_RECORD,
+    ),
+    (
+        "lignin-tree/src/directory/check.rs",
+        "let what = ",
+        DIRECTORY_RECORD,
+    ),
+    (
+        "lignin-tree/src/directory/rekey.rs",
+        "let what = ",
+        DIRECTORY_RECORD,
+    ),
+    (
+        "lignin-tree/src/directory/write.rs",
+        "let what = ",
+        DIRECTORY_RECORD,
+    ),
+    ("lignin-tree/src/flat/cursor.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/long_key.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/node.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/store.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/tree.rs", "what: ", FLAT_PAGE),
+    (
+        "lignin-tree/src/directory/read.rs",
+        "Malformed(",
+        DIRECTORY_RECORD,
+    ),
+    (
+        "lignin-tree/src/directory/record.rs",
+        "Malformed(",
+        DIRECTORY_RECORD,
+    ),
+    (
+        "lignin-tree/src/directory/record.rs",
+        "let what = ",
+        DIRECTORY_RECORD,
+    ),
     ("lignindb/src/db/open.rs", "tree(", FIRST_COMMIT),
     ("lignindb/src/db/open.rs", "column(", FIRST_COMMIT),
     (
@@ -151,10 +198,12 @@ const REASONS: [(&str, &str, &str); 12] = [
 ];
 const FIRST_COMMIT: &str = "the first commit of the database (";
 const KEYSPACES: &str = "the record of the keyspaces: ";
+const FLAT_PAGE: &str = "flat page …: …";
+const DIRECTORY_RECORD: &str = "subtree directory record ";
 
 /// Words of those types that fill a place of a longer message of theirs,
 /// which the chapter quotes with `…` there.
-const PARTS: [&str; 1] = ["up to …"];
+const PARTS: [&str; 2] = ["up to …", "offset … of log file …"];
 
 /// The first words of the commands a document can name in a code span.
 const COMMANDS: [&str; 20] = [
@@ -602,16 +651,62 @@ fn is_message(span: &str) -> bool {
 
 /// A string literal of Rust source as a pattern of the text it formats:
 /// escapes made, a line that ends in `\` joined to the next with no space
-/// between, and every argument of a format string as `…`.
+/// between, and every argument of a format string as `…`. The literals of
+/// an item that is built for tests alone (`#[cfg(test)]`,
+/// `#[cfg(all(test, …))]`) are left out, up to the `;` or `,` that ends
+/// it, or the bracket that closes its first.
 fn literal_patterns(source: &str) -> Vec<String> {
     let chars: Vec<char> = source.chars().collect();
     let mut literals = Vec::new();
     let mut at = 0;
     let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let starts = |at: usize, text: &str| {
+        text.chars()
+            .enumerate()
+            .all(|(i, c)| chars.get(at + i) == Some(&c))
+    };
+    // How deep in brackets the scan is, and where an item for tests began
+    // and whether its first bracket has opened.
+    let mut depth = 0usize;
+    let mut test_item: Option<(usize, bool)> = None;
     while at < chars.len() {
         let c = chars[at];
         let next = chars.get(at + 1).copied();
         match c {
+            '#' if test_item.is_none()
+                && (starts(at, "#[cfg(test)]") || starts(at, "#[cfg(all(test,")) =>
+            {
+                test_item = Some((depth, false));
+                while at < chars.len() && chars[at] != ']' {
+                    at += 1;
+                }
+                if starts(at, "))]") {
+                    at += 2;
+                }
+                at += 1;
+            }
+            '{' | '(' | '[' => {
+                depth += 1;
+                if let Some((_, opened)) = &mut test_item {
+                    *opened = true;
+                }
+                at += 1;
+            }
+            '}' | ')' | ']' => {
+                depth = depth.saturating_sub(1);
+                if test_item
+                    .is_some_and(|(began, opened)| depth < began || (depth == began && opened))
+                {
+                    test_item = None;
+                }
+                at += 1;
+            }
+            ';' | ',' => {
+                if test_item.is_some_and(|(began, opened)| depth == began && !opened) {
+                    test_item = None;
+                }
+                at += 1;
+            }
             '/' if next == Some('/') => {
                 while at < chars.len() && chars[at] != '\n' {
                     at += 1;
@@ -666,7 +761,9 @@ fn literal_patterns(source: &str) -> Vec<String> {
                 while end < chars.len() && !closes(end) {
                     end += 1;
                 }
-                literals.push(chars[start..end].iter().collect::<String>());
+                if test_item.is_none() {
+                    literals.push(chars[start..end].iter().collect::<String>());
+                }
                 at = end + 1 + hashes;
             }
             '"' => {
@@ -701,7 +798,9 @@ fn literal_patterns(source: &str) -> Vec<String> {
                     }
                 }
                 at += 1;
-                literals.push(text);
+                if test_item.is_none() {
+                    literals.push(text);
+                }
             }
             _ => at += 1,
         }
@@ -1218,16 +1317,21 @@ fn defaults() -> BTreeMap<String, String> {
 fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
     let root = repository();
     let chapter = read(&operator_dir().join("messages.md"));
-    let prose = parse(&chapter).prose;
-    let quoted: BTreeSet<String> = prose
-        .iter()
-        .flat_map(|(_, line)| code_spans(line))
-        .collect();
-    let rows: Vec<BTreeSet<String>> = prose
-        .iter()
-        .filter(|(_, line)| line.starts_with('|'))
-        .map(|(_, line)| code_spans(line).into_iter().collect())
-        .collect();
+    // A message counts as quoted where a row of a table gives it as its
+    // message, with what it means and what to do; one that is only named
+    // beside another does not. Each row: its messages, and every span it
+    // has.
+    let mut rows: Vec<(BTreeSet<String>, BTreeSet<String>)> = Vec::new();
+    for table in tables(&parse(&chapter).prose) {
+        let Some(message) = table.header.iter().position(|cell| cell == "Message") else {
+            continue;
+        };
+        for (_, row) in &table.rows {
+            let all = row.iter().flat_map(|cell| code_spans(cell)).collect();
+            rows.push((code_spans(&row[message]).into_iter().collect(), all));
+        }
+    }
+    let quoted: BTreeSet<&String> = rows.iter().flat_map(|(messages, _)| messages).collect();
     let mut missing = Vec::new();
     let mut covered = 0;
     for (file, types) in COVERED {
@@ -1263,7 +1367,7 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
             covered += 1;
             if !rows
                 .iter()
-                .any(|row| row.contains(&pattern) && row.contains(message))
+                .any(|(messages, all)| messages.contains(&pattern) && all.contains(message))
             {
                 missing.push(format!(
                     "{file} (after {before:?}): `{pattern}`, in a row with `{message}`"
