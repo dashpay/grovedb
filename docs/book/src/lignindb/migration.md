@@ -35,7 +35,7 @@ database that step 3 makes: the commands here are the ones that were run.
 
 **Time.** A run counts as its elements the records of the data
 keyspaces it carries: Merk nodes, records that no tree links and flat
-records alike (`elements=…` in its last line). The survey of step 5
+records alike (`elements=…` in its line `migrate: done target=…`). The survey of step 5
 counts every record of the data keyspaces under the prefixes it reaches
 in `data records:`, the flat records among them (`flat records:` gives
 those apart), and the records under prefixes that nothing leads to in
@@ -46,9 +46,9 @@ takes longer than its `Merk nodes:` alone says. The plan's acceptance for the mi
 is at least 40,000 elements a second on the reference shape, measured on
 a rented machine with dedicated processors (the least of 20 runs was
 40,357); the plan records that a database of many small Merks loads
-about 5% slower at the default setting. Every run ends with a line that says what it took,
-`migrate: done target=… seconds=…`, with `elements_per_second=…` for a
-run that made the whole target, so the rehearsal of step 3 on your own
+about 5% slower at the default setting. Before its last line, every run prints a line that says
+what it took, `migrate: done target=… seconds=…`, with
+`elements_per_second=…` for a run that made the whole target, so the rehearsal of step 3 on your own
 machine gives you a rate to plan with.
 Add the time of `lignin verify` in step 7, which reads the whole store
 again, and of the copies of steps 8 and 9, which are as long as copying
@@ -58,7 +58,10 @@ the database's bytes.
 the source's records plus 256 MiB on the device of the target, and says
 so before the load begins:
 `the load needs about … MiB on the device of … while it runs; …`, with
-how much is free there. The RocksDB database stays where it is, beside
+how much is free there. That figure counts the records under the
+prefixes the survey reaches; with `--unreachable carry`, add twice the
+bytes the survey gives for the records under prefixes that nothing
+leads to, which a run then carries too. The RocksDB database stays where it is, beside
 the new one. Step 8 needs room for one copy of the new database, best on
 another device, and step 9 for one more where `RESTORE` is, until it is
 removed.
@@ -116,18 +119,24 @@ real_dir() {
   plain_path "$d" || return 1
   printf '%s\n' "$d"
 }
-claim_dir() {
+outside_databases() {
   local d
+  d=$(dirname -- "$1")
+  while :; do
+    case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
+      *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
+    esac
+    if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
+    if [ "$d" = / ] || [ "$d" = . ]; then return 0; fi
+    d=$(dirname -- "$d")
+  done
+}
+claim_dir() {
   plain_path "$1" || return 1
   case "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" in
     *.creating) echo "$1 ends in .creating, under which LigninDB builds a checkpoint: choose another path" >&2; return 1 ;;
   esac
-  d=$(dirname -- "$1")
-  while :; do
-    if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
-    if [ "$d" = / ] || [ "$d" = . ]; then break; fi
-    d=$(dirname -- "$d")
-  done
+  outside_databases "$1" || return 1
   mkdir -- "$1" || { echo "$1 is there already, or cannot be made: choose another path" >&2; return 1; }
 }
 real_new() {
@@ -167,8 +176,9 @@ by the directories they are, `-ef`, and by names that differ in case
 alone), and to claim a new directory with `mkdir`, which fails where
 anything is there already. The claim also refuses a name that ends in
 `.creating`, under which LigninDB builds a checkpoint, and a path inside
-a directory that holds a `MANIFEST` or a `MANIFEST.deleting`: a database,
-whose deletion would remove what is inside it.
+a directory of such a name or one that holds a `MANIFEST` or a
+`MANIFEST.deleting`: a database, whose deletion would remove what is
+inside it.
 
 ## 2. Set the variables
 
@@ -184,12 +194,13 @@ The block makes `WORK` absolute, since it changes into the source
 directory to build. It clones the repository where no clone is there
 yet, and refuses a `grovedb` that is a link, one that is no clone of
 its own (a directory inside another repository, as `WORK` being a
-GroveDB checkout makes it), one that is not shallow, as the clone it
-makes is, one whose `origin` is not the repository's address, and one
-with changes of its own: a checkout that is not the one this block made
-is not moved. It also refuses a `reports` directory that is a link or
-holds one, since the reports are written through `tee`, which follows
-a link and writes where it leads; nothing but these steps is to write
+GroveDB checkout makes it), one without the mark the block sets in the
+clone's configuration when it makes it (`grovedb.runbook`), one whose
+`origin` is not the repository's address, and one with changes of its
+own: a checkout that is not the one this block made is not moved. It
+also refuses a `reports` directory that is a link or holds a link or a
+file with a second name, since the reports are written through `tee`,
+which writes where the name leads; nothing but these steps is to write
 into `WORK`. It then fetches `GROVEDB_REF` from the
 repository's address and checks it out, so that a clone that a run
 before left behind is moved to the release as well. It names
@@ -202,11 +213,11 @@ absolute paths too.
 : "${WORK:?set WORK to a directory for the build and the reports}"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
-if [ -L "$WORK/reports" ] || [ -n "$(find "$WORK/reports" -type l)" ]; then echo "$WORK/reports is a link or holds one: give a WORK of your own"; false; fi
+if [ -L "$WORK/reports" ] || [ -n "$(find "$WORK/reports" -type l -o -type f -links +1)" ]; then echo "$WORK/reports is a link or holds one: give a WORK of your own"; false; fi
 if [ -L "$WORK/grovedb" ]; then echo "$WORK/grovedb is a link: give a WORK with no grovedb in it"; false; fi
-if [ ! -e "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
+if [ ! -e "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb" && git -C "$WORK/grovedb" config grovedb.runbook clone; fi
 if [ "$(git -C "$WORK/grovedb" rev-parse --show-toplevel)" != "$(real_dir "$WORK/grovedb")" ]; then echo "$WORK/grovedb is no clone of its own (it lies inside another repository): give a WORK with no grovedb in it"; false; fi
-if [ "$(git -C "$WORK/grovedb" rev-parse --is-shallow-repository)" != true ]; then echo "$WORK/grovedb is not the shallow clone this block makes: give a WORK with no grovedb in it"; false; fi
+if [ "$(git -C "$WORK/grovedb" config --get grovedb.runbook)" != clone ]; then echo "$WORK/grovedb is not the clone this block makes: give a WORK with no grovedb in it"; false; fi
 if [ "$(git -C "$WORK/grovedb" remote get-url origin)" != https://github.com/dashpay/grovedb.git ]; then echo "$WORK/grovedb is no clone of https://github.com/dashpay/grovedb.git: give a WORK with no grovedb in it"; false; fi
 cd "$WORK/grovedb"
 if [ -n "$(git status --porcelain)" ]; then echo "$WORK/grovedb has changes of its own: give a WORK with no clone in it"; false; fi
@@ -290,6 +301,7 @@ TARGET=$(real_new "$TARGET")
 BACKUP=$(real_new "$BACKUP")
 RESTORE=$(real_new "$RESTORE")
 apart "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
+outside_databases "$TARGET"
 printf 'SOURCE  %s\nTARGET  %s\nBACKUP  %s\nRESTORE %s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
 ```
 
@@ -298,6 +310,9 @@ The block writes each path again with every link followed (`cd -P` and
 four paths of which one is another or lies inside another. It compares
 them by the directories they are (`-ef`), and takes two names that
 differ in case alone for one, as a file system that ignores case does.
+It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
+or a `MANIFEST.deleting`, a LigninDB database or checkpoint whose
+deletion would remove it, or inside one whose name ends in `.creating`.
 Use the paths it prints from here on. A second mount of one directory
 is not seen. The migrator
 also refuses a `TARGET` inside `SOURCE`, or around it, before it opens

@@ -35,8 +35,9 @@ anything is there already, and then copies the files into it, so that a
 copy never lands inside a directory that something else made. The claim
 also refuses a name that ends in `.creating`, which LigninDB takes for
 the build of a checkpoint and whose deletion removes, and a path inside
-a directory that holds a `MANIFEST` or a `MANIFEST.deleting`, a database
-whose deletion would remove the copy with it.
+a directory of such a name or one that holds a `MANIFEST` or a
+`MANIFEST.deleting`, a database whose deletion would remove the copy
+with it.
 Each procedure below names the paths it uses, and the directory each new
 path is to be in has to be there.
 
@@ -54,18 +55,24 @@ real_dir() {
   plain_path "$d" || return 1
   printf '%s\n' "$d"
 }
-claim_dir() {
+outside_databases() {
   local d
+  d=$(dirname -- "$1")
+  while :; do
+    case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
+      *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
+    esac
+    if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
+    if [ "$d" = / ] || [ "$d" = . ]; then return 0; fi
+    d=$(dirname -- "$d")
+  done
+}
+claim_dir() {
   plain_path "$1" || return 1
   case "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" in
     *.creating) echo "$1 ends in .creating, under which LigninDB builds a checkpoint: choose another path" >&2; return 1 ;;
   esac
-  d=$(dirname -- "$1")
-  while :; do
-    if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
-    if [ "$d" = / ] || [ "$d" = . ]; then break; fi
-    d=$(dirname -- "$d")
-  done
+  outside_databases "$1" || return 1
   mkdir -- "$1" || { echo "$1 is there already, or cannot be made: choose another path" >&2; return 1; }
 }
 real_new() {
@@ -257,7 +264,15 @@ application keeps there. A link in the directory is copied as a link,
 and not what it points to: a file of the application's that is kept
 elsewhere and linked from there is backed up where it is kept. A copy
 of a checkpoint holds what the checkpoint holds: the engine's files and
-no file of the application's.
+no file of the application's. A copy of a checkpoint made while the node
+runs holds whole files, and the files a checkpoint shares with the live
+database go on growing: the copy can hold bytes that the live database
+appended after the checkpoint, values and log records of later commits,
+behind the lengths its manifest gives. They are no part of the version
+the copy restores, and a recovery reads none of them
+([BK6](../disk-full-and-backup.md#62-the-procedure)), but they are in the
+copy: give a backup only where the database as it was when the copy was
+made may go.
 
 ### Delete the checkpoint of a backup
 
