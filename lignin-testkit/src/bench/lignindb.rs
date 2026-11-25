@@ -575,6 +575,20 @@ impl LigninDbEngine {
         self.db.engine().database().stats()
     }
 
+    /// Opens the database in `dir` as `tuning` says.
+    pub(super) fn open_tuned(dir: &Path, tuning: Tuning) -> Result<Self, BenchError> {
+        let engine =
+            LigninEngine::open_with(dir, &tuning.options).map_err(grovedb::Error::StorageError)?;
+        Ok(LigninDbEngine {
+            db: GroveDb::from_engine(engine),
+            dir: dir.to_path_buf(),
+            pace: tuning.pace,
+            quiet: tuning.quiet(),
+            read: None,
+            stood: Stood::default(),
+        })
+    }
+
     /// Waits until a turn of write-back that began after this call has
     /// ended, no pending value is held and no turn of the background work
     /// has failed: the turn has seen every commit that was published
@@ -613,17 +627,7 @@ impl Engine for LigninDbEngine {
     }
 
     fn open_with(dir: &Path, settings: &EngineSettings) -> Result<Self, BenchError> {
-        let tuning = Tuning::new(settings)?;
-        let engine =
-            LigninEngine::open_with(dir, &tuning.options).map_err(grovedb::Error::StorageError)?;
-        Ok(LigninDbEngine {
-            db: GroveDb::from_engine(engine),
-            dir: dir.to_path_buf(),
-            pace: tuning.pace,
-            quiet: tuning.quiet(),
-            read: None,
-            stood: Stood::default(),
-        })
+        Self::open_tuned(dir, Tuning::new(settings)?)
     }
 
     fn dir(&self) -> &Path {
