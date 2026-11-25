@@ -14,7 +14,12 @@
 //! applied untimed, and then `--blocks` blocks of the reference workload's
 //! shape, each in a write transaction of its own, with a pause of
 //! `--pause-us` after each commit. The time of a commit is an `Instant`
-//! around the commit of the block's transaction and nothing else. After
+//! around the commit of the block's transaction and nothing else. Where
+//! the system tells how long a thread has run (Linux), the measuring
+//! thread's time on a processor is read before and after it as well: a
+//! commit's time less that is what the thread was off a processor for, as
+//! the system that runs the harness sees it. A machine under that system
+//! that takes a processor away from it is not seen there. After
 //! the last engine the root hashes of the engines are compared: they have
 //! applied one stream.
 //!
@@ -22,8 +27,13 @@
 //!
 //! | `--background` | LigninDB | RocksDB |
 //! | --- | --- | --- |
-//! | `quiet` | a cleaner that moves nothing, and no table checkpoint of write-back's loop before 64 GiB of log are held: the passes of write-back are left | as GroveDB opens it |
+//! | `default` | as a node opens it | as GroveDB opens it |
 //! | `heavy` | segments and log files of 4 MiB, a table checkpoint at each megabyte of log, and a cleaner that works towards a twentieth of dead space | as GroveDB opens it, with a flush of its memtables asked from a second thread every `--flush-blocks` blocks, so that table files are written and compacted beside the commits |
+//! | `quiet` | a cleaner that moves nothing, and no table checkpoint of write-back's loop before 64 GiB of log are held: the passes of write-back are left | as GroveDB opens it |
+//!
+//! Under `quiet` LigninDB keeps every block and every log file it writes,
+//! so the setting is one for a short run: the database grows by what the
+//! run writes, where under the two others it grows by what the run adds.
 //!
 //! GroveDB opens RocksDB with fixed options, so the harness cannot make its
 //! background heavier from inside; the flush is `GroveDb::flush`, which any
@@ -91,7 +101,9 @@ pub const MARK: &str = "lignin-mark commit";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Background {
-    /// As little as an engine can be asked for.
+    /// As a node opens the engine.
+    Default,
+    /// As little as an engine can be asked for, for a short run.
     Quiet,
     /// Small files, frequent checkpoints and cleaning.
     Heavy,
@@ -100,6 +112,7 @@ pub enum Background {
 impl Background {
     fn named(name: &str) -> Option<Self> {
         match name {
+            "default" => Some(Background::Default),
             "quiet" => Some(Background::Quiet),
             "heavy" => Some(Background::Heavy),
             _ => None,
@@ -108,6 +121,7 @@ impl Background {
 
     fn name(self) -> &'static str {
         match self {
+            Background::Default => "default",
             Background::Quiet => "quiet",
             Background::Heavy => "heavy",
         }
@@ -159,7 +173,7 @@ pub struct LatencyOptions {
 }
 
 impl LatencyOptions {
-    /// A run of 100,000 blocks on RocksDB beside a quiet background, on a
+    /// A run of 100,000 blocks on RocksDB beside its default background, on a
     /// store of 100,000 documents, with 5 ms between two blocks.
     pub fn new(scratch: PathBuf) -> Self {
         LatencyOptions {
@@ -171,7 +185,7 @@ impl LatencyOptions {
             warm_blocks: 200,
             blocks: 100_000,
             pause: Duration::from_micros(5_000),
-            background: Background::Quiet,
+            background: Background::Default,
             flush_blocks: 10,
             neighbour: None,
             engine: EngineSettings::default(),
@@ -272,6 +286,9 @@ pub struct EngineLatency {
     pub commit_ns: Vec<u64>,
     /// The time the operations of each block took, in nanoseconds.
     pub apply_ns: Vec<u64>,
+    /// How long the measuring thread ran on a processor during each commit,
+    /// in nanoseconds, where the system tells.
+    pub ran_ns: Option<Vec<u64>>,
     /// The parts of each commit that the engine counts apart, in
     /// nanoseconds and in the order of [`PARTS`], where it counts them.
     pub parts_ns: Option<Vec<[u64; 6]>>,
@@ -297,6 +314,8 @@ pub struct SlowCommit {
     pub block: u64,
     /// The time of the commit, in nanoseconds.
     pub commit_ns: u64,
+    /// How long the measuring thread ran on a processor during it.
+    pub ran_ns: Option<u64>,
     /// The parts of the commit that the engine counts apart, in the order
     /// of [`PARTS`].
     pub parts_ns: Option<[u64; 6]>,
@@ -427,6 +446,7 @@ mod lignin {
 
         fn asked(background: Background) -> &'static [&'static str] {
             match background {
+                Background::Default => &[],
                 Background::Quiet => QUIET,
                 Background::Heavy => HEAVY,
             }
@@ -751,14 +771,15 @@ impl Marker {
 
 /// Applies the operations of the next block of `stream` in a write
 /// transaction of its own and commits it. Returns how long the operations
-/// and the commit took, and when the commit began. `watch` is told where
-/// the commit begins.
+/// and the commit took, when the commit began, and how long the thread
+/// ran on a processor during it where the system tells. `watch` is told
+/// where the commit begins.
 fn block<E: Engine>(
     engine: &E,
     stream: &mut Stream,
     grove_version: &GroveVersion,
     watch: Option<&Watch>,
-) -> Result<(Duration, Duration, Instant), BenchError> {
+) -> Result<(Duration, Duration, Instant, Option<u64>), BenchError> {
     let block = next_block(stream);
     let Some((Op::Commit, ops)) = block.split_last() else {
         return Err(BenchError::Check("the stream has ended".to_string()));
@@ -772,10 +793,14 @@ fn block<E: Engine>(
     if let Some(watch) = watch {
         watch.reset_appends();
     }
+    let ran = machine::thread_cpu_ns();
     let began = Instant::now();
     let (committed, took) = timed(|| transaction.commit());
+    let ran = ran
+        .zip(machine::thread_cpu_ns())
+        .map(|(before, after)| after.saturating_sub(before));
     committed?;
-    Ok((applied, took, began))
+    Ok((applied, took, began, ran))
 }
 
 /// The neighbour: appends 4 KiB to `path` and syncs the file every `every`
@@ -865,6 +890,7 @@ fn measure_in<E: Subject>(
     let blocks = options.blocks as usize;
     let mut commit_ns = Vec::with_capacity(blocks);
     let mut apply_ns = Vec::with_capacity(blocks);
+    let mut ran_ns = machine::thread_cpu_ns().map(|_| Vec::with_capacity(blocks));
     let mut parts_ns = engine.look().map(|_| Vec::with_capacity(blocks));
     let mut slowest: Vec<SlowCommit> = Vec::new();
     let mut marker = Marker::new(options.mark);
@@ -890,7 +916,7 @@ fn measure_in<E: Subject>(
         let mut measure = || -> Result<(), BenchError> {
             for number in 0..options.blocks {
                 let before = engine.look();
-                let (applied, took, from) = block(engine, &mut stream, grove_version, watch)?;
+                let (applied, took, from, ran) = block(engine, &mut stream, grove_version, watch)?;
                 let to = from + took;
                 marker.mark(number, took);
                 let nanos = took.as_nanos() as u64;
@@ -899,6 +925,9 @@ fn measure_in<E: Subject>(
                 });
                 commit_ns.push(nanos);
                 apply_ns.push(applied.as_nanos() as u64);
+                if let (Some(all), Some(ran)) = (ran_ns.as_mut(), ran) {
+                    all.push(ran);
+                }
                 if let (Some(all), Some(parts)) = (parts_ns.as_mut(), parts) {
                     all.push(parts);
                 }
@@ -908,6 +937,7 @@ fn measure_in<E: Subject>(
                     slowest.push(SlowCommit {
                         block: number,
                         commit_ns: nanos,
+                        ran_ns: ran,
                         parts_ns: parts,
                         append_calls: watch.map(Watch::appends),
                         syncs_beside: watch.map_or_else(Vec::new, |watch| watch.beside(from, to)),
@@ -956,6 +986,7 @@ fn measure_in<E: Subject>(
         thread_id: machine::thread_id(),
         commit_ns,
         apply_ns,
+        ran_ns,
         parts_ns,
         turns,
         flushes_asked: flushes_asked?,
@@ -1132,6 +1163,17 @@ pub fn table(report: &LatencyReport) -> String {
             "\n- the operations of a block, µs: median {median}, 99% {p99}, 99.9% {p999}, \
              longest {longest}"
         );
+        if let Some(ran) = &engine.ran_ns {
+            let off: Vec<u64> = (engine.commit_ns.iter().zip(ran))
+                .map(|(commit, ran)| commit.saturating_sub(*ran))
+                .collect();
+            let [median, p99, p999, longest] = quantiles(&off).map(micros);
+            let _ = writeln!(
+                out,
+                "- the commit, off a processor, µs: median {median}, 99% {p99}, 99.9% {p999}, \
+                 longest {longest}"
+            );
+        }
         for (part, name) in PARTS.iter().enumerate() {
             let Some(parts) = &engine.parts_ns else {
                 break;
@@ -1154,6 +1196,10 @@ pub fn table(report: &LatencyReport) -> String {
         }
         for slow in &engine.slowest {
             let _ = write!(out, "- block {}: {} µs", slow.block, micros(slow.commit_ns));
+            if let Some(ran) = slow.ran_ns {
+                let off = slow.commit_ns.saturating_sub(ran);
+                let _ = write!(out, ", {} of them off a processor", micros(off));
+            }
             if let Some(parts) = slow.parts_ns {
                 let named: Vec<String> = PARTS
                     .iter()
@@ -1279,7 +1325,7 @@ pub fn parse_options(args: &[String]) -> Result<(LatencyOptions, Option<PathBuf>
                     "--background" => {
                         options.background = Background::named(value).ok_or_else(|| {
                             BenchError::Check(format!(
-                                "--background takes quiet or heavy, not {value:?}"
+                                "--background takes default, heavy or quiet, not {value:?}"
                             ))
                         })?
                     }
@@ -1378,14 +1424,14 @@ mod tests {
         assert_eq!(out, None);
         assert_eq!(defaults.engines, vec![EngineChoice::RocksDb]);
         assert_eq!((defaults.blocks, defaults.documents), (100_000, 100_000));
-        assert_eq!(defaults.background, Background::Quiet);
+        assert_eq!(defaults.background, Background::Default);
 
         for (line, message) in [
             ("--blocks", "--blocks needs a value"),
             ("--blocks x", "--blocks takes a number, not \"x\""),
             (
                 "--background loud",
-                "--background takes quiet or heavy, not \"loud\"",
+                "--background takes default, heavy or quiet, not \"loud\"",
             ),
             (
                 "--documents 30",
@@ -1454,6 +1500,12 @@ mod tests {
         assert_eq!(rocksdb.parts_ns, None);
         assert_eq!(rocksdb.turns, None);
         assert!(rocksdb.syncs.is_empty());
+        // Where the system tells how long the thread ran, it tells it of
+        // every commit.
+        if let Some(ran) = &rocksdb.ran_ns {
+            assert_eq!(ran.len(), 12);
+        }
+        assert_eq!(rocksdb.ran_ns.is_some(), machine::thread_cpu_ns().is_some());
         assert!(rocksdb
             .slowest
             .iter()
@@ -1491,6 +1543,7 @@ mod tests {
             engines: vec![EngineChoice::RocksDb, EngineChoice::LigninDb],
             watch_files: true,
             label: Some("head".to_string()),
+            background: Background::Quiet,
             ..small(scratch.path())
         };
         let report = run(&options).unwrap();
