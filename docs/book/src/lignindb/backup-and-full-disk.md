@@ -38,8 +38,8 @@ copy never lands inside a directory that something else made. The claim
 also refuses a name that ends in `.creating`, which LigninDB takes for
 the build of a checkpoint and whose deletion removes, and a path inside
 a directory of such a name or one that holds a `MANIFEST` or a
-`MANIFEST.deleting`, a database whose deletion would remove the copy
-with it.
+`MANIFEST.deleting` (LigninDB's) or a `CURRENT` (RocksDB's), a database
+or checkpoint whose deletion would remove the copy with it.
 Each procedure below names the paths it uses, and the directory each new
 path is to be in has to be there.
 
@@ -64,6 +64,7 @@ outside_databases() {
       *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
     esac
     if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
+    if [ -e "$d/CURRENT" ]; then echo "$1 lies inside $d, a RocksDB database directory: choose a path outside it" >&2; return 1; fi
     if [ "$d" = / ] || [ "$d" = . ]; then return 0; fi
     d=$(dirname -- "$d")
   done

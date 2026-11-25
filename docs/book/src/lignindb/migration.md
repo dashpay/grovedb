@@ -58,16 +58,23 @@ the database's bytes.
 the source's records plus 256 MiB on the device of the target, and says
 so before the load begins:
 `the load needs about … MiB on the device of … while it runs; …`, with
-how much is free there. That figure counts the records under the
-prefixes the survey reaches; with `--unreachable carry`, add twice the
-bytes the survey gives for the records under prefixes that nothing
-leads to, which a run then carries too. The RocksDB database stays where it is, beside
+how much is free there. That figure is the tool's estimate from the
+records the survey counts under the prefixes it reaches and from the
+root keys. With `--unreachable carry`, add twice the bytes the survey
+gives for the records under prefixes that nothing leads to, which a run
+then carries too; the marks that a run writes for pending drops (the
+survey's `pending drops: …, which leave … records behind and … marks`)
+are not in it either. The RocksDB database stays where it is, beside
 the new one. Step 8 needs room for one copy of the new database, best on
 another device, and step 9 for one more where `RESTORE` is, until it is
 removed.
 
 **Memory.** A Merk is handed over whole, so the largest Merk of the
-source decides the peak. The survey says what peak the run projects
+source is the part of the peak that grows with one Merk. The survey
+keeps, besides, the prefixes of every subtree and of the aux and meta
+records, which grow with the number of subtrees and are not in the
+projection: a source of very many subtrees needs more than it says. The
+survey says what peak the run projects
 (`the migration projects a peak of about … MiB of memory`): 256 MiB, the
 commit size (`--batch`, 160 MiB unless given), the buffer pool
 (`--cache`, 64 MiB unless given), and about 1.5 KB with its key and value
@@ -127,6 +134,7 @@ outside_databases() {
       *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
     esac
     if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
+    if [ -e "$d/CURRENT" ]; then echo "$1 lies inside $d, a RocksDB database directory: choose a path outside it" >&2; return 1; fi
     if [ "$d" = / ] || [ "$d" = . ]; then return 0; fi
     d=$(dirname -- "$d")
   done
@@ -177,16 +185,21 @@ alone), and to claim a new directory with `mkdir`, which fails where
 anything is there already. The claim also refuses a name that ends in
 `.creating`, under which LigninDB builds a checkpoint, and a path inside
 a directory of such a name or one that holds a `MANIFEST` or a
-`MANIFEST.deleting`: a database, whose deletion would remove what is
-inside it.
+`MANIFEST.deleting` (LigninDB's) or a `CURRENT` (RocksDB's): a
+database or checkpoint, whose deletion would remove what is inside it.
 
 ## 2. Set the variables
 
 Set two variables before the next block:
 
-- `GROVEDB_REF`: the GroveDB release your node runs, as a tag or a
-  branch of `https://github.com/dashpay/grovedb`. The tool is built from
-  the same release, so that it reads and writes what your node does.
+- `GROVEDB_REF`: the GroveDB release your node runs, as a tag of
+  `https://github.com/dashpay/grovedb`. The tool is built from the same
+  release, so that it reads and writes what your node does. A branch is
+  taken as it stands when the block runs, and can move between two runs
+  of it: a migration that is gone on with after a failure is then gone
+  on with by another build. The block prints the commit it builds, on
+  the line that begins with the words building GroveDB at; on a run of
+  it after a failure it is to print the same one.
 - `WORK`: a directory for the source code, the build and the reports of
   each step. The build takes a few GiB.
 
@@ -198,10 +211,11 @@ GroveDB checkout makes it), one without the mark the block sets in the
 clone's configuration when it makes it (`grovedb.runbook`), one whose
 `origin` is not the repository's address, and one with changes of its
 own: a checkout that is not the one this block made is not moved. It
-also refuses a `reports` directory that is a link or holds a link or a
-file with a second name, since the reports are written through `tee`,
-which writes where the name leads; nothing but these steps is to write
-into `WORK`. It then fetches `GROVEDB_REF` from the
+also refuses a `WORK` with a colon in it, which `PATH` would split, and
+a `WORK` or `reports` that holds a link or a file with a second name, or
+a `reports` that is a link, since the reports are written through `tee`
+and the rehearsal's through `lignin-bench`, which write where the name
+leads; nothing but these steps is to write into `WORK`. It then fetches `GROVEDB_REF` from the
 repository's address and checks it out, so that a clone that a run
 before left behind is moved to the release as well. It names
 where Cargo builds (`CARGO_TARGET_DIR`), so that the `lignin` it puts
@@ -213,7 +227,8 @@ absolute paths too.
 : "${WORK:?set WORK to a directory for the build and the reports}"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
-if [ -L "$WORK/reports" ] || [ -n "$(find "$WORK/reports" -type l -o -type f -links +1)" ]; then echo "$WORK/reports is a link or holds one: give a WORK of your own"; false; fi
+case "$WORK" in *:*) echo "$WORK has a colon in it, which PATH takes for a separator: give a WORK without one"; false ;; esac
+if [ -L "$WORK/reports" ] || [ -n "$(find "$WORK" -maxdepth 1 \( -type l -o -type f -links +1 \); find "$WORK/reports" \( -type l -o -type f -links +1 \))" ]; then echo "$WORK or $WORK/reports holds a link or a file with a second name: give a WORK of your own"; false; fi
 if [ -L "$WORK/grovedb" ]; then echo "$WORK/grovedb is a link: give a WORK with no grovedb in it"; false; fi
 if [ ! -e "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb" && git -C "$WORK/grovedb" config grovedb.runbook clone; fi
 if [ "$(git -C "$WORK/grovedb" rev-parse --show-toplevel)" != "$(real_dir "$WORK/grovedb")" ]; then echo "$WORK/grovedb is no clone of its own (it lies inside another repository): give a WORK with no grovedb in it"; false; fi
@@ -311,8 +326,9 @@ four paths of which one is another or lies inside another. It compares
 them by the directories they are (`-ef`), and takes two names that
 differ in case alone for one, as a file system that ignores case does.
 It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
-or a `MANIFEST.deleting`, a LigninDB database or checkpoint whose
-deletion would remove it, or inside one whose name ends in `.creating`.
+or a `MANIFEST.deleting`, or a `CURRENT`, a LigninDB or RocksDB
+database or checkpoint whose deletion would remove it, or inside one
+whose name ends in `.creating`.
 Use the paths it prints from here on. A second mount of one directory
 is not seen. The migrator
 also refuses a `TARGET` inside `SOURCE`, or around it, before it opens
@@ -395,6 +411,13 @@ seconds (or as `--progress` says) a line says where the load stands:
 | 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, but in two cases: the error says that the database got that name and the name could not be made durable; or it refuses the target as one that is there (`the target … is there and …`), which is also what a run that was given a `TARGET` an earlier run had already named answers | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there. That database is whole, but no report of a run that finished is held to it (step 7): migrate again into a new `TARGET`, and leave that one where it is until you know what it holds |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
+
+The status is the pipeline's: a `tee` that cannot write the report (a
+device of `WORK` that is full or read-only) fails it too, whatever the
+migration did. Where the terminal then shows the last line
+`migrated … into …: loaded, compared and verified`, the migration was
+made, but no report holds it and step 7 cannot be held to it: make room
+for the reports, and migrate again into a new `TARGET`.
 
 **A run that stops** (a kill, a power cut, a full device, an error) is
 gone on with by the same command, with the same `--unreachable`. What
