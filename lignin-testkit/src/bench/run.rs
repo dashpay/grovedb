@@ -1017,6 +1017,135 @@ fn warm_up<E: Engine>(
     Ok(())
 }
 
+/// The warm rows of `engine`: untimed warm-up reads, then the timed point
+/// gets, point proofs and proofs of 100 references with the proof sizes.
+/// The first proof of each kind is checked against `root_hash`.
+fn warm_rows<E: Engine>(
+    engine: &E,
+    reads: &mut Reads,
+    settings: &Settings,
+    root_hash: &[u8; 32],
+    grove_version: &GroveVersion,
+    rows: &mut Vec<Row>,
+) -> Result<(), BenchError> {
+    let loaded = settings.documents;
+    warm_up(engine, reads, settings, grove_version)?;
+
+    let mut get_meter = Meter::new(settings, "warm-get");
+    let mut get_us = Vec::new();
+    for _ in 0..settings.point_reads {
+        let (elapsed, _) =
+            ReadKind::Get.read(engine, reads, loaded, grove_version, &mut get_meter)?;
+        get_us.push(Unit::Micros.of(elapsed));
+    }
+    rows.push(time_row(
+        "point_get",
+        "warm",
+        Unit::Micros,
+        get_us,
+        get_meter.finish(),
+        u64::from(settings.point_reads),
+        "Instant around GroveDb::get of a random loaded document",
+    ));
+
+    for kind in [ReadKind::PointProof, ReadKind::ReferencesProof] {
+        let (count, size_id, rows_per_proof) = match kind {
+            ReadKind::PointProof => (settings.point_reads, "point_proof_bytes", 1),
+            _ => (
+                settings.reference_reads,
+                "references_proof_bytes",
+                usize::from(REFERENCES_PER_PROOF),
+            ),
+        };
+        let first_query = match kind {
+            ReadKind::PointProof => reads.point_query(loaded),
+            _ => reads.references_query(),
+        };
+        let (proof, _) = engine.prove(&first_query, grove_version)?;
+        check_proof(
+            &proof,
+            &first_query,
+            root_hash,
+            rows_per_proof,
+            grove_version,
+        )?;
+        let mut meter = Meter::new(settings, &format!("warm-{}", kind.id()));
+        let mut times = Vec::new();
+        let mut sizes = Vec::new();
+        for _ in 0..count {
+            let (elapsed, size) = kind.read(engine, reads, loaded, grove_version, &mut meter)?;
+            times.push(Unit::Micros.of(elapsed));
+            sizes.push(size.unwrap_or(0) as f64);
+        }
+        rows.push(time_row(
+            kind.id(),
+            "warm",
+            Unit::Micros,
+            times,
+            meter.finish(),
+            u64::from(count),
+            match kind {
+                ReadKind::PointProof => {
+                    "Instant around GroveDb::prove_query of one random loaded document by id"
+                }
+                _ => {
+                    "Instant around GroveDb::prove_query of 100 references in the $ownerId \
+                     index of a random owner with at least 100 documents, references followed"
+                }
+            },
+        ));
+        rows.push(sampled_count_row(
+            size_id,
+            "warm",
+            "B",
+            sizes,
+            "length of each proof GroveDb::prove_query returned for the timed reads",
+        ));
+    }
+    Ok(())
+}
+
+/// Measures the warm rows alone over the `E` database that an earlier run
+/// kept in `settings.scratch/<engine>` (`run --keep`), opened as it was
+/// left. The settings name the documents that run loaded: its seed, its
+/// documents and its owners, with no creates, updates or deletes after
+/// the load, so every document a read asks for is there.
+pub fn read_engine<E: Engine>(
+    settings: &Settings,
+    grove_version: &GroveVersion,
+) -> Result<EngineReport, BenchError> {
+    let dir = settings.scratch.join(E::NAME);
+    if !dir.is_dir() {
+        return Err(BenchError::Check(format!(
+            "no kept database at {}: `run --keep` leaves one",
+            dir.display()
+        )));
+    }
+    let mut reads = Reads::new(settings)?;
+    let mut engine = E::open_with(&dir, &settings.engine)?;
+    engine.settle()?;
+    let root_hash = engine.root_hash(grove_version)?;
+    let disk = disk_usage(&dir)?;
+    let mut rows = Vec::new();
+    warm_rows(
+        &engine,
+        &mut reads,
+        settings,
+        &root_hash,
+        grove_version,
+        &mut rows,
+    )?;
+    Ok(EngineReport {
+        engine: E::NAME.to_string(),
+        root_hash_after_load: hex::encode(root_hash),
+        root_hash_at_end: hex::encode(engine.root_hash(grove_version)?),
+        rows,
+        phases: Vec::new(),
+        disk_after_load: disk.clone(),
+        disk_after_flush: disk,
+    })
+}
+
 /// Runs the whole measurement over a fresh `E` database in
 /// `settings.scratch/<engine>`.
 pub fn run_engine<E: Engine>(
@@ -1116,80 +1245,14 @@ fn measure<E: Engine>(
     ));
 
     let loaded = settings.documents;
-    warm_up(&engine, &mut reads, settings, grove_version)?;
-
-    let mut get_meter = Meter::new(settings, "warm-get");
-    let mut get_us = Vec::new();
-    for _ in 0..settings.point_reads {
-        let (elapsed, _) =
-            ReadKind::Get.read(&engine, &mut reads, loaded, grove_version, &mut get_meter)?;
-        get_us.push(Unit::Micros.of(elapsed));
-    }
-    rows.push(time_row(
-        "point_get",
-        "warm",
-        Unit::Micros,
-        get_us,
-        get_meter.finish(),
-        u64::from(settings.point_reads),
-        "Instant around GroveDb::get of a random loaded document",
-    ));
-
-    for kind in [ReadKind::PointProof, ReadKind::ReferencesProof] {
-        let (count, size_id, rows_per_proof) = match kind {
-            ReadKind::PointProof => (settings.point_reads, "point_proof_bytes", 1),
-            _ => (
-                settings.reference_reads,
-                "references_proof_bytes",
-                usize::from(REFERENCES_PER_PROOF),
-            ),
-        };
-        let first_query = match kind {
-            ReadKind::PointProof => reads.point_query(loaded),
-            _ => reads.references_query(),
-        };
-        let (proof, _) = engine.prove(&first_query, grove_version)?;
-        check_proof(
-            &proof,
-            &first_query,
-            &root_hash_after_load,
-            rows_per_proof,
-            grove_version,
-        )?;
-        let mut meter = Meter::new(settings, &format!("warm-{}", kind.id()));
-        let mut times = Vec::new();
-        let mut sizes = Vec::new();
-        for _ in 0..count {
-            let (elapsed, size) =
-                kind.read(&engine, &mut reads, loaded, grove_version, &mut meter)?;
-            times.push(Unit::Micros.of(elapsed));
-            sizes.push(size.unwrap_or(0) as f64);
-        }
-        rows.push(time_row(
-            kind.id(),
-            "warm",
-            Unit::Micros,
-            times,
-            meter.finish(),
-            u64::from(count),
-            match kind {
-                ReadKind::PointProof => {
-                    "Instant around GroveDb::prove_query of one random loaded document by id"
-                }
-                _ => {
-                    "Instant around GroveDb::prove_query of 100 references in the $ownerId \
-                     index of a random owner with at least 100 documents, references followed"
-                }
-            },
-        ));
-        rows.push(sampled_count_row(
-            size_id,
-            "warm",
-            "B",
-            sizes,
-            "length of each proof GroveDb::prove_query returned for the timed reads",
-        ));
-    }
+    warm_rows(
+        &engine,
+        &mut reads,
+        settings,
+        &root_hash_after_load,
+        grove_version,
+        &mut rows,
+    )?;
 
     rows.push(checkpoints(&engine, settings, "at-size")?);
     engine.flush()?;

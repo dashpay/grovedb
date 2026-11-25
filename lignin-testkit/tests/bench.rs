@@ -440,6 +440,99 @@ fn the_command_writes_a_report() {
         .starts_with("writing /nonexistent/dir/report.json"));
 }
 
+/// The warm rows are measured again over the databases a run kept: the
+/// same grove, so the same proofs, and nothing but the warm rows.
+#[test]
+fn the_warm_reads_are_measured_again_over_a_kept_database() {
+    let scratch = tempfile::tempdir().unwrap();
+    let kept = scratch.path().join("db");
+    let out = scratch.path().join("run.json");
+    let sizes = "--documents 400 --owners 2 --creates 0 --updates 0 --deletes 0 --point-reads 4 \
+                 --reference-reads 2 --warmup-reads 3 --label test --commit 0123";
+    let engines = if cfg!(grovedb_engine_seam) {
+        "--engine rocksdb --engine lignindb"
+    } else {
+        "--engine rocksdb"
+    };
+    let args = |command: &str, out: &std::path::Path, rest: &str| -> Vec<String> {
+        format!(
+            "{command} --scratch {} --out {} {engines} {sizes} {rest}",
+            kept.display(),
+            out.display()
+        )
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+    };
+
+    // Nothing is kept yet.
+    let refused = cli::main_with(&args("reads", &out, "")).unwrap_err();
+    assert!(
+        refused.to_string().starts_with("no kept database at "),
+        "{refused}"
+    );
+
+    cli::main_with(&args(
+        "run",
+        &out,
+        "--keep --cold-reads 1 --checkpoints 1 --reopens 1",
+    ))
+    .unwrap();
+    let run = Report::from_json(&std::fs::read_to_string(&out).unwrap()).unwrap();
+
+    let out = scratch.path().join("reads.json");
+    let printed = cli::main_with(&args("reads", &out, "")).unwrap();
+    assert!(printed.contains("references_proof"), "{printed}");
+    let reads = Report::from_json(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(reads.engines.len(), run.engines.len());
+    for (read, ran) in reads.engines.iter().zip(&run.engines) {
+        assert_eq!(read.engine, ran.engine);
+        assert_eq!(read.root_hash_after_load, ran.root_hash_after_load);
+        assert_eq!(read.root_hash_at_end, ran.root_hash_after_load);
+        let ids: Vec<&str> = read.rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "point_get",
+                "point_query_proof",
+                "point_proof_bytes",
+                "references_proof",
+                "references_proof_bytes"
+            ]
+        );
+        assert!(read.rows.iter().all(|row| row.phase == "warm"));
+        for (id, samples) in [
+            ("point_get", 4),
+            ("point_query_proof", 4),
+            ("references_proof", 2),
+        ] {
+            let row = read.row(id, "warm").unwrap();
+            assert_eq!(row.samples.len(), samples, "{id}");
+            assert!(row.value > 0.0, "{id}");
+        }
+        // The reads are the run's own: the same seed asks for the same
+        // documents and owners in the same order.
+        for id in ["point_proof_bytes", "references_proof_bytes"] {
+            assert_eq!(
+                read.row(id, "warm").unwrap().samples,
+                ran.row(id, "warm").unwrap().samples,
+                "{id}"
+            );
+        }
+        assert!(read.phases.is_empty());
+    }
+    // The second engine's rows carry their ratio to RocksDB's.
+    if let Some(second) = reads.engines.get(1) {
+        assert!(second
+            .row("point_get", "warm")
+            .unwrap()
+            .ratio_to_rocksdb
+            .is_some());
+    }
+    // The kept databases are still there for the next call.
+    assert!(cli::main_with(&args("reads", &out, "")).is_ok());
+}
+
 #[test]
 fn a_run_that_asks_for_instructions_is_refused_where_perf_counts_none() {
     if perf_counts() {

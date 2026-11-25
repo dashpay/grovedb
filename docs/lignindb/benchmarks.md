@@ -11,6 +11,7 @@ PERF-05 and PERF-09 read its reports.
 ```sh
 cargo build --release -p lignin-testkit --bin lignin-bench
 lignin-bench run --scratch /path/to/scratch --out run.json --label <machine> [--perf]
+lignin-bench reads --scratch /path/to/scratch --out reads.json   # the warm reads of a kept database
 lignin-bench table run.json                # rows beside the plan's values
 lignin-bench compare run1.json run2.json   # how far two runs are apart
 ```
@@ -41,6 +42,18 @@ option.
 
 `--set KEY=VALUE` changes one setting of LigninDB, or the harness's pacing
 of it, for the run ("LigninDB's settings" below).
+
+`lignin-bench reads` measures the warm rows alone (the point gets, the point
+proofs and the proofs of 100 references, with the proof sizes) over the
+databases that an earlier run kept. That run is given `--keep` and
+`--creates 0 --updates 0 --deletes 0`, so that every loaded document is still
+there, and `reads` is given the same `--scratch`, `--seed`, `--documents`,
+`--owners` and engines. It opens each database as the run left it, which is
+after a flush and a reopen: on LigninDB the reads of a run are made right after
+the load, beside what write-back has not placed yet, and the reads of `reads`
+over pages that are written back. Its report holds the warm rows only, and
+`table` and `compare` read it as any other. The reads are the run's own: the
+same seed asks for the same documents in the same order.
 
 Smaller runs take `--documents`, `--owners`, `--creates`, `--updates`,
 `--deletes` and the sample counts (`--point-reads`, `--reference-reads`,
