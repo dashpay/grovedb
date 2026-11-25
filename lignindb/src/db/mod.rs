@@ -133,6 +133,8 @@
 //! | has an entry that RocksDB makes (`CURRENT`, `IDENTITY`, `MANIFEST-…`, `OPTIONS-…`, an `.sst` file), or a `MANIFEST` that is no LigninDB file | [`OpenError::OtherEngine`] |
 //! | has a manifest of a format version this build does not read | [`OpenError::FormatVersion`] |
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
+//! | lists `seg`, `wal`, `val` or `table` as anything but a directory of its own, such as a symbolic link, which is not followed | [`OpenError::StoreDirNotADirectory`] |
+//! | lists `LOCK`, `MANIFEST`, `RESERVE` or `RESERVE.new`, or a file its manifest names, as anything but a regular file, such as a named pipe or a symbolic link | [`OpenError::NotARegularFile`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
 //! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |
@@ -181,11 +183,13 @@
 //! path whose last name does not end in `.creating` (below), in a
 //! directory that is not there, and in one that holds none of these: an
 //! entry named `MANIFEST.deleting`, an entry that RocksDB makes, a
-//! `MANIFEST`, and an entry with the name of a directory of a store's
-//! files (`seg`, `val`, `wal`, `table`). So an empty directory is such a
-//! place, one that holds only entries that are not the engine's is, and
-//! so is what an open leaves that failed before it made its first
-//! manifest: a `LOCK`, a `MANIFEST.tmp`, or both.
+//! `MANIFEST`, an entry with the name of a directory of a store's files
+//! (`seg`, `val`, `wal`, `table`), and an entry named `LOCK`, `RESERVE`
+//! or `RESERVE.new` that is anything but a regular file (the table
+//! above). So an empty directory is such a place, one that holds only
+//! entries that are not the engine's is, and so is what an open leaves
+//! that failed before it made its first manifest: a `LOCK` that is a
+//! regular file, a `MANIFEST.tmp`, or both.
 //!
 //! A directory that holds the mark of a removal gets no database while
 //! the mark is there ([`OpenError::Deleting`] says what

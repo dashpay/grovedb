@@ -36,6 +36,8 @@ mod legacy;
 mod made_again;
 mod many_moves;
 mod many_trees;
+#[cfg(target_os = "linux")]
+mod measured;
 mod moves;
 mod nested;
 mod over;

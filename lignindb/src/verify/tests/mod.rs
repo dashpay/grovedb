@@ -29,7 +29,7 @@ use crate::{
     snapshot::Versions,
     txn::{
         tests::{
-            model::{self, OwnedBatch, OwnedSubtree},
+            model::{self, Committed, OwnedBatch, OwnedSubtree},
             put,
             store::{Db, Rules, ENTERED, SIZE},
             World,
@@ -78,8 +78,13 @@ pub(super) fn write_back(db: &Db, versions: &Versions) {
 
 /// A store that holds one of everything, written back.
 pub(super) fn plant() -> Planted {
+    plant_with_its_model().0
+}
+
+/// [`plant`], with the model of the records the store holds.
+pub(super) fn plant_with_its_model() -> (Planted, Committed) {
     let (db, versions) = Db::new(1024);
-    {
+    let model = {
         let mut world = World::new(&db, &versions);
         let tx = world.begin();
         world.edit(&tx, BIG, |items| {
@@ -161,9 +166,10 @@ pub(super) fn plant() -> Planted {
         };
         world.apply(&tx, &batch).expect("the subtree is dropped");
         world.commit(tx, &[]);
-    }
+        world.model
+    };
     write_back(&db, &versions);
-    Planted { db, versions }
+    (Planted { db, versions }, model)
 }
 
 /// Drops the subtree `name` of `store` in a commit of its own.

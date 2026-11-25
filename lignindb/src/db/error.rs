@@ -56,6 +56,34 @@ pub enum OpenError {
         /// One of the entries that are a database's.
         entry: OsString,
     },
+    /// A store subdirectory (`seg`, `wal`, `val` or `table`) is listed in
+    /// the database directory as something other than a directory of its
+    /// own, such as a symbolic link, which is not followed. No store opens
+    /// it or removes within it: a link would reach the files of the
+    /// directory it leads to (P-02).
+    StoreDirNotADirectory {
+        /// The directory.
+        dir: PathBuf,
+        /// The subdirectory entry that is not a directory.
+        entry: OsString,
+    },
+    /// A file that the open would open by its name is listed as something
+    /// other than a regular file: the lock file, the manifest or a file of
+    /// the reserve in the database directory, or a file the manifest names
+    /// in a store subdirectory. On Linux and macOS an open of a named pipe
+    /// for reading alone, as the manifest is opened, waits with no error
+    /// until a writer opens the pipe; one for reading and writing, as the
+    /// lock file is opened, does not wait on Linux. A symbolic link is not
+    /// followed. Each of these entries is refused whichever way the open
+    /// would have opened it, and whether the options of this open have it
+    /// use the reserve or not. The entry is not opened (P-02).
+    NotARegularFile {
+        /// The directory that lists the entry: the database directory or
+        /// a store subdirectory of it.
+        dir: PathBuf,
+        /// The entry that is not a regular file.
+        entry: OsString,
+    },
     /// The database has pages of another size than the one that was asked
     /// for (`segment-manifest.md` M17).
     PageSize {
@@ -262,6 +290,8 @@ impl OpenError {
                 | Self::OtherEngine { .. }
                 | Self::FormatVersion { .. }
                 | Self::NoManifest { .. }
+                | Self::StoreDirNotADirectory { .. }
+                | Self::NotARegularFile { .. }
                 | Self::NoLockFile { .. }
                 | Self::Deleting { .. }
                 | Self::Creating { .. }
@@ -290,6 +320,20 @@ impl fmt::Display for OpenError {
             Self::NoManifest { dir, entry } => write!(
                 f,
                 "{} has files of a database ({}) and no manifest",
+                dir.display(),
+                Path::new(entry).display()
+            ),
+            Self::NotARegularFile { dir, entry } => write!(
+                f,
+                "{} lists {} as something other than a regular file (a named pipe is not \
+                 opened and a symbolic link is not followed): no database is opened or made",
+                dir.display(),
+                Path::new(entry).display()
+            ),
+            Self::StoreDirNotADirectory { dir, entry } => write!(
+                f,
+                "{} lists {} as something other than a directory of its own (a symbolic link \
+                 is not followed): no database is opened or made beside it",
                 dir.display(),
                 Path::new(entry).display()
             ),
@@ -372,6 +416,8 @@ impl Error for OpenError {
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }
             | Self::NoManifest { .. }
+            | Self::StoreDirNotADirectory { .. }
+            | Self::NotARegularFile { .. }
             | Self::PageSize { .. }
             | Self::Locked { .. } => None,
         }

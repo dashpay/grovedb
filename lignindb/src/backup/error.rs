@@ -75,6 +75,17 @@ pub enum BackupError {
         /// The bytes the file has, or `None` if it is not there.
         len: Option<u64>,
     },
+    /// An entry of the source that the copy would read is listed there as
+    /// something else than a database directory holds under that name:
+    /// the lock file, the manifest or a file the manifest names that is no
+    /// regular file, or a store subdirectory that is no directory of its
+    /// own. A symbolic link is such an entry and is not followed, so a
+    /// copy holds no byte from outside its source, and a named pipe is not
+    /// opened. Nothing was made.
+    NotRegular {
+        /// The entry.
+        path: PathBuf,
+    },
     /// The manifest of the source names a file of a kind that no database
     /// directory holds under a number.
     Kind {
@@ -166,6 +177,12 @@ impl fmt::Display for BackupError {
                 "{} is not there, and the manifest vouches for {valid_len} bytes of it",
                 path.display()
             ),
+            Self::NotRegular { path } => write!(
+                f,
+                "{} is no regular file of the source, or no directory of its own (a symbolic \
+                 link is not followed): nothing is copied",
+                path.display()
+            ),
             Self::Kind { kind, file } => write!(
                 f,
                 "the manifest names file {file} of the kind {kind:?}, which no directory of a \
@@ -198,6 +215,7 @@ impl Error for BackupError {
             | Self::NoLockFile { .. }
             | Self::Open { .. }
             | Self::Short { .. }
+            | Self::NotRegular { .. }
             | Self::Kind { .. }
             | Self::CarriedName { .. } => None,
         }

@@ -323,12 +323,33 @@ fn subtrees(listed: Vec<Listed>, what: DumpWhat) -> Result<Vec<Entered>, ToolErr
             )));
         }
     };
+    order(entries, children, tops)
+}
+
+/// The subtrees in the order a dump loads them: each top, then the
+/// subtrees it hosts, depth first, each after its host. `children` maps a
+/// host's subtree to the `(key, position, subtree)` of each subtree it
+/// hosts.
+///
+/// A subtree reached a second time is a directory made by hand in which
+/// the hosts lead in a cycle, or that names one subtree twice (a directory
+/// `Directory::check` refuses, "a Merk with no node hosts a Merk"). It is
+/// refused as an error, which lets the dump reach its cleanup, where the
+/// panic a second `remove` of one key would raise does not.
+fn order(
+    mut entries: BTreeMap<Subtree, Entered>,
+    mut children: HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>>,
+    tops: Vec<Subtree>,
+) -> Result<Vec<Entered>, ToolError> {
     let mut order = Vec::new();
     let mut stack: Vec<(Subtree, bool)> = tops.into_iter().rev().map(|top| (top, true)).collect();
     while let Some((subtree, top)) = stack.pop() {
-        let mut entered = entries
-            .remove(&subtree)
-            .expect("each subtree is hosted once");
+        let Some(mut entered) = entries.remove(&subtree) else {
+            return Err(dump_error(format!(
+                "the directory names {} twice, or its hosts lead in a cycle",
+                hex(subtree.as_bytes())
+            )));
+        };
         if top {
             entered.host = None;
         }
@@ -872,4 +893,89 @@ pub fn load(common: &Common, file: &Path, out: &mut dyn Write) -> Result<Outcome
         file.display()
     )?;
     Ok(Outcome::Done)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use lignindb::txn::Subtree;
+
+    use super::{order, Entered, Host};
+
+    type Entries = BTreeMap<Subtree, Entered>;
+    type Children = HashMap<Subtree, Vec<(Vec<u8>, u8, Subtree)>>;
+
+    fn subtree(n: u8) -> Subtree {
+        Subtree::new([n; 32])
+    }
+
+    fn entered(n: u8, host: Option<u8>) -> Entered {
+        Entered {
+            subtree: subtree(n),
+            tree_type: b"tree".to_vec(),
+            host: host.map(|h| Host {
+                parent: subtree(h),
+                key: vec![n],
+                position: 0,
+            }),
+            root: Some(vec![1]),
+        }
+    }
+
+    fn maps(all: &[Entered]) -> (Entries, Children) {
+        let mut entries = Entries::new();
+        let mut children = Children::new();
+        for e in all {
+            if let Some(host) = &e.host {
+                (children.entry(host.parent).or_default()).push((
+                    host.key.clone(),
+                    host.position,
+                    e.subtree,
+                ));
+            }
+            entries.insert(e.subtree, e.clone());
+        }
+        (entries, children)
+    }
+
+    /// A top with the subtrees it hosts, depth first, each after its host.
+    #[test]
+    fn order_lists_a_sound_tree_top_first() {
+        let all = [entered(1, None), entered(2, Some(1)), entered(3, Some(2))];
+        let (entries, children) = maps(&all);
+        let out = order(entries, children, vec![subtree(1)]).expect("a sound tree");
+        let got: Vec<_> = out.iter().map(|e| e.subtree).collect();
+        assert_eq!(got, vec![subtree(1), subtree(2), subtree(3)]);
+    }
+
+    /// A selected subtree that is a member of a host cycle is refused, not
+    /// walked into a second visit (which would panic on the second
+    /// `remove`). With one host per live entry a cycle has no hostless top,
+    /// so `--all` leaves it out rather than walking it; only selecting a
+    /// member reaches it. The child map is built the way `subtrees` builds
+    /// it (`maps`), from one host per entry, not by hand.
+    #[test]
+    fn order_refuses_a_selected_subtree_in_a_host_cycle() {
+        // `2` and `3` host each other: a cycle with no hostless top.
+        let all = [entered(2, Some(3)), entered(3, Some(2))];
+        let (entries, children) = maps(&all);
+
+        // `--all`'s tops are the hostless entries; a cycle has none, so
+        // nothing is walked and the cycle is left out of the dump.
+        let tops: Vec<Subtree> = (all.iter())
+            .filter(|e| e.host.is_none())
+            .map(|e| e.subtree)
+            .collect();
+        assert!(tops.is_empty());
+        let out = order(entries.clone(), children.clone(), tops).expect("nothing to walk");
+        assert!(out.is_empty());
+
+        // Selecting a member reaches the cycle and is refused, not a panic.
+        for top in [subtree(2), subtree(3)] {
+            let error = order(entries.clone(), children.clone(), vec![top])
+                .expect_err("the cycle is refused");
+            assert!(error.to_string().contains("lead in a cycle"), "{error}");
+        }
+    }
 }

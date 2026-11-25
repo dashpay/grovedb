@@ -441,3 +441,45 @@ pub(crate) fn check_reads(db: &Db, state: &State, context: &str) {
         );
     }
 }
+
+/// Makes a named pipe at `path`, on the file system of the machine.
+pub(crate) fn pipe(path: &std::path::Path) {
+    let made = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "no pipe at {}", path.display());
+}
+
+/// Runs `call` on a thread of its own and gives what it returns, or `None`
+/// where it has not returned after ten seconds. Then the call is taken to
+/// wait on the named pipe at `pipe`, which gets a writer until the thread
+/// ends: a reader of a pipe waits for one, with no error.
+pub(crate) fn within<T: Send + 'static>(
+    pipe: &std::path::Path,
+    call: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    use std::{sync::mpsc, thread, time::Duration};
+
+    let (sender, receiver) = mpsc::channel();
+    let thread = thread::spawn(move || {
+        let _ = sender.send(call());
+    });
+    let returned = receiver.recv_timeout(Duration::from_secs(10)).ok();
+    for _ in 0..500 {
+        if returned.is_some() || thread.is_finished() {
+            break;
+        }
+        drop(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(pipe),
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    if thread.is_finished() {
+        thread.join().expect("the call does not panic");
+    }
+    returned
+}

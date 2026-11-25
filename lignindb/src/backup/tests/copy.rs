@@ -811,3 +811,106 @@ fn a_copy_that_the_device_fails_says_what_failed() {
     );
     assert!(is_no_database(&to, TARGET));
 }
+
+/// A database on the file system of the machine, in `dir`, written and
+/// closed.
+fn on_disk(dir: &Path, seed: u64) {
+    let options = Options {
+        page_size: Some(PageSize::MIN),
+        cache_size: 16 << 20,
+        idle: Duration::from_millis(20),
+        ..Options::default()
+    };
+    let db = Db::open(dir, &options).expect("a new database");
+    let mut state = State::new();
+    let mut rng = Rng::new(seed);
+    for number in 1..=4 {
+        write(&db, &mut state, &mut rng, number);
+    }
+    db.close().expect("the session ends");
+}
+
+/// The path in `source` of the first file its manifest names, and the
+/// store subdirectory that holds it.
+fn first_named(source: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let manifest = read_manifest(&lignin_io::StdVfs, source).expect("the manifest");
+    let file = manifest.files().first().expect("a named file");
+    let names = match file.kind() {
+        FileKind::Wal => FileNames::WAL,
+        FileKind::Segment => FileNames::SEGMENT,
+        FileKind::ValueLog => FileNames::VALUE_LOG,
+        kind => panic!("{kind:?}"),
+    };
+    (names.path(source, file.id()), names.dir(source))
+}
+
+/// A source in which a symbolic link or a named pipe stands where the copy
+/// reads a file (the lock file, the manifest, a file the manifest names
+/// and the table checkpoint it names), or a link where the store
+/// subdirectory of a named file is, is refused
+/// before anything is made. The link is not followed, whatever it leads
+/// to (here, to the very entry it replaced), so that a copy holds no byte
+/// from outside its source; and the pipe is not opened, so that the copy
+/// does not wait on it.
+#[test]
+fn a_source_with_a_link_or_a_pipe_where_the_copy_reads_is_refused() {
+    use std::{fs, os::unix::fs::symlink};
+
+    use super::world::{pipe, within};
+
+    let place = tempfile::tempdir().expect("a directory");
+    let source = place.path().join("db");
+    on_disk(&source, 91);
+    let (named, subdirectory) = first_named(&source);
+    let table = {
+        let manifest = read_manifest(&lignin_io::StdVfs, &source).expect("the manifest");
+        let table = (manifest.table_checkpoint()).expect("the table checkpoint of a close");
+        FileNames::PAGE_TABLE.path(&source, table.file())
+    };
+    let target = place.path().join("copy");
+    let copy = {
+        let (source, target) = (source.clone(), target.clone());
+        move || Backup::new(Arc::new(lignin_io::StdVfs)).copy(&source, &target)
+    };
+
+    copy().expect("the copy is made");
+    fs::remove_dir_all(&target).expect("the copy goes");
+
+    let (lock, manifest) = (source.join("LOCK"), source.join(ManifestStore::FILE_NAME));
+    for (entry, is_pipe) in [
+        (&lock, false),
+        (&lock, true),
+        (&manifest, false),
+        (&manifest, true),
+        (&named, false),
+        (&named, true),
+        (&table, false),
+        (&table, true),
+        (&subdirectory, false),
+    ] {
+        // The entry goes outside the source, and a link to it, or a
+        // pipe, takes its place.
+        let outside = place.path().join("outside");
+        fs::rename(entry, &outside).expect("the entry moves");
+        match is_pipe {
+            true => pipe(entry),
+            false => symlink(&outside, entry).expect("a link"),
+        }
+        let what = format!("{} (a pipe: {is_pipe})", entry.display());
+
+        let error = within(entry, copy.clone())
+            .unwrap_or_else(|| panic!("{what}: the copy waited on it"))
+            .expect_err("neither is opened");
+        assert!(
+            matches!(&error, BackupError::NotRegular { path } if path == entry),
+            "{what}: {error}"
+        );
+        assert!(error.to_string().contains("nothing is copied"), "{what}");
+        assert!(!target.exists(), "{what}: something was made");
+
+        fs::remove_file(entry).expect("what took its place goes");
+        fs::rename(&outside, entry).expect("the entry is back");
+    }
+
+    copy().expect("the copy is made");
+}
