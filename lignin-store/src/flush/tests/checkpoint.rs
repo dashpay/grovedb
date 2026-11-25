@@ -277,11 +277,11 @@ impl<F: Fn() + Sync> PageValues for Meanwhile<F> {
         _: PageId,
         _: &mut ValueWriter,
         _: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-    ) -> Result<u64, RegroupError> {
+    ) -> Result<Regroup, RegroupError> {
         if !self.1.swap(true, Ordering::SeqCst) {
             (self.0)();
         }
-        Ok(0)
+        Ok(Regroup::default())
     }
 }
 

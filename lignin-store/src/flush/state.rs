@@ -114,11 +114,12 @@ impl Kept {
     }
 
     /// Lets go of the records of `page` if they are more than `most`
-    /// bytes: the longest run a block holds. The versions they are of can
-    /// then be written as a base image only, which is what a run of that
-    /// length is written as. So what is kept of a page that many commits
-    /// change before it is written stays within one run, whatever the log
-    /// holds of it.
+    /// bytes: the length of the longest run a block holds. A look that
+    /// takes the page in hand after that finds no records of those
+    /// versions and writes a base image, which is what a run of that
+    /// length is written as. So the records kept of a page that many
+    /// commits change before it is written are `most` bytes at most once
+    /// a commit or a step has been told, whatever the log holds of it.
     ///
     /// Nothing more is kept of the page until a block of it is written
     /// ([`Self::wrote`]). From then on the records of later commits are
@@ -414,6 +415,8 @@ pub(super) struct Turns {
     pub(super) begun: u64,
     /// The number of the last turn that has ended, counted as they begin.
     pub(super) ended: u64,
+    /// The turns that have ended with an error.
+    pub(super) failed: u64,
     /// Whether that turn moved anything on.
     pub(super) progress: bool,
 }
@@ -532,6 +535,14 @@ impl FlushState {
     /// that was published before the call.
     pub fn turns_begun(&self) -> u64 {
         lock(&self.turns).begun
+    }
+
+    /// How many turns have ended with an error. A turn's failure is told
+    /// in one step with its end: whoever reads [`Self::turns`] first and
+    /// this afterwards has, for every turn the first reading shows as
+    /// ended, its failure in the second.
+    pub fn turns_failed(&self) -> u64 {
+        lock(&self.turns).failed
     }
 
     /// The blocks of each segment that a trim took out of every chain:

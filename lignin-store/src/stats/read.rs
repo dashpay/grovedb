@@ -27,8 +27,9 @@ pub struct StoreStats {
     pub other_records: u64,
     /// Their bytes.
     pub other_record_bytes: u64,
-    /// Bytes write-back wrote: blocks and values as stored, the copies
-    /// of regrouped values among them, and table-checkpoint files.
+    /// Bytes write-back wrote: every block it appended to a segment and
+    /// every value it appended to the value log, as stored, the copies of
+    /// regrouped values among them, and table-checkpoint files.
     pub flush_bytes: u64,
     /// Bytes the cleaners wrote.
     pub cleaner_bytes: u64,
@@ -105,6 +106,11 @@ pub struct Watch {
     /// [`Self::turns_begun`] once the commit is published and waits for
     /// this to pass it.
     pub turns_ended: u64,
+    /// Turns of write-back that ended with an error
+    /// ([`FlushState::turns_failed`](crate::flush::FlushState::turns_failed)).
+    /// It is read after [`Self::turns_ended`], so the failure of every
+    /// turn that reading shows as ended is in it.
+    pub turns_failed: u64,
 }
 
 /// Why the log is held ([`Watch::log_held_by`]).
@@ -235,6 +241,7 @@ impl Stats {
             segments_not_durable: state.segments_not_durable(),
             turns_begun: state.turns_begun(),
             turns_ended: state.turns(),
+            turns_failed: state.turns_failed(),
         };
         StoreStats {
             log_bytes: log.bytes(),
@@ -243,7 +250,7 @@ impl Stats {
             node_record_bytes: flush.node_record_bytes,
             other_records: flush.other_records,
             other_record_bytes: flush.other_record_bytes,
-            flush_bytes: flush.stored_bytes
+            flush_bytes: flush.appended_bytes
                 + flush.value_stored_bytes
                 + flush.regroup_stored_bytes
                 + flush.checkpoint_bytes,

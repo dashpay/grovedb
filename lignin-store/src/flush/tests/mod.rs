@@ -267,7 +267,7 @@ impl PageValues for ByKey<'_> {
         id: PageId,
         to: &mut ValueWriter,
         cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-    ) -> Result<u64, RegroupError> {
+    ) -> Result<Regroup, RegroupError> {
         let db = self.0;
         let placed: Vec<(SlotId, ValuePointer)> = {
             let frame = db.frame(id, db.latest())?;
@@ -282,7 +282,7 @@ impl PageValues for ByKey<'_> {
             (after.file(), after.offset()) == (before.file(), before.end(V1))
         });
         if back_to_back {
-            return Ok(0);
+            return Ok(Regroup::default());
         }
         let mut hold = ValueHold::new();
         let mut buf = Vec::new();
@@ -292,11 +292,16 @@ impl PageValues for ByKey<'_> {
             moves.push((slot, from, to.append(&mut hold, id, &bytes)?));
         }
         cover(to)?;
-        let mut moved = 0;
+        let mut done = Regroup::default();
         for (slot, from, to) in moves {
-            moved += u64::from(db.repoint(id, slot, from, to, false));
+            if db.repoint(id, slot, from, to, false) {
+                done.moved += 1;
+            } else {
+                done.left += 1;
+                done.left_bytes += u64::from(to.value_len());
+            }
         }
-        Ok(moved)
+        Ok(done)
     }
 }
 

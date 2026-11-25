@@ -5,7 +5,7 @@
 use super::*;
 use crate::flush::{
     state::{lock, Changes, Kept},
-    write_back::AFTER_THE_LOOK,
+    write_back::{AFTER_THE_LOOK, PENDING_SCANS},
 };
 
 /// A store whose turns leave `leave` pages.
@@ -68,19 +68,21 @@ fn a_turn_leaves_the_pages_that_changed_last() {
 }
 
 /// The commits that change a page while it is left are written as one run
-/// behind its image.
+/// behind its image. Each of the three changes a cell of its own, so the
+/// page as it is read from the run shows that the run holds all three.
 #[test]
 fn the_commits_of_a_page_that_was_left_are_one_run() {
     let db = leaving(4);
-    // Two cells that make the page's image longer than the run will be.
+    // Three cells that make the page's image longer than the run will be.
     db.commit(&[
         insert((1, 1), b"a", inline(&noise(1, 300))),
         insert((1, 2), b"b", inline(&noise(2, 300))),
+        insert((1, 3), b"c", inline(&noise(3, 300))),
     ]);
     db.wb().pass().expect("a pass");
     assert_eq!(db.shape(page(1)), "B");
-    for byte in 1..=3 {
-        db.commit(&[hash((1, 1), byte), hash((1, 2), byte)]);
+    for cell in 1..=3u16 {
+        db.commit(&[hash((1, cell), 10 + cell as u8)]);
         let pass = db.wb().tick_deferring().expect("a turn").pass;
         assert_eq!((pass.written, pass.deferred), (0, 1));
     }
@@ -295,6 +297,19 @@ fn a_version_that_a_pin_reaches_gets_its_block_while_the_page_is_left() {
     assert_eq!((pass.written, pass.held, pass.deferred), (1, 0, 1));
     assert_eq!(db.shape(page(1)), "Bd");
     assert_eq!(db.chain(page(1))[1].version, second);
+    // The pinned version as its block gives it, through an empty pool.
+    {
+        let cold = new_pool(Db::SIZE);
+        let mut buffers = LoadBuffers::new();
+        let frame = (db.loader(&cold))
+            .get(page(1), second, &mut buffers)
+            .expect("the pinned version");
+        assert_eq!(frame.born(), second);
+        let model = db.model.lock().expect("the model");
+        let (_, cells) = model.at(page(1), second).expect("the page at the pin");
+        let found = db.cells(page(1), &frame, None);
+        assert!(same(&found, cells), "{found:?}, not {cells:?}");
+    }
 
     // The pin goes, and the third version is superseded: it is kept for
     // the block of the fourth.
@@ -316,8 +331,9 @@ fn a_version_that_a_pin_reaches_gets_its_block_while_the_page_is_left() {
 }
 
 /// A page that a turn left with nothing to do for it is not looked at by
-/// the turns after it: a turn in a store at rest takes no page in hand.
-/// A commit that changes the page has it looked at again.
+/// the turns after it: a turn in a store at rest takes no page in hand,
+/// neither to write it nor to look for its pending values. A commit that
+/// changes the page has it looked at again.
 #[test]
 fn a_turn_does_not_look_again_at_a_page_that_rests() {
     let db = leaving(4);
@@ -336,12 +352,14 @@ fn a_turn_does_not_look_again_at_a_page_that_rests() {
         });
     };
     count(&looked);
+    let scanned = PENDING_SCANS.with(|scans| scans.get());
     for _ in 0..3 {
         let tick = db.wb().tick_deferring().expect("a turn");
         assert_eq!((tick.pass.deferred, tick.pass.waiting), (2, 2));
         assert!(!tick.progressed());
     }
     assert_eq!(looked.get(), 0);
+    assert_eq!(PENDING_SCANS.with(|scans| scans.get()), scanned);
 
     // Page 1 changes: it is looked at, and its first version is kept for
     // the block of the second. Page 2 rests on. The turn after that finds
@@ -350,6 +368,7 @@ fn a_turn_does_not_look_again_at_a_page_that_rests() {
     let pass = db.wb().tick_deferring().expect("a turn").pass;
     assert_eq!((pass.held, pass.deferred, pass.waiting), (1, 2, 2));
     assert_eq!(looked.get(), 1);
+    assert_eq!(PENDING_SCANS.with(|scans| scans.get()), scanned + 1);
     let rests = || -> Vec<PageId> {
         let mut rests: Vec<PageId> = lock(&db.state.files).rested.keys().copied().collect();
         rests.sort_unstable();
@@ -455,6 +474,17 @@ fn a_page_step_leaves_a_page_at_rest_and_reaches_its_block() {
     assert_eq!(db.stats().runs_refused, 0);
     db.check_warm();
     db.check_cold();
+    // The page as its blocks give it holds the pointer the step gave.
+    let moved = db.pointer(page(1), slot(1));
+    let cold = new_pool(Db::SIZE);
+    let mut buffers = LoadBuffers::new();
+    let frame = (db.loader(&cold))
+        .get(page(1), db.latest(), &mut buffers)
+        .expect("the page from its blocks");
+    let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+    let cell = tree.cell(slot(1)).expect("the cell");
+    assert_eq!(cell.value_pointer(), Some(moved));
+    assert_ne!(moved, before);
 }
 
 /// A page that is left has its pending value placed in the turn that

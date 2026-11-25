@@ -145,7 +145,15 @@ fn a_page_under_a_private_copy_is_written_without_a_regrouping() {
     txn.copy(page(1));
     let pass = wb.pass().expect("a pass");
     assert_eq!((pass.written, pass.waiting), (1, 0));
-    assert_eq!(db.stats().values_regrouped, 0);
+    // The two values were copied before the steps were refused: the
+    // copies are dead space, counted with the bytes of their values.
+    let stats = db.stats();
+    assert_eq!(stats.values_regrouped, 0);
+    assert_eq!(
+        (stats.regroup_copies_left, stats.regroup_left_bytes),
+        (2, 2100)
+    );
+    assert!(stats.regroup_stored_bytes > 2100);
     assert!(!is_one_run(&in_key_order(&db, page(1))));
     txn.roll_back();
     db.check_cold();
@@ -153,7 +161,9 @@ fn a_page_under_a_private_copy_is_written_without_a_regrouping() {
     // Once the copy is gone, the next image of the page is regrouped.
     db.commit(&[hash((1, 1), 2)]);
     wb.pass().expect("a pass");
-    assert_eq!(db.stats().values_regrouped, 2);
+    let stats = db.stats();
+    assert_eq!(stats.values_regrouped, 2);
+    assert_eq!(stats.regroup_copies_left, 2, "no more were left");
     assert!(is_one_run(&in_key_order(&db, page(1))));
     db.check_cold();
 }
@@ -172,7 +182,7 @@ fn a_regrouping_that_fails_is_reported_and_the_page_is_written_as_it_is() {
             _: PageId,
             to: &mut ValueWriter,
             cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-        ) -> Result<u64, RegroupError> {
+        ) -> Result<Regroup, RegroupError> {
             self.0.fetch_add(1, Ordering::SeqCst);
             cover(to)?;
             Err("the tree layer could not".into())

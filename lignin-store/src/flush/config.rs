@@ -154,6 +154,11 @@ pub struct FlushStats {
     pub delta_bytes: u64,
     /// The bytes all those blocks take in their segments, frames included.
     pub stored_bytes: u64,
+    /// The bytes of every block that write-back appended to a segment,
+    /// frames included: those of `stored_bytes`, and those of the blocks
+    /// that got no link, because the page table refused it
+    /// (`links_refused`) or pushing it failed. The latter are dead space.
+    pub appended_bytes: u64,
     /// Base images written because a chain had reached the length or the
     /// byte threshold.
     pub consolidations: u64,
@@ -188,12 +193,25 @@ pub struct FlushStats {
     /// durable, and the next value goes to another file.
     pub value_files_given_up: u64,
     /// Values that were appended again and repointed when the values of
-    /// their page were regrouped.
+    /// their page were regrouped, in regroupings that ended without an
+    /// error.
     pub values_regrouped: u64,
+    /// Copies of a regrouping that no cell came to point at
+    /// ([`Regroup::left`](super::Regroup::left)): the step that was to
+    /// give the cell its pointer was refused, or was not tried after a
+    /// refusal. They are dead space. A
+    /// regrouping that ended with an error adds to neither this count
+    /// nor `values_regrouped`, though the cells it had given their copies
+    /// keep them: of its copies only the bytes are counted
+    /// (`regroup_stored_bytes`).
+    pub regroup_copies_left: u64,
+    /// The bytes of the values of those copies, without their record
+    /// headers.
+    pub regroup_left_bytes: u64,
     /// The bytes that regroupings appended to the value log, frames
-    /// included: the copies of the values counted in `values_regrouped`,
-    /// and those of a regrouping that failed or whose page could not take
-    /// the new pointers, which are dead space.
+    /// included, whether a cell came to point at the copy or not and
+    /// whether the regrouping ended with an error or not. A copy that no
+    /// cell points at is dead space.
     pub regroup_stored_bytes: u64,
     /// Page steps that were put off because a write transaction held a
     /// private copy of the page.
@@ -279,6 +297,7 @@ pub(super) struct Counters {
     pub(super) delta_blocks: AtomicU64,
     pub(super) delta_bytes: AtomicU64,
     pub(super) stored_bytes: AtomicU64,
+    pub(super) appended_bytes: AtomicU64,
     pub(super) consolidations: AtomicU64,
     pub(super) flat_blocks: AtomicU64,
     pub(super) flat_stored_bytes: AtomicU64,
@@ -289,6 +308,8 @@ pub(super) struct Counters {
     pub(super) values_given_up: AtomicU64,
     pub(super) value_files_given_up: AtomicU64,
     pub(super) values_regrouped: AtomicU64,
+    pub(super) regroup_copies_left: AtomicU64,
+    pub(super) regroup_left_bytes: AtomicU64,
     pub(super) regroup_stored_bytes: AtomicU64,
     pub(super) steps_put_off: AtomicU64,
     pub(super) held_for_readers: AtomicU64,
@@ -330,6 +351,7 @@ impl Counters {
             delta_blocks: read(&self.delta_blocks),
             delta_bytes: read(&self.delta_bytes),
             stored_bytes: read(&self.stored_bytes),
+            appended_bytes: read(&self.appended_bytes),
             consolidations: read(&self.consolidations),
             flat_blocks: read(&self.flat_blocks),
             flat_stored_bytes: read(&self.flat_stored_bytes),
@@ -340,6 +362,8 @@ impl Counters {
             values_given_up: read(&self.values_given_up),
             value_files_given_up: read(&self.value_files_given_up),
             values_regrouped: read(&self.values_regrouped),
+            regroup_copies_left: read(&self.regroup_copies_left),
+            regroup_left_bytes: read(&self.regroup_left_bytes),
             regroup_stored_bytes: read(&self.regroup_stored_bytes),
             steps_put_off: read(&self.steps_put_off),
             held_for_readers: read(&self.held_for_readers),

@@ -549,9 +549,9 @@ fn a_page_that_is_freed_while_its_block_is_written_gets_no_link() {
             id: PageId,
             _: &mut ValueWriter,
             _: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-        ) -> Result<u64, RegroupError> {
+        ) -> Result<Regroup, RegroupError> {
             self.0.commit(&[Op::Free { page: id }]);
-            Ok(0)
+            Ok(Regroup::default())
         }
     }
 
@@ -568,6 +568,9 @@ fn a_page_that_is_freed_while_its_block_is_written_gets_no_link() {
     assert_eq!(db.latest(), version(3));
     let stats = db.stats();
     assert_eq!((stats.links_refused, stats.base_blocks), (1, 1));
+    // The block that got no link was appended all the same, and its
+    // bytes are among those that write-back wrote.
+    assert!(stats.appended_bytes > stats.stored_bytes, "{stats:?}");
     let chain = db.chain(page(1));
     assert_eq!(
         chain.last().map(|link| (link.kind, link.version)),

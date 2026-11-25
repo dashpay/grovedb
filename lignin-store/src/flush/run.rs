@@ -162,8 +162,10 @@ impl WriteBack<'_> {
 
     /// One turn that a caller makes: the log is rolled and synced if that
     /// is due, a pass is made, and a table checkpoint is taken if one is
-    /// due. The pass leaves no page for a later turn. The turns of the
-    /// background loop are these, with a pass that does
+    /// due. The pass leaves no page for a later turn by choice: what it
+    /// cannot write waits as ever (a page under the private copy of a
+    /// write transaction, a page whose value has no place yet). The turns
+    /// of the background loop are these, with a pass that leaves pages
     /// ([`Self::tick_deferring`]).
     ///
     /// The pass is made whatever became of the log, so that a committer
@@ -198,6 +200,7 @@ impl WriteBack<'_> {
         let (progress, turn) = self.turn(deferring);
         let mut turns = lock(&state.turns);
         turns.ended = number;
+        turns.failed += u64::from(turn.is_err());
         turns.progress = progress;
         drop(turns);
         state.turned.notify_all();

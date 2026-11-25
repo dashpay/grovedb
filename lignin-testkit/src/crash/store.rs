@@ -43,7 +43,7 @@ use lignin_store::{
     cleaner::{Cleaner, CleanerConfig, CleanerState, Pass, ValuePass},
     flush::{
         Checkpointed, FlushConfig, FlushError, FlushState, FlushStats, PageValues, Published,
-        RegroupError, Stores, WriteBack,
+        Regroup, RegroupError, Stores, WriteBack,
     },
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
     recovery::{recover, Recovered, RecoveryOptions, RecoveryReport},
@@ -1885,12 +1885,12 @@ impl PageValues for Session {
         id: PageId,
         to: &mut ValueWriter,
         cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-    ) -> Result<u64, RegroupError> {
+    ) -> Result<Regroup, RegroupError> {
         let Some(frame) = self.current(id)? else {
-            return Ok(0);
+            return Ok(Regroup::default());
         };
         if !is_tree(&frame) {
-            return Ok(0);
+            return Ok(Regroup::default());
         }
         let born = frame.born();
         let placed: Vec<ValuePointer> = {
@@ -1906,7 +1906,7 @@ impl PageValues for Session {
             (after.file(), after.offset()) == (before.file(), before.end(FRAME_FORMAT))
         });
         if back_to_back {
-            return Ok(0);
+            return Ok(Regroup::default());
         }
         let mut hold = ValueHold::new();
         let mut buf = Vec::new();
@@ -1916,7 +1916,11 @@ impl PageValues for Session {
             moves.push((from, to.append(&mut hold, id, &bytes)?));
         }
         cover(to)?;
-        let mut moved = 0;
+        let copied = moves.len() as u64;
+        let copied_bytes: u64 = (moves.iter())
+            .map(|(_, copy)| u64::from(copy.value_len()))
+            .sum();
+        let (mut moved, mut moved_bytes) = (0, 0);
         for (from, to) in moves {
             let Some(frame) = self.current(id)? else {
                 break;
@@ -1928,6 +1932,7 @@ impl PageValues for Session {
                     drop(step);
                     counts.apply(&ValueChange::moved(from, to), self.latest())?;
                     moved += 1;
+                    moved_bytes += u64::from(to.value_len());
                 }
                 Ok(Err(_)) => break,
                 Err(StepError::Log(error)) => {
@@ -1941,7 +1946,11 @@ impl PageValues for Session {
                 Err(StepError::Other(error)) => return Err(error.into()),
             }
         }
-        Ok(moved)
+        Ok(Regroup {
+            moved,
+            left: copied - moved,
+            left_bytes: copied_bytes - moved_bytes,
+        })
     }
 }
 

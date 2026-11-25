@@ -67,9 +67,9 @@ pub trait PageValues: Sync {
     /// to `to`, back to back in scan order, calls `cover`, which makes the
     /// copies durable and has the manifest cover them, and then gives each
     /// cell the pointer to its copy, each in a page step whose record goes
-    /// to the log through [`WriteBack::append_change`]. Returns how many
-    /// values it moved. A page that a write transaction holds a private
-    /// copy of is left as it is.
+    /// to the log through [`WriteBack::append_change`]. Returns what
+    /// became of the copies ([`Regroup`]). A page that a write transaction
+    /// holds a private copy of is left as it is.
     ///
     /// Write-back calls this, under an operation guard, for a page it is
     /// about to write a new base image of, after it has placed the page's
@@ -80,7 +80,40 @@ pub trait PageValues: Sync {
         page: PageId,
         to: &mut ValueWriter,
         cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-    ) -> Result<u64, RegroupError>;
+    ) -> Result<Regroup, RegroupError>;
+}
+
+/// What a regrouping of one page's values did, where it ended without
+/// an error ([`PageValues::regroup`]). A regrouping that fails tells
+/// nothing of its copies: the cells that were given theirs before the
+/// error keep them, and the other copies are dead space.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Regroup {
+    /// Values whose cells hold the pointers to their copies.
+    pub moved: u64,
+    /// Copies that no cell had been given when the regrouping returned.
+    /// A step that is to give a cell its copy is refused where the page
+    /// is no longer the frame whose values were copied (a commit has
+    /// superseded it, a write transaction holds a private copy of it, or
+    /// a page step has replaced the frame, be it for another cell), and
+    /// where the cell holds that value no more. After a refusal of the
+    /// first kind the steps that remain are not tried, and their copies
+    /// are left with it. They are dead space.
+    pub left: u64,
+    /// The bytes of the values of those copies, without their record
+    /// headers.
+    pub left_bytes: u64,
+}
+
+impl Regroup {
+    /// A regrouping that moved `moved` values and left no copy.
+    pub const fn moved(moved: u64) -> Self {
+        Self {
+            moved,
+            left: 0,
+            left_bytes: 0,
+        }
+    }
 }
 
 /// The parts of one open store that write-back works on.
@@ -293,6 +326,9 @@ thread_local! {
     /// the page in between.
     pub(super) static AFTER_THE_LOOK: std::cell::RefCell<Option<AfterTheLook>> =
         const { std::cell::RefCell::new(None) };
+    /// The pages whose pending values the passes of this thread have
+    /// looked for.
+    pub(super) static PENDING_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// What one look at a page works on: the frames of its unwritten versions,
@@ -667,8 +703,9 @@ impl<'s> WriteBack<'s> {
         // A page that an earlier pass left, and found with nothing to do
         // for it, is not looked at while it is left again with the same
         // version waiting: no commit has changed it since, and a page
-        // step gives a page no pending value. So a turn costs what the
-        // commits since the last one changed, not what waits.
+        // step gives a page no pending value. So of the pages that rest
+        // on, a turn reads no more than their place in the list of what
+        // waits.
         let deferred = &round.deferred;
         (files.rested).retain(|page, rests| {
             deferred.contains(page)
@@ -922,21 +959,27 @@ impl<'s> WriteBack<'s> {
             values.commit(&mut *self.manifest()?)?;
             Ok(())
         };
-        let mut moved = Ok(0);
-        versions.guarded(&mut || moved = page_values.regroup(page, writer, &mut cover));
+        let mut done = Ok(Regroup::default());
+        versions.guarded(&mut || done = page_values.regroup(page, writer, &mut cover));
         // The copies are in the file whatever became of the regrouping.
+        let counters = &self.state.counters;
         count(
-            &self.state.counters.regroup_stored_bytes,
+            &counters.regroup_stored_bytes,
             writer.end().saturating_sub(began),
         );
-        match moved {
-            Ok(moved) => {
-                count(&self.state.counters.values_regrouped, moved);
-                Ok(moved)
+        match done {
+            Ok(done) => {
+                count(&counters.values_regrouped, done.moved);
+                count(&counters.regroup_copies_left, done.left);
+                count(&counters.regroup_left_bytes, done.left_bytes);
+                Ok(done.moved)
             }
             Err(source) => {
-                // The copies are given up, and the next value goes to
-                // another file: a sync of this one may have failed.
+                // Nothing is counted of this regrouping but the bytes
+                // it appended: the cells that were given their copies
+                // keep them, and the other copies are dead space. The
+                // next value goes to another file: a sync of this one
+                // may have failed.
                 self.give_up_value_file(files);
                 Err(FlushError::Regroup { page, source })
             }
@@ -1321,7 +1364,11 @@ impl<'s> WriteBack<'s> {
         }
         let writer = files.segment.as_mut().expect("a segment was just made");
         match writer.append(page, content, compression, payload) {
-            Ok(location) => Ok(location),
+            Ok(location) => {
+                let counters = &self.state.counters;
+                count(&counters.appended_bytes, u64::from(location.len));
+                Ok(location)
+            }
             Err(SegmentStoreError::SegmentFull { .. }) => {
                 let full = files.segment.take().expect("the segment that is full");
                 self.seal(files, full)?;

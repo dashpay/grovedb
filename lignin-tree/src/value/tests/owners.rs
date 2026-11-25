@@ -459,6 +459,8 @@ fn a_regrouping_that_is_refused_leaves_the_page_and_the_counts_as_they_were() {
         (refused.moved, refused.gone, refused.busy),
         (0, 0, old.len() as u64)
     );
+    let lens = old.iter().map(|pointer| u64::from(pointer.value_len()));
+    assert_eq!(refused.left_bytes, lens.sum::<u64>());
     assert_eq!(refused.after, refused.before);
     db.roll_back(scope);
     unchanged();
@@ -620,7 +622,7 @@ impl StepLog for SharedLog {
 /// it defines, and [`Regrouping`] is what stands behind it.
 #[test]
 fn write_back_reaches_the_scan_order_and_the_regrouping_through_its_trait() {
-    use lignin_store::flush::{FlushError, PageValues};
+    use lignin_store::flush::{FlushError, PageValues, Regroup};
 
     let db = Db::traced();
     let tree = tree_of(&db, 150, 30);
@@ -672,7 +674,8 @@ fn write_back_reaches_the_scan_order_and_the_regrouping_through_its_trait() {
     let moved = through
         .regroup(page, &mut to, &mut cover)
         .expect("regrouped");
-    assert_eq!((moved, covered.get()), (was.values, 1));
+    assert_eq!((moved, covered.get()), (Regroup::moved(was.values), 1));
+    let moved = moved.moved;
     let now = locality(&db, page);
     assert_eq!((now.values, now.runs), (was.values, 1));
     assert_eq!(log.records.lock().expect("the log").len() as u64, moved);
@@ -684,5 +687,5 @@ fn write_back_reaches_the_scan_order_and_the_regrouping_through_its_trait() {
     let again = through
         .regroup(page, &mut to, &mut cover)
         .expect("nothing to do");
-    assert_eq!((again, covered.get()), (0, 1));
+    assert_eq!((again, covered.get()), (Regroup::default(), 1));
 }
