@@ -282,7 +282,7 @@ fn rows_as(rows: &[(&[u8], Element)], v: &GroveVersion) -> String {
         (key.to_vec(), (element.clone(), bytes))
     };
     let rows: Vec<_> = rows.iter().map(row).collect();
-    format!("{:?}", Ok::<_, Error>((rows, 0u16)))
+    super::whole::text(&Ok::<_, Error>((rows, 0u16)))
 }
 
 /// The calls of [`history`] that the engines answer differently on the
