@@ -64,6 +64,27 @@ const SPEAKERS: [&str; 10] = [
     "lignin-testkit/src/bench",
 ];
 
+/// The error types of an open, a recovery, a commit, the end of a
+/// session, a close, a checkpoint and the tool, by the file their
+/// `Display` is in: the messages chapter quotes every message of each.
+const COVERED: [(&str, &[&str]); 5] = [
+    (
+        "lignindb/src/db/error.rs",
+        &["OpenError", "Reopen", "DbError"],
+    ),
+    (
+        "lignindb/src/commit/error.rs",
+        &["Stopped", "CommitError", "Failure"],
+    ),
+    ("lignin-store/src/recovery/error.rs", &["RecoveryError"]),
+    ("lignindb/src/checkpoint/error.rs", &["CheckpointError"]),
+    ("lignin-tools/src/error.rs", &["ToolError"]),
+];
+
+/// Words of those types that fill a place of a longer message of theirs,
+/// which the chapter quotes with `…` there.
+const PARTS: [&str; 1] = ["up to …"];
+
 /// The first words of the commands a document can name in a code span.
 const COMMANDS: [&str; 18] = [
     "lignin",
@@ -434,13 +455,16 @@ fn command_fault(line: &str, packages: &BTreeMap<String, (PathBuf, String)>) -> 
             .err()
             .map(|error| format!("does not parse: {error}")),
         Some("lignin-bench") => {
-            let parser = read(&repository().join("lignin-testkit/src/bench/cli.rs"));
-            let quoted = |word: &str| parser.contains(&format!("\"{word}\""));
-            let unknown: Vec<&str> = (words[1..].iter().copied())
-                .filter(|word| word.starts_with("--") || *word == words[1])
-                .filter(|word| !quoted(word))
+            let cli = read(&repository().join("lignin-testkit/src/bench/cli.rs"));
+            if words.get(1) != Some(&"run") {
+                return Some("lignin-bench is run here with `run` alone".to_owned());
+            }
+            let body = function_body(&cli, "pub fn parse_run(");
+            let unknown: Vec<&str> = (words[2..].iter().copied())
+                .filter(|word| word.starts_with("--"))
+                .filter(|word| !body.contains(&format!("\"{word}\"")))
                 .collect();
-            (!unknown.is_empty()).then(|| format!("lignin-bench does not read {unknown:?}"))
+            (!unknown.is_empty()).then(|| format!("lignin-bench run does not read {unknown:?}"))
         }
         Some("cargo") => {
             let value = |option: &str| {
@@ -468,6 +492,24 @@ fn command_fault(line: &str, packages: &BTreeMap<String, (PathBuf, String)>) -> 
         }
         _ => None,
     }
+}
+
+/// The text of the item that begins at `start` in `source`, up to the
+/// brace that closes it.
+fn function_body<'a>(source: &'a str, start: &str) -> &'a str {
+    let at = source
+        .find(start)
+        .unwrap_or_else(|| panic!("no {start:?} in the source"));
+    let mut depth = 0;
+    for (offset, c) in source[at..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' if depth == 1 => return &source[at..at + offset + 1],
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    panic!("{start:?} does not end");
 }
 
 /// Whether a code span of prose is the text of a message, which is to be
@@ -784,7 +826,7 @@ fn every_command_names_what_the_workspace_has() {
             for span in code_spans(prose) {
                 let tokens: Vec<&str> = span.split_whitespace().collect();
                 let fault = match tokens.as_slice() {
-                    ["lignin-bench", ..] => command_fault(&span, &packages),
+                    ["lignin-bench", _, ..] => command_fault(&span, &packages),
                     ["lignin", rest @ ..] if !rest.is_empty() => {
                         let subcommand = rest.first().filter(|word| !word.starts_with("--"));
                         let options = rest.iter().filter(|word| word.starts_with("--"));
@@ -848,8 +890,11 @@ fn every_quoted_message_is_in_the_code() {
                 for span in spans {
                     quoted += 1;
                     in_tables.insert((*line, span.clone()));
-                    if !patterns.iter().any(|pattern| pattern.contains(&span)) {
-                        faults.push(format!("{name}:{line}: `{span}` is not in {file}"));
+                    if !patterns
+                        .iter()
+                        .any(|pattern| pattern.trim_end_matches('\n') == span)
+                    {
+                        faults.push(format!("{name}:{line}: `{span}` is no message of {file}"));
                     }
                 }
             }
@@ -924,6 +969,7 @@ fn defaults() -> BTreeMap<String, String> {
         max_chain_deltas,
         max_chain_bytes,
         segment_len,
+        max_deferred,
         max_unwritten,
         max_pending_bytes,
         max_log_held,
@@ -942,6 +988,11 @@ fn defaults() -> BTreeMap<String, String> {
         value_dead_percent,
         idle: cleaner_idle,
     } = cleaner.unwrap_or(CleanerConfig::new());
+    let migrate = read(&repository().join("lignin-tools/src/migrate/mod.rs"));
+    assert!(
+        migrate.contains("Some(machine / 2)"),
+        "the limit of a migration is no longer half of the machine's memory"
+    );
     let memory_limit =
         "half the machine's memory as `/proc/meminfo` states it; none where that file does not \
          state it"
@@ -977,6 +1028,7 @@ fn defaults() -> BTreeMap<String, String> {
             bytes(max_chain_bytes as u64),
         ),
         ("FlushConfig::segment_len", bytes(segment_len)),
+        ("FlushConfig::max_deferred", max_deferred.to_string()),
         ("FlushConfig::idle", duration(flush_idle)),
         ("FlushConfig::max_failed_wait", duration(max_failed_wait)),
         (
@@ -1032,6 +1084,43 @@ fn defaults() -> BTreeMap<String, String> {
     .into_iter()
     .map(|(option, default)| (option.to_owned(), default))
     .collect()
+}
+
+#[test]
+fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
+    let root = repository();
+    let chapter = read(&operator_dir().join("messages.md"));
+    let quoted: BTreeSet<String> = parse(&chapter)
+        .prose
+        .iter()
+        .flat_map(|(_, line)| code_spans(line))
+        .collect();
+    let mut missing = Vec::new();
+    let mut covered = 0;
+    for (file, types) in COVERED {
+        let source = read(&root.join(file));
+        for name in types {
+            let display = function_body(&source, &format!("impl fmt::Display for {name} {{"));
+            for pattern in literal_patterns(display) {
+                let pattern = pattern.trim_end_matches('\n').to_owned();
+                let words = pattern.chars().filter(|c| c.is_alphabetic()).count();
+                if words < 3 || !pattern.contains(' ') || PARTS.contains(&pattern.as_str()) {
+                    continue;
+                }
+                covered += 1;
+                if !quoted.contains(&pattern) {
+                    missing.push(format!("{file} ({name}): `{pattern}`"));
+                }
+            }
+        }
+    }
+    println!("{covered} messages of the error types quoted");
+    assert!(covered > 50, "only {covered} messages were read");
+    assert!(
+        missing.is_empty(),
+        "not in messages.md:\n{}",
+        missing.join("\n")
+    );
 }
 
 #[test]
