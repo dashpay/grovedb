@@ -67,7 +67,8 @@ const SPEAKERS: [&str; 10] = [
 /// The error types of an open, a recovery, a commit, the end of a
 /// session, a close, a checkpoint and the tool, by the file their
 /// `Display` is in: the messages chapter quotes every message of each.
-const COVERED: [(&str, &[&str]); 25] = [
+const COVERED: [(&str, &[&str]); 26] = [
+    ("lignin-tree/src/drop/error.rs", &["DropError"]),
     ("lignin-tree/src/flat/error.rs", &["FlatError"]),
     ("lignin-tree/src/directory/error.rs", &["DirectoryError"]),
     ("lignin-format/src/error.rs", &["FormatError"]),
@@ -118,18 +119,14 @@ const COVERED: [(&str, &[&str]); 25] = [
 
 /// Words that the code hands to a message of those types as a value, by
 /// the file, the words before each, and the message they fill: the string
-/// literal after each is quoted in a row of the messages chapter that
-/// quotes that message too, so a reason quoted for one message does not
-/// stand for the same word of another.
-const REASONS: [(&str, &str, &str); 25] = [
+/// literal after each, or every literal of the call where the words open
+/// one, is quoted as the message of a row of the messages chapter that
+/// names that file and quotes that message too, so a reason quoted for one
+/// message does not stand for the same word of another.
+const REASONS: [(&str, &str, &str); 35] = [
     (
         "lignin-tree/src/directory/check.rs",
-        "damaged(&key, ",
-        DIRECTORY_RECORD,
-    ),
-    (
-        "lignin-tree/src/directory/check.rs",
-        "damaged(&[], ",
+        "damaged(",
         DIRECTORY_RECORD,
     ),
     (
@@ -143,15 +140,15 @@ const REASONS: [(&str, &str, &str); 25] = [
         DIRECTORY_RECORD,
     ),
     (
+        "lignin-tree/src/directory/rekey.rs",
+        "let twice = ",
+        DIRECTORY_RECORD,
+    ),
+    (
         "lignin-tree/src/directory/write.rs",
         "let what = ",
         DIRECTORY_RECORD,
     ),
-    ("lignin-tree/src/flat/cursor.rs", "what: ", FLAT_PAGE),
-    ("lignin-tree/src/flat/long_key.rs", "what: ", FLAT_PAGE),
-    ("lignin-tree/src/flat/node.rs", "what: ", FLAT_PAGE),
-    ("lignin-tree/src/flat/store.rs", "what: ", FLAT_PAGE),
-    ("lignin-tree/src/flat/tree.rs", "what: ", FLAT_PAGE),
     (
         "lignin-tree/src/directory/read.rs",
         "Malformed(",
@@ -167,6 +164,21 @@ const REASONS: [(&str, &str, &str); 25] = [
         "let what = ",
         DIRECTORY_RECORD,
     ),
+    ("lignin-tree/src/flat/cursor.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/long_key.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/node.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/store.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/flat/tree.rs", "what: ", FLAT_PAGE),
+    ("lignin-tree/src/drop/step.rs", "damaged(", DROP_PAGE),
+    ("lignin-tree/src/drop/flat.rs", "damaged(", DROP_PAGE),
+    ("lignin-tree/src/drop/flat.rs", "let twice = ", DROP_PAGE),
+    ("lignin-tree/src/drop/column.rs", "damaged(", DROP_PAGE),
+    ("lignin-tree/src/drop/column.rs", "let what = ", DROP_PAGE),
+    ("lignin-tree/src/drop/column.rs", ": &str = ", DROP_PAGE),
+    ("lignin-tree/src/drop/merk.rs", "let what = ", DROP_PAGE),
+    ("lignin-tree/src/drop/step.rs", "Record(", DROP_RECORD),
+    ("lignin-tree/src/drop/flat.rs", "Record(", DROP_RECORD),
+    ("lignin-tree/src/drop/column.rs", "Record(", DROP_RECORD),
     ("lignindb/src/db/open.rs", "tree(", FIRST_COMMIT),
     ("lignindb/src/db/open.rs", "column(", FIRST_COMMIT),
     (
@@ -200,6 +212,8 @@ const FIRST_COMMIT: &str = "the first commit of the database (";
 const KEYSPACES: &str = "the record of the keyspaces: ";
 const FLAT_PAGE: &str = "flat page …: …";
 const DIRECTORY_RECORD: &str = "subtree directory record ";
+const DROP_PAGE: &str = "what a dropped subtree left in page …: …";
+const DROP_RECORD: &str = "record of unlinked pages: …";
 
 /// Words of those types that fill a place of a longer message of theirs,
 /// which the chapter quotes with `…` there.
@@ -649,64 +663,171 @@ fn is_message(span: &str) -> bool {
         && !span.contains("::")
 }
 
-/// A string literal of Rust source as a pattern of the text it formats:
-/// escapes made, a line that ends in `\` joined to the next with no space
-/// between, and every argument of a format string as `…`. The literals of
-/// an item that is built for tests alone (`#[cfg(test)]`,
-/// `#[cfg(all(test, …))]`) are left out, up to the `;` or `,` that ends
-/// it, or the bracket that closes its first.
-fn literal_patterns(source: &str) -> Vec<String> {
+/// `source` with every item that is built for tests alone (`#[cfg(test)]`,
+/// `#[cfg(all(test, …))]`) left out: from its attribute to the `;` or `,`
+/// that ends it, or to the brace that closes its body. Strings, characters
+/// and comments are read as such, so a bracket in one counts for nothing.
+fn outside_tests(source: &str) -> String {
     let chars: Vec<char> = source.chars().collect();
-    let mut literals = Vec::new();
-    let mut at = 0;
-    let ident = |c: char| c.is_alphanumeric() || c == '_';
     let starts = |at: usize, text: &str| {
         text.chars()
             .enumerate()
             .all(|(i, c)| chars.get(at + i) == Some(&c))
     };
-    // How deep in brackets the scan is, and where an item for tests began
-    // and whether its first bracket has opened.
+    let mut out = String::with_capacity(source.len());
     let mut depth = 0usize;
-    let mut test_item: Option<(usize, bool)> = None;
+    // Where an item for tests began, and whether its body has opened.
+    let mut item: Option<(usize, bool)> = None;
+    let mut at = 0;
+    while at < chars.len() {
+        let len = token_len(&chars, at);
+        let c = chars[at];
+        let mut keep = item.is_none();
+        if len == 1 {
+            match c {
+                '#' if item.is_none()
+                    && (starts(at, "#[cfg(test)]") || starts(at, "#[cfg(all(test,")) =>
+                {
+                    item = Some((depth, false));
+                    keep = false;
+                }
+                '{' | '(' | '[' => {
+                    depth += 1;
+                    if let Some((began, opened)) = &mut item {
+                        *opened |= c == '{' && depth == *began + 1;
+                    }
+                }
+                '}' | ')' | ']' => {
+                    depth = depth.saturating_sub(1);
+                    match item {
+                        // The bracket around the item closes: it ends, and
+                        // the bracket is the code's.
+                        Some((began, _)) if depth < began => {
+                            item = None;
+                            keep = true;
+                        }
+                        Some((began, true)) if c == '}' && depth == began => item = None,
+                        _ => {}
+                    }
+                }
+                ';' | ',' if item.is_some_and(|(began, opened)| depth == began && !opened) => {
+                    item = None;
+                }
+                _ => {}
+            }
+        }
+        if keep {
+            out.extend(&chars[at..at + len]);
+        }
+        at += len;
+    }
+    out
+}
+
+/// How many characters the token at `at` takes: a comment, a string, a
+/// character, or one character.
+fn token_len(chars: &[char], at: usize) -> usize {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let next = chars.get(at + 1).copied();
+    let rest = chars.len() - at;
+    match chars[at] {
+        '/' if next == Some('/') => (chars[at..].iter().position(|c| *c == '\n')).unwrap_or(rest),
+        '/' if next == Some('*') => {
+            let (mut depth, mut end) = (0, at);
+            while end < chars.len() {
+                match (chars[end], chars.get(end + 1)) {
+                    ('/', Some('*')) => {
+                        depth += 1;
+                        end += 2;
+                    }
+                    ('*', Some('/')) => {
+                        depth -= 1;
+                        end += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => end += 1,
+                }
+            }
+            end - at
+        }
+        '\'' => match (next, chars.get(at + 2)) {
+            (Some('\\'), _) => {
+                let close = chars[at + 2..].iter().position(|c| *c == '\'');
+                close.map_or(1, |close| close + 3)
+            }
+            (Some(_), Some('\'')) => 3,
+            _ => 1,
+        },
+        'r' if (at == 0 || !ident(chars[at - 1])) && matches!(next, Some('"') | Some('#')) => {
+            let hashes = chars[at + 1..].iter().take_while(|c| **c == '#').count();
+            if chars.get(at + 1 + hashes) != Some(&'"') {
+                return 1;
+            }
+            let mut end = at + 2 + hashes;
+            let closes = |end: usize| {
+                chars[end] == '"'
+                    && chars[end + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|c| **c == '#')
+                        .count()
+                        == hashes
+            };
+            while end < chars.len() && !closes(end) {
+                end += 1;
+            }
+            (end + 1 + hashes).min(chars.len()) - at
+        }
+        '"' => {
+            let mut end = at + 1;
+            while end < chars.len() && chars[end] != '"' {
+                end += if chars[end] == '\\' { 2 } else { 1 };
+            }
+            (end + 1).min(chars.len()) - at
+        }
+        _ => 1,
+    }
+}
+
+/// The arguments of a call, from just after its `(` to the `)` that closes
+/// it, read as Rust.
+fn call_arguments(rest: &str) -> String {
+    let chars: Vec<char> = rest.chars().collect();
+    let (mut depth, mut at) = (1, 0);
+    while at < chars.len() {
+        let len = token_len(&chars, at);
+        if len == 1 {
+            match chars[at] {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        at += len;
+    }
+    chars[..at].iter().collect()
+}
+
+/// A string literal of Rust source as a pattern of the text it formats:
+/// escapes made, a line that ends in `\` joined to the next with no space
+/// between, and every argument of a format string as `…`. The literals of
+/// an item built for tests alone are not read ([`outside_tests`]).
+fn literal_patterns(source: &str) -> Vec<String> {
+    let chars: Vec<char> = outside_tests(source).chars().collect();
+    let mut literals = Vec::new();
+    let mut at = 0;
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
     while at < chars.len() {
         let c = chars[at];
         let next = chars.get(at + 1).copied();
         match c {
-            '#' if test_item.is_none()
-                && (starts(at, "#[cfg(test)]") || starts(at, "#[cfg(all(test,")) =>
-            {
-                test_item = Some((depth, false));
-                while at < chars.len() && chars[at] != ']' {
-                    at += 1;
-                }
-                if starts(at, "))]") {
-                    at += 2;
-                }
-                at += 1;
-            }
-            '{' | '(' | '[' => {
-                depth += 1;
-                if let Some((_, opened)) = &mut test_item {
-                    *opened = true;
-                }
-                at += 1;
-            }
-            '}' | ')' | ']' => {
-                depth = depth.saturating_sub(1);
-                if test_item
-                    .is_some_and(|(began, opened)| depth < began || (depth == began && opened))
-                {
-                    test_item = None;
-                }
-                at += 1;
-            }
-            ';' | ',' => {
-                if test_item.is_some_and(|(began, opened)| depth == began && !opened) {
-                    test_item = None;
-                }
-                at += 1;
-            }
             '/' if next == Some('/') => {
                 while at < chars.len() && chars[at] != '\n' {
                     at += 1;
@@ -761,9 +882,7 @@ fn literal_patterns(source: &str) -> Vec<String> {
                 while end < chars.len() && !closes(end) {
                     end += 1;
                 }
-                if test_item.is_none() {
-                    literals.push(chars[start..end].iter().collect::<String>());
-                }
+                literals.push(chars[start..end].iter().collect::<String>());
                 at = end + 1 + hashes;
             }
             '"' => {
@@ -798,9 +917,7 @@ fn literal_patterns(source: &str) -> Vec<String> {
                     }
                 }
                 at += 1;
-                if test_item.is_none() {
-                    literals.push(text);
-                }
+                literals.push(text);
             }
             _ => at += 1,
         }
@@ -1095,26 +1212,35 @@ fn every_quoted_message_is_in_the_code() {
             let (Some(message), Some(code)) = (column("Message"), column("Code")) else {
                 continue;
             };
+            // A row names the file of its messages, or each file where a
+            // message is the words of more than one type.
             for (line, row) in &table.rows {
                 let spans = code_spans(&row[message]);
-                let file = code_spans(&row[code]).into_iter().next();
-                let Some(file) = file.filter(|_| !spans.is_empty()) else {
+                let files = code_spans(&row[code]);
+                if spans.is_empty() || files.is_empty() {
                     faults.push(format!(
                         "{name}:{line}: a row without a message or its file"
                     ));
                     continue;
-                };
-                let patterns = by_file
-                    .entry(file.clone())
-                    .or_insert_with(|| literal_patterns(&read(&root.join(&file))));
+                }
+                for file in &files {
+                    by_file
+                        .entry(file.clone())
+                        .or_insert_with(|| literal_patterns(&read(&root.join(file))));
+                }
                 for span in spans {
                     quoted += 1;
                     in_tables.insert((*line, span.clone()));
-                    if !patterns
-                        .iter()
-                        .any(|pattern| pattern.trim_end_matches('\n') == span)
-                    {
-                        faults.push(format!("{name}:{line}: `{span}` is no message of {file}"));
+                    let is_of = |file: &String| {
+                        by_file[file]
+                            .iter()
+                            .any(|pattern| pattern.trim_end_matches('\n') == span)
+                    };
+                    if !files.iter().any(is_of) {
+                        faults.push(format!(
+                            "{name}:{line}: `{span}` is no message of {}",
+                            files.join(", ")
+                        ));
                     }
                 }
             }
@@ -1318,20 +1444,29 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
     let root = repository();
     let chapter = read(&operator_dir().join("messages.md"));
     // A message counts as quoted where a row of a table gives it as its
-    // message, with what it means and what to do; one that is only named
-    // beside another does not. Each row: its messages, and every span it
+    // message, with what it means and what to do, and names the file it is
+    // in; one that is only named beside another, or quoted for another
+    // file, does not. Each row: its file, its messages, and every span it
     // has.
-    let mut rows: Vec<(BTreeSet<String>, BTreeSet<String>)> = Vec::new();
+    let mut rows: Vec<(BTreeSet<String>, BTreeSet<String>, BTreeSet<String>)> = Vec::new();
     for table in tables(&parse(&chapter).prose) {
-        let Some(message) = table.header.iter().position(|cell| cell == "Message") else {
+        let column = |title: &str| table.header.iter().position(|cell| cell == title);
+        let (Some(message), Some(code)) = (column("Message"), column("Code")) else {
             continue;
         };
         for (_, row) in &table.rows {
+            let files = code_spans(&row[code]).into_iter().collect();
             let all = row.iter().flat_map(|cell| code_spans(cell)).collect();
-            rows.push((code_spans(&row[message]).into_iter().collect(), all));
+            rows.push((files, code_spans(&row[message]).into_iter().collect(), all));
         }
     }
-    let quoted: BTreeSet<&String> = rows.iter().flat_map(|(messages, _)| messages).collect();
+    let quoted = |file: &str, pattern: &str, with: Option<&str>| {
+        rows.iter().any(|(of, messages, all)| {
+            of.contains(file)
+                && messages.contains(pattern)
+                && with.is_none_or(|with| all.contains(with))
+        })
+    };
     let mut missing = Vec::new();
     let mut covered = 0;
     for (file, types) in COVERED {
@@ -1345,33 +1480,34 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
                     continue;
                 }
                 covered += 1;
-                if !quoted.contains(&pattern) {
+                if !quoted(file, &pattern, None) {
                     missing.push(format!("{file} ({name}): `{pattern}`"));
                 }
             }
         }
     }
     for (file, before, message) in REASONS {
-        let source = read(&root.join(file));
+        let source = outside_tests(&read(&root.join(file)));
         for (at, _) in source.match_indices(before) {
-            let rest = source[at + before.len()..].trim_start();
-            if !rest.starts_with('"') {
-                continue;
-            }
-            let Some(pattern) = literal_patterns(rest).into_iter().next() else {
-                continue;
+            let rest = &source[at + before.len()..];
+            let patterns = match before.ends_with('(') {
+                true => literal_patterns(&call_arguments(rest)),
+                false if rest.trim_start().starts_with('"') => literal_patterns(rest.trim_start())
+                    .into_iter()
+                    .take(1)
+                    .collect(),
+                false => continue,
             };
-            if pattern.chars().filter(|c| c.is_alphabetic()).count() < 3 {
-                continue;
-            }
-            covered += 1;
-            if !rows
-                .iter()
-                .any(|(messages, all)| messages.contains(&pattern) && all.contains(message))
-            {
-                missing.push(format!(
-                    "{file} (after {before:?}): `{pattern}`, in a row with `{message}`"
-                ));
+            for pattern in patterns {
+                if pattern.chars().filter(|c| c.is_alphabetic()).count() < 3 {
+                    continue;
+                }
+                covered += 1;
+                if !quoted(file, &pattern, Some(message)) {
+                    missing.push(format!(
+                        "{file} (after {before:?}): `{pattern}`, in a row of that file with `{message}`"
+                    ));
+                }
             }
         }
     }
