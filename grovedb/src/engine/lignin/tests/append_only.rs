@@ -15,8 +15,6 @@
 //! in the third of five trees, one inside the other, where every append
 //! is carried up to the root.
 
-use std::fmt::Debug;
-
 use grovedb_bulk_append_tree::deserialize_chunk_blob;
 use grovedb_commitment_tree::{
     serialize_ciphertext, DashMemo, NoteBytesData, TransmittedNoteCiphertext,
@@ -26,7 +24,10 @@ use grovedb_merk::{proofs::Query, store::lignin::hash::MerkHashRules};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignindb::{Db, Options};
 
-use super::Lignin;
+use super::{
+    whole::{text, Whole},
+    Lignin,
+};
 use crate::{
     batch::QualifiedGroveDbOp,
     engine::Engine,
@@ -56,14 +57,14 @@ impl<'db, E: Engine> History<'db, E> {
     }
 
     /// Takes in a call that only reads, and gives what it returned.
-    pub(super) fn read<T: Debug>(
+    pub(super) fn read<T: Whole>(
         &mut self,
         name: impl Into<String>,
         answer: CostResult<T, Error>,
     ) -> Option<T> {
         let cost = answer.cost.clone();
         let value = answer.unwrap();
-        self.answers.push((name.into(), cost, format!("{value:?}")));
+        self.answers.push((name.into(), cost, text(&value)));
         value.ok()
     }
 
@@ -98,15 +99,15 @@ impl<'db, E: Engine> History<'db, E> {
     }
 
     /// Takes in a call that has no cost.
-    pub(super) fn plain<T: Debug>(&mut self, name: impl Into<String>, answer: Result<T, Error>) {
+    pub(super) fn plain<T: Whole>(&mut self, name: impl Into<String>, answer: Result<T, Error>) {
         let name = name.into();
         self.answers
-            .push((name, OperationCost::default(), format!("{answer:?}")));
+            .push((name, OperationCost::default(), text(&answer)));
     }
 
     /// Takes in a call that writes, and the root hash that `through` reads
     /// after it.
-    pub(super) fn write_in<T: Debug>(
+    pub(super) fn write_in<T: Whole>(
         &mut self,
         name: impl Into<String>,
         answer: CostResult<T, Error>,
@@ -120,7 +121,7 @@ impl<'db, E: Engine> History<'db, E> {
 
     /// Takes in a call that writes with no transaction, and the root hash
     /// after it.
-    pub(super) fn write<T: Debug>(
+    pub(super) fn write<T: Whole>(
         &mut self,
         name: impl Into<String>,
         answer: CostResult<T, Error>,
@@ -258,8 +259,8 @@ pub(super) trait Appended {
     );
 }
 
-fn shown<T: Debug>(answer: CostResult<T, Error>) -> CostResult<String, Error> {
-    answer.map_ok(|answer| format!("{answer:?}"))
+fn shown<T: Whole>(answer: CostResult<T, Error>) -> CostResult<String, Error> {
+    answer.map_ok(|answer| text(&answer))
 }
 
 pub(super) struct Mmr;
@@ -1462,7 +1463,7 @@ fn keyed_child<T: Appended, E: Engine>(
         let read = db.query_raw(&query, true, true, true, elements, None, v);
         h.read(
             name,
-            read.map_ok(|(found, skipped)| (format!("{found:?}"), skipped)),
+            read.map_ok(|(found, skipped)| (text(&found), skipped)),
         );
     }
     h.read("empty", db.is_empty_tree(at_tree, None, v));

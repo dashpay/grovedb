@@ -1074,7 +1074,7 @@ const MANY: &str = ", many";
 /// a sum of 64 bits.
 fn verify(proof: &[u8], query: &PathQuery, version: &GroveVersion) -> Verified {
     let by_shape = GroveDb::verify_path_query(proof, query, version);
-    let by_shape = by_shape.map(|verified| (*verified.root_hash(), format!("{verified:?}")));
+    let by_shape = by_shape.map(|verified| (*verified.root_hash(), super::whole::text(&verified)));
     by_shape.or_else(|refused| {
         let wide = match query.query.query.items.first() {
             Some(QueryItem::AggregateSumOnRange(_)) => {
@@ -1189,7 +1189,8 @@ fn prove<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) {
                 Ok((_, trunk)) => trunk.leaf_keys.clone(),
                 Err(_) => BTreeMap::new(),
             };
-            let verified = verified.map(|(root, trunk)| (root, format!("{:?}", trunk.elements)));
+            let verified =
+                verified.map(|(root, trunk)| (root, super::whole::text(&trunk.elements)));
             let (call, verified) = verification(verified, &root);
             let trunk_name = format!("the trunk of {name}");
             note(recorder.log, named(phase, call, &trunk_name), verified);
@@ -1206,7 +1207,8 @@ fn prove<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) {
                     // its key, which the trunk's proof led to the root.
                     let verified =
                         GroveDb::verify_branch_chunk_proof(proof, &branch, leaf.hash, version);
-                    let verified = verified.map(|branch| (root, format!("{:?}", branch.elements)));
+                    let verified =
+                        verified.map(|branch| (root, super::whole::text(&branch.elements)));
                     let (call, verified) = verification(verified, &root);
                     note(recorder.log, named(phase, call, &branch_name), verified);
                 }

@@ -28,7 +28,10 @@ testing = ["dep:tempfile"]
 # the functions that made them before they were made to cost less than the
 # transaction is large (`txn::opened::held`, `txn::write_set::held`), and
 # so are the subtrees that a transaction wrote below a Merk which one of
-# its batches drops or clears (`txn::below`, `Frames::below`). The
+# its batches drops or clears (`txn::below`, `Frames::below`, and by key
+# `ByKey::cut`), and what
+# the write set says of a subtree as a whole and of the operations of an
+# open scope (`WriteSet::subtree`, `WriteSet::ops_of`). The
 # two are compared at every call that both answer, at the cost of the old
 # one, and a difference panics, as does an answer that could only be made
 # the old way. A read that fails in either ends the call with its error

@@ -294,7 +294,7 @@ impl<'db, 'a, 'l, E: Engine> Calls<'db, 'a, 'l, E> {
         let answer = (
             named("verified", at),
             OperationCost::default(),
-            format!("{verified:?}"),
+            super::whole::text(&verified),
         );
         self.log.answers.push(answer);
     }

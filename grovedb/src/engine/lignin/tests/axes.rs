@@ -281,7 +281,7 @@ fn prove<T: Indexed, E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &
         if let Ok(proof) = &proved.value {
             let verified = GroveDb::verify_path_query(proof, &query, version);
             let verified =
-                verified.map(|verified| (*verified.root_hash(), format!("{verified:?}")));
+                verified.map(|verified| (*verified.root_hash(), super::whole::text(&verified)));
             let (call, verified) = verification(verified, &root);
             note(recorder.log, named(phase, call, &name), verified);
         }
