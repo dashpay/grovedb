@@ -7,6 +7,7 @@
 
 use std::{
     collections::BTreeSet,
+    fmt,
     mem::{discriminant, Discriminant},
     path::Path,
 };
@@ -21,7 +22,63 @@ use super::{
     trace::{one_line, shortened, Detail, Entry, Segment, Tally, Trace},
     Error,
 };
-use crate::workload::{Op, Read, StreamDigest, TransactionOp, Workload, Write};
+// The one engine there is where `GroveDb` is not generic over its engine
+// (`workload::pinned`).
+#[cfg(not(grovedb_engine_seam))]
+use crate::workload::DefaultEngine as E;
+#[cfg(grovedb_engine_seam)]
+use crate::workload::StreamEngine;
+use crate::workload::{Db, Op, Read, StreamDigest, TransactionOp, Workload, Write};
+
+/// The engine a trace runs on.
+///
+/// The corpus is recorded from RocksDB. Another engine replays it, and is
+/// held to what RocksDB answered at every step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Engine {
+    /// RocksDB: the engine `GroveDb::open` opens, which the corpus is
+    /// recorded from. Where `cost-model-storage/check.sh` builds the crate,
+    /// its storage is the cost model, and it is named so.
+    #[default]
+    RocksDb,
+    /// LigninDB, GroveDB's `LigninEngine`.
+    #[cfg(grovedb_engine_seam)]
+    LigninDb,
+}
+
+impl Engine {
+    /// The engine a command line names: `rocksdb` or `lignindb`.
+    pub fn named(name: &str) -> Result<Self, String> {
+        match name {
+            "rocksdb" => Ok(Engine::RocksDb),
+            #[cfg(grovedb_engine_seam)]
+            "lignindb" => Ok(Engine::LigninDb),
+            #[cfg(not(grovedb_engine_seam))]
+            "lignindb" => Err("this GroveDB has no LigninDB engine".to_string()),
+            other => Err(format!("`{other}` is not an engine: rocksdb or lignindb")),
+        }
+    }
+
+    /// The name a command line gives it.
+    pub fn command_name(self) -> &'static str {
+        match self {
+            Engine::RocksDb => "rocksdb",
+            #[cfg(grovedb_engine_seam)]
+            Engine::LigninDb => "lignindb",
+        }
+    }
+}
+
+impl fmt::Display for Engine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Engine::RocksDb if cfg!(lignin_cost_model) => "the cost model",
+            Engine::RocksDb => "RocksDB",
+            #[cfg(grovedb_engine_seam)]
+            Engine::LigninDb => "LigninDB",
+        })
+    }
+}
 
 /// A trace to record: the streams applied, one after another, to one
 /// database that starts empty.
@@ -100,17 +157,18 @@ pub enum Detailing<'a> {
 /// values of a megabyte.
 const REMARK_CHARS: usize = 400;
 
-/// A fresh database in a directory of its own under `scratch`. The
-/// directory goes when the first of the pair is dropped, so the database is
-/// the second.
-fn fresh_database(scratch: &Path) -> Result<(tempfile::TempDir, GroveDb), Error> {
-    let dir = tempfile::Builder::new()
+/// A directory of its own under `scratch` for a fresh database. It goes
+/// when it is dropped, so it is dropped after the database.
+fn fresh_directory(scratch: &Path) -> Result<tempfile::TempDir, Error> {
+    tempfile::Builder::new()
         .prefix("lignin-golden-")
         .tempdir_in(scratch)
-        .map_err(|error| Error::io(scratch, &error))?;
-    let db =
-        GroveDb::open(dir.path()).map_err(|error| Error::engine("opening a database", &error))?;
-    Ok((dir, db))
+        .map_err(|error| Error::io(scratch, &error))
+}
+
+/// A database of RocksDB in `dir`.
+fn open_rocksdb(dir: &Path) -> Result<GroveDb, Error> {
+    GroveDb::open(dir).map_err(|error| Error::engine("opening a database", &error))
 }
 
 /// Runs `spec` on a fresh database under `scratch` and hands every step to
@@ -126,7 +184,8 @@ pub fn each_step(
     mut visit: impl FnMut(usize, &Op, Observed) + Send,
 ) -> Result<(), Error> {
     on_a_deep_stack(|| {
-        let (_dir, db) = fresh_database(scratch)?;
+        let dir = fresh_directory(scratch)?;
+        let db = open_rocksdb(dir.path())?;
         let mut runner = Runner::new(&db, spec.grove_version)?;
         for (index, segment) in spec.segments.iter().enumerate() {
             for op in segment.source.ops(spec.seed) {
@@ -151,18 +210,38 @@ pub(crate) fn on_a_deep_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
     })
 }
 
-/// Runs `spec` on a fresh database under `scratch` and returns the trace.
+/// Runs `spec` on a fresh database of `on` under `scratch` and returns the
+/// trace, which names `engine` as the engine commit it came from.
 ///
 /// Call it on a thread with a stack of
 /// [`STACK_BYTES`](super::run::STACK_BYTES).
 pub fn record(
     spec: &TraceSpec,
+    on: Engine,
     engine: &str,
     detailing: Detailing,
     scratch: &Path,
 ) -> Result<Trace, Error> {
-    let (_dir, db) = fresh_database(scratch)?;
-    let mut runner = Runner::new(&db, spec.grove_version)?;
+    let dir = fresh_directory(scratch)?;
+    match on {
+        Engine::RocksDb => traced(&open_rocksdb(dir.path())?, spec, engine, detailing),
+        #[cfg(grovedb_engine_seam)]
+        Engine::LigninDb => {
+            let db = GroveDb::<grovedb::LigninEngine>::open_with_engine(dir.path())
+                .map_err(|error| Error::engine("opening a database of LigninDB", &error))?;
+            traced(&db, spec, engine, detailing)
+        }
+    }
+}
+
+/// Runs `spec` on `db`, which is fresh, and returns the trace.
+fn traced<#[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &Db<E>,
+    spec: &TraceSpec,
+    engine: &str,
+    detailing: Detailing,
+) -> Result<Trace, Error> {
+    let mut runner = Runner::new(db, spec.grove_version)?;
     let mut digest = TraceDigest::new();
     let mut tally = Tally::default();
     let mut sampled_kinds = Vec::new();
@@ -375,7 +454,7 @@ mod tests {
 
     fn run(spec: &TraceSpec, detailing: Detailing) -> Trace {
         let scratch = tempfile::tempdir().expect("temp dir");
-        record(spec, "engine", detailing, scratch.path()).expect("record")
+        record(spec, Engine::RocksDb, "engine", detailing, scratch.path()).expect("record")
     }
 
     #[test]
@@ -457,6 +536,56 @@ mod tests {
             everything.detail(40).expect("step 40").lines,
             trace.detail(40).expect("step 40").lines
         );
+    }
+
+    #[test]
+    fn an_engine_is_named_on_the_command_line() {
+        assert_eq!(Engine::default(), Engine::RocksDb);
+        assert_eq!(Engine::named("rocksdb"), Ok(Engine::RocksDb));
+        let shown = if cfg!(lignin_cost_model) {
+            "the cost model"
+        } else {
+            "RocksDB"
+        };
+        assert_eq!(
+            (Engine::RocksDb.command_name(), Engine::RocksDb.to_string()),
+            ("rocksdb", shown.to_string())
+        );
+        assert_eq!(
+            Engine::named("rocks"),
+            Err("`rocks` is not an engine: rocksdb or lignindb".to_string())
+        );
+        #[cfg(grovedb_engine_seam)]
+        {
+            assert_eq!(Engine::named("lignindb"), Ok(Engine::LigninDb));
+            assert_eq!(
+                (
+                    Engine::LigninDb.command_name(),
+                    Engine::LigninDb.to_string()
+                ),
+                ("lignindb", "LigninDB".to_string())
+            );
+        }
+    }
+
+    #[cfg(grovedb_engine_seam)]
+    #[test]
+    fn a_trace_on_lignindb_is_the_trace_on_rocksdb() {
+        let spec = spec(None, Sample::Nothing);
+        let scratch = tempfile::tempdir().expect("temp dir");
+        let on = |engine| {
+            record(
+                &spec,
+                engine,
+                "engine",
+                Detailing::Everything,
+                scratch.path(),
+            )
+            .expect("record")
+        };
+        let rocksdb = on(Engine::RocksDb);
+        assert_eq!(rocksdb.steps, 100);
+        assert_eq!(on(Engine::LigninDb), rocksdb);
     }
 
     #[test]
@@ -792,7 +921,14 @@ mod tests {
     fn a_scratch_directory_that_does_not_exist_is_an_error() {
         let spec = spec(None, Sample::Nothing);
         let missing = Path::new("/nonexistent/lignin-golden");
-        let error = record(&spec, "engine", Detailing::Sampled, missing).expect_err("no scratch");
+        let error = record(
+            &spec,
+            Engine::RocksDb,
+            "engine",
+            Detailing::Sampled,
+            missing,
+        )
+        .expect_err("no scratch");
         assert!(
             matches!(&error, Error::Io { path, .. } if path == missing),
             "{error}"

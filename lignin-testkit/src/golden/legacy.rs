@@ -633,7 +633,7 @@ mod tests {
     use crate::{
         golden::{
             corpus::in_parallel,
-            record::{record, Detailing, Sample, SegmentSpec, Source, TraceSpec},
+            record::{record, Detailing, Engine, Sample, SegmentSpec, Source, TraceSpec},
         },
         workload::Features,
     };
@@ -658,9 +658,15 @@ mod tests {
         };
         let scratch = tempfile::tempdir().expect("temp dir");
         catch_unwind(AssertUnwindSafe(|| {
-            record(&spec, "engine", Detailing::Sampled, scratch.path())
-                .expect("record")
-                .render()
+            record(
+                &spec,
+                Engine::RocksDb,
+                "engine",
+                Detailing::Sampled,
+                scratch.path(),
+            )
+            .expect("record")
+            .render()
         }))
         .map_err(|panic| {
             panic

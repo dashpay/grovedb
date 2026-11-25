@@ -74,6 +74,7 @@ fn the_reference_scale_replays_green() {
         jobs: std::env::var("LIGNIN_GOLDEN_JOBS")
             .ok()
             .map_or(1, |jobs| jobs.parse().expect("a number of jobs")),
+        ..Settings::default()
     };
     let report = replay(&corpus_dir(), &Selection::all(Scale::Reference), &settings)
         .expect("the corpus can be replayed");

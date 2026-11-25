@@ -23,7 +23,7 @@ use std::{
 pub use super::trace::Tally;
 use super::{
     plan::{plan, Planned, Scale},
-    record::{self, Detailing},
+    record::{self, Detailing, Engine},
     run::STACK_BYTES,
     trace::{Detail, Difference, ParseError, Trace},
     Error,
@@ -114,6 +114,9 @@ pub struct Settings {
     pub scratch: PathBuf,
     /// How many traces run at once.
     pub jobs: usize,
+    /// The engine the traces run on. A replay or a dump runs on any; the
+    /// corpus is recorded from RocksDB only.
+    pub engine: Engine,
 }
 
 impl Default for Settings {
@@ -123,6 +126,7 @@ impl Default for Settings {
         Settings {
             scratch: std::env::temp_dir(),
             jobs: thread::available_parallelism().map_or(1, |jobs| jobs.get().min(8)),
+            engine: Engine::RocksDb,
         }
     }
 }
@@ -163,6 +167,12 @@ pub fn record(
     engine: &str,
     settings: &Settings,
 ) -> Result<Vec<Written>, Error> {
+    if settings.engine != Engine::RocksDb {
+        return Err(Error::Refused(format!(
+            "the corpus is recorded from RocksDB, not from {}",
+            settings.engine
+        )));
+    }
     let written = write(corpus, selection, engine, Detailing::Sampled, settings)?;
     if selection.is_whole() {
         for stray in strays(corpus, selection.scale)? {
@@ -204,7 +214,13 @@ fn write(
 ) -> Result<Vec<Written>, Error> {
     let planned = selection.traces();
     in_parallel(&planned, settings.jobs, |planned| {
-        let trace = record::record(&planned.spec, engine, detailing, &settings.scratch)?;
+        let trace = record::record(
+            &planned.spec,
+            settings.engine,
+            engine,
+            detailing,
+            &settings.scratch,
+        )?;
         let text = trace.render();
         let path = directory.join(&planned.file);
         let parent = path.parent().unwrap_or(directory);
@@ -267,6 +283,8 @@ fn strays(corpus: &Path, scale: Scale) -> Result<Vec<String>, Error> {
 /// What replaying the corpus found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
+    /// The engine the traces were replayed on.
+    pub engine: Engine,
     /// Every selected trace.
     pub traces: Vec<Replayed>,
     /// The trace files the plan does not produce. Only looked for when a
@@ -347,8 +365,9 @@ impl fmt::Display for Report {
             .count();
         writeln!(
             f,
-            "golden corpus: {} traces replayed, {same} as recorded ({} steps), {} not",
+            "golden corpus: {} traces replayed on {}, {same} as recorded ({} steps), {} not",
             self.traces.len(),
+            self.engine,
             self.steps(),
             self.traces.len() - same + self.strays.len(),
         )?;
@@ -391,9 +410,14 @@ impl fmt::Display for Report {
                     writeln!(
                         f,
                         "  the steps in full, to compare with a dump of that commit: \
-                         lignin-golden dump --only {} --grove-version {}{} --out <directory>",
+                         lignin-golden dump --only {} --grove-version {}{}{} --out <directory>",
                         trace.name,
                         trace.grove_version,
+                        match self.engine {
+                            Engine::RocksDb => String::new(),
+                            #[allow(unreachable_patterns)]
+                            other => format!(" --engine {}", other.command_name()),
+                        },
                         if trace.file.starts_with("reference/") {
                             " --reference --steps <first>..<last>"
                         } else {
@@ -433,7 +457,11 @@ pub fn replay(corpus: &Path, selection: &Selection, settings: &Settings) -> Resu
     } else {
         Vec::new()
     };
-    Ok(Report { traces, strays })
+    Ok(Report {
+        engine: settings.engine,
+        traces,
+        strays,
+    })
 }
 
 fn replay_one(corpus: &Path, planned: &Planned, settings: &Settings) -> Result<Outcome, Error> {
@@ -451,6 +479,7 @@ fn replay_one(corpus: &Path, planned: &Planned, settings: &Settings) -> Result<O
     let run = |steps: &BTreeSet<u64>| {
         record::record(
             &planned.spec,
+            settings.engine,
             &recorded.engine,
             Detailing::Steps(steps),
             &settings.scratch,
@@ -706,7 +735,8 @@ mod tests {
         assert_eq!(
             report.to_string(),
             format!(
-                "golden corpus: 5 traces replayed, 5 as recorded ({} steps), 0 not\n",
+                "golden corpus: 5 traces replayed on {}, 5 as recorded ({} steps), 0 not\n",
+                Engine::RocksDb,
                 report.steps()
             )
         );
@@ -749,8 +779,12 @@ mod tests {
         assert_eq!(replayed.step, 0);
         assert!(replayed.lines[0].starts_with("cost seeks="));
         let shown = report.to_string();
+        let heading = format!(
+            "golden corpus: 1 traces replayed on {}, 0 as recorded (0 steps), 1 not\n",
+            Engine::RocksDb
+        );
         for expected in [
-            "golden corpus: 1 traces replayed, 0 as recorded (0 steps), 1 not\n",
+            heading.as_str(),
             "v5/balances.trace: balances, seed 0x1, grove version 5: 1 differences from the \
              recording of engine commit abc123\n",
             "  step 0: balances: cost differ: ",
@@ -760,6 +794,35 @@ mod tests {
             "  the steps in full, to compare with a dump of that commit: ",
         ] {
             assert!(shown.contains(expected), "{shown}\nlacks {expected:?}");
+        }
+
+        #[cfg(grovedb_engine_seam)]
+        {
+            let on_lignindb = Settings {
+                engine: Engine::LigninDb,
+                ..settings()
+            };
+            let report = replay(corpus.path(), &selection, &on_lignindb).expect("replay");
+            let Outcome::Differs { differences, .. } = &report.traces[0].outcome else {
+                panic!("the replay on LigninDB differs: {report}");
+            };
+            assert_eq!(differences.len(), 1, "{report}");
+            assert_eq!(differences[0].step, Some(0));
+            let shown = report.to_string();
+            for expected in [
+                "golden corpus: 1 traces replayed on LigninDB, 0 as recorded (0 steps), 1 not\n",
+                "  step 0: balances: cost differ: ",
+                "lignin-golden dump --only balances --grove-version 5 --engine lignindb --out \
+                 <directory>",
+            ] {
+                assert!(shown.contains(expected), "{shown}\nlacks {expected:?}");
+            }
+            assert_eq!(
+                record(corpus.path(), &selection, "abc123", &on_lignindb),
+                Err(Error::Refused(
+                    "the corpus is recorded from RocksDB, not from LigninDB".to_string()
+                ))
+            );
         }
 
         let unsampled = recorded.segments[0]
@@ -871,15 +934,19 @@ mod tests {
             Ok(vec!["reference/v9.trace".to_string()])
         );
         let report = Report {
+            engine: Engine::RocksDb,
             traces: Vec::new(),
             strays: strays(corpus.path(), Scale::Reference).expect("strays"),
         };
         assert!(!report.is_green());
         assert_eq!(
             report.to_string(),
-            "golden corpus: 0 traces replayed, 0 as recorded (0 steps), 1 not\n\
-             reference/v9.trace: recorded, but no longer part of the corpus. Record the corpus \
-             again.\n"
+            format!(
+                "golden corpus: 0 traces replayed on {}, 0 as recorded (0 steps), 1 not\n\
+                 reference/v9.trace: recorded, but no longer part of the corpus. Record the \
+                 corpus again.\n",
+                Engine::RocksDb
+            )
         );
         let filtered =
             replay(corpus.path(), &one("no-such-trace", 5), &settings()).expect("replay");
