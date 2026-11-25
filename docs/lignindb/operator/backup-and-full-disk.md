@@ -23,27 +23,42 @@ The commands use these variables, as absolute paths:
 `lignin` is the tool of the [migration runbook](migration.md#1-build-the-tool),
 built the same way (the feature `migrate` is not needed here).
 
-The directory each of `BACKUP` and `RESTORE` is in has to be there. The
-block writes the three paths again with every link followed, so that a
-copy is never made of a link or into the database, and refuses three
-paths of which one is another or lies inside another.
+Run the blocks in a shell of their own (`bash`), which the first block
+sets to stop at the first command that fails: a block refuses a path
+with `false`, and only `set -e` makes that stop the rest. The block also
+defines what the later ones use to write a path again with every link
+followed (`cd -P`, so that `..` is taken after the links), and to refuse
+two paths of which one is the other or lies inside it, compared by the
+directories they are (`-ef`) and by names that differ in case alone.
+Each procedure below names the paths it uses, and the directory each new
+path is to be in has to be there.
 
 <!-- runbook.sh: DB="$TARGET"; mkdir "$WORK/backup-chapter"; BACKUP="$WORK/backup-chapter/backup"; RESTORE="$WORK/backup-chapter/restore" -->
 ```sh
-: "${DB:?set DB to the directory of the database}"
-: "${BACKUP:?set BACKUP to where the backup is to be}"
-: "${RESTORE:?set RESTORE to where a backup is to be restored}"
-for path in "$BACKUP" "$RESTORE"; do
-  if [ ! -d "$(dirname "$path")" ]; then echo "$(dirname "$path") is not there: make it first"; false; fi
-done
-DB=$(cd "$DB" && pwd -P)
-BACKUP="$(cd "$(dirname "$BACKUP")" && pwd -P)/$(basename "$BACKUP")"
-RESTORE="$(cd "$(dirname "$RESTORE")" && pwd -P)/$(basename "$RESTORE")"
-for path in "$DB" "$BACKUP" "$RESTORE"; do
-  n=$(printf '%s\n' "$DB" "$BACKUP" "$RESTORE" | awk -v p="$path" '$0 == p || index($0, p "/") == 1' | wc -l)
-  if [ "$n" -ne 1 ]; then echo "$path is another of the three paths, or a directory that one of them is in: give three paths apart"; false; fi
-done
-printf 'DB      %s\nBACKUP  %s\nRESTORE %s\n' "$DB" "$BACKUP" "$RESTORE"
+set -euo pipefail
+real_dir() { (cd -P -- "$1" && pwd -P); }
+real_new() { printf '%s/%s\n' "$(cd -P -- "$(dirname -- "$1")" && pwd -P)" "$(basename -- "$1")"; }
+same_place() {
+  if [ -e "$1" ] && [ "$1" -ef "$2" ]; then return 0; fi
+  [ "$(dirname -- "$1")" -ef "$(dirname -- "$2")" ] && [ "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" = "$(basename -- "$2" | tr '[:upper:]' '[:lower:]')" ]
+}
+within() {
+  local d=$1
+  while :; do
+    if same_place "$d" "$2"; then return 0; fi
+    if [ "$d" = / ]; then return 1; fi
+    d=$(dirname -- "$d")
+  done
+}
+apart() {
+  local i j
+  local -a p=("$@")
+  for ((i = 0; i < ${#p[@]}; i++)); do
+    for ((j = 0; j < ${#p[@]}; j++)); do
+      if [ "$i" -ne "$j" ] && within "${p[i]}" "${p[j]}"; then echo "${p[i]} is ${p[j]}, or lies inside it: give paths apart"; return 1; fi
+    done
+  done
+}
 ```
 
 ## What a backup is
@@ -71,7 +86,11 @@ With the node stopped (or any process that had the database open
 closed):
 
 ```sh
+: "${DB:?set DB to the directory of the database}" "${BACKUP:?set BACKUP to where the backup is to be}"
 if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
+DB=$(real_dir "$DB")
+BACKUP=$(real_new "$BACKUP")
+apart "$DB" "$BACKUP"
 cp -a "$DB" "$BACKUP"
 sync
 lignin manifest "$BACKUP"
@@ -95,10 +114,10 @@ once a restore of it has passed `lignin verify` (below).
    makes one more for the backup. When the call returns `Ok`, the
    checkpoint is durable as far as the directory above `path` is: that
    directory's own name is the application's to have made durable.
-   **A checkpoint holds the engine's files and nothing else**, unless the
-   application names files for it to carry: a file that the application
-   keeps in the database directory is not in it, and is backed up as the
-   application's documentation says.
+   **A checkpoint holds the engine's files and nothing else**:
+   `GroveDb::create_checkpoint` carries no other file, so a file that the
+   application keeps in the database directory is not in it, and is
+   backed up as the application's documentation says.
 2. **Do not open the checkpoint** before it is copied: every open writes
    to the directory it opens. `lignin manifest` and `lignin segments` read
    files only, and can be run on it.
@@ -106,20 +125,26 @@ once a restore of it has passed `lignin verify` (below).
    copy's files and nothing else. On Linux, `sync` given files (GNU
    coreutils) syncs those files alone: `find` hands it every file and
    directory of the copy, and the loop after it syncs each directory the
-   copy is in, up to the root, which hold the copy's name and the names
-   above it. macOS's `sync` takes no file and syncs every file of the
-   system, so there the block makes no sync:
+   copy is in, up to and with the root, which hold the copy's name and the
+   names above it. A sync of a file that `cp` has written and closed
+   cannot report a write that the system had already failed before it:
+   the check of a restore (below) reads the copy back, which the system
+   can answer from its cache. macOS's `sync` takes no file and syncs every
+   file of the system, so there the block makes no sync:
 
    <!-- runbook.sh: CHECKPOINT="$WORK/backup-chapter/checkpoint"; cp -a "$DB" "$CHECKPOINT"; BACKUP="$WORK/backup-chapter/backup-of-checkpoint" -->
    ```sh
-   : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}"
-   CHECKPOINT=$(cd "$CHECKPOINT" && pwd -P)
-   lignin manifest "$CHECKPOINT"
+   : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}" "${BACKUP:?set BACKUP to where the backup is to be}"
    if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
+   CHECKPOINT=$(real_dir "$CHECKPOINT")
+   BACKUP=$(real_new "$BACKUP")
+   apart "$CHECKPOINT" "$BACKUP"
+   lignin manifest "$CHECKPOINT"
    cp -a "$CHECKPOINT" "$BACKUP"
    if [ "$(uname -s)" = Linux ]; then
      find "$BACKUP" -exec sync {} +
-     d=$(dirname "$BACKUP"); while [ "$d" != / ]; do sync "$d"; d=$(dirname "$d"); done
+     d=$(dirname -- "$BACKUP")
+     while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
    else
      echo "no sync here: make the copy durable once the node has stopped"
    fi
@@ -160,11 +185,16 @@ A restore that a node is to run on is made with that node stopped, and
 is durable once synced as a stopped database's backup is.
 
 ```sh
+: "${BACKUP:?set BACKUP to the backup}" "${RESTORE:?set RESTORE to where it is to be restored}"
 if [ -e "$RESTORE" ] || [ -L "$RESTORE" ]; then echo "$RESTORE is there already: the copy would go into it"; false; fi
+BACKUP=$(real_dir "$BACKUP")
+RESTORE=$(real_new "$RESTORE")
+apart "$BACKUP" "$RESTORE"
 cp -a "$BACKUP" "$RESTORE"
 if [ "$(uname -s)" = Linux ]; then
   find "$RESTORE" -exec sync {} +
-  d=$(dirname "$RESTORE"); while [ "$d" != / ]; do sync "$d"; d=$(dirname "$d"); done
+  d=$(dirname -- "$RESTORE")
+  while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
 fi
 lignin verify "$RESTORE"
 ```
@@ -191,8 +221,7 @@ lignin verify "$RESTORE"
 database's directory with `cp -a` holds the whole directory: the
 engine's files, the reserve (`RESERVE`, below) and whatever the
 application keeps there. A copy of a checkpoint holds what the
-checkpoint holds: the engine's files, and the files the application
-named for it to carry.
+checkpoint holds: the engine's files and no file of the application's.
 
 ### What a cut-short copy or checkpoint leaves
 
@@ -226,6 +255,7 @@ reserve, below.
      what a fill of it left behind:
 
      ```sh
+     : "${DB:?set DB to the directory of the database}"
      rm -f "$DB/RESERVE" "$DB/RESERVE.new"
      ```
 

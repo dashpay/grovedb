@@ -50,7 +50,8 @@ so before the load begins:
 `the load needs about … MiB on the device of … while it runs; …`, with
 how much is free there. The RocksDB database stays where it is, beside
 the new one. Step 8 needs room for one copy of the new database, best on
-another device.
+another device, and step 9 for one more where `RESTORE` is, until it is
+removed.
 
 **Memory.** A Merk is handed over whole, so the largest Merk of the
 source decides the peak. The survey says what peak the run projects
@@ -170,8 +171,9 @@ open is refused (`a process has it open`), and a node that is started
 meanwhile cannot open it. A writer whose `LOCK` file was replaced while
 it ran is not seen that way, since the new file says nothing of it.
 
-Then name four paths. None of them is to be there yet, and the directory
-each is in has to be there: make it first.
+Then name four paths. `SOURCE` is there; `TARGET`, `BACKUP` and
+`RESTORE` are not there yet, and the directory each of them is to be in
+has to be there: make it first.
 
 - `SOURCE`: the directory of the node's RocksDB GroveDB, the one that
   holds `CURRENT`, `MANIFEST-…` and the `.sst` files. A RocksDB
@@ -187,25 +189,48 @@ each is in has to be there: make it first.
 : "${TARGET:?set TARGET to where the LigninDB database is to be}"
 : "${BACKUP:?set BACKUP to where the backup of the new database is to be}"
 : "${RESTORE:?set RESTORE to where the backup is to be restored once}"
+real_dir() { (cd -P -- "$1" && pwd -P); }
+real_new() { printf '%s/%s\n' "$(cd -P -- "$(dirname -- "$1")" && pwd -P)" "$(basename -- "$1")"; }
+same_place() {
+  if [ -e "$1" ] && [ "$1" -ef "$2" ]; then return 0; fi
+  [ "$(dirname -- "$1")" -ef "$(dirname -- "$2")" ] && [ "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" = "$(basename -- "$2" | tr '[:upper:]' '[:lower:]')" ]
+}
+within() {
+  local d=$1
+  while :; do
+    if same_place "$d" "$2"; then return 0; fi
+    if [ "$d" = / ]; then return 1; fi
+    d=$(dirname -- "$d")
+  done
+}
+apart() {
+  local i j
+  local -a p=("$@")
+  for ((i = 0; i < ${#p[@]}; i++)); do
+    for ((j = 0; j < ${#p[@]}; j++)); do
+      if [ "$i" -ne "$j" ] && within "${p[i]}" "${p[j]}"; then echo "${p[i]} is ${p[j]}, or lies inside it: give paths apart"; return 1; fi
+    done
+  done
+}
 for path in "$TARGET" "$BACKUP" "$RESTORE"; do
   if [ -e "$path" ] || [ -L "$path" ]; then echo "$path is there already: choose another path"; false; fi
-  if [ ! -d "$(dirname "$path")" ]; then echo "$(dirname "$path") is not there: make it first"; false; fi
+  if [ ! -d "$(dirname -- "$path")" ]; then echo "$(dirname -- "$path") is not there: make it first"; false; fi
 done
-SOURCE=$(cd "$SOURCE" && pwd -P)
-TARGET="$(cd "$(dirname "$TARGET")" && pwd -P)/$(basename "$TARGET")"
-BACKUP="$(cd "$(dirname "$BACKUP")" && pwd -P)/$(basename "$BACKUP")"
-RESTORE="$(cd "$(dirname "$RESTORE")" && pwd -P)/$(basename "$RESTORE")"
-for path in "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"; do
-  n=$(printf '%s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE" | awk -v p="$path" '$0 == p || index($0, p "/") == 1' | wc -l)
-  if [ "$n" -ne 1 ]; then echo "$path is another of the four paths, or a directory that one of them is in: give four paths apart"; false; fi
-done
+SOURCE=$(real_dir "$SOURCE")
+TARGET=$(real_new "$TARGET")
+BACKUP=$(real_new "$BACKUP")
+RESTORE=$(real_new "$RESTORE")
+apart "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
 printf 'SOURCE  %s\nTARGET  %s\nBACKUP  %s\nRESTORE %s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
 ```
 
-The block writes each path again with every link followed (`pwd -P`),
-and then refuses four paths of which one is another, or lies inside
-another. Use the paths it prints from here on. Two names that no link
-gives one directory (a second mount of it) are not seen. The migrator
+The block writes each path again with every link followed (`cd -P` and
+`pwd -P`, so that a `..` is taken after the links), and then refuses
+four paths of which one is another or lies inside another. It compares
+them by the directories they are (`-ef`), and takes two names that
+differ in case alone for one, as a file system that ignores case does.
+Use the paths it prints from here on. A second mount of one directory
+is not seen. The migrator
 also refuses a `TARGET` inside `SOURCE`, or around it, before it opens
 anything.
 
@@ -340,7 +365,7 @@ grep ': loaded, compared and verified$' "$WORK/reports/migrate.txt"
 survey_hash=$(sed -n 's/^  root hash: //p' "$WORK/reports/survey.txt")
 target_hash=$(grep -o 'root_hash=[0-9a-f]*' "$WORK/reports/migrate.txt" | cut -d= -f2)
 if [ -n "$survey_hash" ] && [ "$survey_hash" = "$target_hash" ]; then echo "the same root hash: $target_hash"; else echo "THE ROOT HASHES DIFFER: survey $survey_hash, target $target_hash"; false; fi
-if [ "$(head -n 1 "$WORK/reports/survey.txt")" = "$(head -n 1 "$WORK/reports/migrate.txt")" ]; then echo "the same RocksDB identity and last write in both runs"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
+if [ "$(sed -n '1s/;.*//p' "$WORK/reports/survey.txt")" = "$(sed -n '1s/;.*//p' "$WORK/reports/migrate.txt")" ]; then echo "the same RocksDB identity and last write in both runs"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
 ```
 
 Each of these prints the line it found, or fails: `grep` with no line
@@ -348,9 +373,9 @@ found, the last two commands with the words THE ROOT HASHES DIFFER or
 THE SOURCE CHANGED BETWEEN THE TWO RUNS. The first of the two holds the
 root hash that the survey of step 5 read from the source to the one the
 migration read from it. The second holds the first line of each report,
-which names the source's RocksDB identity and the sequence number of
-its last write: where they are the same, no write reached the source
-between the two runs. That the target has the source's root hash is
+up to its `;`, to the other: the source's path, its RocksDB identity and
+the sequence number of its last write. Where they are the same, no
+write reached the source between the two runs. That the target has the source's root hash is
 what `differing=0` says; the migration also refuses a source that
 changes while it reads it. Do not start the node on a target for which
 one of them fails.
@@ -432,12 +457,16 @@ From its first commit on, the node's state is in `TARGET` alone. Keep
 
 ## 11. The way back
 
-The source was never written, so it is the node's database as it was
-when the node was stopped in step 4.
+The source was never written, so it is what it was when the migration
+read it: the node's database as it was when the node was stopped in
+step 4, or, where `SOURCE` was a RocksDB checkpoint, the state of that
+checkpoint. In the second case the node's own RocksDB directory can hold
+commits after the checkpoint, and it is that directory, and not the
+checkpoint, that the node goes back to.
 
 - **Before the node has committed anything on LigninDB**, going back is
-  pointing the node at `SOURCE` again and selecting RocksDB. `TARGET`
-  can then be removed.
+  pointing the node at its RocksDB database again and selecting RocksDB.
+  `TARGET` can then be removed.
 - **After it has committed on LigninDB**, `SOURCE` is still the state at
   the migration, and what the node committed since is in `TARGET` alone.
   GroveDB has no tool that migrates a LigninDB database back to RocksDB. A
