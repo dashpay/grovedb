@@ -41,8 +41,9 @@ the engine's words after `lignindb: `:
 | `not durable: the commit happened, but it is not known to survive a crash` | a commit was published and the sync it asked for failed; the session takes no write any more ([When a session ends](#when-a-session-ends)) | `storage/src/error.rs` |
 | `unsettled: the engine could not find out whether the commit happened` | the session takes no write any more; the next open settles whether the commit is there ([When a session ends](#when-a-session-ends)) | `storage/src/error.rs` |
 
-Through the tool, every error is one line that begins `lignin: `, and the
-exit status is 1 (2 for arguments that are no subcommand).
+Through the tool, an error is a line that begins `lignin: ` on the
+standard error, and the exit status is 1; arguments that are no
+subcommand give the same line, then the usage, and the status 2.
 
 ## At an open
 
@@ -52,7 +53,9 @@ An open is `Db::open`: what a node does when it starts, what
 come after `lignin: the database did not open: `.
 
 The first group says that the directory is not one this build opens.
-Each is found before anything is written: **the directory is as it was**.
+Each is found before anything is written: **the directory is as it was**,
+for a directory that nothing else changes while it is being opened
+(`OpenError::left_untouched`).
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
@@ -63,7 +66,7 @@ Each is found before anything is written: **the directory is as it was**.
 | `… lists … as something other than a regular file (a named pipe is not opened and a symbolic link is not followed): no database is opened or made` | `LOCK`, `MANIFEST`, `RESERVE` or a file the manifest names is a link, a pipe or a directory | put the real file back; the engine follows no link | `lignindb/src/db/error.rs` |
 | `… lists … as something other than a directory of its own (a symbolic link is not followed): no database is opened or made beside it` | `wal`, `seg`, `val` or `table` is a link or a file | the four directories are the database's own and cannot be links to elsewhere | `lignindb/src/db/error.rs` |
 | `… was changed while it was being opened: the database that was seen there is gone, or the lock file that was taken is not the one at the path any more. No database is opened or made there` | something removed, replaced or emptied the directory during the open | find what did, and open again | `lignindb/src/db/error.rs` |
-| `… holds an entry named MANIFEST.deleting, the name a removal gives the manifest of what it removes: no database is opened or made beside it` | a removal of this directory (`GroveDb::delete_checkpoint`) was cut short | finish it with `GroveDb::delete_checkpoint`; if nothing removed it and the database is to be kept, remove that entry and nothing else | `lignindb/src/db/error.rs` |
+| `… holds an entry named MANIFEST.deleting, the name a removal gives the manifest of what it removes: no database is opened or made beside it` | the directory holds that entry. With no `MANIFEST` beside it, a removal (`GroveDb::delete_checkpoint`) was cut short: a removal renames the manifest to that name before it removes any file. With a `MANIFEST` beside it, no removal left it | with no `MANIFEST`: finish the removal with `GroveDb::delete_checkpoint`. With a `MANIFEST`, if the database is to be kept: remove the entry `MANIFEST.deleting` and nothing else, since `delete_checkpoint` goes by the manifest it finds and would remove the whole database | `lignindb/src/db/error.rs` |
 | `… has a final file name with the suffix reserved for checkpoint creation (.creating, ignoring ASCII case): no database was opened or made` | the path is where a checkpoint is built before it gets its name, and is never opened | open the checkpoint's own path once its creation has returned | `lignindb/src/db/error.rs` |
 | `… holds a database and no LOCK file (a copy left it out, or it was removed), and the file is made in no directory that holds a database` | a copy left `LOCK` out | with no process having the directory open, put an empty file `LOCK` there ([backup](backup-and-full-disk.md#check-a-backup-and-restore-one)) | `lignindb/src/db/error.rs` |
 | `… has pages of … bytes, and … were asked for` | the options name a page size the database was not made with | leave `page_size` unset ([tuning](tuning.md)): a database keeps its page size | `lignindb/src/db/error.rs` |
@@ -116,12 +119,14 @@ names, replays the log on it up to the last commit whose group the log
 holds whole, and begins a log file of its own. It lands on one committed
 version. These words follow `recovery: `.
 
-Two kinds are told apart (`RecoveryError::is_damage`). **A file
-operation that failed** (the first group below) leaves the directory as
-the next open expects it: fix what the system says, and open again. The
-buffer pool's refusals are in that group too, and say what to do. A
-message of that group that comes again at the next open, with nothing
-for the system to fix, is damage as well.
+Two kinds are told apart (`RecoveryError::is_damage`). **The first
+group below** says which part of the store could not be read, and the
+words after it say why: what the system answered to a file operation
+(fix what it says, and open again), the buffer pool's refusal of its
+size (below, with what to do), or the words of [the files](#the-files-at-an-open),
+whose own rows say what to do. A message of that group that comes again
+at the next open, with nothing for the system to fix, is damage as
+well.
 **Damage** (the second group) is a store whose files do not hold what
 they must: restore the database from a backup, keep the damaged
 directory, and report it with what `lignin verify` says of it (where
@@ -203,7 +208,7 @@ A commit that meets the end itself says so in words of its own:
 | `the cleaner: …` | the cleaner could not close the files it was moving into; what it moved stands | open again | `lignindb/src/db/error.rs` |
 | `segment …, which takes the moved blocks, could not be made durable: …` | after `the cleaner: `: the cleaner's segment could not be made durable | open again | `lignin-store/src/cleaner/error.rs` |
 | `the … thread panicked` | a background thread of the engine panicked: what it held is as a crash leaves it | open again, and report it | `lignindb/src/db/error.rs` |
-| `… was not found to hold this database any more: it was removed or replaced while the database was open, and the close finished nothing in it` | the directory was removed or replaced under the open handle | nothing for the database: it is gone from that path. A checkpoint that the node removed while it was open ends so | `lignindb/src/db/error.rs` |
+| `… was not found to hold this database any more: it was removed or replaced while the database was open, and the close finished nothing in it` | the directory was removed or replaced under the open handle | nothing for the database: it is gone from that path. A database whose directory was removed while it was open, as a checkpoint's can be, ends so | `lignindb/src/db/error.rs` |
 
 ## At a checkpoint
 
@@ -226,8 +231,10 @@ words follow `lignindb: `; a refusal for the name is `not supported: `.
 | `the log could not be made durable: …` | the creation's sync of the log failed: the session has ended | open again | `lignindb/src/checkpoint/error.rs` |
 | `the manifest was in doubt, and settling it answered an error: …` | a replacement of the manifest had not finished, and settling it failed | make the checkpoint again; make room first if the device is full | `lignindb/src/checkpoint/error.rs` |
 | `the manifest could not be read: …` | the manifest was in doubt again when the creation read it | make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
-| `the log holds commit …, and the latest published version is …` | the log is ahead of what the session published | open again | `lignindb/src/checkpoint/error.rs` |
-| `the checkpoint's log ends at …, and the log is durable …` | the checkpoint would need log that is not durable | make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
+| `the log holds commit …, and the latest published version is …` | the log holds a commit the session never published, as after a commit that panicked between its append and its publication | open again | `lignindb/src/checkpoint/error.rs` |
+| `the checkpoint's log ends at …, and the log is durable …` | the log's sync returned without covering where the checkpoint's log ends | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
+| `log file … …` | a log file before the end of the checkpoint's log is not closed and durable as the checkpoint needs it; the reason follows the file's id | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
+| `the log: …` | the log refused to be held for the checkpoint, or to say what its files are; the log's words follow | as those words say; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 | `the manifest of the checkpoint could not be written: …` | the checkpoint's manifest could not be encoded | report it | `lignindb/src/checkpoint/error.rs` |
 | `could not … …: …` | the file layer refused an operation of the creation or the removal; the system's words follow | fix what the system says; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 
@@ -248,7 +255,7 @@ The tool's own words, besides the engine's above.
 | `the database did not open: …` | the open failed: the words of [At an open](#at-an-open) follow | as they say | `lignin-tools/src/error.rs` |
 | `… is no database: …` | the directory is no database that the tool reads; the reason follows | as the reason says | `lignin-tools/src/error.rs` |
 | `its final name ends in .creating: it is a checkpoint that is being made, or the part of one that a creation cut short left, and it is never opened` | the reason, for a path that ends in `.creating` | run `lignin` on the checkpoint's own path once its creation has returned | `lignin-tools/src/open.rs` |
-| `it holds MANIFEST.deleting: a removal of it is under way, or one was cut short and some of its files may be gone` | the reason, for a directory being removed | `GroveDb::delete_checkpoint` finishes the removal; where no removal made that entry and the database is to be kept, remove the entry and nothing else | `lignin-tools/src/open.rs` |
+| `it holds MANIFEST.deleting: a removal of it is under way, or one was cut short and some of its files may be gone` | the reason, for a directory being removed | as for the open's refusal of the same entry ([At an open](#at-an-open)): decide by whether a `MANIFEST` is beside it | `lignin-tools/src/open.rs` |
 | `this build of lignin has no …: build lignin-tools with the Cargo feature …` | `migrate` was asked of a build without the feature `migrate` | build as [the runbook](migration.md#2-set-the-variables) does | `lignin-tools/src/error.rs` |
 | `the background work failed: …` | `lignin compact`: a turn of write-back or the cleaner failed; its report is written | as the words say | `lignin-tools/src/error.rs` |
 
@@ -261,9 +268,9 @@ The tool's own words, besides the engine's above.
 | `INCOMPLETE RESTORE: the root holds the mark of a state-sync restore that did not finish` | exit status 4: a state sync into this database did not finish, so it is unsound by its own statement | discard the database; sync again or restore from a backup | `lignin-tools/src/verify.rs` |
 | `value hashes of trees are the ones grove versions 1 to 3 left after a delete below them (GroveDB #686), not the ones the rules make` | counted after the report; no damage, and not unsound | nothing | `lignin-tools/src/verify.rs` |
 
-A report with a rule that does not hold (exit status 3) names the rule
-and where. Keep the database as it is, restore from a backup, and report
-it with the whole report.
+A report with a rule that does not hold (exit status 3) says what does
+not hold, and where. Keep the database as it is, restore from a backup,
+and report it with the whole report.
 
 ## lignin migrate
 

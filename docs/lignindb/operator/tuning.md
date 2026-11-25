@@ -7,8 +7,10 @@ OPS-05 of the LigninDB plan
 It gives no performance figures: the measurements are in
 [benchmarks.md](../benchmarks.md), with the method that made them.
 **The defaults are the ones to run with** unless something below says
-otherwise for your node; none of the settings changes what a reader is
-given, a root hash, a proof or a cost.
+otherwise for your node. The documentation of write-back's and the
+cleaner's settings says that none of them changes what a reader is
+given, and costs are charged from the cost model over logical sizes, not
+from the engine's work ([cost-model.md](../cost-model.md)).
 
 The settings are the fields of `lignindb::Options`. An application hands
 them to GroveDB when it opens a database on LigninDB, as
@@ -30,7 +32,7 @@ fails that test until this chapter says the new one.
 | `Options::cache_size` | 256 MiB | the buffer pool: the memory in which the database keeps its pages. It also holds what it cannot evict: the private copies of pages that open write transactions made, and the page versions that write-back has not written yet. | see [Memory](#memory) |
 | `Options::sync` | never | when a commit makes the log durable; see [Durability](#durability) | see [Durability](#durability) |
 | `Options::page_size` | 32 KiB | the size of the pages of a new database. A database keeps the size it was made with for good, and an open that names another is refused. | leave it unset: a database is opened with its own size |
-| `Options::log_file_len` | 64 MiB | the length at which a log file is full and the log goes on in the next one | rarely; a device that holds few large files well, or a small test database |
+| `Options::log_file_len` | 64 MiB | the length at which a log file is full and the log goes on in the next one | no reason known for a node |
 | `Options::reserve` | 0 bytes | the room a session keeps in a file of its own, to give back when the device fills ([backup and full disk](backup-and-full-disk.md#the-reserve)) | on a node whose device can fill: the design text's first estimate is one log file and one segment, 128 MiB with the defaults |
 | `Options::idle` | 100 ms | how long the thread that reclaims dropped subtrees sleeps when nobody wakes it | no reason known |
 | `Options::create_if_missing` | yes | whether an open makes a database in a directory that holds none | GroveDB's `open_checkpoint` and `lignin` set it off; a node that must never start on an empty directory sets it off |
@@ -39,30 +41,31 @@ fails that test until this chapter says the new one.
 
 Each open database has a buffer pool of its own: the live database, and
 every checkpoint the node has open (a node can keep checkpoints open to
-serve them). **The memory the engine takes is about the sum of the
-`cache_size` of every database a process has open**, beside what the
-application holds itself. Size them together, within the memory the node
-may use:
+serve them). **Each pool is sized by the `cache_size` of its own open**,
+so a process that has several databases open has as many pools: size
+them together, within the memory the node may use, beside what the
+application and the rest of the engine hold.
 
 - **The live database** takes the largest share. A pool that holds the
   pages the node reads again and again answers them without a read of
   the device; how much that is worth on a given workload is in
   [benchmarks.md](../benchmarks.md).
-- **A checkpoint that is opened to be read** needs much less: it takes
-  no writes, so nothing waits in its pool to be written. The example of
-  `lignindb::Options` opens one with 16 MiB.
+- **A checkpoint that is opened to be read** needs less: it takes no
+  commits, so no private copies and no page versions of its own commits
+  fill its pool. The example in the documentation of `lignindb::Options`
+  opens one with 16 MiB.
 - **The pool also holds what it cannot evict**: the private copies of
   open write transactions, the page versions that wait for write-back
-  (`max_unwritten` at most before committers wait), and at an open the
-  pages that replay rebuilds (as many again at most, before replay writes
-  them out). A `cache_size` below one page refuses the open
-  ([messages](messages.md#in-a-recovery)).
+  (committers wait once `max_unwritten` of them wait), and at an open the
+  pages that replay rebuilds (up to `max_unwritten`, beyond which replay
+  writes out those it can). A `cache_size` too small to hold one frame
+  of a page refuses the open ([messages](messages.md#in-a-recovery)).
 
 ### Durability
 
 | `Options::sync` | A commit is durable | After a power cut, the open lands on |
 | --- | --- | --- |
-| never (the default) | after the next `flush()`, checkpoint or close | the last commit before the last sync, or a later one: never on a part of a commit |
+| never (the default) | after the next `flush()`, checkpoint, close, or table checkpoint of write-back, each of which syncs the log | the last commit before the last sync, or a later one: never on a part of a commit |
 | `SyncPolicy::Interval(d)` | after about `d` at most: a commit syncs the log when the last sync is at least `d` ago, and write-back's loop does the same between commits | a commit at most about `d` older than the last |
 | `SyncPolicy::EveryCommit` | when its commit returns | the last commit that returned |
 
@@ -70,8 +73,8 @@ In every case the open lands on one committed version, never on a part
 of a commit, and on none older than the last one made durable
 ([transactions.md](../transactions.md#12-durability-and-recovery), DU2).
 The default is the plan's decision DEC-04, and it is what GroveDB does
-on RocksDB, whose commits are not synced either. A node that applies its
-last blocks again after a crash (as a Platform node does) runs with it.
+on RocksDB, whose commits are not synced either. An application that
+applies its last commits again after a crash runs with it.
 A commit writes its group to the log file before it returns, so a
 process that is killed while the machine keeps running leaves its
 commits in the system's cache, where the next open reads them; what a
@@ -98,7 +101,7 @@ the database's page size, and the defaults below are for pages of
 | `FlushConfig::max_chain_bytes` | 16 KiB | the most bytes of delta runs after a base image (half a page) | as above |
 | `FlushConfig::segment_len` | 64 MiB | the length at which a segment is sealed | leave it; the reserve's estimate depends on it |
 | `FlushConfig::idle` | 50 ms | how long write-back's loop sleeps when nobody wakes it | no reason known |
-| `FlushConfig::max_failed_wait` | 1 s | the longest wait after a turn that failed, before the next turn; the wait doubles from the idle time up to it ([DF12](../disk-full-and-backup.md#52-the-order)) | lower on a device that recovers from a full state quickly |
+| `FlushConfig::max_failed_wait` | 1 s | the longest wait after a turn that failed, before the next turn; the wait doubles from the idle time up to it ([DF12](../disk-full-and-backup.md#52-the-order)) | no reason known |
 
 **What to watch** (`lignin stats` on a stopped database or a checkpoint,
 `Db::stats` in the application): `log held:` against `max_log_held`, and
@@ -126,10 +129,14 @@ is `CleanerConfig::new`.
 | `CleanerConfig::segment_len` | 64 MiB | the length of the segments the cleaner moves blocks into | leave it |
 | `CleanerConfig::idle` | 100 ms | how long the cleaner sleeps between passes when nobody wakes it | with `max_pass_bytes` |
 
-With the defaults, the dead space of a store stays below about 20 in a
-hundred under a steady load: the 14 the cleaner leaves and at most 4
-more that waits for a table checkpoint, for a store with no reader on an
-old version and no long operation. A snapshot or a checkpoint that is
+The documentation of `CleanerConfig::new` states what the defaults give:
+the dead space of a store stays below 20 in a hundred under a steady
+load of commits, as read after a pass of the cleaner (14 that the
+cleaner leaves, and at most 4 more that wait for a table checkpoint),
+for a store with no reader on an old version, no operation that runs for
+long, and blocks that are large against `min_segment_len`. What a burst
+of commits frees faster than the cleaner moves shows until it has caught
+up. A snapshot or a checkpoint that is
 kept holds what was freed since, whatever the cleaner's settings
 ([backup and full disk](backup-and-full-disk.md#space-that-does-not-come-back)).
 **What to watch:** the `on disk:` line of `lignin stats`, against what

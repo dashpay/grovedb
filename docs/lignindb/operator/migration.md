@@ -7,9 +7,8 @@ task OPS-05 of the LigninDB plan
 Everything here is done with GroveDB's own tool, `lignin`, whose
 subcommand `migrate` reads a RocksDB GroveDB and writes the same grove
 as a new LigninDB database. How a node is stopped, started and pointed
-at a database is the application's to say (Dash Platform's own
-documentation, for a Platform node); this runbook says where those steps
-come.
+at a database is the application's to say; this runbook says where those
+steps come.
 
 The migration is offline: the node is stopped for the whole run. The
 RocksDB database is read and never written, so it stays the way back
@@ -36,8 +35,8 @@ database that step 3 makes: the commands here are the ones that were run.
 holds (`Merk nodes:`). The plan's acceptance for the migrator (OPS-02 in
 [task register 3](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583786))
 is at least 40,000 elements a second on the reference shape, measured on
-a rented machine with dedicated processors; a database of many small
-Merks goes slower. Every run ends with a line that says what it took,
+a rented machine with dedicated processors, with a database of many
+small Merks reported beside it. Every run ends with a line that says what it took,
 `migrate: done target=… seconds=…`, with `elements_per_second=…` for a
 run that made the whole target, so the rehearsal of step 3 on your own
 machine gives you a rate to plan with.
@@ -47,7 +46,7 @@ the database's bytes.
 
 **Disk.** While it runs, the migration needs about twice the bytes of
 the source's records plus 256 MiB on the device of the target, and says
-so before it writes anything:
+so before the load begins:
 `the load needs about … MiB on the device of … while it runs; …`, with
 how much is free there. The RocksDB database stays where it is, beside
 the new one. Step 8 needs room for one copy of the new database, best on
@@ -73,7 +72,8 @@ bindings are made with `libclang`. On Debian or Ubuntu those are the
 packages `git`, `curl`, `build-essential`, `clang` and `libclang-dev`; on
 macOS, the Xcode command line tools. You also need Rust. If `cargo` is
 not on your path, the first block installs it with `rustup`, the
-installer the Rust project publishes, for your user alone.
+installer the Rust project publishes, for your user alone; the installer
+also adds Cargo to your shell's profile files.
 
 ```sh
 set -o pipefail
@@ -122,8 +122,9 @@ This step is optional, and worth the few minutes: it runs every later
 step on a small RocksDB GroveDB that the repository's benchmark tool
 makes, so that you see each report before you meet it on your node's
 database. The tool is `lignin-bench` (`docs/lignindb/benchmarks.md`),
-which writes Drive's document layout: 20,000 documents over 200 owners
-here, with creates, updates and deletes after them. With
+which writes the plan's reference workload: a tree of documents and an
+index of a reference to each by its owner, here 20,000 documents over
+200 owners, with creates, updates and deletes after them. With
 `lignin-bench run --keep` its database stays in
 `$WORK/rehearsal/rocksdb`. Its report goes to a file; nothing in it is
 needed below.
@@ -144,10 +145,11 @@ variables of step 4 yourself.
 
 Stop the node, as its own documentation says, and make sure that no
 other process uses its database: not the node, not a second instance of
-it, not a backup job. `migrate` takes RocksDB's lock of the source for
-as long as it runs, so a node that is started meanwhile fails to open it;
-but a process that already had it open is not seen by a lock that is
-taken after it.
+it, not a backup job. Where the source has a `LOCK` file, `migrate`
+holds a lock on it for as long as it runs: a process that has the source
+open is refused (`a process has it open`), and a node that is started
+meanwhile cannot open it. A writer whose `LOCK` file was replaced while
+it ran is not seen that way, since the new file says nothing of it.
 
 Then name four paths. None of them is to be there yet; the directory
 each is in can be, and is made below.
@@ -196,9 +198,13 @@ Read its report before you go on:
 - The counts after it say what is in the source. A line that begins
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
-  `the source … holds what a migration does not carry`. The one shape
-  refused today is a keyed child under a tree of flat records, which
-  grove versions 1 to 3 let a caller write.
+  `the source … holds what a migration does not carry`. The survey
+  refuses a keyed child under a tree of flat records (grove versions 1
+  to 3 let a caller write one), the mark of a state-sync restore that
+  did not finish (such a database is to be discarded, not migrated),
+  and records in places where GroveDB writes none; with
+  `--unreachable refuse` or `carry`, also the prefixes that nothing leads
+  to which that choice does not take.
 - `prefixes that nothing leads to:` counts records under prefixes that no
   element leads to (a tree that a batch's plain delete removed while it
   held an element leaves them). Unless `--unreachable` says otherwise
@@ -219,8 +225,8 @@ lignin migrate "$SOURCE" "$TARGET" | tee "$WORK/reports/migrate.txt"
 ```
 
 The run surveys the source again, loads the target a commit at a time,
-compares every record of the source with what the target answers through
-GroveDB, checks the target with the physical invariant checker, and only
+compares every record of the source that it carries with what the target
+answers through GroveDB, checks the target with the physical invariant checker, and only
 then gives the database the name `TARGET`. Until that last step it works
 in the directory `TARGET.migrating`, so nothing is at `TARGET` that is
 not whole, compared and verified. Lines that begin `migrate:` hold
@@ -236,7 +242,7 @@ seconds (or as `--progress` says) a line says where the load stands:
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
 
 **A run that stops** (a kill, a power cut, a full device, an error) is
-gone on with by the same command, with the same options. What
+gone on with by the same command, with the same `--unreachable`. What
 `TARGET.migrating` holds says where the run stood, and a load goes on
 from its last commit. To start again from nothing instead, remove
 `TARGET.migrating`. Nothing else is to open `TARGET.migrating` while the
@@ -289,7 +295,8 @@ Then check the target once more on its own, with the checker of
 as the close left it: every page, every value, and every stored hash
 made again by Merk's rules. Exit status 0 is a sound store, 3 a store in
 which a rule does not hold, and 4 a database that holds the mark of a
-state-sync restore that did not finish (which a migration never leaves).
+state-sync restore that did not finish (the survey refuses a source with
+that mark, so a migration leaves none).
 
 ```sh
 lignin verify "$TARGET" | tee "$WORK/reports/verify.txt"
@@ -360,7 +367,7 @@ when the node was stopped in step 4.
   can then be removed.
 - **After it has committed on LigninDB**, `SOURCE` is still the state at
   the migration, and what the node committed since is in `TARGET` alone.
-  There is no tool that migrates a LigninDB database back to RocksDB. A
+  GroveDB has no tool that migrates a LigninDB database back to RocksDB. A
   node that goes back starts from `SOURCE` and has to apply again what it
   applied since the migration, which is the application's to do.
 - **A migration that failed** left nothing at `TARGET` (exit status 1

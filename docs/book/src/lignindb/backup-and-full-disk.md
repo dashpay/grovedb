@@ -62,8 +62,9 @@ lignin manifest "$BACKUP"
 `cp -a` copies every file of the directory with the `LOCK` file. `cp`
 returns before its bytes are on the device: `sync` makes the copy
 durable. `lignin manifest` reads the backup's manifest without opening
-it and lists the files it names; a copy that was cut short has no
-manifest, and the command then fails.
+it and lists the files it names. It does not read the files themselves:
+a backup is relied on once a restore of it has passed `lignin verify`
+(below).
 
 ## Back up a running node
 
@@ -71,7 +72,8 @@ manifest, and the command then fails.
    `GroveDb::create_checkpoint(path)`, where `path` is not there and the
    directory above it is. A node that makes checkpoints for its own use
    makes one more for the backup. When the call returns `Ok`, the
-   checkpoint is durable.
+   checkpoint is durable as far as the directory above `path` is: that
+   directory's own name is the application's to have made durable.
 2. **Do not open the checkpoint** before it is copied: every open writes
    to the directory it opens. `lignin manifest` and `lignin segments` read
    files only, and can be run on it.
@@ -139,18 +141,19 @@ whatever the application keeps there.
 
 | Left | What it is | What to do |
 | --- | --- | --- |
-| a target with no `MANIFEST` (empty, with `LOCK` alone, or with some files) | a copy that was cut short | remove it, and copy again |
+| a copy that `cp` or `sync` did not finish, with or without a `MANIFEST` | a copy that was cut short: `cp` writes the files in no set order, so its manifest says nothing of the rest | remove it, and copy again |
 | a directory whose name ends in `.creating`, beside a checkpoint's path | a checkpoint whose creation was cut short or failed. It is never opened. | leave it: the next creation at the same path takes it over, and `GroveDb::delete_checkpoint(path)` removes it |
-| a directory that holds `MANIFEST.deleting` | a deletion that was cut short | `GroveDb::delete_checkpoint(path)` finishes it |
+| a directory that holds `MANIFEST.deleting` and no `MANIFEST` | a deletion that was cut short: a deletion renames the manifest to that name before it removes any file | `GroveDb::delete_checkpoint(path)` finishes it |
+| a directory that holds both `MANIFEST.deleting` and `MANIFEST` | no deletion leaves this, since it renames the manifest first: something else made the entry beside a database | if the database is to be kept, remove the entry `MANIFEST.deleting` and nothing else. `GroveDb::delete_checkpoint(path)` would remove the whole database: it goes by the manifest it finds, not by the entry's name |
 
 ## The device is full
 
 ### What you see
 
-Commits fail and the node stops at a block. The error of the commit has
-the system's "no space left" among its causes; its words end with what
-the system said, such as "No space left on device (os error 28)".
-Reads go on.
+Commits fail. The error of the commit has the system's "no space left"
+among its causes (`lignindb::space::out_of_space` says so of an error),
+and its words end with what the system said, such as "No space left on
+device (os error 28)". Reads go on.
 
 **What is true then.** Nothing that was made durable is lost, nothing
 that was committed is damaged, and nothing needs a repair. **Do not
@@ -184,7 +187,7 @@ reserve, below.
    and start it again once there is room. Nothing that was made durable
    is lost. The open can land on an earlier commit than the last one the
    node published, since a sync that the device refused makes no promise
-   of what it was for; the node goes on from where the open landed.
+   of what it was for; `Db::version` says where the open landed.
    Otherwise the session goes on by itself: the next commit is taken.
 3. **Let the engine give room back.** In a running session, write-back
    takes a table checkpoint and drops the log files it covers, and the
@@ -251,4 +254,4 @@ it. Three things take the bound away:
 - **A crash while a dropped Merk was being reclaimed** leaves the rest of
   that Merk's cells in their pages: space, and no state. `lignin verify`
   counts them, and they do not make the store unsound. A database that is
-  built again from its data (a state sync, a migration) has none.
+  built again from its data, by a state sync, has none.

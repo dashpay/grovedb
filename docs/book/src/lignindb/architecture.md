@@ -36,8 +36,9 @@ their records through `FlatStore` ([flat-store.md](https://github.com/dashpay/gr
 On LigninDB both are kept in pages that the engine owns: a Merk node is a
 cell of a tree page, which stores its value hash, its key-value hash and
 its children's hashes beside it, so that **every hash is read as it was
-stored, and a hash update never rewrites a value**
-([tree-layout.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/tree-layout.md)).
+stored, and a changed hash is logged as a small record of its own,
+without the node's value** ([tree-layout.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/tree-layout.md),
+[page-delta.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/page-delta.md)).
 
 ## The crates, and what each must not know about
 
@@ -92,10 +93,9 @@ every commit hashes up to the root of the grove, as on RocksDB.
    ([cost-model.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/cost-model.md)), so it is what RocksDB is charged;
    the physical work is free to be smaller.
 2. **The transaction writes into private copies** of the pages it
-   changes, in the buffer pool. A new or changed value is written once.
-   The hashes on the path to the root are updated in their cells; no
-   ancestor's value is written again. The transaction reads its own
-   writes; nobody else sees them
+   changes, in the buffer pool: the new and changed values, and the
+   hashes on the path to the root, each in its cell. The transaction
+   reads its own writes; nobody else sees them
    ([transactions.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/transactions.md), section 7).
 3. **The commit** checks for a conflict with commits made since the
    transaction began, the rule of RocksDB's optimistic transactions, and
@@ -128,14 +128,16 @@ If the background falls behind, committers are made to wait
    taken at. No lock is taken, and no writer waits for a reader.
 2. **The subtree directory** gives the page and slot of the subtree's
    root, from the path's 32-byte prefix, as RocksDB's prefixes are.
-3. **Descent follows page ids and slots** from cell to cell, with no
-   search by key on the way. A page that is not in the buffer pool is
+3. **Descent follows page ids and slots** from cell to cell: a node's
+   children are reached by their page and slot, and not looked up by key
+   in an index, while Merk compares keys at each node as it does on
+   RocksDB. A page that is not in the buffer pool is
    read from its segment once, its blocks checked against their
    checksums, and its deltas applied to its last image.
 4. **Hashes are used as stored.** A proof is assembled from the cells:
    the hashes of nodes that it does not show are read from their pages,
-   and their values are never loaded. A value that is kept out of its
-   page is read from the value log when it is asked for.
+   and a value that is kept out of its page is read from the value log
+   only when it is asked for.
 
 ## A checkpoint
 
@@ -155,8 +157,12 @@ the database at one committed version, in a directory of its own
    `path`. A creation that is cut short leaves nothing at `path`, or the
    whole checkpoint.
 
-It takes the time of a few hard links and holds back no commit. It is a
-database like any other: opened by the normal open, which recovers it to
+Commits go on while it is built. The recording step holds the commit
+lock for that step, and a commit waits for the checkpoint's sync only
+where its own sync policy syncs at the commit. A creation that finds
+more than 1 MiB of log held for the checkpoint's first open to replay
+has write-back catch up first ([engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md#checkpoints)).
+A checkpoint is a database like any other: opened by the normal open, which recovers it to
 its version, and able to take writes of its own that its source does not
 see. It keeps the files it shares with the live database, so their disk
 space comes back when it is deleted
@@ -190,9 +196,7 @@ section 12).
 So the database opens at one committed version, never a part of one, and
 never one older than the newest that was made durable. A file that does
 not read, or does not hold what the manifest says, stops the open with
-an error that names it ([messages](messages.md#in-a-recovery)): the
-engine does not open a store it cannot account for, and it changes
-nothing that the next open does not expect.
+an error that names it ([messages](messages.md#in-a-recovery)).
 
 ## When a session must be opened again
 
@@ -217,5 +221,6 @@ opened again, which settles what the log holds
   each ([crash-tests.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/crash-tests.md)); the full device is swept
   at every file operation ([disk-full-and-backup.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md),
   section 9).
-- **The differential fuzzer** runs the same operations on both engines
-  and compares every answer ([ci.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/ci.md#nightly)).
+- **The differential fuzzer** applies random operations to RocksDB and
+  to LigninDB, and compares the cost, the result, the root hash and the
+  proof bytes after every step ([ci.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/ci.md#nightly)).
