@@ -99,9 +99,16 @@ fn is_own_file(name: &OsStr) -> bool {
 /// a named pipe for reading alone waits until a writer opens it, and a
 /// link is not followed. A file or a subdirectory that is not listed is
 /// left to the store that opens it. So is an entry the manifest does not
-/// name: of those a store opens only what its own listing has as a
-/// regular file, to measure a file whose id is above the manifest's last
-/// before it removes it, and it passes over every other.
+/// name, of which a store opens none that its own listing has as anything
+/// but a regular file:
+///
+/// - it passes over an entry that is no regular file, and one whose name
+///   is not of its files;
+/// - a regular file of its naming whose id is at or below the manifest's
+///   last, it removes and does not open;
+/// - one whose id is above the manifest's last, it opens to measure or to
+///   read it, and then removes it, or refuses the open and leaves the
+///   file: a segment that is longer than its header is left so.
 fn refuse_irregular_named(vfs: &dyn Vfs, dir: &Path, manifest: &Manifest) -> Result<(), OpenError> {
     let table = (manifest.table_checkpoint()).map(|table| (FileNames::PAGE_TABLE, table.file()));
     let files = manifest.files().iter().filter_map(|file| {
@@ -188,7 +195,9 @@ fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
     }
     // A file that the engine opens by its name is refused likewise where
     // the directory lists it as anything but a regular file, before it is
-    // opened: a named pipe would be waited on.
+    // opened. An open for reading alone, as of the manifest, would wait on
+    // a named pipe; the lock file is opened for reading and writing, which
+    // does not wait on Linux, and is refused all the same.
     if let Some(entry) =
         (entries.iter()).find(|entry| is_own_file(&entry.name) && entry.kind != EntryKind::File)
     {
