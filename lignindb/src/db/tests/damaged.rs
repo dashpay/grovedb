@@ -432,10 +432,9 @@ fn kept_image(kept: &Path) -> Option<Files> {
 /// a hard link, which is made only where that name is free: the image of
 /// the first writer is the one that every writer and every later reader
 /// has. So it is for writers that share the directory and nothing else,
-/// not a process id either. The writer's file is made with the mode of a
-/// file that is made by its name alone (0666, less what the process's
-/// mask takes), which the image then has: whoever could read an image
-/// that another process kept can read this one.
+/// not a process id either. The writer asks for mode 0666 for its file,
+/// as an ordinary creation of a file does, and the image, which is a hard
+/// link to that file, has the permissions the file was given.
 fn keep(kept: &Path, files: &Files) -> Files {
     let dir = kept.parent().expect("a directory");
     fs::create_dir_all(dir).expect("a directory");
@@ -497,10 +496,11 @@ fn encode(files: &Files) -> Vec<u8> {
     out
 }
 
-/// The files of an image, or why the bytes are none. A kept image is read
-/// from a directory that anybody may have written into: an image that is
-/// cut is told, and so is a path that would not be written below the
-/// directory of a case.
+/// The files of an image, or why the bytes are none. What is read from
+/// the directory of kept images is not taken on trust: an image that is
+/// cut within one of its entries is told, and so is a path that would not
+/// be written below the directory of a case. An image that ends between
+/// two of its entries is a shorter image, and nothing here tells it.
 fn decode(mut bytes: &[u8]) -> Result<Files, String> {
     let mut files = Files::new();
     while !bytes.is_empty() {
