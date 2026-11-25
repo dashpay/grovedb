@@ -57,7 +57,7 @@ use super::{
         nested::{made_by, number, KINDS},
         queries::path,
     },
-    begin, must_put, open, put, records, row, whole, Made, Served, Shape, Side, PARTS, VERSION,
+    begin, must_put, open, records, row, whole, Made, Served, Shape, Side, PARTS, VERSION,
 };
 use crate::{
     replication::{
@@ -773,7 +773,13 @@ fn change(bytes: &mut Vec<u8>, rng: &mut Rng) {
 /// kind, with as much in each as the plan says: Merks of one chunk and of
 /// many, values in a node and out of line, trees one deep and twenty
 /// deep, append-only trees with nothing and past their first boundary,
-/// indexed trees with no child and with many.
+/// indexed trees with their child tree alone and with many children
+/// beside it.
+///
+/// These groves are made on the latest grove version, which makes every
+/// kind: a kind that is not made, and an append or a child that is not
+/// taken, fail the making and leave no grove that holds less than its
+/// plan says.
 #[derive(Clone, Copy, Debug)]
 struct Plan {
     /// The rows of a tree of each kind whose data is one Merk.
@@ -811,30 +817,34 @@ const PLANNED_DEEP: &[u8] = b"deep";
 const PLANNED_APPENDED: &[u8] = b"appended";
 const PLANNED_INDEXED: &[u8] = b"indexed";
 
-/// A tree of an append-only kind with the plan's values in it, where the
-/// grove version makes the kind. A kind that is full takes no more.
+/// The positions of a dense tree of the height these tests make them
+/// with (`append_only::Dense`): a tree of height 5.
+const DENSE_ROOM: usize = 31;
+
+/// A tree of an append-only kind with the plan's values in it, and no
+/// more than the `room` the kind has. Returns how many it holds.
 fn planned_appended<T: Appended, E: Engine>(
     db: &GroveDb<E>,
     plan: &Plan,
+    room: usize,
     v: &GroveVersion,
     shape: &mut Shape,
-) {
+) -> usize {
     let name = T::NAME.as_bytes();
-    if !put(db, &path(&[PLANNED_APPENDED]), name, T::empty(None), v) {
-        return;
-    }
-    for n in 0..plan.appended {
+    must_put(db, &path(&[PLANNED_APPENDED]), name, T::empty(None), v);
+    let count = plan.appended.min(room);
+    for n in 0..count {
         let appended = T::append(db, &[PLANNED_APPENDED], name, n, None, v);
-        if appended.unwrap().is_err() {
-            break;
+        if let Err(error) = appended.unwrap() {
+            panic!("value {n} of {count} is appended to {}: {error}", T::NAME);
         }
     }
     shape.flats.push(path(&[PLANNED_APPENDED, name]));
+    count
 }
 
 /// An indexed tree of one kind with the plan's children and a child that
-/// is a tree with elements of its own, where the grove version makes the
-/// kind.
+/// is a tree with elements of its own.
 fn planned_indexed<I: Indexed, E: Engine>(
     db: &GroveDb<E>,
     plan: &Plan,
@@ -842,9 +852,7 @@ fn planned_indexed<I: Indexed, E: Engine>(
     shape: &mut Shape,
 ) {
     let name = I::NAME.as_bytes();
-    if !put(db, &path(&[PLANNED_INDEXED]), name, I::empty(), v) {
-        return;
-    }
+    must_put(db, &path(&[PLANNED_INDEXED]), name, I::empty(), v);
     let at: [&[u8]; 2] = [PLANNED_INDEXED, name];
     for n in 0..plan.children {
         let inserted = I::insert(db, &at, &row(n), I::leaf(n), None, v);
@@ -904,11 +912,29 @@ fn planned<E: Side>(plan: &Plan, v: &GroveVersion) -> Made<E> {
         shape.merks.push((at.clone(), sums));
     }
 
-    planned_appended::<Mmr, E>(&db, plan, v, &mut shape);
-    planned_appended::<Bulk, E>(&db, plan, v, &mut shape);
-    planned_appended::<Dense, E>(&db, plan, v, &mut shape);
-    planned_appended::<Commitment, E>(&db, plan, v, &mut shape);
-    planned_appended::<Private, E>(&db, plan, v, &mut shape);
+    let appended = [
+        planned_appended::<Mmr, E>(&db, plan, usize::MAX, v, &mut shape),
+        planned_appended::<Bulk, E>(&db, plan, usize::MAX, v, &mut shape),
+        planned_appended::<Dense, E>(&db, plan, DENSE_ROOM, v, &mut shape),
+        planned_appended::<Commitment, E>(&db, plan, usize::MAX, v, &mut shape),
+        planned_appended::<Private, E>(&db, plan, usize::MAX, v, &mut shape),
+    ];
+    // What the grove holds of the kinds that a version or a full tree
+    // could have left out: every kind of append-only tree with the
+    // plan's values, as far as it has room, and every kind of indexed
+    // tree.
+    let room = plan.appended.min(DENSE_ROOM);
+    assert_eq!(
+        appended,
+        [
+            plan.appended,
+            plan.appended,
+            room,
+            plan.appended,
+            plan.appended
+        ]
+    );
+    assert_eq!(shape.flats.len(), appended.len());
 
     planned_indexed::<Count, E>(&db, plan, v, &mut shape);
     planned_indexed::<Sum, E>(&db, plan, v, &mut shape);
@@ -916,6 +942,7 @@ fn planned<E: Side>(plan: &Plan, v: &GroveVersion) -> Made<E> {
     planned_indexed::<SumAndAverage, E>(&db, plan, v, &mut shape);
     planned_indexed::<BigSum, E>(&db, plan, v, &mut shape);
     planned_indexed::<CountBigSum, E>(&db, plan, v, &mut shape);
+    assert_eq!(shape.indexed.len(), 6);
 
     let root = db.root_hash(None, v).unwrap().expect("a root hash");
     Made {
@@ -962,7 +989,9 @@ impl Asked {
         };
         let shard = said("LIGNIN_HOSTILE_PEER_SHARD").map(|shard| {
             let (index, of) = shard.split_once('/').expect("i/n");
-            (index.parse().expect("i"), of.parse().expect("n"))
+            let (index, of): (usize, usize) = (index.parse().expect("i"), of.parse().expect("n"));
+            assert!(index < of, "the shard {index} of {of}: i is below n");
+            (index, of)
         });
         let seconds = said("LIGNIN_HOSTILE_PEER_SECONDS")
             .map(|seconds| Duration::from_secs(seconds.parse().expect("seconds")));
@@ -992,7 +1021,14 @@ impl Asked {
     }
 
     /// The cases of a run: those of the list, unless the seeds run
-    /// alone, and those of the seeds.
+    /// alone, and those of the seeds. The grove of the sync tests takes
+    /// every alteration of the list, and the list is held to that. A
+    /// planned grove need not: one with nothing appended has no entry of
+    /// a page to change. An alteration that no part of such a grove takes
+    /// makes no case there, and the run says which.
+    ///
+    /// The case of a seed is made when it is asked for, and of a seed
+    /// outside the shard not at all.
     fn cases<'a, S: Side>(
         &'a self,
         honest: &'a Honest<S>,
@@ -1000,12 +1036,17 @@ impl Asked {
     ) -> impl Iterator<Item = Case> + 'a {
         let listed = match self.seeds_alone {
             true => Vec::new(),
-            false => honest.altered(self.wide, v),
+            false => honest.altered(self.wide, self.shape == 0, v),
         };
-        let seeded = self.seeds.clone().map(|seed| honest.at_random(seed));
-        (listed.into_iter().chain(seeded).enumerate())
-            .filter(|(at, _)| self.shard.is_none_or(|(index, of)| at % of == index))
-            .map(|(_, case)| case)
+        let in_shard = move |at: usize| self.shard.is_none_or(|(index, of)| at % of == index);
+        let count = listed.len();
+        let listed = (listed.into_iter().enumerate())
+            .filter(move |(at, _)| in_shard(*at))
+            .map(|(_, case)| case);
+        let seeded = (self.seeds.clone().enumerate())
+            .filter(move |(at, _)| in_shard(count + at))
+            .map(|(_, seed)| honest.at_random(seed));
+        listed.chain(seeded)
     }
 
     /// The modes a run makes its cases in: a session that commits once,
@@ -1020,10 +1061,10 @@ impl Asked {
         }
     }
 
-    /// Whether the run holds the whole list, whose cases do not all end
-    /// one way.
+    /// Whether the run holds the whole list on the grove of the sync
+    /// tests, whose cases do not all end one way.
     fn holds_the_list(&self) -> bool {
-        !self.seeds_alone && self.shard.is_none() && self.until.is_none()
+        self.shape == 0 && !self.seeds_alone && self.shard.is_none() && self.until.is_none()
     }
 
     /// The line that says what the cases of a run came to.
@@ -1080,8 +1121,10 @@ impl<S: Side> Honest<S> {
 
     /// The cases of the alterations of the list: each at the first and at
     /// the last part of the session that it can be made on, or with `wide`
-    /// at every part.
-    fn altered(&self, wide: bool, v: &GroveVersion) -> Vec<Case> {
+    /// at every part. With `every`, each alteration is made on a part; with
+    /// no `every`, one that no part of the session takes is left out and
+    /// told.
+    fn altered(&self, wide: bool, every: bool, v: &GroveVersion) -> Vec<Case> {
         let mut cases = Vec::new();
         for alteration in ALTERATIONS {
             let mut placed = Vec::new();
@@ -1111,7 +1154,10 @@ impl<S: Side> Honest<S> {
                     });
                 }
             }
-            assert!(!placed.is_empty(), "no part takes: {}", alteration.name);
+            if placed.is_empty() {
+                assert!(!every, "no part takes: {}", alteration.name);
+                println!("NOT MADE on this grove: {}", alteration.name);
+            }
             if !wide && placed.len() > 2 {
                 let last = placed.pop().expect("a case");
                 placed.truncate(1);
@@ -1426,6 +1472,9 @@ fn a_session_with_a_peer_that_alters_a_payload_ends_on_lignindb() {
     let mut broken = Vec::new();
     let mut count = 0;
     for (mode, commits) in asked.modes() {
+        if asked.is_over() {
+            break;
+        }
         let honest = Honest::<Lignin>::new(asked.source(v), commits, v);
         for case in asked.cases(&honest, v) {
             if asked.is_over() {
@@ -1477,6 +1526,9 @@ fn both_engines_answer_a_peer_that_alters_a_payload_alike() {
     let mut said: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut count = 0;
     for (mode, commits) in asked.modes() {
+        if asked.is_over() {
+            break;
+        }
         let honest = Honest::<Rocks>::new(asked.source(v), commits, v);
         for case in asked.cases(&honest, v) {
             if asked.is_over() {
