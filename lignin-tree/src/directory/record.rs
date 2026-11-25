@@ -325,6 +325,18 @@ impl Reader<'_> {
     }
 }
 
+/// Whether the bytes of an entry name a root, read from the entry's first
+/// fourteen bytes alone: its id, which is not zero, and the address of
+/// its root, which is zero for a Merk with no node. Nothing behind them is
+/// read: bytes that pass here and are no entry are refused by
+/// [`Entry::decode`] and not by this.
+pub fn names_root(raw: &[u8]) -> Result<bool, Malformed> {
+    let mut read = Reader { rest: raw };
+    MerkId::decode(read.array()?).ok_or(Malformed("an entry with no id"))?;
+    let address: [u8; CellAddress::ENCODED_LEN] = read.array()?;
+    Ok(address != [0; CellAddress::ENCODED_LEN])
+}
+
 impl Entry {
     /// Reads the bytes of an entry.
     pub fn decode(raw: Vec<u8>) -> Result<Self, Malformed> {

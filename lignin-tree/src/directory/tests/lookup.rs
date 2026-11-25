@@ -278,18 +278,117 @@ fn the_merk_with_a_node_beside_a_prefix_is_the_nearest_in_use() {
     let last = rooted[rooted.len() - 1];
     let behind = entered.iter().filter(|prefix| **prefix > last).count() as u64;
     let levels = grove.pages.levels(&grove.directory);
-    let (found, read) = grove.pages.reads(|| beside(&last, false));
+    let (found, read, _) = walked(&grove, &last, None, false);
     assert_eq!(found, None);
-    assert!(
-        read.0 <= levels * 2 * (1 + behind),
-        "{read:?}, {behind} behind"
-    );
-    assert_eq!(read.1, 0);
+    assert!(read <= levels * 2 * (1 + behind), "{read}, {behind} behind");
     let (all, whole) = grove.pages.reads(|| {
         let mut walk = grove.directory.entries();
         std::iter::from_fn(|| walk.next(&grove.pages).expect("an entry")).count()
     });
     // The entry of the dropped Merk went with the drop.
     assert_eq!(all, entered.len() - 1);
-    assert!(read.0 * 2 < whole.0, "{read:?} of {whole:?}");
+    assert!(read * 2 < whole.0, "{read} of {whole:?}");
+}
+
+/// What `rooted_beside` answers, the pages it read for it by itself, and
+/// the pages that the walk by steps read, which the answer is held to in
+/// this build and which is made within the call.
+fn walked(
+    grove: &Grove,
+    from: &Prefix,
+    until: Option<&Prefix>,
+    back: bool,
+) -> (Option<Prefix>, u64, u64) {
+    let directory = &grove.directory;
+    let (by_steps, steps) = (grove.pages).reads(|| {
+        let walk = directory.rooted_beside_by_steps(&grove.pages, from, until, back);
+        walk.expect("a walk")
+    });
+    let (found, both) = (grove.pages).reads(|| {
+        let walk = directory.rooted_beside(&grove.pages, from, until, back);
+        walk.expect("a walk")
+    });
+    assert_eq!(found, by_steps);
+    assert_eq!((steps.1, both.1), (0, 0), "no entry here is out of line");
+    (found, both.0 - steps.0, steps.0)
+}
+
+/// How many leaves of the directory's keyspace hold entries.
+fn leaves_of_entries(grove: &Grove) -> u64 {
+    fn below(grove: &Grove, page: PageId) -> u64 {
+        match FlatPage::decode(&grove.pages.pages[&page], V1).expect("a page") {
+            FlatPage::Leaf(leaf) => {
+                let holds = |slot| leaf.key(slot).map(|key| key.to_vec()[0]);
+                let entry = Some(RecordKind::Entry.code());
+                let last = leaf.len().saturating_sub(1);
+                u64::from(holds(0) <= entry && entry <= holds(last))
+            }
+            FlatPage::Branch(branch) => (0..=branch.len())
+                .map(|index| below(grove, branch.child(index).expect("a child")))
+                .sum(),
+        }
+    }
+    below(grove, grove.directory.root_page())
+}
+
+/// The walk past Merks with no node holds a leaf across its entries: past
+/// 1,799 of them it asks for a few pages for each leaf of entries, where
+/// the walk by steps asks for two pages for each entry. And it answers
+/// what the model says from every seventh entry and from the three that
+/// have a node, both ways, with a prefix to end at and with none.
+#[test]
+fn the_walk_past_merks_with_no_node_asks_for_pages_by_the_leaf_not_by_the_entry() {
+    let (mut grove, paths) = wide(2_000, 1);
+    let mut entered: Vec<(Prefix, &Vec<String>)> = (paths[1..].iter())
+        .map(|at| (prefix_of(&path(&keys(at))), at))
+        .collect();
+    entered.sort();
+    // The root of the grove has a node, as a host, and of the Merks below
+    // it two that have 1,799 between them.
+    let (near, far) = (entered[100], entered[1_900]);
+    grove.root(&keys(near.1));
+    grove.root(&keys(far.1));
+    let (near, far) = (near.0, far.0);
+    let first = prefix_of(&[]);
+    assert!(first < entered[0].0);
+
+    let levels = grove.pages.levels(&grove.directory);
+    let leaves = leaves_of_entries(&grove);
+    assert!(
+        levels >= 2 && leaves >= 8,
+        "{levels} levels, {leaves} leaves"
+    );
+    for (from, back, to) in [(near, false, far), (far, true, near)] {
+        let (found, read, by_steps) = walked(&grove, &from, None, back);
+        assert_eq!(found, Some(to));
+        assert!(by_steps >= 2 * 1_799, "{by_steps} by steps");
+        assert!(
+            read <= 2 * levels * (leaves + 1),
+            "{read} pages, {leaves} leaves of {levels} levels"
+        );
+        assert!(read * 20 < by_steps, "{read} against {by_steps}");
+    }
+
+    // From every seventh entry, and from the three with a node.
+    let from = (entered.iter().step_by(7).map(|(prefix, _)| *prefix)).chain([first, near, far]);
+    let rooted = [first, near, far];
+    for from in from {
+        let after = rooted.iter().find(|prefix| **prefix > from).copied();
+        let before = rooted.iter().rev().find(|prefix| **prefix < from).copied();
+        assert_eq!(walked(&grove, &from, None, false).0, after);
+        assert_eq!(walked(&grove, &from, None, true).0, before);
+        // A prefix to end at is not reached: the Merk there is not
+        // answered, and one before it is.
+        for until in [&entered[1_000].0, &near, &far] {
+            let back = *until < from;
+            let found = if back { before } else { after };
+            let within = found.filter(|found| match back {
+                false => found < until,
+                true => found > until,
+            });
+            if *until != from {
+                assert_eq!(walked(&grove, &from, Some(until), back).0, within);
+            }
+        }
+    }
 }

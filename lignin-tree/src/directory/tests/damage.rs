@@ -3,8 +3,8 @@
 
 use super::{
     super::record::{
-        child_key, dropped_key, encode_child, encode_dropped, encode_header, entry_key, root_key,
-        Fields, HEADER_KEY,
+        child_key, dropped_key, encode_child, encode_dropped, encode_header, entry_key, names_root,
+        root_key, Fields, HEADER_KEY,
     },
     *,
 };
@@ -605,4 +605,180 @@ fn a_failed_page_write_is_reported_as_the_keyspace_reports_it() {
         grove.directory.check(&grove.pages),
         Err(DirectoryError::Flat(_))
     ));
+}
+
+/// The walk to the Merk with a node beside a prefix reports the damage it
+/// decodes, and it decodes of an entry that names no root the id and the
+/// address alone: such an entry that is damaged behind them is passed, and
+/// the check and the lookup by its prefix report it.
+#[test]
+fn the_walk_beside_a_prefix_reports_the_damage_it_reads() {
+    let mut grove = sample();
+    grove.add(&["a", "n"]);
+    let rooted = grove.entry(&["a"]).as_bytes().to_vec();
+    let rootless = grove.entry(&["a", "n"]).as_bytes().to_vec();
+    assert!(names_root(&rooted).expect("an address"));
+    assert!(!names_root(&rootless).expect("an address"));
+    // Three prefixes behind every prefix of the sample.
+    let (from, at, last): (Prefix, Prefix, Prefix) = ([0xfd; 32], [0xfe; 32], [0xff; 32]);
+    let mut entries = grove.directory.entries();
+    while let Some((prefix, _)) = entries.next(&grove.pages).expect("an entry") {
+        assert!(prefix < from);
+    }
+    let key = entry_key(&at);
+    let beside = |grove: &Grove| {
+        grove
+            .directory
+            .rooted_beside(&grove.pages, &from, None, false)
+    };
+    let by_steps =
+        |grove: &Grove| (grove.directory).rooted_beside_by_steps(&grove.pages, &from, None, false);
+    let what = |found: Result<Option<Prefix>, DirectoryError>| match found {
+        Err(DirectoryError::Damaged { key: found, what }) if found[..] == key => what,
+        other => panic!("the walk found {other:?}"),
+    };
+    let with = |bytes: &[u8], more: &[u8]| [bytes, more].concat();
+
+    // Entries as they are written: one with no root is passed, and one
+    // with a root is the answer.
+    put(&mut grove, &entry_key(&last), &rooted);
+    put(&mut grove, &key, &rootless);
+    assert_eq!(beside(&grove).expect("a walk"), Some(last));
+    put(&mut grove, &key, &rooted);
+    assert_eq!(beside(&grove).expect("a walk"), Some(at));
+
+    // An entry that names a root is read whole.
+    put(&mut grove, &key, &with(&rooted, &[0]));
+    assert_eq!(what(beside(&grove)), "bytes after the entry");
+    let mut no_address = rooted.clone();
+    no_address[8..14].copy_from_slice(&[0, 0, 0, 0, 1, 0]);
+    put(&mut grove, &key, &no_address);
+    assert_eq!(what(beside(&grove)), "a root address that is not one");
+    // An entry that ends before the address or in it is no entry.
+    for len in [0, 8, 13] {
+        put(&mut grove, &key, &rootless[..len]);
+        assert_eq!(what(beside(&grove)), "an entry that ends early");
+    }
+
+    // An entry that names no root and is damaged behind the address: the
+    // walk passes it, the walk by steps did not, and the check and the
+    // lookup report it.
+    for damaged in [with(&rootless, &[0]), rootless[..14].to_vec()] {
+        put(&mut grove, &key, &damaged);
+        assert_eq!(beside(&grove).expect("a walk"), Some(last));
+        let says = what(by_steps(&grove));
+        assert_eq!(
+            what(grove.directory.stored(&grove.pages, &at).map(|_| None)),
+            says
+        );
+        assert_eq!(found(&grove), (key.to_vec(), says));
+    }
+
+    // A key among the entries that is no prefix.
+    delete(&mut grove, &key);
+    let short = &key[..key.len() - 1];
+    put(&mut grove, short, &rootless);
+    let found = grove.directory.rooted_beside(&grove.pages, &at, None, true);
+    assert!(
+        matches!(&found, Err(DirectoryError::Damaged { key, what })
+            if key[..] == *short && *what == "not a prefix"),
+        "{found:?}"
+    );
+}
+
+/// The walk reads no value of the entry it begins under and of the first
+/// entry at or beyond the prefix it ends at: an entry there whose value
+/// is out of line and cannot be read does not fail it, where the same
+/// entry on its way does. And an entry with no root and no id is no entry
+/// to it either.
+#[test]
+fn the_walk_beside_a_prefix_reads_the_values_of_the_entries_between_alone() {
+    let mut grove = sample();
+    grove.add(&["a", "n"]);
+    let rooted = grove.entry(&["a"]).as_bytes().to_vec();
+    let rootless = grove.entry(&["a", "n"]).as_bytes().to_vec();
+    // Four prefixes behind every prefix of the sample, in their order.
+    let behind: [Prefix; 4] = [[0xfc; 32], [0xfd; 32], [0xfe; 32], [0xff; 32]];
+    let mut entries = grove.directory.entries();
+    while let Some((prefix, _)) = entries.next(&grove.pages).expect("an entry") {
+        assert!(prefix < behind[0]);
+    }
+    let [first, second, third, last] = behind;
+    // An entry too long for its page, whose bytes are with no page.
+    let out_of_line = vec![0xa5; 3_000];
+    let lose_values = |grove: &mut Grove| grove.pages.values.clear();
+    let beside = |grove: &Grove, from: &Prefix, until: Option<&Prefix>, back: bool| {
+        (grove.directory).rooted_beside(&grove.pages, from, until, back)
+    };
+    let by_steps = |grove: &Grove, from: &Prefix, until: Option<&Prefix>, back: bool| {
+        (grove.directory).rooted_beside_by_steps(&grove.pages, from, until, back)
+    };
+
+    // Under the prefix the walk begins at, both ways.
+    put(&mut grove, &entry_key(&first), &rooted);
+    put(&mut grove, &entry_key(&second), &out_of_line);
+    put(&mut grove, &entry_key(&third), &rootless);
+    put(&mut grove, &entry_key(&last), &rooted);
+    lose_values(&mut grove);
+    for (back, to) in [(false, last), (true, first)] {
+        let (found, read) = grove.pages.reads(|| beside(&grove, &second, None, back));
+        assert_eq!(found.expect("a walk"), Some(to));
+        assert_eq!(
+            by_steps(&grove, &second, None, back).expect("a walk"),
+            Some(to)
+        );
+        assert_eq!(read.1, 0, "no value out of line was asked for");
+    }
+    // At the prefix the walk ends at.
+    assert_eq!(
+        beside(&grove, &first, Some(&second), false).expect("a walk"),
+        None
+    );
+    assert_eq!(
+        beside(&grove, &third, Some(&second), true).expect("a walk"),
+        None
+    );
+    assert_eq!(
+        by_steps(&grove, &first, Some(&second), false).expect("a walk"),
+        None
+    );
+    // On the way, it is read, and cannot be: by either walk.
+    for found in [
+        beside(&grove, &first, None, false),
+        beside(&grove, &last, None, true),
+        by_steps(&grove, &first, None, false),
+        beside(&grove, &first, Some(&third), false),
+    ] {
+        let failed = found.expect_err("an entry that cannot be read");
+        assert!(
+            matches!(failed, DirectoryError::Flat(FlatError::NoValue { .. })),
+            "{failed}"
+        );
+    }
+
+    // An entry with no root whose id is none: damage in front of the
+    // address, which both walks report.
+    let mut no_id = rootless.clone();
+    no_id[..8].fill(0);
+    put(&mut grove, &entry_key(&second), &no_id);
+    for found in [
+        beside(&grove, &first, None, false),
+        by_steps(&grove, &first, None, false),
+        beside(&grove, &third, None, true),
+    ] {
+        let failed = found.expect_err("no entry");
+        assert!(
+            matches!(&failed, DirectoryError::Damaged { key, what }
+                if key[..] == entry_key(&second) && *what == "an entry with no id"),
+            "{failed}"
+        );
+    }
+    assert_eq!(
+        names_root(&no_id).expect_err("no id").0,
+        "an entry with no id"
+    );
+    assert_eq!(
+        names_root(&rootless[..13]).expect_err("short").0,
+        "an entry that ends early"
+    );
 }
