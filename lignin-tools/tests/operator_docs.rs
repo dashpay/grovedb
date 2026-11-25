@@ -67,7 +67,12 @@ const SPEAKERS: [&str; 10] = [
 /// The error types of an open, a recovery, a commit, the end of a
 /// session, a close, a checkpoint and the tool, by the file their
 /// `Display` is in: the messages chapter quotes every message of each.
-const COVERED: [(&str, &[&str]); 5] = [
+const COVERED: [(&str, &[&str]); 7] = [
+    (
+        "lignin-store/src/segment/error.rs",
+        &["SegmentStoreError", "ManifestChange"],
+    ),
+    ("lignin-store/src/wal/error.rs", &["LogError"]),
     (
         "lignindb/src/db/error.rs",
         &["OpenError", "Reopen", "DbError"],
@@ -86,7 +91,7 @@ const COVERED: [(&str, &[&str]); 5] = [
 const PARTS: [&str; 1] = ["up to …"];
 
 /// The first words of the commands a document can name in a code span.
-const COMMANDS: [&str; 18] = [
+const COMMANDS: [&str; 19] = [
     "lignin",
     "lignin-bench",
     "cargo",
@@ -105,6 +110,7 @@ const COMMANDS: [&str; 18] = [
     "sh",
     "bash",
     "rustup",
+    "pwd",
 ];
 
 fn repository() -> PathBuf {
@@ -990,7 +996,7 @@ fn defaults() -> BTreeMap<String, String> {
     } = cleaner.unwrap_or(CleanerConfig::new());
     let migrate = read(&repository().join("lignin-tools/src/migrate/mod.rs"));
     assert!(
-        migrate.contains("Some(machine / 2)"),
+        migrate.contains("Some(machine / 2)") && migrate.contains("starts_with(\"MemTotal:\")"),
         "the limit of a migration is no longer half of the machine's memory"
     );
     let memory_limit =
