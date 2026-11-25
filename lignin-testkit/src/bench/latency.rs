@@ -41,8 +41,11 @@
 //!   `lignin-mark commit <block> <nanoseconds>`, to `/dev/null`, outside
 //!   the timed region. A trace of the system's calls that follows the
 //!   thread finds the commit by the line that comes after it.
-//! - For LigninDB the engine's own count of the commit's append to the log
-//!   is read around every commit.
+//! - For LigninDB the parts of a commit that the engine counts apart
+//!   ([`PARTS`]) are read around every commit: its waits for the commit
+//!   lock and for the lock on the counts of values, its append to the log,
+//!   the placing of values and the reclaiming after it, and its wait for
+//!   room in write-back.
 //! - With `--watch-files`, LigninDB is opened on a file layer of the harness
 //!   that passes every call on to the system's and times the syncs and the
 //!   appends: the report then counts the syncs by what they are of, and
@@ -269,9 +272,9 @@ pub struct EngineLatency {
     pub commit_ns: Vec<u64>,
     /// The time the operations of each block took, in nanoseconds.
     pub apply_ns: Vec<u64>,
-    /// The engine's own count of each commit's append to its log, in
-    /// nanoseconds, where it counts that.
-    pub appending_ns: Option<Vec<u64>>,
+    /// The parts of each commit that the engine counts apart, in
+    /// nanoseconds and in the order of [`PARTS`], where it counts them.
+    pub parts_ns: Option<Vec<[u64; 6]>>,
     /// The turns of the engine's write-back that ended over the measured
     /// blocks, where it has such turns.
     pub turns: Option<u64>,
@@ -294,8 +297,9 @@ pub struct SlowCommit {
     pub block: u64,
     /// The time of the commit, in nanoseconds.
     pub commit_ns: u64,
-    /// The engine's count of the commit's append to its log.
-    pub appending_ns: Option<u64>,
+    /// The parts of the commit that the engine counts apart, in the order
+    /// of [`PARTS`].
+    pub parts_ns: Option<[u64; 6]>,
     /// The append calls that the measuring thread made on files of the log
     /// during the commit, as the watching file layer timed them: how many,
     /// their time in all and the longest, in nanoseconds. A commit appends
@@ -306,6 +310,17 @@ pub struct SlowCommit {
     /// nanoseconds.
     pub syncs_beside: Vec<(String, u64)>,
 }
+
+/// The parts of a commit that LigninDB counts apart, as a report names
+/// them.
+pub const PARTS: [&str; 6] = [
+    "its wait for the commit lock",
+    "its wait for the lock on the counts of values",
+    "its append to the log",
+    "placing values after it",
+    "reclaiming versions after it",
+    "its wait for room in write-back",
+];
 
 /// The sample that `share` of `sorted` are at or below: the smallest one
 /// with at least that share of the samples not above it.
@@ -349,9 +364,10 @@ trait Subject: Engine + Sync {
         watch: Option<&'static Watch>,
     ) -> Result<Self, BenchError>;
 
-    /// The engine's running count of its commits' appends to its log, and
-    /// of the turns of its write-back that have ended.
-    fn look(&self) -> Option<(Duration, u64)> {
+    /// The engine's running counts of the parts of its commits, in
+    /// nanoseconds and in the order of [`PARTS`], and of the turns of its
+    /// write-back that have ended.
+    fn look(&self) -> Option<([u64; 6], u64)> {
         None
     }
 }
@@ -431,9 +447,19 @@ mod lignin {
             Self::open_tuned(dir, tuning)
         }
 
-        fn look(&self) -> Option<(Duration, u64)> {
+        fn look(&self) -> Option<([u64; 6], u64)> {
             let stats = self.grove().engine().database().stats();
-            Some((stats.commits.appending, stats.store.watch.turns_ended))
+            let commits = &stats.commits;
+            let parts = [
+                commits.lock_waited,
+                commits.counts_waited,
+                commits.appending,
+                commits.placing,
+                commits.reclaiming,
+                stats.store.flush.room_waited,
+            ];
+            let nanos = |part: Duration| u64::try_from(part.as_nanos()).unwrap_or(u64::MAX);
+            Some((parts.map(nanos), stats.store.watch.turns_ended))
         }
     }
 }
@@ -839,7 +865,7 @@ fn measure_in<E: Subject>(
     let blocks = options.blocks as usize;
     let mut commit_ns = Vec::with_capacity(blocks);
     let mut apply_ns = Vec::with_capacity(blocks);
-    let mut appending_ns = engine.look().map(|_| Vec::with_capacity(blocks));
+    let mut parts_ns = engine.look().map(|_| Vec::with_capacity(blocks));
     let mut slowest: Vec<SlowCommit> = Vec::new();
     let mut marker = Marker::new(options.mark);
     let committed = AtomicU64::new(0);
@@ -868,13 +894,13 @@ fn measure_in<E: Subject>(
                 let to = from + took;
                 marker.mark(number, took);
                 let nanos = took.as_nanos() as u64;
-                let appending = before.zip(engine.look()).map(|((before, _), (after, _))| {
-                    after.saturating_sub(before).as_nanos() as u64
+                let parts = before.zip(engine.look()).map(|((before, _), (after, _))| {
+                    std::array::from_fn(|part| after[part].saturating_sub(before[part]))
                 });
                 commit_ns.push(nanos);
                 apply_ns.push(applied.as_nanos() as u64);
-                if let (Some(all), Some(appending)) = (appending_ns.as_mut(), appending) {
-                    all.push(appending);
+                if let (Some(all), Some(parts)) = (parts_ns.as_mut(), parts) {
+                    all.push(parts);
                 }
                 let is_slow = slowest.len() < options.slowest
                     || slowest.last().is_some_and(|last| nanos > last.commit_ns);
@@ -882,7 +908,7 @@ fn measure_in<E: Subject>(
                     slowest.push(SlowCommit {
                         block: number,
                         commit_ns: nanos,
-                        appending_ns: appending,
+                        parts_ns: parts,
                         append_calls: watch.map(Watch::appends),
                         syncs_beside: watch.map_or_else(Vec::new, |watch| watch.beside(from, to)),
                     });
@@ -930,7 +956,7 @@ fn measure_in<E: Subject>(
         thread_id: machine::thread_id(),
         commit_ns,
         apply_ns,
-        appending_ns,
+        parts_ns,
         turns,
         flushes_asked: flushes_asked?,
         neighbour_syncs: neighbour_syncs?,
@@ -1022,6 +1048,10 @@ impl LatencyReport {
     }
 }
 
+/// How many of the syncs beside a slow commit a table names; a report has
+/// them all.
+const SYNCS_LISTED: usize = 8;
+
 fn micros(nanos: u64) -> String {
     format!("{:.0}", nanos as f64 / 1e3)
 }
@@ -1102,12 +1132,16 @@ pub fn table(report: &LatencyReport) -> String {
             "\n- the operations of a block, µs: median {median}, 99% {p99}, 99.9% {p999}, \
              longest {longest}"
         );
-        if let Some(appending) = &engine.appending_ns {
-            let [median, p99, p999, longest] = quantiles(appending).map(micros);
+        for (part, name) in PARTS.iter().enumerate() {
+            let Some(parts) = &engine.parts_ns else {
+                break;
+            };
+            let of_part: Vec<u64> = parts.iter().map(|parts| parts[part]).collect();
+            let [median, p99, p999, longest] = quantiles(&of_part).map(micros);
             let _ = writeln!(
                 out,
-                "- the commit's append to the log, as the engine counts it, µs: median \
-                 {median}, 99% {p99}, 99.9% {p999}, longest {longest}"
+                "- {name}, as the engine counts it, µs: median {median}, 99% {p99}, 99.9% \
+                 {p999}, longest {longest}"
             );
         }
         for (of, (count, nanos)) in &engine.syncs {
@@ -1120,8 +1154,16 @@ pub fn table(report: &LatencyReport) -> String {
         }
         for slow in &engine.slowest {
             let _ = write!(out, "- block {}: {} µs", slow.block, micros(slow.commit_ns));
-            if let Some(appending) = slow.appending_ns {
-                let _ = write!(out, ", its append {} µs", micros(appending));
+            if let Some(parts) = slow.parts_ns {
+                let named: Vec<String> = PARTS
+                    .iter()
+                    .zip(parts)
+                    .filter(|(_, nanos)| *nanos >= 1_000)
+                    .map(|(name, nanos)| format!("{name} {}", micros(nanos)))
+                    .collect();
+                if !named.is_empty() {
+                    let _ = write!(out, " ({})", named.join(", "));
+                }
             }
             if let Some((calls, total, longest)) = slow.append_calls {
                 let _ = write!(
@@ -1135,9 +1177,13 @@ pub fn table(report: &LatencyReport) -> String {
                 let beside: Vec<String> = slow
                     .syncs_beside
                     .iter()
+                    .take(SYNCS_LISTED)
                     .map(|(of, nanos)| format!("{of} {:.1} ms", *nanos as f64 / 1e6))
                     .collect();
                 let _ = write!(out, "; syncs beside it: {}", beside.join(", "));
+                if let Some(more) = slow.syncs_beside.len().checked_sub(SYNCS_LISTED + 1) {
+                    let _ = write!(out, " and {} more", more + 1);
+                }
             }
             out.push('\n');
         }
@@ -1405,7 +1451,7 @@ mod tests {
         };
         assert_eq!((rocksdb.commit_ns.len(), rocksdb.apply_ns.len()), (12, 12));
         assert!(rocksdb.commit_ns.iter().all(|nanos| *nanos > 0));
-        assert_eq!(rocksdb.appending_ns, None);
+        assert_eq!(rocksdb.parts_ns, None);
         assert_eq!(rocksdb.turns, None);
         assert!(rocksdb.syncs.is_empty());
         assert!(rocksdb
@@ -1461,12 +1507,14 @@ mod tests {
         // Every commit of a block appends its group: the engine counts
         // the append, and the file layer timed the calls of each of the
         // slowest, the group's and those of its page steps.
-        let appending = lignindb.appending_ns.as_ref().unwrap();
-        assert_eq!(appending.len(), 12);
-        for (appending, commit) in appending.iter().zip(&lignindb.commit_ns) {
+        let parts = lignindb.parts_ns.as_ref().unwrap();
+        assert_eq!(parts.len(), 12);
+        for (parts, commit) in parts.iter().zip(&lignindb.commit_ns) {
+            let appending = parts[2];
+            assert!(appending > 0, "{parts:?}");
             assert!(
-                *appending > 0 && appending <= commit,
-                "{appending} of {commit}"
+                parts.iter().sum::<u64>() <= *commit,
+                "{parts:?} of {commit}"
             );
         }
         assert_eq!(lignindb.slowest.len(), 3);
