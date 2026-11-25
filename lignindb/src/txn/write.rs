@@ -245,12 +245,23 @@ pub enum RootPut<'a> {
 ///   that is kept, a written node that has a cell is taken to stay in its
 ///   tree, and a new node is in the tree where a written node of the tree
 ///   links it.
-/// - **Only written nodes are looked at.** A cell that the batch neither
-///   writes nor deletes, and that no node links any more, stays in its
-///   page with no link to it, and no record is kept for it. So does a
-///   written node with a cell that its parent stops linking under a root
-///   that is kept. A commit of a Merk leaves neither: it states its root,
-///   and puts or deletes every node that leaves its tree.
+/// - **Only written nodes are looked at.** That is said of what a batch
+///   does to the cells of its Merk, and not of what a write reads: a
+///   write reads other cells to find the nodes that it names by their
+///   keys, and the cell that a link leads to for its key. A cell that
+///   the batch neither writes nor deletes, and that no node links any
+///   more, stays in its page with no link to it, and no record is kept
+///   for it. So does a written node with a cell that no node links any
+///   more under a root that is kept. A commit of a Merk that was made
+///   of the tree it is written to leaves neither: it states its root,
+///   and puts or deletes every node that leaves its tree. A write that
+///   may leave such a cell ends every node handle (PN8), those that it
+///   reports among them ([`Applied::nodes`]): the cell keeps its key in
+///   its page. Whether a write may is found from what it states and from
+///   the cells that it writes over or takes out, and no other cell is
+///   read for it: it is every write in which a cell loses the link that
+///   led to it, and is not taken out, is not the root, and is not linked
+///   again from the root by the nodes of the change set.
 /// - **A key has one record.** A node that is linked under a key takes the
 ///   place of an unlinked record there. A delete of the key takes
 ///   whichever is there, and so does a drop or a clear of the subtree.
@@ -1053,15 +1064,24 @@ impl Batch<'_> {
 /// What the application of a batch reports: where the nodes it wrote are
 /// (`tree-layout.md` P5, `engine.md` "The batch across subtrees").
 ///
-/// A holder of node handles that takes this in never has to find a node of
-/// its own transaction by key (S6). The handles say where a node is: one
+/// A holder of node handles takes this in for where the nodes are that
+/// the write wrote or moved (S6), so that it does not look for them by
+/// their keys. Each handle is a hint as every other is, and is checked
+/// where it is followed (PN8): one that the report gives can have ended
+/// when the write returns, and so can a handle of another node, and such
+/// a node is asked for by its key. The handles say where a node is: one
 /// the write wrote, or one whose cell it moved without writing its key.
 /// The second kind is no read of the node: a write that keeps the
 /// committed value of a node names the handle the node was read with
 /// ([`NodePut::at`]). The first kind is the transaction's own node as the
 /// write left it, and a later keep of that node can name it. The report
 /// is empty while the transaction serves its records by key (WT7b): they
-/// have no cells then.
+/// have no cells then. The handles of a write that may leave a cell out
+/// of the tree of its Merk have ended when the write returns
+/// ([`MerkWrite`], "Only written nodes are looked at"): none is followed,
+/// and a node is asked for by its key, which finds none where the write
+/// left the node out of its tree. A keep that names one of them as its
+/// read names the write all the same ([`NodePut::at`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Applied {
     /// The handles of the written nodes, in the order of the batch: the

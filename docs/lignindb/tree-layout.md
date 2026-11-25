@@ -246,8 +246,11 @@ same key: co-located subtrees often hold the same keys. So:
   address is good only under the lease it was read under, which is also how
   the reuse of a page id is settled
 
-A holder that takes in what every write reports (P5) never fails the check
-because of its own transaction.
+A holder that takes in what every write reports (P5) has, for every cell
+that the write wrote or carried, the address at which the write left it.
+That address is a hint as every other is: a write of the same transaction
+can end it, the write that reported it among them (PN8 of
+transactions.md), and the check tells.
 
 A slot number is 16 bits (format.md, draft 9 of the plan). A page of 32 KiB
 holds a few hundred cells.

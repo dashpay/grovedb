@@ -54,6 +54,32 @@
 //! subtree whose read or write gave it, and is asked for under that
 //! subtree alone.
 //!
+//! Nor does a cell say that the tree of its Merk reaches it. A change set
+//! can leave a cell in its page and out of its tree: one that the search
+//! by its key came to before the write and does not come to after it,
+//! and that the change set does not remove ([`MerkWrite`], "Only written
+//! nodes are looked at"). The lease ends with every write that may leave
+//! such a cell, as it does for one that drops or clears a Merk: with
+//! every write in which a cell loses the link that led to it, and is not
+//! taken out by the write, is not the root after it, and is not linked
+//! again from the root by the nodes of the change set (`leaves_a_cell`
+//! in `frames`). No place and no handle from before the write answers
+//! after it, and neither does a handle that the write reports: it can be
+//! of a node that the write put into a branch it cut off. So a place
+//! that the transaction kept from a search or from a write is followed
+//! only to a cell that the search by its key comes to, and nothing that
+//! is read after such a write names a cell that is out of its tree: a
+//! later write that names the key of one finds no node under it. A
+//! commit of a Merk that was made of the tree it is written to leaves no
+//! such cell, and no lease ends by this rule at its write.
+//!
+//! That is said of a Merk whose links keep its keys in order, and that is
+//! no deeper than a search by key goes ([`find`](super::pages::find):
+//! 128 cells, where a Merk of 2^64 nodes is at most 93 deep). The
+//! transaction takes the links of a change set as they are stated, and
+//! holds them to neither: a search by key is right of no tree that is
+//! out of order, and fails in one that is deeper.
+//!
 //! # What a told place is good for
 //!
 //! A caller that was shown a node with a handle, and that will name the
@@ -89,9 +115,13 @@
 //!   cell ([`Places::renew`]), or by a load of the whole Merk, which
 //!   forgets what is kept of the subtree ([`Places::forget_subtree`]);
 //! - a write that gives a Merk another prefix, and one that drops or
-//!   clears a Merk, is made under a new lease
-//!   (`lignin_tree::node::Lease`), and so is everything that reads other
-//!   pages than those the table was filled from.
+//!   clears a Merk, are made under a new lease
+//!   (`lignin_tree::node::Lease`); one that may leave a cell of a Merk
+//!   in its page and out of its tree, which a later write could
+//!   otherwise link again without putting it, ends the lease it was made
+//!   under;
+//!   and everything that reads other pages than those the table was
+//!   filled from reads them under another lease.
 //!
 //! A table is of one lease: every handle in it was issued under that
 //! lease, and what it says of a key was found under it. It answers
@@ -100,6 +130,7 @@
 //! nothing has to empty a table where a lease ends.
 //!
 //! [`Applied::nodes`]: super::Applied::nodes
+//! [`MerkWrite`]: super::MerkWrite
 //! [`NodePut::at`]: super::NodePut::at
 //! [`WriteTxn::place`]: super::WriteTxn::place
 

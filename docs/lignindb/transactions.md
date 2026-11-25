@@ -791,6 +791,18 @@ for a private frame, the frame itself:
   in its page, and a freed slot can be given to another cell, even to one
   with the same key. So finding the expected key at a location does not
   show that the location is still good.
+- Every location into a private frame ends at a write of the same
+  transaction that leaves a cell of a Merk in its page and out of the
+  Merk's tree, or may. There are two kinds. One drops, clears or moves a
+  Merk. In the other, a cell loses the link that led to it, and is not
+  removed by the change set, is not the root after it, and is not linked
+  again from the root by the nodes of the change set (`MerkWrite`, "Only
+  written nodes are looked at"). A cell that is left out keeps its key, and
+  a later write could link it again where no search from the root finds it.
+  A write of the second kind ends the locations that it reports of its own
+  nodes with the others: a node that it wrote can be in a branch it cut
+  off. A write that is of the first kind alone makes its report under the
+  lease that it took: this rule ends none of the locations it reports.
 - A location is never kept outside the handle it was read through.
 
 The engine must make it impossible to follow a location that is no longer

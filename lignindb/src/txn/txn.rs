@@ -1446,8 +1446,15 @@ impl<'s> WriteTxn<'s> {
                     // own, is not dated. The frames go at the next
                     // operation, and show no node before that.
                     state.reads.forget_frames(frames.lease());
-                } else if !applied.nodes.is_empty() || !applied.carried.is_empty() {
-                    state.reads.note_frames(frames.lease(), op.at);
+                } else if let Some(handle) =
+                    (applied.nodes.first()).or_else(|| applied.carried.first().map(|(_, to)| to))
+                {
+                    // The handles of the report are of the lease that the
+                    // write was made under. It has ended where the write
+                    // may have left a cell out of the tree of its Merk,
+                    // and a keep by one of its handles names this write
+                    // all the same: that lease is the one to date.
+                    state.reads.note_frames(handle.lease(), op.at);
                 }
                 Ok(applied)
             }

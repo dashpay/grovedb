@@ -16,9 +16,10 @@
 //! are run once.
 
 use lignin_format::tree_page::Side;
-use lignin_tree::node::NodeHandle;
+use lignin_tree::node::{Lease, NodeHandle};
 
 use super::{
+    super::frames::probe,
     load::whole,
     model::{self, records, value, OwnedSubtree},
     store::{Db, Outcome, Rng},
@@ -895,4 +896,671 @@ fn a_table_takes_no_told_place_whose_key_its_buffer_has_no_room_for() {
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
+}
+
+fn refusal(result: Result<Applied, TxnError>) -> BatchError {
+    match result {
+        Err(TxnError::Batch(error)) => error,
+        other => panic!("a refused batch is expected, and not {other:?}"),
+    }
+}
+
+/// The record of the node under `key` of the Merk `name` as `tx` reads it.
+fn record(world: &World<'_>, tx: &Tx<'_>, name: u8, key: &[u8]) -> model::NodeRec {
+    let unit = Unit::data(model::subtree(name));
+    let view = tx.model.borrow().view(&world.model.records, unit);
+    match view.get(key) {
+        Some(model::Val::Node(node)) => node.clone(),
+        other => panic!("a node is expected under {key:?}, and not {other:?}"),
+    }
+}
+
+/// A store whose Merk 1 has sixty nodes, with a transaction that has its
+/// frames, the root of the Merk, the node the root links on its left and
+/// a node that this one links: a branch of the tree, and a node of it.
+/// The two are read by their keys, which searches for them, and kept.
+/// `test` is given the root's key, the branch's and that of the node
+/// below it.
+fn with_a_branch(seed: u64, test: impl for<'s> FnOnce(&World<'s>, &Tx<'s>, [Vec<u8>; 3])) {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(seed);
+    fill(&mut world, &mut rng, 1, 60);
+    let tx = world.begin();
+    world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+    let least = items(&world, &tx, 1).keys().next().cloned();
+    let way = walk(&world, &tx, 1, &least.expect("a node"));
+    assert!(way.len() >= 3, "the least key is {} nodes down", way.len());
+    let [top, branch, below] = [0, 1, 2].map(|at| way[at].0.clone());
+    for key in [&branch, &below] {
+        assert_eq!(read_checked(&world, &tx, 1, key), (1, false));
+        assert_eq!(read_checked(&world, &tx, 1, key), (0, true));
+    }
+    test(&world, &tx, [top, branch, below]);
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+}
+
+/// A change set of the Merk 1 of `tx` that changes nothing yet.
+fn change_set<'s>(world: &World<'s>, tx: &Tx<'s>) -> OwnedMerk {
+    world.merk(tx, 1, |_| {})
+}
+
+fn batch_of(merk: OwnedMerk) -> OwnedBatch {
+    OwnedBatch {
+        merks: vec![merk],
+        ..OwnedBatch::default()
+    }
+}
+
+/// A change set may write a node without one of its links and neither
+/// write nor remove the child: the branch below that link stays in its
+/// pages, out of the tree. Such a write ends the handles and the places
+/// of the lease before it, as one that drops a Merk does: the keys of the
+/// branch are searched for, and have no node. A change set that links
+/// the branch again is refused, since no search from the root finds the
+/// child, and every read stays what the search gives.
+#[test]
+fn a_write_that_cuts_a_branch_off_ends_the_places_of_its_lease() {
+    with_a_branch(65, |world, tx, [top, branch, below]| {
+        let lease = walked(world, tx, 1, &top).lease();
+        let whole = record(world, tx, 1, &top);
+        assert!(whole.left.is_some(), "the root links the branch");
+        let cut = model::NodeRec {
+            left: None,
+            ..whole.clone()
+        };
+        let mut merk = change_set(world, tx);
+        merk.nodes.push((top.clone(), cut, true));
+        probe::lost_counts();
+        let applied = (world.apply(tx, &batch_of(merk))).expect("the root is written");
+        let left_out = probe::Lost {
+            left_out: 1,
+            ..probe::Lost::default()
+        };
+        assert_eq!(probe::lost_counts(), left_out);
+        // The handle that the write reports of the root is of the lease
+        // that ended with it.
+        assert_ne!(walked(world, tx, 1, &top).lease(), lease);
+        assert_eq!(applied.nodes.len(), 1);
+        assert_eq!(applied.nodes[0].lease(), lease);
+
+        let placed = tx.txn.stats().places_followed;
+        for key in [&branch, &below] {
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+        }
+        assert_eq!(tx.txn.stats().places_followed, placed);
+
+        // The change set that makes the Merk what its items say again:
+        // the root as it was, with its link to the branch.
+        let merk = change_set(world, tx);
+        let written: Vec<_> = merk
+            .nodes
+            .iter()
+            .map(|(key, node, _)| (key, node))
+            .collect();
+        assert_eq!(written, [(&top, &whole)]);
+        let subtree = model::subtree(1);
+        let again = world.apply(tx, &batch_of(merk));
+        assert_eq!(refusal(again), BatchError::NoChild { subtree });
+        for key in [&branch, &below] {
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+        }
+        assert!(read(tx, 1, &top).is_some());
+    });
+}
+
+/// The same of a node that is removed while the nodes it linked are
+/// neither removed nor linked anew, and of a root that is set to none
+/// over cells that stay: the cells that are left out of the tree are
+/// shown to no read, also once the Merk has a root again.
+#[test]
+fn a_write_that_leaves_cells_below_a_removed_node_or_a_root_ends_the_places() {
+    with_a_branch(66, |world, tx, [top, branch, below]| {
+        let lease = walked(world, tx, 1, &top).lease();
+        let cut = model::NodeRec {
+            left: None,
+            ..record(world, tx, 1, &top)
+        };
+        let mut merk = change_set(world, tx);
+        merk.nodes.push((top.clone(), cut, true));
+        merk.removed.push(branch.clone());
+        (world.apply(tx, &batch_of(merk))).expect("the branch's node is removed");
+        assert_ne!(walked(world, tx, 1, &top).lease(), lease);
+        assert_eq!(read(tx, 1, &branch), None);
+        assert_eq!(read(tx, 1, &below), None);
+    });
+
+    with_a_branch(67, |world, tx, [top, branch, below]| {
+        let leaf = model::NodeRec {
+            left: None,
+            right: None,
+            ..record(world, tx, 1, &top)
+        };
+        let mut merk = change_set(world, tx);
+        merk.root = Some(None);
+        merk.removed.push(b"no node".to_vec());
+        (world.apply(tx, &batch_of(merk))).expect("the Merk has no root");
+        for key in [&top, &branch, &below] {
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+        }
+
+        // A node of its own is the root: the cells that were left are in
+        // their pages still, and none of them is a node of the Merk.
+        let new = b"a new root".to_vec();
+        let mut merk = change_set(world, tx);
+        merk.nodes.push((new.clone(), leaf, true));
+        merk.root = Some(Some(new.clone()));
+        (world.apply(tx, &batch_of(merk))).expect("the Merk has a root");
+        assert!(read(tx, 1, &new).is_some());
+        for key in [&top, &branch, &below] {
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+        }
+    });
+}
+
+/// A commit of a Merk that is made of the tree it is written to leaves no
+/// cell out of its tree: it puts or removes every node that leaves, and
+/// links anew what a rotation moves. Its write takes no new lease,
+/// whatever it removes and puts: a handle ends then with a cell that
+/// leaves its page, and with nothing else. Every
+/// cell that lost its link in these commits was taken out by its change
+/// set, or was the root after it, or was linked again from the root by
+/// the nodes of the change set.
+#[test]
+fn a_commit_of_a_merk_takes_no_new_lease() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(68);
+    fill(&mut world, &mut rng, 1, 90);
+    let tx = world.begin();
+    world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+    let lease = |world: &World<'_>| {
+        let top = root(world, &tx, 1);
+        walked(world, &tx, 1, &top).lease()
+    };
+    let before = lease(&world);
+    probe::lost_counts();
+    for round in 0..6 {
+        world.edit(&tx, 1, |items| {
+            for index in (round * 15)..(round * 15 + 11) {
+                items.remove(&key(index));
+            }
+            for index in 0..7 {
+                items.insert(key(500 + round * 10 + index), vec![round as u8; 90]);
+            }
+        });
+        assert_eq!(lease(&world), before, "{round}");
+        world.check(&tx);
+    }
+    world.edit(&tx, 1, |items| items.clear());
+    world.edit(&tx, 1, |items| {
+        items.insert(key(1), b"one".to_vec());
+    });
+    assert_eq!(lease(&world), before);
+    let lost = probe::lost_counts();
+    assert!(lost.held >= 6, "{lost:?}");
+    assert_eq!(lost.left_out, 0);
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+}
+
+/// A write that cuts a branch off can put a node of that branch in the
+/// same change set. Under a root that is kept the node has a cell, is
+/// taken to stay in its tree, and is reported. Its handle ends with the
+/// write, as every other does: nothing is shown by it, a place that is
+/// told with it is dropped, and a change set that names it to link the
+/// branch again finds no node under the key, and is refused for the child
+/// that no search from the root finds.
+#[test]
+fn a_node_that_is_put_into_a_branch_its_write_cuts_off_is_reported_with_an_ended_handle() {
+    with_a_branch(69, |world, tx, [top, branch, below]| {
+        let lease = walked(world, tx, 1, &top).lease();
+        let whole = record(world, tx, 1, &top);
+        let node = record(world, tx, 1, &branch);
+        assert_eq!(node.left.as_ref().map(|link| &link.key), Some(&below));
+        let cut = model::NodeRec {
+            left: None,
+            ..whole.clone()
+        };
+        let mut set = change_set(world, tx);
+        set.nodes.push((top.clone(), cut, true));
+        set.nodes.push((branch.clone(), node.clone(), true));
+        let applied = (world.apply(tx, &batch_of(set))).expect("both nodes are written");
+        assert_eq!((applied.nodes.len(), applied.unlinked.len()), (2, 0));
+        let now = walked(world, tx, 1, &top).lease();
+        assert_ne!(now, lease);
+        assert!(applied.nodes.iter().all(|handle| handle.lease() == lease));
+
+        let reported = applied.nodes[1];
+        let shown = |view: Option<NodeView<'_>>| view.is_some();
+        let child = tx.txn.child(model::subtree(1), reported, Side::Left, shown);
+        assert_eq!(child.expect("a read"), None);
+        let places = tx.txn.places();
+        tx.txn.place(merk(1), &branch, reported);
+        assert_eq!(tx.txn.places(), places);
+        for key in [&branch, &below] {
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+        }
+
+        let mut again = change_set(world, tx);
+        again.nodes = vec![(top.clone(), whole, true), (branch.clone(), node, true)];
+        again.hints.insert(branch.clone(), reported);
+        let subtree = model::subtree(1);
+        let refused = world.apply_as_read(tx, &batch_of(again));
+        assert_eq!(refusal(refused), BatchError::NoChild { subtree });
+        for key in [&branch, &below] {
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+        }
+        assert!(read(tx, 1, &top).is_some());
+    });
+}
+
+/// A cell that loses its link is in its tree still where a node of the
+/// tree links it, and not where any node of the batch does. The root
+/// stops linking the branch, and a leaf of that branch is written with a
+/// link to it: the leaf has a cell and its link names the branch, and
+/// the two are in no tree. No link of the batch leads from the root to
+/// the leaf, so its link holds nothing, and the handles end.
+#[test]
+fn a_link_from_a_node_that_no_tree_reaches_holds_no_cell() {
+    with_a_branch(70, |world, tx, [top, branch, below]| {
+        let least = items(world, tx, 1).keys().next().cloned().expect("a node");
+        let leaf = record(world, tx, 1, &least);
+        assert_eq!((&leaf.left, &leaf.right), (&None, &None));
+        let lease = walked(world, tx, 1, &top).lease();
+        let whole = record(world, tx, 1, &top);
+        let cut = model::NodeRec {
+            left: None,
+            ..whole.clone()
+        };
+        let back = model::NodeRec {
+            left: whole.left.clone(),
+            ..leaf
+        };
+        let mut set = change_set(world, tx);
+        set.nodes.push((top.clone(), cut, true));
+        set.nodes.push((least.clone(), back, true));
+        probe::lost_counts();
+        let applied = (world.apply(tx, &batch_of(set))).expect("the two nodes are written");
+        assert_eq!((applied.nodes.len(), applied.unlinked.len()), (2, 0));
+        let left_out = probe::Lost {
+            left_out: 1,
+            ..probe::Lost::default()
+        };
+        assert_eq!(probe::lost_counts(), left_out);
+        assert_ne!(walked(world, tx, 1, &top).lease(), lease);
+        let placed = tx.txn.stats().places_followed;
+        for key in [&branch, &below, &least] {
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+            assert_eq!(read(tx, 1, key), None, "{key:?}");
+        }
+        assert_eq!(tx.txn.stats().places_followed, placed);
+    });
+}
+
+/// A change set that moves cells between nodes of its own, as a rotation
+/// does, and that does not write the nodes above them: the nodes that
+/// link the moved cells anew hang below cells the batch does not write,
+/// and no link of the batch leads to them from the root. The cells are
+/// in the tree all the same. Each lost the link that led to it, and
+/// nothing that the batch states shows it to be in the tree: no more is
+/// asked, and the write ends the handles, its own with them. Every read
+/// after it is the model's, by a search that is kept.
+#[test]
+fn a_change_set_that_moves_cells_below_cells_it_does_not_write_ends_the_handles() {
+    with_a_branch(71, |world, tx, [top, branch, below]| {
+        let lease = walked(world, tx, 1, &top).lease();
+        let (upper, middle) = (record(world, tx, 1, &branch), record(world, tx, 1, &below));
+        let low = middle
+            .left
+            .clone()
+            .expect("the way to the least key goes on");
+        let lower = record(world, tx, 1, &low.key);
+        // The node on the way below `below` goes up to where `below` was,
+        // and `below` hangs on its right with what it had there.
+        let link_to = |key: &[u8], from: &model::LinkRec| model::LinkRec {
+            key: key.to_vec(),
+            ..from.clone()
+        };
+        let up = upper.left.clone().expect("the branch links the node below");
+        let nodes = vec![
+            (
+                branch.clone(),
+                model::NodeRec {
+                    left: Some(link_to(&low.key, &up)),
+                    ..upper
+                },
+                true,
+            ),
+            (
+                low.key.clone(),
+                model::NodeRec {
+                    right: Some(link_to(&below, &up)),
+                    ..lower.clone()
+                },
+                true,
+            ),
+            (
+                below.clone(),
+                model::NodeRec {
+                    left: lower.right.clone(),
+                    ..middle
+                },
+                true,
+            ),
+        ];
+        let mut set = change_set(world, tx);
+        set.nodes = nodes;
+        probe::lost_counts();
+        let applied = (world.apply(tx, &batch_of(set))).expect("the three nodes are written");
+        assert_eq!((applied.nodes.len(), applied.unlinked.len()), (3, 0));
+        let left_out = probe::Lost {
+            left_out: 1,
+            ..probe::Lost::default()
+        };
+        assert_eq!(probe::lost_counts(), left_out);
+        assert_ne!(walked(world, tx, 1, &top).lease(), lease);
+        assert!(applied.nodes.iter().all(|handle| handle.lease() == lease));
+        for key in [&branch, &below] {
+            assert_eq!(read_checked(world, tx, 1, key), (1, false), "{key:?}");
+            assert_eq!(read_checked(world, tx, 1, key), (0, true), "{key:?}");
+        }
+        for index in 0..60 {
+            read_checked(world, tx, 1, &key(index));
+        }
+    });
+}
+
+/// A write that leaves a cell out of the tree of one Merk and loads
+/// another Merk whole in the same batch: the handles of the load's nodes
+/// are of the lease that ends with the write, as the others it reports
+/// are, and the nodes of the load are read by their keys.
+#[test]
+fn a_write_that_cuts_a_branch_off_and_loads_a_merk_reports_ended_handles_for_both() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(72);
+    fill(&mut world, &mut rng, 1, 60);
+    fill(&mut world, &mut rng, 2, 4);
+    let tx = world.begin();
+    world.edit(&tx, 2, |items| items.clear());
+    let top = root(&world, &tx, 1);
+    let lease = walked(&world, &tx, 1, &top).lease();
+    let whole_top = record(&world, &tx, 1, &top);
+    assert!(whole_top.left.is_some(), "the root links a branch");
+    let mut cut = world.merk(&tx, 1, |_| {});
+    let without = model::NodeRec {
+        left: None,
+        ..whole_top
+    };
+    cut.nodes.push((top.clone(), without, true));
+    let mut loaded = Items::new();
+    for index in 0..12 {
+        loaded.insert(key(index), value(&mut rng, 80));
+    }
+    let mut batch = super::load::batch_of(vec![whole(2, &loaded)]);
+    batch.merks.insert(0, cut);
+    let scope = tx.txn.scope().expect("a scope");
+    let first_write = world.latest().get();
+    let applied = batch.loading(&[model::subtree(2)], |batch| scope.apply(batch));
+    scope.merge();
+    let applied = applied.expect("a cut and a load");
+    assert!(applied.load.is_some());
+    world.note(&tx, &batch, first_write);
+    assert_eq!(applied.nodes.len(), 1 + loaded.len());
+    assert!(applied.nodes.iter().all(|handle| handle.lease() == lease));
+    assert_ne!(walked(&world, &tx, 1, &top).lease(), lease);
+    for key in loaded.keys() {
+        read_checked(&world, &tx, 2, key);
+    }
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+}
+
+/// The report of a write is of the lease the write was made under, and
+/// that lease is the one that is dated at the write, also where it has
+/// ended by then. One batch clears a Merk, so it is made under a lease
+/// that no node was read under, and writes the root of another Merk
+/// without one of its links, so that lease ends with the write. A later
+/// write that keeps the value of the root, and names the handle the
+/// first write reported as its read, names that write: it is no keep of
+/// a value that a commit may have replaced.
+#[test]
+fn a_keep_by_a_handle_that_a_cutting_write_reported_is_dated_at_that_write() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(73);
+    fill(&mut world, &mut rng, 1, 60);
+    fill(&mut world, &mut rng, 2, 8);
+    let tx = world.begin();
+    let top = root(&world, &tx, 1);
+    let whole = record(&world, &tx, 1, &top);
+    assert!(whole.left.is_some(), "the root links a branch");
+    let cut = model::NodeRec {
+        left: None,
+        ..whole
+    };
+    let mut set = world.merk(&tx, 1, |_| {});
+    set.nodes.push((top.clone(), cut.clone(), false));
+    let batch = OwnedBatch {
+        merks: vec![set],
+        subtrees: vec![OwnedSubtree::Clear(model::subtree(2))],
+        records: vec![delete(Unit::new(Column::Roots, model::subtree(2)), b"root")],
+    };
+    let applied = world.apply(&tx, &batch).expect("a clear and a cut");
+    assert_eq!(applied.nodes.len(), 1);
+    let reported = applied.nodes[0];
+    assert_ne!(walked(&world, &tx, 1, &top).lease(), reported.lease());
+
+    let mut again = world.merk(&tx, 1, |_| {});
+    again.nodes = vec![(top.clone(), cut, false)];
+    again.hints.insert(top, reported);
+    (world.apply_as_read(&tx, &batch_of(again))).expect("the keep names the write");
+    assert_eq!(tx.txn.stats().overlapped, 0);
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+}
+
+/// The same of two writes whose trees stay in key order throughout. The
+/// first stops linking the branch on the root's left and puts the node
+/// of the branch: the node has a cell, is reported, and its handle ends.
+/// The node on the root's right is searched for then, and kept. The
+/// second write stops linking that node from the root and links it from
+/// the node of the cut branch, which it names by the handle the first
+/// write reported: the handle is not followed, no node is under the key,
+/// and what is put there is linked by no node of the tree, so it is a
+/// record beside the tree and its link holds nothing. The handles end
+/// again, and the node that was on the right is no node of the tree.
+#[test]
+fn a_link_from_a_node_of_a_branch_that_was_cut_off_before_holds_no_cell() {
+    with_a_branch(74, |world, tx, [top, branch, _]| {
+        let whole = record(world, tx, 1, &top);
+        let right = whole
+            .right
+            .clone()
+            .expect("the root links a node on its right");
+        let node = record(world, tx, 1, &branch);
+        let alone = model::NodeRec {
+            left: None,
+            ..whole.clone()
+        };
+        let mut set = change_set(world, tx);
+        set.nodes.push((top.clone(), alone.clone(), true));
+        set.nodes.push((branch.clone(), node.clone(), true));
+        let applied = (world.apply(tx, &batch_of(set))).expect("the first write");
+        assert_eq!((applied.nodes.len(), applied.unlinked.len()), (2, 0));
+        let reported = applied.nodes[1];
+        assert_eq!(read_checked(world, tx, 1, &right.key), (1, false));
+        assert_eq!(read_checked(world, tx, 1, &right.key), (0, true));
+        let lease = walked(world, tx, 1, &top).lease();
+        assert_ne!(reported.lease(), lease);
+
+        let bare = model::NodeRec {
+            right: None,
+            ..alone
+        };
+        let holder = model::NodeRec {
+            right: Some(right.clone()),
+            ..node
+        };
+        let mut set = change_set(world, tx);
+        set.nodes = vec![(top.clone(), bare, true), (branch.clone(), holder, true)];
+        set.hints.insert(branch.clone(), reported);
+        probe::lost_counts();
+        let applied = (world.apply_as_read(tx, &batch_of(set))).expect("the second write");
+        assert_eq!((applied.nodes.len(), &applied.unlinked[..]), (1, &[1][..]));
+        let left_out = probe::Lost {
+            left_out: 1,
+            ..probe::Lost::default()
+        };
+        assert_eq!(probe::lost_counts(), left_out);
+        assert_ne!(walked(world, tx, 1, &top).lease(), lease);
+        let placed = tx.txn.stats().places_followed;
+        assert_eq!(read(tx, 1, &right.key), None);
+        assert_eq!(read(tx, 1, &right.key), None);
+        assert_eq!(tx.txn.stats().places_followed, placed);
+    });
+}
+
+/// A store whose Merk 1 has one node, under the one-byte key `sole`, and a
+/// transaction that has its frames and has searched for that key and for
+/// the key 255, which has no node. The transaction then writes a chain
+/// over it, with its keys in order: the nodes 0 to `last`, each on the
+/// right of the one before it, and the first as the root. Where `sole`
+/// is past `last`, the node under it is put as well, as it is, and no
+/// node of the chain links it. `test` is given the lease from before the
+/// write, what the write reported and what it counted of the cell that
+/// was the root.
+fn with_a_chain(
+    (sole, last): (usize, usize),
+    test: impl for<'s> FnOnce(&World<'s>, &Tx<'s>, Lease, Applied, probe::Lost),
+) {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let deep = |index: usize| vec![index as u8];
+    world.edit_outside(
+        1,
+        |items| drop(items.insert(deep(sole), b"last".to_vec())),
+        &[],
+    );
+    let tx = world.begin();
+    world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+    let lease = read(&tx, 1, &deep(sole)).and_then(|(_, handle)| handle);
+    let lease = lease.expect("the node has a handle").lease();
+    assert_eq!(read(&tx, 1, &[255]), None);
+    let leaf = record(&world, &tx, 1, &deep(sole));
+    // A link as the model states one, to name each next node with.
+    let three: Items = (0..3).map(|index| (deep(index), Vec::new())).collect();
+    let stated = records(&three).1.into_values();
+    let link = stated.flat_map(|node| node.left.or(node.right)).next();
+    let link = link.expect("a tree of three nodes has a link");
+    let mut set = world.merk(&tx, 1, |_| {});
+    set.nodes = (0..=last)
+        .map(|index| {
+            let right = (index < last).then(|| model::LinkRec {
+                key: deep(index + 1),
+                ..link.clone()
+            });
+            (
+                deep(index),
+                model::NodeRec {
+                    right,
+                    ..leaf.clone()
+                },
+                true,
+            )
+        })
+        .collect();
+    if sole > last {
+        set.nodes.push((deep(sole), leaf.clone(), true));
+    }
+    set.root = Some(Some(deep(0)));
+    let batch = OwnedBatch {
+        records: World::root_record(&set).into_iter().collect(),
+        merks: vec![set],
+        ..OwnedBatch::default()
+    };
+    probe::lost_counts();
+    let applied = world.apply(&tx, &batch).expect("the chain is written");
+    assert_eq!(applied.nodes.len(), last + 1);
+    assert!(applied.nodes.iter().all(|handle| handle.lease() == lease));
+    test(&world, &tx, lease, applied, probe::lost_counts());
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+}
+
+/// A change set can state a tree that is deeper than a search by key
+/// goes, with its keys in order: a chain of 129 nodes over a Merk whose
+/// one node becomes the last of them. The links of the batch lead to
+/// that cell from the root, and further than a search comes: it is held
+/// to be left out, and the handles end. What the transaction kept of the
+/// key answers nothing then, and the read by key fails as the search
+/// does, where the node one link nearer to the root is read.
+#[test]
+fn a_change_set_that_links_a_cell_deeper_than_a_search_goes_ends_the_handles() {
+    with_a_chain((128, 128), |_, tx, lease, applied, lost| {
+        assert!(applied.unlinked.is_empty());
+        let left_out = probe::Lost {
+            left_out: 1,
+            ..probe::Lost::default()
+        };
+        assert_eq!(lost, left_out);
+        let near = read(tx, 1, &[127]).and_then(|(_, handle)| handle);
+        assert_ne!(near.expect("a node that a search comes to").lease(), lease);
+        let last = tx
+            .txn
+            .node(model::subtree(1), &[128], |view| view.is_some());
+        assert!(matches!(last, Err(TxnError::Damaged(_))), "{last:?}");
+    });
+}
+
+/// The same with one node less: the cell that was the root is the last
+/// that a search by key comes to, 127 links from the root. The links of
+/// the batch hold it, and no lease is taken: its place answers, where
+/// the search comes to it. A key past the end of the chain has no node,
+/// by what was found before the write and by a search that ends at the
+/// last cell, which has no child there.
+#[test]
+fn a_cell_that_a_change_set_links_as_deep_as_a_search_goes_stays_in_its_tree() {
+    with_a_chain((127, 127), |world, tx, lease, applied, lost| {
+        assert!(applied.unlinked.is_empty());
+        let held = probe::Lost {
+            held: 1,
+            ..probe::Lost::default()
+        };
+        assert_eq!(lost, held);
+        assert_eq!(read_checked(world, tx, 1, &[127]), (0, true));
+        let last = read(tx, 1, &[127]).and_then(|(_, handle)| handle);
+        assert_eq!(last.expect("the last node").lease(), lease);
+        let (placed, searched) = (tx.txn.stats().places_followed, searches(world));
+        assert_eq!(read(tx, 1, &[255]), None);
+        assert_eq!(tx.txn.stats().places_followed, placed);
+        assert_eq!(searches(world), searched, "what was found before answers");
+        assert_eq!(read(tx, 1, &[254]), None);
+        assert_eq!(searches(world), searched + 1);
+    });
+}
+
+/// The walk that finds whether the tree reaches a written node ends
+/// where the search does. The chain is as deep as a search goes, and the
+/// node that was the root is put with it, past its end and linked by no
+/// node: the walk for its key comes to the last cell of the chain, which
+/// has no child there, and the tree does not reach the node. It is kept
+/// as a record beside the tree, its cell goes, and no lease is taken.
+#[test]
+fn a_written_node_past_the_last_cell_that_a_search_comes_to_is_in_no_tree() {
+    with_a_chain((200, 127), |_, tx, lease, applied, lost| {
+        assert_eq!(applied.unlinked, [128]);
+        let held = probe::Lost {
+            held: 1,
+            ..probe::Lost::default()
+        };
+        assert_eq!(lost, held);
+        let last = read(tx, 1, &[127]).and_then(|(_, handle)| handle);
+        assert_eq!(last.expect("the last node of the chain").lease(), lease);
+        assert_eq!(read(tx, 1, &[200]), Some((b"last".to_vec(), None)));
+    });
 }

@@ -36,7 +36,7 @@ use super::{
         entry_firsts, is_load, load_error, load_order, stated_hashes, LoadPages, Loaded, Placing,
         Source, Stated, StoredValue,
     },
-    pages::{find, follow, handle_at, linked_child, NodePages, TreePages},
+    pages::{find, follow, handle_at, linked_child, linked_children, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
     places::{Place, Places},
     unlinked,
@@ -127,6 +127,41 @@ pub(crate) mod probe {
         static PANIC: Cell<bool> = const { Cell::new(false) };
         static TAKEN: Cell<u64> = const { Cell::new(0) };
         static CHAINED: Cell<u64> = const { Cell::new(0) };
+        static LOST: Cell<Lost> = const {
+            Cell::new(Lost {
+                held: 0,
+                left_out: 0,
+            })
+        };
+    }
+
+    /// What this thread's writes found of the Merks in which a cell lost
+    /// the link that led to it (`Awake::leaves_a_cell`). The Merks of a
+    /// batch are asked in their order, and none after the first in which
+    /// one such cell is neither taken out, nor the root, nor linked from
+    /// the root by the nodes of the batch.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Lost {
+        /// The Merks that were asked and in which each such cell was one
+        /// of the three. It is counted where a batch is resolved, also
+        /// for a batch that is refused after that.
+        pub(crate) held: u64,
+        /// The tree writes that were made and took a new lease, because
+        /// a Merk of theirs had such a cell that was none of the three.
+        /// One whose batch is refused after it, for a flat record, is
+        /// counted all the same: its frames are thrown away.
+        pub(crate) left_out: u64,
+    }
+
+    pub(super) fn lost(count: impl FnOnce(&mut Lost)) {
+        let mut lost = LOST.get();
+        count(&mut lost);
+        LOST.set(lost);
+    }
+
+    /// The counts of this thread since they were last taken.
+    pub(crate) fn lost_counts() -> Lost {
+        LOST.replace(Lost::default())
     }
 
     /// The next write panics once the tree pages have taken its batch,
@@ -639,7 +674,9 @@ impl Subtrees {
 
     /// Whether the batch ends every node handle that was read before it:
     /// it drops, clears or moves a Merk, whose cells stay in their pages
-    /// (PN8).
+    /// (PN8). A batch that may leave a cell out of the tree of its Merk
+    /// ends them too, and the handles that it reports with them, which
+    /// is found where its names are resolved ([`Awake::leaves_a_cell`]).
     fn ends_handles(&self) -> bool {
         !self.leaving.is_empty() || self.rekey.is_some()
     }
@@ -875,6 +912,24 @@ struct Resolved<'a> {
     value: ValueWrite<'a>,
 }
 
+/// What one Merk of a batch is given to [`Awake::leaves_a_cell`] with.
+struct MerkLinks<'r, 'a> {
+    /// The nodes of the tree write so far. Those of the Merk are the last
+    /// of them, from `first` on.
+    nodes: &'r [Resolved<'a>],
+    first: usize,
+    /// What the cell of each of its nodes of the tree write linked before
+    /// the batch, on its left and on its right.
+    before: &'r [[Option<CellAddress>; 2]],
+    /// What the cells that the batch takes out of the Merk linked.
+    below_removed: &'r [Option<CellAddress>],
+    /// The cells that the batch takes out of the Merk.
+    removed: &'r [CellAddress],
+    /// The root of the Merk before the batch, and what the batch names
+    /// as its root.
+    root: (Option<CellAddress>, Option<Target>),
+}
+
 /// What every name of a batch stands for, as [`Frames::resolve`] finds it.
 struct ResolvedBatch<'a> {
     nodes: Vec<Resolved<'a>>,
@@ -882,6 +937,9 @@ struct ResolvedBatch<'a> {
     removed: Vec<CellAddress>,
     root_writes: Vec<Option<RootWrite>>,
     root_targets: Vec<Option<Target>>,
+    /// Whether the batch may leave a cell out of the tree of its Merk and
+    /// in its page ([`Awake::leaves_a_cell`]).
+    cuts_off: bool,
 }
 
 impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
@@ -2389,6 +2447,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             removed,
             root_writes,
             root_targets,
+            cuts_off,
         } = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
@@ -2663,6 +2722,20 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             for key in merk.removed {
                 self.seen.forget(&subtree, key);
             }
+        }
+        // A cell that the write left out of the tree of its Merk is in
+        // its page still, with its key. A handle to it would be followed,
+        // as one into a Merk that left would, and a later write could
+        // link it again where a search from the root does not find it.
+        // So every node handle ends here (PN8): those that were read
+        // before the write, what the frames kept of where they saw their
+        // nodes, and the handles that this write reports, which can be
+        // of nodes that it wrote into a branch it cut off. They are of
+        // the lease that ends, and the next read is made under a new one.
+        if cuts_off {
+            #[cfg(all(test, not(loom)))]
+            probe::lost(|lost| lost.left_out += 1);
+            self.tree.set_lease(Lease::take());
         }
         let applied = Applied {
             carried: (report.carried.iter())
@@ -3114,7 +3187,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 Some(link) => named(&mut self.tree, link.key)?,
             };
         }
-        Err(TxnError::Damaged("a Merk deeper than any tree of nodes"))
+        match at {
+            // The last node that a search comes to has no child on the
+            // side of the key: the tree holds no node under it.
+            None => Ok(false),
+            Some(_) => Err(TxnError::Damaged("a Merk deeper than any tree of nodes")),
+        }
     }
 
     /// What the change sets of a batch do to the unlinked records, found
@@ -3253,6 +3331,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let mut hosted: Vec<Vec<Option<Target>>> = Vec::new();
         let mut removed = Vec::new();
         let mut hosted_here = vec![false; merks.len()];
+        // What the cells that the batch writes linked before it, node by
+        // node, and what the cells that it takes out linked.
+        let mut linked_before = Vec::with_capacity(reach.linked.len());
+        let mut below_removed = Vec::new();
+        let mut cuts_off = false;
         for (merk, write) in merks.iter().enumerate() {
             let subtree = write.subtree;
             let offset = resolver.offsets[merk];
@@ -3271,14 +3354,22 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 }
                 continue;
             }
+            let begun = (nodes.len(), below_removed.len(), removed.len());
             for (node, put) in write.nodes.iter().enumerate() {
                 let at = reach.ats[offset + node];
                 if !reach.linked[offset + node] {
                     // The node is in no tree: its cell goes, if it has
                     // one, and its record is kept beside the tree.
-                    removed.extend(at);
+                    if let Some(at) = at {
+                        below_removed.extend(linked_children(&mut self.tree, at)?);
+                        removed.push(at);
+                    }
                     continue;
                 }
+                linked_before.push(match at {
+                    Some(at) => linked_children(&mut self.tree, at)?,
+                    None => [None, None],
+                });
                 let (tree, seen) = (&mut self.tree, &self.seen);
                 let mut link = |side: Side, link: &Option<LinkPut<'a>>| {
                     let parent = at.map(|at| (at, side));
@@ -3345,7 +3436,20 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             for key in write.removed {
                 // A delete of a key with no node is a write of the key and
                 // changes no page (ST5).
-                removed.extend(resolver.cell(&mut self.tree, &self.seen, merk, key)?);
+                if let Some(at) = resolver.cell(&mut self.tree, &self.seen, merk, key)? {
+                    below_removed.extend(linked_children(&mut self.tree, at)?);
+                    removed.push(at);
+                }
+            }
+            if !cuts_off {
+                cuts_off = Self::leaves_a_cell(MerkLinks {
+                    nodes: &nodes,
+                    first: begun.0,
+                    before: &linked_before[begun.0..],
+                    below_removed: &below_removed[begun.1..],
+                    removed: &removed[begun.2..],
+                    root: (resolver.roots[merk], root_targets[merk]),
+                });
             }
         }
         // The root of a Merk that no node of the batch hosts is named by a
@@ -3365,6 +3469,105 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             removed,
             root_writes,
             root_targets,
+            cuts_off,
         })
+    }
+
+    /// Whether a batch may leave a cell of one Merk in its page and out of
+    /// the tree of that Merk ([`MerkWrite`](super::MerkWrite), "Only
+    /// written nodes are looked at"): whether a cell of the Merk loses
+    /// the link that led to it, and nothing that the batch states shows
+    /// the cell to be gone from its page or in the tree still.
+    ///
+    /// Only a cell that loses the link which led to it can be left out,
+    /// or a cell below one: a child that the cell of a written node
+    /// linked and that the node does not link on that side any more, a
+    /// child of a cell that the batch takes out, and a root that is the
+    /// root no more. Such a cell is not left in its page where the batch
+    /// takes it out. And it is in the tree still where it is the root,
+    /// and where the links of the batch lead to it from the root through
+    /// nodes of the batch alone, no deeper than a search by key goes
+    /// ([`MAX_DEPTH`]). A commit of a Merk writes the path from the root
+    /// to every node it changes. Where it was made of the tree that it is
+    /// written to, every cell that a rotation or a removal of it moved is
+    /// one of these three, and the answer is no.
+    /// It is found from the batch and from one read of each cell that
+    /// the batch writes over or takes out, for what that cell linked.
+    ///
+    /// For any other cell that lost its link the answer is yes, and
+    /// nothing more is asked: the cell may be in the tree all the same,
+    /// below a cell that the batch does not write.
+    fn leaves_a_cell(by: MerkLinks<'_, '_>) -> bool {
+        let MerkLinks {
+            nodes,
+            first,
+            before,
+            below_removed,
+            removed,
+            root,
+        } = by;
+        let own = &nodes[first..];
+        // The cell that a link or a root of the batch names: one that is
+        // there, the one a written node had, or the one that was named
+        // there before.
+        let cell = |target: &Target, was: Option<CellAddress>| match target {
+            Target::At(at) => Some(*at),
+            Target::Node(node) => nodes[*node].at,
+            Target::Kept => was,
+        };
+        let root_now = root.1.as_ref().and_then(|now| cell(now, root.0));
+        let mut lost: Vec<CellAddress> = below_removed.iter().flatten().copied().collect();
+        for (node, before) in own.iter().zip(before) {
+            for (was, now) in before.iter().zip([&node.left, &node.right]) {
+                let now = now.as_ref().and_then(|link| cell(&link.child, *was));
+                lost.extend(was.filter(|was| now != Some(*was)));
+            }
+        }
+        lost.extend(root.0.filter(|was| root_now != Some(*was)));
+        if lost.is_empty() {
+            return false;
+        }
+        // What the batch takes out, the root, and what the links of the
+        // batch lead to from the root through its own nodes.
+        let mut held: HashSet<CellAddress> = removed.iter().copied().collect();
+        held.extend(root_now);
+        let top = match root.1 {
+            Some(Target::Node(node)) => Some(node),
+            _ => {
+                let written = |root| own.iter().position(|node| node.at == Some(root));
+                root_now.and_then(written).map(|node| first + node)
+            }
+        };
+        let mut reached = vec![false; own.len()];
+        // Each with the links that lead to it from the root: the root has
+        // none, and a search by key comes to no cell that has as many as
+        // `MAX_DEPTH`.
+        let mut ahead: Vec<(usize, usize)> = top.map(|top| (top, 0)).into_iter().collect();
+        while let Some((node, level)) = ahead.pop() {
+            if std::mem::replace(&mut reached[node - first], true) {
+                continue;
+            }
+            held.extend(nodes[node].at);
+            if level + 1 >= MAX_DEPTH {
+                continue;
+            }
+            for link in [&nodes[node].left, &nodes[node].right]
+                .into_iter()
+                .flatten()
+            {
+                match link.child {
+                    Target::Node(child) => ahead.push((child, level + 1)),
+                    Target::At(at) => drop(held.insert(at)),
+                    // What was there before is there still.
+                    Target::Kept => {}
+                }
+            }
+        }
+        let left_out = lost.iter().any(|cell| !held.contains(cell));
+        #[cfg(all(test, not(loom)))]
+        if !left_out {
+            probe::lost(|lost| lost.held += 1);
+        }
+        left_out
     }
 }

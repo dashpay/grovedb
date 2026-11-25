@@ -396,11 +396,16 @@
 //! frames, when its frames are made again (a rebase, a rollback to a mark,
 //! a failed operation), and when it is rolled back. A handle of another
 //! lease is not followed, and the node is found by its key. No address is
-//! handed out that is not inside a handle. Two writes take a new lease in
-//! frames that stay: one that drops, clears or moves a Merk, whose cells
-//! stay in their pages, and one that keeps a value which a commit has
-//! replaced, for the date of its handles and not for their places ("A
-//! kept value and the read it is of").
+//! handed out that is not inside a handle. Three writes take a new lease
+//! in frames that stay: one that drops, clears or moves a Merk, whose
+//! cells stay in their pages; one whose change set may leave a cell of a
+//! Merk in its page and out of the tree, for the same reason
+//! ([`MerkWrite`], "Only written nodes are looked at"), which takes the
+//! lease when the write is made, so that the handles the write reports
+//! end with the others; and one that keeps a value which a commit has
+//! replaced since the read that the write names, or may have, for the
+//! date of its handles and not for their places ("A kept value and the
+//! read it is of").
 //!
 //! One lease is taken over: the frames that a first write makes, over the
 //! version the transaction read last and with no write to lay out, are
@@ -444,7 +449,8 @@
 //! where the key was, or by a load of the whole Merk, which forgets what
 //! is kept of the subtree. Whatever else could give a key a cell is
 //! behind a new lease: a commit that the transaction takes in, frames
-//! that are made again, and a write that drops, clears or moves a Merk.
+//! that are made again, and a write that drops, clears or moves a Merk
+//! or leaves a cell of one out of its tree.
 //! What is kept is of one lease, answers under no other, and is emptied
 //! by the first search that is kept under another: a write under another
 //! keeps nothing in it. What the transaction found before its first write

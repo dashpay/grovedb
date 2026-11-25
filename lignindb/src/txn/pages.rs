@@ -127,7 +127,12 @@ pub(crate) fn find<P: NodePages>(
             }
         }
     }
-    Err(TxnError::Damaged("a Merk deeper than any tree of nodes"))
+    match next {
+        // The last cell that a search comes to has no child on the side
+        // of the key: no node is under it.
+        None => Ok(None),
+        Some(_) => Err(TxnError::Damaged("a Merk deeper than any tree of nodes")),
+    }
 }
 
 /// The handle of the node whose cell is at `address`, as these pages show
@@ -140,6 +145,18 @@ pub(crate) fn handle_at<P: NodePages>(
         page.node(address.slot()).map(|node| node.handle())
     })?;
     Ok(handle.ok_or(NodeError::NoNode { address })?)
+}
+
+/// The cells that the cell at `at` links, on the left and on the right.
+pub(crate) fn linked_children<P: NodePages>(
+    pages: &mut P,
+    at: CellAddress,
+) -> Result<[Option<CellAddress>; 2], TxnError> {
+    let children = pages.page(at.page(), |page| {
+        let node = page.node(at.slot())?;
+        Some([Side::Left, Side::Right].map(|side| node.link(side).map(|link| link.child)))
+    })?;
+    Ok(children.ok_or(NodeError::NoNode { address: at })?)
 }
 
 /// The cell that the cell at `parent` links on `side`, if that cell has
