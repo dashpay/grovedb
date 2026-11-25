@@ -88,13 +88,19 @@ const TIME_ROWS: [&str; 8] = [
 
 /// The rows whose values follow the schedule: where a log file starts,
 /// when background work ran, what the rest of the process wrote.
-const MEASURED_ROWS: [&str; 6] = [
+const MEASURED_ROWS: [&str; 12] = [
     "bytes_logged_per_transition",
     "physical_bytes_per_transition",
     "flush_bytes_per_transition",
     "compaction_bytes_per_transition",
     "process_write_bytes_per_transition",
     "size_on_disk",
+    "point_get_pages_asked",
+    "point_get_pages_missed",
+    "point_query_proof_pages_asked",
+    "point_query_proof_pages_missed",
+    "references_proof_pages_asked",
+    "references_proof_pages_missed",
 ];
 
 fn kind_of(id: &str) -> RowKind {
@@ -497,7 +503,11 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
         assert_eq!(read.engine, ran.engine);
         assert_eq!(read.root_hash_after_load, ran.root_hash_after_load);
         assert_eq!(read.root_hash_at_end, ran.root_hash_after_load);
-        let ids: Vec<&str> = read.rows.iter().map(|row| row.id.as_str()).collect();
+        // An engine that counts the pages its pool is asked for has two
+        // rows more for each kind of read: LigninDB does, RocksDB does not.
+        let (pages, ids): (Vec<&str>, Vec<&str>) = (read.rows.iter())
+            .map(|row| row.id.as_str())
+            .partition(|id| id.contains("_pages_"));
         assert_eq!(
             ids,
             [
@@ -508,6 +518,31 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
                 "references_proof_bytes"
             ]
         );
+        match read.engine.as_str() {
+            "rocksdb" => assert!(pages.is_empty(), "{pages:?}"),
+            _ => {
+                assert_eq!(
+                    pages,
+                    [
+                        "point_get_pages_asked",
+                        "point_get_pages_missed",
+                        "point_query_proof_pages_asked",
+                        "point_query_proof_pages_missed",
+                        "references_proof_pages_asked",
+                        "references_proof_pages_missed"
+                    ]
+                );
+                // Every read asks the pool for a page, and the pool
+                // misses no more pages than it is asked for. (What the
+                // rows are made of is held by a test beside them.)
+                for kind in ["point_get", "point_query_proof", "references_proof"] {
+                    let asked = read.row(&format!("{kind}_pages_asked"), "settled");
+                    let missed = read.row(&format!("{kind}_pages_missed"), "settled");
+                    let (asked, missed) = (asked.unwrap().value, missed.unwrap().value);
+                    assert!(asked >= 1.0 && missed <= asked, "{kind}: {asked}, {missed}");
+                }
+            }
+        }
         assert!(read.rows.iter().all(|row| row.phase == "settled"));
         // The run has the settled rows beside the ones after the load.
         for row in &read.rows {
@@ -523,17 +558,44 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
             assert_eq!(row.samples.len(), samples, "{id}");
             assert!(row.value > 0.0, "{id}");
         }
-        // The reads are the run's own: the same seed asks for the same
-        // documents and owners in the same order.
+        // The reads are those of the run's settled rows: the same seed
+        // and the same numbers of reads ask for the same documents and
+        // owners in the same order, so every proof is as long. They are
+        // not the reads of the rows after the load, which are a stream
+        // of their own.
         for id in ["point_proof_bytes", "references_proof_bytes"] {
             assert_eq!(
                 read.row(id, "settled").unwrap().samples,
-                ran.row(id, "warm").unwrap().samples,
+                ran.row(id, "settled").unwrap().samples,
                 "{id}"
             );
         }
         assert!(read.phases.is_empty());
+        // It has no size on disk, where the run has both.
+        assert_eq!(
+            (&read.disk_after_load, &read.disk_after_flush),
+            (&None, &None)
+        );
+        assert!(ran.disk_after_load.is_some() && ran.disk_after_flush.is_some());
     }
+    let written = std::fs::read_to_string(&out).unwrap();
+    for size in ["disk_after_load", "disk_after_flush"] {
+        assert!(written.contains(&format!("\"{size}\": null")), "{size}");
+    }
+    // The report says what was measured: no write after the load, no cold
+    // read, no checkpoint and no reopen, whatever the options named.
+    let said = (&reads.workload, &reads.method);
+    assert_eq!(
+        (said.0.measured_creates, said.0.updates, said.0.deletes),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        (said.1.cold_reads, said.1.checkpoints, said.1.reopens),
+        (0, 0, 0)
+    );
+    assert_eq!((said.1.point_reads, said.1.reference_reads), (4, 2));
+    // The run that kept the databases states its own.
+    assert_eq!(run.method.reopens, 1);
     // The second engine's rows carry their ratio to RocksDB's.
     if let Some(second) = reads.engines.get(1) {
         assert!(second
@@ -542,8 +604,16 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
             .ratio_to_rocksdb
             .is_some());
     }
-    // The kept databases are still there for the next call.
-    assert!(cli::main_with(&args("reads", &out, "")).is_ok());
+    // The kept databases are still there for the next call, and a call
+    // whose options name writes, cold reads, checkpoints and reopens
+    // reports none all the same.
+    let rest = "--creates 20 --updates 20 --deletes 20 --cold-reads 3 --checkpoints 2 --reopens 2";
+    cli::main_with(&args("reads", &out, rest)).unwrap();
+    let again = Report::from_json(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(
+        (&again.workload, &again.method),
+        (&reads.workload, &reads.method)
+    );
 }
 
 #[test]

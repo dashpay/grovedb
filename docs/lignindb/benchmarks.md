@@ -50,9 +50,13 @@ databases that an earlier run kept. That run is given `--keep` and
 there, and `reads` is given the same `--scratch`, `--seed`, `--documents`,
 `--owners` and engines. It opens each database as the run left it, which is
 the settled state, so its rows have the phase `settled`. Its report holds
-those rows only, and `table` and `compare` read it as any other. The reads are
-those of the run's `warm` rows: the same seed asks for the same documents in
-the same order.
+those rows only, says of its workload and method what it did (no write after
+the load, no cold read, no checkpoint, no timed reopen) and has no size on
+disk (both are `null`), and `table` and `compare` read it as any other. The
+reads of the settled rows are a stream of their own, apart from that of the
+`warm` rows: with the same seed, documents, owners, `--warmup-reads`,
+`--point-reads` and `--reference-reads`, `reads` asks for the documents and
+owners that the run's `settled` rows asked for, in the same order.
 
 ### The two states of the warm reads
 
@@ -87,10 +91,11 @@ per owner.
    size on disk is taken again after a flush, once the engine's background
    work is idle (`flushed`). That is the row compared with the plan's 1.01 GB.
 5. **Reopens** (`flushed`).
-6. **`settled`.** The warm reads of step 3 once more, in the settled state:
-   after the flush, with the engine's background work idle, and after the
-   database was closed and opened again. The rows have the ids of the warm
-   rows and the phase `settled`.
+6. **`settled`.** The warm reads of step 3 once more, from a stream of
+   documents and owners of its own, in the settled state: after the flush, after the database was
+   closed and opened again, and after a wait for the background work of
+   the opened engine. The rows have the ids of the warm rows and the
+   phase `settled`.
 7. **`cold`.** Each sample is the first read after closing the database,
    dropping its files from the page cache where the machine allows it, and
    opening it again.
@@ -137,6 +142,7 @@ only.
 | `point_proof_bytes`, `references_proof_bytes` | B | proof lengths |
 | `wall_per_transition`, `block_commit`, `bulk_load` | µs, ms, s | `Instant` around apply and commit |
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
+| `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: how often its buffer pool was asked for a page over the timed reads of one kind, and how often it did not hold the page, for one read (LigninDB only; measured, since the pool counts its background threads too; no row for a kind of which no read was timed) |
 | `checkpoint`, `reopen` | ms | `Instant` around one checkpoint or open |
 
 GroveDB's storage layer charges one seek for every record it writes. So, for

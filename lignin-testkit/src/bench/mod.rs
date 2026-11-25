@@ -235,7 +235,9 @@ pub fn run(options: &RunOptions) -> Result<Report, BenchError> {
 /// The settings are that run's seed, documents and owners; it applied no
 /// creates, updates or deletes after its load. The report holds the
 /// warm rows of the settled state ([`run::SETTLED`]) and nothing else,
-/// and reads back and compares as any other.
+/// states that nothing was written, read cold, checkpointed or reopened
+/// for a time, and no size on disk, and reads back and compares as any
+/// other.
 pub fn reads(options: &RunOptions) -> Result<Report, BenchError> {
     options.check_engine_settings()?;
     on_the_benchmark_thread(options, Rows::WarmReads)
@@ -281,9 +283,28 @@ fn counts_instructions(asked: bool, works: impl FnOnce() -> bool) -> Result<(), 
 
 fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
     options.settings.check()?;
-    let settings = &options.settings;
+    // A measurement of the warm reads alone writes nothing, reads nothing
+    // cold, and times no checkpoint and no reopen: its report says so,
+    // whatever the settings name, and the machine is not probed for how
+    // it reads cold.
+    let warm_only = Settings {
+        measured_creates: 0,
+        updates: 0,
+        deletes: 0,
+        cold_reads: 0,
+        checkpoints: 0,
+        reopens: 0,
+        ..options.settings.clone()
+    };
+    let settings = match rows {
+        Rows::All => &options.settings,
+        Rows::WarmReads => &warm_only,
+    };
     counts_instructions(settings.perf, || machine::Perf::works(&settings.scratch))?;
-    let cold_method = ColdMethod::detect(&settings.scratch);
+    let cold_method = match rows {
+        Rows::All => ColdMethod::detect(&settings.scratch),
+        Rows::WarmReads => ColdMethod::Reopen,
+    };
     let commit = options
         .commit
         .clone()

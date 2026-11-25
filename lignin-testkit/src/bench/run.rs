@@ -34,7 +34,7 @@ use grovedb_costs::OperationCost;
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    engine::{timed, Block, Detail, Engine, EngineSettings},
+    engine::{timed, Block, Counters, Detail, Engine, EngineSettings},
     machine::{self, ColdMethod, Perf},
     report::{
         ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
@@ -815,6 +815,15 @@ struct Reads {
 }
 
 impl Reads {
+    /// The reads of the rows of the settled state ([`SETTLED`]): a
+    /// stream of their own, which begins the same wherever those rows
+    /// are measured, by a whole run and by `reads` over what it kept.
+    fn settled(settings: &Settings) -> Result<Reads, BenchError> {
+        let mut reads = Self::new(settings)?;
+        reads.rng = Rng::derive(settings.seed, DOMAIN_BENCH_READS, 1);
+        Ok(reads)
+    }
+
     fn new(settings: &Settings) -> Result<Reads, BenchError> {
         let documents = settings.workload();
         let mut per_owner = vec![0u32; settings.owners as usize];
@@ -1018,22 +1027,58 @@ fn warm_up<E: Engine>(
     Ok(())
 }
 
+/// The rows `<read>_pages_asked` and `<read>_pages_missed` of `phase`:
+/// how often the engine's buffer pool was asked for a page while `reads`
+/// reads of the kind `read` were timed, and how often it did not hold the
+/// page it was asked for, for one read. None for an engine that counts
+/// neither, and none where no read was timed. The counts are the pool's
+/// own, so what the engine's background threads asked for meanwhile is in
+/// them: the rows are measured, and no counts.
+fn page_rows(read: &str, phase: &str, counted: &Counters, reads: u64) -> Vec<Row> {
+    let (Some(read_in), Some(held)) = (counted.page_reads, counted.cache_hits) else {
+        return Vec::new();
+    };
+    if reads == 0 {
+        return Vec::new();
+    }
+    let row = |what: &str, pages: u64, source: &str| {
+        let id = format!("{read}_pages_{what}");
+        measured_row(&id, phase, "pages", pages as f64, reads, source)
+    };
+    vec![
+        row(
+            "asked",
+            read_in + held,
+            "engine: pages the buffer pool was asked for over the timed reads, held or not",
+        ),
+        row(
+            "missed",
+            read_in,
+            "engine: pages the buffer pool was asked for and did not hold, over the timed reads",
+        ),
+    ]
+}
+
 /// The phase of the warm reads that are made right after the load, with
 /// whatever each engine's background work has not done yet: the state
 /// the plan's recorded values were taken in.
 pub const WARM: &str = "warm";
 
-/// The phase of the warm reads in the settled state: after a flush, with
-/// the engine's background work idle, and after the database was closed
-/// and opened again. A node reads a database in this state.
+/// The phase of the warm reads in the settled state: after a flush, after
+/// the database was closed and opened again, and after a call of
+/// [`Engine::wait_for_background`] on the opened engine. A node reads a
+/// database in this state.
 pub const SETTLED: &str = "settled";
 
 /// The warm rows of `engine` in `phase` ([`WARM`] or [`SETTLED`]): untimed
 /// warm-up reads, then the timed point gets, point proofs and proofs of 100
 /// references with the proof sizes. The first proof of each kind is
-/// checked against `root_hash`.
+/// checked against `root_hash`. For an engine that counts them, each
+/// kind of read of which a read was timed has two rows more: how often
+/// its buffer pool was asked for a page over the timed reads, and how
+/// often it did not hold the page, for one read ([`page_rows`]).
 fn warm_rows<E: Engine>(
-    engine: &E,
+    engine: &mut E,
     reads: &mut Reads,
     settings: &Settings,
     root_hash: &[u8; 32],
@@ -1046,11 +1091,19 @@ fn warm_rows<E: Engine>(
 
     let mut get_meter = Meter::new(settings, &format!("{phase}-get"));
     let mut get_us = Vec::new();
+    let before = engine.counters()?;
     for _ in 0..settings.point_reads {
         let (elapsed, _) =
             ReadKind::Get.read(engine, reads, loaded, grove_version, &mut get_meter)?;
         get_us.push(Unit::Micros.of(elapsed));
     }
+    let counted = engine.counters()?.since(&before);
+    rows.extend(page_rows(
+        "point_get",
+        phase,
+        &counted,
+        u64::from(settings.point_reads),
+    ));
     rows.push(time_row(
         "point_get",
         phase,
@@ -1085,11 +1138,14 @@ fn warm_rows<E: Engine>(
         let mut meter = Meter::new(settings, &format!("{phase}-{}", kind.id()));
         let mut times = Vec::new();
         let mut sizes = Vec::new();
+        let before = engine.counters()?;
         for _ in 0..count {
             let (elapsed, size) = kind.read(engine, reads, loaded, grove_version, &mut meter)?;
             times.push(Unit::Micros.of(elapsed));
             sizes.push(size.unwrap_or(0) as f64);
         }
+        let counted = engine.counters()?.since(&before);
+        rows.extend(page_rows(kind.id(), phase, &counted, u64::from(count)));
         rows.push(time_row(
             kind.id(),
             phase,
@@ -1120,11 +1176,17 @@ fn warm_rows<E: Engine>(
 
 /// Measures the warm rows alone over the `E` database that an earlier run
 /// kept in `settings.scratch/<engine>` (`run --keep`), opened as it was
-/// left: after a flush, with the background work idle, closed and opened
-/// again. So the rows are of the phase [`SETTLED`]. The settings name the
-/// documents that run loaded: its seed, its
-/// documents and its owners, with no creates, updates or deletes after
-/// the load, so every document a read asks for is there.
+/// left, which is after a flush and a close, and after a wait for the
+/// background work of the opened engine. So the rows are of the phase
+/// [`SETTLED`], and their reads are that phase's own stream
+/// (`Reads::settled`): with the seed, the documents, the owners and the
+/// numbers of warm-up and timed reads of the run, they ask for the
+/// documents and owners that the run's settled rows asked for, in the
+/// same order. The settings name the documents that run loaded, which
+/// made no creates, updates or deletes after the load, so every document
+/// a read asks for is there.
+///
+/// The report has no size on disk: neither is measured.
 pub fn read_engine<E: Engine>(
     settings: &Settings,
     grove_version: &GroveVersion,
@@ -1136,14 +1198,14 @@ pub fn read_engine<E: Engine>(
             dir.display()
         )));
     }
-    let mut reads = Reads::new(settings)?;
+    let mut reads = Reads::settled(settings)?;
     let mut engine = E::open_with(&dir, &settings.engine)?;
     engine.settle()?;
+    engine.wait_for_background()?;
     let root_hash = engine.root_hash(grove_version)?;
-    let disk = disk_usage(&dir)?;
     let mut rows = Vec::new();
     warm_rows(
-        &engine,
+        &mut engine,
         &mut reads,
         settings,
         &root_hash,
@@ -1157,8 +1219,8 @@ pub fn read_engine<E: Engine>(
         root_hash_at_end: hex::encode(engine.root_hash(grove_version)?),
         rows,
         phases: Vec::new(),
-        disk_after_load: disk.clone(),
-        disk_after_flush: disk,
+        disk_after_load: None,
+        disk_after_flush: None,
     })
 }
 
@@ -1262,7 +1324,7 @@ fn measure<E: Engine>(
 
     let loaded = settings.documents;
     warm_rows(
-        &engine,
+        &mut engine,
         &mut reads,
         settings,
         &root_hash_after_load,
@@ -1308,14 +1370,17 @@ fn measure<E: Engine>(
     ));
 
     // The settled state: the flush is made, the background work is idle
-    // again after the checkpoints, and the database is opened anew.
+    // again after the checkpoints, the database is opened anew, and the
+    // background work of that opened engine is waited for too.
     engine.wait_for_background()?;
     drop(engine);
-    engine = E::open(dir)?;
+    engine = E::open_with(dir, &settings.engine)?;
     engine.settle()?;
+    engine.wait_for_background()?;
+    let mut settled_reads = Reads::settled(settings)?;
     warm_rows(
-        &engine,
-        &mut reads,
+        &mut engine,
+        &mut settled_reads,
         settings,
         &root_hash_after_load,
         grove_version,
@@ -1407,8 +1472,8 @@ fn measure<E: Engine>(
         root_hash_at_end: hex::encode(root_hash_at_end),
         rows,
         phases,
-        disk_after_load,
-        disk_after_flush,
+        disk_after_load: Some(disk_after_load),
+        disk_after_flush: Some(disk_after_flush),
     })
 }
 
@@ -1421,8 +1486,46 @@ pub(crate) fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// The page rows are the pool's counts over the timed reads, for one
+    /// read: what it was asked for is what it held and what it did not
+    /// hold together. An engine that counts neither has no such row, and
+    /// neither has a kind of read of which none was timed.
+    #[test]
+    fn the_page_rows_are_the_pools_counts_for_one_read() {
+        let counted = |hits, misses| Counters {
+            cache_hits: hits,
+            page_reads: misses,
+            ..Counters::default()
+        };
+        let rows = page_rows("point_get", SETTLED, &counted(Some(6), Some(2)), 2);
+        let said: Vec<(&str, &str, f64, &str)> = (rows.iter())
+            .map(|row| {
+                (
+                    row.id.as_str(),
+                    row.phase.as_str(),
+                    row.value,
+                    row.unit.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("point_get_pages_asked", "settled", 4.0, "pages"),
+                ("point_get_pages_missed", "settled", 1.0, "pages"),
+            ]
+        );
+        assert!(rows.iter().all(|row| row.kind == RowKind::Measured));
+        // No read was timed: the counts are of no read.
+        assert!(page_rows("point_get", SETTLED, &counted(Some(6), Some(2)), 0).is_empty());
+        // An engine that counts one of the two, or neither.
+        for (hits, misses) in [(None, Some(2)), (Some(6), None), (None, None)] {
+            assert!(page_rows("point_get", WARM, &counted(hits, misses), 2).is_empty());
+        }
+    }
+
     use super::*;
-    use crate::{bench::Counters, workload::PartialBatch};
+    use crate::workload::PartialBatch;
 
     /// The acceptance test of STORE-11: every engine count of a write
     /// phase's rows comes from LigninDB's `StoreStats`, each from the
