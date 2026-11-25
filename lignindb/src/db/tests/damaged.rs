@@ -52,15 +52,16 @@
 //! that directory, and made and kept there where they are missing, so that
 //! a seed is the same case in every process that reads them: an image is
 //! kept once, and where two processes make one, both read the one that was
-//! named first.
+//! named first. That directory is the campaign's own: nothing but the
+//! processes of the campaign writes into it while the campaign runs.
 
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
     fmt::Debug,
     fs,
-    io::{ErrorKind, Read, Write},
-    os::unix::fs::OpenOptionsExt,
+    io::{ErrorKind, Write},
+    os::unix::fs::PermissionsExt,
     panic::{self, AssertUnwindSafe},
     path::{Component, Path, PathBuf},
     sync::{
@@ -148,8 +149,7 @@ enum Shape {
     Cleaned,
     /// A database whose process was killed: the files as they were while
     /// the session was open, when each of its threads had ended the turn
-    /// it was in. No close was made: what was written back by then is in
-    /// the segments, and the rest is the log's alone.
+    /// it was in, and with no close made.
     Killed,
 }
 
@@ -391,49 +391,32 @@ fn made(shape: Shape) -> Made {
     Made { files, state }
 }
 
-/// The flag with which `open` does not wait where a named pipe with no
-/// writer is at the path, on the systems whose number for it is written
-/// out here: Linux on x86-64 and on AArch64, and macOS.
-const O_NONBLOCK: Option<i32> = if cfg!(target_os = "macos") {
-    Some(0x0004)
-} else if cfg!(all(
-    target_os = "linux",
-    any(target_arch = "x86_64", target_arch = "aarch64")
-)) {
-    Some(0o4000)
-} else {
-    None
-};
-
-/// The image that is kept at `kept`, or `None` where none is. An image
-/// that is there and is not one to damage ends the run: whoever runs the
+/// The image that is kept at `kept`, or `None` where none is.
+///
+/// What is at the name is looked at before anything is opened, by a look
+/// that follows no link and opens nothing. An entry that is no regular
+/// file ends the run, a named pipe among them, which an open could wait
+/// on; and so does a file that is no image to damage. Whoever runs the
 /// campaign removes it.
 ///
-/// The directory of the images is one that anybody may have written into.
-/// The entry is opened so that the open does not wait on a named pipe, on
-/// the systems [`O_NONBLOCK`] is known for, and it is the handle that is
-/// asked what it is of: an entry that is no regular file is not read.
+/// The directory is the campaign's own (the module's documentation): an
+/// entry that something else puts in the place of an image between that
+/// look and the read is not guarded against.
 fn kept_image(kept: &Path) -> Option<Files> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    if let Some(flag) = O_NONBLOCK {
-        options.custom_flags(flag);
-    }
-    let mut file = match options.open(kept) {
-        Ok(file) => file,
+    let entry = match fs::symlink_metadata(kept) {
+        Ok(entry) => entry,
         Err(error) if error.kind() == ErrorKind::NotFound => return None,
         Err(error) => panic!("the image kept at {}: {error}", kept.display()),
     };
-    let is_regular = file.metadata().is_ok_and(|entry| entry.is_file());
     assert!(
-        is_regular,
+        entry.file_type().is_file(),
         "the entry at {} is no regular file: remove it",
         kept.display()
     );
-    let mut bytes = Vec::new();
-    if let Err(error) = file.read_to_end(&mut bytes) {
-        panic!("the image kept at {}: {error}", kept.display());
-    }
+    let bytes = match fs::read(kept) {
+        Ok(bytes) => bytes,
+        Err(error) => panic!("the image kept at {}: {error}", kept.display()),
+    };
     match decode(&bytes).and_then(|files| usable(&files).map(|()| files)) {
         Ok(files) => Some(files),
         Err(why) => panic!(
@@ -449,11 +432,17 @@ fn kept_image(kept: &Path) -> Option<Files> {
 /// a hard link, which is made only where that name is free: the image of
 /// the first writer is the one that every writer and every later reader
 /// has. So it is for writers that share the directory and nothing else,
-/// not a process id either.
+/// not a process id either. The writer's file is made with the mode of a
+/// file that is made by its name alone (0666, less what the process's
+/// mask takes), which the image then has: whoever could read an image
+/// that another process kept can read this one.
 fn keep(kept: &Path, files: &Files) -> Files {
     let dir = kept.parent().expect("a directory");
     fs::create_dir_all(dir).expect("a directory");
-    let mut own = tempfile::NamedTempFile::new_in(dir).expect("a file of the writer's own");
+    let mut own = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o666))
+        .tempfile_in(dir)
+        .expect("a file of the writer's own");
     own.write_all(&encode(files)).expect("the image is written");
     let named = fs::hard_link(own.path(), kept);
     // The writer's own name goes; the image, if this writer named it,
