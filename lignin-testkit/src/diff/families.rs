@@ -69,12 +69,11 @@
 //! flat drop's caller instead
 //! ([`Shape::keeps_the_drop_contract`](super::case::Shape)).
 //!
-//! One difference at such a tree is of no family: the conflict that the
+//! One difference at such a tree is of no family: a conflict that the
 //! reference alone answers to the commit of a block which wrote into
 //! the subtree of a dropped tree before a drain reclaimed the record of
-//! its drop. A drain writes beside the open block. RocksDB's deletes the
-//! range of the dropped prefix, over the keys the block wrote under it,
-//! and refuses the block's commit. No rule holds a difference at a
+//! its drop. A drain writes beside the open block, and RocksDB's deletes
+//! the range of the dropped prefix. No rule holds a difference at a
 //! commit: the run ends there as a divergence.
 //!
 //! One family is of no answer that differs (GROVE-04-F3, D-422):

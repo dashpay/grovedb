@@ -375,10 +375,11 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
 /// called before the block commits. RocksDB answers the block's commit
 /// with a conflict and LigninDB takes it, on grove versions 4 and 5. No
 /// rule of the fuzzer holds a difference at a commit: the run ends there
-/// as a divergence in the error and the root hash, and nothing is
-/// counted for a family. The same with the tree made again and dropped
-/// flat a second time before any drain. Grove versions 1 to 3 have no
-/// flat drop: both engines refuse it, and the case runs to its end.
+/// as a divergence in the error and the root hash, and no answer is
+/// counted for a family. The same on those two versions with the tree
+/// made again and dropped flat a second time before any drain. Grove
+/// versions 1 to 3 have no flat drop: both engines refuse it, and the
+/// case with the one drop runs to its end.
 ///
 /// With the drain after the block's commit, and with a block that puts
 /// the tree's element and writes nothing into the tree, the case runs
