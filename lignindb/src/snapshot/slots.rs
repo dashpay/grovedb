@@ -66,6 +66,13 @@ fn home() -> usize {
     0
 }
 
+/// The cell of the first chunk that the calling thread starts at, for the
+/// measurement of the readers (`tests::scaling`).
+#[cfg(all(test, not(loom)))]
+pub(super) fn home_of_this_thread() -> usize {
+    home() % FIRST_CHUNK
+}
+
 /// The table. It grows by a chunk when every cell is claimed, and never
 /// shrinks.
 pub(super) struct Slots {
