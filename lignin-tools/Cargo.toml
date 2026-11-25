@@ -54,3 +54,8 @@ nix = { version = "0.32", default-features = false, features = ["fs"], optional 
 tempfile = { workspace = true }
 # Elements as GroveDB serializes them, for the databases of the tests.
 grovedb-element = { version = "7.0.0", path = "../grovedb-element" }
+
+# The pipe of one test of the migrator's lock probe, by a call that Linux and
+# macOS both have: `rustix` makes no pipe on macOS.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.32", default-features = false, features = ["fs"] }

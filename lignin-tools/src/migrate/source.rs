@@ -869,14 +869,8 @@ mod tests {
         let dir = dir.path().join("rocksdb");
         drop(open_for_writing(&dir).expect("a database"));
         std::fs::remove_file(dir.join("LOCK")).expect("the lock file is removed");
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            dir.join("LOCK"),
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::from_raw_mode(0o600),
-            0,
-        )
-        .expect("a pipe");
+        let owner = nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR;
+        nix::unistd::mkfifo(&dir.join("LOCK"), owner).expect("a pipe");
         let refused = match Source::open(&dir) {
             Err(refused) => refused.to_string(),
             Ok(_) => panic!("{} opened", dir.display()),
