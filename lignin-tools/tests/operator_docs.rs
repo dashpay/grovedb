@@ -67,8 +67,16 @@ const SPEAKERS: [&str; 10] = [
 /// The error types of an open, a recovery, a commit, the end of a
 /// session, a close, a checkpoint and the tool, by the file their
 /// `Display` is in: the messages chapter quotes every message of each.
-const COVERED: [(&str, &[&str]); 15] = [
+const COVERED: [(&str, &[&str]); 23] = [
     ("lignin-format/src/error.rs", &["FormatError"]),
+    ("lignin-format/src/manifest.rs", &["ManifestError"]),
+    ("lignin-format/src/wal.rs", &["WalError"]),
+    ("lignin-format/src/tree_page.rs", &["TreePageError"]),
+    ("lignin-format/src/table.rs", &["TableError"]),
+    ("lignin-format/src/value_log.rs", &["ValueLogError"]),
+    ("lignin-format/src/flat_page.rs", &["FlatPageError"]),
+    ("lignin-format/src/segment.rs", &["SegmentError"]),
+    ("lignin-format/src/delta.rs", &["DeltaError"]),
     (
         "lignin-store/src/table/error.rs",
         &["LinkError", "PageTableError"],
@@ -1020,7 +1028,8 @@ fn defaults() -> BTreeMap<String, String> {
         [
             "Some(machine / 2)",
             "starts_with(\"MemTotal:\")",
-            "read_to_string(\"/proc/meminfo\")"
+            "read_to_string(\"/proc/meminfo\")",
+            "kib.saturating_mul(1024)",
         ]
         .iter()
         .all(|line| migrate.contains(line)),
