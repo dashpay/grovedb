@@ -91,7 +91,19 @@ In 54 runs with syncs 5 ms longer (108,000 commits, of several builds of this ta
 
 In the runs that list their syncs, the harness reported for the two commits with the longest `appending` (0.84 and 0.75 ms, against a median of 0.10 ms) a sync of a segment or of the log's file that was under way at their end and had begun 9.6 to 11.2 ms earlier, 5 ms of which is the pause. The harness of those runs took a sync for under way while it had not listed the sync's end.
 
-What such an append waits for was not found.
+What such an append waits for was not found on that machine.
+
+On a second machine of the same kind such commits are frequent (a `c-16-intel` whose 16 processors are a Xeon Gold 6548N's, with the same image, file system and mount options; the median sync of a 4 KiB append is 0.39 to 0.83 ms in eight probes there, and the longest 15.8 ms). Three runs of 2,000 blocks of each setting, the median and the range of the runs' values:
+
+| Background | Syncs | 99%, µs | 99.9%, µs | Commits whose append took 2 ms or more, in each run |
+| --- | --- | --- | --- | --- |
+| default | as the disk makes them | 1,737 (1,507 to 1,868) | 2,475 (1,999 to 2,556) | none |
+| default | 5 ms longer | 1,442 (1,376 to 1,704) | 9,699 (9,175 to 25,690) | 7, 7 and 4 |
+| quiet | 5 ms longer | 1,409 (1,376 to 1,671) | 5,636 (4,719 to 10,486) | 4, 4 and 4 |
+
+**The machine's own syncs are enough for such an append.** One more run of each background with syncs as the disk makes them had none under the default and under the heavy background and three under the quiet one: of 86.6, 80.2 and 3.1 ms, in commits that had a moment in common with a sync of 107, of 100 and of 27 ms. Over all the runs of this task's builds on that machine, 3 of 12,000 commits with syncs as the disk makes them had an append of 2 ms or more, and 74 of 30,000 with syncs 5 ms longer. The 99th percentile of the commit of a block was 1.34 to 1.87 ms in every one of those 21 runs.
+
+In six of the runs with syncs 5 ms longer, the file layer of the harness timed each append call of the system's file layer (a change that is not in the harness). The six runs had 33 commits whose append took 2 ms or more (2.1 to 60.5 ms), and in all 33 the append call on the log's file, on the committing thread, took the time of the append to within 0.1 ms. For 31 of the 33 a sync of 8 ms or more, the pause included, had a moment in common with the commit: of a value-log file for 12, of the manifest's temporary file for 10, of a directory's names for 10, of the log's file for 3. **So on that machine an append to the log waits inside the file layer's call while files other than the log are synced.** Why the system holds the call was not found: no stack of the system was taken. A reading that was not tested is that the file system has one journal, that a sync of any file commits it, and that a write that makes a file longer waits for that commit.
 
 ### 3.3 Readers beside the writer
 
@@ -138,7 +150,7 @@ Pages read through a snapshot (`scaling.rs`), on the 48 processors beside a writ
 
 ## 4. What is open
 
-1. **What a slow append to the log waits for** (3.2). Whether an append waits for a flush on a device whose flush takes milliseconds is to be measured on such a device: the file layer of the harness makes a sync longer, and not the file system's own part of it.
+1. **A slow append to the log** (3.2). On one of the two machines it waits inside the file layer's call beside syncs of other files; why the system holds the call was not found, and nothing here is built against it. Whether an append waits for a flush on a device whose flush takes milliseconds is to be measured on such a device: the file layer of the harness makes a sync longer, and not the file system's own part of it.
 2. **Evictions are one at a time** (3.4), for readers and for the writer, which takes the frames of its copies from the same pool. It was measured on a store far smaller than the machine's memory, where the system's cache is taken to answer the reads of a file; that was not measured.
 3. **The cells that threads begin at when they look for a pin's cell are 32** (3.4).
 
