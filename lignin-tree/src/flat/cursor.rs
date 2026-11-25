@@ -7,7 +7,7 @@ use std::{
 };
 
 use lignin_format::{
-    flat_page::{FlatLeaf, FlatPage},
+    flat_page::{FlatLeaf, FlatPage, FlatValue},
     PageId,
 };
 
@@ -215,6 +215,34 @@ impl Level {
     }
 }
 
+/// What the caller of a walk says of a record it is shown
+/// ([`Cursor::walk`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Look {
+    /// The record is passed, and the walk goes on.
+    Pass,
+    /// The walk stops, and the cursor stands on the record.
+    Stop,
+    /// Said of a record that is shown by its key: the record is shown
+    /// once more, with its value, if it has one, and is passed if it has
+    /// none any more. Said of a record that is shown with its value, it
+    /// passes the record.
+    Value,
+}
+
+/// Where a walk through one leaf ended ([`Cursor::walk`]).
+enum Walked {
+    /// At a record the walk stops at: the cursor stands on it.
+    Stopped,
+    /// With every record passed that the leaf shows on that side: the
+    /// cursor stands on the last of them.
+    Passed,
+    /// Nowhere: the leaf does not show the record the cursor stands on.
+    /// The pages are of another revision than the cursor's, or the entry
+    /// is not where the cursor left it.
+    Unseen,
+}
+
 /// A cursor over the records of a flat keyspace, or over those whose keys
 /// start with one prefix, in key order.
 ///
@@ -352,6 +380,162 @@ impl Cursor {
     /// not positioned stays so.
     pub fn prev<P: FlatPages + ?Sized>(&mut self, pages: &P) -> Result<(), FlatError> {
         self.advance(pages, true)
+    }
+
+    /// Walks from the record the cursor stands on, in key order or with
+    /// `back` against it, and leaves the cursor on the first record that
+    /// `look` stops at, or not positioned where it stops at none, as a
+    /// step past the end leaves it. A cursor that is not positioned stays
+    /// so, and `look` is shown nothing.
+    ///
+    /// `look` is shown each record, the one the cursor stands on first:
+    /// its key without the cursor's prefix, and no value. It answers
+    /// [`Look::Pass`], [`Look::Stop`] or [`Look::Value`], and after
+    /// `Value` it is shown the same key with the record's value, to
+    /// answer `Pass` or `Stop` (`Value` there passes the record). A
+    /// record that has no value any more is passed where its value is
+    /// asked for. A value is read only where it is asked for.
+    ///
+    /// Over pages that do not change meanwhile this is [`Self::key`],
+    /// [`Self::value`] where the value is asked for, and [`Self::next`]
+    /// or [`Self::prev`], one after another. What the walk adds is
+    /// stated in the module's documentation ("The cursor"): **while the
+    /// leaf of the cursor's record shows that record, the walk holds the
+    /// leaf across the records it shows of it**, reads it once for all
+    /// of them, and shows a value that the leaf holds itself where it
+    /// is, uncopied. The cursor is not moved while `look` runs: it stands
+    /// on the record the call found it on, or on the one the walk last
+    /// moved it to, which need not be the record `look` is shown. A walk
+    /// that fails leaves no position.
+    pub fn walk<P, F>(&mut self, pages: &P, back: bool, mut look: F) -> Result<(), FlatError>
+    where
+        P: FlatPages + ?Sized,
+        F: FnMut(&[u8], Option<&[u8]>) -> Look,
+    {
+        let walked = self.walk_on(pages, back, &mut look);
+        if walked.is_err() {
+            self.leave();
+        }
+        walked
+    }
+
+    fn walk_on<P, F>(&mut self, pages: &P, back: bool, look: &mut F) -> Result<(), FlatError>
+    where
+        P: FlatPages + ?Sized,
+        F: FnMut(&[u8], Option<&[u8]>) -> Look,
+    {
+        let mut value = Vec::new();
+        while !self.levels.is_empty() {
+            match self.through_leaf(pages, back, look, &mut value)? {
+                Walked::Stopped => return Ok(()),
+                Walked::Passed => {}
+                // The record is shown as `key` and `value` show it, with
+                // no page held.
+                Walked::Unseen => {
+                    let key = self.key.get(self.prefix.len()..).unwrap_or_default();
+                    let mut said = look(key, None);
+                    if said == Look::Value {
+                        value.clear();
+                        said = match self.value(pages, &mut value)? {
+                            true => look(key, Some(&value)),
+                            false => Look::Pass,
+                        };
+                    }
+                    if said == Look::Stop {
+                        return Ok(());
+                    }
+                }
+            }
+            self.advance(pages, back)?;
+        }
+        Ok(())
+    }
+
+    /// Shows `look` the record the cursor stands on and those beside it in
+    /// its leaf, which is held meanwhile, and then stands on the one
+    /// `look` stopped at, or on the last one it passed.
+    fn through_leaf<P, F>(
+        &mut self,
+        pages: &P,
+        back: bool,
+        look: &mut F,
+        out_of_line: &mut Vec<u8>,
+    ) -> Result<Walked, FlatError>
+    where
+        P: FlatPages + ?Sized,
+        F: FnMut(&[u8], Option<&[u8]>) -> Look,
+    {
+        if Some(pages.revision()) != self.revision {
+            return Ok(Walked::Unseen);
+        }
+        let Self {
+            levels,
+            key,
+            prefix,
+            ..
+        } = self;
+        let Some(level) = levels.last_mut() else {
+            return Ok(Walked::Unseen);
+        };
+        let page = level.leaf;
+        let frame = pages.page(page)?;
+        let leaf = leaf(&frame, page)?;
+        if !level.is_at(&leaf) {
+            return Ok(Walked::Unseen);
+        }
+        let config = level.tree.config();
+        // The key that is shown is made beside the cursor's own, which
+        // names the record the cursor stands on until the walk has moved:
+        // its first bytes are what the buckets above this level give.
+        let head = key.len().saturating_sub(level.stored.len());
+        let mut shown = key.get(..head).unwrap_or_default().to_vec();
+        let (mut slot, mut passed) = (level.slot, None);
+        let walked = loop {
+            let (stored, value) = leaf.entry(slot).ok_or(FlatError::Damaged {
+                page,
+                what: "a leaf without the entry its slots name",
+            })?;
+            shown.truncate(head);
+            stored.append_to(&mut shown);
+            // What the leaf does not show: a bucket, whose records are in
+            // a tree of its own, and a key of another keyspace. A step of
+            // the cursor from the last record passed goes there.
+            if config.is_bucket(stored.len()) || !shown.starts_with(prefix) {
+                break Walked::Passed;
+            }
+            let record = shown.get(prefix.len()..).unwrap_or_default();
+            let mut said = look(record, None);
+            if said == Look::Value {
+                let value = match value {
+                    FlatValue::Inline(bytes) => bytes,
+                    FlatValue::OutOfLine(_) => {
+                        out_of_line.clear();
+                        read_value(pages, &frame, page, slot, value, out_of_line)?;
+                        out_of_line.as_slice()
+                    }
+                };
+                said = look(record, Some(value));
+            }
+            if said == Look::Stop {
+                break Walked::Stopped;
+            }
+            passed = Some(slot);
+            match beside(slot, back).filter(|&to| to < leaf.len()) {
+                Some(to) => slot = to,
+                None => break Walked::Passed,
+            }
+        };
+        let stand = match walked {
+            Walked::Stopped => Some(slot),
+            Walked::Passed | Walked::Unseen => passed,
+        };
+        let Some(stand) = stand else {
+            return Ok(Walked::Unseen);
+        };
+        level.stand(page, &leaf, stand)?;
+        key.truncate(head);
+        key.extend_from_slice(&level.stored);
+        Ok(walked)
     }
 
     fn advance<P: FlatPages + ?Sized>(&mut self, pages: &P, back: bool) -> Result<(), FlatError> {
