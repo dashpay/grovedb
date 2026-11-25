@@ -95,7 +95,7 @@
 //! | --- | --- |
 //! | 1 | A target that is there is refused, and so is one whose path is inside the source, with nothing touched. |
 //! | 2 | The lock of the source is taken through its lock file, which must be there, and its manifest is read under the lock. No file is made in the source. |
-//! | 3 | Every file the manifest names is measured: a file that is missing, or shorter than the manifest vouches for, ends the copy before anything is made ([`BackupError::Short`]). Each entry the copy reads is looked at first in the listing of its directory, which follows no link: a lock file, a manifest or a named file that is listed as anything but a regular file, and a store subdirectory that is listed as anything but a directory, end the copy as well ([`BackupError::NotRegular`]). |
+//! | 3 | Every file the manifest names is measured: a file that is missing, or shorter than the manifest vouches for, ends the copy before anything is made ([`BackupError::Short`]). Each entry the copy reads is looked at first in the listing of its directory, which follows no link: a lock file, a manifest or a named file that is listed as anything but a regular file, and a store subdirectory that a named file is in and that is listed as anything but a directory, end the copy as well ([`BackupError::NotRegular`]). An entry that the copy does not read is not looked at. |
 //! | 4 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. Its `LOCK` file is the copy's from here on: a database is opened through the lock file it has (`crate::db`). |
 //! | 5 | Each file is copied under its own name and synced: of a file that the manifest names closed or sealed, the bytes up to its valid length; of a file it names open, all it has, since whole records may follow the valid length. The files that the caller has the copy carry ([`Backup::carrying`]) are copied whole. |
 //! | 6 | Every name in the target is made durable, and then the target's own name. |
@@ -150,6 +150,16 @@
 //! another engine's (`crate::db`, "The directory") has it refuse
 //! both.
 //!
+//! One thing does not follow. An open looks at entries that a copy does
+//! not read: it refuses a directory in which a file of the reserve is no
+//! regular file, and one in which a store subdirectory is no directory of
+//! its own though the manifest names no file in it
+//! (`crate::db::OpenError::NotARegularFile`,
+//! `crate::db::OpenError::StoreDirNotADirectory`). A copy reads no such
+//! entry and nothing it leads to, and the target does not have it. So the
+//! copy of such a source is made, and it opens where the source is
+//! refused.
+//!
 //! # What a copy that fails leaves
 //!
 //! The source is as it was. Of the target the copy takes away what it
@@ -200,7 +210,8 @@ mod error;
 pub(crate) mod tests;
 
 use std::{
-    ffi::OsStr,
+    collections::HashMap,
+    ffi::{OsStr, OsString},
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
@@ -226,12 +237,19 @@ const LOCK_FILE_NAME: &str = "LOCK";
 /// How many bytes of a file are copied at a time.
 const COPY_CHUNK_LEN: u64 = 1 << 20;
 
+/// What a listing of a directory has each of its entries as, by name: a
+/// name is looked up in it in one step, however many files the manifest
+/// names in the directory.
+type Listed = HashMap<OsString, EntryKind>;
+
 /// The entries of the directory `dir` of a source, and none where it is
 /// not there: the call that opens a file in it says so.
-fn entries_of(vfs: &dyn Vfs, dir: &Path) -> Result<Vec<DirEntry>, BackupError> {
+fn entries_of(vfs: &dyn Vfs, dir: &Path) -> Result<Listed, BackupError> {
     match vfs.read_dir(dir) {
-        Ok(entries) => Ok(entries),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+        Ok(entries) => Ok((entries.into_iter())
+            .map(|entry| (entry.name, entry.kind))
+            .collect()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Listed::new()),
         Err(error) => Err(BackupError::io("list", dir)(error)),
     }
 }
@@ -241,13 +259,13 @@ fn entries_of(vfs: &dyn Vfs, dir: &Path) -> Result<Vec<DirEntry>, BackupError> {
 /// refused whatever it leads to. An entry that is not listed is left to
 /// the call that opens it.
 fn refuse_other(
-    entries: &[DirEntry],
+    entries: &Listed,
     dir: &Path,
     name: &OsStr,
     kind: EntryKind,
 ) -> Result<(), BackupError> {
-    match entries.iter().find(|entry| entry.name == name) {
-        Some(entry) if entry.kind != kind => Err(BackupError::NotRegular {
+    match entries.get(name) {
+        Some(listed) if *listed != kind => Err(BackupError::NotRegular {
             path: dir.join(name),
         }),
         _ => Ok(()),
@@ -479,7 +497,7 @@ impl<'a> Backup<'a> {
         source: &Path,
         target: &Path,
         manifest: &Manifest,
-        listed: &[DirEntry],
+        listed: &Listed,
     ) -> Result<(Vec<Planned>, usize, u64), BackupError> {
         let table = manifest.table_checkpoint().map(|table| {
             (
@@ -505,8 +523,9 @@ impl<'a> Backup<'a> {
         });
         let mut planned = Vec::new();
         let mut bytes = 0;
-        // The listing of each subdirectory a named file is in.
-        let mut listings: Vec<(PathBuf, Vec<DirEntry>)> = Vec::new();
+        // The listing of each subdirectory a named file is in: there are
+        // four such subdirectories at most.
+        let mut listings: Vec<(PathBuf, Listed)> = Vec::new();
         for file in table.into_iter().map(Ok).chain(named) {
             let (names, id, state, valid_len): (FileNames, FileId, FileState, u64) = file?;
             let path = names.path(source, id);
