@@ -95,7 +95,7 @@
 //! | --- | --- |
 //! | 1 | A target that is there is refused, and so is one whose path is inside the source, with nothing touched. |
 //! | 2 | The lock of the source is taken through its lock file, which must be there, and its manifest is read under the lock. No file is made in the source. |
-//! | 3 | Every file the manifest names is measured: a file that is missing, or shorter than the manifest vouches for, ends the copy before anything is made ([`BackupError::Short`]). Each entry the copy reads is looked at first in the listing of its directory, which follows no link: a lock file, a manifest or a named file that is listed as anything but a regular file, and a store subdirectory that a named file is in and that is listed as anything but a directory, end the copy as well ([`BackupError::NotRegular`]). An entry that the copy does not read is listed with the others, with what the listing has it as, and nothing more is done with it: it is not checked and not opened. |
+//! | 3 | Every file the manifest names is measured: a file that is missing, or shorter than the manifest vouches for, ends the copy before anything is made ([`BackupError::Short`]). Each entry the copy reads is looked at first in the listing of its directory, which follows no link: a lock file, a manifest or a named file that is listed as anything but a regular file, and a store subdirectory that a named file is in and that is listed as anything but a directory, end the copy as well ([`BackupError::NotRegular`]). Of the source, the copy lists the directory itself and the store subdirectory of each named file, and no other directory. Within those, an entry that the copy does not select gets no further check and is not opened. |
 //! | 4 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. Its `LOCK` file is the copy's from here on: a database is opened through the lock file it has (`crate::db`). |
 //! | 5 | Each file is copied under its own name and synced: of a file that the manifest names closed or sealed, the bytes up to its valid length; of a file it names open, all it has, since whole records may follow the valid length. The files that the caller has the copy carry ([`Backup::carrying`]) are copied whole. |
 //! | 6 | Every name in the target is made durable, and then the target's own name. |
@@ -151,17 +151,20 @@
 //! both.
 //!
 //! One thing does not follow. An open looks at entries that a copy does
-//! not read: it refuses a directory in which a file of the reserve is no
-//! regular file, and one in which an entry with the name of a store
+//! not select: it refuses a directory in which a file of the reserve is
+//! no regular file, and one in which an entry with the name of a store
 //! subdirectory is no directory of its own though the manifest names no
 //! file in it (`crate::db::OpenError::NotARegularFile`,
-//! `crate::db::OpenError::StoreDirNotADirectory`). A copy reads no such
-//! entry and nothing it leads to. The target has the entry only where the
-//! caller has the copy carry it, which it does for a regular file alone:
-//! a regular file named `val` that is carried is in the target too, and
-//! the target is refused as the source is. So where such an entry is all
-//! that an open refuses the source for, and the copy is not told to carry
-//! it, the copy is made, and it opens where the source is refused.
+//! `crate::db::OpenError::StoreDirNotADirectory`).
+//!
+//! - Where the caller does not have the copy carry such an entry, the copy
+//!   reads neither the entry nor what it leads to, and the target does not
+//!   have it. Where the entry is all that an open refuses the source for,
+//!   the copy is made, and it opens where the source is refused.
+//! - Where the caller has the copy carry it, which a copy does for a
+//!   regular file alone, the copy reads and copies it as it does any file
+//!   it carries: a regular file named `val` is then in the target too, and
+//!   the target is refused as the source is.
 //!
 //! # What a copy that fails leaves
 //!

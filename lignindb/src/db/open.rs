@@ -99,16 +99,10 @@ fn is_own_file(name: &OsStr) -> bool {
 /// a named pipe for reading alone waits until a writer opens it, and a
 /// link is not followed. A file or a subdirectory that is not listed is
 /// left to the store that opens it. So is an entry the manifest does not
-/// name, of which a store opens none that its own listing has as anything
-/// but a regular file:
-///
-/// - it passes over an entry that is no regular file, and one whose name
-///   is not of its files;
-/// - a regular file of its naming whose id is at or below the manifest's
-///   last, it removes and does not open;
-/// - one whose id is above the manifest's last, it opens to measure or to
-///   read it, and then removes it, or refuses the open and leaves the
-///   file: a segment that is longer than its header is left so.
+/// name. What a store does with such an entry is its own to say
+/// (`SegmentStore::remove_unnamed` and what the other stores have in its
+/// place): none of them opens one that its own listing has as anything
+/// but a regular file, which is all that this check relies on.
 fn refuse_irregular_named(vfs: &dyn Vfs, dir: &Path, manifest: &Manifest) -> Result<(), OpenError> {
     let table = (manifest.table_checkpoint()).map(|table| (FileNames::PAGE_TABLE, table.file()));
     let files = manifest.files().iter().filter_map(|file| {
