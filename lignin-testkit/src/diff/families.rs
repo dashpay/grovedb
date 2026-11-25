@@ -69,16 +69,13 @@
 //! flat drop's caller instead
 //! ([`Shape::keeps_the_drop_contract`](super::case::Shape)).
 //!
-//! One answer is of the family of a dropped tree by no place, by the
-//! owner's ruling D-420: the conflict that the reference alone answers
-//! to the commit of a block which wrote into the subtree of a dropped
-//! tree before a drain reclaimed the record of its drop. A drain writes
-//! beside the open block. RocksDB's deletes the range of the dropped
-//! prefix, over the keys the block wrote under it, and refuses the
-//! block's commit; LigninDB dropped the subtree with the commit of the
-//! drop, its drain writes no key of the block, and it takes the commit.
-//! The case ends there, counted for the family
-//! ([`Known::family_of_commit`]).
+//! One difference at such a tree is of no family: the conflict that the
+//! reference alone answers to the commit of a block which wrote into
+//! the subtree of a dropped tree before a drain reclaimed the record of
+//! its drop. A drain writes beside the open block. RocksDB's deletes the
+//! range of the dropped prefix, over the keys the block wrote under it,
+//! and refuses the block's commit. No rule holds a difference at a
+//! commit: the run ends there as a divergence.
 //!
 //! One family is of no answer that differs (GROVE-04-F3, D-422):
 //!
@@ -89,8 +86,7 @@
 //!   RocksDB keeps the removal in the caller's transaction, with the
 //!   old element over a subtree that holds nothing; LigninDB rolls the
 //!   removal back and keeps the child as it was. The root hash is the
-//!   same. The case ends at such an insert, counted, unless its next
-//!   operation gives the block up, after which the engines agree again
+//!   same. The case ends at such an insert, counted
 //!   ([`Known::swept_by_a_refused_insert`]).
 //!
 //! Of a place below a plain delete a refused write is counted apart, by
@@ -327,7 +323,7 @@ use super::pair::Part;
 use super::state::Record;
 use super::state::{
     a_node_is_under, a_record_is_under, a_secondary_holds_a_row, node_keys_below,
-    node_records_below, nothing_under, Keyspace, NodeKey,
+    node_records_below, Keyspace, NodeKey,
 };
 use crate::golden::step::{Outcome, Proof, Proved, Step, Value, Verification};
 use crate::workload::{
@@ -617,7 +613,7 @@ pub struct Counts {
     /// a batch that removes a tree made again below a plain delete,
     /// which are counted apart, the cases that came to such a step;
     /// and for a dedicated insert refused after its removal the cases
-    /// that came to one, whether or not the block was given up next.
+    /// that came to one.
     pub histories: [u64; FAMILIES],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
@@ -695,7 +691,7 @@ impl Counts {
                     Family::BelowPlainDelete => "with a read that differs passed over",
                     Family::KeptRecordsCost => "with such a cost passed over",
                     Family::RefusedBelowPlainDelete => "with such a refusal passed over",
-                    Family::SweptByARefusedInsert => "ended there, the block not given up next",
+                    Family::SweptByARefusedInsert => "ended there",
                     _ => "ended at an answer that differs",
                 };
                 format!(
@@ -824,24 +820,6 @@ pub struct Known {
     /// The trees among `pending` at whose path the reference reads a tree
     /// again, as [`Known::made_again`] was last told.
     remade: Vec<Path>,
-    /// The subtrees that the open block has written into: those of each
-    /// operation the reference took since the block began, less what
-    /// was written before a rollback to a savepoint
-    /// ([`Known::in_the_block`]).
-    written_in_block: Vec<Path>,
-    /// Whether an operation that the reference took since the block
-    /// began drops a tree flat.
-    dropped_in_block: bool,
-    /// The dropped trees whose pending record a drain reclaimed after
-    /// the open block wrote into their subtree, and under whose path
-    /// the candidate had committed no record when that drain was called
-    /// ([`Known::drained`]).
-    drained_beside: Vec<Path>,
-    /// Whether an operation that commits by itself
-    /// ([`Op::commits_by_itself`]) came since the block began,
-    /// whatever it was answered: a write beside the block that is no
-    /// drain.
-    committed_beside: bool,
     stored: [bool; FAMILIES],
     counts: Counts,
 }
@@ -2158,145 +2136,6 @@ impl Known {
         }
     }
 
-    /// The case came to `op`, which the reference took (`taken`) or
-    /// refused: what the open block wrote is kept for
-    /// [`Known::family_of_commit`].
-    ///
-    /// - A commit, whatever it is answered, a rollback of the block and
-    ///   an abandoned block begin a block that has written nothing.
-    /// - A rollback to a savepoint forgets the subtrees written and the
-    ///   trees drained beside the block, since it may have undone the
-    ///   writes, and keeps that the block dropped a tree flat.
-    /// - Any other operation that the reference took adds the subtrees
-    ///   it writes into ([`written_subtrees`]), and says that the block
-    ///   dropped a tree flat where it is a flat drop or a batch that
-    ///   lists one, also one at a key the batch names twice.
-    /// - An operation that commits by itself, whatever it is answered,
-    ///   says that something other than a drain wrote beside the block,
-    ///   until the block ends.
-    pub fn in_the_block(&mut self, op: &Op, taken: bool) {
-        self.committed_beside |= op.commits_by_itself();
-        match op {
-            Op::Commit | Op::Transaction(TransactionOp::Rollback | TransactionOp::Abandon) => {
-                self.committed_beside = false;
-                self.written_in_block.clear();
-                self.drained_beside.clear();
-                self.dropped_in_block = false;
-            }
-            Op::Transaction(TransactionOp::RollbackToSavepoint) => {
-                self.written_in_block.clear();
-                self.drained_beside.clear();
-            }
-            _ if taken => {
-                self.written_in_block.extend(written_subtrees(op, true));
-                let lists_one = |batch_op: &BatchOp| matches!(batch_op, BatchOp::DropFlat { .. });
-                self.dropped_in_block |= matches!(op, Op::Write(Write::DropFlat { .. }))
-                    || op.batch_ops().any(lists_one);
-            }
-            _ => {}
-        }
-    }
-
-    /// The trees of which the candidate is asked before `op`
-    /// ([`Known::has_committed_nothing_under`]): where `op` is a drain,
-    /// those with a pending record into whose subtree the open block
-    /// has written, and none for any other operation.
-    pub fn asked_before_a_drain(&self, op: &Op) -> Vec<Path> {
-        if !matches!(op, Op::FlushPendingDrops) {
-            return Vec::new();
-        }
-        let written = |tree: &&Path| self.written_in_block.contains(tree);
-        self.pending.iter().filter(written).cloned().collect()
-    }
-
-    /// Those of `trees` under whose path `db` has committed no record
-    /// ([`nothing_under`]): no node, flat, aux or meta record of the
-    /// subtree at the path or of a secondary tree of it. They are read
-    /// through a snapshot taken here, which sees nothing that an open
-    /// transaction wrote. Asked of the candidate before a drain. A tree
-    /// that cannot be read is none of them.
-    pub fn has_committed_nothing_under<E: StreamEngine>(db: &Db<E>, trees: &[Path]) -> Vec<Path> {
-        if trees.is_empty() {
-            return Vec::new();
-        }
-        let committed = db.start_snapshot_read_transaction();
-        let nothing = |tree: &&Path| matches!(nothing_under(db, &committed, tree), Ok(true));
-        trees.iter().filter(nothing).cloned().collect()
-    }
-
-    /// The case came to `op`, after which the pending records were read
-    /// again ([`Known::pending`]), with `read` saying whether they
-    /// could be read. `before` are the trees that had a pending record
-    /// before it, and `nothing_under` those under whose path the
-    /// candidate had committed no record before it
-    /// ([`Known::has_committed_nothing_under`]). A drain
-    /// (`Op::FlushPendingDrops`) writes beside the open block: a tree
-    /// of `before` that has no pending record after it, into whose
-    /// subtree the open block had written, and that is of
-    /// `nothing_under`, was drained beside the block. Any other
-    /// operation makes none, and so does a drain after which the
-    /// records could not be read: that a record is gone is then not
-    /// known.
-    pub fn drained(&mut self, op: &Op, before: &[Path], read: bool, nothing_under: &[Path]) {
-        if !read || !matches!(op, Op::FlushPendingDrops) {
-            return;
-        }
-        for tree in before {
-            if !self.pending.contains(tree)
-                && self.written_in_block.contains(tree)
-                && nothing_under.contains(tree)
-            {
-                self.drained_beside.push(tree.clone());
-            }
-        }
-    }
-
-    /// The family of the answers to `op` where it is a commit that the
-    /// reference refuses as a conflict and the candidate takes: that of
-    /// a dropped tree, where all of this holds, and none otherwise.
-    ///
-    /// - `op` is a commit, the reference answers `Commit::Conflict`,
-    ///   and the candidate takes it.
-    /// - In the block that this commit ends, an operation that the
-    ///   reference took wrote into the subtree at the path of a tree
-    ///   the case dropped flat ([`written_subtrees`]: the subtree a
-    ///   direct write names, and the path of an operation of a batch;
-    ///   the put of the tree's own element is a write into the tree
-    ///   above and is none), and after it a drain was called before
-    ///   which that tree's drop had a pending record and after which it
-    ///   has none, with no rollback to a savepoint since that write
-    ///   ([`Known::in_the_block`], [`Known::drained`]).
-    /// - The candidate had committed no record under that tree's path
-    ///   when that drain was called
-    ///   ([`Known::has_committed_nothing_under`]): its drain has
-    ///   nothing there to delete beside the block. A candidate that
-    ///   kept the tree's records, and whose drain reclaims nothing,
-    ///   takes the same commit, and is of no family.
-    /// - No operation that the reference took in the block drops a tree
-    ///   flat: such a block writes a pending record itself, under a key
-    ///   that a drain may remove, which is a conflict on both engines.
-    /// - No operation that commits by itself came since the block
-    ///   began: it writes beside the block as a drain does, and a
-    ///   conflict after it is held to no family.
-    ///
-    /// The drain reads committed state, where the path of the dropped
-    /// tree leads to no element while the block that made the tree
-    /// again is open, so it reclaims the record. RocksDB's then deletes
-    /// the range of the dropped prefix in every column family, beside
-    /// the block and over the keys the block wrote under the prefix.
-    pub fn family_of_commit(
-        &self,
-        op: &Op,
-        reference: &Outcome,
-        candidate: &Outcome,
-    ) -> Option<Family> {
-        let conflict = matches!(reference, Outcome::Failed(error) if error == "Commit::Conflict");
-        let taken = matches!(candidate, Outcome::Returned(_));
-        let beside =
-            !self.drained_beside.is_empty() && !self.dropped_in_block && !self.committed_beside;
-        (matches!(op, Op::Commit) && conflict && taken && beside).then_some(Family::DroppedTree)
-    }
-
     /// The tree under the key of a dedicated insert into an indexed
     /// tree: where `op` is such an insert (`Write::IndexedInsert`) and
     /// each engine's block reads, under the key it names, a tree that
@@ -2329,10 +2168,7 @@ impl Known {
     /// reads, also one that fails, it did not.
     ///
     /// The case ends at such an insert, counted
-    /// ([`Family::SweptByARefusedInsert`]), unless its next operation
-    /// is a rollback of the block or gives the block up, after which
-    /// the engines hold the same again: then the case goes on, and
-    /// what the engines store is not compared at this step.
+    /// ([`Family::SweptByARefusedInsert`]).
     pub fn swept_by_a_refused_insert<'db, A: StreamEngine, B: StreamEngine>(
         reference: (&'db Db<A>, &Tx<'db, A>),
         candidate: (&'db Db<B>, &Tx<'db, B>),
@@ -2348,16 +2184,6 @@ impl Known {
     /// removal ([`Known::swept_by_a_refused_insert`]).
     pub fn came_to_a_refused_insert(&mut self) {
         self.counts.histories[Family::SweptByARefusedInsert.index()] = 1;
-    }
-
-    /// The case with the seed `seed` went on past such an insert,
-    /// because its next operation gives the block up: what the engines
-    /// store was not compared at that step, and is counted as a stored
-    /// difference of the family that was passed over.
-    pub fn passed_a_refused_insert(&mut self, seed: u64) {
-        let at = Family::SweptByARefusedInsert.index();
-        self.counts.stored[at] = 1;
-        self.counts.stored_seed[at] = Some(seed);
     }
 
     /// Whether the case has dropped a tree flat.
@@ -3152,337 +2978,6 @@ mod tests {
         assert_eq!(known.family(&below), Some(Family::BelowFlatDrop));
     }
 
-    /// The answers to a commit are of the family of a dropped tree where
-    /// the reference answers a conflict, the candidate takes the commit,
-    /// and in the block that the commit ends a drain reclaimed the
-    /// record of a dropped tree after the block wrote into the tree's
-    /// subtree, in a block that drops no tree flat. Without any one of
-    /// these they are of no family: with other answers, at another
-    /// operation, where the block put the tree's element alone, wrote
-    /// beside the tree or below it, or had its write refused, where the
-    /// write came after the drain or no drain was called, where the
-    /// block drops a tree flat, where an operation committed by itself
-    /// beside the block, where it was rolled back to a savepoint
-    /// since the write, where the block ended before the commit, where
-    /// the drain left the record, where the record left at another
-    /// operation than a drain, where the records could not be read
-    /// after the drain, and where the candidate had committed a
-    /// record under the tree before the drain. The candidate is asked
-    /// before a drain alone, of the trees with a pending record that
-    /// the block wrote into.
-    #[test]
-    fn a_conflict_at_a_commit_is_of_a_dropped_tree_by_a_drain_beside_the_block_that_wrote_into_it()
-    {
-        let dropped = path(&[b"a", b"dropped"]);
-        let conflict = Outcome::Failed("Commit::Conflict".to_string());
-        let other = Outcome::Failed("StorageError::StorageError".to_string());
-        let took = Outcome::Returned(Value::Nothing);
-        let tree = Some(Family::DroppedTree);
-        let remake = Op::Write(Write::Insert {
-            path: path(&[b"a"]),
-            key: b"dropped".to_vec(),
-            element: Element::empty_tree(),
-        });
-        let into = |at: &Path| {
-            Op::Batch(vec![BatchOp::InsertOnly {
-                path: at.clone(),
-                key: b"k".to_vec(),
-                element: Element::new_item(vec![1]),
-            }])
-        };
-        let write = into(&dropped);
-        let drain = Op::FlushPendingDrops;
-        let back = Op::Transaction(TransactionOp::RollbackToSavepoint);
-        let drop_another = Op::Write(Write::DropFlat {
-            path: path(&[b"b"]),
-            key: b"another".to_vec(),
-        });
-        let lists_a_drop = Op::Batch(vec![
-            BatchOp::DropFlat {
-                path: path(&[b"b"]),
-                key: b"another".to_vec(),
-                tree_type: grovedb::TreeType::NormalTree,
-            },
-            BatchOp::InsertOnly {
-                path: path(&[b"b"]),
-                key: b"another".to_vec(),
-                element: Element::empty_tree(),
-            },
-        ]);
-        // A case that dropped the tree flat and committed the drop runs
-        // `block`, in which each drain reclaims the record, and is asked
-        // for the family of `answers` to `last`.
-        let family = |block: &[(&Op, bool)], last: &Op, answers: (&Outcome, &Outcome)| {
-            let mut known = known();
-            known.pending(vec![dropped.clone()]);
-            known.in_the_block(&Op::Commit, true);
-            for (op, taken) in block {
-                // The candidate has committed nothing under a tree
-                // it is asked of.
-                let asked = known.asked_before_a_drain(op);
-                known.in_the_block(op, *taken);
-                let before = known.pending_paths().to_vec();
-                if **op == Op::FlushPendingDrops {
-                    known.pending(Vec::new());
-                }
-                known.drained(op, &before, true, &asked);
-            }
-            known.family_of_commit(last, answers.0, answers.1)
-        };
-        let written = [(&remake, true), (&write, true), (&drain, true)];
-        assert_eq!(family(&written, &Op::Commit, (&conflict, &took)), tree);
-        let direct = Op::Write(Write::Insert {
-            path: dropped.clone(),
-            key: b"k".to_vec(),
-            element: Element::new_item(vec![1]),
-        });
-        let directly = [(&remake, true), (&direct, true), (&drain, true)];
-        assert_eq!(family(&directly, &Op::Commit, (&conflict, &took)), tree);
-
-        // Other answers, and another operation.
-        for answers in [
-            (&conflict, &conflict),
-            (&conflict, &other),
-            (&other, &took),
-            (&took, &conflict),
-            (&took, &took),
-        ] {
-            assert_eq!(family(&written, &Op::Commit, answers), None, "{answers:?}");
-        }
-        for last in [&drain, &remake, &write, &back] {
-            assert_eq!(family(&written, last, (&conflict, &took)), None, "{last:?}");
-        }
-
-        let beside = into(&path(&[b"a"]));
-        let below = into(&path(&[b"a", b"dropped", b"below"]));
-        let rollback = Op::Transaction(TransactionOp::Rollback);
-        let abandon = Op::Transaction(TransactionOp::Abandon);
-        let by_itself = Op::Write(Write::ConvertToBigSumTree {
-            path: path(&[b"q"]),
-            key: b"elsewhere".to_vec(),
-            own_transaction: true,
-        });
-        let blocks: [(&str, Vec<(&Op, bool)>); 18] = [
-            ("the element alone", vec![(&remake, true), (&drain, true)]),
-            (
-                "a write beside the tree",
-                vec![(&remake, true), (&beside, true), (&drain, true)],
-            ),
-            (
-                "a write below the tree",
-                vec![(&remake, true), (&below, true), (&drain, true)],
-            ),
-            (
-                "a write that was refused",
-                vec![(&remake, true), (&write, false), (&drain, true)],
-            ),
-            (
-                "the write after the drain",
-                vec![(&remake, true), (&drain, true), (&write, true)],
-            ),
-            ("no drain", vec![(&remake, true), (&write, true)]),
-            (
-                "a flat drop before the write",
-                vec![
-                    (&drop_another, true),
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                ],
-            ),
-            (
-                "a flat drop after the drain",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                    (&drop_another, true),
-                ],
-            ),
-            (
-                "a flat drop that a batch lists at a key it names twice",
-                vec![
-                    (&lists_a_drop, true),
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                ],
-            ),
-            (
-                "a flat drop before a rollback to a savepoint",
-                vec![
-                    (&drop_another, true),
-                    (&back, true),
-                    (&write, true),
-                    (&drain, true),
-                ],
-            ),
-            (
-                "a rollback to a savepoint between the write and the drain",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&back, true),
-                    (&drain, true),
-                ],
-            ),
-            (
-                "a rollback to a savepoint after the drain",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                    (&back, true),
-                ],
-            ),
-            (
-                "a commit after the drain",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                    (&Op::Commit, false),
-                ],
-            ),
-            (
-                "a rollback after the drain",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                    (&rollback, true),
-                ],
-            ),
-            (
-                "an abandoned block after the drain",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                    (&abandon, true),
-                ],
-            ),
-            (
-                "an operation that commits by itself before the write",
-                vec![
-                    (&by_itself, true),
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                ],
-            ),
-            (
-                "an operation that commits by itself after the drain",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&drain, true),
-                    (&by_itself, true),
-                ],
-            ),
-            (
-                "an operation that commits by itself and was refused",
-                vec![
-                    (&remake, true),
-                    (&write, true),
-                    (&by_itself, false),
-                    (&drain, true),
-                ],
-            ),
-        ];
-        for (what, block) in &blocks {
-            assert_eq!(
-                family(block, &Op::Commit, (&conflict, &took)),
-                None,
-                "{what}"
-            );
-        }
-        // One that committed by itself in the block before is none of
-        // this block's.
-        let before = [
-            (&by_itself, true),
-            (&Op::Commit, true),
-            (&remake, true),
-            (&write, true),
-            (&drain, true),
-        ];
-        assert_eq!(family(&before, &Op::Commit, (&conflict, &took)), tree);
-        // A flat drop that the reference refused is none of the block's.
-        let refused_drop = [
-            (&drop_another, false),
-            (&remake, true),
-            (&write, true),
-            (&drain, true),
-        ];
-        assert_eq!(family(&refused_drop, &Op::Commit, (&conflict, &took)), tree);
-
-        // The drain left the record, and the record left at another
-        // operation than a drain.
-        let before = std::slice::from_ref(&dropped);
-        let written = || {
-            let mut known = known();
-            known.pending(vec![dropped.clone()]);
-            known.in_the_block(&write, true);
-            known
-        };
-        let mut known = written();
-        known.drained(&drain, before, true, before);
-        assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
-        known.pending(Vec::new());
-        known.drained(&remake, before, true, before);
-        assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
-        // The record left with the drain.
-        let mut known = written();
-        assert_eq!(known.asked_before_a_drain(&drain), before);
-        known.pending(Vec::new());
-        known.drained(&drain, before, true, before);
-        assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), tree);
-        // The pending records could not be read after the drain: that
-        // the record is gone is not known.
-        let mut known = written();
-        known.pending(Vec::new());
-        known.drained(&drain, before, false, before);
-        assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
-        // The candidate had committed a record under the tree before
-        // the drain: it kept the tree.
-        let mut known = written();
-        known.pending(Vec::new());
-        known.drained(&drain, before, true, &[]);
-        assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
-        // A tree with no pending record before the drain is none.
-        let mut known = self::known();
-        known.in_the_block(&write, true);
-        known.drained(&drain, &[], true, before);
-        assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
-
-        // The candidate is asked before a drain alone, of the trees
-        // with a pending record that the open block wrote into.
-        let known = written();
-        for other in [&remake, &write, &back, &rollback, &Op::Commit] {
-            assert!(known.asked_before_a_drain(other).is_empty(), "{other:?}");
-        }
-        let mut known = self::known();
-        known.pending(vec![dropped.clone()]);
-        assert!(known.asked_before_a_drain(&drain).is_empty());
-        for elsewhere in [&remake, &beside, &below] {
-            known.in_the_block(elsewhere, true);
-            let asked = known.asked_before_a_drain(&drain);
-            assert!(asked.is_empty(), "{elsewhere:?}");
-        }
-        known.in_the_block(&write, false);
-        assert!(known.asked_before_a_drain(&drain).is_empty());
-        known.in_the_block(&write, true);
-        assert_eq!(known.asked_before_a_drain(&drain), before);
-        for ends in [&back, &rollback, &abandon, &Op::Commit] {
-            let mut known = written();
-            known.in_the_block(ends, true);
-            assert!(known.asked_before_a_drain(&drain).is_empty(), "{ends:?}");
-        }
-        let mut known = written();
-        known.pending(Vec::new());
-        assert!(known.asked_before_a_drain(&drain).is_empty());
-    }
-
     /// The tree under a dedicated insert is asked for an insert through
     /// the method of an indexed tree alone, where both engines read a
     /// tree with an element under its key; and the insert left the
@@ -3572,11 +3067,6 @@ mod tests {
         assert_eq!(known.counts().histories[11], 1);
         assert_eq!(known.counts().answers[11], 0);
         assert!(!known.counts().passed_over());
-        let mut passed = known.clone();
-        passed.passed_a_refused_insert(9);
-        assert_eq!(passed.counts().stored[11], 1);
-        assert_eq!(passed.counts().stored_seed[11], Some(9));
-        assert!(passed.counts().passed_over());
         known.ended_at(Family::SweptByARefusedInsert, 9);
         assert_eq!(known.counts().answers[11], 1);
         assert_eq!(known.counts().answer_seed[11], Some(9));

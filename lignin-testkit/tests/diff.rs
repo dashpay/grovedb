@@ -372,30 +372,22 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
 
 /// A tree is dropped flat and the drop committed. The next block makes
 /// the tree again at the dropped path and writes into it, and a drain is
-/// called before the block commits. The drain reads committed state,
-/// finds no element at the path and reclaims the record of the drop.
-/// RocksDB's deletes the range of the dropped prefix beside the block,
-/// over the keys the block wrote under it, and answers the block's
-/// commit with a conflict; LigninDB dropped the subtree with the commit
-/// of the drop, its drain writes no key of the block, and it takes the
-/// commit. It is the open difference of a dropped tree until its drain:
-/// the case ends at the commit, counted for the family, on grove
-/// versions 4 and 5, and is no divergence. Grove versions 1 to 3 have no
+/// called before the block commits. RocksDB answers the block's commit
+/// with a conflict and LigninDB takes it, on grove versions 4 and 5. No
+/// rule of the fuzzer holds a difference at a commit: the run ends there
+/// as a divergence in the error and the root hash, and nothing is
+/// counted for a family. The same with the tree made again and dropped
+/// flat a second time before any drain. Grove versions 1 to 3 have no
 /// flat drop: both engines refuse it, and the case runs to its end.
 ///
-/// With the drain after the block's commit, which finds the path live
-/// and leaves the record, and with a block that puts the tree's element
-/// and writes nothing into the tree, both engines take the commit and
-/// the case runs to its end.
-///
-/// With the tree made again and dropped flat a second time before any
-/// drain, so that the record of its drop never leaves the pending ones,
-/// LigninDB has committed nothing below the tree when the drain is
-/// called, and the case ends at the same commit, counted.
+/// With the drain after the block's commit, and with a block that puts
+/// the tree's element and writes nothing into the tree, the case runs
+/// to its end on grove versions 4 and 5 with no step that fails and no
+/// divergence.
 #[test]
-fn a_commit_that_rocksdb_refuses_after_a_drain_beside_a_tree_made_again_ends_the_case() {
+fn a_commit_that_rocksdb_refuses_after_a_drain_beside_a_tree_made_again_ends_the_run() {
     use lignin_testkit::{
-        diff::{Case, Family},
+        diff::Case,
         workload::{BatchOp, Op, Read, Write},
     };
 
@@ -458,36 +450,49 @@ fn a_commit_that_rocksdb_refuses_after_a_drain_beside_a_tree_made_again_ends_the
     };
     for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
         let number = number + 1;
-        let ops: Vec<Op> = dropped.iter().chain(&beside).cloned().collect();
-        let case = Case::of(43, grove_version, ops);
-        let run = ran(&case);
-        if let Some(divergence) = &run.divergence {
-            let report = divergence.report(&case, "RocksDB", "LigninDB");
-            panic!("grove version {number}:\n{}", report.join("\n"));
-        }
+        let again = [made(), dropped[DROP].clone(), Op::Commit];
+        let once: Vec<Op> = dropped.iter().chain(&beside).cloned().collect();
+        let twice: Vec<Op> = (dropped.iter().chain(&again).chain(&beside))
+            .cloned()
+            .collect();
         if number < 4 {
+            let case = Case::of(43, grove_version, once);
+            let run = ran(&case);
+            if let Some(divergence) = &run.divergence {
+                let report = divergence.report(&case, "RocksDB", "LigninDB");
+                panic!("grove version {number}:\n{}", report.join("\n"));
+            }
             assert_eq!(run.failed_steps, [DROP], "grove version {number}");
             assert_eq!(run.ended_at, None, "grove version {number}");
             assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
             assert_eq!(run.tally.families.answers, [0; 12], "{number}");
             continue;
         }
-        assert_eq!(run.ended_at, Some(Family::DroppedTree), "{number}");
-        let ended = run.ended_with.as_ref().expect("the answers it ended with");
-        assert_eq!(ended.step, COMMIT, "grove version {number}");
-        assert_eq!(run.tally.steps as usize, COMMIT + 1, "{number}");
-        assert_eq!(case.ops[COMMIT], Op::Commit);
-        assert!(ended.parts.contains(&Part::Error), "{ended:?}");
-        let conflict = Some("failed Commit::Conflict".to_string());
-        assert_eq!(failed(&ended.reference), conflict, "{ended:?}");
-        assert_eq!(failed(&ended.candidate), None, "{ended:?}");
-        println!(
-            "grove version {number}: the commit differs in {:?}\n  RocksDB: {:?}\n  LigninDB: {:?}",
-            ended.parts, ended.reference, ended.candidate
-        );
-        let families = run.tally.families;
-        assert_eq!(families.answers, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(families.answer_seed[2], Some(case.seed));
+        for (what, ops, commit) in [
+            ("dropped once", once, COMMIT),
+            ("dropped twice", twice, COMMIT + again.len()),
+        ] {
+            let case = Case::of(43, grove_version, ops);
+            let run = ran(&case);
+            assert_eq!(case.ops[commit], Op::Commit);
+            assert_eq!(run.ended_at, None, "{what} on grove version {number}");
+            let divergence = run.divergence.as_ref().expect("the commit");
+            assert_eq!(divergence.step, commit, "{what} on {number}");
+            assert_eq!(
+                divergence.parts,
+                [Part::Error, Part::RootHash],
+                "{what} on {number}"
+            );
+            let conflict = Some("failed Commit::Conflict".to_string());
+            assert_eq!(failed(&divergence.reference), conflict, "{divergence:?}");
+            assert_eq!(failed(&divergence.candidate), None, "{divergence:?}");
+            assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
+            assert_eq!(run.tally.families.answers, [0; 12], "{what} on {number}");
+            println!(
+                "grove version {number}, {what}: the commit differs in {:?}\n  RocksDB: {:?}\n  LigninDB: {:?}",
+                divergence.parts, divergence.reference, divergence.candidate
+            );
+        }
 
         for (what, block) in [
             ("the drain after", &after[..]),
@@ -513,94 +518,6 @@ fn a_commit_that_rocksdb_refuses_after_a_drain_beside_a_tree_made_again_ends_the
             );
             assert_eq!(run.tally.families.answers, [0; 12], "{what} on {number}");
         }
-
-        let again = [made(), dropped[DROP].clone(), Op::Commit];
-        let ops: Vec<Op> = (dropped.iter().chain(&again).chain(&beside))
-            .cloned()
-            .collect();
-        let case = Case::of(45, grove_version, ops);
-        let run = ran(&case);
-        if let Some(divergence) = &run.divergence {
-            let report = divergence.report(&case, "RocksDB", "LigninDB");
-            panic!("dropped twice on {number}:\n{}", report.join("\n"));
-        }
-        assert_eq!(run.ended_at, Some(Family::DroppedTree), "{number}");
-        let ended = run.ended_with.as_ref().expect("the answers it ended with");
-        assert_eq!(ended.step, COMMIT + again.len(), "grove version {number}");
-        assert_eq!(failed(&ended.reference), conflict, "{ended:?}");
-        assert_eq!(failed(&ended.candidate), None, "{ended:?}");
-        assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
-        let families = run.tally.families;
-        assert_eq!(families.answers, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    }
-}
-
-/// The conflict after a drain asks what LigninDB has committed below the
-/// dropped tree when the drain is called, and nothing of any earlier
-/// moment. A batch that lists the flat drop of a tree, the tree's
-/// element again and an element in it would leave a record below the
-/// tree in the block at the very operation that makes the record of its
-/// drop pending. Both engines refuse that batch, on every grove version,
-/// and the tree stands as it was: the case runs to its end, with the
-/// batch as its one common failure and nothing counted for a family.
-#[test]
-fn a_batch_that_drops_a_tree_flat_and_writes_into_it_again_is_refused_by_both_engines() {
-    use lignin_testkit::{
-        diff::Case,
-        workload::{BatchOp, Op, Read, Write},
-    };
-
-    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
-        segments.iter().map(|segment| segment.to_vec()).collect()
-    };
-    let only = |at: &[&[u8]], key: &[u8], element: grovedb::Element| BatchOp::InsertOnly {
-        path: path(at),
-        key: key.to_vec(),
-        element,
-    };
-    let tree = grovedb::Element::empty_tree;
-    let item = || grovedb::Element::new_item(vec![7; 8]);
-    let ops = vec![
-        Op::Write(Write::Insert {
-            path: Vec::new(),
-            key: b"a".to_vec(),
-            element: tree(),
-        }),
-        Op::Batch(vec![
-            only(&[b"a"], b"t", tree()),
-            only(&[b"a", b"t"], b"k", item()),
-        ]),
-        Op::Commit,
-        Op::Batch(vec![
-            BatchOp::DropFlat {
-                path: path(&[b"a"]),
-                key: b"t".to_vec(),
-                tree_type: grovedb::TreeType::NormalTree,
-            },
-            only(&[b"a"], b"t", tree()),
-            only(&[b"a", b"t"], b"k", item()),
-        ]),
-        Op::Commit,
-        Op::Read(Read::Get {
-            path: path(&[b"a", b"t"]),
-            key: b"k".to_vec(),
-        }),
-        Op::FlushPendingDrops,
-        Op::Commit,
-    ];
-    const BATCH: usize = 3;
-    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
-        let number = number + 1;
-        let case = Case::of(46, grove_version, ops.clone());
-        let run = ran(&case);
-        if let Some(divergence) = &run.divergence {
-            let report = divergence.report(&case, "RocksDB", "LigninDB");
-            panic!("grove version {number}:\n{}", report.join("\n"));
-        }
-        assert_eq!(run.failed_steps, [BATCH], "grove version {number}");
-        assert_eq!(run.ended_at, None, "grove version {number}");
-        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
-        assert_eq!(run.tally.families.answers, [0; 12], "{number}");
     }
 }
 
@@ -611,15 +528,15 @@ fn a_batch_that_drops_a_tree_flat_and_writes_into_it_again_is_refused_by_both_en
 /// insert removed what the tree held before its put was refused:
 /// RocksDB keeps the removal in the block, with the old element over a
 /// subtree that holds nothing, and LigninDB rolls it back and keeps the
-/// tree. The case ends at the insert, counted, and is no divergence.
+/// tree. The case ends at the insert, counted, and is no divergence,
+/// also where the next operation rolls the block back or gives it up.
 ///
-/// Where the next operation rolls the block back or gives it up, the
-/// engines hold the same again and the case runs to its end, with every
-/// answer and every stored record after that compared. The same insert
-/// over the tree with the small sum is made by both, and the case runs
-/// to its end with no step of the family.
+/// The same insert over the tree with the small sum fails on neither
+/// engine and replaces the tree: the one step that fails afterwards, on
+/// both, is the read of what the tree held. The case runs to its end
+/// with no step of the family.
 #[test]
-fn a_dedicated_insert_refused_after_its_removal_ends_the_case_unless_the_block_is_given_up() {
+fn a_dedicated_insert_refused_after_its_removal_ends_the_case() {
     use lignin_testkit::{
         diff::{Case, Family},
         workload::{IndexedTree, Op, Read, TransactionOp, Write},
@@ -704,7 +621,8 @@ fn a_dedicated_insert_refused_after_its_removal_ends_the_case_unless_the_block_i
         assert_eq!(run.failed_steps, [refused], "grove version {number}");
         assert_eq!(run.tally.failed, 1, "grove version {number}");
 
-        // Given up by the next operation: the case goes on to its end.
+        // Given up by the next operation: the case ends at the insert
+        // all the same.
         for end in [TransactionOp::Rollback, TransactionOp::Abandon] {
             let mut ops = made.clone();
             ops.extend([dedicated(b"g"), Op::Transaction(end.clone())]);
@@ -715,19 +633,18 @@ fn a_dedicated_insert_refused_after_its_removal_ends_the_case_unless_the_block_i
                 let report = divergence.report(&case, "RocksDB", "LigninDB");
                 panic!("{end:?} on grove version {number}:\n{}", report.join("\n"));
             }
-            assert_eq!(run.ended_at, None, "{end:?} on grove version {number}");
-            assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+            let family = Some(Family::SweptByARefusedInsert);
+            assert_eq!(run.ended_at, family, "{end:?} on {number}");
+            assert_eq!(run.tally.steps as usize, refused + 1, "{end:?} on {number}");
             assert_eq!(run.failed_steps, [refused], "{end:?} on {number}");
             let families = run.tally.families;
             assert_eq!(families.histories[11], 1, "{end:?} on {number}");
-            assert_eq!(families.answers[11], 0, "{end:?} on {number}");
-            // What the engines stored at the insert was passed over.
-            assert_eq!(families.stored[11], 1, "{end:?} on {number}");
-            assert_eq!(families.stored_seed[11], Some(case.seed));
-            assert_eq!(run.tally.failed, 1, "{end:?} on {number}");
+            assert_eq!(families.answers[11], 1, "{end:?} on {number}");
+            assert_eq!(families.stored[11], 0, "{end:?} on {number}");
         }
 
-        // The insert over the tree with the small sum is made by both.
+        // The insert over the tree with the small sum fails on neither:
+        // the last read, of what that tree held, is the one failure.
         let mut ops = made.clone();
         ops.push(dedicated(b"z"));
         ops.extend(after.iter().cloned());
@@ -739,6 +656,8 @@ fn a_dedicated_insert_refused_after_its_removal_ends_the_case_unless_the_block_i
         }
         assert_eq!(run.ended_at, None, "made on grove version {number}");
         assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        assert_eq!(case.ops[refused + after.len()], held(b"z"));
+        assert_eq!(run.failed_steps, [refused + after.len()], "{number}");
         assert_eq!(run.tally.families.histories[11], 0, "made on {number}");
     }
 }
@@ -1950,9 +1869,10 @@ fn a_record_that_a_commit_kept_is_known_after_a_rollback_and_one_of_the_block_is
 /// kept the item's record: where it opens the subtree under that key it
 /// reads the record and refuses with `CorruptedPath`, for a parent
 /// that is no tree. LigninDB holds no record there and refuses with
-/// `InvalidPath`, for no element above the subtree. Both keep the root
-/// hash they had. The run ends there as a divergence in the cost and
-/// the error, on every grove version: the batch writes into a tree that
+/// `InvalidPath`, for no element above the subtree. After the refusal
+/// each has the root hash the other has. The run ends there as a
+/// divergence in the cost and the error, on every grove version, with
+/// the delete below the item listed first: the batch writes into a tree that
 /// is neither at the removed tree's path nor the tree above it, so the
 /// refusal is of no family.
 #[test]
@@ -2020,7 +1940,7 @@ fn a_batch_below_a_kept_item_is_refused_with_another_error_by_each_engine_and_en
             line(candidate, "# failed").ends_with("at path [p/t] for key 0x01"),
             "{candidate:?}"
         );
-        // Neither wrote: each has the root hash the other has.
+        // Each has the root hash the other has.
         assert_eq!(line(reference, "root "), line(candidate, "root "));
         assert!(line(reference, "root ").len() > 5, "{reference:?}");
         assert_eq!(run.ended_at, None, "grove version {number}");

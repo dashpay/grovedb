@@ -733,12 +733,6 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             )
         })
         .unwrap_or_default();
-        // Asked of the candidate before a drain: under which of the
-        // dropped trees that the open block wrote into it has committed
-        // no record. Its drain has nothing to delete there.
-        let asked = known.asked_before_a_drain(op);
-        let nothing_under = catching(|| Known::has_committed_nothing_under(candidate_db, &asked))
-            .unwrap_or_default();
         let was = observe(&mut reference_runner, op);
         // A put of an indexed tree over an indexed tree that the reference
         // took is counted, whatever the candidate did.
@@ -822,7 +816,6 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 .or_else(cost)
                 .or_else(refused_write)
                 .or_else(taken_write)
-                .or_else(|| known.family_of_commit(op, reference, candidate))
                 .or_else(|| known.family_of_answer(op, taken, &parts))
                 .or_else(through_a_proof);
             let Some(family) = family else {
@@ -885,9 +878,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         }
         // A dedicated insert over a tree that both engines refused
         // alike, after which the reference alone reads the tree as
-        // empty: the stated difference of such an insert. Where the
-        // next operation gives the block up, the engines agree again
-        // and the case goes on. Else it ends here, counted.
+        // empty: the stated difference of such an insert. The case ends
+        // here, counted.
         let swept = under_a_dedicated_insert.as_ref().is_some_and(|child| {
             let refused_alike = parts.is_empty() && was.step.failed();
             let left = || {
@@ -897,25 +889,13 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             };
             refused_alike && catching(left).unwrap_or(false)
         });
-        let given_up_next = matches!(
-            case.ops.get(step + 1),
-            Some(Op::Transaction(
-                TransactionOp::Rollback | TransactionOp::Abandon
-            ))
-        );
         if swept {
             known.came_to_a_refused_insert();
-            if given_up_next {
-                known.passed_a_refused_insert(case.seed);
-            }
-            tally.families = known.counts();
-        }
-        if swept && !given_up_next {
             let family = Family::SweptByARefusedInsert;
             known.ended_at(family, case.seed);
             tally.families = known.counts();
             // Both engines refused the insert alike: it is a common
-            // failure, as it is where the case goes on.
+            // failure.
             failed_steps.borrow_mut().push(step);
             tally.failed += 1;
             let ended_with = Divergence {
@@ -949,7 +929,6 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         // operation and has the root hash it had.
         let root_changed = was.step.root_hash.is_some() && roots.0 != before.0;
         known.forgets(op, !was.step.failed(), root_changed);
-        known.in_the_block(op, !was.step.failed());
         if !was.step.failed() {
             known.wrote(op, root_changed);
             // The trees a plain delete of the batch removed of which the
@@ -968,18 +947,11 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         // are held against the records as they were before it. Where the
         // reference cannot be read, none is pending.
         if known.dropped_flat() {
-            let had_a_record = known.pending_paths().to_vec();
             let pending = catching(|| {
                 let block = reference_runner.transactions().block();
                 pending_drop_paths(reference_db, block)
             });
-            let pending = pending.ok().and_then(Result::ok);
-            let read = pending.is_some();
-            known.pending(pending.unwrap_or_default());
-            // A drain writes beside the open block: the trees whose
-            // record it reclaimed after the block wrote into them, and
-            // under which the candidate had committed nothing.
-            known.drained(op, &had_a_record, read, &nothing_under);
+            known.pending(pending.ok().and_then(Result::ok).unwrap_or_default());
             // Those of them at which the reference reads a tree again.
             let standing = catching(|| {
                 let block = reference_runner.transactions().block();
@@ -1006,9 +978,7 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             Stored::AtTheEnd => last,
             Stored::Every(every) => last || (write && writes.is_multiple_of(every.max(1))),
         };
-        // After a dedicated insert that left the engines apart and that
-        // the next operation gives up, what they store is not compared.
-        if !due || swept {
+        if !due {
             continue;
         }
         let before = std::mem::take(&mut places);
@@ -1414,11 +1384,13 @@ mod tests {
     /// a drain is called before the block commits. The reference's
     /// drain deletes the range of the dropped prefix beside the block,
     /// and its commit is a conflict. A candidate that keeps the dropped
-    /// tree's records, and whose drain frees nothing, takes the commit:
-    /// that is no answer of the family of a dropped tree, which is for
-    /// a candidate that dropped the subtree with the drop, and the run
-    /// ends there as a divergence. The stand-in as it is answers as
-    /// the reference does.
+    /// tree's records, and whose drain frees nothing, takes the commit
+    /// with no failure: a difference at a commit is of no family, and
+    /// the run ends there as a divergence. The same holds where the
+    /// tree was dropped again before the drain after it was first
+    /// dropped empty, where it was dropped in a block that is rolled
+    /// back, and for a tree of flat records. The stand-in as it is
+    /// refuses each of these commits as the reference does.
     #[test]
     fn a_commit_taken_after_a_drain_that_freed_nothing_is_a_divergence() {
         let insert = |at: &[&[u8]], key: &[u8], element: Element| {
@@ -1519,7 +1491,8 @@ mod tests {
             assert!(divergence.parts.contains(&Part::Error), "{divergence:?}");
             let conflict = "failed Commit::Conflict".to_string();
             assert!(divergence.reference.contains(&conflict), "{divergence:?}");
-            assert!(!divergence.candidate.contains(&conflict), "{divergence:?}");
+            let failed = |line: &String| line.starts_with("failed ");
+            assert!(!divergence.candidate.iter().any(failed), "{divergence:?}");
 
             let run = compared(&case(ops), &rocksdb(), &stand_in(), Stored::AtTheEnd);
             assert_eq!((run.divergence, run.ended_at), (None, None), "{what}");
