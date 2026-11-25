@@ -147,9 +147,9 @@ fn should_fetch_pinned_view_nodes_without_a_mutation_baseline() {
         .unwrap()
         .unwrap();
 
-    assert_eq!(fetched.old_value, None);
+    assert_eq!(fetched.old_value(), None);
     assert_eq!(fetched.inner, mutable.inner);
-    assert_eq!(mutable.old_value.as_ref(), Some(mutable.value_ref()));
+    assert_eq!(mutable.old_value(), Some(mutable.value_ref()));
 }
 
 /// A caller outside the walk gets only a value, charged as a storage `get`

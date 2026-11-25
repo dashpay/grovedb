@@ -24,8 +24,8 @@ use lignindb::{
 use super::{
     access::{
         column, fault, kept_key, link_of, own_key, Access, BatchPart, LigninEntryRefused,
-        LinkWrite, Location, MerkChange, NodeWrite, Prefix, RecordChange, RootWrite, SubtreeChange,
-        ValueWrite, Write, Written,
+        LinkWrite, Location, MerkChange, NodeKey, NodeWrite, Prefix, RecordChange, RootWrite,
+        SubtreeChange, ValueWrite, Write, Written,
     },
     feature::{encode_aggregate, encode_feature},
     hash::{held_link, stale_hashes, HeldLink},
@@ -55,7 +55,7 @@ pub struct PreparedNode(Result<(NodeWrite, usize), Error>);
 fn link_write(link: &Link) -> Result<(LinkWrite, HeldLink), Error> {
     let held = held_link(link)?;
     let write = LinkWrite {
-        key: link.key().to_vec(),
+        key: NodeKey::new(link.key()),
         hash: held.hash.unwrap_or(NULL_HASH),
         heights: held.heights,
         aggregate: encode_aggregate(&held.aggregate),
@@ -96,7 +96,7 @@ fn prepare(node: &TreeNode, change: NodeChange) -> Result<(NodeWrite, usize), Er
     };
     Ok((
         NodeWrite {
-            key: node.key().to_vec(),
+            key: NodeKey::new(node.key()),
             feature: encode_feature(&node.feature_type()),
             value_hash: *node.value_hash(),
             kv_hash: *node.kv_hash(),
@@ -176,6 +176,9 @@ impl fmt::Debug for LigninChangeSet {
             .finish_non_exhaustive()
     }
 }
+
+/// The nodes a change set is given room for with its first.
+const FIRST_NODES: usize = 48;
 
 fn stored_key_len(key: &[u8]) -> usize {
     MODEL.stored_key_len(key.len())
@@ -268,12 +271,12 @@ impl LigninChangeSet {
     /// value was read with from `reads`.
     pub(super) fn hint(
         &mut self,
-        hints: &HashMap<Vec<u8>, Location>,
-        reads: &HashMap<Vec<u8>, Option<Location>>,
+        hints: &HashMap<NodeKey, Location>,
+        reads: &HashMap<NodeKey, Option<Location>>,
     ) {
         for (node, _) in &mut self.nodes {
-            node.hint = hints.get(&node.key).copied();
-            node.read = reads.get(&node.key).copied().flatten();
+            node.hint = hints.get(node.key.as_slice()).copied();
+            node.read = reads.get(node.key.as_slice()).copied().flatten();
         }
     }
 
@@ -308,16 +311,16 @@ impl LigninChangeSet {
     /// at that read ([`LigninSettled::move_as`]).
     pub(super) fn note_trees(
         &mut self,
-        trees: &HashSet<Vec<u8>>,
-        reads: &HashMap<Vec<u8>, Option<Location>>,
+        trees: &HashSet<NodeKey>,
+        reads: &HashMap<NodeKey, Option<Location>>,
     ) {
         let stated = |node: &NodeWrite| matches!(node.value, ValueWrite::Stated(_));
         let over = self.nodes.iter().map(|(node, _)| node);
-        let over = over.filter(|node| stated(node) && trees.contains(&node.key));
-        self.over_trees = over.map(|node| node.key.clone()).collect();
-        let put = self.nodes.iter().map(|(node, _)| &node.key);
-        let written = put.chain(self.removed.iter().map(|(key, _)| key));
-        let read = |key: &Vec<u8>| Some((key.clone(), (*reads.get(key)?)?));
+        let over = over.filter(|node| stated(node) && trees.contains(node.key.as_slice()));
+        self.over_trees = over.map(|node| node.key.to_vec()).collect();
+        let put = self.nodes.iter().map(|(node, _)| node.key.as_slice());
+        let written = put.chain(self.removed.iter().map(|(key, _)| key.as_slice()));
+        let read = |key: &[u8]| Some((key.to_vec(), (*reads.get(key)?)?));
         let read = written.filter(|key| trees.contains(*key)).filter_map(read);
         self.tree_reads = read.collect();
     }
@@ -461,7 +464,9 @@ impl NodeChangeSet for LigninChangeSet {
     ) -> Result<(), Error> {
         let (mut node, record_len) = prepared.0?;
         // The record key of the write is the key Merk puts the node under.
-        node.key = key.to_vec();
+        if node.key.as_slice() != key {
+            node.key = NodeKey::new(key);
+        }
         let (children, cost) = match cost {
             Some(cost) => (
                 Some((cost.feature, cost.left_child, cost.right_child)),
@@ -493,6 +498,9 @@ impl NodeChangeSet for LigninChangeSet {
                 cost,
             },
         };
+        if self.nodes.capacity() == 0 {
+            self.nodes.reserve(FIRST_NODES);
+        }
         self.nodes.push((node, sizes));
         Ok(())
     }

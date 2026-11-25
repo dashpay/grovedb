@@ -1,5 +1,3 @@
-use std::collections::{BTreeSet, LinkedList};
-
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
@@ -161,8 +159,7 @@ where
 
         // No key is added, removed or moved, so the root key stays and only
         // the rewritten nodes are written.
-        let key_updates =
-            KeyUpdates::new(BTreeSet::new(), BTreeSet::new(), LinkedList::new(), None);
+        let key_updates = KeyUpdates::none();
         let aux: &AuxMerkBatch<Vec<u8>> = &[];
         cost_return_on_error!(
             &mut cost,
@@ -245,9 +242,7 @@ where
     // The commit bills a node against its old value. A node this handle
     // wrote itself has none, or the one it replaced: what is stored is the
     // value it holds now, which the conversion keeps.
-    if node.old_value.as_ref() != Some(node.value_ref()) {
-        node.old_value = Some(node.value_ref().clone());
-    }
+    node.value_is_stored();
     node.known_storage_cost = None;
     node.set_feature_type(widened);
 

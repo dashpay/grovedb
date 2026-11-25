@@ -16,7 +16,7 @@ use grovedb_version::version::GroveVersion;
 use super::{NodeChange, NodeChangeSet, NodeStore, NodeWriteCost};
 use crate::{
     merk::defaults::ROOT_KEY_KEY,
-    tree::{kv::ValueDefinedCostType, TreeNode, TreeNodeInner},
+    tree::{kv::ValueDefinedCostType, spare, TreeNode, TreeNodeInner},
     Error,
     Error::{CostsError, EdError, StorageError},
 };
@@ -106,7 +106,7 @@ where
             record
                 .map(|record| TreeNode::decode_raw(
                     &record,
-                    key.to_vec(),
+                    spare::bytes(key),
                     value_defined_cost_fn,
                     grove_version
                 ))

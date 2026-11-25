@@ -7,6 +7,7 @@
 //! through [`Access`].
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -20,10 +21,14 @@ use lignin_format::{
     CommitVersion,
 };
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
-use lignindb::txn::{
-    Batch, BatchError, ChildKeys, Column, Entering, HostPut, Hosted, LinkPut, LinkView, MerkCursor,
-    MerkSide, MerkWrite, NodePut, NodeView, ParkedCursor, RecordWrite, Resumed, RootPut, Scope,
-    StandIns, Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
+use lignindb::{
+    batch::InlineBytes,
+    txn::{
+        Batch, BatchError, ChildKeys, Column, Entering, HostPut, Hosted, LinkPut, LinkView,
+        MerkCursor, MerkSide, MerkWrite, NodePut, NodeView, ParkedCursor, RecordWrite, Resumed,
+        RootPut, Scope, StandIns, Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut,
+        WriteTxn,
+    },
 };
 
 use super::{
@@ -32,7 +37,11 @@ use super::{
     feature::{decode_aggregate, decode_feature, encode_aggregate, encode_feature, Tp12},
     refused, LigninEntry, LigninHost, LigninHosted,
 };
-use crate::{cost_model::Keyspace, tree::AggregateData, CryptoHash, Error, TreeFeatureType};
+use crate::{
+    cost_model::Keyspace,
+    tree::{spare, AggregateData},
+    CryptoHash, Error, TreeFeatureType,
+};
 
 /// The 32 bytes that name a subtree.
 pub(super) type Prefix = [u8; 32];
@@ -141,10 +150,17 @@ pub(super) fn read_by_key() -> Error {
     ))
 }
 
+/// The key of a node as the store holds it beside the node's tree: in a
+/// written node, in a link of one, and in what a handle remembers of the
+/// nodes it loaded. A key of up to 38 bytes is kept in place, so the store
+/// asks for no memory for it; a longer one is behind a box. It reads, is
+/// compared and is hashed as the slice of its bytes.
+pub(super) type NodeKey = InlineBytes<38>;
+
 /// A link of a written node: the child is named by its key.
 #[derive(Clone, Debug)]
 pub(super) struct LinkWrite {
-    pub(super) key: Vec<u8>,
+    pub(super) key: NodeKey,
     /// The child's hash. Where the write leaves it stale
     /// ([`NodeWrite::stale`]) these bytes are no hash, and the bytes the
     /// transaction holds in that link are written in their place.
@@ -166,7 +182,7 @@ pub(super) enum ValueWrite {
 /// One written node: every part, as Merk hands the record to storage.
 #[derive(Clone, Debug)]
 pub(super) struct NodeWrite {
-    pub(super) key: Vec<u8>,
+    pub(super) key: NodeKey,
     pub(super) feature: Tp12,
     pub(super) value_hash: CryptoHash,
     pub(super) kv_hash: CryptoHash,
@@ -583,9 +599,84 @@ fn stored_link(link: LinkView<'_>) -> Result<StoredLink, Error> {
         hash: *link.hash,
         heights: link.heights,
         key_len: link.child_key_len,
-        key: link.key.map(<[u8]>::to_vec),
+        key: link.key.map(spare::bytes),
         aggregate: decode_aggregate(link.aggregate)?,
     })
+}
+
+thread_local! {
+    /// The memory that the reads of this thread use for a value that is
+    /// not in its cell ([`ValueBuf`]), kept from one read to the next. It
+    /// grows to the longest value that was read with it, and a value
+    /// longer than [`KEPT_VALUE_LEN`] is read with memory of its own.
+    static VALUE_BUF: RefCell<ValueBuf> = RefCell::new(ValueBuf::new());
+}
+
+/// Calls `read` with the buffer of the thread, or with one of its own
+/// where the thread has none to lend: the buffer is in use further up the
+/// stack, or the thread is ending and has dropped it.
+fn with_value_buf<R>(read: impl Fn(&mut ValueBuf) -> R) -> R {
+    let lent =
+        VALUE_BUF.try_with(|kept| kept.try_borrow_mut().ok().map(|mut kept| read(&mut kept)));
+    match lent {
+        Ok(Some(answer)) => answer,
+        Ok(None) | Err(_) => read(&mut ValueBuf::new()),
+    }
+}
+
+#[cfg(test)]
+mod value_buf {
+    use std::{cell::RefCell, sync::mpsc};
+
+    use super::{with_value_buf, VALUE_BUF};
+
+    /// Reads once more when its thread ends.
+    struct AtTheEnd(mpsc::Sender<bool>);
+
+    impl Drop for AtTheEnd {
+        fn drop(&mut self) {
+            let _ = self.0.send(with_value_buf(|_| true));
+        }
+    }
+
+    thread_local! {
+        static HELD: RefCell<Option<AtTheEnd>> = const { RefCell::new(None) };
+    }
+
+    #[test]
+    fn a_read_has_a_buffer_of_its_own_where_the_thread_lends_none() {
+        let (sender, read_at_the_end) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            // What is held is dropped with the thread. Where a thread
+            // drops what it holds in the reverse of the order it was made
+            // in, the buffer, which is made later, is gone by then.
+            HELD.with(|held| *held.borrow_mut() = Some(AtTheEnd(sender)));
+            let place = || with_value_buf(|buf| std::ptr::from_mut(buf) as usize);
+            // One read after the other is lent the buffer of the thread.
+            let lent = VALUE_BUF.with(|kept| kept.as_ptr() as usize);
+            assert_eq!((place(), place()), (lent, lent));
+            // A read from inside a read finds that buffer in use, and has
+            // another.
+            let (outer, inner) = with_value_buf(|buf| (std::ptr::from_mut(buf) as usize, place()));
+            assert_eq!(outer, lent);
+            assert_ne!(inner, lent);
+        });
+        thread.join().expect("a thread that ends");
+        assert_eq!(read_at_the_end.recv(), Ok(true));
+    }
+}
+
+/// The longest value whose read keeps its memory for the next read of
+/// its thread.
+const KEPT_VALUE_LEN: u32 = 64 * 1024;
+
+/// A copy of the value of the node `view` shows.
+fn value_of(view: &NodeView<'_>) -> Result<Vec<u8>, Error> {
+    let read = |buf: &mut ValueBuf| Ok(spare::bytes(view.value(buf).map_err(fault)?));
+    if view.value_len() > KEPT_VALUE_LEN {
+        return read(&mut ValueBuf::new());
+    }
+    with_value_buf(read)
 }
 
 pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Error> {
@@ -594,7 +685,7 @@ pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<Store
     }
     let value = match with_value {
         false => None,
-        true => Some(view.value(&mut ValueBuf::new()).map_err(fault)?.to_vec()),
+        true => Some(value_of(view)?),
     };
     Ok(StoredNode {
         feature: decode_feature(view.feature())?,
@@ -900,7 +991,7 @@ fn read_child(
     let child = reads
         .child(Subtree::new(*subtree), parent, side(left), |view| {
             view.map(|view| Child::Found {
-                key: view.key().to_vec(),
+                key: spare::bytes(view.key()),
                 location: view.handle().map(Location),
             })
         })
@@ -1469,7 +1560,7 @@ fn as_it_is(reads: &impl Reads, subtree: Subtree, key: &[u8]) -> Result<Option<N
     let [on_the_left, on_the_right] = children;
     let link = |link: &Option<StoredLink>, child: Option<Vec<u8>>| match (link, child) {
         (Some(link), Some(key)) => Ok(Some(LinkWrite {
-            key,
+            key: NodeKey::new(&key),
             hash: link.hash,
             heights: link.heights,
             aggregate: encode_aggregate(&link.aggregate),
@@ -1480,7 +1571,7 @@ fn as_it_is(reads: &impl Reads, subtree: Subtree, key: &[u8]) -> Result<Option<N
     let left = link(&stored.left, on_the_left)?;
     let right = link(&stored.right, on_the_right)?;
     Ok(Some(NodeWrite {
-        key: key.to_vec(),
+        key: NodeKey::new(key),
         feature: encode_feature(&stored.feature),
         value_hash: stored.value_hash,
         kv_hash: stored.kv_hash,
@@ -1602,7 +1693,7 @@ fn way_to(
     for _ in 0..LONGEST_WAY {
         let put = own.and_then(|merk| merk.nodes.iter().find(|node| node.key == at));
         let held = (again.iter())
-            .find(|held| held.subtree == above && held.node.key == at)
+            .find(|held| held.subtree == above && held.node.key.as_slice() == at)
             .map(|held| &held.node);
         let left = match host.key.as_slice().cmp(&at) {
             std::cmp::Ordering::Less => true,
@@ -1660,7 +1751,7 @@ fn way_to(
             }
             (None, Some(held)) => {
                 let link = if left { &held.left } else { &held.right };
-                link.as_ref().map(|link| link.key.clone())
+                link.as_ref().map(|link| link.key.to_vec())
             }
             (None, None) => match linked(reads, above, &at, [left, !left])? {
                 Some((_, [on_the_left, on_the_right])) => match left {
@@ -1810,7 +1901,7 @@ fn held_elements(
             *anchored &= !hosted.contains(added);
         }
         let node = (held.again.iter_mut())
-            .find(|again| again.subtree == above && again.node.key == host.key)
+            .find(|again| again.subtree == above && again.node.key.as_slice() == host.key)
             .ok_or_else(|| refused("the node of a held element was not read"))?;
         node.hosted = Some(hosted);
         let written = batch.merks.iter().any(|merk| merk.subtree == above);

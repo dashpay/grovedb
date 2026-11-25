@@ -306,7 +306,7 @@ use lignin_tree::node::NodeHandle;
 
 use self::staged::{Leave, Staged};
 pub use self::{
-    node::{StagedLink, StagedNode},
+    node::{InlineBytes, StagedFeature, StagedKey, StagedLink, StagedNode},
     resolved::{Outcome, Resolved, Written},
 };
 use crate::txn::{Applied, BatchError, NodePut, Scope, Subtree, TxnError, Unit};

@@ -129,7 +129,7 @@ where
             };
             loop {
                 if node.key() == key {
-                    return node.old_value.is_some();
+                    return node.has_old_value();
                 }
                 match node.link(key < node.key()).and_then(Link::tree) {
                     Some(child) => node = child,

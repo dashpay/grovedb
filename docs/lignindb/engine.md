@@ -859,7 +859,7 @@ What this leaves to later tasks:
 
 - **A band of an axis that is read in descending order and has no value above it in the ranking.** The read seeks to the end of the band and steps back from past the last record of its subtree, where RocksDB's answer depends on what follows the subtree in its column family. The cursor of the store answers the same ([flat-store.md](flat-store.md#a-step-from-no-key)), and the histories of the rows read such ranges (`QueryItem::Range`, `RangeTo` and `RangeAfterTo` that end past the last key, read right to left, in `tests/queries.rs`); the history of the axes (`tests/axes.rs`) reads no such band.
 - **A grove that batches made.** The histories here write with `insert`, `delete` and the entry points of the indexed trees. `tests/batches.rs` compares the root hash after every batch, and the proofs of the trees that a batch wrote over others.
-- **Fewer reads** (PERF-01, PERF-05). A proof on LigninDB reads the root of each Merk it opens whole, `Merk::branch_query` walks its path three times, and a cursor's value is a record that is built for it. The charges are RocksDB's all the same.
+- **Fewer reads** (PERF-05; PERF-01 left the reads as they are, `node-store.md`, "Choices PERF-01 made"). A proof on LigninDB reads the root of each Merk it opens whole, `Merk::branch_query` walks its path three times, and a cursor's value is a record that is built for it. The charges are RocksDB's all the same.
 
 ### State sync
 

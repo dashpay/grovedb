@@ -66,12 +66,16 @@
 //! Time rows are medians of many samples. Beside wall time a row carries
 //! the measuring thread's CPU time per sample where the system reports it
 //! (`/proc/thread-self/schedstat`), and its user-space instructions per
-//! sample when `perf` is asked for and works (`perf stat -e
-//! instructions:u`, attached to the thread and switched on only around the
-//! measured calls).
+//! sample when `perf` is asked for (`perf stat -e instructions:u`,
+//! attached to the thread and switched on only around the measured calls).
+//! A run that asks for it where `perf` counts nothing is refused at its
+//! start. A row during which `perf` fails later keeps its time and has no
+//! count, and a table says so where no row of it has one.
 
 pub mod cli;
 pub mod engine;
+#[cfg(grovedb_engine_seam)]
+pub mod lignindb;
 pub mod machine;
 pub mod report;
 pub mod rocksdb;
@@ -81,6 +85,8 @@ use std::path::PathBuf;
 
 use grovedb_version::version::GroveVersion;
 
+#[cfg(grovedb_engine_seam)]
+pub use self::lignindb::LigninDbEngine;
 pub use self::{
     engine::{Block, Counters, Engine, NodeAnatomy},
     machine::{ColdMethod, Machine},
@@ -145,6 +151,9 @@ impl From<grovedb::Error> for BenchError {
 pub enum EngineChoice {
     /// [`RocksDbEngine`].
     RocksDb,
+    /// [`LigninDbEngine`].
+    #[cfg(grovedb_engine_seam)]
+    LigninDb,
 }
 
 impl EngineChoice {
@@ -152,6 +161,8 @@ impl EngineChoice {
     pub fn named(name: &str) -> Option<EngineChoice> {
         match name {
             RocksDbEngine::NAME => Some(EngineChoice::RocksDb),
+            #[cfg(grovedb_engine_seam)]
+            LigninDbEngine::NAME => Some(EngineChoice::LigninDb),
             _ => None,
         }
     }
@@ -204,12 +215,26 @@ pub fn run(options: &RunOptions) -> Result<Report, BenchError> {
         .map_err(|_| BenchError::Check("the benchmark thread panicked".to_string()))?
 }
 
+/// What a run that asks for instruction counts is told where `perf`
+/// counts none.
+const NO_PERF: &str = "--perf: `perf stat -e instructions:u` counts nothing for a thread of this \
+                       process here (is `perf` installed, and does `kernel.perf_event_paranoid` \
+                       allow it?). Without --perf the run measures and counts no instructions";
+
+/// Refuses a run that asks for instruction counts where `perf` counts
+/// none (`works`, which is asked only then, before the run measures
+/// anything).
+fn counts_instructions(asked: bool, works: impl FnOnce() -> bool) -> Result<(), BenchError> {
+    match asked && !works() {
+        true => Err(BenchError::Check(NO_PERF.to_string())),
+        false => Ok(()),
+    }
+}
+
 fn run_here(options: &RunOptions) -> Result<Report, BenchError> {
     options.settings.check()?;
-    let settings = &Settings {
-        perf: options.settings.perf && machine::Perf::works(&options.settings.scratch),
-        ..options.settings.clone()
-    };
+    let settings = &options.settings;
+    counts_instructions(settings.perf, || machine::Perf::works(&settings.scratch))?;
     let cold_method = ColdMethod::detect(&settings.scratch);
     let commit = options
         .commit
@@ -232,9 +257,30 @@ fn run_here(options: &RunOptions) -> Result<Report, BenchError> {
             EngineChoice::RocksDb => {
                 run::run_engine::<RocksDbEngine>(settings, cold_method, options.grove_version)?
             }
+            #[cfg(grovedb_engine_seam)]
+            EngineChoice::LigninDb => {
+                run::run_engine::<LigninDbEngine>(settings, cold_method, options.grove_version)?
+            }
         });
     }
     report.load_average_after = machine::load_average();
     report.fill_ratios();
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_run_that_asks_for_instructions_is_refused_where_perf_counts_none() {
+        // A run that does not ask does not look for a counter.
+        let unasked = || -> bool { panic!("a run without --perf looked for a counter") };
+        assert!(counts_instructions(false, unasked).is_ok());
+        assert!(counts_instructions(true, || true).is_ok());
+        match counts_instructions(true, || false) {
+            Err(BenchError::Check(why)) => assert!(why.starts_with("--perf: "), "{why}"),
+            other => panic!("not refused: {other:?}"),
+        }
+    }
 }

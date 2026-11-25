@@ -25,7 +25,7 @@ graph TD
             LEFT["<b>left:</b> Option&lt;Link&gt;"]
             RIGHT["<b>right:</b> Option&lt;Link&gt;"]
         end
-        OLD["<b>old_value:</b> Option&lt;Vec&lt;u8&gt;&gt; — previous value for cost deltas"]
+        OLD["<b>baseline:</b> Baseline — previous value for cost deltas"]
         KNOWN["<b>known_storage_cost:</b> Option&lt;KeyValueStorageCost&gt;"]
     end
 
@@ -44,7 +44,7 @@ In code (`merk/src/tree/mod.rs`):
 ```rust
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
-    pub(crate) old_value: Option<Vec<u8>>,        // Previous value for cost tracking
+    pub(crate) baseline: Baseline,                  // Previous value for cost tracking
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 
@@ -57,6 +57,12 @@ pub struct TreeNodeInner {
 
 The `Box<TreeNodeInner>` keeps the node on the heap, which is essential since child
 links can recursively contain entire `TreeNode` instances.
+
+`baseline` is the value a commit bills the node against, where the node has one;
+a node that has none is billed as new. The comment on `tree::Baseline` says what
+gives a node one. While the baseline is the node's own value, a release build
+holds no second copy of it; a copy is kept from when the value is replaced or
+handed out to be changed.
 
 ## The KV Structure
 

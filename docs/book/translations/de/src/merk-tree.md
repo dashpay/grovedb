@@ -25,7 +25,7 @@ graph TD
             LEFT["<b>left:</b> Option&lt;Link&gt;"]
             RIGHT["<b>right:</b> Option&lt;Link&gt;"]
         end
-        OLD["<b>old_value:</b> Option&lt;Vec&lt;u8&gt;&gt; — vorheriger Wert für Kostendeltas"]
+        OLD["<b>baseline:</b> Baseline — vorheriger Wert für Kostendeltas"]
         KNOWN["<b>known_storage_cost:</b> Option&lt;KeyValueStorageCost&gt;"]
     end
 
@@ -44,7 +44,7 @@ Im Code (`merk/src/tree/mod.rs`):
 ```rust
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
-    pub(crate) old_value: Option<Vec<u8>>,        // Vorheriger Wert für Kostenerfassung
+    pub(crate) baseline: Baseline,                  // Vorheriger Wert für Kostenerfassung
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 

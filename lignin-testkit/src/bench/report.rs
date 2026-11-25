@@ -689,6 +689,38 @@ mod tests {
     }
 
     #[test]
+    fn a_table_says_when_no_row_of_it_has_a_count_of_instructions() {
+        let second_line = |report: &Report| {
+            let table = crate::bench::cli::table(report);
+            table.lines().nth(1).map(str::to_string)
+        };
+        let says = |report: &Report, what: &str| {
+            second_line(report).is_some_and(|line| {
+                line.starts_with("instr/sample is empty") && line.contains(what)
+            })
+        };
+        // With no row, and with rows that have no count.
+        let uncounted = vec![engine("rocksdb", vec![row("point_get", "warm", 1.0)])];
+        for engines in [Vec::new(), uncounted] {
+            let mut run = report(engines);
+            assert!(says(&run, "`run --perf` counts them"));
+            run.method.perf_instructions = true;
+            assert!(says(&run, "asked for instructions"));
+        }
+        // One row with a count, the last of the second engine: the rows
+        // follow the first line.
+        let mut counted = row("point_query_proof", "warm", 2.0);
+        counted.instructions_per_sample = Some(0.0);
+        let first = engine("rocksdb", vec![row("point_get", "warm", 1.0)]);
+        let second = engine("lignindb", vec![row("point_get", "warm", 1.0), counted]);
+        let mut run = report(vec![first, second]);
+        for asked in [false, true] {
+            run.method.perf_instructions = asked;
+            assert!(second_line(&run).is_some_and(|line| line.starts_with("engine")));
+        }
+    }
+
+    #[test]
     fn summaries_interpolate_percentiles() {
         assert_eq!(Summary::of(&[]), None);
         let summary = Summary::of(&[5.0, 1.0, 3.0, 2.0, 4.0]).unwrap();

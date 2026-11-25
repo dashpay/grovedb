@@ -1,17 +1,17 @@
 //! The interface the harness drives an engine through.
 //!
-//! The `Engine` trait of SEAM-04 does not exist yet, so the harness has its
-//! own small one. An engine opens a database in a directory, applies
-//! workload operations block by block through [`crate::workload::apply()`],
-//! serves reads and proofs, checkpoints, flushes, and reports
-//! [`Counters`]: the physical work it did, which GroveDB's
-//! `OperationCost` cannot see.
+//! The harness has a small interface of its own, beside GroveDB's `Engine`:
+//! what it measures is a whole `GroveDb` with its counters. An engine opens
+//! a database in a directory, applies workload operations block by block
+//! through [`crate::workload::apply()`], serves reads and proofs,
+//! checkpoints, flushes, and reports [`Counters`]: the physical work it
+//! did, which GroveDB's `OperationCost` cannot see.
 //!
-//! [`RocksDbEngine`](super::RocksDbEngine) implements it for today's
-//! engine. What LigninDB has to implement is the same trait over
-//! `GroveDb<LigninEngine>` (GROVE-01), with its counters read from
-//! `lignin-store::stats` (STORE-11) through `Counters::from(&StoreStats)`,
-//! which fills every field:
+//! [`RocksDbEngine`](super::RocksDbEngine) implements it for RocksDB, and
+//! `LigninDbEngine` (`bench/lignindb.rs`) for LigninDB, over
+//! `GroveDb<LigninEngine>`, with its counters read from
+//! `lignin-store::stats` through `Counters::from(&StoreStats)`, which fills
+//! every field:
 //!
 //! | `Counters` field | RocksDB | LigninDB |
 //! | --- | --- | --- |

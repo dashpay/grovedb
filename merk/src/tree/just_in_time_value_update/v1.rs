@@ -50,7 +50,7 @@ impl TreeNode {
     ) -> Result<(), Error> {
         let mut i = 0;
 
-        if let Some(old_value) = self.old_value.clone() {
+        if let Some(old_value) = self.old_value().cloned() {
             // At this point the tree value can be updated based on client requirements
             // For example to store the costs
             // todo: clean up clones
@@ -148,7 +148,7 @@ impl TreeNode {
             self.known_storage_cost = Some(storage_costs);
         }
 
-        self.old_value = Some(self.value_ref().clone());
+        self.value_is_stored();
 
         Ok(())
     }

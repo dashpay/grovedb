@@ -44,6 +44,8 @@ pub mod committer;
 mod convert_to_big_sum_tree;
 /// Getting values by key from a Merk tree.
 pub mod get;
+/// The set of keys an apply notes.
+mod key_set;
 /// Metadata (non-authenticated KV) access for Merk trees, cached in memory
 /// alongside uncommitted tree state.
 mod meta;
@@ -63,15 +65,17 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, LinkedList},
     fmt,
+    ops::Deref,
 };
 
-use committer::{MerkCommitter, NodeUpdate};
+use committer::{MerkCommitter, NodeUpdate, NodeUpdates};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_default, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
     OperationCost,
 };
 use grovedb_version::version::GroveVersion;
+pub use key_set::KeySet;
 use source::{MerkSource, PaidNodes};
 
 use crate::{
@@ -102,9 +106,9 @@ use crate::{
 /// Key update types
 pub struct KeyUpdates {
     /// Keys that were newly inserted.
-    pub new_keys: BTreeSet<Vec<u8>>,
+    pub new_keys: KeySet,
     /// Keys whose values were updated.
-    pub updated_keys: BTreeSet<Vec<u8>>,
+    pub updated_keys: KeySet,
     /// Keys that were deleted, along with their storage costs.
     pub deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
     /// The previous root key if the root key changed.
@@ -114,17 +118,22 @@ pub struct KeyUpdates {
 impl KeyUpdates {
     /// New KeyUpdate
     pub fn new(
-        new_keys: BTreeSet<Vec<u8>>,
-        updated_keys: BTreeSet<Vec<u8>>,
+        new_keys: impl Into<KeySet>,
+        updated_keys: impl Into<KeySet>,
         deleted_keys: LinkedList<(Vec<u8>, KeyValueStorageCost)>,
         updated_root_key_from: Option<Vec<u8>>,
     ) -> Self {
         Self {
-            new_keys,
-            updated_keys,
+            new_keys: new_keys.into(),
+            updated_keys: updated_keys.into(),
             deleted_keys,
             updated_root_key_from,
         }
+    }
+
+    /// No key update.
+    pub fn none() -> Self {
+        Self::new(KeySet::new(), KeySet::new(), LinkedList::new(), None)
     }
 }
 
@@ -295,7 +304,7 @@ pub struct Merk<S> {
     /// The in-memory root of the AVL tree, or `None` if the tree is empty.
     /// Wrapped in a `Cell` so it can be temporarily taken out for traversal
     /// and mutation (see `use_tree`, `walk`) without requiring `&mut self`.
-    pub(crate) tree: Cell<Option<TreeNode>>,
+    pub(crate) tree: TreeCell,
     /// The key under which the root `TreeNode` is stored, or `None` for an
     /// empty tree. For standalone/base Merks this is read from the
     /// `ROOT_KEY_KEY` metadata entry; for layered Merks it is supplied by
@@ -345,6 +354,28 @@ where
         }
     }
     Ok(()).wrap_with_cost(cost)
+}
+
+/// The cell of a Merk's tree. When it is dropped, with its Merk, the
+/// memory of the tree it holds is given to the thread
+/// ([`crate::tree::spare`]).
+#[derive(Default)]
+pub(crate) struct TreeCell(Cell<Option<TreeNode>>);
+
+impl Deref for TreeCell {
+    type Target = Cell<Option<TreeNode>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for TreeCell {
+    fn drop(&mut self) {
+        if let Some(tree) = self.0.take() {
+            crate::tree::spare::give_tree(tree);
+        }
+    }
 }
 
 impl<S> fmt::Debug for Merk<S> {
@@ -506,7 +537,7 @@ where
                     change_set.delete_root_key(cost);
                 }
 
-                Ok(vec![])
+                Ok(NodeUpdates::new())
             }
             .wrap_with_cost(inner_cost)
         });
@@ -515,18 +546,17 @@ where
 
         // TODO: move this to MerkCommitter impl?
         for (key, storage_cost) in key_updates.deleted_keys {
-            to_batch.push((key, NodeUpdate::Remove(storage_cost)));
+            to_batch.push(&key, NodeUpdate::Remove(storage_cost));
         }
-        to_batch.sort_by(|a, b| a.0.cmp(&b.0));
+        let (keys, to_batch) = to_batch.into_sorted();
         for (key, update) in to_batch {
+            let key = &keys[key];
             match update {
                 NodeUpdate::Write(node, write_cost) => cost_return_on_error_no_add!(
                     cost,
-                    change_set.put_node(&key, node, Some(write_cost))
+                    change_set.put_node(key, node, Some(write_cost))
                 ),
-                NodeUpdate::Remove(storage_cost) => {
-                    change_set.delete_node(&key, Some(storage_cost))
-                }
+                NodeUpdate::Remove(storage_cost) => change_set.delete_node(key, Some(storage_cost)),
             }
         }
 
@@ -679,7 +709,7 @@ where
                         if let Some(t) = tree.as_ref() {
                             self.root_tree_key = Cell::new(Some(t.key().to_vec()));
                         }
-                        self.tree = Cell::new(tree);
+                        self.tree.set(tree);
                         self.paid_nodes.clear();
                     })
             } else {
@@ -705,7 +735,7 @@ where
             self.storage
                 .get_node(tree_root_key, value_defined_cost_fn, grove_version)
                 .map_ok(|tree| {
-                    self.tree = Cell::new(tree);
+                    self.tree.set(tree);
                     self.paid_nodes.clear();
                 })
         } else {

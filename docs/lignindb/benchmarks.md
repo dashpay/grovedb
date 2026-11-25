@@ -29,8 +29,15 @@ Times on the project's machines:
 - Linux x86_64 box (strixbox): one to two hours, because its CPU weight is
   deliberately low and its I/O is shared.
 
-`--perf` attaches `perf stat -e instructions:u` to the measuring thread, where
-`perf` works.
+`--perf` attaches `perf stat -e instructions:u` to the measuring thread: a time
+row that is measured under it carries its instructions per sample, and a row
+during which `perf` failed keeps its time and has no count. Where `perf` counts
+nothing for a thread when the run starts (it is not installed, or the kernel
+does not allow it), a run with `--perf` is refused. A run without `--perf`
+counts no instructions. A table says under its first line when no row of it has
+a count: that the run counted none, or, where the report says that `perf` was
+counting, that `perf` gave none. A gate that compares instructions passes the
+option.
 
 Smaller runs take `--documents`, `--owners`, `--creates`, `--updates`,
 `--deletes` and the sample counts (`--point-reads`, `--reference-reads`,
@@ -137,10 +144,9 @@ flush and compaction sum to within 1%. It counts the whole process and the
 children it has waited for, so beside other work, or on a file system that
 does not count writes (tmpfs), it can differ.
 
-### What LigninDB has to implement
+### The LigninDB engine of the harness
 
-The harness drives engines through `bench::Engine`, its own small interface
-until SEAM-04's `Engine` exists:
+The harness drives engines through `bench::Engine`, its own small interface:
 
 - open;
 - a block's write transaction (apply through `workload::apply`, commit);
@@ -152,9 +158,11 @@ until SEAM-04's `Engine` exists:
 - waiting for background work;
 - counters.
 
-LigninDB implements it over `GroveDb<LigninEngine>` (GROVE-01). Its
-`Counters` come from `lignin-store::stats` (STORE-11) through
-`Counters::from(&StoreStats)`, as the table in `bench/engine.rs` lists:
+`bench::LigninDbEngine` (`bench/lignindb.rs`) implements it over
+`GroveDb<LigninEngine>`, opened as `Engine::open` opens it, with the default
+options. Its `Counters` come from one reading of `lignin-store::stats`
+through `Counters::from(&StoreStats)`, as the table in `bench/engine.rs`
+lists:
 
 - log bytes and groups;
 - value cells and hash records;
@@ -163,9 +171,12 @@ LigninDB implements it over `GroveDb<LigninEngine>` (GROVE-01). Its
 - keyed lookups and hashes, which the tree layer counts in the store's
   `Stats`.
 
-To add the engine, add an `EngineChoice` arm. A run with `--engine rocksdb
---engine lignindb` then reports every row of both engines, with each
-LigninDB row's ratio to RocksDB's in the same run.
+Its background work is idle once no page version waits to be written back
+and the flusher and the cleaner have written nothing for a second.
+
+A run with `--engine rocksdb --engine lignindb` reports every row of both
+engines, with each LigninDB row's ratio to RocksDB's in the same run. With no
+`--engine` a run measures RocksDB alone.
 
 ## The report
 
@@ -357,5 +368,5 @@ How well the runs agree, within 10%:
   after the load (+40%), which copies the live log, whose length at that
   moment varies.
 
-With one engine, every ratio to RocksDB in the same run is 1. The ratio is
-computed for any engine added to a run.
+In a run of RocksDB alone every ratio to RocksDB in the same run is 1. The
+ratio is computed for every engine a run measures after RocksDB.

@@ -24,9 +24,9 @@ Unlike traditional Merkle trees where only leaves store data, in Merk **every no
 
 ```rust
 pub struct TreeNode {
-    pub inner: Box<TreeNodeInner>,
-    pub old_value: Option<Vec<u8>>,      // Previous value for cost tracking
-    pub known_storage_cost: Option<u32>,  // Cached storage cost
+    pub(crate) inner: Box<TreeNodeInner>,
+    pub(crate) baseline: Baseline,       // The value a commit bills against
+    pub(crate) known_storage_cost: Option<KeyValueStorageCost>, // Cached storage cost
 }
 
 pub struct TreeNodeInner {

@@ -186,7 +186,7 @@ use grovedb_element::ElementType;
 use grovedb_storage::Error as StorageError;
 use grovedb_version::version::GroveVersion;
 
-use self::access::{Access, Child, Location, StoredLink, StoredNode};
+use self::access::{Access, Child, Location, NodeKey, StoredLink, StoredNode};
 pub use self::feature::{aggregate_bytes, feature_bytes};
 pub use self::{
     access::{LigninEntryRefused, LigninWriter},
@@ -208,7 +208,7 @@ use crate::{
     merk::defaults::ROOT_KEY_KEY,
     tree::{
         kv::{ValueDefinedCostType, KV},
-        TreeNode, TreeNodeInner,
+        spare, TreeNode, TreeNodeInner,
     },
     Error, Link, TreeType,
 };
@@ -273,7 +273,7 @@ pub struct LigninNodeStore<'db> {
     subtree: LigninSubtree,
     mode: Mode<'db>,
     /// Where the cells of this subtree's nodes were last seen, by key.
-    hints: RefCell<HashMap<Vec<u8>, Location>>,
+    hints: RefCell<HashMap<NodeKey, Location>>,
     /// The handle each node's value was first read with, by key: that of
     /// the handle's first load of the node, and none where that load
     /// showed the transaction's own record. A node that is written with
@@ -281,12 +281,12 @@ pub struct LigninNodeStore<'db> {
     /// and not here, whether the read of its parent said it, a second load
     /// of the node or the report of a write: the caller may still hold the
     /// node as it was first loaded.
-    reads: RefCell<HashMap<Vec<u8>, Option<Location>>>,
+    reads: RefCell<HashMap<NodeKey, Option<Location>>>,
     /// The keys of the nodes that the handle loaded with the element of a
     /// tree as their value. A write that states another value for one of
     /// them is told to the batch that takes it
     /// ([`LigninSettled::over_trees`]).
-    trees: RefCell<HashSet<Vec<u8>>>,
+    trees: RefCell<HashSet<NodeKey>>,
     /// Whether the writer of the handle's Merk began with no node, once
     /// the first change set of nodes was staged through the handle
     /// ([`Self::began_empty`]).
@@ -435,6 +435,17 @@ fn record_len(node: &StoredNode) -> Result<usize, Error> {
         child(&node.left),
         child(&node.right),
     )
+}
+
+/// Takes in that the cell of the node under `key` was seen at `location`.
+/// The key is copied only where the handle has seen no cell of the node.
+fn seen_at(hints: &mut HashMap<NodeKey, Location>, key: &[u8], location: Location) {
+    match hints.get_mut(key) {
+        Some(at) => *at = location,
+        None => {
+            hints.insert(NodeKey::new(key), location);
+        }
+    }
 }
 
 fn reference(link: Option<StoredLink>) -> Result<Option<Link>, Error> {
@@ -619,8 +630,10 @@ impl<'db> LigninNodeStore<'db> {
     fn left_at(&self, key: &[u8], location: Option<Location>) {
         let mut hints = self.hints.borrow_mut();
         match location {
-            Some(location) => hints.insert(key.to_vec(), location),
-            None => hints.remove(key),
+            Some(location) => seen_at(&mut hints, key, location),
+            None => {
+                hints.remove(key);
+            }
         };
         self.loose.set(key, location.is_none());
     }
@@ -675,8 +688,11 @@ impl<'db> LigninNodeStore<'db> {
             }
             hash::refuse_stale(node.stale)?;
             hint = None;
-            let mut found = Vec::new();
-            for (left, link) in [(true, &mut node.left), (false, &mut node.right)] {
+            // Where the cell of each child is, of a child whose key was
+            // read from that cell.
+            let mut found = [None, None];
+            let sides = [(true, &mut node.left), (false, &mut node.right)];
+            for ((left, link), found) in sides.into_iter().zip(&mut found) {
                 let Some(link) = link.as_mut().filter(|link| link.key.is_none()) else {
                     continue;
                 };
@@ -688,20 +704,29 @@ impl<'db> LigninNodeStore<'db> {
                     Child::ByKey => return Err(access::read_by_key()),
                     Child::Missing => return Err(refused("a link leads to no node")),
                     Child::Found { key, location } => {
-                        found.extend(location.map(|location| (key.clone(), location)));
+                        *found = location;
                         link.key = Some(key);
                     }
                 }
             }
             let mut hints = self.hints.borrow_mut();
-            hints.extend(found);
+            for (link, found) in [&node.left, &node.right].into_iter().zip(found) {
+                let child = link.as_ref().and_then(|link| link.key.as_deref());
+                if let (Some(child), Some(location)) = (child, found) {
+                    seen_at(&mut hints, child, location);
+                }
+            }
             match node.location {
-                Some(location) => hints.insert(key.to_vec(), location),
-                None => hints.remove(key),
+                Some(location) => seen_at(&mut hints, key, location),
+                None => {
+                    hints.remove(key);
+                }
             };
             self.loose.set(key, node.unlinked);
             let mut reads = self.reads.borrow_mut();
-            reads.entry(key.to_vec()).or_insert(node.location);
+            if !reads.contains_key(key) {
+                reads.insert(NodeKey::new(key), node.location);
+            }
             self.note_tree(key, node.value.as_deref());
             return Ok(Some(node));
         }
@@ -727,7 +752,7 @@ impl<'db> LigninNodeStore<'db> {
     fn note_tree(&self, key: &[u8], value: Option<&[u8]>) {
         let element = value.and_then(|value| ElementType::from_serialized_value(value).ok());
         if element.is_some_and(|element| element.is_tree()) {
-            self.trees.borrow_mut().insert(key.to_vec());
+            self.trees.borrow_mut().insert(NodeKey::new(key));
         }
     }
 
@@ -856,7 +881,7 @@ impl<'db> LigninNodeStore<'db> {
         let written = self.access.apply(write)?;
         for (merk, locations) in write.merks.iter().zip(&written.locations) {
             for key in &merk.removed {
-                self.hints.borrow_mut().remove(key);
+                self.hints.borrow_mut().remove(key.as_slice());
                 self.loose.set(key, false);
             }
             for (node, location) in merk.nodes.iter().zip(locations) {
@@ -898,13 +923,13 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
                     return Ok(None);
                 };
                 if let Some(record) = node.record.take() {
-                    let key = key.to_vec();
+                    let key = spare::bytes(key);
                     let cost_fn = value_defined_cost_fn;
                     let mut node = TreeNode::decode_raw(&record, key, cost_fn, grove_version)?;
                     node.mark_from_flat_record();
                     return Ok(Some(node));
                 }
-                let mut inner = node_inner(key.to_vec(), node)?;
+                let mut inner = node_inner(spare::bytes(key), node)?;
                 if let Some(value_defined_cost_fn) = &value_defined_cost_fn {
                     inner.kv.value_defined_cost =
                         value_defined_cost_fn(inner.kv.value_as_slice(), grove_version);
@@ -944,11 +969,11 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
                 if let Some(record) = node.record.take() {
                     let no_cost = None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
                     let mut node =
-                        TreeNode::decode_raw(&record, key.to_vec(), no_cost, grove_version)?;
+                        TreeNode::decode_raw(&record, spare::bytes(key), no_cost, grove_version)?;
                     node.mark_from_flat_record();
                     return Ok(node);
                 }
-                node_without_value(key.to_vec(), node)
+                node_without_value(spare::bytes(key), node)
             })
             .flatten()
     }

@@ -22,7 +22,7 @@ where
     /// Open empty tree
     pub fn open_empty(storage: S, merk_type: MerkType, tree_type: TreeType) -> Self {
         Self {
-            tree: Cell::new(None),
+            tree: Default::default(),
             root_tree_key: Cell::new(None),
             storage,
             merk_type,
@@ -42,7 +42,7 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
-            tree: Cell::new(None),
+            tree: Default::default(),
             root_tree_key: Cell::new(None),
             storage,
             merk_type: StandaloneMerk,
@@ -65,7 +65,7 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
-            tree: Cell::new(None),
+            tree: Default::default(),
             root_tree_key: Cell::new(None),
             storage,
             merk_type: BaseMerk,
@@ -89,7 +89,7 @@ where
         grove_version: &GroveVersion,
     ) -> CostResult<Self, Error> {
         let mut merk = Self {
-            tree: Cell::new(None),
+            tree: Default::default(),
             root_tree_key: Cell::new(root_key),
             storage,
             merk_type: LayeredMerk,

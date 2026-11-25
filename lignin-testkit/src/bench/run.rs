@@ -73,7 +73,8 @@ pub struct Settings {
     pub checkpoints: u32,
     /// Reopens timed.
     pub reopens: u32,
-    /// Count instructions with `perf` where it works.
+    /// Count instructions with `perf`. A run is refused at its start
+    /// where `perf` counts none then.
     pub perf: bool,
     /// Where the databases are created; each engine gets a subdirectory,
     /// removed at the end unless `keep` is set.

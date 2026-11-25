@@ -20,7 +20,7 @@ graph TD
             LEFT["<b>left:</b> Option&lt;Link&gt;"]
             RIGHT["<b>right:</b> Option&lt;Link&gt;"]
         end
-        OLD["<b>old_value:</b> Option&lt;Vec&lt;u8&gt;&gt; — maliyet farklari icin onceki deger"]
+        OLD["<b>baseline:</b> Baseline — maliyet farklari icin onceki deger"]
         KNOWN["<b>known_storage_cost:</b> Option&lt;KeyValueStorageCost&gt;"]
     end
 
@@ -39,7 +39,7 @@ Kodda (`merk/src/tree/mod.rs`):
 ```rust
 pub struct TreeNode {
     pub(crate) inner: Box<TreeNodeInner>,
-    pub(crate) old_value: Option<Vec<u8>>,        // Maliyet takibi icin onceki deger
+    pub(crate) baseline: Baseline,                  // Maliyet takibi icin onceki deger
     pub(crate) known_storage_cost: Option<KeyValueStorageCost>,
 }
 

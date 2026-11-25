@@ -1,10 +1,9 @@
 //! Merk tree ops
 
+#[cfg(all(feature = "minimal", test))]
+use std::collections::BTreeSet;
 #[cfg(feature = "minimal")]
-use std::{
-    collections::{BTreeSet, LinkedList},
-    fmt,
-};
+use std::fmt;
 
 #[cfg(feature = "minimal")]
 use grovedb_costs::{
@@ -216,6 +215,73 @@ impl Fetch for PanicSource {
 }
 
 #[cfg(feature = "minimal")]
+/// Where an apply notes the keys it changes: in the key updates of the
+/// apply as a whole, or nowhere, for a part of it whose key updates are
+/// not kept.
+struct Noted<'a>(Option<&'a mut KeyUpdates>);
+
+#[cfg(feature = "minimal")]
+impl Noted<'_> {
+    fn new_key(&mut self, key: &[u8]) {
+        if let Some(key_updates) = &mut self.0 {
+            key_updates.new_keys.note(key);
+        }
+    }
+
+    fn new_keys<K: AsRef<[u8]>>(&mut self, batch: &MerkBatch<K>) {
+        for (key, _) in batch {
+            self.new_key(key.as_ref());
+        }
+    }
+
+    fn updated_key(&mut self, key: &[u8]) {
+        if let Some(key_updates) = &mut self.0 {
+            key_updates.updated_keys.note(key);
+        }
+    }
+
+    fn deleted_key(&mut self, key: &[u8], cost: KeyValueStorageCost) {
+        if let Some(key_updates) = &mut self.0 {
+            key_updates.deleted_keys.push_back((key.to_vec(), cost));
+        }
+    }
+}
+
+#[cfg(feature = "minimal")]
+/// The key a node had before a walk, kept on the stack where it is no
+/// longer than [`KeyBefore::INLINE`] bytes.
+enum KeyBefore {
+    Inline {
+        len: u8,
+        bytes: [u8; KeyBefore::INLINE],
+    },
+    Heap(Vec<u8>),
+}
+
+#[cfg(feature = "minimal")]
+impl KeyBefore {
+    const INLINE: usize = 64;
+
+    fn of(key: &[u8]) -> Self {
+        match u8::try_from(key.len()) {
+            Ok(len) if key.len() <= Self::INLINE => {
+                let mut bytes = [0; Self::INLINE];
+                bytes[..key.len()].copy_from_slice(key);
+                Self::Inline { len, bytes }
+            }
+            _ => Self::Heap(key.to_vec()),
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Inline { len, bytes } => &bytes[..usize::from(*len)],
+            Self::Heap(key) => key,
+        }
+    }
+}
+
+#[cfg(feature = "minimal")]
 impl<S> Walker<S>
 where
     S: Fetch + Sized + Clone,
@@ -249,18 +315,58 @@ where
         R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
         O: FnMut(&[u8], &[u8], OldValueDisposition),
     {
+        let mut key_updates = KeyUpdates::none();
+        let applied = Self::apply_to_noting(
+            maybe_tree,
+            batch,
+            source,
+            old_tree_cost,
+            value_defined_cost_fn,
+            get_temp_new_value_with_old_flags,
+            update_tree_value_based_on_costs,
+            section_removal_bytes,
+            old_value_observer,
+            &mut Noted(Some(&mut key_updates)),
+            grove_version,
+        );
+        applied.map_ok(|(maybe_tree, updated_root_key_from)| {
+            key_updates.updated_root_key_from = updated_root_key_from;
+            (maybe_tree, key_updates)
+        })
+    }
+
+    /// [`Self::apply_to`], with the keys it changes noted in `noted`. It
+    /// returns the tree and the key its root had before, where the root is
+    /// another node now.
+    fn apply_to_noting<K: AsRef<[u8]>, C, V, T, U, R, O>(
+        maybe_tree: Option<Self>,
+        batch: &MerkBatch<K>,
+        source: S,
+        old_tree_cost: &C,
+        value_defined_cost_fn: Option<&V>,
+        get_temp_new_value_with_old_flags: &T,
+        update_tree_value_based_on_costs: &mut U,
+        section_removal_bytes: &mut R,
+        old_value_observer: &mut O,
+        noted: &mut Noted<'_>,
+        grove_version: &GroveVersion,
+    ) -> CostContext<Result<(Option<TreeNode>, Option<Vec<u8>>), Error>>
+    where
+        C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
+        V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
+        U: FnMut(
+            &StorageCost,
+            &Vec<u8>,
+            &mut Vec<u8>,
+        ) -> Result<(ElementFlagsUpdate, Option<ValueDefinedCostType>), Error>,
+        R: FnMut(&Vec<u8>, u32, u32) -> Result<(StorageRemovedBytes, StorageRemovedBytes), Error>,
+        O: FnMut(&[u8], &[u8], OldValueDisposition),
+    {
         let mut cost = OperationCost::default();
 
-        let (maybe_walker, key_updates) = if batch.is_empty() {
-            (
-                maybe_tree,
-                KeyUpdates::new(
-                    BTreeSet::default(),
-                    BTreeSet::default(),
-                    LinkedList::default(),
-                    None,
-                ),
-            )
+        let (maybe_walker, updated_root_key_from) = if batch.is_empty() {
+            (maybe_tree, None)
         } else {
             match maybe_tree {
                 None => {
@@ -276,25 +382,14 @@ where
                         grove_version,
                     )
                     .map_ok(|tree| {
-                        let new_keys: BTreeSet<Vec<u8>> = batch
-                            .iter()
-                            .map(|batch_entry| batch_entry.0.as_ref().to_vec())
-                            .collect();
-                        (
-                            tree,
-                            KeyUpdates::new(
-                                new_keys,
-                                BTreeSet::default(),
-                                LinkedList::default(),
-                                None,
-                            ),
-                        )
+                        noted.new_keys(batch);
+                        (tree, None)
                     });
                 }
                 Some(tree) => {
                     cost_return_on_error!(
                         &mut cost,
-                        tree.apply_sorted(
+                        tree.apply_sorted_noting(
                             batch,
                             old_tree_cost,
                             value_defined_cost_fn,
@@ -302,6 +397,7 @@ where
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                             old_value_observer,
+                            noted,
                             grove_version
                         )
                     )
@@ -310,7 +406,7 @@ where
         };
 
         let maybe_tree = maybe_walker.map(|walker| walker.into_inner());
-        Ok((maybe_tree, key_updates)).wrap_with_cost(cost)
+        Ok((maybe_tree, updated_root_key_from)).wrap_with_cost(cost)
     }
 
     /// Builds a `Tree` from a batch of operations.
@@ -375,7 +471,7 @@ where
                     Some(tree) => {
                         cost_return_on_error!(
                             &mut cost,
-                            tree.apply_sorted(
+                            tree.apply_sorted_noting(
                                 right_batch,
                                 old_tree_cost,
                                 value_defined_cost_fn,
@@ -383,6 +479,7 @@ where
                                 update_tree_value_based_on_costs,
                                 section_removal_bytes,
                                 old_value_observer,
+                                &mut Noted(None),
                                 grove_version
                             )
                         )
@@ -514,18 +611,13 @@ where
                 batch,
                 mid_index,
                 true,
-                KeyUpdates::new(
-                    BTreeSet::default(),
-                    BTreeSet::default(),
-                    LinkedList::default(),
-                    None
-                ),
                 old_tree_cost,
                 value_defined_cost_fn,
                 get_temp_new_value_with_old_flags,
                 update_tree_value_based_on_costs,
                 section_removal_bytes,
                 old_value_observer,
+                &mut Noted(None),
                 grove_version,
             )
         )
@@ -540,7 +632,8 @@ where
         batch: &MerkBatch<K>,
         grove_version: &GroveVersion,
     ) -> CostResult<(Option<Self>, KeyUpdates), Error> {
-        self.apply_sorted(
+        let mut key_updates = KeyUpdates::none();
+        let applied = self.apply_sorted_noting(
             batch,
             &|_, _| Ok(0),
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -553,15 +646,23 @@ where
                 ))
             },
             &mut |_, _, _| {},
+            &mut Noted(Some(&mut key_updates)),
             grove_version,
-        )
+        );
+        applied.map_ok(|(maybe_walker, updated_root_key_from)| {
+            key_updates.updated_root_key_from = updated_root_key_from;
+            (maybe_walker, key_updates)
+        })
     }
 
     /// Applies a batch of operations to an existing tree. This is similar to
     /// `Walker<S>::apply`_to, but requires a populated tree.
     ///
     /// Keys in batch must be sorted and unique.
-    fn apply_sorted<K: AsRef<[u8]>, C, V, T, U, R, O>(
+    ///
+    /// The keys it changes are noted in `noted`. It returns the tree and
+    /// the key its root had before, where the root is another node now.
+    fn apply_sorted_noting<K: AsRef<[u8]>, C, V, T, U, R, O>(
         self,
         batch: &MerkBatch<K>,
         old_specialized_cost: &C,
@@ -570,8 +671,9 @@ where
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
         old_value_observer: &mut O,
+        noted: &mut Noted<'_>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<Self>, KeyUpdates), Error>
+    ) -> CostResult<(Option<Self>, Option<Vec<u8>>), Error>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         V: Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
@@ -586,10 +688,12 @@ where
     {
         let mut cost = OperationCost::default();
 
-        let key_vec = self.tree().key().to_vec();
         // binary search to see if this node's key is in the batch, and to split
         // into left and right batches
-        let search = batch.binary_search_by(|(key, _op)| key.as_ref().cmp(&key_vec));
+        let search = {
+            let node_key = self.tree().key();
+            batch.binary_search_by(|(key, _op)| key.as_ref().cmp(node_key))
+        };
 
         let tree = if let Ok(index) = search {
             let (_, op) = &batch[index];
@@ -608,7 +712,7 @@ where
                 _ => OldValueDisposition::Replaced,
             };
             old_value_observer(
-                key_vec.as_slice(),
+                self.tree().key(),
                 self.tree().value_ref().as_slice(),
                 disposition,
             );
@@ -745,6 +849,7 @@ where
                 | DeleteMaybeSpecialized
                 | DeleteMoved => {
                     let source = self.clone_source();
+                    let key_vec = self.tree().key().to_vec();
 
                     let (r_key_cost, r_value_cost) = if matches!(&batch[index].1, DeleteMoved) {
                         // The element's bytes are billed at the key a
@@ -808,16 +913,8 @@ where
                     // If there are no more batch updates to the left this means that the index is 0
                     // There would be no key updates to the left of this part of the tree.
 
-                    let (maybe_tree_walker, mut key_updates) = if index == 0 {
-                        (
-                            maybe_tree_walker,
-                            KeyUpdates::new(
-                                BTreeSet::default(),
-                                BTreeSet::default(),
-                                LinkedList::default(),
-                                None,
-                            ),
-                        )
+                    let maybe_tree_walker = if index == 0 {
+                        maybe_tree_walker
                     } else {
                         match maybe_tree_walker {
                             None => {
@@ -835,24 +932,13 @@ where
                                         grove_version,
                                     )
                                 );
-                                let new_keys: BTreeSet<Vec<u8>> = batch[..index]
-                                    .iter()
-                                    .map(|batch_entry| batch_entry.0.as_ref().to_vec())
-                                    .collect();
-                                (
-                                    new_tree_node.map(|tree| Self::new(tree, source.clone())),
-                                    KeyUpdates::new(
-                                        new_keys,
-                                        BTreeSet::default(),
-                                        LinkedList::default(),
-                                        None,
-                                    ),
-                                )
+                                noted.new_keys(&batch[..index]);
+                                new_tree_node.map(|tree| Self::new(tree, source.clone()))
                             }
                             Some(tree) => {
                                 cost_return_on_error!(
                                     &mut cost,
-                                    tree.apply_sorted(
+                                    tree.apply_sorted_noting(
                                         &batch[..index],
                                         old_specialized_cost,
                                         value_defined_cost_fn,
@@ -860,9 +946,11 @@ where
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
                                         old_value_observer,
+                                        noted,
                                         grove_version
                                     )
                                 )
+                                .0
                             }
                         }
                     };
@@ -870,16 +958,8 @@ where
                     // We not have a new top tree node, and a set of batch operations to the right
                     // of the node
 
-                    let (maybe_tree_walker, mut key_updates_right) = if index == batch.len() - 1 {
-                        (
-                            maybe_tree_walker,
-                            KeyUpdates::new(
-                                BTreeSet::default(),
-                                BTreeSet::default(),
-                                LinkedList::default(),
-                                None,
-                            ),
-                        )
+                    let maybe_tree_walker = if index == batch.len() - 1 {
+                        maybe_tree_walker
                     } else {
                         match maybe_tree_walker {
                             None => {
@@ -897,24 +977,13 @@ where
                                         grove_version,
                                     )
                                 );
-                                let new_keys: BTreeSet<Vec<u8>> = batch[index + 1..]
-                                    .iter()
-                                    .map(|batch_entry| batch_entry.0.as_ref().to_vec())
-                                    .collect();
-                                (
-                                    new_tree_node.map(|tree| Self::new(tree, source)),
-                                    KeyUpdates::new(
-                                        new_keys,
-                                        BTreeSet::default(),
-                                        LinkedList::default(),
-                                        None,
-                                    ),
-                                )
+                                noted.new_keys(&batch[index + 1..]);
+                                new_tree_node.map(|tree| Self::new(tree, source))
                             }
                             Some(tree) => {
                                 cost_return_on_error!(
                                     &mut cost,
-                                    tree.apply_sorted(
+                                    tree.apply_sorted_noting(
                                         &batch[index + 1..],
                                         old_specialized_cost,
                                         value_defined_cost_fn,
@@ -922,26 +991,18 @@ where
                                         update_tree_value_based_on_costs,
                                         section_removal_bytes,
                                         old_value_observer,
+                                        noted,
                                         grove_version
                                     )
                                 )
+                                .0
                             }
                         }
                     };
 
-                    key_updates.new_keys.append(&mut key_updates_right.new_keys);
-                    key_updates
-                        .updated_keys
-                        .append(&mut key_updates_right.updated_keys);
-                    key_updates
-                        .deleted_keys
-                        .append(&mut key_updates_right.deleted_keys);
-                    key_updates
-                        .deleted_keys
-                        .push_back((key_vec.clone(), deletion_cost));
-                    key_updates.updated_root_key_from = Some(key_vec);
+                    noted.deleted_key(&key_vec, deletion_cost);
 
-                    return Ok((maybe_tree_walker, key_updates)).wrap_with_cost(cost);
+                    return Ok((maybe_tree_walker, Some(key_vec))).wrap_with_cost(cost);
                 }
             }
         } else {
@@ -953,25 +1014,23 @@ where
             Err(index) => (index, false),
         };
 
-        let mut updated_keys = BTreeSet::new();
-        let mut new_keys = BTreeSet::new();
         if exclusive {
-            updated_keys.insert(key_vec);
+            noted.updated_key(tree.tree().key());
         } else {
-            new_keys.insert(key_vec);
+            noted.new_key(tree.tree().key());
         }
 
         tree.recurse(
             batch,
             mid,
             exclusive,
-            KeyUpdates::new(new_keys, updated_keys, LinkedList::default(), None),
             old_specialized_cost,
             value_defined_cost_fn,
             get_temp_new_value_with_old_flags,
             update_tree_value_based_on_costs,
             section_removal_bytes,
             old_value_observer,
+            noted,
             grove_version,
         )
         .add_cost(cost)
@@ -982,20 +1041,23 @@ where
     ///
     /// This recursion executes serially in the same thread, but in the future
     /// will be dispatched to workers in other threads.
+    ///
+    /// The keys it changes are noted in `noted`. It returns the tree and
+    /// the key its root had before, where the root is another node now.
     fn recurse<K: AsRef<[u8]>, C, V, T, U, R, O>(
         self,
         batch: &MerkBatch<K>,
         mid: usize,
         exclusive: bool,
-        mut key_updates: KeyUpdates,
         old_tree_cost: &C,
         value_defined_cost_fn: Option<&V>,
         get_temp_new_value_with_old_flags: &T,
         update_tree_value_based_on_costs: &mut U,
         section_removal_bytes: &mut R,
         old_value_observer: &mut O,
+        noted: &mut Noted<'_>,
         grove_version: &GroveVersion,
-    ) -> CostResult<(Option<Self>, KeyUpdates), Error>
+    ) -> CostResult<(Option<Self>, Option<Vec<u8>>), Error>
     where
         C: Fn(&Vec<u8>, &Vec<u8>) -> Result<u32, Error>,
         T: Fn(&Vec<u8>, &Vec<u8>) -> Result<Option<Vec<u8>>, Error>,
@@ -1017,7 +1079,7 @@ where
             &batch[mid..]
         };
 
-        let old_root_key = self.tree().key().to_vec();
+        let old_root_key = KeyBefore::of(self.tree().key());
 
         let tree = if !left_batch.is_empty() {
             let source = self.clone_source();
@@ -1026,7 +1088,7 @@ where
                 self.walk(
                     true,
                     |maybe_left| {
-                        Self::apply_to(
+                        Self::apply_to_noting(
                             maybe_left,
                             left_batch,
                             source,
@@ -1036,18 +1098,10 @@ where
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                             old_value_observer,
+                            noted,
                             grove_version,
                         )
-                        .map_ok(|(maybe_left, mut key_updates_left)| {
-                            key_updates.new_keys.append(&mut key_updates_left.new_keys);
-                            key_updates
-                                .updated_keys
-                                .append(&mut key_updates_left.updated_keys);
-                            key_updates
-                                .deleted_keys
-                                .append(&mut key_updates_left.deleted_keys);
-                            maybe_left
-                        })
+                        .map_ok(|(maybe_left, _)| maybe_left)
                     },
                     value_defined_cost_fn,
                     grove_version,
@@ -1064,7 +1118,7 @@ where
                 tree.walk(
                     false,
                     |maybe_right| {
-                        Self::apply_to(
+                        Self::apply_to_noting(
                             maybe_right,
                             right_batch,
                             source,
@@ -1074,18 +1128,10 @@ where
                             update_tree_value_based_on_costs,
                             section_removal_bytes,
                             old_value_observer,
+                            noted,
                             grove_version,
                         )
-                        .map_ok(|(maybe_right, mut key_updates_right)| {
-                            key_updates.new_keys.append(&mut key_updates_right.new_keys);
-                            key_updates
-                                .updated_keys
-                                .append(&mut key_updates_right.updated_keys);
-                            key_updates
-                                .deleted_keys
-                                .append(&mut key_updates_right.deleted_keys);
-                            maybe_right
-                        })
+                        .map_ok(|(maybe_right, _)| maybe_right)
                     },
                     value_defined_cost_fn,
                     grove_version
@@ -1100,16 +1146,12 @@ where
             tree.maybe_balance(value_defined_cost_fn, grove_version)
         );
 
-        let new_root_key = tree.tree().key();
-
-        let updated_from = if !old_root_key.eq(new_root_key) {
-            Some(old_root_key)
-        } else {
-            None
+        let updated_from = match old_root_key.as_slice() == tree.tree().key() {
+            true => None,
+            false => Some(old_root_key.as_slice().to_vec()),
         };
-        key_updates.updated_root_key_from = updated_from;
 
-        Ok((Some(tree), key_updates)).wrap_with_cost(cost)
+        Ok((Some(tree), updated_from)).wrap_with_cost(cost)
     }
 
     /// Gets the wrapped tree's balance factor.
@@ -1724,6 +1766,37 @@ mod test {
         assert_eq!(tree.key(), &[6]);
         assert_eq!(tree.child(true).expect("expected child").key(), &[5]);
         assert_eq!(tree.child(false).expect("expected child").key(), &[7]);
+    }
+
+    #[test]
+    fn a_root_that_moves_is_named_by_the_key_it_had_whatever_its_length() {
+        let grove_version = GroveVersion::latest();
+        // The longest key that is kept in place, one byte more, and lengths
+        // around what a byte holds.
+        for len in [1, KeyBefore::INLINE, KeyBefore::INLINE + 1, 255, 256, 300] {
+            let key = |last: u8| {
+                let mut key = vec![7; len];
+                key[len - 1] = last;
+                key
+            };
+            let tree = TreeNode::new(key(5), vec![123], None, BasicMerkNode).unwrap();
+            let batch = vec![(key(6), Put(vec![123], BasicMerkNode))];
+            let tree = apply_memonly(tree, &batch, grove_version);
+            assert_eq!(tree.key(), key(5), "{len} bytes");
+
+            let batch = [(key(7), Put(vec![123], BasicMerkNode))];
+            let (maybe_walker, key_updates) = Walker::new(tree, PanicSource {})
+                .apply_sorted_without_costs(&batch, grove_version)
+                .unwrap()
+                .expect("apply errored");
+            let walker = maybe_walker.expect("should be Some");
+            assert_eq!(walker.tree().key(), key(6), "{len} bytes");
+            assert_eq!(
+                key_updates.updated_root_key_from,
+                Some(key(5)),
+                "{len} bytes"
+            );
+        }
     }
 
     #[test]

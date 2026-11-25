@@ -303,7 +303,7 @@ impl<C> Resolved<C> {
             for (key, entry) in keys {
                 match &entry.write {
                     Write::Node { node, .. } => {
-                        let hosted = hosts.and_then(|hosts| hosts.get(key));
+                        let hosted = hosts.and_then(|hosts| hosts.get(&**key));
                         puts.push(node.as_put(match hosted {
                             Some(host) => Hosted::Set(&host.hosted),
                             None => Hosted::Keep,
