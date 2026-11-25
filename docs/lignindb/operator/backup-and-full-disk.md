@@ -164,8 +164,8 @@ once a restore of it has passed `lignin verify` (below).
    CHECKPOINT=$(real_dir "$CHECKPOINT")
    BACKUP=$(real_new "$BACKUP")
    apart "$CHECKPOINT" "$BACKUP"
-   CHECKPOINT_INODE=$(ls -di -- "$CHECKPOINT" | awk '{print $1}')
-   printf 'CHECKPOINT       %s\nCHECKPOINT_INODE %s\nBACKUP           %s\n' "$CHECKPOINT" "$CHECKPOINT_INODE" "$BACKUP"
+   CHECKPOINT_ID="$(df -P -- "$CHECKPOINT" | awk 'NR == 2 {print $1}') $(ls -di -- "$CHECKPOINT" | awk '{print $1}')"
+   printf 'CHECKPOINT    %s\nCHECKPOINT_ID %s\nBACKUP        %s\n' "$CHECKPOINT" "$CHECKPOINT_ID" "$BACKUP"
    lignin manifest "$CHECKPOINT"
    claim_dir "$BACKUP"
    cp -a "$CHECKPOINT/." "$BACKUP/"
@@ -199,13 +199,15 @@ the copy of a directory reads no page, and the check reads them all. The
 restore is synced as the copy of a checkpoint is, file by file on Linux
 and not at all elsewhere, so that it can be made beside a running node.
 A restore that a node is to run on is made with that node stopped, and
-is durable once synced as a stopped database's backup is.
+is durable once synced as a stopped database's backup is. Where
+`CHECKPOINT` is set, as the copy's block sets it, the restore is also
+kept apart from the checkpoint, whose deletion would remove it.
 
 ```sh
 : "${BACKUP:?set BACKUP to the backup}" "${RESTORE:?set RESTORE to where it is to be restored}"
 BACKUP=$(real_dir "$BACKUP")
 RESTORE=$(real_new "$RESTORE")
-apart "$BACKUP" "$RESTORE"
+apart "$BACKUP" "$RESTORE" ${CHECKPOINT:+"$CHECKPOINT"}
 claim_dir "$RESTORE"
 cp -a "$BACKUP/." "$RESTORE/"
 if [ "$(uname -s)" = Linux ]; then
@@ -248,8 +250,8 @@ no file of the application's.
 Once the copy of a checkpoint is durable (on macOS: the node stopped and
 the copy's device ejected, or the system shut down) and its restore has
 passed `lignin verify`, delete the checkpoint. Until it is deleted it
-keeps the bytes of every file the live database has let go of since it
-was made. The application deletes it with the deletion of the engine it
+keeps the files it links, which the live database would otherwise let
+go of as it writes on. The application deletes it with the deletion of the engine it
 runs: `GroveDb::<LigninEngine>::delete_checkpoint_with_engine(path)`, or
 `EitherEngine::delete_checkpoint_of(EngineKind::Lignin, path)` where it
 chooses the engine at the open. `GroveDb::delete_checkpoint` deletes
@@ -257,21 +259,39 @@ with the build's default engine, which is RocksDB in a build of both
 engines unless the build sets it otherwise ([engine.md](../engine.md#the-default-engine)).
 LigninDB's deletion can remove more than a checkpoint, the directory
 `path.creating` beside it among what it removes: it is given the
-checkpoint's path and nothing else. Or the checkpoint's directory, as
-the copy's block wrote it with its links followed, is removed once no
-handle has it open. Give the block that path and its inode as the copy's
-block printed them (`CHECKPOINT`, `CHECKPOINT_INODE`): it refuses a path
-that is a link now, no directory, another path once its links are
-followed, or another directory than the one that was copied, since what
-is there is then not what was copied.
+checkpoint's path and nothing else. It removes the database that is at
+that path when it runs, whatever made it: it cannot tell a checkpoint
+from another database, and nothing keeps the path from leading to
+another directory meanwhile. So the application makes its checkpoints
+at paths of their own, where nothing else makes, moves or restores a
+directory, and deletes each by the path it made it at.
+
+Or the checkpoint's directory, as the copy's block wrote it with its
+links followed, is removed once no handle has it open. Give the block
+that path and its identity as the copy's block printed them
+(`CHECKPOINT`, `CHECKPOINT_ID`: the device and the inode). It refuses a
+path that is a link now, no directory, another path once its links are
+followed, another directory than the one that was copied, or a
+directory that holds anything but the entries a checkpoint of GroveDB
+has (`LOCK`, `MANIFEST`, `wal`, `seg`, `val` and `table`), such as a
+restore made inside it: what is there is then not what was copied. The
+checks and the removal are two steps: nothing else is to make, move or
+remove a directory at that path between them.
 
 ```sh
 : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint, as the copy block printed it}"
 plain_path "$CHECKPOINT"
 if [ -L "$CHECKPOINT" ] || [ ! -d "$CHECKPOINT" ]; then echo "$CHECKPOINT is a link or no directory now: it is not what was copied"; false; fi
 if [ "$(real_dir "$CHECKPOINT")" != "$CHECKPOINT" ]; then echo "$CHECKPOINT is not the path the copy's block wrote: give that one"; false; fi
-: "${CHECKPOINT_INODE:?set CHECKPOINT_INODE as the copy block printed it}"
-if [ "$(ls -di -- "$CHECKPOINT" | awk '{print $1}')" != "$CHECKPOINT_INODE" ]; then echo "$CHECKPOINT is another directory than the one that was copied"; false; fi
+: "${CHECKPOINT_ID:?set CHECKPOINT_ID as the copy block printed it}"
+if [ "$(df -P -- "$CHECKPOINT" | awk 'NR == 2 {print $1}') $(ls -di -- "$CHECKPOINT" | awk '{print $1}')" != "$CHECKPOINT_ID" ]; then echo "$CHECKPOINT is another directory than the one that was copied"; false; fi
+for entry in "$CHECKPOINT"/* "$CHECKPOINT"/.[!.]* "$CHECKPOINT"/..?*; do
+  if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then continue; fi
+  case "${entry##*/}" in
+    LOCK | MANIFEST | wal | seg | val | table) ;;
+    *) echo "$CHECKPOINT holds ${entry##*/}, which a checkpoint does not: it is not what was copied"; false ;;
+  esac
+done
 rm -rf -- "$CHECKPOINT"
 ```
 

@@ -31,8 +31,12 @@ database that step 3 makes: the commands here are the ones that were run.
 
 ## What it takes
 
-**Time.** The survey of step 5 prints how many Merk nodes the source
-holds (`Merk nodes:`). The plan's acceptance for the migrator (OPS-02 in
+**Time.** A run counts as its elements the records of the data
+keyspaces it carries: Merk nodes, records that no tree links and flat
+records alike (`elements=…` in its last line). The survey of step 5
+prints how many the source holds (`data records:` and `flat records:`),
+and a source of many flat records takes longer than its `Merk nodes:`
+alone says. The plan's acceptance for the migrator (OPS-02 in
 [task register 3](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583786))
 is at least 40,000 elements a second on the reference shape, measured on
 a rented machine with dedicated processors (the least of 20 runs was
@@ -160,12 +164,13 @@ Set two variables before the next block:
 
 The block makes `WORK` absolute, since it changes into the source
 directory to build. It clones the repository where no clone is there
-yet, refuses a `grovedb` that is no clone of its own (a directory inside
-another repository, as `WORK` being a GroveDB checkout makes it) and one
-with changes of its own, and then fetches
-`GROVEDB_REF` from the repository's own address and checks it out, so
-that a clone that a run before left behind is moved to the release as
-well, whatever remote it names. It names
+yet, and refuses a `grovedb` that is a link, one that is no clone of
+its own (a directory inside another repository, as `WORK` being a
+GroveDB checkout makes it), one whose `origin` is not the repository's
+address, and one with changes of its own: a checkout that is not the
+one this block made is not moved. It then fetches `GROVEDB_REF` from the
+repository's address and checks it out, so that a clone that a run
+before left behind is moved to the release as well. It names
 where Cargo builds (`CARGO_TARGET_DIR`), so that the `lignin` it puts
 first on the path is the one it built. Give the paths of step 4 as
 absolute paths too.
@@ -175,8 +180,10 @@ absolute paths too.
 : "${WORK:?set WORK to a directory for the build and the reports}"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
+if [ -L "$WORK/grovedb" ]; then echo "$WORK/grovedb is a link: give a WORK with no grovedb in it"; false; fi
 if [ ! -e "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
 if [ "$(git -C "$WORK/grovedb" rev-parse --show-toplevel)" != "$(real_dir "$WORK/grovedb")" ]; then echo "$WORK/grovedb is no clone of its own (it lies inside another repository): give a WORK with no grovedb in it"; false; fi
+if [ "$(git -C "$WORK/grovedb" remote get-url origin)" != https://github.com/dashpay/grovedb.git ]; then echo "$WORK/grovedb is no clone of https://github.com/dashpay/grovedb.git: give a WORK with no grovedb in it"; false; fi
 cd "$WORK/grovedb"
 if [ -n "$(git status --porcelain)" ]; then echo "$WORK/grovedb has changes of its own: give a WORK with no clone in it"; false; fi
 git fetch --depth 1 https://github.com/dashpay/grovedb.git "$GROVEDB_REF"
@@ -404,28 +411,33 @@ grep '^migrate: verify sound=true ' "$WORK/reports/migrate.txt"
 survey_hash=$(sed -n 's/^  root hash: //p' "$WORK/reports/survey.txt")
 target_hash=$(sed -n 's/^migrate: compared .* root_hash=\([0-9a-f]*\) seconds=.*/\1/p' "$WORK/reports/migrate.txt")
 if [ -n "$survey_hash" ] && [ "$survey_hash" = "$target_hash" ]; then echo "the same root hash: $target_hash"; else echo "THE ROOT HASHES DIFFER: survey $survey_hash, target $target_hash"; false; fi
-if [ "$(sed -n '1s/;[^;]*$//p' "$WORK/reports/survey.txt")" = "$(sed -n '1s/;[^;]*$//p' "$WORK/reports/migrate.txt")" ]; then echo "the same RocksDB identity and last write in both runs"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
-grep -F -x "migrated $SOURCE into $TARGET: loaded, compared and verified" "$WORK/reports/migrate.txt"
+survey_source=$(sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$WORK/reports/survey.txt")
+migrate_source=$(sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$WORK/reports/migrate.txt")
+case "$survey_source" in "the source $SOURCE: RocksDB identity "*) ;; *) survey_source= ;; esac
+if [ -n "$survey_source" ] && [ "$survey_source" = "$migrate_source" ]; then echo "the same RocksDB identity and last write in both runs: $survey_source"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS, or a report does not begin with this SOURCE"; false; fi
+last_line="migrated $SOURCE into $TARGET: loaded, compared and verified"
+if [ "$(tail -n 1 "$WORK/reports/migrate.txt")" = "$last_line" ]; then echo "the report ends with: $last_line"; else echo "THE REPORT DOES NOT END WITH: $last_line"; false; fi
 ```
 
 Each of these prints the line it found, or fails: `grep` with no line
-found, the two comparisons with the words THE ROOT HASHES DIFFER or
-THE SOURCE CHANGED BETWEEN THE TWO RUNS. Step 7 reads the report of the
+found, the three comparisons with the words THE ROOT HASHES DIFFER,
+THE SOURCE CHANGED BETWEEN THE TWO RUNS or THE REPORT DOES NOT END WITH. Step 7 reads the report of the
 run that ended with status 0 (where a run before it failed, that is the
 report the retry of step 6 wrote: name it in place of `migrate.txt`).
-The last command looks for the run's last line, which names this
-`SOURCE` and this `TARGET`, so that the report is held to the database
-you are about to start the node on. A run that was stopped after it gave
+The last comparison requires the report to end with the run's last
+line, which names this `SOURCE` and this `TARGET`, so that the report is
+held to the database you are about to start the node on. A run that was stopped after it gave
 the database its name and before that line leaves a report that cannot
 be held to what is at `TARGET`: then migrate again into a new `TARGET`,
 and leave the old one where it is until you know what it holds. The
 first comparison reads the root hash from the line
 `migrate: compared subtrees=…` alone and holds the root hash that the
 survey of step 5 read from the source to the one the migration read
-from it. The second holds the first line of each report, up to its last
-`;`, to the other: the source's path, its RocksDB identity and the
-sequence number of its last write. Where they are the same, no write
-reached the source between the two runs. That the target has the
+from it. The second holds the first line of each report, up to the `;` after
+its last write, to the other: the source's path, which has to be this
+`SOURCE`, its RocksDB identity and the sequence number of its last
+write. Where they are the same, no write reached the source between the
+two runs. That the target has the
 source's root hash is what `differing=0` says; the migration also
 refuses a source that changes while it reads it. Do not start the node
 on a target for which one of them fails.
@@ -500,7 +512,17 @@ the path that step 4 printed for `RESTORE`.
 **First**, put into `TARGET` what the application keeps in its RocksDB
 directory beside RocksDB's own files, as the application's
 documentation says: the migration carries GroveDB's records and nothing
-else, and `SOURCE` keeps its own copy for the way back. Then point the
+else, and `SOURCE` keeps its own copy for the way back. Copy nothing over
+a file that `TARGET` has, and put no file there under a name of the
+engine's: `LOCK`, `MANIFEST`, `MANIFEST.tmp`, `MANIFEST.deleting`,
+`RESERVE`, `RESERVE.new`, `wal`, `seg`, `val` and `table`. The engine
+takes a file of such a name for its own (an open removes
+`MANIFEST.tmp`, and refuses a directory where `wal`, `seg`, `val` or
+`table` is not a directory), and an open refuses a directory that holds
+`CURRENT`, `IDENTITY`, or a name that begins `MANIFEST-` or `OPTIONS-`
+or ends in `.sst`, which it takes for RocksDB's. A file of the
+application's under one of these names goes where the application's
+documentation says, outside `TARGET`. Then point the
 node at `TARGET` and select the LigninDB engine, as the application's
 configuration says. On GroveDB's side, an application
 opens a database on LigninDB with
@@ -544,7 +566,8 @@ want a way back, and after a backup of the LigninDB database
 ([backup and full disk](backup-and-full-disk.md)). **The migration
 carries GroveDB's records and nothing else**: a file that the
 application keeps in the RocksDB directory beside RocksDB's own was put
-into `TARGET` at step 10, from where the node has kept it since. The
+into `TARGET` at step 10, or where step 10 sends a file of one of the
+engine's names, and the node has kept it there since. The
 copies in `SOURCE` are those of the migration: do not copy them over
 `TARGET`'s, and keep or remove them with `SOURCE`, as the application's
 documentation says.
