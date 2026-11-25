@@ -34,9 +34,12 @@ database that step 3 makes: the commands here are the ones that were run.
 **Time.** A run counts as its elements the records of the data
 keyspaces it carries: Merk nodes, records that no tree links and flat
 records alike (`elements=…` in its last line). The survey of step 5
-prints how many the source holds (`data records:` and `flat records:`),
-and a source of many flat records takes longer than its `Merk nodes:`
-alone says. The plan's acceptance for the migrator (OPS-02 in
+counts every record of the data keyspaces under the prefixes it reaches
+in `data records:`, the flat records among them (`flat records:` gives
+those apart), and the records under prefixes that nothing leads to in
+`prefixes that nothing leads to: …, with … records`, which a run
+carries only with `--unreachable carry`. A source of many flat records
+takes longer than its `Merk nodes:` alone says. The plan's acceptance for the migrator (OPS-02 in
 [task register 3](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583786))
 is at least 40,000 elements a second on the reference shape, measured on
 a rented machine with dedicated processors (the least of 20 runs was
@@ -112,7 +115,17 @@ real_dir() {
   printf '%s\n' "$d"
 }
 claim_dir() {
+  local d
   plain_path "$1" || return 1
+  case "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" in
+    *.creating) echo "$1 ends in .creating, under which LigninDB builds a checkpoint: choose another path" >&2; return 1 ;;
+  esac
+  d=$(dirname -- "$1")
+  while :; do
+    if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
+    if [ "$d" = / ] || [ "$d" = . ]; then break; fi
+    d=$(dirname -- "$d")
+  done
   mkdir -- "$1" || { echo "$1 is there already, or cannot be made: choose another path" >&2; return 1; }
 }
 real_new() {
@@ -150,7 +163,10 @@ taken after the links), to refuse a path with a line break in it, to
 refuse two paths of which one is the other or lies inside it (compared
 by the directories they are, `-ef`, and by names that differ in case
 alone), and to claim a new directory with `mkdir`, which fails where
-anything is there already.
+anything is there already. The claim also refuses a name that ends in
+`.creating`, under which LigninDB builds a checkpoint, and a path inside
+a directory that holds a `MANIFEST` or a `MANIFEST.deleting`: a database,
+whose deletion would remove what is inside it.
 
 ## 2. Set the variables
 
@@ -166,9 +182,13 @@ The block makes `WORK` absolute, since it changes into the source
 directory to build. It clones the repository where no clone is there
 yet, and refuses a `grovedb` that is a link, one that is no clone of
 its own (a directory inside another repository, as `WORK` being a
-GroveDB checkout makes it), one whose `origin` is not the repository's
-address, and one with changes of its own: a checkout that is not the
-one this block made is not moved. It then fetches `GROVEDB_REF` from the
+GroveDB checkout makes it), one that is not shallow, as the clone it
+makes is, one whose `origin` is not the repository's address, and one
+with changes of its own: a checkout that is not the one this block made
+is not moved. It also refuses a `reports` directory that is a link or
+holds one, since the reports are written through `tee`, which follows
+a link and writes where it leads; nothing but these steps is to write
+into `WORK`. It then fetches `GROVEDB_REF` from the
 repository's address and checks it out, so that a clone that a run
 before left behind is moved to the release as well. It names
 where Cargo builds (`CARGO_TARGET_DIR`), so that the `lignin` it puts
@@ -180,9 +200,11 @@ absolute paths too.
 : "${WORK:?set WORK to a directory for the build and the reports}"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
+if [ -L "$WORK/reports" ] || [ -n "$(find "$WORK/reports" -type l)" ]; then echo "$WORK/reports is a link or holds one: give a WORK of your own"; false; fi
 if [ -L "$WORK/grovedb" ]; then echo "$WORK/grovedb is a link: give a WORK with no grovedb in it"; false; fi
 if [ ! -e "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
 if [ "$(git -C "$WORK/grovedb" rev-parse --show-toplevel)" != "$(real_dir "$WORK/grovedb")" ]; then echo "$WORK/grovedb is no clone of its own (it lies inside another repository): give a WORK with no grovedb in it"; false; fi
+if [ "$(git -C "$WORK/grovedb" rev-parse --is-shallow-repository)" != true ]; then echo "$WORK/grovedb is not the shallow clone this block makes: give a WORK with no grovedb in it"; false; fi
 if [ "$(git -C "$WORK/grovedb" remote get-url origin)" != https://github.com/dashpay/grovedb.git ]; then echo "$WORK/grovedb is no clone of https://github.com/dashpay/grovedb.git: give a WORK with no grovedb in it"; false; fi
 cd "$WORK/grovedb"
 if [ -n "$(git status --porcelain)" ]; then echo "$WORK/grovedb has changes of its own: give a WORK with no clone in it"; false; fi
@@ -440,7 +462,12 @@ write. Where they are the same, no write reached the source between the
 two runs. That the target has the
 source's root hash is what `differing=0` says; the migration also
 refuses a source that changes while it reads it. Do not start the node
-on a target for which one of them fails.
+on a target for which one of them fails. These checks hold the report to
+the path `TARGET`, not to the bytes there: no command of `lignin` reads
+the root hash of a LigninDB database, and `lignin verify` below finds
+whether what is at `TARGET` is sound, not whether it is the source's.
+So put nothing at `TARGET`, and let nothing write there, between step 6
+and the start of the node.
 
 Then check the target once more on its own, with the checker of
 `lignin verify`. It opens the database, closes it, and checks the store

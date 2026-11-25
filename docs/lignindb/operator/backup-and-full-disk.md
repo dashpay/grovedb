@@ -32,7 +32,11 @@ two paths of which one is the other or lies inside it, compared by the
 directories they are (`-ef`) and by names that differ in case alone.
 A copy claims its directory first with `mkdir`, which fails where
 anything is there already, and then copies the files into it, so that a
-copy never lands inside a directory that something else made.
+copy never lands inside a directory that something else made. The claim
+also refuses a name that ends in `.creating`, which LigninDB takes for
+the build of a checkpoint and whose deletion removes, and a path inside
+a directory that holds a `MANIFEST` or a `MANIFEST.deleting`, a database
+whose deletion would remove the copy with it.
 Each procedure below names the paths it uses, and the directory each new
 path is to be in has to be there.
 
@@ -51,7 +55,17 @@ real_dir() {
   printf '%s\n' "$d"
 }
 claim_dir() {
+  local d
   plain_path "$1" || return 1
+  case "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" in
+    *.creating) echo "$1 ends in .creating, under which LigninDB builds a checkpoint: choose another path" >&2; return 1 ;;
+  esac
+  d=$(dirname -- "$1")
+  while :; do
+    if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
+    if [ "$d" = / ] || [ "$d" = . ]; then break; fi
+    d=$(dirname -- "$d")
+  done
   mkdir -- "$1" || { echo "$1 is there already, or cannot be made: choose another path" >&2; return 1; }
 }
 real_new() {
@@ -273,8 +287,9 @@ that path and its identity as the copy's block printed them
 path that is a link now, no directory, another path once its links are
 followed, another directory than the one that was copied, or a
 directory that holds anything but the entries a checkpoint of GroveDB
-has (`LOCK`, `MANIFEST`, `wal`, `seg`, `val` and `table`), such as a
-restore made inside it: what is there is then not what was copied. The
+has (`LOCK`, `MANIFEST`, `wal`, `seg`, `val` and `table`, with nothing
+but files in those four), such as a restore made inside it: what is
+there is then not what was copied. The
 checks and the removal are two steps: nothing else is to make, move or
 remove a directory at that path between them.
 
@@ -292,6 +307,7 @@ for entry in "$CHECKPOINT"/* "$CHECKPOINT"/.[!.]* "$CHECKPOINT"/..?*; do
     *) echo "$CHECKPOINT holds ${entry##*/}, which a checkpoint does not: it is not what was copied"; false ;;
   esac
 done
+if [ -n "$(find "$CHECKPOINT" -mindepth 2 ! -type f)" ]; then echo "$CHECKPOINT holds a directory or a link inside its own directories, which a checkpoint does not: it is not what was copied"; false; fi
 rm -rf -- "$CHECKPOINT"
 ```
 

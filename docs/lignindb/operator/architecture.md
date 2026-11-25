@@ -79,8 +79,9 @@ A LigninDB database is one directory:
   RESERVE              room kept for a full device, where the options ask for it
 ```
 
-Each file has a header with the format version, and every block a
-checksum. The manifest is replaced whole (a new file given the name
+The manifest and each file of the log, the segments, the value log and
+the page table have a header with the format version, and every block a
+checksum; `LOCK` and `RESERVE` hold no data. The manifest is replaced whole (a new file given the name
 `MANIFEST`), and it names each file with its valid length. A file that
 the manifest calls closed or sealed is the database's up to that length;
 the log file that the database was writing when its session ended is

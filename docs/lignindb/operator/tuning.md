@@ -141,8 +141,9 @@ cleaner leaves, and at most 4 more that wait for a table checkpoint),
 for a store with no reader on an old version, no operation that runs for
 long, and blocks that are large against `min_segment_len`. What a burst
 of commits frees faster than the cleaner moves shows until it has caught
-up. A snapshot or a checkpoint that is
-kept holds what was freed since, whatever the cleaner's settings
+up. A snapshot that is kept holds what was freed after its version, and
+a checkpoint that is kept holds the files it links, whatever the
+cleaner's settings
 ([backup and full disk](backup-and-full-disk.md#space-that-does-not-come-back)).
 **What to watch:** the `on disk:` line of `lignin stats`, against what
 the database holds.
