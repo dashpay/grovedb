@@ -1854,3 +1854,98 @@ fn a_subtree_that_is_said_not_to_be_under_a_node_keeps_its_values() {
     };
     assert!(said.contains("twice"), "{said}");
 }
+
+/// A thread that reads a subtree through one snapshot after another, as
+/// reads with no transaction do, remembers the entry it last kept of the
+/// subtree, and what it reads is the Merk of each snapshot's version
+/// all the same: after a commit, through a snapshot from before it, in
+/// another database, and on another thread.
+#[test]
+fn a_thread_reads_a_subtree_it_read_before_from_what_it_kept_of_it() {
+    use super::super::view::last_opened;
+
+    let other = LigninSubtree::alone([7; 32]);
+    let write = |facade: &Facade, at: &LigninSubtree, keys: std::ops::Range<u64>, salt: u64| {
+        let transaction = facade.db.begin();
+        let staged = LigninBatch::new();
+        let handle = LigninNodeStore::deferred(&transaction, at.clone(), Some(&staged));
+        if handle.entry().expect("a lookup").is_none() {
+            handle.enter(TreeType::NormalTree).expect("entered");
+        }
+        let mut merk = open(handle, TreeType::NormalTree);
+        apply(&mut merk, &puts(keys, salt));
+        drop(merk);
+        staged.apply(&transaction).unwrap().expect("a batch");
+        facade.commit(&transaction);
+    };
+    // The value under a key, read through `snapshot`.
+    let read_in = |snapshot: &LigninSnapshot<'_>, at: &LigninSubtree, key: u64| {
+        let handle = LigninNodeStore::read_only(snapshot, at.clone());
+        let node = handle.get_node(&plain(key), NO_VALUE_DEFINED_COST, version());
+        let node = node.unwrap().expect("a read");
+        node.map(|node| node.value_as_slice().to_vec())
+    };
+    // The same, through a snapshot of its own.
+    let read = |facade: &Facade, at: &LigninSubtree, key: u64| {
+        read_in(&LigninSnapshot::new(facade.db.snapshot()), at, key)
+    };
+    let remembers = |at: &LigninSubtree| {
+        last_opened(&at.prefix).is_some_and(|kept| *kept.subtree().as_bytes() == at.prefix)
+    };
+
+    // On a thread of its own, which remembers nothing yet.
+    std::thread::scope(|scope| {
+        let run = scope.spawn(|| {
+            let facade = Facade::new();
+            write(&facade, &ROOT, 1..60, 1);
+            write(&facade, &other, 1..60, 2);
+            assert!(!remembers(&ROOT) && !remembers(&other));
+            let first = read(&facade, &ROOT, 7).expect("a node");
+            assert!(remembers(&ROOT) && !remembers(&other));
+            // Another snapshot of the same version.
+            assert_eq!(read(&facade, &ROOT, 7).as_ref(), Some(&first));
+            assert_eq!(read(&facade, &ROOT, 70), None);
+            let beside = read(&facade, &other, 7).expect("a node");
+            assert_ne!(beside, first);
+            assert!(remembers(&ROOT) && remembers(&other));
+
+            // A commit writes the subtree again. A snapshot from before
+            // it reads the Merk of its version after the thread has kept
+            // the entry of the later one, and the other way round.
+            let before = LigninSnapshot::new(facade.db.snapshot());
+            write(&facade, &ROOT, 1..90, 3);
+            let second = read(&facade, &ROOT, 7).expect("a node");
+            assert_ne!(second, first);
+            assert!(read(&facade, &ROOT, 70).is_some());
+            assert_eq!(read_in(&before, &ROOT, 7).as_ref(), Some(&first));
+            assert_eq!(read_in(&before, &ROOT, 70), None);
+            assert_eq!(read(&facade, &ROOT, 7).as_ref(), Some(&second));
+            assert_eq!(read(&facade, &other, 7).as_ref(), Some(&beside));
+
+            // Another database with another Merk under the prefix, and
+            // one with no subtree there, at the same version.
+            let elsewhere = Facade::new();
+            write(&elsewhere, &ROOT, 1..60, 9);
+            write(&elsewhere, &ROOT, 1..60, 9);
+            write(&elsewhere, &ROOT, 1..60, 9);
+            let same =
+                |a: &Facade, b: &Facade| a.db.snapshot().version() == b.db.snapshot().version();
+            assert!(same(&elsewhere, &facade));
+            let there = read(&elsewhere, &ROOT, 7).expect("a node");
+            assert!(there != first && there != second);
+            assert_eq!(read(&elsewhere, &other, 7), None);
+            assert_eq!(read(&facade, &ROOT, 7).as_ref(), Some(&second));
+            assert_eq!(read(&facade, &other, 7).as_ref(), Some(&beside));
+
+            // Another thread remembers nothing of this one's reads.
+            std::thread::scope(|scope| {
+                let read = scope.spawn(|| {
+                    assert!(!remembers(&ROOT));
+                    read(&facade, &ROOT, 7)
+                });
+                assert_eq!(read.join().expect("a read"), Some(second.clone()));
+            });
+        });
+        run.join().expect("the reads");
+    });
+}

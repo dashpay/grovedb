@@ -8,6 +8,7 @@
 //! | a snapshot ([`LigninSnapshot`]) | the one version it pinned (RD1) | refused, with `SnapshotReadOnlyTransaction` |
 
 use std::{
+    cell::RefCell,
     collections::HashMap,
     sync::{Mutex, PoisonError},
 };
@@ -58,17 +59,70 @@ impl<'a> From<&'a LigninSnapshot<'_>> for LigninView<'a> {
     }
 }
 
+/// How many subtrees a thread remembers ([`LAST_OPENED`]).
+const REMEMBERED: usize = 32;
+
+thread_local! {
+    /// What this thread last kept of the subtrees it opened on a snapshot,
+    /// each in the place that the first byte of its prefix names: the
+    /// entry of the subtree at one version of one database.
+    ///
+    /// A read with no transaction is made on a snapshot of its own, and a
+    /// thread that reads one subtree again and again, as the resolution of
+    /// references into one tree does, would look its entry up for every
+    /// read. A snapshot's first open of a subtree that the thread
+    /// remembers resumes from here instead (`Operation::resume`, which
+    /// says what a resume reads and when it looks the subtree up), and
+    /// one of a subtree it does not remember looks the subtree up. What
+    /// is remembered holds no version, no page and no database open: for
+    /// each of a thread's 32 places, the bytes of one entry.
+    static LAST_OPENED: RefCell<[Option<Kept>; REMEMBERED]> =
+        const { RefCell::new([const { None }; REMEMBERED]) };
+}
+
+/// The place of `subtree` among the subtrees a thread remembers.
+fn place(subtree: &Prefix) -> usize {
+    usize::from(subtree[0]) % REMEMBERED
+}
+
+/// What the thread last kept of `subtree`, if it remembers the subtree.
+pub(super) fn last_opened(subtree: &Prefix) -> Option<Kept> {
+    let remembered = LAST_OPENED.try_with(|last| {
+        let last = last.try_borrow().ok()?;
+        let kept = last[place(subtree)].as_ref();
+        kept.filter(|kept| kept.subtree().as_bytes() == subtree)
+            .cloned()
+    });
+    remembered.ok().flatten()
+}
+
+/// Remembers `kept` as what the thread last kept of `subtree`.
+fn remember(subtree: &Prefix, kept: &Kept) {
+    let _ = LAST_OPENED.try_with(|last| {
+        if let Ok(mut last) = last.try_borrow_mut() {
+            last[place(subtree)] = Some(kept.clone());
+        }
+    });
+}
+
 /// A snapshot of a LigninDB database as the store reads it: one committed
 /// version, pinned for as long as this lives (`transactions.md` RD1).
 ///
 /// Every read through it is one operation of the snapshot. The entry of
 /// a subtree that was looked up in the subtree directory is kept, and the
 /// reads that follow open the subtree from the kept entry: a snapshot's
-/// version does not change. A node is read with where its cell is and
-/// where the cell of each child is, under the snapshot's lease, and a
-/// read that is given such a location goes to the cell and searches by
-/// key only where the location is no longer good. A write through it is
-/// refused with `SnapshotReadOnlyTransaction`.
+/// version does not change. The first open of a subtree takes the entry
+/// that the thread last kept of it, through this snapshot or another,
+/// where that was kept at the snapshot's version of the same database,
+/// and looks the subtree up otherwise. A node that is a cell of the
+/// Merk's tree is read with where the cell is, and with where the cell
+/// of each child is whose key the read took from that cell, under the
+/// snapshot's lease. A read that is given such a location gives it to
+/// the engine, which follows it or searches by key
+/// (`Opened::follow_by_kind` of `lignindb` says when). A build that holds
+/// its reads (`lignindb/held_reads`) makes the lookup and the search
+/// beside every entry and location it takes this way. A write through it
+/// is refused with `SnapshotReadOnlyTransaction`.
 pub struct LigninSnapshot<'s> {
     snapshot: Snapshot<'s>,
     /// The subtrees that were opened, each with its entry, or with none
@@ -107,7 +161,8 @@ impl<'s> LigninSnapshot<'s> {
     }
 
     /// Opens `subtree` in `operation`, an operation of this snapshot:
-    /// from its kept entry, or by one lookup in the directory.
+    /// from its kept entry, from the entry the thread last kept of the
+    /// subtree at this version, or by one lookup in the directory.
     fn open<'a, 'o>(
         &self,
         operation: &'a Operation<'o>,
@@ -121,8 +176,14 @@ impl<'s> LigninSnapshot<'s> {
             Some(None) => Ok(None),
             Some(Some(kept)) => operation.resume(&kept).map_err(unread),
             None => {
-                let found = operation.open(Subtree::new(*subtree)).map_err(unread)?;
-                let kept = found.map(|found| found.keep());
+                let found = match last_opened(subtree) {
+                    Some(last) => operation.resume(&last),
+                    None => operation.open(Subtree::new(*subtree)),
+                };
+                let kept = found.map_err(unread)?.map(|found| found.keep());
+                if let Some(kept) = &kept {
+                    remember(subtree, kept);
+                }
                 // Of two first opens of one subtree, the entry that was
                 // kept first is the one both read through.
                 let kept = {
