@@ -566,19 +566,24 @@ fn batches_of_ten_thousand_operations_on_both_engines() {
     }
 }
 
-/// A run of LigninDB with settings: the report names them, the details of
-/// the background work are rows that add up to the rows they split, and
-/// with the blocks paced every block's pages are written back by
-/// themselves.
+/// A run of LigninDB with settings, its blocks paced: the report names
+/// the settings, the details of the background work are rows that add up
+/// to the rows they split, and the four gauges are rows of each write
+/// phase.
+/// A setting in a run that measures no engine which takes one is refused
+/// before anything is measured.
 #[cfg(grovedb_engine_seam)]
 #[test]
 fn a_run_of_lignindb_with_settings_splits_its_bytes() {
     let scratch = tempfile::tempdir().unwrap();
     let mut options = options(scratch.path().join("set"));
-    options.engines = vec![EngineChoice::LigninDb];
     for pair in ["pace=block", "deferred=4"] {
         options.settings.engine.set(pair).unwrap();
     }
+    let refused = run(&options).unwrap_err().to_string();
+    assert_eq!(refused, "--set: no engine of this run takes a setting");
+    assert!(!options.settings.scratch.exists(), "nothing was begun");
+    options.engines = vec![EngineChoice::LigninDb];
     let report = run(&options).unwrap();
     assert_eq!(report.method.engine_settings, ["pace=block", "deferred=4"]);
     let engine = &report.engines[0];
@@ -627,10 +632,14 @@ fn a_run_of_lignindb_with_settings_splits_its_bytes() {
             physical,
             value("physical_bytes_per_transition", phase)
         ));
+        assert!(value("log_held_mean", phase) <= value("log_held_max", phase));
+        assert!(
+            value("page_versions_waiting_mean", phase) <= value("page_versions_waiting_max", phase)
+        );
     }
     assert!(value("segment_bytes_per_transition", "load") > 0.0);
-    // With four pages left by a turn, more than four never wait once
-    // write-back has had its turn; the most is read before the turn.
+    // A turn leaves four pages at most. The load changes more pages
+    // than that in a block, so after some commit at least four wait.
     assert!(value("page_versions_waiting_max", "load") >= 4.0);
     assert!(value("log_held_max", "load") >= value("log_held_mean", "load"));
     assert!(value("log_held_mean", "load") > 0.0);

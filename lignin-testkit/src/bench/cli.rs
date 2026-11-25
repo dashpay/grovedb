@@ -132,24 +132,8 @@ pub fn parse_run(args: &[String]) -> Result<(RunOptions, Option<PathBuf>), Bench
         options.engines.push(EngineChoice::RocksDb);
     }
     options.settings.check()?;
-    check_engine_settings(&options)?;
+    options.check_engine_settings()?;
     Ok((options, out))
-}
-
-/// Refuses a setting that no engine of the run takes, before anything is
-/// measured.
-fn check_engine_settings(options: &RunOptions) -> Result<(), BenchError> {
-    let settings = &options.settings.engine;
-    if settings.is_empty() {
-        return Ok(());
-    }
-    #[cfg(grovedb_engine_seam)]
-    if options.engines.contains(&EngineChoice::LigninDb) {
-        return super::lignindb::Tuning::new(settings).map(drop);
-    }
-    Err(BenchError::Check(
-        "--set: no engine of this run takes a setting".to_string(),
-    ))
 }
 
 fn number(value: f64) -> String {

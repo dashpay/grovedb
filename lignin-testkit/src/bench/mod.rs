@@ -188,6 +188,25 @@ pub struct RunOptions {
     pub grove_version: &'static GroveVersion,
 }
 
+impl RunOptions {
+    /// Refuses a setting that no engine of the run takes, and a setting
+    /// that the engine which takes settings cannot take. [`run`] asks
+    /// this before anything is measured.
+    pub fn check_engine_settings(&self) -> Result<(), BenchError> {
+        let settings = &self.settings.engine;
+        if settings.is_empty() {
+            return Ok(());
+        }
+        #[cfg(grovedb_engine_seam)]
+        if self.engines.contains(&EngineChoice::LigninDb) {
+            return lignindb::Tuning::new(settings).map(drop);
+        }
+        Err(BenchError::Check(
+            "--set: no engine of this run takes a setting".to_string(),
+        ))
+    }
+}
+
 /// A thread big enough for GroveDB's recursion on deep paths.
 pub const STACK_BYTES: usize = 64 << 20;
 
@@ -206,6 +225,7 @@ pub const STACK_BYTES: usize = 64 << 20;
 ///    are repeated, so the writes start warm.
 /// 3. `create`, `update`, `delete`: the writes at size, sampled per block.
 pub fn run(options: &RunOptions) -> Result<Report, BenchError> {
+    options.check_engine_settings()?;
     std::fs::create_dir_all(&options.settings.scratch)
         .map_err(|error| BenchError::io("creating the scratch directory", error))?;
     let options = options.clone();
