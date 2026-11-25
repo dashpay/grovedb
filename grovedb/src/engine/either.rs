@@ -10,9 +10,10 @@
 //! ([`Engine::open_write_scope`] on [`EitherEngine`]).
 //!
 //! [`EitherEngine::open_with`] is told the engine by an [`EngineChoice`].
-//! Named RocksDB opens reject a reserved name before listing. Other opens
-//! and path-only removals classify the directory before calling an engine
-//! ([`EitherEngine::found_at`] says how a directory is told).
+//! Opens and path-only removals classify the directory before calling an
+//! engine ([`EitherEngine::found_at`] says how a directory is told). Where
+//! no entry says an engine, a RocksDB open of a path whose last name ends
+//! in `.creating` is refused.
 //!
 //! `docs/lignindb/engine.md`, "An engine chosen at the open", is the
 //! contract.
@@ -662,14 +663,16 @@ fn is_reserved(path: &Path) -> bool {
     })
 }
 
-/// RocksDB opens for the caller and checkpoint creation reject this
-/// suffix, ignoring ASCII case. LigninDB builds at the literal sibling
-/// `p.creating`.
+/// Checkpoint creation by RocksDB rejects this suffix, ignoring ASCII
+/// case, and so does a RocksDB open for the caller where no entry of the
+/// directory says an engine ([`listed_for_rocksdb`]). LigninDB builds at
+/// the literal sibling `p.creating`.
 fn refuse_a_reserved_name(path: &Path) -> Result<(), Error> {
     match is_reserved(path) {
         true => Err(Error::NotSupported(format!(
-            "the path {} ends in `{CREATING_SUFFIX}`; it cannot be used for a RocksDB open for \
-             the caller or for checkpoint creation",
+            "the path {} ends in `{CREATING_SUFFIX}`, the name LigninDB builds a checkpoint \
+             under: RocksDB opens it for the caller only where an entry of the directory says \
+             RocksDB and none says LigninDB, and makes no checkpoint there",
             path.display()
         ))),
         false => Ok(()),
@@ -710,6 +713,18 @@ fn refuse_the_other(dir: &Path, choice: &EngineChoice) -> Result<bool, Error> {
         ))),
         found => Ok(found.is_some()),
     }
+}
+
+/// [`refuse_the_other`] for an open that names RocksDB. Where no entry
+/// says an engine, a last name of `dir` that ends in `.creating` is
+/// refused: LigninDB may be building a checkpoint there, and a directory
+/// it has just made has no entry yet.
+fn listed_for_rocksdb(dir: &Path) -> Result<bool, Error> {
+    let says_rocksdb = refuse_the_other(dir, &EngineChoice::RocksDb)?;
+    if !says_rocksdb {
+        refuse_a_reserved_name(dir)?;
+    }
+    Ok(says_rocksdb)
 }
 
 /// The RocksDB engine or the LigninDB engine, chosen when the database is
@@ -761,19 +776,23 @@ impl EitherEngine {
     /// the file system of its options. A listing with an entry of the
     /// other engine's, or with entries of both, is refused with
     /// [`Error::NotSupported`], and the chosen engine is not called. The
-    /// listing and the open are two steps: the refusal is of what the
-    /// directory held when it was listed.
+    /// listing and the open are two steps: a refusal, and the admission of
+    /// a name below, are of what the directory held when it was listed.
     ///
     /// For RocksDB a path whose last name ends in `.creating`, in any case
-    /// of its ASCII letters, is refused before it is listed. LigninDB
-    /// builds the checkpoint at `p` at the literal sibling `p.creating`
-    /// (`lignindb::checkpoint`).
+    /// of its ASCII letters, is opened only where the listing says RocksDB
+    /// and only RocksDB: a database of RocksDB that is there is opened as
+    /// under any other name. Where there is no directory, or no entry
+    /// says an engine, the path is refused for its name with
+    /// [`Error::NotSupported`], and nothing is made. LigninDB builds the
+    /// checkpoint at `p` at the literal sibling `p.creating`
+    /// (`lignindb::checkpoint`), and a directory it has just made has no
+    /// entry yet.
     pub fn open_with<P: AsRef<Path>>(path: P, choice: &EngineChoice) -> Result<Self, Error> {
         let path = path.as_ref();
         match choice {
             EngineChoice::RocksDb => {
-                refuse_a_reserved_name(path)?;
-                refuse_the_other(path, choice)?;
+                listed_for_rocksdb(path)?;
                 RocksDbEngine::open(path).map(Self::from)
             }
             EngineChoice::Lignin(options) => {
@@ -789,10 +808,11 @@ impl EitherEngine {
     /// with the options of the choice, [`Options::create_if_missing`]
     /// taken as off.
     ///
-    /// What [`Self::open_with`] refuses is refused here. Where RocksDB is
-    /// chosen, a listing in which no entry says an engine is refused by
-    /// this type too, with [`Error::StorageError`] and no engine called;
-    /// where LigninDB is chosen it is LigninDB's to answer. An admitted
+    /// What [`Self::open_with`] refuses is refused here, a path whose last
+    /// name ends in `.creating` by the same rule. Where RocksDB is chosen,
+    /// a listing in which no entry says an engine is refused by this type
+    /// too, with [`Error::StorageError`] and no engine called; where
+    /// LigninDB is chosen it is LigninDB's to answer. An admitted
     /// RocksDB-only listing selects the native checkpoint open, which can
     /// write files before failing.
     pub fn open_checkpoint_with<P: AsRef<Path>>(
@@ -801,13 +821,10 @@ impl EitherEngine {
     ) -> Result<Self, Error> {
         let path = path.as_ref();
         match choice {
-            EngineChoice::RocksDb => {
-                refuse_a_reserved_name(path)?;
-                match refuse_the_other(path, choice)? {
-                    true => RocksDbEngine::open_checkpoint(path).map(Self::from),
-                    false => Err(no_checkpoint(path)),
-                }
-            }
+            EngineChoice::RocksDb => match listed_for_rocksdb(path)? {
+                true => RocksDbEngine::open_checkpoint(path).map(Self::from),
+                false => Err(no_checkpoint(path)),
+            },
             EngineChoice::Lignin(options) => {
                 refuse_the_other(path, choice)?;
                 let options = Options {
@@ -989,13 +1006,18 @@ impl Engine for EitherEngine {
     /// directory say ([`Self::found_at`]), with that engine's default
     /// options. On an unmarked ordinary path, `EitherEngine::open` selects
     /// RocksDB except in the `either-lignin` unit suite, which selects
-    /// LigninDB. Where the path would go to RocksDB and its last name ends
-    /// in `.creating`, it is refused as by [`Self::open_with`].
+    /// LigninDB. Where no entry says an engine, the path would go to
+    /// RocksDB and its last name ends in `.creating`, it is refused as by
+    /// [`Self::open_with`]. Where an entry says RocksDB, the name is not
+    /// looked at.
     fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
-        match Self::found_at(path)?.unwrap_or(WHERE_NONE_IS_SAID) {
+        let found = Self::found_at(path)?;
+        match found.unwrap_or(WHERE_NONE_IS_SAID) {
             EngineKind::RocksDb => {
-                refuse_a_reserved_name(path)?;
+                if found.is_none() {
+                    refuse_a_reserved_name(path)?;
+                }
                 RocksDbEngine::open(path).map(Self::from)
             }
             EngineKind::Lignin => LigninEngine::open(path).map(Self::from),
@@ -1004,25 +1026,22 @@ impl Engine for EitherEngine {
 
     /// Opens the checkpoint at `path` with the engine that the entries of
     /// the directory say. A listing in which none says an engine is
-    /// refused with no engine called, and so is a path whose last name
-    /// ends in `.creating` where an entry says RocksDB. An admitted
-    /// RocksDB-only listing selects the native checkpoint open, which can
-    /// write files before failing.
+    /// refused with no engine called, whatever the name of the path. An
+    /// admitted RocksDB-only listing selects the native checkpoint open,
+    /// also under a last name that ends in `.creating`, which can write
+    /// files before failing.
     fn open_checkpoint<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let path = path.as_ref();
         match Self::found_at(path)? {
-            Some(EngineKind::RocksDb) => {
-                refuse_a_reserved_name(path)?;
-                RocksDbEngine::open_checkpoint(path).map(Self::from)
-            }
+            Some(EngineKind::RocksDb) => RocksDbEngine::open_checkpoint(path).map(Self::from),
             Some(EngineKind::Lignin) => LigninEngine::open_checkpoint(path).map(Self::from),
             None => Err(no_checkpoint(path)),
         }
     }
 
     /// Makes a checkpoint with the engine that is held. Where RocksDB is
-    /// held, a `path` whose last name ends in `.creating` is refused, as
-    /// by [`Self::open_with`].
+    /// held, a `path` whose last name ends in `.creating`, in any case of
+    /// its ASCII letters, is refused, whatever is there.
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
         let path = path.as_ref();
         match &self.held {
