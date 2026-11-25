@@ -191,8 +191,22 @@ has to be there: make it first.
 : "${TARGET:?set TARGET to where the LigninDB database is to be}"
 : "${BACKUP:?set BACKUP to where the backup of the new database is to be}"
 : "${RESTORE:?set RESTORE to where the backup is to be restored once}"
-real_dir() { (cd -P -- "$1" && pwd -P); }
-real_new() { printf '%s/%s\n' "$(cd -P -- "$(dirname -- "$1")" && pwd -P)" "$(basename -- "$1")"; }
+plain_path() {
+  case "$1" in *$'\n'*) echo "a path with a line break in it is not taken: $1" >&2; return 1 ;; esac
+}
+real_dir() {
+  local d
+  plain_path "$1" || return 1
+  d=$(cd -P -- "$1" && pwd -P) || return 1
+  plain_path "$d" || return 1
+  printf '%s\n' "$d"
+}
+real_new() {
+  local d
+  plain_path "$1" || return 1
+  d=$(real_dir "$(dirname -- "$1")") || return 1
+  printf '%s/%s\n' "${d%/}" "$(basename -- "$1")"
+}
 same_place() {
   if [ -e "$1" ] && [ "$1" -ef "$2" ]; then return 0; fi
   [ "$(dirname -- "$1")" -ef "$(dirname -- "$2")" ] && [ "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" = "$(basename -- "$2" | tr '[:upper:]' '[:lower:]')" ]
@@ -310,7 +324,7 @@ seconds (or as `--progress` says) a line says where the load stands:
 | Exit status | What it means | What to do |
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
-| 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, unless the error says the database got that name and the name could not be made durable | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again. In the one case where the database got its name and the name could not be made durable, keep this report and send the next run's to another file: that run makes the name durable and then refuses the target as one that is there, with status 1 again, which is what it does with a whole database at `TARGET`. This report has every line that step 7 looks for but the last: run step 7's other commands on it, and `lignin verify` on the target |
+| 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, but in two cases: the error says that the database got that name and the name could not be made durable; or it refuses the target as one that is there (`the target … is there and …`), which is also what a run that was given a `TARGET` an earlier run had already named answers | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again. Where the database got its name and the name could not be made durable, keep this report and send the next run's to another file: that run makes the name durable and then refuses the target as one that is there. Where a run was stopped after it gave the database its name and before you read its last line, the next run refuses the target too. A database that a migration put at `TARGET` is whole; run step 7's commands on the report of the run that made it, where it has its lines, and `lignin verify` on the target |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
 
@@ -367,7 +381,7 @@ grep ': loaded, compared and verified$' "$WORK/reports/migrate.txt"
 survey_hash=$(sed -n 's/^  root hash: //p' "$WORK/reports/survey.txt")
 target_hash=$(grep -o 'root_hash=[0-9a-f]*' "$WORK/reports/migrate.txt" | cut -d= -f2)
 if [ -n "$survey_hash" ] && [ "$survey_hash" = "$target_hash" ]; then echo "the same root hash: $target_hash"; else echo "THE ROOT HASHES DIFFER: survey $survey_hash, target $target_hash"; false; fi
-if [ "$(sed -n '1s/;.*//p' "$WORK/reports/survey.txt")" = "$(sed -n '1s/;.*//p' "$WORK/reports/migrate.txt")" ]; then echo "the same RocksDB identity and last write in both runs"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
+if [ "$(sed -n '1s/;[^;]*$//p' "$WORK/reports/survey.txt")" = "$(sed -n '1s/;[^;]*$//p' "$WORK/reports/migrate.txt")" ]; then echo "the same RocksDB identity and last write in both runs"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
 ```
 
 Each of these prints the line it found, or fails: `grep` with no line
@@ -375,7 +389,7 @@ found, the last two commands with the words THE ROOT HASHES DIFFER or
 THE SOURCE CHANGED BETWEEN THE TWO RUNS. The first of the two holds the
 root hash that the survey of step 5 read from the source to the one the
 migration read from it. The second holds the first line of each report,
-up to its `;`, to the other: the source's path, its RocksDB identity and
+up to its last `;`, to the other: the source's path, its RocksDB identity and
 the sequence number of its last write. Where they are the same, no
 write reached the source between the two runs. That the target has the source's root hash is
 what `differing=0` says; the migration also refuses a source that
@@ -407,9 +421,10 @@ database is closed and no process has it open, so a copy of its
 directory is a consistent backup ([backup and full disk](backup-and-full-disk.md)).
 `cp -a` copies every file with the `LOCK` file, which an open needs. `cp`
 returns before its bytes are on the device: on Linux, `sync` returns once
-the system has written them. On macOS `sync` can return before they are
-written, so a copy made there is durable once its device has been
-ejected or the system shut down.
+the system has written them, and tells of no write that failed. On macOS
+`sync` can return before they are written, so a copy made there is
+written once its device has been ejected or the system shut down. Either
+way, step 9's restore is what the backup is relied on by.
 
 ```sh
 if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
@@ -469,16 +484,17 @@ checkpoint, that the node goes back to.
 - **Before the node has committed anything on LigninDB**, going back is
   pointing the node at its RocksDB database again and selecting RocksDB.
   `TARGET` can then be removed.
-- **After it has committed on LigninDB**, `SOURCE` is still the state at
-  the migration, and what the node committed since is in `TARGET` alone.
-  GroveDB has no tool that migrates a LigninDB database back to RocksDB. A
-  node that goes back starts from `SOURCE` and has to apply again what it
-  applied since the migration, which is the application's to do.
+- **After it has committed on LigninDB**, its RocksDB database is still
+  the state at the migration, and what the node committed since is in
+  `TARGET` alone. GroveDB has no tool that migrates a LigninDB database
+  back to RocksDB. A node that goes back starts from its RocksDB
+  database and has to apply again what it applied since the migration,
+  which is the application's to do.
 - **A migration that failed** left nothing at `TARGET` (exit status 1
-  and 4, unless the error says otherwise) or left its database in
-  `TARGET.migrating` (exit status 3): start the node on `SOURCE` as
-  before, and remove `TARGET.migrating` when it is no longer needed for a
-  report, after looking into it as step 6 says.
+  and 4, but for the cases the table of step 6 names) or left its
+  database in `TARGET.migrating` (exit status 3): start the node on its
+  RocksDB database as before, and remove `TARGET.migrating` when it is
+  no longer needed for a report, after looking into it as step 6 says.
 
 Remove `SOURCE` only when the node has run on LigninDB for as long as you
 want a way back, and after a backup of the LigninDB database

@@ -37,8 +37,22 @@ path is to be in has to be there.
 
 ```sh
 set -euo pipefail
-real_dir() { (cd -P -- "$1" && pwd -P); }
-real_new() { printf '%s/%s\n' "$(cd -P -- "$(dirname -- "$1")" && pwd -P)" "$(basename -- "$1")"; }
+plain_path() {
+  case "$1" in *$'\n'*) echo "a path with a line break in it is not taken: $1" >&2; return 1 ;; esac
+}
+real_dir() {
+  local d
+  plain_path "$1" || return 1
+  d=$(cd -P -- "$1" && pwd -P) || return 1
+  plain_path "$d" || return 1
+  printf '%s\n' "$d"
+}
+real_new() {
+  local d
+  plain_path "$1" || return 1
+  d=$(real_dir "$(dirname -- "$1")") || return 1
+  printf '%s/%s\n' "${d%/}" "$(basename -- "$1")"
+}
 same_place() {
   if [ -e "$1" ] && [ "$1" -ef "$2" ]; then return 0; fi
   [ "$(dirname -- "$1")" -ef "$(dirname -- "$2")" ] && [ "$(basename -- "$1" | tr '[:upper:]' '[:lower:]')" = "$(basename -- "$2" | tr '[:upper:]' '[:lower:]')" ]
@@ -99,9 +113,12 @@ lignin manifest "$BACKUP"
 
 `cp -a` copies every file of the directory with the `LOCK` file. `cp`
 returns before its bytes are on the device. On Linux `sync` returns once
-the system has written them, and so makes the copy durable; on macOS
-`sync` can return before, so a copy made there is durable once its
-device has been ejected or the system shut down. `lignin manifest`
+the system has written them, and tells of no write that failed; on
+macOS `sync` can return before, so a copy made there is written once
+its device has been ejected or the system shut down. Either way, a
+backup is relied on once a restore of it has passed `lignin verify`,
+and that check can be answered from the system's cache: a restore on
+another machine reads what the device holds. `lignin manifest`
 reads the backup's manifest without opening it and lists the files it
 names, marking one that is not there `MISSING` and one that is shorter
 `SHORT`; it exits 0 either way, and reads no page. A backup is relied on
@@ -125,7 +142,8 @@ once a restore of it has passed `lignin verify` (below).
 3. **Copy its directory**, and make the copy durable by syncing the
    copy's files and nothing else. On Linux, `sync` given files (GNU
    coreutils) syncs those files alone: `find` hands it every file and
-   directory of the copy, and the loop after it syncs each directory the
+   directory of the copy, and no link, which `sync` would follow to a
+   file outside it, and the loop after it syncs each directory the
    copy is in, up to and with the root, which hold the copy's name and the
    names above it. A sync of a file that `cp` has written and closed
    cannot report a write that the system had already failed before it:
@@ -142,7 +160,7 @@ once a restore of it has passed `lignin verify` (below).
    lignin manifest "$CHECKPOINT"
    cp -a "$CHECKPOINT" "$BACKUP"
    if [ "$(uname -s)" = Linux ]; then
-     find "$BACKUP" -exec sync {} +
+     find "$BACKUP" \( -type f -o -type d \) -exec sync {} +
      d=$(dirname -- "$BACKUP")
      while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
    else
@@ -192,7 +210,7 @@ RESTORE=$(real_new "$RESTORE")
 apart "$BACKUP" "$RESTORE"
 cp -a "$BACKUP" "$RESTORE"
 if [ "$(uname -s)" = Linux ]; then
-  find "$RESTORE" -exec sync {} +
+  find "$RESTORE" \( -type f -o -type d \) -exec sync {} +
   d=$(dirname -- "$RESTORE")
   while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
 fi
@@ -227,7 +245,7 @@ checkpoint holds: the engine's files and no file of the application's.
 | Left | What it is | What to do |
 | --- | --- | --- |
 | a copy that `cp` or `sync` did not finish, with or without a `MANIFEST` | a copy that was cut short: `cp` writes the files in no set order, so its manifest says nothing of the rest | remove it, and copy again |
-| a directory whose name ends in `.creating`, beside a checkpoint's path | what a creation of a checkpoint at that path left, when it was cut short or failed. It is never opened, and it holds disk space. | with no checkpoint being made at that path, remove that directory by itself. Keep nothing of your own under a name that ends in `.creating`: a creation at the path takes over whatever such a directory holds, and the deletion of a checkpoint at the path removes it |
+| a directory whose name ends in `.creating`, beside a checkpoint's path | what a creation of a checkpoint at that path left, when it was cut short or failed, where one was made there. It is never opened, and it holds disk space. The name alone does not say who made the directory | where you know that a creation of a checkpoint at that path failed or was cut short (its error said so, or the node stopped during one) and none is being made now, remove that directory by itself. Otherwise look at what it holds first, and remove nothing you cannot account for. Keep nothing of your own under a name that ends in `.creating`: a creation at the path takes over whatever such a directory holds, and the deletion of a checkpoint at the path removes it |
 | a directory that holds `MANIFEST.deleting` and no `MANIFEST` | a deletion that was cut short, where that entry is a manifest and a deletion of this directory was under way: a deletion renames the manifest to that name before it removes any file. The names alone do not say that a deletion was meant | where you know that this directory was being deleted, the deletion of [step 4](#back-up-a-running-node) finishes it (it refuses the directory where the entry is no manifest). Where you do not know that, delete and rename nothing: some of its files may be gone, and the database is restored from a backup |
 | a directory that holds both `MANIFEST.deleting` and `MANIFEST` | no deletion leaves this, since it renames the manifest first: something else made the entry beside a database | if the database is to be kept, remove the entry `MANIFEST.deleting` and nothing else. The deletion of [step 4](#back-up-a-running-node) would remove the whole database: it goes by the manifest it finds, not by the entry's name |
 
@@ -289,8 +307,9 @@ reserve, below.
    cleaner drops the segment and value-log files that are dead and moves
    what is live out of the others. On a stopped database, `lignin stats`
    shows where the room is, and `lignin compact` has the cleaner work
-   until a whole pass moves nothing (600 s at most, unless `--timeout`
-   says otherwise):
+   until a whole pass moves nothing, and starts no further turn once
+   600 s have passed (or what `--timeout` says); the turn under way and
+   the close end after that:
 
    ```sh
    df -h "$DB"

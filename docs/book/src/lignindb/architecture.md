@@ -16,8 +16,14 @@ which GroveDB reaches through one trait, `Engine`
 ([engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md)). Two engines implement it: the RocksDB
 engine, which GroveDB has always had, and LigninDB. A node chooses one
 when it opens its database. Merk's tree shape, its hashes and its costs
-stay in Merk, above the seam, so a grove has the same root hash, the
-same proofs and the same `OperationCost` on either engine.
+stay in Merk, above the seam, so that on every existing GroveVersion a
+grove has the same root hash, the same proofs and the same
+`OperationCost` on either engine, as the golden corpus holds. The plan
+holds this for what a resync of mainnet or testnet can meet, and states
+the differences it leaves in states those histories do not reach:
+[engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md#a-subtree-leaves-with-its-element) names them,
+the first after a tree is removed by a batch's plain delete while it
+still holds elements.
 
 ```text
 the application          a node: blocks, state transitions, checkpoints, state sync

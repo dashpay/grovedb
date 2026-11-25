@@ -70,7 +70,7 @@ application and the rest of the engine hold.
 | --- | --- | --- |
 | never (the default) | after the next `flush()`, checkpoint, close, or table checkpoint of write-back, each of which syncs the log | the last commit before the last sync, or a later one: never on a part of a commit |
 | `SyncPolicy::Interval(d)` | after the next sync: a commit syncs the log where the last sync is at least `d` ago, and so does a turn of write-back's loop between commits. That is no bound in time where no commit and no turn comes, or a sync fails | the last commit before the last sync that was made, or a later one |
-| `SyncPolicy::EveryCommit` | when its commit returns `Ok`; a commit that returns `NotDurable` is published and not known to be durable | the last commit that returned `Ok`, or a later one whose bytes reached the device all the same: one whose call had not returned when the power was cut, or one that returned `NotDurable` |
+| `SyncPolicy::EveryCommit` | when its commit returns `Ok`; a commit that returns `NotDurable` is published and not known to be durable | the last commit that returned `Ok`, or a later one whose bytes reached the device all the same: one whose call had not returned when the power was cut, or one that returned `NotDurable` or `Unsettled` |
 
 In every case the open lands on one committed version, never on a part
 of a commit, and on none older than the last one made durable
@@ -160,7 +160,7 @@ node's, and takes:
 | `lignin migrate --batch` | 160 MiB | about how much one commit of a migration holds |
 | `lignin migrate --progress` | 5 s | how often a migration says where its load stands |
 | `lignin migrate --memory-limit` | half the machine's memory as `/proc/meminfo` states it; none where that file does not state it | the most a migration may project to hold |
-| `lignin compact --timeout` | 600 s | how long `compact` works at most |
+| `lignin compact --timeout` | 600 s | after how long `compact` starts no further turn of the cleaner; the turn under way and the close end after it |
 
 Where to give them, and when, is in [the runbook](migration.md#6-migrate).
 To read what a database holds after a change of the settings, run
