@@ -778,8 +778,8 @@ fn change(bytes: &mut Vec<u8>, rng: &mut Rng) {
 ///
 /// These groves are made on the latest grove version, which makes every
 /// kind: a kind that is not made, and an append or a child that is not
-/// taken, fail the making and leave no grove that holds less than its
-/// plan says.
+/// taken, fail the making, so that no grove is left whose making was
+/// refused something its plan asks for.
 #[derive(Clone, Copy, Debug)]
 struct Plan {
     /// The rows of a tree of each kind whose data is one Merk.
@@ -821,15 +821,16 @@ const PLANNED_INDEXED: &[u8] = b"indexed";
 /// with (`append_only::Dense`): a tree of height 5.
 const DENSE_ROOM: usize = 31;
 
-/// A tree of an append-only kind with the plan's values in it, and no
-/// more than the `room` the kind has. Returns how many it holds.
+/// A tree of an append-only kind, and the plan's values appended to it, no
+/// more than the `room` the kind has: the tree is made and every append is
+/// taken, or the making fails.
 fn planned_appended<T: Appended, E: Engine>(
     db: &GroveDb<E>,
     plan: &Plan,
     room: usize,
     v: &GroveVersion,
     shape: &mut Shape,
-) -> usize {
+) {
     let name = T::NAME.as_bytes();
     must_put(db, &path(&[PLANNED_APPENDED]), name, T::empty(None), v);
     let count = plan.appended.min(room);
@@ -840,7 +841,6 @@ fn planned_appended<T: Appended, E: Engine>(
         }
     }
     shape.flats.push(path(&[PLANNED_APPENDED, name]));
-    count
 }
 
 /// An indexed tree of one kind with the plan's children and a child that
@@ -912,29 +912,16 @@ fn planned<E: Side>(plan: &Plan, v: &GroveVersion) -> Made<E> {
         shape.merks.push((at.clone(), sums));
     }
 
-    let appended = [
-        planned_appended::<Mmr, E>(&db, plan, usize::MAX, v, &mut shape),
-        planned_appended::<Bulk, E>(&db, plan, usize::MAX, v, &mut shape),
-        planned_appended::<Dense, E>(&db, plan, DENSE_ROOM, v, &mut shape),
-        planned_appended::<Commitment, E>(&db, plan, usize::MAX, v, &mut shape),
-        planned_appended::<Private, E>(&db, plan, usize::MAX, v, &mut shape),
-    ];
-    // What the grove holds of the kinds that a version or a full tree
-    // could have left out: every kind of append-only tree with the
-    // plan's values, as far as it has room, and every kind of indexed
-    // tree.
-    let room = plan.appended.min(DENSE_ROOM);
-    assert_eq!(
-        appended,
-        [
-            plan.appended,
-            plan.appended,
-            room,
-            plan.appended,
-            plan.appended
-        ]
-    );
-    assert_eq!(shape.flats.len(), appended.len());
+    planned_appended::<Mmr, E>(&db, plan, usize::MAX, v, &mut shape);
+    planned_appended::<Bulk, E>(&db, plan, usize::MAX, v, &mut shape);
+    planned_appended::<Dense, E>(&db, plan, DENSE_ROOM, v, &mut shape);
+    planned_appended::<Commitment, E>(&db, plan, usize::MAX, v, &mut shape);
+    planned_appended::<Private, E>(&db, plan, usize::MAX, v, &mut shape);
+    // A tree of each of the five append-only kinds was made, and each
+    // append that the plan asks of it was taken. What a tree then holds
+    // is not read here: the records that a synced grove is held to are
+    // read from this grove itself.
+    assert_eq!(shape.flats.len(), 5);
 
     planned_indexed::<Count, E>(&db, plan, v, &mut shape);
     planned_indexed::<Sum, E>(&db, plan, v, &mut shape);
@@ -1027,8 +1014,9 @@ impl Asked {
     /// a page to change. An alteration that no part of such a grove takes
     /// makes no case there, and the run says which.
     ///
-    /// The case of a seed is made when it is asked for, and of a seed
-    /// outside the shard not at all.
+    /// The case of a seed is made when it is asked for. With a shard, the
+    /// seeds of the shard are stepped to, each in one step however far
+    /// apart they are, and no other seed is looked at.
     fn cases<'a, S: Side>(
         &'a self,
         honest: &'a Honest<S>,
@@ -1043,9 +1031,15 @@ impl Asked {
         let listed = (listed.into_iter().enumerate())
             .filter(move |(at, _)| in_shard(*at))
             .map(|(_, case)| case);
-        let seeded = (self.seeds.clone().enumerate())
-            .filter(move |(at, _)| in_shard(count + at))
-            .map(|(_, seed)| honest.at_random(seed));
+        // The seed at the offset `k` of the range is the case `count + k`
+        // of the run: the first offset of the shard, and every `of`th
+        // from it.
+        let (first, step) = match self.shard {
+            Some((index, of)) => ((index + of - count % of) % of, of),
+            None => (0, 1),
+        };
+        let seeded =
+            (self.seeds.clone().skip(first).step_by(step)).map(|seed| honest.at_random(seed));
         listed.chain(seeded)
     }
 
