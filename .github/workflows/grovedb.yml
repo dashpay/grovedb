@@ -473,6 +473,36 @@ jobs:
       - name: Replay the golden corpus on the cost model
         run: .github/scripts/lignin-ci.sh cost-model
 
+  # The golden corpus of the standard scale replayed on LigninDB and compared
+  # with the files RocksDB recorded: any cost, result, error, root hash or
+  # proof that differs fails it.
+  corpus-lignindb:
+    name: Golden corpus on LigninDB
+    needs: detect-changes
+    if: needs.detect-changes.outputs.needs-tests == 'true'
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      - name: Replay the golden corpus on LigninDB
+        run: .github/scripts/lignin-ci.sh corpus --engine lignindb
+
   formatting:
     name: Formatting
     needs: detect-changes

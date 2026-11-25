@@ -148,14 +148,19 @@ jobs:
           if-no-files-found: warn
 
   # The golden corpus of the reference scale: a million documents on each
-  # grove version, replayed on RocksDB.
+  # grove version, replayed on RocksDB and on LigninDB, and compared with
+  # the files RocksDB recorded.
   corpus-reference:
-    name: Corpus of the reference scale
+    name: Corpus of the reference scale on ${{ matrix.engine }}
     runs-on: >-
       ${{ fromJSON((github.event_name != 'pull_request'
       || github.event.pull_request.head.repo.full_name == github.repository)
       && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [rocksdb, lignindb]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -172,7 +177,9 @@ jobs:
         with:
           cache-on-failure: "false"
       - name: Replay
-        run: .github/scripts/lignin-ci.sh corpus-reference ${{ github.event_name == 'pull_request' && '--grove-version 5' || '' }}
+        run: >
+          .github/scripts/lignin-ci.sh corpus-reference --engine ${{ matrix.engine }}
+          ${{ github.event_name == 'pull_request' && '--grove-version 5' || '' }}
 
   # The corpus recorded again from the commit of develop it is pinned to,
   # through record-at-pin.sh, and compared with the committed corpus: the
