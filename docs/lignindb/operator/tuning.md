@@ -51,12 +51,12 @@ may use:
 - **A checkpoint that is opened to be read** needs much less: it takes
   no writes, so nothing waits in its pool to be written. The example of
   `lignindb::Options` opens one with 16 MiB.
-- **Too small a pool** can refuse an open: a recovery rebuilds the pages
-  that the log changes in the pool, and fails with
-  `the buffer pool refused a rebuilt page` where they do not fit
-  ([messages](messages.md#in-a-recovery)). Open with a larger
-  `cache_size`. Write-back's `max_log_held` bounds how much log there is
-  to replay.
+- **The pool also holds what it cannot evict**: the private copies of
+  open write transactions, the page versions that wait for write-back
+  (`max_unwritten` at most before committers wait), and at an open the
+  pages that replay rebuilds (as many again at most, before replay writes
+  them out). A `cache_size` below one page refuses the open
+  ([messages](messages.md#in-a-recovery)).
 
 ### Durability
 

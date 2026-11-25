@@ -116,7 +116,8 @@ version. These words follow `recovery: `.
 
 Two kinds are told apart (`RecoveryError::is_damage`). **A file
 operation that failed** (the first group below) leaves the directory as
-the next open expects it: fix what the system says, and open again.
+the next open expects it: fix what the system says, and open again. The
+buffer pool's refusals are in that group too, and say what to do.
 **Damage** (the second group) is a store whose files do not hold what
 they must: restore the database from a backup, keep the damaged
 directory, and report it with what `lignin verify` says of it (where
@@ -128,8 +129,10 @@ that opens it at all).
 | `the table checkpoint did not load: …` | the page-table checkpoint could not be read | `lignin-store/src/recovery/error.rs` |
 | `the value log was not recovered: …` | a value-log file could not be read | `lignin-store/src/recovery/error.rs` |
 | `the log was not recovered: …` | a log file could not be read; [the files](#the-files-at-an-open) say which | `lignin-store/src/recovery/error.rs` |
-| `the buffer pool refused a rebuilt page: …` | the pool is too small for what the log replays: raise the cache size ([tuning](tuning.md)) | `lignin-store/src/recovery/error.rs` |
-| `the buffer pool refused the rebuilt frame of page …: …` | the same, for one page | `lignin-store/src/recovery/error.rs` |
+| `the buffer pool refused a rebuilt page: …` | the buffer pool could not be made, or refused a page that replay rebuilt; the words after it say which, below | `lignin-store/src/recovery/error.rs` |
+| `a buffer pool of … bytes does not hold one frame of … bytes` | after the line above: `cache_size` is below one page. Give a larger one ([tuning](tuning.md#memory)) | `lignin-store/src/cache/error.rs` |
+| `the buffer pool is too large to allocate` | after the line above: `cache_size` is more than one allocation can be. Give a smaller one | `lignin-store/src/cache/error.rs` |
+| `the buffer pool refused the rebuilt frame of page …: …` | the pool refused a page that replay rebuilt: a defect, to report with the whole message | `lignin-store/src/recovery/error.rs` |
 | `the page ids were not recovered: …` | the record of page ids could not be read | `lignin-store/src/recovery/error.rs` |
 | `the store's pages cannot be read: …` | the loader of pages could not be made | `lignin-store/src/recovery/error.rs` |
 | `page …, which the item at … changes, could not be read: …` | a page that the log changes could not be read | `lignin-store/src/recovery/error.rs` |

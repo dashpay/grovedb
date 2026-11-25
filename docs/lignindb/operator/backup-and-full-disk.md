@@ -106,11 +106,13 @@ manifest, and the command then fails.
 ## Check a backup, and restore one
 
 A backup that is to be relied on is checked once, on a restore of it:
-the copy of a directory reads no page, and the check reads them all.
+the copy of a directory reads no page, and the check reads them all. The
+restore is synced file by file, as the copy of a checkpoint is, so that
+it can be made beside a running node.
 
 ```sh
 cp -a "$BACKUP" "$RESTORE"
-sync
+find "$RESTORE" -exec sync {} +
 lignin verify "$RESTORE"
 ```
 
@@ -120,18 +122,18 @@ restore is a database like any other, at the version the backup holds:
 point the node at it, or keep it as the check and remove it.
 
 **A restored directory that does not open, with
-`holds a database and no LOCK file`,** was copied by a tool that left `LOCK` out. Put an empty file
-of that name there, once you know that no process has the directory
-open:
+`holds a database and no LOCK file`,** was copied by a tool that left
+`LOCK` out. Put an empty file of that name there, once you know that no
+process has the directory open:
 
 ```sh
 touch "$RESTORE/LOCK"
 lignin stats "$RESTORE"
 ```
 
-**A backup does not hold** what the copy did not copy. `cp -a` copies
-the whole directory: the engine's files, the reserve (`RESERVE`, below)
-and whatever the application keeps there.
+**What a backup holds** is what was copied. `cp -a` copies the whole
+directory: the engine's files, the reserve (`RESERVE`, below) and
+whatever the application keeps there.
 
 ### What a cut-short copy or checkpoint leaves
 
@@ -177,26 +179,30 @@ reserve, below.
 2. **Let the node tell you whether its session goes on.** An error whose
    words say
    `the session takes no write, and the database has to be opened again`
-   means a sync of the log or of a segment was refused
-   while the device was full, and the session has ended: stop the node
+   means a sync of the log or of a segment was refused while the device
+   was full, and the session has ended: stop the node
    and start it again once there is room. Nothing that was made durable
    is lost. The open can land on an earlier commit than the last one the
    node published, since a sync that the device refused makes no promise
    of what it was for; the node goes on from where the open landed.
    Otherwise the session goes on by itself: the next commit is taken.
-3. **Let the engine give room back.** Write-back takes a table checkpoint
-   and drops the log files it covers; the cleaner drops the segment and
-   value-log files that are dead, and moves what is live out of the
-   others. On a stopped database, `lignin stats` shows where the room
-   is:
+3. **Let the engine give room back.** In a running session, write-back
+   takes a table checkpoint and drops the log files it covers, and the
+   cleaner drops the segment and value-log files that are dead and moves
+   what is live out of the others. On a stopped database, `lignin stats`
+   shows where the room is, and `lignin compact` has the cleaner work
+   until a whole pass moves nothing (600 s at most, unless `--timeout`
+   says otherwise):
 
    ```sh
    df -h "$DB"
    lignin stats "$DB"
+   lignin compact "$DB"
    ```
 
-   Its lines `log held:` and `on disk:` are the log that recovery would
-   read and the bytes of each kind of file.
+   The lines `log held:` and `on disk:` of `lignin stats` are the log that
+   a recovery would read and the bytes of each kind of file. `compact`
+   needs room for the copies it makes before it gives files back.
 4. **The reserve fills again by itself** in a session that keeps one,
    once commits are taken, a table checkpoint was installed and the
    cleaner is at rest.

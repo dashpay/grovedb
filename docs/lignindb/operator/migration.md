@@ -49,9 +49,9 @@ the database's bytes.
 the source's records plus 256 MiB on the device of the target, and says
 so before it writes anything:
 `the load needs about … MiB on the device of … while it runs; …`, with
-how much is free there. The RocksDB
-database stays where it is, beside the new one. Step 8 needs room for one
-copy of the new database, best on another device.
+how much is free there. The RocksDB database stays where it is, beside
+the new one. Step 8 needs room for one copy of the new database, best on
+another device.
 
 **Memory.** A Merk is handed over whole, so the largest Merk of the
 source decides the peak. The survey says what peak the run projects
@@ -124,8 +124,9 @@ makes, so that you see each report before you meet it on your node's
 database. The tool is `lignin-bench` (`docs/lignindb/benchmarks.md`),
 which writes Drive's document layout: 20,000 documents over 200 owners
 here, with creates, updates and deletes after them. With
-`lignin-bench run --keep` its database stays in `$WORK/rehearsal/rocksdb`. Its report goes to a file; nothing
-in it is needed below.
+`lignin-bench run --keep` its database stays in
+`$WORK/rehearsal/rocksdb`. Its report goes to a file; nothing in it is
+needed below.
 
 ```sh
 cargo build --release -p lignin-testkit --bin lignin-bench
@@ -196,9 +197,8 @@ Read its report before you go on:
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
   `the source … holds what a migration does not carry`. The one shape
-  refused today is a keyed
-  child under a tree of flat records, which grove versions 1 to 3 let a
-  caller write.
+  refused today is a keyed child under a tree of flat records, which
+  grove versions 1 to 3 let a caller write.
 - `prefixes that nothing leads to:` counts records under prefixes that no
   element leads to (a tree that a batch's plain delete removed while it
   held an element leaves them). Unless `--unreachable` says otherwise
