@@ -127,7 +127,7 @@ fn rules(hashes: bool) -> Option<MerkHashRules<'static>> {
 
 /// What `verify` says of the value hashes that a delete on grove versions
 /// 1 to 3 left, if the check came to any.
-fn left_hashes(report: &Report) -> Option<String> {
+pub(crate) fn left_hashes(report: &Report) -> Option<String> {
     let left = &report.other_hashes;
     let said = match left.count {
         0 => return None,

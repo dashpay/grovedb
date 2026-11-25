@@ -41,6 +41,11 @@ grovedb-merk = { version = "7.0.0", path = "../merk", features = ["lignin_storag
 
 [dev-dependencies]
 grovedb-merk = { version = "7.0.0", path = "../merk", features = ["lignin_storage"] }
+# The migrator from RocksDB, which `tests/migrate.rs` runs on the groves of
+# the corpus. With `migrate` the tool asks GroveDB for `lignin_storage`,
+# which the engine the golden corpus is pinned to does not have:
+# `corpus/record-at-pin.sh` takes this line out of its copy of this manifest.
+lignin-tools = { version = "7.0.0", path = "../lignin-tools", features = ["migrate"] }
 lignindb = { version = "7.0.0", path = "../lignindb", features = ["testing"] }
 rustix = { version = "1", features = ["fs"] }
 syn = { version = "2", features = ["full", "visit"] }

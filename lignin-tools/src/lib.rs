@@ -19,11 +19,18 @@
 //! lignin dump      DIR (SUBTREE | --all) FILE
 //!                                       a subtree, with every subtree below it, to a file
 //! lignin load      DIR FILE             a dump, into a database that does not have its subtrees
+//! lignin migrate   SOURCE TARGET [--batch MIB] [--progress SECS] [--unreachable refuse|leave|carry]
+//!                                       a RocksDB GroveDB into a new LigninDB database
+//! lignin migrate   SOURCE --survey [--unreachable refuse|leave|carry]
+//!                                       what a RocksDB GroveDB holds, and whether it migrates
 //! ```
 //!
-//! Every subcommand that opens the database (all but `manifest` and
-//! `segments`) also takes `--cache MIB`, the buffer pool of the open
-//! (64 MiB unless given). A subtree is named by its
+//! `migrate` is in a build with the Cargo feature `migrate`, which compiles
+//! RocksDB: the module `migrate` has its documentation.
+//!
+//! Every subcommand that opens a LigninDB database (all but `manifest`,
+//! `segments` and `migrate --survey`) also takes `--cache MIB`, the buffer
+//! pool of the open (64 MiB unless given). A subtree is named by its
 //! 32 bytes in hex, as `lignin directory` prints it.
 //!
 //! # What a subcommand does to the directory
@@ -34,9 +41,10 @@
 //! | `pages`, `directory`, `stats`, `verify`, `dump` | yes ([`lignindb::Db::open`]) | what any open writes: the recovery starts the session's log file and replaces the manifest, and the close writes back and takes a table checkpoint |
 //! | `compact` | yes, with a cleaner that leaves no dead byte it can move | the cleaner's copies, then what a close writes |
 //! | `load` | yes | the subtrees of the dump, in one commit |
+//! | `migrate` | no database at its target: it makes one beside it | the source: nothing. The target: a new database in the directory `TARGET.migrating`, which is given the name `TARGET` at the end |
 //!
-//! **A database that a process has open is not opened again**: the open
-//! takes the directory's lock and fails with
+//! **A LigninDB database that a process has open is not opened again**: the
+//! open takes the directory's lock and fails with
 //! [`OpenError::Locked`](lignindb::db::OpenError::Locked). The tool is run
 //! on a database whose node is stopped, or on a checkpoint of a live one
 //! (`lignindb::checkpoint`): a checkpoint is a database of its own,
@@ -46,24 +54,31 @@
 //! before anything opens a checkpoint that is to be backed up
 //! ([`lignindb::backup`]): an open is a session, which writes.
 //!
-//! No subcommand reads a part of a checkpoint (a path whose final name
-//! ends in `.creating`) or a directory that holds `MANIFEST.deleting` (a
-//! database being removed): each refuses it before it reads anything,
-//! and says what the operator can do.
+//! No subcommand reads a part of a LigninDB checkpoint (a path whose
+//! final name ends in `.creating`) or a directory that holds
+//! `MANIFEST.deleting` (a LigninDB database being removed): each refuses
+//! it before it reads anything, and says what the operator can do. The
+//! source of `migrate` is a RocksDB database, which is neither by its
+//! name or by a file of that name.
 //!
-//! No subcommand makes a database: an open of a directory that holds none
-//! fails ([`OpenError::NoDatabase`](lignindb::db::OpenError::NoDatabase)),
-//! `load` included.
+//! No subcommand but `migrate` makes a database: an open of a directory
+//! that holds none fails
+//! ([`OpenError::NoDatabase`](lignindb::db::OpenError::NoDatabase)), `load`
+//! included. `migrate` makes one in a directory of its own beside its
+//! target, and refuses a target whose name ends in `.creating`. Its source
+//! is a RocksDB database, which it reads through RocksDB's read-only open
+//! behind a probe of that database's lock, and never writes: the module
+//! `migrate` says how.
 //!
 //! # Exit status
 //!
 //! | Status | |
 //! | --- | --- |
 //! | 0 | done; for `verify`, the store is sound |
-//! | 1 | the subcommand failed: the error is printed |
+//! | 1 | the subcommand failed: the error is printed. `migrate` put nothing at its target, unless the error says that the database is there under a name that could not be made durable |
 //! | 2 | the arguments are not a subcommand |
-//! | 3 | `verify`: a rule of the store does not hold |
-//! | 4 | `verify`: the database holds the mark of a state-sync restore that did not finish ([`verify`]) |
+//! | 3 | `verify`: a rule of the store does not hold. `migrate`: the migrated store differs from its source, or a rule of it does not hold |
+//! | 4 | `verify`: the database holds the mark of a state-sync restore that did not finish ([`verify`]). `migrate`: the device of its target is full, and the same command goes on once there is room |
 //!
 //! # Choices made here that the plan left open
 //!
@@ -88,6 +103,8 @@ pub mod directory;
 pub mod dump;
 mod error;
 pub mod manifest;
+#[cfg(feature = "migrate")]
+pub mod migrate;
 mod open;
 pub mod pages;
 pub mod segments;
@@ -109,6 +126,9 @@ pub enum Outcome {
     NotSound,
     /// `verify` found the mark of a restore that did not finish.
     IncompleteRestore,
+    /// `migrate` met a full device, in a state that the same command goes
+    /// on from once there is room.
+    IncompleteMigration,
 }
 
 impl Outcome {
@@ -117,7 +137,7 @@ impl Outcome {
         match self {
             Self::Done => 0,
             Self::NotSound => 3,
-            Self::IncompleteRestore => 4,
+            Self::IncompleteRestore | Self::IncompleteMigration => 4,
         }
     }
 }
@@ -147,6 +167,35 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> Result<Outcome, ToolError>
         Command::Compact { common, timeout } => compact::run(&common, timeout, out),
         Command::Dump { common, what, file } => dump::dump(&common, &what, &file, out),
         Command::Load { common, file } => dump::load(&common, &file, out),
+        #[cfg(feature = "migrate")]
+        Command::Migrate {
+            source,
+            target,
+            cache_size,
+            batch_bytes,
+            progress,
+            unreachable,
+            memory_limit,
+        } => {
+            let migration = migrate::Migration {
+                source,
+                target,
+                options: lignindb::Options {
+                    cache_size,
+                    ..lignindb::Options::default()
+                },
+                batch_bytes,
+                progress,
+                unreachable,
+                memory_limit,
+            };
+            migrate::migrate(&migration, out)
+        }
+        #[cfg(not(feature = "migrate"))]
+        Command::Migrate { .. } => Err(ToolError::NotBuilt {
+            subcommand: "migrate",
+            feature: "migrate",
+        }),
     }
 }
 

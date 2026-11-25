@@ -187,6 +187,7 @@ use grovedb_storage::Error as StorageError;
 use grovedb_version::version::GroveVersion;
 
 use self::access::{Access, Child, Location, StoredLink, StoredNode};
+pub use self::feature::{aggregate_bytes, feature_bytes};
 pub use self::{
     access::{LigninEntryRefused, LigninWriter},
     change_set::{

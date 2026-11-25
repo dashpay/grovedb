@@ -26,6 +26,7 @@ mod deletes;
 mod full_pages;
 #[cfg(feature = "unsafe-dump-load")]
 mod hatch;
+mod hosted;
 mod indexed;
 mod inspection;
 mod kinds;

@@ -70,6 +70,7 @@ mod checkpoint;
 mod enter;
 mod error;
 mod gone;
+mod hosted;
 mod moved;
 mod over;
 mod restore;
@@ -114,6 +115,7 @@ use lignindb::{
 };
 
 use self::error::{failed, merk_error, not_supported, txn_error, write_error};
+pub use self::hosted::{hosted_by_element, HostedSubtree};
 use super::{
     move_record, Engine, EngineBatch, SubtreeCursor, SubtreeHandle, SubtreeMove, WriteGroup,
 };
