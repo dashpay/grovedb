@@ -557,6 +557,37 @@ pub fn node_records_below<'db, E: StreamEngine>(
     Ok(Some(found))
 }
 
+/// Whether `transaction` reads no record of `db` under `path`, whether
+/// or not an element leads there: no node and no flat record in the
+/// data of the subtree at `path`, no aux and no meta record of it, and
+/// none of these in a secondary tree of it on any axis. Records of a
+/// subtree further down are not looked for: with no node at `path`, no
+/// element names one.
+pub fn nothing_under<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+) -> Result<bool, String> {
+    let mut records = Vec::new();
+    for data in [Keyspace::Nodes, Keyspace::Flat] {
+        let place = Place {
+            path: path.to_vec(),
+            secondary: None,
+            data,
+        };
+        list(db.engine(), transaction, &place, true, &mut records)?;
+    }
+    for axis in AXES {
+        let place = Place {
+            path: path.to_vec(),
+            secondary: Some(axis.tag()),
+            data: Keyspace::Nodes,
+        };
+        list(db.engine(), transaction, &place, true, &mut records)?;
+    }
+    Ok(records.is_empty())
+}
+
 /// The paths of the trees whose flat drops have a pending record as
 /// `transaction` sees `db`, the records it staged itself among them. A
 /// record that does not decode names no path.

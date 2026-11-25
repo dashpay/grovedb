@@ -327,7 +327,7 @@ use super::pair::Part;
 use super::state::Record;
 use super::state::{
     a_node_is_under, a_record_is_under, a_secondary_holds_a_row, node_keys_below,
-    node_records_below, Keyspace, NodeKey,
+    node_records_below, nothing_under, Keyspace, NodeKey,
 };
 use crate::golden::step::{Outcome, Proof, Proved, Step, Value, Verification};
 use crate::workload::{
@@ -833,13 +833,10 @@ pub struct Known {
     /// began drops a tree flat.
     dropped_in_block: bool,
     /// The dropped trees whose pending record a drain reclaimed after
-    /// the open block wrote into their subtree ([`Known::drained`]).
+    /// the open block wrote into their subtree, and under whose path
+    /// the candidate had committed no record when that drain was called
+    /// ([`Known::drained`]).
     drained_beside: Vec<Path>,
-    /// The trees with a pending record at or below whose path the
-    /// candidate held no node record when that record was first seen
-    /// pending ([`Known::saw_pending`]): the candidate dropped their
-    /// subtree with the drop.
-    dropped_with_the_drop: Vec<Path>,
     /// Whether an operation that commits by itself
     /// ([`Op::commits_by_itself`]) came since the block began,
     /// whatever it was answered: a write beside the block that is no
@@ -2200,58 +2197,58 @@ impl Known {
         }
     }
 
-    /// Those of `trees` at or below whose path `transaction` reads no
-    /// node record in `db` ([`node_keys_below`]): asked of the
-    /// candidate, for the trees whose drop has a pending record for the
-    /// first time. A tree that cannot be read, or that holds more than
-    /// [`MOST_LISTED_BELOW`] records, is none of them.
-    pub fn holds_nothing_below<'db, E: StreamEngine>(
-        db: &'db Db<E>,
-        transaction: &Tx<'db, E>,
-        trees: &[Path],
-        grove_version: &GroveVersion,
-    ) -> Vec<Path> {
-        let nothing = |tree: &&Path| {
-            let most = MOST_LISTED_BELOW;
-            let below = node_keys_below(db, transaction, tree, most, grove_version);
-            matches!(below, Ok(Some(below)) if below.is_empty())
-        };
-        trees.iter().filter(nothing).cloned().collect()
+    /// The trees of which the candidate is asked before `op`
+    /// ([`Known::has_committed_nothing_under`]): where `op` is a drain,
+    /// those with a pending record into whose subtree the open block
+    /// has written, and none for any other operation.
+    pub fn asked_before_a_drain(&self, op: &Op) -> Vec<Path> {
+        if !matches!(op, Op::FlushPendingDrops) {
+            return Vec::new();
+        }
+        let written = |tree: &&Path| self.written_in_block.contains(tree);
+        self.pending.iter().filter(written).cloned().collect()
     }
 
-    /// The record of the drop of each of `dropped` was seen pending for
-    /// the first time, and the candidate held no node record at or
-    /// below the tree's path then ([`Known::holds_nothing_below`]).
-    pub fn saw_pending(&mut self, dropped: Vec<Path>) {
-        self.dropped_with_the_drop.extend(dropped);
+    /// Those of `trees` under whose path `db` has committed no record
+    /// ([`nothing_under`]): no node, flat, aux or meta record of the
+    /// subtree at the path or of a secondary tree of it. They are read
+    /// through a snapshot taken here, which sees nothing that an open
+    /// transaction wrote. Asked of the candidate before a drain. A tree
+    /// that cannot be read is none of them.
+    pub fn has_committed_nothing_under<E: StreamEngine>(db: &Db<E>, trees: &[Path]) -> Vec<Path> {
+        if trees.is_empty() {
+            return Vec::new();
+        }
+        let committed = db.start_snapshot_read_transaction();
+        let nothing = |tree: &&Path| matches!(nothing_under(db, &committed, tree), Ok(true));
+        trees.iter().filter(nothing).cloned().collect()
     }
 
     /// The case came to `op`, after which the pending records were read
     /// again ([`Known::pending`]), with `read` saying whether they
-    /// could be read; `before` are the trees that had one before it. A
-    /// drain (`Op::FlushPendingDrops`) writes beside the open block: a
-    /// tree of `before` that has no pending record after it, into whose
-    /// subtree the open block had written, and whose subtree the
-    /// candidate had dropped with the drop ([`Known::saw_pending`]),
-    /// was drained beside the block. Any other operation makes none,
-    /// and so does a drain after which the records could not be read:
-    /// that a record is gone is then not known.
-    pub fn drained(&mut self, op: &Op, before: &[Path], read: bool) {
-        if !read {
+    /// could be read. `before` are the trees that had a pending record
+    /// before it, and `nothing_under` those under whose path the
+    /// candidate had committed no record before it
+    /// ([`Known::has_committed_nothing_under`]). A drain
+    /// (`Op::FlushPendingDrops`) writes beside the open block: a tree
+    /// of `before` that has no pending record after it, into whose
+    /// subtree the open block had written, and that is of
+    /// `nothing_under`, was drained beside the block. Any other
+    /// operation makes none, and so does a drain after which the
+    /// records could not be read: that a record is gone is then not
+    /// known.
+    pub fn drained(&mut self, op: &Op, before: &[Path], read: bool, nothing_under: &[Path]) {
+        if !read || !matches!(op, Op::FlushPendingDrops) {
             return;
         }
-        if matches!(op, Op::FlushPendingDrops) {
-            for tree in before {
-                if !self.pending.contains(tree)
-                    && self.written_in_block.contains(tree)
-                    && self.dropped_with_the_drop.contains(tree)
-                {
-                    self.drained_beside.push(tree.clone());
-                }
+        for tree in before {
+            if !self.pending.contains(tree)
+                && self.written_in_block.contains(tree)
+                && nothing_under.contains(tree)
+            {
+                self.drained_beside.push(tree.clone());
             }
         }
-        let pending = &self.pending;
-        (self.dropped_with_the_drop).retain(|tree| pending.contains(tree));
     }
 
     /// The family of the answers to `op` where it is a commit that the
@@ -2269,12 +2266,12 @@ impl Known {
     ///   which that tree's drop had a pending record and after which it
     ///   has none, with no rollback to a savepoint since that write
     ///   ([`Known::in_the_block`], [`Known::drained`]).
-    /// - The candidate held no node record at or below that tree's
-    ///   path when the record of its drop was first seen pending
-    ///   ([`Known::saw_pending`]): it dropped the subtree with the
-    ///   drop, which is why its drain writes no key of the block. A
-    ///   candidate that kept the tree's records, and whose drain
-    ///   reclaims nothing, takes the same commit, and is of no family.
+    /// - The candidate had committed no record under that tree's path
+    ///   when that drain was called
+    ///   ([`Known::has_committed_nothing_under`]): its drain has
+    ///   nothing there to delete beside the block. A candidate that
+    ///   kept the tree's records, and whose drain reclaims nothing,
+    ///   takes the same commit, and is of no family.
     /// - No operation that the reference took in the block drops a tree
     ///   flat: such a block writes a pending record itself, under a key
     ///   that a drain may remove, which is a conflict on both engines.
@@ -3169,8 +3166,10 @@ mod tests {
     /// since the write, where the block ended before the commit, where
     /// the drain left the record, where the record left at another
     /// operation than a drain, where the records could not be read
-    /// after the drain, and where the candidate held a node record
-    /// below the tree when the record of its drop was first seen.
+    /// after the drain, and where the candidate had committed a
+    /// record under the tree before the drain. The candidate is asked
+    /// before a drain alone, of the trees with a pending record that
+    /// the block wrote into.
     #[test]
     fn a_conflict_at_a_commit_is_of_a_dropped_tree_by_a_drain_beside_the_block_that_wrote_into_it()
     {
@@ -3216,15 +3215,17 @@ mod tests {
         let family = |block: &[(&Op, bool)], last: &Op, answers: (&Outcome, &Outcome)| {
             let mut known = known();
             known.pending(vec![dropped.clone()]);
-            known.saw_pending(vec![dropped.clone()]);
             known.in_the_block(&Op::Commit, true);
             for (op, taken) in block {
+                // The candidate has committed nothing under a tree
+                // it is asked of.
+                let asked = known.asked_before_a_drain(op);
                 known.in_the_block(op, *taken);
                 let before = known.pending_paths().to_vec();
                 if **op == Op::FlushPendingDrops {
                     known.pending(Vec::new());
                 }
-                known.drained(op, &before, true);
+                known.drained(op, &before, true, &asked);
             }
             known.family_of_commit(last, answers.0, answers.1)
         };
@@ -3421,51 +3422,65 @@ mod tests {
         let written = || {
             let mut known = known();
             known.pending(vec![dropped.clone()]);
-            known.saw_pending(vec![dropped.clone()]);
             known.in_the_block(&write, true);
             known
         };
         let mut known = written();
-        known.drained(&drain, before, true);
+        known.drained(&drain, before, true, before);
         assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
         known.pending(Vec::new());
-        known.drained(&remake, before, true);
+        known.drained(&remake, before, true, before);
         assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
         // The record left with the drain.
         let mut known = written();
+        assert_eq!(known.asked_before_a_drain(&drain), before);
         known.pending(Vec::new());
-        known.drained(&drain, before, true);
+        known.drained(&drain, before, true, before);
         assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), tree);
         // The pending records could not be read after the drain: that
         // the record is gone is not known.
         let mut known = written();
         known.pending(Vec::new());
-        known.drained(&drain, before, false);
+        known.drained(&drain, before, false, before);
         assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
-        // The candidate held a node record below the tree when the
-        // record of its drop was first seen: it kept the tree.
-        let mut known = self::known();
-        known.pending(vec![dropped.clone()]);
-        known.in_the_block(&write, true);
-        known.pending(Vec::new());
-        known.drained(&drain, before, true);
-        assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
-        // What the candidate held is asked again where the record
-        // leaves and comes back.
+        // The candidate had committed a record under the tree before
+        // the drain: it kept the tree.
         let mut known = written();
         known.pending(Vec::new());
-        known.drained(&remake, before, true);
-        known.pending(vec![dropped.clone()]);
-        known.in_the_block(&write, true);
-        known.pending(Vec::new());
-        known.drained(&drain, before, true);
+        known.drained(&drain, before, true, &[]);
         assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
         // A tree with no pending record before the drain is none.
         let mut known = self::known();
-        known.saw_pending(vec![dropped.clone()]);
         known.in_the_block(&write, true);
-        known.drained(&drain, &[], true);
+        known.drained(&drain, &[], true, before);
         assert_eq!(known.family_of_commit(&Op::Commit, &conflict, &took), None);
+
+        // The candidate is asked before a drain alone, of the trees
+        // with a pending record that the open block wrote into.
+        let known = written();
+        for other in [&remake, &write, &back, &rollback, &Op::Commit] {
+            assert!(known.asked_before_a_drain(other).is_empty(), "{other:?}");
+        }
+        let mut known = self::known();
+        known.pending(vec![dropped.clone()]);
+        assert!(known.asked_before_a_drain(&drain).is_empty());
+        for elsewhere in [&remake, &beside, &below] {
+            known.in_the_block(elsewhere, true);
+            let asked = known.asked_before_a_drain(&drain);
+            assert!(asked.is_empty(), "{elsewhere:?}");
+        }
+        known.in_the_block(&write, false);
+        assert!(known.asked_before_a_drain(&drain).is_empty());
+        known.in_the_block(&write, true);
+        assert_eq!(known.asked_before_a_drain(&drain), before);
+        for ends in [&back, &rollback, &abandon, &Op::Commit] {
+            let mut known = written();
+            known.in_the_block(ends, true);
+            assert!(known.asked_before_a_drain(&drain).is_empty(), "{ends:?}");
+        }
+        let mut known = written();
+        known.pending(Vec::new());
+        assert!(known.asked_before_a_drain(&drain).is_empty());
     }
 
     /// The tree under a dedicated insert is asked for an insert through

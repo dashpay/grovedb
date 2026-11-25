@@ -733,6 +733,12 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             )
         })
         .unwrap_or_default();
+        // Asked of the candidate before a drain: under which of the
+        // dropped trees that the open block wrote into it has committed
+        // no record. Its drain has nothing to delete there.
+        let asked = known.asked_before_a_drain(op);
+        let nothing_under = catching(|| Known::has_committed_nothing_under(candidate_db, &asked))
+            .unwrap_or_default();
         let was = observe(&mut reference_runner, op);
         // A put of an indexed tree over an indexed tree that the reference
         // took is counted, whatever the candidate did.
@@ -970,24 +976,10 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             let pending = pending.ok().and_then(Result::ok);
             let read = pending.is_some();
             known.pending(pending.unwrap_or_default());
-            // The trees whose record is pending for the first time: of
-            // those, the ones the candidate holds no node record below,
-            // because it dropped the subtree with the drop.
-            let first_seen: Vec<_> = (known.pending_paths().iter())
-                .filter(|tree| !had_a_record.contains(tree))
-                .cloned()
-                .collect();
-            if !first_seen.is_empty() {
-                let dropped = catching(|| {
-                    let block = candidate_runner.transactions().block();
-                    let version = case.grove_version;
-                    Known::holds_nothing_below(candidate_db, block, &first_seen, version)
-                });
-                known.saw_pending(dropped.unwrap_or_default());
-            }
             // A drain writes beside the open block: the trees whose
-            // record it reclaimed after the block wrote into them.
-            known.drained(op, &had_a_record, read);
+            // record it reclaimed after the block wrote into them, and
+            // under which the candidate had committed nothing.
+            known.drained(op, &had_a_record, read, &nothing_under);
             // Those of them at which the reference reads a tree again.
             let standing = catching(|| {
                 let block = reference_runner.transactions().block();
@@ -1451,20 +1443,88 @@ mod tests {
             Op::FlushPendingDrops,
             Op::Commit,
         ];
-        let commit = ops.len() - 1;
-        let keeps = StandIn::side(Fault::Unreclaimed);
-        let run = compared(&case(ops.clone()), &rocksdb(), &keeps, Stored::AtTheEnd);
-        assert_eq!(run.ended_at, None);
-        let divergence = run.divergence.expect("the commit that one engine took");
-        assert_eq!(divergence.step, commit);
-        assert!(divergence.parts.contains(&Part::Error), "{divergence:?}");
-        let conflict = "failed Commit::Conflict".to_string();
-        assert!(divergence.reference.contains(&conflict), "{divergence:?}");
-        assert!(!divergence.candidate.contains(&conflict), "{divergence:?}");
+        let drop_it = || {
+            Op::Write(Write::DropFlat {
+                path: Vec::new(),
+                key: b"d".to_vec(),
+            })
+        };
+        let delete = |key: &[u8]| {
+            Op::Write(Write::Delete {
+                path: vec![b"d".to_vec()],
+                key: key.to_vec(),
+            })
+        };
+        let last_block = || {
+            [
+                insert(&[], b"d", Element::empty_tree()),
+                insert(&[b"d"], b"k", Element::new_item(vec![3])),
+                Op::FlushPendingDrops,
+                Op::Commit,
+            ]
+        };
+        // The tree is dropped while it holds nothing, so an engine that
+        // keeps what a drop was to free holds nothing below it then. It
+        // is made again, filled and dropped again before any drain, so
+        // its record never leaves the pending ones.
+        let mut dropped_again = vec![
+            insert(&[], b"d", Element::empty_tree()),
+            Op::Commit,
+            drop_it(),
+            Op::Commit,
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![1])),
+            insert(&[b"d"], b"j", Element::new_item(vec![2])),
+            drop_it(),
+            Op::Commit,
+        ];
+        dropped_again.extend(last_block());
+        // A block makes the tree again over the records that were kept,
+        // writes and deletes each of them, and drops the tree while the
+        // block reads nothing below it. The block is rolled back, and
+        // the records are there as before.
+        let mut given_up = ops[..6].to_vec();
+        given_up.extend([
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![4])),
+            insert(&[b"d"], b"j", Element::new_item(vec![5])),
+            delete(b"k"),
+            delete(b"j"),
+            drop_it(),
+            Op::Transaction(TransactionOp::Rollback),
+        ]);
+        given_up.extend(last_block());
+        // The tree keeps flat records and no node.
+        let mut of_flat_records = a_filled_log();
+        of_flat_records.extend([
+            drop_the_log(),
+            Op::Commit,
+            a_filled_log().swap_remove(0),
+            a_filled_log().swap_remove(1),
+            Op::FlushPendingDrops,
+            Op::Commit,
+        ]);
+        for (what, ops) in [
+            ("dropped once", ops),
+            ("dropped again before a drain", dropped_again),
+            ("dropped empty in a block that is rolled back", given_up),
+            ("a tree of flat records", of_flat_records),
+        ] {
+            let commit = ops.len() - 1;
+            let keeps = StandIn::side(Fault::Unreclaimed);
+            let run = compared(&case(ops.clone()), &rocksdb(), &keeps, Stored::AtTheEnd);
+            assert_eq!(run.ended_at, None, "{what}");
+            let divergence = run.divergence.expect("the commit that one engine took");
+            assert_eq!(divergence.step, commit, "{what}");
+            assert!(divergence.parts.contains(&Part::Error), "{divergence:?}");
+            let conflict = "failed Commit::Conflict".to_string();
+            assert!(divergence.reference.contains(&conflict), "{divergence:?}");
+            assert!(!divergence.candidate.contains(&conflict), "{divergence:?}");
 
-        let run = compared(&case(ops), &rocksdb(), &stand_in(), Stored::AtTheEnd);
-        assert_eq!((run.divergence, run.ended_at), (None, None));
-        assert_eq!(run.failed_steps, [commit]);
+            let run = compared(&case(ops), &rocksdb(), &stand_in(), Stored::AtTheEnd);
+            assert_eq!((run.divergence, run.ended_at), (None, None), "{what}");
+            assert_eq!(run.failed_steps, [commit], "{what}");
+        }
     }
 
     /// An engine whose flush frees nothing answers every operation as the

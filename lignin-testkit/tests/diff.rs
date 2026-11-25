@@ -387,6 +387,11 @@ fn a_tree_made_again_before_the_drain_of_its_flat_drop_ends_the_case_for_its_fam
 /// and leaves the record, and with a block that puts the tree's element
 /// and writes nothing into the tree, both engines take the commit and
 /// the case runs to its end.
+///
+/// With the tree made again and dropped flat a second time before any
+/// drain, so that the record of its drop never leaves the pending ones,
+/// LigninDB has committed nothing below the tree when the drain is
+/// called, and the case ends at the same commit, counted.
 #[test]
 fn a_commit_that_rocksdb_refuses_after_a_drain_beside_a_tree_made_again_ends_the_case() {
     use lignin_testkit::{
@@ -508,6 +513,94 @@ fn a_commit_that_rocksdb_refuses_after_a_drain_beside_a_tree_made_again_ends_the
             );
             assert_eq!(run.tally.families.answers, [0; 12], "{what} on {number}");
         }
+
+        let again = [made(), dropped[DROP].clone(), Op::Commit];
+        let ops: Vec<Op> = (dropped.iter().chain(&again).chain(&beside))
+            .cloned()
+            .collect();
+        let case = Case::of(45, grove_version, ops);
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("dropped twice on {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(run.ended_at, Some(Family::DroppedTree), "{number}");
+        let ended = run.ended_with.as_ref().expect("the answers it ended with");
+        assert_eq!(ended.step, COMMIT + again.len(), "grove version {number}");
+        assert_eq!(failed(&ended.reference), conflict, "{ended:?}");
+        assert_eq!(failed(&ended.candidate), None, "{ended:?}");
+        assert!(run.failed_steps.is_empty(), "{:?}", run.failed_steps);
+        let families = run.tally.families;
+        assert_eq!(families.answers, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+}
+
+/// The conflict after a drain asks what LigninDB has committed below the
+/// dropped tree when the drain is called, and nothing of any earlier
+/// moment. A batch that lists the flat drop of a tree, the tree's
+/// element again and an element in it would leave a record below the
+/// tree in the block at the very operation that makes the record of its
+/// drop pending. Both engines refuse that batch, on every grove version,
+/// and the tree stands as it was: the case runs to its end, with the
+/// batch as its one common failure and nothing counted for a family.
+#[test]
+fn a_batch_that_drops_a_tree_flat_and_writes_into_it_again_is_refused_by_both_engines() {
+    use lignin_testkit::{
+        diff::Case,
+        workload::{BatchOp, Op, Read, Write},
+    };
+
+    let path = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    };
+    let only = |at: &[&[u8]], key: &[u8], element: grovedb::Element| BatchOp::InsertOnly {
+        path: path(at),
+        key: key.to_vec(),
+        element,
+    };
+    let tree = grovedb::Element::empty_tree;
+    let item = || grovedb::Element::new_item(vec![7; 8]);
+    let ops = vec![
+        Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"a".to_vec(),
+            element: tree(),
+        }),
+        Op::Batch(vec![
+            only(&[b"a"], b"t", tree()),
+            only(&[b"a", b"t"], b"k", item()),
+        ]),
+        Op::Commit,
+        Op::Batch(vec![
+            BatchOp::DropFlat {
+                path: path(&[b"a"]),
+                key: b"t".to_vec(),
+                tree_type: grovedb::TreeType::NormalTree,
+            },
+            only(&[b"a"], b"t", tree()),
+            only(&[b"a", b"t"], b"k", item()),
+        ]),
+        Op::Commit,
+        Op::Read(Read::Get {
+            path: path(&[b"a", b"t"]),
+            key: b"k".to_vec(),
+        }),
+        Op::FlushPendingDrops,
+        Op::Commit,
+    ];
+    const BATCH: usize = 3;
+    for (number, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        let number = number + 1;
+        let case = Case::of(46, grove_version, ops.clone());
+        let run = ran(&case);
+        if let Some(divergence) = &run.divergence {
+            let report = divergence.report(&case, "RocksDB", "LigninDB");
+            panic!("grove version {number}:\n{}", report.join("\n"));
+        }
+        assert_eq!(run.failed_steps, [BATCH], "grove version {number}");
+        assert_eq!(run.ended_at, None, "grove version {number}");
+        assert_eq!(run.tally.steps as usize, case.ops.len(), "{number}");
+        assert_eq!(run.tally.families.answers, [0; 12], "{number}");
     }
 }
 
