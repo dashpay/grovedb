@@ -232,6 +232,32 @@ measured kind still reads back, and against a newer report its rows are
 compared as the newer one classes them; a binary from before it cannot read
 a newer report.
 
+## Large batches
+
+The reference workload applies batches of some tens of records. `bench::batches`
+times two batches of thousands of operations, on one engine after the other,
+each in a write transaction of its own: the application of the batch and the
+commit. The time of the application includes the making of GroveDB's operations
+out of the workload's, which is the same work on both engines.
+
+- **moves**: trees under twelve parents, each with one item, and one batch that
+  moves every tree to another key of its parent;
+- **mixed**: a tree of items under each parent, and one batch over them of
+  which a third replaces an item, a third deletes one and the rest puts a new
+  one.
+
+Each time is of one batch, so it is a result of one run and not a median of
+samples. GroveDB's charges for each batch and the root hash after it are the
+same on both engines, which the small form of the test asserts on every run.
+The measurement is the ignored test, at ten thousand moves and ten thousand
+mixed operations, five times on each engine in turn:
+
+```sh
+cargo test --release -p lignin-testkit --test bench batches_of_ten_thousand -- --ignored --nocapture
+```
+
+It is no part of a `lignin-bench` report.
+
 ## RocksDB baseline and the plan's recorded values
 
 These are the count and measured rows of the reference run, on

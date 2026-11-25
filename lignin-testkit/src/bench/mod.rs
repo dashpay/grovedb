@@ -72,6 +72,7 @@
 //! start. A row during which `perf` fails later keeps its time and has no
 //! count, and a table says so where no row of it has one.
 
+pub mod batches;
 pub mod cli;
 pub mod engine;
 #[cfg(grovedb_engine_seam)]

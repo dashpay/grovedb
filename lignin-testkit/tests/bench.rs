@@ -458,3 +458,94 @@ fn a_run_without_enough_documents_per_owner_is_refused() {
         "more deletes than documents"
     );
 }
+
+/// Two batches of many operations, small here: the trees under twelve
+/// parents moved to other keys in one batch, and a batch that replaces,
+/// deletes and puts items. Both engines are charged the same for each and
+/// end at the same root hash.
+#[cfg(grovedb_engine_seam)]
+#[test]
+fn large_batches_are_applied_alike_on_both_engines() {
+    use lignin_testkit::bench::{
+        batches::{large_batches, Sizes},
+        BenchError, LigninDbEngine, RocksDbEngine,
+    };
+
+    let sizes = Sizes {
+        moves: 120,
+        parents: 12,
+        mixed: 150,
+    };
+    let scratch = tempfile::tempdir().unwrap();
+    let version = GroveVersion::latest();
+    let rocksdb =
+        large_batches::<RocksDbEngine>(&scratch.path().join("rocksdb"), sizes, version).unwrap();
+    let lignindb =
+        large_batches::<LigninDbEngine>(&scratch.path().join("lignindb"), sizes, version).unwrap();
+
+    let named: Vec<_> = (rocksdb.iter())
+        .map(|batch| (batch.name, batch.operations))
+        .collect();
+    assert_eq!(named, [("moves", 120), ("mixed", 150)]);
+    for (on_rocksdb, on_lignindb) in rocksdb.iter().zip(&lignindb) {
+        let name = on_rocksdb.name;
+        assert_eq!(on_rocksdb.operations, on_lignindb.operations, "{name}");
+        assert_eq!(on_rocksdb.cost, on_lignindb.cost, "{name}");
+        assert_eq!(on_rocksdb.root_hash, on_lignindb.root_hash, "{name}");
+        assert!(on_rocksdb.cost.seek_count > 0, "{name}");
+    }
+    assert_eq!(lignindb.len(), 2);
+    assert_ne!(rocksdb[0].root_hash, rocksdb[1].root_hash);
+
+    let none = Sizes {
+        parents: 0,
+        ..sizes
+    };
+    let refused = large_batches::<RocksDbEngine>(&scratch.path().join("none"), none, version);
+    assert!(matches!(refused, Err(BenchError::Check(_))), "{refused:?}");
+}
+
+/// The same at the size a caller makes such batches: ten thousand moves
+/// under twelve parents and ten thousand mixed operations, five times on
+/// each engine in turn. It prints the times of each batch, and holds the
+/// two engines to the same charge and the same root for each batch that
+/// both report. What else the small test asserts is not asserted here.
+#[cfg(grovedb_engine_seam)]
+#[test]
+#[ignore = "a measurement: it prints, and wants a release build"]
+fn batches_of_ten_thousand_operations_on_both_engines() {
+    use lignin_testkit::bench::{
+        batches::{large_batches, Sizes},
+        LigninDbEngine, RocksDbEngine,
+    };
+
+    let sizes = Sizes {
+        moves: 10_000,
+        parents: 12,
+        mixed: 10_000,
+    };
+    let version = GroveVersion::latest();
+    let ms = |time: std::time::Duration| time.as_secs_f64() * 1e3;
+    for round in 1..=5 {
+        let scratch = tempfile::tempdir().unwrap();
+        let rocksdb =
+            large_batches::<RocksDbEngine>(&scratch.path().join("rocksdb"), sizes, version)
+                .unwrap();
+        let lignindb =
+            large_batches::<LigninDbEngine>(&scratch.path().join("lignindb"), sizes, version)
+                .unwrap();
+        for (on_rocksdb, on_lignindb) in rocksdb.iter().zip(&lignindb) {
+            assert_eq!(on_rocksdb.cost, on_lignindb.cost, "{}", on_rocksdb.name);
+            assert_eq!(on_rocksdb.root_hash, on_lignindb.root_hash);
+            for (engine, batch) in [("rocksdb", on_rocksdb), ("lignindb", on_lignindb)] {
+                println!(
+                    "large batch: round {round} {engine:8} {:5} {} operations: apply {:.3} ms, commit {:.3} ms",
+                    batch.name,
+                    batch.operations,
+                    ms(batch.apply),
+                    ms(batch.commit)
+                );
+            }
+        }
+    }
+}
