@@ -440,7 +440,12 @@ values and how a commit is told of it, the batch and the write set of a
 transaction, and in `lignin-store/src/wal` how the log's next file is made
 where its name is taken. That last is a state these directories hold: a
 manifest that is ended at an earlier frame names fewer files of the log
-than the directory has.
+than the directory has. So the campaign ran once more on the rebased
+branch, ten minutes in each build with sixteen processes: 743,548 cases in
+a release build (seeds from 7,000,000,000,000) and 107,123 in a debug
+build (from 8,000,000,000,000), 4.9 CPU-hours, with no finding, no process
+ended by a signal, and no answer of a kind that the table below does not
+have. They are not in the counts of the table.
 
 | Run | Build | Processes | Seeds from | Cases | CPU-hours | Findings |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -500,8 +505,25 @@ no read, and its backup and its second open are still made.
   check of a session reads a version of the store; the close checks the
   store that is then still, with what it keeps beside its pages.
 - **In three cases the close called the store unsound and the second open
-  did not**: two were then refused at the open, by the catalog, and one
-  opened and was checked sound. The first run has no such case.
+  did not.** The first run has no such case. Each of the three was found
+  again by its seed, with what the checker reported and with its
+  directories kept, and each repeats:
+  - In one, the change is in a record of the log that frees a page: the
+    commit version that the page is freed with was 16 and is 8. After the
+    open the page is gone from the version, as the record says, and its id
+    is still held as live. The pages are sound, and the checks of the
+    session say so; the count of page ids that the close makes finds the
+    id. The close writes a table checkpoint, so the second open replays no
+    such record, and the store is sound with one live id fewer. This is
+    row VER-10-17 of section 7.
+  - In the other two, the change is in the block of a segment that names
+    the root pages of the keyspaces: a keyspace is given the page of the
+    subtree directory. The first check calls the store unsound for it (a
+    flat page that is reached twice, a page that nothing reaches). The
+    write of the case then puts a record of that keyspace into the
+    directory's page, and the second open refuses the directory it finds
+    there. An open does not run the checker, and a store that the checker
+    calls unsound is not one to write to.
 
 **What changed between the first run and the second**, and what it means
 for the first:
@@ -835,6 +857,7 @@ with the owner: VER-10-2, VER-10-3 and VER-10-16.
 | VER-10-14 | medium | `merk` `tree/ops.rs`, `Walker::apply_sorted`: GroveDB's Merk, the same code on both engines | a batch that removes a run of adjacent keys of one Merk | on a removal the node is replaced by its neighbour in key order from the taller child, and `apply_sorted` is called again on the same subtree for what is left of the batch there: one call nested in another for each removal that follows another. The nesting is as deep as the run of removals, up to about a quarter of the Merk's keys, where the run begins at the key of a subtree's root; a batch that removes every key, or a run from the lowest key, does not nest. Measured in a release build of upstream's `develop`, with RocksDB (the function is the same file on this branch): 2.22 KiB of stack for each nested call, so 915 adjacent removals overflow a thread's stack of 2 MiB and 3,723 one of 8 MiB, and the process aborts. A measurement of this on glibc has to turn the cache of thread stacks off (`GLIBC_TUNABLES=glibc.pthread.stack_cache_size=0`): a thread that asks for 2 MiB in a process that has had larger threads can be given a cached stack of 8 MiB, and then survives a depth that overflows 2 MiB | **open (upstream)**: not fixed on this branch, since it is Merk's own code and no part of the engine. What bounds it is the application's own limits on the batches it makes. A test that shows it against `develop` is kept for the report to upstream |
 | VER-10-15 | medium | `lignin-tree` (the move rules of `tree-layout.md`, X1), `lignindb` `commit` (the values of a log group, `log-format.md` LG23) | values above the inline threshold of 256 bytes in one tree, and then a small write into the same tree | when the small write fills a page of the Merk, cells leave for another page, and each takes its out-of-line value with it: the commit reads each such value whole, holds them together, and appends them to its log group. Measured through GroveDB (section 6.3): one put of an item of 8 bytes appends the values of 127 cells to the log and holds twice their bytes, which with 200 items of 64 KiB, 256 KiB and 1 MiB in the tree is 8.0, 31.8 and 127.0 MiB appended and 16.4, 63.9 and 254.9 MiB held. On RocksDB the same put takes the Merk's path only (1.9, 8.3 and 32.7 MiB held). GroveDB's costs do not count it. Under a memory limit below what the commit holds, the commit does not fail with an error: the kernel kills the process, and the directory it leaves recovers sound at the commit before | **open (owner)**: not fixed on this branch; it is the format's rule for a cell that moves. What bounds it is the cells of one page times the application's own limit on the size of a value, in one commit, and until the follow-up that limit is a condition of deployment. The follow-up that is named: the commit appends the carried values one at a time and does not hold them together, which changes memory and neither the format, the layout nor an answer. A split that chose its part by the bytes of the values it would carry is possible too (`tree-layout.md`, X5), and is a change of the layout |
 | VER-10-16 | low | `lignin-store` `flush/write_back.rs` (`regroup`), `cleaner/values.rs`; `lignin-tree` `value/regroup.rs`, `value/owners.rs` (`copy_grouped`, `install_grouped`) | values above the inline threshold of 256 bytes in one tree, and writes into that tree | before write-back writes a new base image of a page whose values lie apart in the value log, it appends every value of the page again and then gives each cell the place of its copy. A copy whose page a commit has superseded since, or whose cell no longer holds the value, is not taken and is dead space. The cleaner's copies of a value-log file's live values are left the same way. Measured through GroveDB (section 6.3): while 200 items of 1 MiB and then 256 items of 8 bytes were put into one tree, the process wrote 2.8 GiB to the value log for 200 MiB of values. Write-back wrote 2,101 value records where its counts show 361 values appended and none regrouped, and the cleaner left 584 of the 758 copies it counts. `FlushStats::values_regrouped` counts the copies that were taken; no count, `StoreStats::flush_bytes` neither, has the bytes of the others. With items of 16 MiB the process wrote 18.5 GiB during the 256 small puts, of which its log and its counts show 3.7 | **open (owner)**: not fixed on this branch; write-back and the regrouping are other units' code. Work of the background threads on the disk, bounded by the values of a page for each time write-back writes the page, and during the same small puts below what the RocksDB engine's process writes. Whoever reads the bytes a workload writes from the engine's counts reads too few where values are large. What a fix would look at: a regrouping that is put off while commits supersede its page, and a count of the bytes that were copied and not taken |
+| VER-10-17 | low | `lignin-store` recovery: the replay of a reclaim record that frees a page (`log-format.md` 4.5, what 3) | a log in which the commit version that such a record frees its page with is changed to an earlier one, under a right checksum | after the open the page is gone from the version, as the record says, and its id is held as live. No page and no record of the store is touched, every read, write and check of the session answers as on a sound store, and the id is given to no page. The count of page ids at the close reports it ("the id is live and no page of the version has it"); in a debug build the close's own assertion panics on a store that its check calls unsound, as it is made to. The close writes a table checkpoint, so the next open replays no such record and the store is sound. Found by the campaign of section 5.3, one case in 14.8 million, which repeats by its seed; an open of the kept directory that is closed at once reports the same | **accepted**: a log made by hand, and what it costs is one page id for one session. Noted for the recovery: a reclaim record whose version does not fit the log around it could be refused as damage |
 
 ## 8. What is open or accepted, and what would make it a finding of higher severity
 
@@ -883,7 +906,10 @@ They **become a finding of higher severity if**:
 - a workload is found in which the copies that write-back makes and does
   not install are more than the RocksDB engine writes for the same
   operations, or in which a commit's wait for room in the log grows with
-  them (VER-10-16).
+  them (VER-10-16);
+- the engine itself comes to write a record that frees a page with a
+  version that does not fit, or a crash to leave one (VER-10-17): the id
+  would then be held on a store that no hand changed.
 
 ## 9. Code and tests
 
