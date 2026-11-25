@@ -314,6 +314,11 @@ struct Held<'db> {
     /// The subtree that keeps the marks of what flat drops left behind,
     /// where the handle was told one ([`LigninNodeStore::left_behind_in`]).
     left_behind: Option<[u8; 32]>,
+    /// What a load for a walk left of where the cells of its node's
+    /// children are ([`LigninNodeStore::load`], which fills this and moves what it
+    /// finds here to the hints). [`LigninNodeStore::hint`] reads it, and
+    /// [`LigninNodeStore::take_hint`] takes from it.
+    told: RefCell<[Option<(NodeKey, Location)>; 2]>,
     /// What the last read of the root-key record through this handle
     /// found, where the handle writes at once and the record does not
     /// name the root of the handle's Merk ([`RootLeftBehind`]).
@@ -511,6 +516,7 @@ impl<'db> LigninNodeStore<'db> {
                 loose: Loose::default(),
                 root_keys: None,
                 left_behind: None,
+                told: RefCell::new([None, None]),
                 root_left_behind: RefCell::new(None),
             }),
         }
@@ -659,8 +665,31 @@ impl<'db> LigninNodeStore<'db> {
         }
     }
 
+    /// The location the handle has for the node under `key`: the one
+    /// among its hints, and with none there the one that `told` has, in
+    /// which a load for a walk leaves what it said of its node's
+    /// children ([`Self::load`]). The handle goes on keeping it.
     fn hint(&self, key: &[u8]) -> Option<Location> {
-        self.held.hints.borrow().get(key).copied()
+        if let Some(location) = self.held.hints.borrow().get(key).copied() {
+            return Some(location);
+        }
+        let told = self.held.told.borrow();
+        let child = (told.iter().flatten()).find(|told| *told.0 == *key);
+        child.map(|told| told.1)
+    }
+
+    /// As [`Self::hint`], for [`Self::load`]: a location that comes from
+    /// `told`, and from no hint, is taken out of its place there. A load
+    /// that comes to a cell keeps the cell's location among the hints
+    /// itself, and one that comes to none has no use for it.
+    fn take_hint(&self, key: &[u8]) -> Option<Location> {
+        if let Some(location) = self.held.hints.borrow().get(key).copied() {
+            return Some(location);
+        }
+        let mut told = self.held.told.borrow_mut();
+        let child =
+            (told.iter_mut()).find(|told| told.as_ref().is_some_and(|told| *told.0 == *key));
+        child.and_then(Option::take).map(|(_, location)| location)
     }
 
     /// The node under `key` with the key of each child in its link, and
@@ -684,9 +713,26 @@ impl<'db> LigninNodeStore<'db> {
     /// longer at the question: a further try takes a further such event.
     /// A read of the cell's page that fails at the read of a child is the
     /// error of the load, and no further try.
-    fn load(&self, key: &[u8], with_value: bool) -> Result<Option<StoredNode>, Error> {
+    ///
+    /// With `walked`, the read is the fetch of a walk of the tree, which
+    /// goes on from the node to its children
+    /// ([`NodeStore::fetch_node_without_value`]), and where the read said
+    /// where the cells of the children are, as a read of a snapshot does,
+    /// the handle keeps that for its reads of them ([`Self::hint`]). A
+    /// read that is no fetch of a walk keeps nothing of what the read
+    /// itself said of the children's cells: the read of a Merk's root
+    /// when it is opened, and a read for a value. Where the children's
+    /// keys were read in operations of their own, as a write transaction
+    /// reads them, the location that each of those gave is kept by every
+    /// load.
+    fn load(
+        &self,
+        key: &[u8],
+        with_value: bool,
+        walked: bool,
+    ) -> Result<Option<StoredNode>, Error> {
         let prefix = &self.held.subtree.prefix;
-        let mut hint = self.hint(key);
+        let mut hint = self.take_hint(key);
         'node: loop {
             let Some(mut node) = self.held.access.node(prefix, key, hint, with_value)? else {
                 self.held.loose.set(key, false);
@@ -728,6 +774,19 @@ impl<'db> LigninNodeStore<'db> {
                 let child = link.as_ref().and_then(|link| link.key.as_deref());
                 if let (Some(child), Some(location)) = (child, found) {
                     seen_at(&mut hints, child, location);
+                }
+            }
+            if walked {
+                // Where the read said the cells of the children are, for
+                // the reads of them, in the place of what the walk's last
+                // node left: that is kept among the hints, under a hint of
+                // a read of the child itself if there is one.
+                let told = [&node.left, &node.right].map(|link| {
+                    let link = link.as_ref()?;
+                    Some((NodeKey::new(link.key.as_deref()?), link.location?))
+                });
+                for (child, location) in self.held.told.replace(told).into_iter().flatten() {
+                    hints.entry(child).or_insert(location);
                 }
             }
             match node.location {
@@ -781,8 +840,13 @@ impl<'db> LigninNodeStore<'db> {
 
     /// Loads the node under `key` and charges the read: the length of the
     /// node's whole record, whether or not its value is read with it.
-    fn read(&self, key: &[u8], with_value: bool) -> CostResult<Option<StoredNode>, Error> {
-        self.charged(self.load(key, with_value).and_then(|node| {
+    fn read(
+        &self,
+        key: &[u8],
+        with_value: bool,
+        walked: bool,
+    ) -> CostResult<Option<StoredNode>, Error> {
+        self.charged(self.load(key, with_value, walked).and_then(|node| {
             let len = node.as_ref().map(record_len).transpose()?;
             Ok((node, len))
         }))
@@ -968,7 +1032,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<TreeNode>, Error> {
-        self.read(key, true)
+        self.read(key, true, false)
             .map_ok(|node| {
                 let Some(mut node) = node else {
                     return Ok(None);
@@ -991,7 +1055,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn get_node_for_read(&self, key: &[u8]) -> CostResult<Option<TreeNodeInner>, Error> {
-        self.read(key, true)
+        self.read(key, true, false)
             .map_ok(|node| match node {
                 None => Ok(None),
                 Some(StoredNode {
@@ -1013,7 +1077,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
         let key = link.key();
-        self.read(key, false)
+        self.read(key, false, true)
             .map_ok(|node| {
                 let mut node = node.ok_or(Error::KeyNotFoundError("Key not found for fetch"))?;
                 // A flat record holds its value: the node is read whole.

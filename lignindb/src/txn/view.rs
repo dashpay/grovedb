@@ -90,9 +90,19 @@ pub struct LinkView<'a> {
 /// builds that record reads the two cells too. A record of the write set
 /// names its children by key, in its links ([`LinkView::key`]), and no key
 /// is read for it.
+///
+/// A reader of a snapshot says with each key where the child's cell is
+/// ([`Self::handle`]): it has read that cell for the key, and the handle
+/// is one of the snapshot's lease. The reader that goes on to the child
+/// gives the handle back
+/// ([`Opened::follow_by_kind`](crate::snapshot::Opened::follow_by_kind),
+/// which says when the handle is followed and when the child is searched
+/// for by its key).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ChildKeys {
     keys: [Vec<u8>; 2],
+    /// Where the cell of each child is, where the reader said so.
+    handles: [Option<NodeHandle>; 2],
 }
 
 impl ChildKeys {
@@ -115,15 +125,33 @@ impl ChildKeys {
         }
     }
 
-    /// The key on `side`, emptied, to be read into.
+    /// The handle of the cell of the child on `side`, as the read that
+    /// gave the child's key issued it: a hint, good under the lease of
+    /// that read's reader (PN8). `None` where the node has no child
+    /// there, where the link holds the key itself, and from a reader
+    /// that gives no handles: the child is then found by its key.
+    pub fn handle(&self, side: Side) -> Option<NodeHandle> {
+        self.handles[Self::at(side)]
+    }
+
+    /// The key on `side`, emptied, to be read into. No handle is left
+    /// of the child that was there.
     pub(crate) fn slot(&mut self, side: Side) -> &mut Vec<u8> {
+        self.handles[Self::at(side)] = None;
         let key = &mut self.keys[Self::at(side)];
         key.clear();
         key
     }
 
+    /// Says where the cell of the child on `side` is, whose key was
+    /// read into the slot.
+    pub(crate) fn found_at(&mut self, side: Side, handle: NodeHandle) {
+        self.handles[Self::at(side)] = Some(handle);
+    }
+
     pub(crate) fn clear(&mut self) {
         self.keys.iter_mut().for_each(Vec::clear);
+        self.handles = [None; 2];
     }
 
     /// Takes the key on `side` out, and leaves it empty.

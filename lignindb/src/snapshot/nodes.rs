@@ -24,7 +24,7 @@ use lignin_format::tree_page::Side;
 use lignin_store::{load::LoadBuffers, values::ValueStore};
 use lignin_tree::{
     cursor::{Cursor, CursorError},
-    node::{NodeReader, PinnedNode},
+    node::{NodeHandle, NodeReader, PinnedNode},
 };
 
 use super::{
@@ -35,7 +35,7 @@ use super::{
 use crate::txn::{unlinked, ChildKeys, Column, FlatKinds, NodeView};
 
 /// Reads the key of each child of `node` from the child's cell
-/// (`tree-page.md` TP10).
+/// (`tree-page.md` TP10), and says where that cell is.
 fn child_keys(
     reader: &NodeReader<'_, OperationGuard<'_>>,
     buffers: &mut LoadBuffers,
@@ -46,7 +46,9 @@ fn child_keys(
         let key = children.slot(side);
         if let Some(link) = node.node().link(side) {
             let child = reader.node(link.child, buffers)?;
-            key.extend_from_slice(child.node().key());
+            let child = child.node();
+            key.extend_from_slice(child.key());
+            children.found_at(side, child.handle());
         }
     }
     Ok(())
@@ -101,7 +103,7 @@ impl Opened<'_, '_> {
         children: Option<&mut ChildKeys>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, ReadError> {
-        self.node_of(key, children, false, read)
+        self.node_of(key, None, children, false, read)
     }
 
     /// As [`Self::node`], for a caller whose subtrees can be of trees
@@ -116,21 +118,65 @@ impl Opened<'_, '_> {
         flat: FlatKinds,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, ReadError> {
-        self.node_of(key, children, flat(self.entry().tree_type()), read)
+        self.node_of(key, None, children, flat(self.entry().tree_type()), read)
+    }
+
+    /// As [`Self::node_by_kind`], through `hint` while that is still
+    /// good (PN8): the same node, found without a search by key from
+    /// the root. `hint` is a handle that a read of this reader gave for
+    /// the node: the node's own ([`NodeView::handle`]), or the one its
+    /// parent's read gave with its key ([`ChildKeys::handle`]).
+    ///
+    /// The handle is followed where it is of the reader's lease, no
+    /// cell has left its page since it was issued, and its cell has the
+    /// key `key`. Otherwise, and with no handle, and where the page of
+    /// the handle cannot be read, the node is found by `key`, as
+    /// [`Self::node_by_kind`] finds it.
+    ///
+    /// A handle is good for the cell it names, and a cell does not say
+    /// which Merk it is in. So `hint` is one that was read for this
+    /// subtree: a good handle of another Merk whose node has the same
+    /// key would be followed. In a test build of this crate, and in a
+    /// build with the feature `held_reads`, every read that follows a
+    /// handle is held to the search by key (the module `held` beside
+    /// this).
+    pub fn follow_by_kind<R>(
+        &self,
+        key: &[u8],
+        hint: Option<NodeHandle>,
+        children: Option<&mut ChildKeys>,
+        flat: FlatKinds,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, ReadError> {
+        self.node_of(key, hint, children, flat(self.entry().tree_type()), read)
     }
 
     fn node_of<R>(
         &self,
         key: &[u8],
+        hint: Option<NodeHandle>,
         children: Option<&mut ChildKeys>,
         raw: bool,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, ReadError> {
         let reader = self.operation.nodes();
         let mut buffers = LoadBuffers::new();
-        let mut cursor = Cursor::open(&reader, self.root());
-        let found = cursor.seek(&reader, &mut buffers, key)?;
-        let found = found.filter(|node| node.node().key() == key);
+        // A Merk with no node has no cell that a handle could name.
+        let followed = (hint.filter(|_| self.root().is_some()))
+            .and_then(|handle| reader.resolve(handle, &mut buffers).ok().flatten())
+            .filter(|node| node.node().key() == key);
+        #[cfg(any(test, feature = "held_reads"))]
+        if let Some(followed) = &followed {
+            held::to_the_search(&reader, &mut buffers, self.root(), key, followed);
+        }
+        let found = match followed {
+            Some(node) => Some(node),
+            None => {
+                let mut cursor = Cursor::open(&reader, self.root());
+                let found = cursor.seek(&reader, &mut buffers, key)?;
+                found.filter(|node| node.node().key() == key)
+            }
+        };
         if found.is_none() && self.has_unlinked()? {
             let mut record = Vec::new();
             if self.get(Column::Data, key, &mut record)? {
@@ -429,5 +475,75 @@ impl NodeWalk {
             Some(children),
             read,
         )
+    }
+}
+
+#[cfg(any(test, feature = "held_reads"))]
+pub(crate) mod held {
+    //! A read that a reader answers through a kept handle
+    //! ([`Opened::follow_by_kind`]) is held to the read it stands for:
+    //! the search by the node's key from the root of the subtree's Merk,
+    //! made in the same operation. The two come to the same cell, or the
+    //! read panics with both. That is so in a test build of this crate,
+    //! and in a build with the feature `held_reads`, by which the tests
+    //! of another crate hold the reads of their own calls.
+    //!
+    //! What makes a handle good for a reader is checked where it is
+    //! followed, by [`NodeReader::resolve`]: the handle is of the
+    //! reader's lease, which for a snapshot is one lease for its life
+    //! ([`Snapshot::lease`](crate::snapshot::Snapshot::lease)), under
+    //! which nothing of the pinned version changes, and no cell has left
+    //! the handle's page since it was issued. What no check of a handle
+    //! says is which Merk its cell is in, and that is what this holds: a
+    //! handle that was read for another Merk, whose node has the same
+    //! key, is followed, and the search does not come to its cell.
+    //!
+    //! A search that fails is compared with nothing: the read through
+    //! the handle then goes on as it does in a build without the hold.
+
+    #[cfg(test)]
+    use std::cell::Cell;
+
+    use lignin_format::CellAddress;
+
+    use super::*;
+
+    #[cfg(test)]
+    thread_local! {
+        static COMPARED: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// How many reads through a handle were compared with the search on
+    /// this thread.
+    #[cfg(test)]
+    pub(crate) fn compared() -> u64 {
+        COMPARED.with(Cell::get)
+    }
+
+    /// Searches by `key` from `root`, and panics where the search ends
+    /// without an error and does not come to the cell of `followed`, the
+    /// node that a handle was followed to. A search that fails is
+    /// compared with nothing.
+    pub(super) fn to_the_search(
+        reader: &NodeReader<'_, OperationGuard<'_>>,
+        buffers: &mut LoadBuffers,
+        root: Option<CellAddress>,
+        key: &[u8],
+        followed: &PinnedNode<'_>,
+    ) {
+        let mut cursor = Cursor::open(reader, root);
+        let Ok(searched) = cursor.seek(reader, buffers, key) else {
+            return;
+        };
+        let searched =
+            (searched.filter(|node| node.node().key() == key)).map(|node| node.node().address());
+        let followed = followed.node().address();
+        #[cfg(test)]
+        COMPARED.with(|compared| compared.set(compared.get() + 1));
+        assert!(
+            searched == Some(followed),
+            "a read of the key {key:?} through a kept location came to the cell at \
+             {followed:?}, and the search by key from the root of its Merk to {searched:?}"
+        );
     }
 }

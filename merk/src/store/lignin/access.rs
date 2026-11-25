@@ -68,6 +68,10 @@ pub(super) struct StoredLink {
     /// is in the child's cell, and [`Access::child`] reads it there.
     pub(super) key: Option<Vec<u8>>,
     pub(super) aggregate: AggregateData,
+    /// Where the child's cell is, where the read of the node said so
+    /// with the child's key: a read of a snapshot does, which reads
+    /// that cell for the key ([`with_child_keys`]).
+    pub(super) location: Option<Location>,
 }
 
 /// A node as a transaction shows it, copied out of its view.
@@ -609,6 +613,7 @@ fn stored_link(link: LinkView<'_>) -> Result<StoredLink, Error> {
         key_len: link.child_key_len,
         key: link.key.map(spare::bytes),
         aggregate: decode_aggregate(link.aggregate)?,
+        location: None,
     })
 }
 
@@ -712,7 +717,8 @@ pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<Store
 
 /// The key of each child of `node` in its link. A cell names a child by
 /// its address, and the key was read from the child's cell with the node
-/// (`children`); a record of the write set names its children by key.
+/// (`children`), with where that cell is if the reader said so; a record
+/// of the write set names its children by key.
 pub(super) fn with_child_keys(
     mut node: StoredNode,
     children: &mut ChildKeys,
@@ -721,6 +727,9 @@ pub(super) fn with_child_keys(
         let Some(link) = link else {
             continue;
         };
+        if link.key.is_none() {
+            link.location = children.handle(side).map(Location);
+        }
         let key = link.key.get_or_insert_with(|| children.take(side));
         if key.len() != usize::from(link.key_len) {
             return Err(Error::CorruptedState(

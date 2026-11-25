@@ -64,8 +64,11 @@ impl<'a> From<&'a LigninSnapshot<'_>> for LigninView<'a> {
 /// Every read through it is one operation of the snapshot. The entry of
 /// a subtree that was looked up in the subtree directory is kept, and the
 /// reads that follow open the subtree from the kept entry: a snapshot's
-/// version does not change. A write through it is refused with
-/// `SnapshotReadOnlyTransaction`.
+/// version does not change. A node is read with where its cell is and
+/// where the cell of each child is, under the snapshot's lease, and a
+/// read that is given such a location goes to the cell and searches by
+/// key only where the location is no longer good. A write through it is
+/// refused with `SnapshotReadOnlyTransaction`.
 pub struct LigninSnapshot<'s> {
     snapshot: Snapshot<'s>,
     /// The subtrees that were opened, each with its entry, or with none
@@ -152,11 +155,13 @@ impl<'s> LigninSnapshot<'s> {
 fn node_of(
     opened: &Opened<'_, '_>,
     key: &[u8],
+    hint: Option<Location>,
     with_value: bool,
 ) -> Result<Option<StoredNode>, Error> {
     let mut children = ChildKeys::new();
+    let hint = hint.map(Location::handle);
     let node = opened
-        .node_by_kind(key, Some(&mut children), keeps_flat_records, |view| {
+        .follow_by_kind(key, hint, Some(&mut children), keeps_flat_records, |view| {
             view.map(|view| stored_node(&view, with_value)).transpose()
         })
         .map_err(unread)??;
@@ -308,14 +313,14 @@ impl Access for LigninSnapshot<'_> {
         &self,
         subtree: &Prefix,
         key: &[u8],
-        _hint: Option<Location>,
+        hint: Option<Location>,
         with_value: bool,
     ) -> Result<Option<StoredNode>, Error> {
-        self.reading(subtree, |opened| node_of(opened, key, with_value))
+        self.reading(subtree, |opened| node_of(opened, key, hint, with_value))
     }
 
     fn committed_node(&self, subtree: &Prefix, key: &[u8]) -> Result<Option<StoredNode>, Error> {
-        self.reading(subtree, |opened| node_of(opened, key, false))
+        self.reading(subtree, |opened| node_of(opened, key, None, false))
     }
 
     fn child(&self, _subtree: &Prefix, _parent: Location, _left: bool) -> Result<Child, Error> {

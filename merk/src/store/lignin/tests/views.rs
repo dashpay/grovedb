@@ -10,7 +10,10 @@ use lignindb::{
     Db as Database, Options,
 };
 
-use super::{super::LigninSnapshot, *};
+use super::{
+    super::{access::NodeKey, LigninSnapshot},
+    *,
+};
 
 pub(super) struct Facade {
     pub(super) db: Database,
@@ -341,6 +344,128 @@ fn a_snapshot_reads_the_merk_of_its_version_and_refuses_every_write() {
         Some(vec![0])
     );
     facade.sound();
+}
+
+/// A handle on a snapshot is told by the read of a node where the node's
+/// cell is and, by a read that a walk goes on from, where the cell of each
+/// child is, and it gives its next read of one of them that location.
+/// That a snapshot follows it is the engine's to show (`lignindb`,
+/// `snapshot::nodes`).
+#[test]
+fn a_handle_on_a_snapshot_goes_where_its_reads_told_it_the_cells_are() {
+    let facade = Facade::new();
+    let other = LigninSubtree::alone([7; 32]);
+    let write = |at: &LigninSubtree, salt: u64| {
+        let transaction = facade.db.begin();
+        let staged = LigninBatch::new();
+        let handle = LigninNodeStore::deferred(&transaction, at.clone(), Some(&staged));
+        handle.enter(TreeType::NormalTree).expect("entered");
+        let mut merk = open(handle, TreeType::NormalTree);
+        apply(&mut merk, &puts(1..60, salt));
+        drop(merk);
+        staged.apply(&transaction).unwrap().expect("a batch");
+        facade.commit(&transaction);
+    };
+    write(&ROOT, 1);
+    write(&other, 2);
+    let snapshot = LigninSnapshot::new(facade.db.snapshot());
+    let handle = LigninNodeStore::read_only(&snapshot, ROOT);
+    let beside = LigninNodeStore::read_only(&snapshot, other.clone());
+    let node = |handle: &LigninNodeStore<'_>, key: &[u8]| {
+        let node = handle.get_node(key, NO_VALUE_DEFINED_COST, version());
+        node.unwrap().expect("a read").expect("a node")
+    };
+    let value =
+        |handle: &LigninNodeStore<'_>, key: &[u8]| node(handle, key).value_as_slice().to_vec();
+
+    let told = |handle: &LigninNodeStore<'_>, child: &[u8]| {
+        let told = handle.held.told.borrow();
+        let child = (told.iter().flatten()).find(|told| told.0.as_slice() == child);
+        child.map(|told| told.1)
+    };
+    let kept =
+        |handle: &LigninNodeStore<'_>, key: &[u8]| handle.held.hints.borrow().get(key).copied();
+    let children = |node: &TreeNode| -> Vec<Vec<u8>> {
+        let links = [true, false].into_iter().filter_map(|left| node.link(left));
+        links.map(|link| link.key().to_vec()).collect()
+    };
+
+    // A read of a node by its key keeps no location of a child: the read
+    // of a Merk's root, and a read for a value.
+    let root = handle.root_key().unwrap().expect("a read").expect("a root");
+    let top = node(&handle, &root);
+    let below_the_root = children(&top);
+    assert_eq!(
+        below_the_root.len(),
+        2,
+        "the root of 59 nodes has two children"
+    );
+    let read = handle.get_node_for_read(&root);
+    assert!(read.unwrap().expect("a read").is_some());
+    assert!(kept(&handle, &root).is_some());
+    for child in &below_the_root {
+        assert_eq!((told(&handle, child), kept(&handle, child)), (None, None));
+        assert_eq!(handle.hint(child), None);
+    }
+
+    // The fetch of a walk says where the cell of each child is, and the
+    // walk's read of a child takes that and keeps it.
+    let fetch = |link: &Link| {
+        let fetched = handle.fetch_node_without_value(link, version());
+        fetched.unwrap().expect("a node")
+    };
+    let left = fetch(top.link(true).expect("a left child"));
+    let below = children(&left);
+    assert_eq!(
+        below.len(),
+        2,
+        "a child of the root of 59 nodes has two children"
+    );
+    let (first, second) = (&below[0], &below[1]);
+    let (of_first, of_second) = (told(&handle, first), told(&handle, second));
+    assert!(of_first.is_some() && of_second.is_some());
+    assert_eq!((kept(&handle, first), kept(&handle, second)), (None, None));
+    // A read that keeps no location of the node leaves what the walk was
+    // told of it where it is: whether the handle holds the node.
+    assert!(handle.has_node(first).unwrap().expect("a read"));
+    assert_eq!(handle.hint(first), of_first);
+    assert_eq!(
+        (told(&handle, first), kept(&handle, first)),
+        (of_first, None)
+    );
+    let next = fetch(left.link(true).expect("a left child"));
+    assert_eq!(next.key(), first.as_slice());
+    assert_eq!(kept(&handle, first), of_first);
+    // What the walk's last node left of its children is kept when the
+    // fetch of the next node takes its place: the other child's.
+    assert_eq!(told(&handle, second), None);
+    assert_eq!(kept(&handle, second), of_second);
+    assert_eq!(handle.hint(second), of_second);
+    // The child's own read by key says the same.
+    node(&handle, second);
+    assert_eq!(kept(&handle, second), of_second);
+
+    // A read through a location reads the node of the key, as a read
+    // with none does.
+    let key = plain(30);
+    let (own, others) = (value(&handle, &key), value(&beside, &key));
+    assert_ne!(own, others);
+    let kept = handle.hint(&key).expect("a cell");
+    assert_eq!(value(&handle, &key), own);
+    assert!(handle.has_node(&key).unwrap().expect("a read"));
+    assert_eq!(handle.hint(&key), Some(kept));
+    // A location that another snapshot's read left is of another lease:
+    // the node is found by its key, and the handle is told its own cell.
+    let later = LigninSnapshot::new(facade.db.snapshot());
+    let of_later = LigninNodeStore::read_only(&later, ROOT);
+    assert_eq!(value(&of_later, &key), own);
+    let foreign = of_later.hint(&key).expect("a cell");
+    assert_ne!(foreign, kept);
+    let mut hints = handle.held.hints.borrow_mut();
+    hints.insert(NodeKey::new(&key), foreign);
+    drop(hints);
+    assert_eq!(value(&handle, &key), own);
+    assert_eq!(handle.hint(&key), Some(kept));
 }
 
 #[test]
