@@ -207,18 +207,28 @@ fn the_next_session_goes_on_from_the_checkpoint_of_the_last() {
 /// The background loop: commits are written back, values placed and
 /// checkpoints taken with nobody calling for them, and a committer that
 /// asks for room waits for the loop.
+///
+/// The turns of the loop leave the pages that changed last for a later
+/// turn, two of them here, so no turn brings what waits to nothing but
+/// one that takes a table checkpoint. The last commit is one that makes
+/// such a turn due for as long as no checkpoint covers it: its group is
+/// more log than write-back may hold. The committer asks for room after
+/// it, which is a wait for turns of the loop that begin from then on,
+/// and ends once a checkpoint covers the commit. No time bounds it.
 #[test]
 fn the_background_loop_writes_back_and_takes_checkpoints() {
     let config = FlushConfig {
         max_unwritten: 4,
+        max_log_held: 3000,
         checkpoint_log_bytes: 2000,
         idle: std::time::Duration::from_millis(5),
         ..FlushConfig::new(Db::SIZE)
     };
     let db = Db::with_log(config, small_log());
     let wb = db.wb();
+    assert_eq!(wb.deferral(), 2);
     let errors = Mutex::new(Vec::new());
-    std::thread::scope(|scope| {
+    let last = std::thread::scope(|scope| {
         scope.spawn(|| wb.run(|error| errors.lock().expect("the errors").push(error.to_string())));
         // The loop ends whatever becomes of this thread.
         let _stop = StopOnDrop(wb);
@@ -236,19 +246,21 @@ fn the_background_loop_writes_back_and_takes_checkpoints() {
             wb.place_ready().expect("placed");
             wb.wake();
         }
-        // The loop catches up by itself.
-        let caught_up = |db: &Db| db.pool.oldest_unwritten().is_none();
-        for _ in 0..2000 {
-            if caught_up(&db) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        // The loop catches up by itself, with a table checkpoint that
+        // covers the last commit.
+        assert_eq!(wb.wait_for_room().expect("room"), Room::Free);
+        let last = db.commit(&[insert((1, 10), b"last", long(60, 3200))]);
+        wb.place_ready().expect("placed");
+        assert_eq!(wb.wait_for_room().expect("room"), Room::Free);
+        last
     });
     assert_eq!(*errors.lock().expect("the errors"), Vec::<String>::new());
     let stats = db.stats();
+    assert_eq!(db.latest(), last);
+    let covered = db.state.in_force().map(|(covers, _)| covers);
+    assert_eq!(covered, Some(last), "{stats:?}");
     assert_eq!(db.state.unwritten(), 0);
-    assert_eq!(stats.values_placed, 60);
+    assert_eq!(stats.values_placed, 61);
     assert!(stats.checkpoints >= 2, "{stats:?}");
     assert!(stats.log_files_dropped > 0, "{stats:?}");
     assert_eq!((stats.errors, stats.runs_refused), (0, 0));

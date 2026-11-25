@@ -96,6 +96,25 @@ impl Drop for StopOnDrop<'_> {
     }
 }
 
+/// Waits until write-back has ended its turn of the number `turn`
+/// ([`FlushState::turns`]), which the background loop on the thread
+/// `the_loop` makes. No time bounds the wait, so a machine that is busy
+/// does not fail it. A loop that ends before that turn does.
+pub(crate) fn turn_ended<T>(
+    state: &FlushState,
+    the_loop: &std::thread::ScopedJoinHandle<'_, T>,
+    turn: u64,
+) {
+    while state.turns() < turn {
+        assert!(
+            !the_loop.is_finished(),
+            "the loop ended after {} turns, before turn {turn}",
+            state.turns()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 /// The thresholds of a store whose loop leaves no page for a later turn:
 /// for the tests of what the loop does with every page due.
 pub(crate) fn eager() -> FlushConfig {

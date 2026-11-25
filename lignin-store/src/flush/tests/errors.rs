@@ -601,15 +601,13 @@ fn the_loop_reports_a_turn_that_fails_and_goes_on() {
 
     let wb = db.wb();
     let errors = Mutex::new(Vec::new());
+    let made = db.state.turns();
     std::thread::scope(|scope| {
-        scope.spawn(|| wb.run(|error| errors.lock().expect("the errors").push(error.to_string())));
-        for _ in 0..5000 {
-            if db.pool.oldest_unwritten().is_none() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        wb.stop();
+        let the_loop = scope
+            .spawn(|| wb.run(|error| errors.lock().expect("the errors").push(error.to_string())));
+        let _stop = StopOnDrop(wb);
+        // Two turns of the loop: the one that fails, and the next.
+        turn_ended(&db.state, &the_loop, made + 2);
     });
     let errors = errors.into_inner().expect("the errors");
     assert_eq!(errors.len(), 1, "{errors:?}");
@@ -703,13 +701,15 @@ fn a_loop_that_is_stopped_before_it_begins_ends_at_once() {
     let wb = db.wb();
     wb.stop();
     wb.run(|error| panic!("{error}"));
+    let made = db.state.turns();
+    assert_eq!((made, db.state.unwritten()), (0, 1));
     std::thread::scope(|scope| {
-        scope.spawn(|| wb.run(|error| panic!("{error}")));
-        while db.pool.oldest_unwritten().is_some() {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        wb.stop();
+        let the_loop = scope.spawn(|| wb.run(|error| panic!("{error}")));
+        let _stop = StopOnDrop(wb);
+        // The first turn of the loop that runs writes the page.
+        turn_ended(&db.state, &the_loop, made + 1);
     });
+    assert_eq!(db.state.unwritten(), 0);
     db.check_cold();
 }
 
