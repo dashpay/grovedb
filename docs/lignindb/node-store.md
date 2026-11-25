@@ -662,7 +662,7 @@ The stores of the tests of `merk/src/store/lignin` and of the replay give the ph
 What MERK-02 left open:
 
 1. **The commit takes the rules from its caller** (`lignindb::commit::Committer::commit`): `NoStaleHashes` on existing GroveVersions, `MerkHashRules` for a writer that leaves hashes. A commit whose rules refuse a stale hash has failed and its transaction is ended (CM6), so nothing may be left stale that the rules refuse.
-2. **Nothing evaluates inside a scope.** A transaction that holds a stale hash cannot be read by Merk at that node before its commit. A writer that leaves hashes (iteration two) needs an evaluation it can ask for, with the caller's rules, or keeps what it wrote in memory.
+2. **Nothing of Merk asks for an evaluation inside a scope.** A transaction that holds a stale hash cannot be read by Merk at that node until the hash is made. The engine makes the stale hashes of one Merk when it is asked, inside the transaction and with the caller's rules, and gives the Merk's root hash (`Scope::evaluate`, TXN-11; `transactions.md` 18.10): with `MerkHashRules` that is the root hash a commit of Merk gives the same tree, for every tree type, and the nodes are handed out afterwards (`hash/tests.rs`, `a_call_before_the_commit_makes_the_hashes_merk_left_out_as_merk_would_have`). No call of this store and none of the `Engine` seam reaches it: a writer that leaves hashes (iteration two) asks through them once GROVE-11 adds the call, or keeps what it wrote in memory.
 3. **A Merk that holds other values than elements** has value hashes these rules do not know: they are for GroveDB's Merks.
 
 ### Choices MERK-01 made

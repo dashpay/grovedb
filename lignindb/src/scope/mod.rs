@@ -35,6 +35,7 @@
 //! | a batch with a node that names a Merk it hosts, and no change set for that Merk | that Merk's data column, for reading: the node's cell is written with the Merk's root, which is read from its entry in the subtree directory |
 //! | a batch that drops a subtree | for writing: every column of the subtree, and every unit of every subtree below it |
 //! | a batch that clears a subtree | for writing: its data column, and every unit of every subtree below it |
+//! | an evaluation of a Merk's stale hashes ([`Scope::evaluate`]) | the Merk's data column, for reading; then, together or not at all, for writing: the data column of every Merk it makes a hash in, and for reading: that of every other Merk whose root it hashes for the value hash of a host ([`crate::txn`], "An evaluation before the commit") |
 //!
 //! - **Any number of scopes read one unit. One scope writes it**, and then
 //!   no other open scope has read it or reads it (SC3). A scope that has
