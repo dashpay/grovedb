@@ -1,10 +1,12 @@
 //! Where a transaction last saw its nodes (`crate::txn::places`,
-//! `transactions.md` PN8): a node that was found by its key, or written, is
-//! read and written again with no search from the root of its Merk, a key
-//! that was found to have no cell is not searched for again, and neither is
-//! taken across what ends a lease. Every read gives what the read rule
-//! names.
+//! `transactions.md` PN8): a node that was searched for by its key is read
+//! and written again with no search from the root of its Merk, through the
+//! writes of it, a key that was found to have no cell is not searched for
+//! again, and neither is taken across what ends a lease. A node that was
+//! written and never searched for is not kept. Every read gives what the
+//! read rule names.
 
+use lignin_format::tree_page::Side;
 use lignin_tree::node::NodeHandle;
 
 use super::{
@@ -194,42 +196,157 @@ fn the_first_write_follows_what_was_read_before_it() {
 }
 
 #[test]
-fn a_written_node_is_found_where_its_write_left_it() {
+fn a_written_node_is_kept_from_the_first_search_for_it() {
     let (db, versions) = Db::new(96);
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(53);
     fill(&mut world, &mut rng, 1, 60);
     let tx = world.begin();
+    let new = below_no_node(&world, &tx, 1);
+    let put = |value: &[u8]| {
+        let before = searches(&world);
+        world.edit(&tx, 1, |items| {
+            items.insert(new.clone(), value.to_vec());
+        });
+        searches(&world) - before
+    };
 
     // A first write, of nodes that were not read before: the model reads
-    // each node whose value it keeps by its key, and the new key is
-    // searched for where the write is applied.
-    world.edit(&tx, 1, |items| {
-        items.insert(key(1000), b"one".to_vec());
-    });
-    // A second write of the same Merk writes the same path again: every
-    // node of it is where the first write left it.
-    let before = searches(&world);
-    assert_eq!(read_checked(&world, &tx, 1, &key(1000)), (0, true));
-    world.edit(&tx, 1, |items| {
-        items.insert(key(1000), b"two".to_vec());
-    });
-    assert_eq!(searches(&world), before);
+    // each node whose value it keeps by its key, and those keys are kept.
+    // The new key is searched for by the write itself, where it is
+    // applied, and nothing is kept of it: not that it had no cell, and
+    // not where the write put its node.
+    put(b"one");
+    let kept = tx.txn.places();
+    assert_eq!(kept.0, 0, "the frames took the places with the lease");
+    assert_ne!(root(&world, &tx, 1), new);
 
-    // A key that is removed has no place afterwards, and is searched for
-    // once more: it has no cell then.
-    world.edit(&tx, 1, |items| drop(items.remove(&key(1000))));
-    assert_eq!(read_checked(&world, &tx, 1, &key(1000)), (1, false));
-    assert_eq!(read_checked(&world, &tx, 1, &key(1000)), (0, false));
+    // A second write of the key, which nothing has asked for: the nodes
+    // above it are where the first write left them, and the write
+    // searches for the key once more.
+    assert_eq!(put(b"two"), 1);
+    assert_eq!(tx.txn.places(), kept);
 
-    // And it is put again where a later write puts it.
-    world.edit(&tx, 1, |items| {
-        items.insert(key(1000), b"three".to_vec());
-    });
-    assert_eq!(read_checked(&world, &tx, 1, &key(1000)), (0, true));
+    // The first read of it by its key searches, as for a node that the
+    // transaction never wrote, and keeps what it finds. A write of the
+    // node finds it there from then on, and keeps where it leaves it.
+    assert_eq!(read_checked(&world, &tx, 1, &new), (1, false));
+    assert_eq!(read_checked(&world, &tx, 1, &new), (0, true));
+    assert_eq!(tx.txn.places(), (0, kept.1 + 1));
+    assert_eq!(put(b"three"), 0);
+    assert_eq!(read_checked(&world, &tx, 1, &new), (0, true));
+    assert_eq!(tx.txn.places(), (0, kept.1 + 1));
+
+    // The key is removed, and put again with no read in between. The
+    // table has nothing of the key then, so the write searches for it,
+    // and it has the key still, so it keeps where the write leaves the
+    // node.
+    world.edit(&tx, 1, |items| drop(items.remove(&new)));
+    assert_eq!(put(b"four"), 1);
+    assert_eq!(read_checked(&world, &tx, 1, &new), (0, true));
+
+    // It is removed and asked for: it has no cell, which is searched for
+    // once. A write that puts it then searches for nothing, and it is
+    // read where the write left it.
+    world.edit(&tx, 1, |items| drop(items.remove(&new)));
+    assert_eq!(read_checked(&world, &tx, 1, &new), (1, false));
+    assert_eq!(read_checked(&world, &tx, 1, &new), (0, false));
+    assert_eq!(put(b"five"), 0);
+    assert_eq!(read_checked(&world, &tx, 1, &new), (0, true));
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
+}
+
+/// The nodes of the Merk `name` from its root to the node under `key`,
+/// each with its handle, reached by the links of the nodes, as a writer
+/// has them that walks the tree: the transaction searches for no key on
+/// the way, and keeps no place of a node below the root for it.
+fn walk(world: &World<'_>, tx: &Tx<'_>, name: u8, key: &[u8]) -> Vec<(Vec<u8>, NodeHandle)> {
+    let top = root(world, tx, name);
+    let handle = read(tx, name, &top).and_then(|(_, handle)| handle);
+    let mut way = vec![(top, handle.expect("the root has a handle"))];
+    loop {
+        let at = way.last().expect("the root");
+        if at.0 == key {
+            return way;
+        }
+        let side = match key < &at.0[..] {
+            true => Side::Left,
+            false => Side::Right,
+        };
+        let seen = |view: Option<NodeView<'_>>| {
+            let view = view.expect("a child on the way to the key");
+            (view.key().to_vec(), view.handle().expect("a handle"))
+        };
+        let child = tx.txn.child(model::subtree(name), at.1, side, seen);
+        way.push(child.expect("a read").expect("the handle is good"));
+    }
+}
+
+/// A node that was searched for, and whose place has ended since, is
+/// written by its key: a write carried a cell out of its page, as a split
+/// does and as a merge does, and did not put the node. The write that
+/// names it then searches for it, and keeps where it leaves it.
+#[test]
+fn a_write_of_a_node_whose_place_has_ended_keeps_the_new_place() {
+    type Change = fn(&mut Items);
+    let grow: Change = |items| {
+        for index in 500..512 {
+            items.insert(key(index), vec![7; 300]);
+        }
+    };
+    let shrink: Change = |items| {
+        for index in 20..70 {
+            items.remove(&key(index));
+        }
+    };
+    for (seed, change) in [(56, grow), (57, shrink)] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        let mut rng = Rng::new(seed);
+        fill(&mut world, &mut rng, 1, 90);
+        let tx = world.begin();
+        let found: BTreeMap<Vec<u8>, NodeHandle> = (0..90)
+            .map(|index| {
+                let key = key(index);
+                let (_, handle) = read(&tx, 1, &key).expect("a node");
+                (key, handle.expect("a handle"))
+            })
+            .collect();
+        let applied = world.edit(&tx, 1, change);
+        assert!(!applied.carried.is_empty(), "{seed}: {applied:?}");
+
+        // A node that the write left and did not put, whose handle of
+        // before names its cell no more, below nodes whose places are
+        // good: the write put them, or their handles are what they were.
+        let left = items(&world, &tx, 1);
+        let ended = |(key, now): &(Vec<u8>, NodeHandle)| {
+            found.get(key) != Some(now) && !applied.nodes.contains(now)
+        };
+        let way = (left.keys())
+            .map(|key| walk(&world, &tx, 1, key))
+            .find(|way| {
+                let (node, above) = way.split_last().expect("a node");
+                ended(node) && !above.is_empty() && !above.iter().any(ended)
+            })
+            .expect("a node whose place has ended");
+        let key = &way.last().expect("the node").0;
+        assert!(found.contains_key(key), "{seed}: it was searched for");
+
+        // The model reads the nodes above it by their keys, each where it
+        // is kept, and the write names the node by its key alone.
+        let (kept, before) = (tx.txn.places(), searches(&world));
+        world.edit(&tx, 1, |items| {
+            items.insert(key.clone(), b"written again".to_vec());
+        });
+        assert_eq!(searches(&world) - before, 1, "{seed}: {key:?}");
+        assert_eq!(read_checked(&world, &tx, 1, key), (0, true), "{seed}");
+        assert_eq!(tx.txn.places(), kept, "{seed}: no key is new to the table");
+        world.check(&tx);
+        assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+        world.check_committed();
+    }
 }
 
 #[test]
@@ -295,6 +412,7 @@ fn nothing_is_taken_across_what_ends_a_lease() {
         items.remove(&there);
         items.insert(key(701), b"to be rolled back".to_vec());
     });
+    assert_eq!(read_checked(&world, &tx, 1, &key(701)), (1, false));
     assert_eq!(read_checked(&world, &tx, 1, &key(701)), (0, true));
     assert_eq!(seen(&world, &tx), (1, 1));
     assert_eq!(seen(&world, &tx), (0, 0));

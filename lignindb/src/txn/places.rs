@@ -1,21 +1,32 @@
-//! Where a transaction last saw the cells of the nodes it found by their
-//! keys and of the nodes it wrote.
+//! Where a transaction last saw the cells of the nodes it was asked for
+//! by their keys.
 //!
 //! A node that is asked for by its key, with no handle or with one that
 //! has ended, is found from the root of its Merk, one cell for each level
 //! ([`find`](super::pages::find)). GroveDB opens the Merks of a path anew
 //! for every batch of a block, and reads the element that hosts each by
 //! its key: a node that the batch before wrote. So the transaction keeps,
-//! for each node it found or wrote, the handle it last had of it, and
-//! follows that handle where a read or a write names the key and no
-//! handle that is good (`tree-layout.md` P5, `transactions.md` PN8).
+//! for each key it searched for, the handle it last had of the node,
+//! through its own writes of that node, and follows that handle where a
+//! read or a write names the key and no handle that is good
+//! (`tree-layout.md` P5, `transactions.md` PN8).
 //!
 //! # What is kept
 //!
 //! - **A node that a search found**: the handle of the cell it found.
 //! - **A key under which a search found no cell.**
-//! - **A node that a write of the transaction put**, where the write left
-//!   it: the handle that the write reports ([`Applied::nodes`]).
+//! - **A node that a write of the transaction put under a key the table
+//!   has**, where the write left it: the handle that the write reports
+//!   ([`Applied::nodes`]). The table has a key from the first search for
+//!   it under the table's lease until the table is emptied, whatever was
+//!   forgotten of the key since.
+//!
+//! A node that a write put under a key the table does not have is not
+//! kept ([`Places::renew`]): a write keeps nothing for a key that nothing
+//! searched for. Such a node is searched for the first time it is asked
+//! for by its key, as a node the transaction never wrote is, and is kept
+//! from then on. A node that is reached from its parent needs no place
+//! here: the cell of the parent says where it is.
 //!
 //! # What a place is good for
 //!
@@ -35,9 +46,9 @@
 //! So it is kept only while it holds, by whoever keeps the table:
 //!
 //! - a cell comes to be under a key of a Merk by a write that puts the
-//!   node, which puts its place here ([`Places::put`]), or by a load of
-//!   the whole Merk, which forgets what is kept of the subtree
-//!   ([`Places::forget_subtree`]);
+//!   node, which keeps its place in the entry that says the key has no
+//!   cell ([`Places::renew`]), or by a load of the whole Merk, which
+//!   forgets what is kept of the subtree ([`Places::forget_subtree`]);
 //! - a write that gives a Merk another prefix, and one that drops or
 //!   clears a Merk, is made under a new lease
 //!   (`lignin_tree::node::Lease`), and so is everything that reads other
@@ -45,9 +56,9 @@
 //!
 //! A table is of one lease: every handle in it was issued under that
 //! lease, and what it says of a key was found under it. It answers
-//! nothing under another lease, and the first thing that is put under
-//! another empties it. So nothing has to empty a table where a lease
-//! ends.
+//! nothing under another lease, the first search that is kept under
+//! another empties it, and a write under another keeps nothing in it. So
+//! nothing has to empty a table where a lease ends.
 //!
 //! [`Applied::nodes`]: super::Applied::nodes
 //! [`NodePut::at`]: super::NodePut::at
@@ -117,9 +128,25 @@ impl<S: BuildHasher> Places<S> {
         self.entries[entry].place
     }
 
-    /// Keeps `handle` as the place of the node under `key` of `subtree`.
+    /// Keeps `handle` as the place of the node that a search found under
+    /// `key` of `subtree`.
     pub(crate) fn put(&mut self, subtree: Subtree, key: &[u8], handle: NodeHandle) {
         self.set(handle.lease(), subtree, key, Place::At(handle));
+    }
+
+    /// Keeps `handle` as the place of the node that a write put under
+    /// `key` of `subtree`, where the table has the key and is of the
+    /// lease of `handle`. A key that is new to the table is not taken.
+    pub(crate) fn renew(&mut self, subtree: &Subtree, key: &[u8], handle: NodeHandle) {
+        if self.entries.is_empty() || self.lease != Some(handle.lease()) {
+            return;
+        }
+        if let Some(entry) = self.entry(self.hash(subtree, key), subtree, key) {
+            let place = &mut self.entries[entry].place;
+            if place.replace(Place::At(handle)).is_none() {
+                self.len += 1;
+            }
+        }
     }
 
     /// Keeps that no cell is under `key` of `subtree`, as the pages that

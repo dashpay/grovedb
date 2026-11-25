@@ -1658,6 +1658,60 @@ fn a_read_from_before_a_met_write_is_dated_as_it_was_once_the_write_is_out() {
     }
 }
 
+/// A met write is made under a lease of its own, and it follows nothing
+/// that the transaction kept of where it saw its nodes under the lease
+/// before (`crate::txn::places`). The write names its nodes with the
+/// handles of a read from before the commit that met it, which have
+/// ended, so each is found by its key. The transaction had searched for
+/// every one of them under the lease of its frames, and kept what it
+/// found: the write searches for each of them below the root once more.
+#[test]
+fn a_met_write_follows_no_place_of_the_lease_before_it() {
+    bed(Stored::InCell, |bed| {
+        let node = bed.node.clone();
+        let tx = bed.world.begin();
+        let (batch, kept) = adding(&bed.world, &tx, bed.len);
+        assert!(kept.contains(&node));
+        let early = read_now(&tx, &batch);
+        bed.rewrite_outside(&[&tx]);
+        bed.world.write(&tx, vec![put(aux(7), b"own", b"1")]);
+
+        // What the write names below the root: the nodes above the added
+        // one, and the added one, which has no cell.
+        let named: Vec<Vec<u8>> = (batch.merks[0].nodes.iter())
+            .map(|(key, ..)| key.clone())
+            .filter(|key| *key != node)
+            .collect();
+        assert!(named.len() > 1, "{named:?}");
+        let searches = |bed: &Bed<'_>| bed.db.stats.keyed_lookups();
+        let there = |key: &[u8]| {
+            let read = |view: Option<NodeView<'_>>| view.is_some();
+            (tx.txn.node(model::subtree(MERK), key, read)).expect("a read")
+        };
+        // Under the lease of the frames each is searched for once, and
+        // kept: where it is, or that it has no cell.
+        for key in &named {
+            let before = searches(bed);
+            let found = there(key);
+            assert_eq!(searches(bed) - before, 1, "{key:?}");
+            assert_eq!(there(key), found);
+            assert_eq!(searches(bed) - before, 1, "{key:?}");
+        }
+        assert_eq!(
+            named.iter().filter(|key| there(key)).count(),
+            named.len() - 1
+        );
+
+        // With the places of the lease before it the write would search
+        // for none of them.
+        let before = searches(bed);
+        bed.keep(&tx, &early, std::slice::from_ref(&node));
+        assert_eq!(searches(bed) - before, named.len() as u64);
+        tx.txn.rollback().expect("no scope is open");
+        tx.forget();
+    });
+}
+
 /// The transaction goes on watching when a rollback takes its last write
 /// out, while it remembers a lease: the key sets of the commits after that
 /// are what a keep by an earlier handle is answered from.

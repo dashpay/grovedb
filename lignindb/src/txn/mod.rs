@@ -417,9 +417,11 @@
 //! the Merks of a path anew for every batch of a block, and reads the
 //! element that hosts each by its key, with no handle: a node that the
 //! batch before wrote. So, for the lease it reads under, the transaction
-//! keeps the handle of every node that a search by key found, and of
-//! every node that a write put, where the write left it
-//! ([`Applied::nodes`]), each under its subtree and its key. A read by key
+//! keeps the handle of every node that a search by key found, under its
+//! subtree and its key, and a write that puts a node under such a key
+//! keeps where it leaves the node ([`Applied::nodes`]). A node that a
+//! write put under a key that was not searched for is not kept: it is
+//! searched for the first time it is asked for by its key. A read by key
 //! with no handle, or with one that has ended, and a write that names a
 //! node with no good hint go there first. Such a handle is followed like
 //! any other, while it is good, so one that has ended costs the search it
@@ -434,8 +436,9 @@
 //! behind a new lease: a commit that the transaction takes in, frames
 //! that are made again, and a write that drops, clears or moves a Merk.
 //! What is kept is of one lease, answers under no other, and is emptied
-//! by the first thing that is kept under another. What the transaction
-//! found before its first write goes to its frames with the lease.
+//! by the first search that is kept under another: a write under another
+//! keeps nothing in it. What the transaction found before its first write
+//! goes to its frames with the lease.
 //!
 //! A search that the root of a Merk answers, or that ends there with no
 //! child on the side of the key, is no search by key in the store's

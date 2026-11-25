@@ -2635,9 +2635,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 nodes
             }
         };
-        // Where each node of the write is now is kept for the reads and
-        // the writes that name its key and no handle (`super::places`):
-        // not for the nodes of a load, which are a whole Merk.
+        // Where a node of the write is now is kept, under a key that was
+        // searched for before, for the reads and the writes that name the
+        // key and no handle (`super::places`): not for the nodes of a
+        // load, which are a whole Merk.
         let mut placed = nodes.iter();
         for (merk, offset) in merks.iter().zip(&resolver.offsets) {
             let subtree = merk.subtree;
@@ -2651,7 +2652,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             }
             for (put, linked) in merk.nodes.iter().zip(linked) {
                 match linked.then(|| placed.next()).flatten() {
-                    Some(handle) => self.seen.put(subtree, put.key, *handle),
+                    Some(handle) => self.seen.renew(&subtree, put.key, *handle),
                     // A node that is in no tree has no cell.
                     None => self.seen.forget(&subtree, put.key),
                 }
