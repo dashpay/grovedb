@@ -371,6 +371,22 @@ impl SubtreeEntry {
             _ => self.dropped(),
         }
     }
+
+    /// The subtree that the entry says something of as a whole, for what
+    /// the transaction's own writes say of a subtree
+    /// ([`WriteSet::subtree`], [`WriteSet::rooted_before`]): the one it
+    /// enters, states anew, clears or drops. A move is not asked there,
+    /// and the other entries change no subtree.
+    fn says_of(&self) -> Option<Subtree> {
+        match *self {
+            Self::Enter { subtree, .. } | Self::Convert { subtree, .. } => Some(subtree),
+            Self::Drop(_)
+            | Self::DropUnder { .. }
+            | Self::DropIfEntered { .. }
+            | Self::Clear(_) => self.left(),
+            Self::RemoveIfEntered(_) | Self::NotUnder { .. } | Self::Move { .. } => None,
+        }
+    }
 }
 
 /// The subtrees that `bytes` hold, 32 bytes each.
@@ -430,6 +446,7 @@ pub(crate) enum Own<'a> {
 }
 
 /// What a transaction's own writes say of a subtree as a whole.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum OwnSubtree<'a> {
     /// No write of the transaction entered the subtree or took it out: it
     /// is what the committed state has. `root` is the key of the root its
@@ -450,6 +467,7 @@ pub(crate) enum OwnSubtree<'a> {
 }
 
 /// What a transaction's own writes say of a subtree ([`WriteSet::subtree`]).
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Said<'a> {
     /// What they come to up to the last of them that entered the subtree
     /// as one that is new, or took it out.
@@ -516,6 +534,20 @@ pub struct Mark {
     pub(crate) pending: usize,
 }
 
+/// The operations that say something of one subtree as a whole, in two
+/// lists, each oldest first and with each operation once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Says {
+    /// Those that change the subtree as a whole: one that enters it,
+    /// states it anew, drops it or clears it, and one whose drop or
+    /// clear takes it with a subtree above it.
+    whole: Vec<usize>,
+    /// Those with a change set that states the root of its Merk: a key,
+    /// or none. A transaction can state the root of one Merk in each of
+    /// its operations, so this list can be as long as the transaction.
+    rooted: Vec<usize>,
+}
+
 /// The write set (WT2): every write the transaction made, in order, with
 /// its bytes in one arena, and beside it an index by record key.
 ///
@@ -558,6 +590,13 @@ pub(crate) struct WriteSet {
     /// first: where each stands there, and the subtree of the host
     /// that it states ([`Self::host_of`]).
     enters: HashMap<Subtree, Vec<(u32, Option<Subtree>)>>,
+    /// For each subtree, the operations that say something of it as a
+    /// whole ([`Says`], [`Self::said_before`]). No subtree is kept with
+    /// no operation.
+    said: HashMap<Subtree, Says>,
+    /// For each open scope, its operations, oldest first
+    /// ([`Self::ops_of`]). No scope is kept with no operation.
+    scoped: HashMap<ScopeId, Vec<usize>>,
     arena: Arena,
     /// The copies of committed values that entries kept. They are not taken
     /// out with a mark: an entry from before the mark can have its copy
@@ -874,6 +913,9 @@ impl WriteSet {
                 }
             }
             if self.leaving.last() == Some(&id) {
+                for cut in Self::cut(&self.arena, &entry) {
+                    Self::unsay(&mut self.said, cut, mark.ops);
+                }
                 self.leaving.pop();
                 let rooted = self
                     .taking
@@ -935,6 +977,20 @@ impl WriteSet {
                 }
             }
         }
+        for entry in &self.subtrees[mark.subtrees..] {
+            if let Some(named) = entry.says_of() {
+                Self::unsay(&mut self.said, named, mark.ops);
+            }
+        }
+        for merk in self.merks[mark.merks..]
+            .iter()
+            .filter(|merk| merk.root.is_some())
+        {
+            Self::unsay(&mut self.said, merk.subtree, mark.ops);
+        }
+        for at in (mark.ops..self.ops.len()).rev() {
+            self.untag(at);
+        }
         self.ops.truncate(mark.ops);
         self.merks.truncate(mark.merks);
         self.subtrees.truncate(mark.subtrees);
@@ -942,7 +998,106 @@ impl WriteSet {
         if self.ops.is_empty() {
             self.kept.clear();
         }
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_said();
         true
+    }
+
+    /// Notes that the operation that is being added says something of
+    /// `subtree` as a whole: with `rooted`, that it states the root of
+    /// its Merk, and otherwise that it changes the subtree.
+    fn note_said(&mut self, subtree: Subtree, rooted: bool) {
+        let op = self.ops.len() - 1;
+        let says = self.said.entry(subtree).or_default();
+        let ops = match rooted {
+            true => &mut says.rooted,
+            false => &mut says.whole,
+        };
+        if ops.last() != Some(&op) {
+            ops.push(op);
+        }
+    }
+
+    /// Takes the operations from `from` on out of what `said` has for
+    /// `subtree`: they are the last of each of its lists.
+    fn unsay(said: &mut HashMap<Subtree, Says>, subtree: Subtree, from: usize) {
+        let Some(says) = said.get_mut(&subtree) else {
+            return;
+        };
+        for ops in [&mut says.whole, &mut says.rooted] {
+            while ops.last().is_some_and(|op| *op >= from) {
+                ops.pop();
+            }
+        }
+        if says.whole.is_empty() && says.rooted.is_empty() {
+            said.remove(&subtree);
+        }
+    }
+
+    /// Takes the operation `at` out of the operations of the open scope
+    /// it is of. It is the last of those: the operations of a scope are
+    /// taken out from the newest back.
+    fn untag(&mut self, at: usize) {
+        let scope = self.ops[at].scope;
+        if scope == 0 {
+            return;
+        }
+        let ops = self.scoped.get_mut(&scope);
+        let ops = ops.expect("the operation of an open scope is listed");
+        let last = ops.pop();
+        debug_assert_eq!(last, Some(at), "the newest of its scope");
+        if ops.is_empty() {
+            self.scoped.remove(&scope);
+        }
+    }
+
+    /// The operations before `end` that [`Self::subtree`] and
+    /// [`Self::rooted_before`] walk, newest first: every one that
+    /// changes `subtree` as a whole, and the newest that states the
+    /// root of its Merk.
+    ///
+    /// A walk over these answers as a walk over every operation before
+    /// `end` does. An operation that neither changes the subtree nor
+    /// states the root of its Merk is passed over by both bodies. A
+    /// statement of the root that is older than another is read by
+    /// neither. A walk that comes to the newer one has answered there
+    /// (the walk of the root), or has its root from there or from a
+    /// clear that is newer still, and takes none once it has one (the
+    /// walk of the subtree). And a walk that ends before it comes to
+    /// the newer one, at an operation that changes the subtree, does
+    /// not come to an older one.
+    fn said_before(&self, subtree: &Subtree, end: usize) -> impl Iterator<Item = usize> + '_ {
+        let says = self.said.get(subtree);
+        // Of a list whose last operation is before `end`, all is taken,
+        // with no search for where to end it: so it is where a walk is
+        // asked of every operation of the set.
+        let before = |ops: &[usize]| match ops.last() {
+            Some(last) if *last >= end => ops.partition_point(|op| *op < end),
+            _ => ops.len(),
+        };
+        let whole = says.map_or(&[][..], |says| &says.whole[..before(&says.whole)]);
+        let rooted = says.map_or(&[][..], |says| &says.rooted[..before(&says.rooted)]);
+        let mut whole = whole.iter().rev().copied().peekable();
+        let mut newest = rooted.last().copied();
+        std::iter::from_fn(move || {
+            // The newest statement of the root goes in at its place among
+            // the operations that change the subtree, once.
+            let next = match (whole.peek().copied(), newest) {
+                (Some(changes), Some(states)) if states >= changes => {
+                    newest = None;
+                    if states == changes {
+                        whole.next();
+                    }
+                    states
+                }
+                (Some(_), _) => whole.next()?,
+                (None, states) => {
+                    newest = None;
+                    states?
+                }
+            };
+            Some(next)
+        })
     }
 
     /// Takes out every write (WT9).
@@ -960,6 +1115,8 @@ impl WriteSet {
         self.taken.clear();
         self.named.clear();
         self.enters.clear();
+        self.said.clear();
+        self.scoped.clear();
         self.arena.clear();
         self.kept.clear();
         self.units.clear();
@@ -1173,6 +1330,9 @@ impl WriteSet {
                 let host = host.map(|(host, ..)| host);
                 self.enters.entry(subtree).or_default().push((at, host));
             }
+            if let Some(named) = entry.says_of() {
+                self.note_said(named, false);
+            }
             self.subtrees.push(entry);
         }
         let mut cut = cut.concat_bytes();
@@ -1194,6 +1354,10 @@ impl WriteSet {
             let below = std::mem::take(&mut cut);
             let subtree = write.subtree();
             let id = self.push(Unit::data(subtree), &below, kind, first_write);
+            // What the entry cut went with its subtree.
+            for cut in subtrees_of(&below) {
+                self.note_said(cut, false);
+            }
             // A drop takes what is below its subtree (CV9). A clear takes
             // it where its Merk has a node, which the operations before
             // this one say: a clear comes before the change sets of its
@@ -1279,6 +1443,9 @@ impl WriteSet {
                 RootPut::Set(None) if *empty => None,
                 RootPut::Set(root) => Some(root.map(|key| self.arena.put(key))),
             };
+            if root.is_some() {
+                self.note_said(merk.subtree, true);
+            }
             self.merks.push(MerkEntry {
                 subtree: merk.subtree,
                 root,
@@ -1310,8 +1477,16 @@ impl WriteSet {
     /// Says that the open scope `scope` made the operation that was added
     /// last, and whether the transaction's frames show it.
     pub(crate) fn tag_last(&mut self, scope: ScopeId, laid: bool) {
-        let op = self.ops.last_mut().expect("an operation was added");
-        (op.scope, op.laid) = (scope, laid);
+        let at = self
+            .ops
+            .len()
+            .checked_sub(1)
+            .expect("an operation was added");
+        self.untag(at);
+        (self.ops[at].scope, self.ops[at].laid) = (scope, laid);
+        if scope != 0 {
+            self.scoped.entry(scope).or_default().push(at);
+        }
     }
 
     /// Whether the transaction's frames show the operation `op`. Frames
@@ -1320,8 +1495,23 @@ impl WriteSet {
         self.ops[op].laid
     }
 
-    /// The operations of the open scope `scope`, oldest first.
+    /// The operations of the open scope `scope`, oldest first. Zero is
+    /// no open scope: it names the transaction's own operations, which
+    /// are found among all of them.
     pub(crate) fn ops_of(&self, scope: ScopeId) -> Vec<usize> {
+        if scope == 0 {
+            return self.ops_among_all(0);
+        }
+        let ops = self.scoped.get(&scope).cloned().unwrap_or_default();
+        #[cfg(any(test, feature = "held_reads"))]
+        assert_eq!(ops, self.ops_among_all(scope), "the operations of a scope");
+        ops
+    }
+
+    /// The operations that name `scope`, oldest first, found among all
+    /// of the set: [`Self::ops_of`] as it was made before the set kept
+    /// the operations of each open scope.
+    fn ops_among_all(&self, scope: ScopeId) -> Vec<usize> {
         let ops = self.ops.iter().enumerate();
         ops.filter_map(|(at, op)| (op.scope == scope).then_some(at))
             .collect()
@@ -1330,7 +1520,10 @@ impl WriteSet {
     /// Makes the operations of the scope `scope` the transaction's (SC6),
     /// all of them laid out.
     pub(crate) fn merge_scope(&mut self, scope: ScopeId) {
-        for op in self.ops.iter_mut().filter(|op| op.scope == scope) {
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_scoped();
+        for op in self.scoped.remove(&scope).unwrap_or_default() {
+            let op = &mut self.ops[op];
             (op.scope, op.laid) = (0, true);
         }
     }
@@ -1338,8 +1531,10 @@ impl WriteSet {
     /// The operations of the open scope `scope` are laid out: the
     /// transaction's frames show them from here on.
     pub(crate) fn lay_scope(&mut self, scope: ScopeId) {
-        for op in self.ops.iter_mut().filter(|op| op.scope == scope) {
-            op.laid = true;
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_scoped();
+        for op in self.scoped.get(&scope).into_iter().flatten() {
+            self.ops[*op].laid = true;
         }
     }
 
@@ -1478,10 +1673,13 @@ impl WriteSet {
     /// set's place when all of them are in: the cost is that of the whole
     /// write set, once.
     pub(crate) fn remove_scope(&mut self, scope: ScopeId) -> bool {
-        let Some(first) = self.ops.iter().position(|op| op.scope == scope) else {
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_scoped();
+        let Some(own) = self.scoped.get(&scope) else {
             return false;
         };
-        if self.ops[first..].iter().all(|op| op.scope == scope) {
+        let first = own[0];
+        if own.len() == self.ops.len() - first {
             self.rewind_before(first);
             return true;
         }
@@ -1505,8 +1703,9 @@ impl WriteSet {
                     &self.op_took(op),
                 );
             });
+            kept.tag_last(was.scope, was.laid);
             let added = kept.ops.last_mut().expect("it was added");
-            (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
+            added.serial = was.serial;
             (added.kinds, added.both) = (was.kinds, was.both);
             let (from, to, ..) = self.op_bounds(op);
             for (id, was) in (start..).zip(&self.entries[from..to]) {
@@ -1526,6 +1725,8 @@ impl WriteSet {
         }
         kept.serial = self.serial;
         *self = kept;
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_said();
         true
     }
 
@@ -2085,7 +2286,9 @@ impl WriteSet {
     /// number of operations where there is none: the operations before it
     /// are the transaction's.
     pub(crate) fn first_open(&self) -> usize {
-        let open = self.ops.iter().position(|op| op.scope != 0);
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_scoped();
+        let open = self.scoped.values().map(|ops| ops[0]).min();
         open.unwrap_or(self.ops.len())
     }
 
@@ -2197,8 +2400,23 @@ impl WriteSet {
     /// Whether an operation of the transaction entered `subtree` if it
     /// was absent ([`SubtreeWrite::EnterIfAbsent`]).
     pub(crate) fn enters_if_absent(&self, subtree: &Subtree) -> bool {
-        let enters = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Enter { subtree: entered, if_absent: true, .. } if entered == subtree);
-        self.subtrees.iter().any(enters)
+        let if_absent = |(at, _): &(u32, Option<Subtree>)| {
+            matches!(
+                self.subtrees[*at as usize],
+                SubtreeEntry::Enter {
+                    if_absent: true,
+                    ..
+                }
+            )
+        };
+        let enters = (self.enters.get(subtree)).is_some_and(|enters| enters.iter().any(if_absent));
+        #[cfg(any(test, feature = "held_reads"))]
+        assert_eq!(
+            enters,
+            self.enters_if_absent_by_every_entry(subtree),
+            "an enter if absent of {subtree}"
+        );
+        enters
     }
 
     /// Whether the Merk `subtree` has a root after the transaction's
@@ -2226,7 +2444,27 @@ impl WriteSet {
     /// older says, and where nothing does, `None`. The version that is
     /// read is then asked, which may have no such subtree.
     fn rooted_before(&self, subtree: &Subtree, end: usize, found: bool) -> Option<bool> {
-        for op in (0..end).rev() {
+        let rooted = self.rooted_in(subtree, self.said_before(subtree, end), found);
+        #[cfg(any(test, feature = "held_reads"))]
+        assert_eq!(
+            rooted,
+            self.rooted_in(subtree, (0..end).rev(), found),
+            "the root of {subtree} before the operation {end}: by the operations that say something of \
+             it, and by every operation"
+        );
+        rooted
+    }
+
+    /// [`Self::rooted_before`] from the operations `ops`, newest first:
+    /// those that say something of the subtree ([`Self::said_before`]),
+    /// or every operation before one.
+    fn rooted_in(
+        &self,
+        subtree: &Subtree,
+        ops: impl Iterator<Item = usize>,
+        found: bool,
+    ) -> Option<bool> {
+        for op in ops {
             // The change sets of an operation come after what it does to
             // subtrees as a whole.
             let (entries_from, entries_to, merks_from, merks_to) = self.op_bounds(op);
@@ -2264,13 +2502,29 @@ impl WriteSet {
     /// the root they left its Merk with. It is what a transaction with no
     /// frames answers from, as [`Self::rooted`] is.
     pub(crate) fn subtree(&self, subtree: &Subtree, end: usize) -> Said<'_> {
+        let end = end.min(self.ops.len());
+        let said = self.subtree_in(subtree, self.said_before(subtree, end));
+        #[cfg(any(test, feature = "held_reads"))]
+        assert_eq!(
+            said,
+            self.subtree_in(subtree, (0..end).rev()),
+            "{subtree} before the operation {end}: by the operations that say something of it, and \
+             by every operation"
+        );
+        said
+    }
+
+    /// [`Self::subtree`] from the operations `ops`, newest first: those
+    /// that say something of the subtree ([`Self::said_before`]), or
+    /// every operation before one.
+    fn subtree_in(&self, subtree: &Subtree, ops: impl Iterator<Item = usize>) -> Said<'_> {
         let mut root: Option<Option<&[u8]>> = None;
         // The operations that entered the subtree if it was absent, newest
         // first, after the write that says of the subtree what does not
         // depend on that.
         let mut if_absent: Vec<(SubtreeView<'_>, usize)> = Vec::new();
         let mut stated = Restated::default();
-        for op in (0..end.min(self.ops.len())).rev() {
+        for op in ops {
             // In one operation the change sets come last, the enters
             // before them, and the drops and the clears first.
             let (entries_from, entries_to, merks_from, merks_to) = self.op_bounds(op);
@@ -2864,6 +3118,76 @@ mod held {
             assert!(last <= self.first_writes, "no number after the last");
         }
 
+        /// The operations by subtree, made anew from every operation
+        /// of the set as [`WriteSet::add`] notes them.
+        fn said_by_every_op(&self) -> HashMap<Subtree, Says> {
+            let mut said: HashMap<Subtree, Says> = HashMap::new();
+            let note = |ops: &mut Vec<usize>, op: usize| {
+                if ops.last() != Some(&op) {
+                    ops.push(op);
+                }
+            };
+            for op in 0..self.ops.len() {
+                let (entries_from, entries_to, merks_from, merks_to) = self.op_bounds(op);
+                let named = self
+                    .op_subtrees(op)
+                    .iter()
+                    .filter_map(SubtreeEntry::says_of);
+                let cut = (self.entries[entries_from..entries_to].iter())
+                    .flat_map(|entry| Self::cut(&self.arena, entry));
+                let rooted = self.merks[merks_from..merks_to].iter();
+                let rooted = rooted.filter(|merk| merk.root.is_some());
+                for subtree in named.chain(cut) {
+                    note(&mut said.entry(subtree).or_default().whole, op);
+                }
+                for merk in rooted {
+                    note(&mut said.entry(merk.subtree).or_default().rooted, op);
+                }
+            }
+            said
+        }
+
+        /// The operations of each open scope, from every operation.
+        fn scoped_by_every_op(&self) -> HashMap<ScopeId, Vec<usize>> {
+            let mut scoped: HashMap<ScopeId, Vec<usize>> = HashMap::new();
+            for (at, op) in self.ops.iter().enumerate().filter(|(_, op)| op.scope != 0) {
+                scoped.entry(op.scope).or_default().push(at);
+            }
+            scoped
+        }
+
+        /// Holds the operations that the set keeps by subtree and by
+        /// open scope to those of every operation
+        /// ([`Self::said_by_every_op`], [`Self::scoped_by_every_op`]):
+        /// after a rollback to a mark and after a scope was taken out,
+        /// the lists are what the operations that stay make them.
+        pub(super) fn hold_said(&self) {
+            assert_eq!(
+                self.said,
+                self.said_by_every_op(),
+                "the operations by subtree"
+            );
+            self.hold_scoped();
+        }
+
+        /// Holds the operations that the set keeps by open scope to
+        /// those of every operation.
+        pub(super) fn hold_scoped(&self) {
+            assert_eq!(
+                self.scoped,
+                self.scoped_by_every_op(),
+                "the operations by scope"
+            );
+        }
+
+        /// [`WriteSet::enters_if_absent`] as it was made before: the
+        /// entries of subtrees as a whole are asked, oldest first, until
+        /// one is such an enter of the subtree.
+        pub(super) fn enters_if_absent_by_every_entry(&self, subtree: &Subtree) -> bool {
+            let enters = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Enter { subtree: entered, if_absent: true, .. } if entered == subtree);
+            self.subtrees.iter().any(enters)
+        }
+
         pub(crate) fn moves_by_every_name(&self, subtree: &Subtree) -> bool {
             (self.moved.iter()).any(|id| self.names(*id).place(subtree).is_some())
         }
@@ -3282,6 +3606,200 @@ mod tests {
         put(&mut set, 2, Column::Aux);
         assert_eq!(written(&set), names(&[2]));
         assert_eq!(after(&set, moved + 1), names(&[2]));
+    }
+
+    /// The operations that say something of a subtree as a whole are kept
+    /// by subtree, and those of an open scope by scope: through writes
+    /// that say something and writes that say nothing, a clear that cuts a
+    /// subtree, a rollback to a mark, a scope that merges, and a scope
+    /// that is taken out from between the operations of others. What the
+    /// set says of each subtree before each operation is asked all along,
+    /// which holds the lists to the walk over every operation.
+    #[test]
+    fn the_operations_by_subtree_and_by_scope_are_kept_with_the_set() {
+        let subtree = |name: u8| Subtree::new([name; 32]);
+        let whole = |set: &mut WriteSet, writes: &[SubtreeWrite<'_>], cut: &[u8]| {
+            let cut: Vec<Subtree> = cut.iter().copied().map(subtree).collect();
+            let batch = Batch {
+                subtrees: writes,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[], &cut, &[], &[], &[]);
+        };
+        let rooted = |set: &mut WriteSet, name: u8, root: RootPut<'_>| {
+            let merks = [MerkWrite {
+                subtree: subtree(name),
+                nodes: &[],
+                removed: &[],
+                root,
+                anchored: false,
+                whole: false,
+            }];
+            let batch = Batch {
+                merks: &merks,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[false], &[], &[], &[], &[]);
+        };
+        let put = |set: &mut WriteSet, name: u8| {
+            let records = [RecordWrite::Put {
+                unit: Unit::new(Column::Aux, subtree(name)),
+                key: b"k",
+                value: b"v",
+            }];
+            let batch = Batch {
+                records: &records,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[], &[], &[], &[], &[]);
+        };
+        let enter = |name: u8, if_absent: bool| match if_absent {
+            false => SubtreeWrite::Enter {
+                subtree: subtree(name),
+                tree_type: b"t",
+                host: None,
+            },
+            true => SubtreeWrite::EnterIfAbsent {
+                subtree: subtree(name),
+                tree_type: b"t",
+                host: None,
+            },
+        };
+        // The operations of a subtree, of both lists, oldest first.
+        let said = |set: &WriteSet, name: u8| -> Vec<usize> {
+            let says = set.said.get(&subtree(name)).cloned().unwrap_or_default();
+            let mut ops = [says.whole, says.rooted].concat();
+            ops.sort_unstable();
+            ops.dedup();
+            ops
+        };
+        let walked = |set: &WriteSet, name: u8, end: usize| -> Vec<usize> {
+            set.said_before(&subtree(name), end).collect()
+        };
+        // Every answer that the lists give, before every operation: each
+        // is held to the walk over every operation where it is made.
+        let asked = |set: &WriteSet| {
+            for name in 0..10 {
+                for end in 0..=set.ops.len() {
+                    let _ = set.subtree(&subtree(name), end);
+                    for found in [false, true] {
+                        let _ = set.rooted_before(&subtree(name), end, found);
+                    }
+                }
+                let _ = set.enters_if_absent(&subtree(name));
+            }
+            set.hold_said();
+        };
+
+        let mut set = WriteSet::new();
+        // A record under a subtree says nothing of the subtree.
+        put(&mut set, 1);
+        assert_eq!(said(&set, 1), []);
+        // An enter does, and so does a change set that states the root.
+        // One that keeps the root says nothing.
+        whole(&mut set, &[enter(1, false)], &[]);
+        rooted(&mut set, 1, RootPut::Set(Some(b"r")));
+        rooted(&mut set, 1, RootPut::Keep);
+        assert_eq!(said(&set, 1), [1, 2]);
+        assert_eq!(set.rooted(&subtree(1)), Some(true));
+        // A second statement of the root: the newest before `end` is taken
+        // with every operation that changes the subtree. It goes again
+        // with a rollback.
+        let again = set.mark();
+        rooted(&mut set, 1, RootPut::Set(None));
+        assert_eq!(set.said[&subtree(1)].rooted, [2, 4]);
+        assert_eq!(
+            (walked(&set, 1, 5), walked(&set, 1, 4)),
+            (vec![4, 1], vec![2, 1])
+        );
+        assert_eq!((walked(&set, 1, 2), walked(&set, 1, 1)), (vec![1], vec![]));
+        assert_eq!(set.rooted(&subtree(1)), Some(false));
+        assert!(set.rewind(again));
+        assert_eq!(walked(&set, 1, 5), vec![2, 1]);
+        // One operation clears a subtree, which cuts another, and enters
+        // a third if it is absent: it is one operation of each, once.
+        let cleared = SubtreeWrite::Clear {
+            subtree: subtree(2),
+        };
+        whole(&mut set, &[cleared, enter(3, true)], &[1]);
+        assert_eq!(
+            (said(&set, 1), said(&set, 2), said(&set, 3)),
+            (vec![1, 2, 4], vec![4], vec![4])
+        );
+        assert_eq!(set.rooted(&subtree(1)), Some(false));
+        assert!(set.enters_if_absent(&subtree(3)) && !set.enters_if_absent(&subtree(1)));
+        asked(&set);
+        let mark = set.mark();
+        // A drop, a statement of a subtree anew, and a move, which is not
+        // asked of the subtrees it names.
+        let dropped = SubtreeWrite::Drop {
+            subtree: subtree(3),
+        };
+        whole(&mut set, &[dropped], &[]);
+        let stated = SubtreeWrite::Convert {
+            subtree: subtree(1),
+            tree_type: b"u",
+            position: None,
+        };
+        whole(&mut set, &[stated], &[]);
+        let moved = SubtreeWrite::Move {
+            from: subtree(4),
+            to: subtree(8),
+            host: HostPut {
+                subtree: subtree(9),
+                key: b"host",
+                position: 0,
+            },
+            read: None,
+            below: &[],
+        };
+        whole(&mut set, &[moved], &[]);
+        assert_eq!(
+            (said(&set, 1), said(&set, 3), said(&set, 4), said(&set, 8)),
+            (vec![1, 2, 4, 6], vec![4, 5], vec![], vec![])
+        );
+        asked(&set);
+        // The rollback takes the three operations: the lists lose the
+        // two of them that they had, and had nothing of the move.
+        assert!(set.rewind(mark));
+        assert_eq!((said(&set, 1), said(&set, 3)), (vec![1, 2, 4], vec![4]));
+        asked(&set);
+
+        // Two open scopes, the operations of one around one of the other.
+        put(&mut set, 5);
+        set.tag_last(7, false);
+        whole(&mut set, &[enter(6, false)], &[]);
+        set.tag_last(9, false);
+        rooted(&mut set, 6, RootPut::Set(Some(b"r")));
+        set.tag_last(7, false);
+        assert_eq!((set.ops_of(7), set.ops_of(9)), (vec![5, 7], vec![6]));
+        assert_eq!((set.ops_of(8), set.first_open()), (vec![], 5));
+        assert_eq!(said(&set, 6), [6, 7]);
+        // The one merges: its operation is the transaction's, and laid.
+        set.lay_scope(9);
+        assert!(set.laid(6) && !set.laid(5));
+        set.merge_scope(9);
+        assert_eq!((set.ops_of(7), set.ops_of(9)), (vec![5, 7], vec![]));
+        assert_eq!((set.ops[6].scope, set.first_open()), (0, 5));
+        asked(&set);
+        // The other is taken out. The operation that stood between its
+        // two is added again behind what stays, as operation 5.
+        assert!(set.remove_scope(7));
+        assert_eq!((set.ops.len(), said(&set, 6)), (6, vec![5]));
+        assert_eq!((set.ops_of(7), set.first_open()), (vec![], 6));
+        assert!(set.scoped.is_empty() && !set.remove_scope(7));
+        asked(&set);
+        // A scope whose operations are the last goes as a rollback does.
+        whole(&mut set, &[enter(4, true)], &[]);
+        set.tag_last(3, true);
+        assert_eq!((said(&set, 4), set.first_open()), (vec![6], 6));
+        assert!(set.remove_scope(3));
+        assert_eq!((said(&set, 4), set.ops.len()), (vec![], 6));
+        asked(&set);
+        // The end of the writes empties both.
+        set.clear();
+        assert!(set.said.is_empty() && set.scoped.is_empty());
+        asked(&set);
     }
 
     /// A mark is refused once a write from before it went, whatever was
