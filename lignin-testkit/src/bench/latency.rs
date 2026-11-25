@@ -14,12 +14,12 @@
 //! applied untimed, and then `--blocks` blocks of the reference workload's
 //! shape, each in a write transaction of its own, with a pause of
 //! `--pause-us` after each commit. The time of a commit is an `Instant`
-//! around the commit of the block's transaction and nothing else. Where
-//! the system tells how long a thread has run (Linux), the measuring
-//! thread's time on a processor is read before and after it as well: a
-//! commit's time less that is what the thread was off a processor for, as
-//! the system that runs the harness sees it. A machine under that system
-//! that takes a processor away from it is not seen there. After
+//! around the commit of the block's transaction and nothing else. The
+//! measuring thread's own processor clock is read before and after it as
+//! well: a commit's time less what the thread ran is what the thread was
+//! off a processor for, as the system that runs the harness sees it. A
+//! machine under that system that takes a processor away from it is not
+//! seen there: the thread's clock goes on. After
 //! the last engine the root hashes of the engines are compared: they have
 //! applied one stream.
 //!
@@ -299,8 +299,8 @@ pub struct EngineLatency {
     /// The time the operations of each block took, in nanoseconds.
     pub apply_ns: Vec<u64>,
     /// How long the measuring thread ran on a processor during each commit,
-    /// in nanoseconds, where the system tells.
-    pub ran_ns: Option<Vec<u64>>,
+    /// in nanoseconds, by the thread's own clock.
+    pub ran_ns: Vec<u64>,
     /// The parts of each commit that the engine counts apart, in
     /// nanoseconds and in the order of [`PARTS`], where it counts them.
     pub parts_ns: Option<Vec<[u64; 6]>>,
@@ -370,6 +370,16 @@ fn clock_probe(stop: &AtomicBool) -> ClockProbe {
     probe
 }
 
+impl EngineLatency {
+    /// How long each commit's thread was off a processor during it: the
+    /// commit's time less what the thread ran.
+    pub fn off_ns(&self) -> Vec<u64> {
+        (self.commit_ns.iter().zip(&self.ran_ns))
+            .map(|(commit, ran)| commit.saturating_sub(*ran))
+            .collect()
+    }
+}
+
 /// One of the slowest commits of a run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlowCommit {
@@ -378,7 +388,7 @@ pub struct SlowCommit {
     /// The time of the commit, in nanoseconds.
     pub commit_ns: u64,
     /// How long the measuring thread ran on a processor during it.
-    pub ran_ns: Option<u64>,
+    pub ran_ns: u64,
     /// The parts of the commit that the engine counts apart, in the order
     /// of [`PARTS`].
     pub parts_ns: Option<[u64; 6]>,
@@ -832,17 +842,23 @@ impl Marker {
     }
 }
 
+/// How long the calling thread has run on a processor, in nanoseconds, by
+/// its own clock.
+fn thread_clock() -> u64 {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    (time.tv_sec as u64) * 1_000_000_000 + time.tv_nsec as u64
+}
+
 /// Applies the operations of the next block of `stream` in a write
 /// transaction of its own and commits it. Returns how long the operations
 /// and the commit took, when the commit began, and how long the thread
-/// ran on a processor during it where the system tells. `watch` is told
-/// where the commit begins.
+/// ran on a processor during it. `watch` is told where the commit begins.
 fn block<E: Engine>(
     engine: &E,
     stream: &mut Stream,
     grove_version: &GroveVersion,
     watch: Option<&Watch>,
-) -> Result<(Duration, Duration, Instant, Option<u64>), BenchError> {
+) -> Result<(Duration, Duration, Instant, u64), BenchError> {
     let block = next_block(stream);
     let Some((Op::Commit, ops)) = block.split_last() else {
         return Err(BenchError::Check("the stream has ended".to_string()));
@@ -856,12 +872,10 @@ fn block<E: Engine>(
     if let Some(watch) = watch {
         watch.reset_appends();
     }
-    let ran = machine::thread_cpu_ns();
+    let ran = thread_clock();
     let began = Instant::now();
     let (committed, took) = timed(|| transaction.commit());
-    let ran = ran
-        .zip(machine::thread_cpu_ns())
-        .map(|(before, after)| after.saturating_sub(before));
+    let ran = thread_clock().saturating_sub(ran);
     committed?;
     Ok((applied, took, began, ran))
 }
@@ -953,7 +967,7 @@ fn measure_in<E: Subject>(
     let blocks = options.blocks as usize;
     let mut commit_ns = Vec::with_capacity(blocks);
     let mut apply_ns = Vec::with_capacity(blocks);
-    let mut ran_ns = machine::thread_cpu_ns().map(|_| Vec::with_capacity(blocks));
+    let mut ran_ns = Vec::with_capacity(blocks);
     let mut parts_ns = engine.look().map(|_| Vec::with_capacity(blocks));
     let mut slowest: Vec<SlowCommit> = Vec::new();
     let mut marker = Marker::new(options.mark);
@@ -989,9 +1003,7 @@ fn measure_in<E: Subject>(
                 });
                 commit_ns.push(nanos);
                 apply_ns.push(applied.as_nanos() as u64);
-                if let (Some(all), Some(ran)) = (ran_ns.as_mut(), ran) {
-                    all.push(ran);
-                }
+                ran_ns.push(ran);
                 if let (Some(all), Some(parts)) = (parts_ns.as_mut(), parts) {
                     all.push(parts);
                 }
@@ -1242,17 +1254,12 @@ pub fn table(report: &LatencyReport) -> String {
             "\n- the operations of a block, µs: median {median}, 99% {p99}, 99.9% {p999}, \
              longest {longest}"
         );
-        if let Some(ran) = &engine.ran_ns {
-            let off: Vec<u64> = (engine.commit_ns.iter().zip(ran))
-                .map(|(commit, ran)| commit.saturating_sub(*ran))
-                .collect();
-            let [median, p99, p999, longest] = quantiles(&off).map(micros);
-            let _ = writeln!(
-                out,
-                "- the commit, off a processor, µs: median {median}, 99% {p99}, 99.9% {p999}, \
-                 longest {longest}"
-            );
-        }
+        let [median, p99, p999, longest] = quantiles(&engine.off_ns()).map(micros);
+        let _ = writeln!(
+            out,
+            "- the commit, off a processor, µs: median {median}, 99% {p99}, 99.9% {p999}, \
+             longest {longest}"
+        );
         for (part, name) in PARTS.iter().enumerate() {
             let Some(parts) = &engine.parts_ns else {
                 break;
@@ -1275,10 +1282,8 @@ pub fn table(report: &LatencyReport) -> String {
         }
         for slow in &engine.slowest {
             let _ = write!(out, "- block {}: {} µs", slow.block, micros(slow.commit_ns));
-            if let Some(ran) = slow.ran_ns {
-                let off = slow.commit_ns.saturating_sub(ran);
-                let _ = write!(out, ", {} of them off a processor", micros(off));
-            }
+            let off = slow.commit_ns.saturating_sub(slow.ran_ns);
+            let _ = write!(out, ", {} of them off a processor", micros(off));
             if let Some(parts) = slow.parts_ns {
                 let named: Vec<String> = PARTS
                     .iter()
@@ -1323,9 +1328,8 @@ struct RunRow {
     /// The median, the 99th and the 99.9th percentile and the longest of
     /// the commits.
     commit: [u64; 4],
-    /// The same of the commits' time off a processor, where the system
-    /// told how long the thread ran.
-    off: Option<[u64; 4]>,
+    /// The same of the commits' time off a processor.
+    off: [u64; 4],
     clock: ClockProbe,
 }
 
@@ -1333,17 +1337,11 @@ fn run_rows(reports: &[LatencyReport]) -> Vec<RunRow> {
     let mut rows = Vec::new();
     for report in reports {
         for engine in &report.engines {
-            let off = engine.ran_ns.as_ref().map(|ran| {
-                let off: Vec<u64> = (engine.commit_ns.iter().zip(ran))
-                    .map(|(commit, ran)| commit.saturating_sub(*ran))
-                    .collect();
-                quantiles(&off)
-            });
             rows.push(RunRow {
                 group: group_of(report, engine),
                 blocks: engine.commit_ns.len(),
                 commit: quantiles(&engine.commit_ns),
-                off,
+                off: quantiles(&engine.off_ns()),
                 clock: engine.clock,
             });
         }
@@ -1382,12 +1380,8 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
     for row in &rows {
         let (build, engine, background) = &row.group;
         let [median, p99, p999, longest] = row.commit.map(micros);
-        let off = match row.off {
-            Some([_, p99, p999, longest]) => {
-                format!("{} | {} | {}", micros(p99), micros(p999), micros(longest))
-            }
-            None => "- | - | -".to_string(),
-        };
+        let [_, off_p99, off_p999, off_longest] = row.off.map(micros);
+        let off = format!("{off_p99} | {off_p999} | {off_longest}");
         let share = |late: u64| {
             format!(
                 "{:.2}%",
@@ -1429,8 +1423,8 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
             let _ = write!(out, " {} |", ranged(values));
         }
         for column in 1..4 {
-            let values = runs.iter().filter_map(|run| run.off.map(|off| off[column]));
-            let _ = write!(out, " {} |", ranged(values.collect()));
+            let values = runs.iter().map(|run| run.off[column]).collect();
+            let _ = write!(out, " {} |", ranged(values));
         }
         out.push('\n');
     }
@@ -1644,12 +1638,13 @@ mod tests {
         assert_eq!(rocksdb.parts_ns, None);
         assert_eq!(rocksdb.turns, None);
         assert!(rocksdb.syncs.is_empty());
-        // Where the system tells how long the thread ran, it tells it of
-        // every commit.
-        if let Some(ran) = &rocksdb.ran_ns {
-            assert_eq!(ran.len(), 12);
+        // The thread's own clock is read around every commit, and a
+        // thread does not run for longer than the commit takes by more
+        // than the two clocks are read apart.
+        assert_eq!(rocksdb.ran_ns.len(), 12);
+        for (ran, commit) in rocksdb.ran_ns.iter().zip(&rocksdb.commit_ns) {
+            assert!(*ran > 0 && *ran < commit + 1_000_000, "{ran} of {commit}");
         }
-        assert_eq!(rocksdb.ran_ns.is_some(), machine::thread_cpu_ns().is_some());
         assert!(rocksdb
             .slowest
             .iter()
