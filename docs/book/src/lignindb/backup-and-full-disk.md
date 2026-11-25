@@ -262,7 +262,7 @@ it: it refuses a path that is a link now, or no directory, since what is
 there is then not what was copied.
 
 ```sh
-: "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint, as the copy's block wrote it}"
+: "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint, as the copy block printed it}"
 plain_path "$CHECKPOINT"
 if [ -L "$CHECKPOINT" ] || [ ! -d "$CHECKPOINT" ]; then echo "$CHECKPOINT is a link or no directory now: it is not what was copied"; false; fi
 if [ "$(real_dir "$CHECKPOINT")" != "$CHECKPOINT" ]; then echo "$CHECKPOINT is not the path the copy's block wrote: give that one"; false; fi
