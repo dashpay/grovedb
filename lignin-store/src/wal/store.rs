@@ -854,14 +854,21 @@ impl LogStore {
     ///
     /// **An id is used up by a file that entered the log, or that a
     /// creation found under it, and by nothing else.** A creation that
-    /// fails uses up none, however often it is made again, and neither
-    /// does a file that was created and is given up before a manifest
-    /// named it ([`Self::commit`]): the next creation asks for a new file
-    /// under the same id. The file layer makes one only where no file has
-    /// that name. Where it answers that one has (what an earlier attempt
-    /// made and could not remove, or a file that is not the log's), that
-    /// creation fails too, the id is that file's from then on, and the
-    /// creation after it takes the next id.
+    /// fails uses up none for the file it could not make, however often
+    /// it is made again, and neither does a file that was created and is
+    /// given up before a manifest named it ([`Self::commit`]): the next
+    /// creation asks for a new file under the id that was asked under
+    /// last. The file layer makes one only where no file has that name.
+    /// Where it answers that one has (what an earlier attempt made and
+    /// could not remove, or a file that is not the log's), the id is that
+    /// file's for the rest of the session, also where the creation fails
+    /// afterwards; the file is left as it is, and the creation asks under
+    /// the next id in the same call, where it can fail as under any id,
+    /// and after the last id as the next paragraph says. The next open
+    /// removes a file with the name of a log file that no manifest names,
+    /// or fails ([`Self::open`]), and an id that was passed over can be
+    /// asked under again by a session that opens on a manifest whose last
+    /// id is below it.
     ///
     /// After the last id there is none ([`LogError::FileIdsExhausted`],
     /// [`Self::file_ids_used_up`]): the ids do not begin again.
@@ -874,31 +881,31 @@ impl LogStore {
                 return Err(LogError::SpareExists { file: spare.id() });
             }
         }
-        let next = taken.map_or(1, |last| last.get().wrapping_add(1));
-        let Some(id) = FileId::new(next) else {
-            self.ids_used_up.store(true, Ordering::Release);
-            return Err(LogError::FileIdsExhausted);
-        };
+        loop {
+            let next = taken.map_or(1, |last| last.get().wrapping_add(1));
+            let Some(id) = FileId::new(next) else {
+                self.ids_used_up.store(true, Ordering::Release);
+                return Err(LogError::FileIdsExhausted);
+            };
 
-        let path = FileNames::WAL.path(&self.dir, id);
-        let handle = match create_unsynced_file(&*self.vfs, &self.dir, &FileNames::WAL, id) {
-            Ok(handle) => handle,
-            Err(error) => {
-                let name_taken = matches!(
-                    &error,
-                    crate::segment::SegmentStoreError::Io { source, .. }
-                        if source.kind() == ErrorKind::AlreadyExists
-                );
-                if name_taken {
+            let path = FileNames::WAL.path(&self.dir, id);
+            match create_unsynced_file(&*self.vfs, &self.dir, &FileNames::WAL, id) {
+                Ok(handle) => {
+                    *taken = Some(id);
+                    let file = Arc::new(LogFile::created(id, path, handle));
+                    self.tail().spare = Some((file, false));
+                    return Ok(id);
+                }
+                // The name is a file's already: the id is that file's,
+                // and the next one is asked for.
+                Err(crate::segment::SegmentStoreError::Io { source, .. })
+                    if source.kind() == ErrorKind::AlreadyExists =>
+                {
                     *taken = Some(id);
                 }
-                return Err(error.into());
+                Err(error) => return Err(error.into()),
             }
-        };
-        *taken = Some(id);
-        let file = Arc::new(LogFile::created(id, path, handle));
-        self.tail().spare = Some((file, false));
-        Ok(id)
+        }
     }
 
     /// Turns the log to its next file, if it is due: the file the log ends

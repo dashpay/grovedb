@@ -23,6 +23,14 @@ fn wal_path(file: u32) -> PathBuf {
     log_path(sim::db_dir(), file)
 }
 
+fn exists(vfs: &dyn Vfs, file: u32) -> bool {
+    match vfs.open(&wal_path(file), OpenMode::Read) {
+        Ok(_) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => panic!("{error}"),
+    }
+}
+
 fn injected(error: &LogError) -> Option<Fault> {
     SimError::injected(error.io_error()?)
 }
@@ -892,8 +900,8 @@ fn a_turn_that_fails_leaves_the_log_where_it_was() {
 
 #[test]
 fn a_file_that_cannot_be_created_or_named_or_deleted_leaves_the_log_as_it_was() {
-    // A creation that fails uses up no id: the next one makes the file
-    // that it could not make.
+    // A creation that fails uses up no id for the file that it could not
+    // make: the next one makes that file.
     for op in [OpKind::Open, OpKind::Append] {
         let mut run = traced_run(9, 64, small_files(500));
         while !run.db.as_ref().unwrap().log.is_due() {
@@ -1507,9 +1515,10 @@ fn a_creation_that_is_refused_again_and_again_uses_up_no_log_file_id() {
     }
 }
 
-/// An id is used up by a file that is found under it, and by nothing
-/// else: the creation that finds the name taken fails and leaves the file
-/// as it is, and the one after it takes the next id.
+/// An id is used up by a file that is found under it: the creation that
+/// finds the name taken leaves the file as it is and makes its own under
+/// the next id, in the same call. Two names in a row that are taken are
+/// passed over alike.
 #[test]
 fn a_log_file_id_is_used_up_by_a_file_that_is_found_under_it() {
     let mut run = traced_run(9, 64, small_files(500));
@@ -1519,15 +1528,108 @@ fn a_log_file_id_is_used_up_by_a_file_that_is_found_under_it() {
     let db = run.db.as_mut().unwrap();
     assert!(db.log.rotate().unwrap());
     put_file(&run.fs, &wal_path(3), b"not the log's");
-    let error = db.log.create().unwrap_err();
-    let kind = error.io_error().map(io::Error::kind);
-    assert_eq!(kind, Some(io::ErrorKind::AlreadyExists), "{error}");
+    put_file(&run.fs, &wal_path(4), b"nor this");
+    assert_eq!(db.log.create().unwrap(), file_id(5));
     assert_eq!(file_bytes(&run.fs, &wal_path(3)), b"not the log's");
-    assert_eq!(db.log.create().unwrap(), file_id(4));
+    assert_eq!(file_bytes(&run.fs, &wal_path(4)), b"nor this");
     db.log.commit(&mut db.manifest).unwrap();
     let last = db.manifest.manifest().unwrap().last_file_ids().wal;
-    assert_eq!(last, Some(file_id(4)));
+    assert_eq!(last, Some(file_id(5)));
     assert_eq!(file_bytes(&run.fs, &wal_path(3)), b"not the log's");
+    run.check_crash_states();
+    run.append();
+    run.restart();
+}
+
+/// A creation whose header the device refuses, and whose file it then
+/// cannot remove, fails and leaves a file under the id it asked for. The
+/// creation after it meets no fault and does not fail: it passes over the
+/// name and makes its file under the next id. The session goes on: the
+/// log reads as the model has it in the crash states that the run checks
+/// once the manifest names the file, and the open of the next session
+/// removes the file that was passed over.
+#[test]
+fn a_creation_passes_over_the_file_that_a_failed_one_could_not_remove() {
+    for torn in [false, true] {
+        let mut run = traced_run(9, 64, small_files(500));
+        while !run.db.as_ref().unwrap().log.is_due() {
+            run.append();
+        }
+        let db = run.db.as_mut().unwrap();
+        assert!(db.log.rotate().unwrap());
+        let refused = FaultRule::new(Fault::Eio)
+            .on(OpKind::Append)
+            .at(wal_path(3));
+        run.fs.add_rule(refused.torn_append(torn).times(1));
+        let kept = FaultRule::new(Fault::Eio)
+            .on(OpKind::RemoveFile)
+            .at(wal_path(3));
+        run.fs.add_rule(kept.times(1));
+        let error = db.log.create().unwrap_err();
+        assert!(error.to_string().contains("00000003.log"), "{error}");
+        let left = file_bytes(&run.fs, &wal_path(3));
+        assert_eq!(torn, !left.is_empty(), "torn: {torn}");
+
+        assert_eq!(db.log.create().unwrap(), file_id(4), "torn: {torn}");
+        assert_eq!(file_bytes(&run.fs, &wal_path(3)), left);
+        db.log.commit(&mut db.manifest).unwrap();
+        let last = db.manifest.manifest().unwrap().last_file_ids().wal;
+        assert_eq!(last, Some(file_id(4)));
+        run.check_crash_states();
+        run.append();
+        run.restart();
+        assert!(!exists(&run.fs, 3), "torn: {torn}");
+    }
+}
+
+/// A session that ends after a creation passed over a name, and before a
+/// manifest names the file it made, leaves two files that no manifest
+/// names: the one that was passed over and the one that was made. The
+/// open after it removes both, where the process ended and in the
+/// states of a failure of the power that the test's plans give (some of
+/// them hold both files), and the first creation of that session asks
+/// under the id that was passed over.
+#[test]
+fn an_open_removes_what_a_creation_passed_over_and_what_it_made() {
+    for torn in [false, true] {
+        let mut run = traced_run(9, 64, small_files(500));
+        while !run.db.as_ref().unwrap().log.is_due() {
+            run.append();
+        }
+        let db = run.db.as_mut().unwrap();
+        assert!(db.log.rotate().unwrap());
+        let refused = FaultRule::new(Fault::Eio)
+            .on(OpKind::Append)
+            .at(wal_path(3));
+        run.fs.add_rule(refused.torn_append(torn).times(1));
+        let kept = FaultRule::new(Fault::Eio)
+            .on(OpKind::RemoveFile)
+            .at(wal_path(3));
+        run.fs.add_rule(kept.times(1));
+        db.log.create().unwrap_err();
+        assert_eq!(db.log.create().unwrap(), file_id(4), "torn: {torn}");
+        let image = run.fs.crash_image();
+
+        // The process ends: every file is as it was written.
+        run.db = None;
+        assert!(exists(&run.fs, 3) && exists(&run.fs, 4));
+        let db = Db::open(sim::shared(&run.fs), sim::db_dir(), run.options).unwrap();
+        assert!(!exists(&run.fs, 3) && !exists(&run.fs, 4), "torn: {torn}");
+        assert_eq!(db.log.create().unwrap(), file_id(3), "torn: {torn}");
+
+        // The power fails: the states that the plans give.
+        let states = sim::crash_states(&image, &run.plans);
+        let mut both = 0;
+        for (plan, state) in &states.states {
+            state.set_faults(FaultOdds::NONE);
+            both += u32::from(exists(state, 3) && exists(state, 4));
+            let db = Db::open(sim::shared(state), sim::db_dir(), run.options)
+                .unwrap_or_else(|error| panic!("torn: {torn}, plan {plan:?}: {error}"));
+            assert!(!exists(state, 3) && !exists(state, 4), "plan {plan:?}");
+            assert_eq!(db.log.create().unwrap(), file_id(3), "plan {plan:?}");
+        }
+        assert!(both > 0, "no state of {} holds both files", states.plans);
+    }
 }
 
 /// After the last id there is none: the creation fails, the log says

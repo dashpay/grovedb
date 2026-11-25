@@ -365,7 +365,8 @@ no open of the database in between.
   readable, and the session ends (DF8).
 
 **DF12. A background loop waits after a turn that failed, and a refused
-creation uses up no log file id** (D-204). Three threads work behind a
+creation uses up no log file id for the file it could not make**
+(D-204). Three threads work behind a
 session: write-back's loop, the reclaimer's and the cleaner's. Each
 counts what failed and goes on (`DbStats::background`). In this rule a
 turn is one turn of write-back's loop, one round of the reclaimer's
@@ -437,9 +438,9 @@ what it refuses, and in the last it takes the file and not the record.
 
 | The device | Log file ids | Names that no sync of a directory has covered |
 | --- | --- | --- |
-| refuses the creation of the file | None. An id is used up by a file that entered the log, and by a file that a creation found under its name. A file has entered the log once it is durable with its name: its sync, the sync of `wal/` and the sync of the temporary file of the manifest that is to name it are made as one set, and the file has entered when the set has been made, also where the replacement of the manifest fails after it. A creation that was refused takes no id, and neither does a file that was made and given up before it entered the log: the next creation asks for a file under the same id. | none |
+| refuses the creation of the file | None. An id is used up by a file that entered the log, and by a file that a creation found under its name. A file has entered the log once it is durable with its name: its sync, the sync of `wal/` and the sync of the temporary file of the manifest that is to name it are made as one set, and the file has entered when the set has been made, also where the replacement of the manifest fails after it. A creation that was refused takes no id for the file that it could not make, and neither does a file that was made and given up before it entered the log: the next creation asks for a file under the id that was asked under last. | none |
 | makes the file, refuses its header and takes the file away again: a device with no free byte | none, for the same reason | one creation and one removal of that one name for each failed turn |
-| makes the file, refuses its header and does not take the file away | One for every two creations: the next creation finds the file under the id, which is then that file's, and the one after it asks under the next id. | one file for each of those ids. The next open removes them, and fails where the device refuses that as well. |
+| makes the file, refuses its header and does not take the file away | One for each creation after the first: the next creation finds the file under the id, which is then that file's, and asks under the next id in the same call, where the device does the same again. | one file for each failed creation, which is one more than the ids used up: the file of the last creation has been found by none. The next open removes them, and fails where the device refuses that as well. |
 | takes the bytes of each record of the log and answers that it has no room | The log finds the start record of its next file whole in that file and turns to it, to a file that takes no item and is one of the log's. A roll makes six turns at most, and a roll whose last turn ends so has failed. So a failed turn of write-back uses six ids at most. | none |
 | takes the log's files with their start records, and refuses the record of each page step | A failed turn that rolls the log uses one where the roll finds a file made ready for the log to turn to, and two where the roll has to make that file first, if no other thread attempts an append to the log during the turn: the roll gives the log a file, the page step is refused its record in that file, and the turn has failed by it. A record of another thread that is refused in that file during the roll can make the roll use a further file. | none |
 
@@ -447,7 +448,7 @@ what it refuses, and in the last it takes the file and not the record.
 grows to its bound, and from then on write-back's loop makes one turn in
 each such wait at most: with the default bound, one a second. That is
 at most one creation and one removal of a name a second in the second
-row, 1,800 ids an hour in the third, 21,600 in the fourth, and 3,600 in
+row, 3,600 ids an hour in the third, 21,600 in the fourth, and 3,600 in
 the fifth where each failed turn uses one id. A shorter bound gives as
 many more. These are the rates of
 write-back's loop. A pass of the cleaner that asks for a table
