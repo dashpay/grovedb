@@ -244,7 +244,7 @@
 //! What it checks with no layout can still refuse the group where it is
 //! applied.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
@@ -593,6 +593,9 @@ pub(super) fn owed(
     // The tree type of each Merk of an indexed tree of `owed.hosts`, in
     // the order of those.
     let mut kinds: Vec<Vec<TreeType>> = Vec::new();
+    // For each Merk that an indexed tree of `owed.hosts` hosts, the first
+    // of those that hosts it.
+    let mut hosted_by: HashMap<[u8; 32], usize> = HashMap::new();
     for subtree in written.into_values() {
         let prefix = subtree.prefix;
         if enters_itself(&prefix) || left.contains(&prefix) {
@@ -611,7 +614,7 @@ pub(super) fn owed(
         let own = host.hosted.first().copied().unwrap_or(prefix);
         // A subtree of an element that was worked out for another of its
         // subtrees: its handle has to name that element.
-        if let Some(known) = (owed.hosts.iter()).find(|known| known.hosted.contains(&prefix)) {
+        if let Some(known) = hosted_by.get(&prefix).map(|at| &owed.hosts[*at]) {
             match same_element(known, host) {
                 true => continue,
                 false => return Err(beside_nothing(host)),
@@ -650,6 +653,9 @@ pub(super) fn owed(
                     }
                 }
                 kinds.push(hosted.into_iter().map(|(_, kind)| kind).collect());
+                for merk in &named.hosted {
+                    hosted_by.entry(*merk).or_insert(owed.hosts.len());
+                }
                 owed.hosts.push(named);
             }
             Hosting::One(_) | Hosting::Nothing if prefix != own => {
@@ -858,22 +864,25 @@ pub(super) fn owed(
     // A subtree is entered once: as its element names it, where a write
     // through a handle that names no element owed it an enter too.
     let mut once: Vec<(LigninSubtree, Vec<u8>)> = Vec::with_capacity(owed.enters.len());
+    let mut place: HashMap<[u8; 32], usize> = HashMap::with_capacity(owed.enters.len());
     for enter in std::mem::take(&mut owed.enters) {
-        match (once.iter_mut()).find(|(known, _)| known.prefix == enter.0.prefix) {
+        match place.get(&enter.0.prefix).map(|at| &mut once[*at]) {
             Some(known) if known.0.host.is_none() => *known = enter,
             Some(_) => {}
-            None => once.push(enter),
+            None => {
+                place.insert(enter.0.prefix, once.len());
+                once.push(enter);
+            }
         }
     }
     owed.enters = once;
     // A subtree whose host is in a subtree that is entered here too comes
     // after it: by how many of its hosts' subtrees are entered here.
     let depth = |subtree: &LigninSubtree| {
+        // Each subtree is entered once here: it is found by its prefix.
         let host = |subtree: &&LigninSubtree| {
             let host = subtree.host.as_ref()?.subtree;
-            (owed.enters.iter())
-                .map(|(owed, _)| owed)
-                .find(|owed| owed.prefix == host)
+            place.get(&host).map(|at| &owed.enters[*at].0)
         };
         let hosts = std::iter::successors(Some(subtree), host);
         hosts.take(owed.enters.len()).count()

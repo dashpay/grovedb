@@ -13,6 +13,7 @@ mod errors;
 mod handles;
 mod hashes;
 mod histories;
+mod leaves;
 pub(crate) mod load;
 mod looks;
 mod moves;

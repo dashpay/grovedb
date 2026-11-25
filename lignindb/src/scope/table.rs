@@ -5,7 +5,7 @@
 //! it under its own lock, and the model of `tests/model.rs` calls it under
 //! a lock of its own.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::txn::{Column, Subtree, Unit};
 
@@ -131,6 +131,8 @@ pub(crate) struct Scopes {
     /// The subtrees that open scopes dropped or cleared, each with its
     /// scope: everything below them is held.
     whole: Vec<(ScopeId, Subtree)>,
+    /// What `whole` holds, to find one of them by.
+    whole_of: HashSet<(ScopeId, Subtree)>,
     pending: BTreeSet<MarkKey>,
     /// Every change of `pending` that had an effect, oldest first.
     log: Vec<MarkChange>,
@@ -191,6 +193,7 @@ impl Scopes {
             }
         }
         self.whole.retain(|(holder, _)| *holder != id);
+        self.whole_of.retain(|(holder, _)| *holder != id);
         Some(Closed {
             laid: scope.laid,
             marks: scope.marks,
@@ -333,7 +336,7 @@ impl Scopes {
             self.note_read(id, *unit);
         }
         for above in whole {
-            if !self.whole.contains(&(id, *above)) {
+            if self.whole_of.insert((id, *above)) {
                 self.whole.push((id, *above));
             }
         }
@@ -372,6 +375,9 @@ impl Scopes {
         for (holder, _) in &self.whole {
             assert!(self.open.contains_key(holder), "a drop of a closed scope");
         }
+        let listed: HashSet<(ScopeId, Subtree)> = self.whole.iter().copied().collect();
+        assert_eq!(listed, self.whole_of, "the subtrees that are held whole");
+        assert_eq!(listed.len(), self.whole.len(), "each is listed once");
     }
 
     fn scope(&mut self, id: ScopeId) -> &mut Open {

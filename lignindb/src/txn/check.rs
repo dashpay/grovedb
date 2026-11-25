@@ -1,6 +1,6 @@
 //! What is checked of a batch before anything is changed.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use lignin_format::value_log::MAX_VALUE_LEN;
 
@@ -10,7 +10,9 @@ use super::{
     error::{BatchError, WholeFault},
     key::{Column, Subtree, Unit},
     load::{is_load, load_order},
-    write::{Batch, Entering, Hosted, MerkWrite, RecordWrite, RootPut, SubtreeWrite, ValuePut},
+    write::{
+        Batch, Entering, Hosted, MerkWrite, NodePut, RecordWrite, RootPut, SubtreeWrite, ValuePut,
+    },
 };
 
 /// The longest key of a Merk node: a cell has one byte for its length
@@ -72,6 +74,12 @@ pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError>
     }
     let named = |subtree: &Subtree| sources.contains(subtree) || targets.contains(subtree);
     let moved = |subtree: Subtree| Err(BatchError::Moved { subtree });
+    // The Merk that holds the host of a move is found by its subtree, and
+    // the host among its nodes by its key: the first of each, as a look
+    // through them in their order finds it. Both are made where the
+    // batch has a move.
+    let mut merk_of: Option<HashMap<Subtree, &MerkWrite<'_>>> = None;
+    let mut nodes_of: HashMap<Subtree, HashMap<&[u8], &NodePut<'_>>> = HashMap::new();
     for moving in batch.moves() {
         let host = moving.host;
         if host.key.len() > MAX_NODE_KEY {
@@ -80,8 +88,23 @@ pub(crate) fn check(batch: &Batch<'_>, laid_out: bool) -> Result<(), BatchError>
                 len: host.key.len(),
             });
         }
-        let merk = batch.merks.iter().find(|merk| merk.subtree == host.subtree);
-        let node = merk.and_then(|merk| merk.nodes.iter().find(|node| node.key == host.key));
+        let merk_of = merk_of.get_or_insert_with(|| {
+            let mut first = HashMap::with_capacity(batch.merks.len());
+            for merk in batch.merks {
+                first.entry(merk.subtree).or_insert(merk);
+            }
+            first
+        });
+        let node = merk_of.get(&host.subtree).and_then(|merk| {
+            let nodes = nodes_of.entry(host.subtree).or_insert_with(|| {
+                let mut first = HashMap::with_capacity(merk.nodes.len());
+                for node in merk.nodes {
+                    first.entry(node.key).or_insert(node);
+                }
+                first
+            });
+            nodes.get(host.key).copied()
+        });
         let at = usize::from(host.position);
         let elsewhere = |hosted: &[Subtree]| {
             let mut named = hosted.iter().enumerate();
@@ -243,15 +266,19 @@ fn if_entered(
     removing: &HashSet<Subtree>,
 ) -> Result<(), BatchError> {
     let refused = |subtree| Err(BatchError::IfEntered { subtree });
-    let written = |subtree: &Subtree| {
-        batch.merks.iter().any(|merk| merk.subtree == *subtree)
-            || (batch.records.iter()).any(|record| record.unit().subtree == *subtree)
-    };
+    // The subtrees that the batch holds a change set or a record of,
+    // gathered where it states such a drop.
+    let mut written: Option<HashSet<Subtree>> = None;
     for write in batch.subtrees {
         let SubtreeWrite::DropIfEntered { subtree, .. } = write else {
             continue;
         };
-        if entered.contains(subtree) || written(subtree) {
+        let written = written.get_or_insert_with(|| {
+            (batch.merks.iter().map(|merk| merk.subtree))
+                .chain(batch.records.iter().map(|record| record.unit().subtree))
+                .collect()
+        });
+        if entered.contains(subtree) || written.contains(subtree) {
             return refused(*subtree);
         }
     }

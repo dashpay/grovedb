@@ -1783,17 +1783,17 @@ fn a_subtree_is_opened_through_the_directory_as_the_transaction_sees_it() {
 
 /// The element that hosts a subtree of a random run: the name of the
 /// subtree it is in, and its key.
-type HostedBy = Option<(u8, Vec<u8>)>;
+pub(super) type HostedBy = Option<(u8, Vec<u8>)>;
 
 /// What a random run knows of the subtrees its two transactions hold: the
 /// element that hosts each one, and the items of its Merk.
 #[derive(Debug, Clone, Default)]
-struct Held {
-    live: BTreeMap<u8, (HostedBy, Items)>,
+pub(super) struct Held {
+    pub(super) live: BTreeMap<u8, (HostedBy, Items)>,
 }
 
 impl Held {
-    fn host(&self, name: u8) -> Option<(Subtree, Vec<u8>, u8)> {
+    pub(super) fn host(&self, name: u8) -> Option<(Subtree, Vec<u8>, u8)> {
         let (host, _) = &self.live[&name];
         (host.as_ref()).map(|(host, key)| (model::subtree(*host), key.clone(), 0))
     }
@@ -1804,7 +1804,7 @@ impl Held {
     }
 
     /// The subtrees below `name`, at any depth.
-    fn below(&self, name: u8) -> Vec<u8> {
+    pub(super) fn below(&self, name: u8) -> Vec<u8> {
         let mut below = vec![name];
         let mut at = 0;
         while at < below.len() {
@@ -1821,7 +1821,7 @@ impl Held {
 
     /// Takes out what is below `name`, and its items: a clear, and the
     /// first half of a drop.
-    fn empty(&mut self, name: u8) {
+    pub(super) fn empty(&mut self, name: u8) {
         if self.live[&name].1.is_empty() {
             return;
         }
@@ -1834,7 +1834,7 @@ impl Held {
     /// The change set that makes of the Merk `name` the Merk `edit` leaves,
     /// which this takes in. A Merk under an element is written without its
     /// host, so it is anchored.
-    fn change(&mut self, name: u8, edit: impl FnOnce(&mut Items)) -> OwnedMerk {
+    pub(super) fn change(&mut self, name: u8, edit: impl FnOnce(&mut Items)) -> OwnedMerk {
         let (host, items) = self.live.get_mut(&name).expect("a live subtree");
         let view = (model::records(items).1.into_iter())
             .map(|(key, node)| (key, Val::Node(node)))

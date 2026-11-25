@@ -1205,7 +1205,7 @@ pub struct LigninSettled {
     /// What whoever applies the batch said of an element after the batch
     /// was settled ([`Self::host`]): the element's subtree and key, and
     /// the Merks it hosts.
-    hosts: Vec<(Subtree, Vec<u8>, Vec<Subtree>)>,
+    hosts: Hosts,
     /// The nodes that handles put in the place of the element of a tree.
     over_trees: BTreeSet<(Prefix, Vec<u8>)>,
     /// Where handles first read the elements of trees that they put or
@@ -1222,7 +1222,7 @@ pub struct LigninSettled {
     /// The subtrees that whoever applies the batch dropped with it
     /// ([`Self::drop_subtree`], [`Self::drop_under`],
     /// [`Self::drop_if_entered`]).
-    drops: Vec<StatedDrop>,
+    drops: Once<Subtree, StatedDrop>,
     /// The subtrees whose writes the batch does not hand the transaction
     /// ([`Self::leave_out`]).
     left_out: BTreeSet<Subtree>,
@@ -1232,7 +1232,7 @@ pub struct LigninSettled {
     /// The marks that the batch is applied with
     /// ([`Self::leave_behind`]): each by the subtree that keeps it, and
     /// its key there.
-    left_behind: Vec<(Subtree, Vec<u8>)>,
+    left_behind: Once<(Subtree, Vec<u8>), (Subtree, Vec<u8>)>,
     /// The subtrees that whoever applies the batch states anew with it
     /// ([`Self::state_anew`]).
     restated: Vec<SubtreeChange>,
@@ -1242,7 +1242,111 @@ pub struct LigninSettled {
     /// The subtrees that whoever applies the batch says are not entered
     /// under a node ([`Self::not_under`]): each with the subtree of that
     /// node's Merk and its key.
-    not_under: Vec<(Subtree, Subtree, Vec<u8>)>,
+    not_under: Once<NotUnder, NotUnder>,
+}
+
+/// Statements of whoever applies a batch, in the order they were made,
+/// each found by what it is of: of two statements of one thing the first
+/// stands.
+#[derive(Debug)]
+pub(super) struct Once<K, T> {
+    stated: Vec<T>,
+    of: HashSet<K>,
+}
+
+impl<K, T> Default for Once<K, T> {
+    fn default() -> Self {
+        Self {
+            stated: Vec::new(),
+            of: HashSet::new(),
+        }
+    }
+}
+
+impl<K: Eq + std::hash::Hash, T> Once<K, T> {
+    /// Keeps `stated`, unless a statement of `of` is kept.
+    pub(super) fn state(&mut self, of: K, stated: T) {
+        if self.of.insert(of) {
+            self.stated.push(stated);
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.stated.clear();
+        self.of.clear();
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.stated.is_empty()
+    }
+
+    /// The statements that are kept, in the order they were made.
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.stated.iter()
+    }
+}
+
+/// What whoever applies a batch said of elements since the batch was
+/// settled ([`LigninSettled::host`]): of each element the Merks it hosts.
+/// Of two statements of one element the later stands, in the place it has
+/// among the statements.
+#[derive(Debug, Default)]
+pub(super) struct Hosts {
+    /// The statements in their order: the subtree and the key of an
+    /// element, and the Merks it hosts. One that a later statement of its
+    /// element took the place of is `None`.
+    said: Vec<Option<(Subtree, Vec<u8>, Vec<Subtree>)>>,
+    /// Where the statement of each element stands, by the element's
+    /// subtree and its key.
+    of: HashMap<Subtree, HashMap<Vec<u8>, usize>>,
+    /// For each Merk, where the statements stand that name it among the
+    /// Merks an element hosts.
+    hosting: HashMap<Subtree, BTreeSet<usize>>,
+}
+
+impl Hosts {
+    /// Says that the element under `key` of `subtree` hosts `hosted`.
+    pub(super) fn say(&mut self, subtree: Subtree, key: &[u8], hosted: Vec<Subtree>) {
+        let at = self.said.len();
+        let elements = self.of.entry(subtree).or_default();
+        if let Some(before) = elements.insert(key.to_vec(), at) {
+            let taken = self.said[before].take();
+            for merk in taken.iter().flat_map(|(.., hosted)| hosted) {
+                if let Some(naming) = self.hosting.get_mut(merk) {
+                    naming.remove(&before);
+                }
+            }
+        }
+        for merk in &hosted {
+            self.hosting.entry(*merk).or_default().insert(at);
+        }
+        self.said.push(Some((subtree, key.to_vec(), hosted)));
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.said.clear();
+        self.of.clear();
+        self.hosting.clear();
+    }
+
+    /// Whether nothing was said.
+    pub(super) fn is_empty(&self) -> bool {
+        self.of.is_empty()
+    }
+
+    /// What the element under `key` of `subtree` was said to host.
+    pub(super) fn hosted(&self, subtree: Subtree, key: &[u8]) -> Option<&[Subtree]> {
+        let at = *self.of.get(&subtree)?.get(key)?;
+        let said = self.said[at].as_ref();
+        said.map(|(.., hosted)| hosted.as_slice())
+    }
+
+    /// The first of the statements that stand, in their order, which
+    /// names `merk` among the Merks its element hosts.
+    pub(super) fn of_merk(&self, merk: &Subtree) -> Option<&(Subtree, Vec<u8>, Vec<Subtree>)> {
+        let at = *self.hosting.get(merk)?.first()?;
+        self.said[at].as_ref()
+    }
 }
 
 /// Whether the outcome under `key` in `unit` is a record that its handle
@@ -1259,6 +1363,10 @@ fn changed(change: &SubtreeChange) -> &Prefix {
         SubtreeChange::Enter { subtree, .. } | SubtreeChange::Convert { subtree, .. } => subtree,
     }
 }
+
+/// A subtree that is said not to be entered under a node: the subtree, the
+/// subtree of the node's Merk, and the node's key.
+type NotUnder = (Subtree, Subtree, Vec<u8>);
 
 /// A drop as whoever applies a batch states it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1331,14 +1439,6 @@ struct StatedMove {
     below: Vec<(Subtree, Subtree)>,
 }
 
-impl StatedMove {
-    /// Whether the move is of `pair`, or takes it along.
-    fn takes(&self, pair: &(Prefix, Prefix)) -> bool {
-        let pair = (Subtree::new(pair.0), Subtree::new(pair.1));
-        (self.from, self.to) == pair || self.below.contains(&pair)
-    }
-}
-
 /// A settled batch is handed to the transaction as it was resolved, with
 /// what was said of an element since ([`LigninSettled::host`]) in the
 /// place of what its handles said.
@@ -1363,15 +1463,11 @@ impl BatchPart for LigninSettled {
             let stays: Vec<bool> = (batch.merks.iter())
                 .map(|merk| !self.left_out.contains(&merk.subtree))
                 .collect();
-            let hosted = |subtree: Subtree, key: &[u8]| {
-                (self.hosts.iter())
-                    .find(|(of, at, _)| *of == subtree && at == key)
-                    .map(|(.., hosted)| hosted.as_slice())
-            };
+            let hosted = |subtree: Subtree, key: &[u8]| self.hosts.hosted(subtree, key);
+            // The nodes of the batch's Merks are the nodes that the
+            // resolved batch puts.
             let puts = |subtree: Subtree, key: &[u8]| {
-                batch.merks.iter().any(|merk| {
-                    merk.subtree == subtree && merk.nodes.iter().any(|node| node.key == key)
-                })
+                matches!(self.resolved.held(subtree, key), Some(Staged::Node(_)))
             };
             let nodes: Vec<Vec<NodePut<'_>>> = (batch.merks.iter())
                 .map(|merk| {
@@ -1391,9 +1487,7 @@ impl BatchPart for LigninSettled {
                     nodes,
                     // A Merk is anchored where the batch does not put the
                     // node of the element that hosts it.
-                    anchored: match (self.hosts.iter())
-                        .find(|(.., hosted)| hosted.contains(&merk.subtree))
-                    {
+                    anchored: match self.hosts.of_merk(&merk.subtree) {
                         Some((subtree, key, _)) => !puts(*subtree, key),
                         None => merk.anchored,
                     },
@@ -1422,14 +1516,14 @@ impl BatchPart for LigninSettled {
             let drops = self.drops.iter().map(StatedDrop::write);
             // What is removed under a subtree if it is entered is said of
             // each such subtree that the batch hands a write for.
-            let handed = |subtree: &Subtree| {
-                merks.iter().any(|merk| merk.subtree == *subtree)
-                    || records
-                        .iter()
-                        .any(|record| record.unit().subtree == *subtree)
+            let handed: HashSet<Subtree> = match self.removing.is_empty() {
+                true => HashSet::new(),
+                false => (merks.iter().map(|merk| merk.subtree))
+                    .chain(records.iter().map(|record| record.unit().subtree))
+                    .collect(),
             };
             let removing = (self.removing.iter())
-                .filter(|subtree| handed(subtree))
+                .filter(|subtree| handed.contains(subtree))
                 .map(|subtree| SubtreeWrite::RemoveIfEntered { subtree: *subtree });
             let moves = self.moved.iter().map(|moved| SubtreeWrite::Move {
                 from: moved.from,
@@ -1483,8 +1577,7 @@ impl BatchPart for LigninSettled {
     /// that the handle of the Merk named ([`LigninSubtree::host`]), if
     /// nothing was said of that element since.
     fn host_of(&self, merk: Subtree) -> Option<LigninHost> {
-        let mut said = self.hosts.iter();
-        if let Some((subtree, key, hosted)) = said.find(|(.., hosted)| hosted.contains(&merk)) {
+        if let Some((subtree, key, hosted)) = self.hosts.of_merk(&merk) {
             return Some(LigninHost {
                 subtree: *subtree.as_bytes(),
                 key: key.clone(),
@@ -1492,10 +1585,8 @@ impl BatchPart for LigninSettled {
             });
         }
         let named = self.written.get(merk.as_bytes())?.host.clone()?;
-        let mut said = self.hosts.iter();
-        let since =
-            said.any(|(subtree, key, _)| *subtree.as_bytes() == named.subtree && *key == named.key);
-        (!since).then_some(named)
+        let since = self.hosts.hosted(Subtree::new(named.subtree), &named.key);
+        since.is_none().then_some(named)
     }
 }
 
@@ -1532,19 +1623,19 @@ impl LigninSettled {
             converted: marks.converted.into_values().collect(),
             pending,
             two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
-            hosts: Vec::new(),
+            hosts: Hosts::default(),
             over_trees: marks.over_trees,
             tree_reads: marks.tree_reads,
             moved: Vec::new(),
             merks,
             paths,
-            drops: Vec::new(),
+            drops: Once::default(),
             left_out: BTreeSet::new(),
             kept,
-            left_behind: Vec::new(),
+            left_behind: Once::default(),
             restated: Vec::new(),
             removing: BTreeSet::new(),
-            not_under: Vec::new(),
+            not_under: Once::default(),
         }
     }
 
@@ -1714,13 +1805,7 @@ impl LigninSettled {
     }
 
     fn state_drop(&mut self, drop: StatedDrop) {
-        if !self
-            .drops
-            .iter()
-            .any(|stated| stated.subtree == drop.subtree)
-        {
-            self.drops.push(drop);
-        }
+        self.drops.state(drop.subtree, drop);
     }
 
     /// Says that what the batch removes under the subtree `prefix` is
@@ -1793,9 +1878,7 @@ impl LigninSettled {
     /// refuses a batch that names a subtree so twice.
     pub fn not_under(&mut self, prefix: &[u8; 32], above: &[u8; 32], key: &[u8]) {
         let stated = (Subtree::new(*prefix), Subtree::new(*above), key.to_vec());
-        if !self.not_under.contains(&stated) {
-            self.not_under.push(stated);
-        }
+        self.not_under.state(stated.clone(), stated);
     }
 
     /// States that what the batch is applied with leaves a record of
@@ -1821,9 +1904,7 @@ impl LigninSettled {
             return;
         };
         let mark = (Subtree::new(*home), key);
-        if !self.left_behind.contains(&mark) {
-            self.left_behind.push(mark);
-        }
+        self.left_behind.state(mark.clone(), mark);
     }
 
     /// What the batch holds for the records of `keyspace` of the subtree
@@ -1836,7 +1917,7 @@ impl LigninSettled {
         prefix: &[u8; 32],
     ) -> impl Iterator<Item = (&[u8], LigninOutcome<'_>)> {
         let unit = Unit::new(column(keyspace), Subtree::new(*prefix));
-        let held = (self.resolved.outcomes()).filter(move |outcome| outcome.unit == unit);
+        let held = self.resolved.outcomes_of(unit);
         held.map(|outcome| {
             let write = match outcome.write {
                 Staged::Record(value) => LigninOutcome::Put(Some(value)),
@@ -1987,11 +2068,8 @@ impl LigninSettled {
     /// element hosts that hosts more than the subtree of its own path. Of
     /// two statements of one element the later stands.
     pub fn host(&mut self, host: &LigninHost) {
-        let subtree = Subtree::new(host.subtree);
-        self.hosts
-            .retain(|(of, key, _)| !(*of == subtree && *key == host.key));
         let hosted = host.hosted.iter().copied().map(Subtree::new).collect();
-        self.hosts.push((subtree, host.key.clone(), hosted));
+        (self.hosts).say(Subtree::new(host.subtree), &host.key, hosted);
     }
 
     /// Takes back every statement of [`Self::host`]: each element hosts
@@ -2043,11 +2121,24 @@ impl LigninSettled {
     /// The nodes that the batch puts in the Merk `prefix` with a stated
     /// value: each by its key, with that value.
     pub fn stated(&self, prefix: &[u8; 32]) -> impl Iterator<Item = (&[u8], &[u8])> {
-        let subtree = Subtree::new(*prefix);
-        let nodes =
-            (self.resolved.outcomes()).filter(move |outcome| outcome.unit.subtree == subtree);
+        // A node is a record of the data column.
+        let nodes = (self.resolved).outcomes_of(Unit::data(Subtree::new(*prefix)));
         nodes.filter_map(|outcome| match outcome.write {
             Staged::Node(node) => Some((outcome.key, node.value.as_deref()?)),
+            _ => None,
+        })
+    }
+
+    /// The nodes that the batch puts with a stated value, in every Merk:
+    /// each by its subtree and its key, with that value. Those of one
+    /// Merk come in the order of [`Self::stated`]. Whoever needs the
+    /// nodes of many Merks reads the batch once by this.
+    pub fn stated_nodes(&self) -> impl Iterator<Item = ([u8; 32], &[u8], &[u8])> {
+        (self.resolved.outcomes()).filter_map(|outcome| match outcome.write {
+            Staged::Node(node) => {
+                let subtree = *outcome.unit.subtree.as_bytes();
+                Some((subtree, outcome.key, node.value.as_deref()?))
+            }
             _ => None,
         })
     }
@@ -2137,7 +2228,18 @@ impl LigninSettled {
         // A move is made as it was stated ([`Self::move_as`]): a pair that
         // the batch was told of and that nobody stated is not made.
         let unstated = |part: &Self| {
-            let stated = |pair: &(Prefix, Prefix)| part.moved.iter().any(|moved| moved.takes(pair));
+            if part.moves.is_empty() {
+                return false;
+            }
+            // Every pair that a stated move is of, or takes along.
+            let mut taken: HashSet<(Subtree, Subtree)> = HashSet::new();
+            for moved in &part.moved {
+                taken.insert((moved.from, moved.to));
+                taken.extend(moved.below.iter().copied());
+            }
+            let stated = |(from, to): &(Prefix, Prefix)| {
+                taken.contains(&(Subtree::new(*from), Subtree::new(*to)))
+            };
             !part.moves.iter().all(stated)
         };
         if parts.iter().any(unstated) {
@@ -2160,12 +2262,17 @@ impl LigninSettled {
         let mut needed: Vec<Option<usize>> = (enters.iter())
             .map(|(subtree, _)| parts.iter().position(|part| part.needs(&subtree.prefix)))
             .collect();
+        // The first of `enters` that is of each subtree.
+        let mut first: HashMap<Prefix, usize> = HashMap::with_capacity(enters.len());
+        for (at, (subtree, _)) in enters.iter().enumerate() {
+            first.entry(subtree.prefix).or_insert(at);
+        }
+        // The one of `enters` before the one at `at` that is of `above`.
+        let before =
+            |at: usize, above: &Prefix| first.get(above).copied().filter(|given| *given < at);
         for at in (0..enters.len()).rev() {
             let above = enters[at].0.host.as_ref().map(|host| host.subtree);
-            let parent = above.and_then(|above| {
-                let mut before = enters[..at].iter();
-                before.position(|(given, _)| given.prefix == above)
-            });
+            let parent = above.and_then(|above| before(at, &above));
             if let (Some(parent), Some(need)) = (parent, needed[at]) {
                 needed[parent] = Some(needed[parent].map_or(need, |known| known.min(need)));
             }
@@ -2175,8 +2282,7 @@ impl LigninSettled {
             let above = subtree.host.as_ref().map(|host| host.subtree);
             let part = above.and_then(|above| {
                 let own = parts.iter().position(|part| part.enters(&above));
-                let given = (enters.iter().zip(&entered_by))
-                    .find_map(|((given, _), part)| (given.prefix == above).then_some(*part));
+                let given = before(at, &above).map(|given| entered_by[given]);
                 own.or(given)
             });
             let for_its_host = || {

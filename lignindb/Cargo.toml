@@ -23,6 +23,17 @@ tempfile = { workspace = true, optional = true }
 # is the one user. It is switched on from `[dev-dependencies]` only, and no
 # other feature turns it on.
 testing = ["dep:tempfile"]
+# A check, and no API: the answers that decide what a transaction reads of
+# a subtree which it moved, or which is below one it moved, are held to
+# the functions that made them before they were made to cost less than the
+# transaction is large (`txn::opened::held`, `txn::write_set::held`). The
+# two are compared at every call, at the cost of the old one, and a
+# difference panics, as does an answer that could only be made the old
+# way. It is on in this crate's own tests. A run of another crate's tests
+# switches it on to hold the answers over that crate's calls (`--features
+# lignindb/held_reads`), and nothing else does: no feature of any crate
+# turns it on.
+held_reads = []
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7.2"

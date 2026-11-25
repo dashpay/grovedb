@@ -6,7 +6,13 @@
 //! names it), because it works on the state that the transaction keeps
 //! under its lock. [`crate::scope`] is its documentation.
 
-use std::{cell::Cell, collections::HashSet, fmt, marker::PhantomData, sync::Arc};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    fmt,
+    marker::PhantomData,
+    sync::Arc,
+};
 
 use lignin_tree::directory::MerkId;
 
@@ -273,18 +279,24 @@ impl fmt::Debug for Scope<'_, '_> {
 /// whether the subtree can be there already: the batch enters it if it is
 /// absent, and does not drop it first.
 fn entering(batch: &Batch<'_>) -> Vec<(Subtree, Option<Subtree>, bool)> {
-    let dropped = |subtree: Subtree| {
-        let mut writes = batch.subtrees.iter();
-        writes.any(|write| write.drops() && write.subtree() == subtree)
-    };
+    let dropped: HashSet<Subtree> = (batch.subtrees.iter())
+        .filter(|write| write.drops())
+        .map(SubtreeWrite::subtree)
+        .collect();
     let enters = batch.subtrees.iter().filter_map(SubtreeWrite::entering);
     enters
         .map(|enter| {
             let host = enter.host.map(|host| host.subtree);
-            let kept = enter.if_absent && !dropped(enter.subtree);
+            let kept = enter.if_absent && !dropped.contains(&enter.subtree);
             (enter.subtree, host, kept)
         })
         .collect()
+}
+
+/// Where the last enter of each subtree stands among `entering`.
+fn last_enters(entering: &[(Subtree, Option<Subtree>, bool)]) -> HashMap<Subtree, usize> {
+    let enters = entering.iter().enumerate();
+    enters.map(|(at, (subtree, ..))| (*subtree, at)).collect()
 }
 
 /// Which subtree is below which for a transaction, asked in two ways.
@@ -318,6 +330,9 @@ struct Hosts<'a, 's> {
     path: &'a WritePath<'s>,
     /// The subtrees the batch enters ([`entering`]).
     entering: &'a [(Subtree, Option<Subtree>, bool)],
+    /// Where the last enter of each subtree stands among them
+    /// ([`last_enters`]).
+    last: HashMap<Subtree, usize>,
     /// The subtrees the batch drops and clears, before it enters any.
     leaving: &'a [Subtree],
     /// The enters if absent that the transaction made (`State::above`).
@@ -335,8 +350,8 @@ struct Hosts<'a, 's> {
 impl Hosts<'_, '_> {
     /// The subtree of the element that hosts `subtree`.
     fn host(&mut self, subtree: &Subtree) -> Result<Option<Subtree>, TxnError> {
-        let mut entering = self.entering.iter().rev();
-        let stated = match entering.find(|(entered, ..)| entered == subtree) {
+        let last = self.last.get(subtree).map(|at| &self.entering[*at]);
+        let stated = match last {
             Some(&(_, host, false)) => return Ok(host),
             stated => stated.map(|&(_, host, _)| host),
         };
@@ -595,6 +610,7 @@ impl<'s> WriteTxn<'s> {
         let mut hosts = Hosts {
             path: &self.path,
             entering: &[],
+            last: HashMap::new(),
             leaving: &[],
             noted: &state.above,
             laid: None,
@@ -678,6 +694,8 @@ impl<'s> WriteTxn<'s> {
                 whole.push(named);
             }
         }
+        // What is written is no read beside.
+        let written: HashSet<Unit> = units.iter().copied().collect();
         let nodes = batch.merks.iter().flat_map(|merk| merk.nodes);
         let mut reads: Vec<Unit> = nodes
             .filter_map(|node| match node.hosted {
@@ -686,7 +704,7 @@ impl<'s> WriteTxn<'s> {
             })
             .flatten()
             .map(|hosted| Unit::data(*hosted))
-            .filter(|unit| !units.contains(unit))
+            .filter(|unit| !written.contains(unit))
             .collect();
         let dated = batch.subtrees.iter().filter_map(|write| match write {
             SubtreeWrite::DropUnder {
@@ -696,16 +714,17 @@ impl<'s> WriteTxn<'s> {
             } => Some(Unit::data(host.subtree)),
             _ => None,
         });
-        reads.extend(dated.filter(|unit| !units.contains(unit)));
+        reads.extend(dated.filter(|unit| !written.contains(unit)));
         // What a batch says a subtree is not under is a read of the
         // subtree's entry, which is of its Merk's unit (SC2).
         let stated = batch.not_under().map(|(subtree, _)| Unit::data(subtree));
-        reads.extend(stated.filter(|unit| !units.contains(unit)));
+        reads.extend(stated.filter(|unit| !written.contains(unit)));
         reads.sort_unstable();
         reads.dedup();
         let mut hosts = Hosts {
             path: &self.path,
             entering: &entering,
+            last: last_enters(&entering),
             leaving: &leaving,
             noted: &state.above,
             laid: None,
@@ -1151,6 +1170,7 @@ impl<'s> WriteTxn<'s> {
         let mut hosts = Hosts {
             path: &self.path,
             entering: &entering,
+            last: last_enters(&entering),
             leaving: &leaving,
             noted: &state.above,
             laid: None,

@@ -234,6 +234,22 @@ impl<C> Resolved<C> {
         })
     }
 
+    /// The outcomes of the keys of `unit`, in the order that
+    /// [`Self::outcomes`] has them in: they are found by the unit,
+    /// whatever else the batch holds.
+    pub fn outcomes_of(&self, unit: Unit) -> impl Iterator<Item = Outcome<'_, C>> {
+        let column = ORDER.iter().position(|column| *column == unit.column);
+        let keys = column.and_then(|column| self.staged.columns[column].get(&unit.subtree));
+        keys.into_iter().flat_map(move |keys| {
+            keys.iter().map(move |(key, entry)| Outcome {
+                unit,
+                key,
+                write: written(&entry.write),
+                tag: &entry.tag,
+            })
+        })
+    }
+
     /// What the call of each outcome attached, in the order of
     /// [`Self::outcomes`], to take or to change.
     pub fn tags_mut(&mut self) -> impl Iterator<Item = &mut C> {
