@@ -25,10 +25,11 @@
 //!   `WriteTxn::node` does with no handle or with one that has ended,
 //!   and a cursor that stands on a key the transaction wrote, or from
 //!   the first place told of it that the table took, until the table is
-//!   emptied, whatever was forgotten of the key since. The search that
-//!   a write or a commit makes for a key it names gives the table no
-//!   key, and neither does one in pages that are read under another
-//!   lease, as a committed read's is.
+//!   emptied, whatever was forgotten of the key since. A key that is
+//!   longer than the table's whole buffer ([`KEPT_KEY_BYTES`]) is not
+//!   taken. The search that a write or a commit makes for a key it
+//!   names gives the table no key, and neither does one in pages that
+//!   are read under another lease, as a committed read's is.
 //! - **A node whose place a caller told** ([`WriteTxn::place`]): the
 //!   handle it named, for a write that names the key and no handle. See
 //!   "What a told place is good for".
@@ -64,10 +65,12 @@
 //!   changes nothing that a search or a write put there, and of two that
 //!   are told for one key the first stands;
 //! - it is not taken where the handle is of another lease than the pages
-//!   are read under, or where the table is full and the key is new to
-//!   it: it is dropped, and nothing else changes. A full table has room
-//!   for it where it has the key already with nothing kept of it: a key
-//!   that it searched for or was told of, and has forgotten since;
+//!   are read under, or where the key is new to a table that is full,
+//!   by its keys ([`KEPT_PLACES`]) or by their bytes
+//!   ([`KEPT_KEY_BYTES`]): it is dropped, and nothing else changes. A
+//!   full table has room for it where it has the key already with
+//!   nothing kept of it: a key that it searched for or was told of, and
+//!   has forgotten since;
 //! - **a write** that names the key with no good handle follows it as it
 //!   follows a handle the write names itself, after the same check, and
 //!   one that puts the node keeps where it leaves it, as under a key
@@ -116,6 +119,16 @@ use super::key::Subtree;
 /// the table is emptied.
 pub(crate) const KEPT_PLACES: usize = 1 << 16;
 
+/// The most bytes of keys a table takes before it is emptied. A key that
+/// is new to a table whose keys would be more bytes than this with it
+/// empties the table first, as one that is new to a table of
+/// [`KEPT_PLACES`] keys does, and a key that is longer than this by
+/// itself is not taken. Where a key is in the buffer, and how long it
+/// is, are held in 32 bits each.
+pub(crate) const KEPT_KEY_BYTES: usize = 1 << 24;
+
+const _: () = assert!(KEPT_KEY_BYTES <= u32::MAX as usize);
+
 /// What a table has of one key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Place {
@@ -144,8 +157,9 @@ struct Entry {
 /// What one lease has shown of the keys of each subtree.
 ///
 /// The keys are in one buffer and the entries in one list, so a table
-/// that is emptied or dropped gives its memory back in three pieces,
-/// however many keys it took.
+/// that is dropped gives its memory back in three pieces, however many
+/// keys it took. One that is emptied keeps the three for the keys it
+/// takes next.
 #[derive(Debug, Default)]
 pub(crate) struct Places<S = RandomState> {
     lease: Option<Lease>,
@@ -217,11 +231,17 @@ impl<S: BuildHasher> Places<S> {
                     self.len += 1;
                 }
             }
-            None if self.entries.len() < KEPT_PLACES => {
+            None if self.room_for(key) => {
                 self.push(hash, subtree, key, Place::Told(handle));
             }
             None => {}
         }
+    }
+
+    /// Whether the table takes `key`, which is new to it, without being
+    /// emptied first.
+    fn room_for(&self, key: &[u8]) -> bool {
+        self.entries.len() < KEPT_PLACES && self.keys.len() + key.len() <= KEPT_KEY_BYTES
     }
 
     /// A new entry, for a key the table has none of.
@@ -270,7 +290,11 @@ impl<S: BuildHasher> Places<S> {
             }
             return;
         }
-        if self.entries.len() >= KEPT_PLACES {
+        if key.len() > KEPT_KEY_BYTES {
+            return;
+        }
+        let bytes = self.keys.len() + key.len();
+        if self.entries.len() >= KEPT_PLACES || bytes > KEPT_KEY_BYTES {
             self.clear();
             self.lease = Some(lease);
         }
@@ -399,6 +423,42 @@ mod tests {
             places.get(lease, &subtree(1), b"one more"),
             Some(Place::Absent)
         );
+    }
+
+    /// The keys of a table are held to a number of bytes: a key that is
+    /// new to a table whose buffer has no room for it empties the table
+    /// first, a key the table has is put in its place whatever the buffer
+    /// holds, and a key that is longer than a table takes is not kept.
+    #[test]
+    fn the_keys_of_a_table_are_held_to_a_number_of_bytes() {
+        let lease = Lease::take();
+        let mut places = Places::<RandomState>::default();
+        let long = |first: u8| {
+            let mut key = vec![0; KEPT_KEY_BYTES / 4];
+            key[0] = first;
+            key
+        };
+        for first in 0..4 {
+            places.put_absent(lease, subtree(1), &long(first));
+        }
+        assert_eq!(places.len(), 4, "the buffer is full to the byte");
+        places.put_absent(lease, subtree(1), &long(2));
+        assert_eq!(places.len(), 4);
+        assert_eq!(
+            places.get(lease, &subtree(1), &long(3)),
+            Some(Place::Absent)
+        );
+
+        places.put_absent(lease, subtree(1), b"a");
+        assert_eq!(places.len(), 1);
+        assert_eq!(places.get(lease, &subtree(1), &long(0)), None);
+        assert_eq!(places.get(lease, &subtree(1), b"a"), Some(Place::Absent));
+
+        let longer = vec![7; KEPT_KEY_BYTES + 1];
+        places.put_absent(lease, subtree(1), &longer);
+        assert_eq!(places.len(), 1);
+        assert_eq!(places.get(lease, &subtree(1), &longer), None);
+        assert_eq!(places.get(lease, &subtree(1), b"a"), Some(Place::Absent));
     }
 
     /// Every key under one hash.

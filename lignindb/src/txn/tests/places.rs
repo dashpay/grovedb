@@ -850,3 +850,49 @@ fn a_full_table_takes_a_place_told_of_a_key_it_has() {
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
 }
+
+/// A table takes a told place of a key that is new to it while its
+/// buffer has room for the key, and drops it where the buffer has none.
+/// The keys here are long, and none of them has a node.
+#[test]
+fn a_table_takes_no_told_place_whose_key_its_buffer_has_no_room_for() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(64);
+    fill(&mut world, &mut rng, 1, 60);
+    fill(&mut world, &mut rng, 2, 60);
+    let tx = world.begin();
+    world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+    let there = below_the_root(&world, &tx, 1, b"");
+    let handle = walked(&world, &tx, 1, &there);
+    let long = |first: u8, len: usize| {
+        let mut key = vec![b'z'; len];
+        key[1] = first;
+        key
+    };
+    let mebibyte = 1 << 20;
+    assert_eq!(crate::txn::places::KEPT_KEY_BYTES, 16 * mebibyte);
+
+    let before = tx.txn.places();
+    tx.txn.place(merk(2), &long(0, mebibyte), handle);
+    assert_eq!(tx.txn.places(), (0, before.1 + 1), "there is room for it");
+    for first in 1..15 {
+        assert_eq!(read(&tx, 2, &long(first, mebibyte)), None);
+    }
+    let kept = tx.txn.places();
+    assert_eq!(kept, (0, before.1 + 15));
+    tx.txn.place(merk(2), &long(99, 2 * mebibyte), handle);
+    assert_eq!(
+        tx.txn.places(),
+        kept,
+        "the key is dropped, and nothing else"
+    );
+
+    // The search for a key that the buffer has no room for empties the
+    // table first.
+    assert_eq!(read(&tx, 2, &long(98, 2 * mebibyte)), None);
+    assert_eq!(tx.txn.places(), (0, 1));
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+}

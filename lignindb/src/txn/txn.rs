@@ -979,7 +979,8 @@ impl<'s> WriteTxn<'s> {
     /// the handle is of another lease than the transaction reads under,
     /// where the transaction keeps a place of the key already, and where
     /// the key is new to a table that has taken as many keys as it
-    /// takes. The call does not say whether the place was taken.
+    /// takes, or as many bytes of keys. The call does not say whether
+    /// the place was taken.
     ///
     /// As with every handle a caller names, a cell does not say which
     /// Merk it is in: a good handle of another Merk whose node has the

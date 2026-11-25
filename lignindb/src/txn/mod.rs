@@ -622,10 +622,10 @@
 //!   its frames are given up (ID1).
 //! - **Where it saw nodes** ("Locations that are kept"): a handle or a
 //!   mark for each key that a read searched for under its lease, or that
-//!   it took a told place of, at most 65,536 of them. A key of a read
-//!   that is one more empties the table first, and the keys are searched
-//!   for again as they are come back to; a told place of a key that is
-//!   one more is dropped.
+//!   it took a told place of, at most 65,536 of them and 16 MiB of their
+//!   keys. A key of a read that is one more empties the table first, and
+//!   the keys are searched for again as they are come back to; a told
+//!   place of a key that is one more is dropped.
 //! - **A watch on the key sets of commits** ([`Commits`]), from its first
 //!   write, from the first read that shows it a node, or from the first
 //!   cursor it opens over a Merk, whichever comes first. A cursor watches
