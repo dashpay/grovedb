@@ -44,6 +44,18 @@
 //! that appends 4 KiB to a file of its own in the scratch directory and
 //! syncs it every `N` milliseconds: syncs of a file that is no engine's.
 //!
+//! # The machine beside the commits
+//!
+//! Beside the measured blocks of each engine a thread of the harness
+//! sleeps for half a millisecond, again and again, and notes by how much
+//! each sleep was longer than asked ([`ClockProbe`]). On a machine that
+//! runs every thread that can run, a sleep is late by tens of
+//! microseconds. Where the machine, or one under it, keeps threads
+//! waiting for a processor, the sleeps are late by milliseconds, and so
+//! is the end of a commit that is as long as a sleep: the report says how
+//! often, so that a percentile of a millisecond or more can be read
+//! against it.
+//!
 //! # What is told of a long commit
 //!
 //! - The harness names its measuring thread `lignin-commit`, and after a
@@ -299,12 +311,63 @@ pub struct EngineLatency {
     pub flushes_asked: u64,
     /// The syncs the neighbour made beside the commits.
     pub neighbour_syncs: u64,
+    /// What the thread that only sleeps saw beside the commits.
+    #[serde(default)]
+    pub clock: ClockProbe,
     /// The syncs the engine made through the watching file layer over the
     /// measured blocks, by what they are of: how many, and their time in
     /// nanoseconds. Empty where the layer was not asked for.
     pub syncs: BTreeMap<String, (u64, u64)>,
     /// The slowest commits, slowest first.
     pub slowest: Vec<SlowCommit>,
+}
+
+/// What the thread that only sleeps saw beside the measured blocks of one
+/// engine: by how much its sleeps of [`ClockProbe::ASKED`] were late.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClockProbe {
+    /// The sleeps it made.
+    pub sleeps: u64,
+    /// The sleeps that were late by 0.2, 1, 5 and 20 ms or more.
+    pub late: [u64; 4],
+    /// The longest a sleep was late by, in nanoseconds.
+    pub latest_ns: u64,
+    /// By how much the sleeps were late in all, in nanoseconds.
+    pub late_ns: u64,
+}
+
+impl ClockProbe {
+    /// How long each sleep is asked to be.
+    pub const ASKED: Duration = Duration::from_micros(500);
+    /// The bounds of [`Self::late`], in nanoseconds.
+    const BOUNDS: [u64; 4] = [200_000, 1_000_000, 5_000_000, 20_000_000];
+
+    fn note(&mut self, late: Duration) {
+        let late = late.as_nanos() as u64;
+        self.sleeps += 1;
+        self.late_ns += late;
+        self.latest_ns = self.latest_ns.max(late);
+        for (count, bound) in self.late.iter_mut().zip(Self::BOUNDS) {
+            *count += u64::from(late >= bound);
+        }
+    }
+
+    /// The share of the sleeps that were late by a millisecond or more.
+    pub fn late_share(&self) -> f64 {
+        self.late[1] as f64 / self.sleeps.max(1) as f64
+    }
+}
+
+/// Sleeps for [`ClockProbe::ASKED`] again and again until `stop`, and
+/// returns by how much the sleeps were late.
+fn clock_probe(stop: &AtomicBool) -> ClockProbe {
+    let mut probe = ClockProbe::default();
+    while !stop.load(Ordering::Acquire) {
+        let began = Instant::now();
+        std::thread::sleep(ClockProbe::ASKED);
+        probe.note(began.elapsed().saturating_sub(ClockProbe::ASKED));
+    }
+    probe
 }
 
 /// One of the slowest commits of a run.
@@ -904,8 +967,9 @@ fn measure_in<E: Subject>(
     let turns_before = engine.look().map(|(_, turns)| turns);
     let began = Instant::now();
 
-    let (measured, flushes_asked, neighbour_syncs) = std::thread::scope(|scope| {
+    let (measured, flushes_asked, neighbour_syncs, clock) = std::thread::scope(|scope| {
         let engine = &engine;
+        let probe = scope.spawn(|| clock_probe(&stop));
         let flusher = flushed
             .then(|| scope.spawn(|| flushes(engine, &committed, options.flush_blocks, &stop)));
         let (file, stop_beside) = (&neighbour_file, &stop);
@@ -965,7 +1029,8 @@ fn measure_in<E: Subject>(
                 )),
             }
         };
-        (measured, join(flusher), join(beside))
+        let clock = probe.join().unwrap_or_default();
+        (measured, join(flusher), join(beside), clock)
     });
     measured?;
     let seconds = began.elapsed().as_secs_f64();
@@ -991,6 +1056,7 @@ fn measure_in<E: Subject>(
         turns,
         flushes_asked: flushes_asked?,
         neighbour_syncs: neighbour_syncs?,
+        clock,
         syncs,
         slowest,
     })
@@ -1157,6 +1223,19 @@ pub fn table(report: &LatencyReport) -> String {
         if engine.neighbour_syncs > 0 {
             let _ = write!(out, ", {} syncs of the neighbour", engine.neighbour_syncs);
         }
+        let clock = &engine.clock;
+        let _ = write!(
+            out,
+            "\n- the machine beside it: of {} sleeps of {} µs, {} were late by 0.2 ms or more, {} \
+             by 1 ms, {} by 5 ms and {} by 20 ms, the latest by {} µs",
+            clock.sleeps,
+            ClockProbe::ASKED.as_micros(),
+            clock.late[0],
+            clock.late[1],
+            clock.late[2],
+            clock.late[3],
+            micros(clock.latest_ns),
+        );
         let [median, p99, p999, longest] = quantiles(&engine.apply_ns).map(micros);
         let _ = writeln!(
             out,
@@ -1237,56 +1316,121 @@ pub fn table(report: &LatencyReport) -> String {
     out
 }
 
-/// Several reports as one table: a row for each engine of each run, in the
-/// order given, and under them, for each build, engine and background that
-/// has more than one run, the median of the runs' values with their range.
-pub fn runs_table(reports: &[LatencyReport]) -> String {
-    let mut out = HEAD.to_string();
-    let mut groups: Vec<(Group, Vec<[u64; 4]>)> = Vec::new();
+/// What a row of a table of several runs is made of.
+struct RunRow {
+    group: Group,
+    blocks: usize,
+    /// The median, the 99th and the 99.9th percentile and the longest of
+    /// the commits.
+    commit: [u64; 4],
+    /// The same of the commits' time off a processor, where the system
+    /// told how long the thread ran.
+    off: Option<[u64; 4]>,
+    clock: ClockProbe,
+}
+
+fn run_rows(reports: &[LatencyReport]) -> Vec<RunRow> {
+    let mut rows = Vec::new();
     for report in reports {
         for engine in &report.engines {
-            let group = group_of(report, engine);
-            let values = quantiles(&engine.commit_ns);
-            let [median, p99, p999, longest] = values.map(micros);
-            let _ = writeln!(
-                out,
-                "| {} | {} | {} | {} | {median} | {p99} | {p999} | {longest} |",
-                group.0,
-                group.1,
-                group.2,
-                engine.commit_ns.len(),
-            );
-            match groups.iter_mut().find(|(other, _)| *other == group) {
-                Some((_, runs)) => runs.push(values),
-                None => groups.push((group, vec![values])),
-            }
+            let off = engine.ran_ns.as_ref().map(|ran| {
+                let off: Vec<u64> = (engine.commit_ns.iter().zip(ran))
+                    .map(|(commit, ran)| commit.saturating_sub(*ran))
+                    .collect();
+                quantiles(&off)
+            });
+            rows.push(RunRow {
+                group: group_of(report, engine),
+                blocks: engine.commit_ns.len(),
+                commit: quantiles(&engine.commit_ns),
+                off,
+                clock: engine.clock,
+            });
         }
     }
-    let several: Vec<_> = groups.iter().filter(|(_, runs)| runs.len() > 1).collect();
-    if several.is_empty() {
+    rows
+}
+
+/// The median of `values` with their range, in microseconds.
+fn ranged(mut values: Vec<u64>) -> String {
+    values.sort_unstable();
+    match (values.first(), values.last()) {
+        (Some(least), Some(most)) => format!(
+            "{} ({} to {})",
+            micros(quantile(&values, 0.5)),
+            micros(*least),
+            micros(*most)
+        ),
+        _ => "-".to_string(),
+    }
+}
+
+/// Several reports as tables. First a row for each engine of each run, in
+/// the order given: the commit's percentiles, then the percentiles of its
+/// time off a processor, and what the thread that only sleeps saw beside
+/// the run. Then, for each build, engine and background that has more than
+/// one run, the median of the runs' values with their range.
+pub fn runs_table(reports: &[LatencyReport]) -> String {
+    let rows = run_rows(reports);
+    let mut out = String::from(
+        "| Build | Engine | Background | Blocks | Median, µs | 99%, µs | 99.9%, µs | Longest, µs \
+         | Off a processor: 99%, µs | 99.9%, µs | longest, µs | Sleeps late by 1 ms or more | \
+         by 5 ms | by 20 ms |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | \
+         --- | --- | --- |\n",
+    );
+    let mut groups: Vec<(&Group, Vec<&RunRow>)> = Vec::new();
+    for row in &rows {
+        let (build, engine, background) = &row.group;
+        let [median, p99, p999, longest] = row.commit.map(micros);
+        let off = match row.off {
+            Some([_, p99, p999, longest]) => {
+                format!("{} | {} | {}", micros(p99), micros(p999), micros(longest))
+            }
+            None => "- | - | -".to_string(),
+        };
+        let share = |late: u64| {
+            format!(
+                "{:.2}%",
+                100.0 * late as f64 / row.clock.sleeps.max(1) as f64
+            )
+        };
+        let _ = writeln!(
+            out,
+            "| {build} | {engine} | {background} | {} | {median} | {p99} | {p999} | {longest} | \
+             {off} | {} | {} | {} |",
+            row.blocks,
+            share(row.clock.late[1]),
+            share(row.clock.late[2]),
+            share(row.clock.late[3]),
+        );
+        match groups.iter_mut().find(|(other, _)| *other == &row.group) {
+            Some((_, runs)) => runs.push(row),
+            None => groups.push((&row.group, vec![row])),
+        }
+    }
+    groups.retain(|(_, runs)| runs.len() > 1);
+    if groups.is_empty() {
         return out;
     }
     out.push_str(
         "\nThe median of the runs' values, and their range:\n\n| Build | Engine | Background | \
-         Runs | Median, µs | 99%, µs | 99.9%, µs | Longest, µs |\n| --- | --- | --- | --- | --- \
-         | --- | --- | --- |\n",
+         Runs | Median, µs | 99%, µs | 99.9%, µs | Longest, µs | Off a processor: 99%, µs | \
+         99.9%, µs | longest, µs |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | \
+         --- |\n",
     );
-    for ((build, engine, background), runs) in several {
+    for ((build, engine, background), runs) in groups {
         let _ = write!(
             out,
             "| {build} | {engine} | {background} | {} |",
             runs.len()
         );
         for column in 0..4 {
-            let mut values: Vec<u64> = runs.iter().map(|run| run[column]).collect();
-            values.sort_unstable();
-            let _ = write!(
-                out,
-                " {} ({} to {}) |",
-                micros(quantile(&values, 0.5)),
-                micros(values[0]),
-                micros(values[values.len() - 1]),
-            );
+            let values = runs.iter().map(|run| run.commit[column]).collect();
+            let _ = write!(out, " {} |", ranged(values));
+        }
+        for column in 1..4 {
+            let values = runs.iter().filter_map(|run| run.off.map(|off| off[column]));
+            let _ = write!(out, " {} |", ranged(values.collect()));
         }
         out.push('\n');
     }
@@ -1518,6 +1662,10 @@ mod tests {
             rocksdb.flushes_asked
         );
         assert!(rocksdb.neighbour_syncs > 0);
+        // The thread that only sleeps ran beside the blocks: twelve of
+        // them with their pauses take longer than a few of its sleeps.
+        assert!(rocksdb.clock.sleeps > 2, "{:?}", rocksdb.clock);
+        assert!(rocksdb.clock.late.is_sorted_by(|more, fewer| more >= fewer));
         let slowest: Vec<u64> = rocksdb.slowest.iter().map(|slow| slow.commit_ns).collect();
         let mut sorted = rocksdb.commit_ns.clone();
         sorted.sort_unstable_by(|a, b| b.cmp(a));
