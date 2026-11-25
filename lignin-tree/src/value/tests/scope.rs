@@ -838,6 +838,10 @@ fn background_work_runs_beside_an_open_scope() {
     assert!(cleaned.busy > 0, "{cleaned:?}");
     let busy = db.regroup(copied[0], &mut to, RegroupPolicy::ALWAYS);
     assert!(busy.is_none_or(|regrouped| regrouped.moved == 0));
+    // The copies that no cell came to point at are told with their bytes.
+    assert!(busy.is_none_or(|regrouped| {
+        (regrouped.gone + regrouped.busy == 0) == (regrouped.left_bytes == 0)
+    }));
     db.check_counts();
 
     // The scope reads what it wrote and what it carried, and commits.

@@ -104,6 +104,8 @@ impl<'s> WriteBack<'s> {
         let mut fresh = Vec::new();
         let mut ended = Ok(());
         'pages: for (&page, versions) in owed {
+            #[cfg(test)]
+            super::write_back::PENDING_SCANS.with(|scans| scans.set(scans.get() + 1));
             let Some(frame) = versions
                 .last()
                 .and_then(|&born| pool.get_version(page, born))

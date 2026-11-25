@@ -101,7 +101,7 @@ fn stuck(config: FlushConfig) -> (SimVfs, Db) {
 
 #[test]
 fn the_wait_after_a_failed_turn_doubles_from_the_idle_time_to_its_bound() {
-    let config = FlushConfig::new(Db::SIZE);
+    let config = eager();
     assert_eq!((config.idle, config.max_failed_wait), (ms(50), ms(1000)));
     let waits = |config: FlushConfig| -> Vec<u128> {
         let wait = |in_vain| config.wait_after_failure(in_vain).as_millis();
@@ -160,7 +160,7 @@ fn a_turn_on_a_device_that_stays_full_waits_longer_each_time_and_uses_up_no_id()
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(80),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (fs, db) = stuck(config);
     let wb = db.wb();
@@ -225,7 +225,7 @@ fn a_failed_turn_on_a_device_with_no_free_byte_changes_one_name_twice() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(80),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let fs = sim_fs(SimConfig::new(5));
     let db = Db::create(shared(&fs), db_dir(), config, LogOptions::default());
@@ -292,7 +292,7 @@ fn the_loop_waits_after_each_failed_turn_whoever_asks_for_a_turn() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(40),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (_fs, db) = stuck(config);
     waits_between_six_failed_turns(&db, config, true);
@@ -395,7 +395,7 @@ fn a_roll_that_ends_in_a_file_that_takes_no_item_is_a_turn_that_failed() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(80),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (lies, db) = stuck_where_the_device_keeps_what_it_refuses(config);
     let wb = db.wb();
@@ -444,7 +444,7 @@ fn a_roll_that_ends_in_vain_fails_a_turn_whose_pass_is_refused_nothing() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(80),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (_lies, db) = stuck_where_the_device_keeps_what_it_refuses(config);
     let wb = db.wb();
@@ -485,7 +485,7 @@ fn the_loop_waits_after_a_roll_that_ended_in_a_file_that_takes_no_item() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(40),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (_lies, db) = stuck_where_the_device_keeps_what_it_refuses(config);
     let before = last_log_id(&db);
@@ -532,7 +532,7 @@ fn a_page_step_whose_record_the_log_refused_is_a_turn_that_failed() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(80),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (fs, lies, db) = stuck_where_the_device_refuses_the_records_of_page_steps(config);
     let wb = db.wb();
@@ -593,7 +593,7 @@ fn a_failed_turn_that_moved_something_on_ends_the_row_of_turns_in_vain() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(80),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (_fs, _lies, db) = stuck_where_the_device_refuses_the_records_of_page_steps(config);
     let wb = db.wb();
@@ -632,7 +632,7 @@ fn the_loop_waits_after_a_turn_whose_page_step_the_log_refused() {
     let config = FlushConfig {
         idle: ms(10),
         max_failed_wait: ms(40),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (_fs, _lies, db) = stuck_where_the_device_refuses_the_records_of_page_steps(config);
     let before = last_log_id(&db);
@@ -671,7 +671,7 @@ fn ends(state: &FlushState, wait: Option<Duration>, mut meanwhile: impl FnMut())
 fn a_call_for_a_turn_ends_no_wait_after_a_failed_turn() {
     let config = FlushConfig {
         idle: Duration::from_secs(3600),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let state = FlushState::new(config);
     state.wake();
@@ -716,7 +716,7 @@ fn a_call_for_a_turn_ends_no_wait_after_a_failed_turn() {
 fn a_call_that_room_was_made_ends_one_wait_after_a_failed_turn() {
     let config = FlushConfig {
         idle: Duration::from_secs(3600),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let state = FlushState::new(config);
     let hour = Some(Duration::from_secs(3600));
@@ -771,7 +771,7 @@ fn a_wait_that_lasted_its_time_has_put_a_turn_off_whatever_came_at_its_end() {
 
     // The sleep itself, with a wait whose time has passed when it
     // begins: a turn was asked for, and room was made.
-    let state = FlushState::new(FlushConfig::new(Db::SIZE));
+    let state = FlushState::new(eager());
     state.wake();
     state.room_made();
     state.sleep(Some(Duration::ZERO));
@@ -795,7 +795,7 @@ fn the_loop_takes_its_next_turn_at_once_when_it_is_told_that_room_was_made() {
     let config = FlushConfig {
         idle: Duration::from_secs(3600),
         max_failed_wait: Duration::from_secs(3600),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (_fs, db) = stuck(config);
     let wb = db.wb();

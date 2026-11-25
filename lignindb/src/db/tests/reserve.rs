@@ -1528,10 +1528,12 @@ fn a_call_that_room_was_made_ends_one_wait_of_the_reclaimers_thread() {
 
 /// A session with small files and short idle times that keeps a reserve
 /// of `reserve` bytes, opened with its three threads, after its first
-/// commit.
+/// commit. Its write-back leaves no page for a later turn, so that it
+/// has caught up with the commits once no page version waits.
 fn threaded(seed: u64, reserve: u64) -> Session {
     let mut session = small(seed, false, reserve);
     let flush = session.options.flush.as_mut().expect("a configuration");
+    flush.max_deferred = 0;
     flush.idle = IDLE;
     flush.max_failed_wait = MOST;
     session.options.cleaner.as_mut().expect("a policy").idle = IDLE;
@@ -2144,6 +2146,8 @@ fn gives_room_back(seed: u64, reserve: u64) -> Gave {
     let (fs, options) = {
         let mut session = small(seed, true, reserve);
         let flush = session.options.flush.as_mut().expect("a configuration");
+        // The workload waits until no page version waits ([`goes_on`]).
+        flush.max_deferred = 0;
         flush.idle = IDLE;
         flush.max_failed_wait = MOST;
         session.options.cleaner.as_mut().expect("a policy").idle = IDLE;

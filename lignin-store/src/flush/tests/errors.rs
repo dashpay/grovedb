@@ -241,7 +241,7 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
                 .torn_append(torn),
         );
 
-        let (pass, passed) = db.wb().pass_through();
+        let (pass, passed) = db.wb().pass_through(0);
         assert_eq!(fs.stats().faults, 1);
         // An append that is left torn may have left the whole record: the
         // log then has it, and the step was made. Otherwise:
@@ -549,9 +549,9 @@ fn a_page_that_is_freed_while_its_block_is_written_gets_no_link() {
             id: PageId,
             _: &mut ValueWriter,
             _: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-        ) -> Result<u64, RegroupError> {
+        ) -> Result<Regroup, RegroupError> {
             self.0.commit(&[Op::Free { page: id }]);
-            Ok(0)
+            Ok(Regroup::default())
         }
     }
 
@@ -568,6 +568,9 @@ fn a_page_that_is_freed_while_its_block_is_written_gets_no_link() {
     assert_eq!(db.latest(), version(3));
     let stats = db.stats();
     assert_eq!((stats.links_refused, stats.base_blocks), (1, 1));
+    // The block that got no link was appended all the same, and its
+    // bytes are among those that write-back wrote.
+    assert!(stats.appended_bytes > stats.stored_bytes, "{stats:?}");
     let chain = db.chain(page(1));
     assert_eq!(
         chain.last().map(|link| (link.kind, link.version)),
@@ -583,7 +586,7 @@ fn a_page_that_is_freed_while_its_block_is_written_gets_no_link() {
 fn the_loop_reports_a_turn_that_fails_and_goes_on() {
     let config = FlushConfig {
         idle: std::time::Duration::from_millis(2),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (fs, db) = Db::on_sim(config, LogOptions::default());
     db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
@@ -645,9 +648,11 @@ fn a_committer_whose_loop_has_ended_makes_the_pass_itself() {
 /// itself and does not wait for a loop that is gone.
 #[test]
 fn a_loop_that_ends_by_a_panic_is_not_said_to_run() {
+    // No page is left for a later turn: the first turn of the loop is to
+    // write the page, and fail at it.
     let config = FlushConfig {
         idle: std::time::Duration::from_millis(2),
-        ..FlushConfig::new(Db::SIZE)
+        ..eager()
     };
     let (fs, db) = Db::on_sim(config, LogOptions::default());
     db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
@@ -693,7 +698,7 @@ fn a_loop_that_ends_by_a_panic_is_not_said_to_run() {
 /// runs.
 #[test]
 fn a_loop_that_is_stopped_before_it_begins_ends_at_once() {
-    let db = Db::new();
+    let db = Db::with(eager());
     db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
     let wb = db.wb();
     wb.stop();

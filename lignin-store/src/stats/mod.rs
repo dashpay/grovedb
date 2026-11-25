@@ -24,7 +24,7 @@
 //! | [`log_groups`](StoreStats::log_groups) | commit groups appended | [`LogStore::appended`] |
 //! | [`node_records`](StoreStats::node_records), [`node_record_bytes`](StoreStats::node_record_bytes) | the page deltas of tree pages the groups carry, and their bytes plus those of the out-of-line values the groups carry | [`WriteBack::committed`] |
 //! | [`other_records`](StoreStats::other_records), [`other_record_bytes`](StoreStats::other_record_bytes) | the changes of flat pages the groups carry: the flat keyspace | [`WriteBack::committed`] |
-//! | [`flush_bytes`](StoreStats::flush_bytes) | bytes write-back wrote: blocks as stored in segments, values as stored in the value log, table-checkpoint files | [`FlushState::stats`] |
+//! | [`flush_bytes`](StoreStats::flush_bytes) | bytes write-back wrote: blocks as stored in segments, values as stored in the value log, the copies of regrouped values among them, table-checkpoint files | [`FlushState::stats`] |
 //! | [`cleaner_bytes`](StoreStats::cleaner_bytes) | bytes the cleaners wrote when they moved live blocks and values | [`Stats::count_cleaner_bytes`] |
 //! | [`page_reads`](StoreStats::page_reads) | page versions the pool did not hold and that were read from storage | [`BufferPool::stats`] (misses) |
 //! | [`cache_hits`](StoreStats::cache_hits) | page versions the pool held | [`BufferPool::stats`] (hits) |

@@ -4,7 +4,7 @@
 use lignin_format::{tree_page::TreePage, PageId, PageSize, SlotId};
 use lignin_store::{
     cache::BufferPool,
-    flush::{FlushError, PageValues, RegroupError},
+    flush::{FlushError, PageValues, Regroup, RegroupError},
     load::{PageLoader, FRAME_FORMAT},
     values::{ValueStore, ValueWriter},
 };
@@ -72,12 +72,17 @@ impl<L: StepLog + Sync> PageValues for Regrouping<'_, L> {
         page: PageId,
         to: &mut ValueWriter,
         cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-    ) -> Result<u64, RegroupError> {
+    ) -> Result<Regroup, RegroupError> {
         let owners = TreeOwners::new(self.loader, self.pool, self.page_size, &self.log);
         let Some(grouped) = owners.copy_grouped(self.values, page, to, self.policy)? else {
-            return Ok(0);
+            return Ok(Regroup::default());
         };
         cover(to)?;
-        Ok(owners.install_grouped(self.values, grouped)?.moved)
+        let done = owners.install_grouped(self.values, grouped)?;
+        Ok(Regroup {
+            moved: done.moved,
+            left: done.gone + done.busy,
+            left_bytes: done.left_bytes,
+        })
     }
 }
