@@ -95,10 +95,13 @@ fn is_own_file(name: &OsStr) -> bool {
 
 /// Refuses a file that `manifest` names if its store subdirectory of
 /// `dir` lists it as anything but a regular file. The stores open the
-/// files the manifest names by their paths: a named pipe there would be
-/// waited on, and a link is not followed. A file or a subdirectory that
-/// is not listed is left to the store that opens it, and so is an entry
-/// the manifest does not name, which the stores do not open.
+/// files the manifest names by their paths: on Linux and macOS an open of
+/// a named pipe for reading alone waits until a writer opens it, and a
+/// link is not followed. A file or a subdirectory that is not listed is
+/// left to the store that opens it. So is an entry the manifest does not
+/// name: of those a store opens only what its own listing has as a
+/// regular file, to measure a file whose id is above the manifest's last
+/// before it removes it, and it passes over every other.
 fn refuse_irregular_named(vfs: &dyn Vfs, dir: &Path, manifest: &Manifest) -> Result<(), OpenError> {
     let table = (manifest.table_checkpoint()).map(|table| (FileNames::PAGE_TABLE, table.file()));
     let files = manifest.files().iter().filter_map(|file| {

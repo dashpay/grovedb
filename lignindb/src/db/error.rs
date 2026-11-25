@@ -70,9 +70,13 @@ pub enum OpenError {
     /// A file that the open would open by its name is listed as something
     /// other than a regular file: the lock file, the manifest or a file of
     /// the reserve in the database directory, or a file the manifest names
-    /// in a store subdirectory. A named pipe there would be waited on with
-    /// no error, and a symbolic link is not followed. The entry is not
-    /// opened (P-02).
+    /// in a store subdirectory. On Linux and macOS an open of a named pipe
+    /// for reading alone, as the manifest is opened, waits with no error
+    /// until a writer opens the pipe; one for reading and writing, as the
+    /// lock file is opened, does not wait on Linux. A symbolic link is not
+    /// followed. Each of these entries is refused whichever way the open
+    /// would have opened it, and whether the options of this open have it
+    /// use the reserve or not. The entry is not opened (P-02).
     NotARegularFile {
         /// The directory that lists the entry: the database directory or
         /// a store subdirectory of it.
@@ -328,7 +332,8 @@ impl fmt::Display for OpenError {
             ),
             Self::StoreDirNotADirectory { dir, entry } => write!(
                 f,
-                "{} lists {} as something other than a directory of its own (a symbolic link                  is not followed): no database is opened or made beside it",
+                "{} lists {} as something other than a directory of its own (a symbolic link \
+                 is not followed): no database is opened or made beside it",
                 dir.display(),
                 Path::new(entry).display()
             ),

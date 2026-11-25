@@ -183,11 +183,13 @@
 //! path whose last name does not end in `.creating` (below), in a
 //! directory that is not there, and in one that holds none of these: an
 //! entry named `MANIFEST.deleting`, an entry that RocksDB makes, a
-//! `MANIFEST`, and an entry with the name of a directory of a store's
-//! files (`seg`, `val`, `wal`, `table`). So an empty directory is such a
-//! place, one that holds only entries that are not the engine's is, and
-//! so is what an open leaves that failed before it made its first
-//! manifest: a `LOCK`, a `MANIFEST.tmp`, or both.
+//! `MANIFEST`, an entry with the name of a directory of a store's files
+//! (`seg`, `val`, `wal`, `table`), and an entry named `LOCK`, `RESERVE`
+//! or `RESERVE.new` that is anything but a regular file (the table
+//! above). So an empty directory is such a place, one that holds only
+//! entries that are not the engine's is, and so is what an open leaves
+//! that failed before it made its first manifest: a `LOCK` that is a
+//! regular file, a `MANIFEST.tmp`, or both.
 //!
 //! A directory that holds the mark of a removal gets no database while
 //! the mark is there ([`OpenError::Deleting`] says what
