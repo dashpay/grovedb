@@ -49,11 +49,19 @@ databases that an earlier run kept. That run is given `--keep` and
 `--creates 0 --updates 0 --deletes 0`, so that every loaded document is still
 there, and `reads` is given the same `--scratch`, `--seed`, `--documents`,
 `--owners` and engines. It opens each database as the run left it, which is
-after a flush and a reopen: on LigninDB the reads of a run are made right after
-the load, beside what write-back has not placed yet, and the reads of `reads`
-over pages that are written back. Its report holds the warm rows only, and
-`table` and `compare` read it as any other. The reads are the run's own: the
-same seed asks for the same documents in the same order.
+the settled state, so its rows have the phase `settled`. Its report holds
+those rows only, and `table` and `compare` read it as any other. The reads are
+those of the run's `warm` rows: the same seed asks for the same documents in
+the same order.
+
+### The two states of the warm reads
+
+The plan's recorded values and the RocksDB baseline below were taken right
+after the load, and that is the phase `warm`: RocksDB then still has
+compactions to make, and LigninDB reads beside what write-back has not placed
+yet. A node reads a database that has settled, and an engine can read faster
+or slower then, so the ratio of the two engines differs between the states. A
+run measures both, and a table prints both.
 
 Smaller runs take `--documents`, `--owners`, `--creates`, `--updates`,
 `--deletes` and the sample counts (`--point-reads`, `--reference-reads`,
@@ -79,10 +87,14 @@ per owner.
    size on disk is taken again after a flush, once the engine's background
    work is idle (`flushed`). That is the row compared with the plan's 1.01 GB.
 5. **Reopens** (`flushed`).
-6. **`cold`.** Each sample is the first read after closing the database,
+6. **`settled`.** The warm reads of step 3 once more, in the settled state:
+   after the flush, with the engine's background work idle, and after the
+   database was closed and opened again. The rows have the ids of the warm
+   rows and the phase `settled`.
+7. **`cold`.** Each sample is the first read after closing the database,
    dropping its files from the page cache where the machine allows it, and
    opening it again.
-7. **`create`, `update`, `delete`.** The page cache is warmed again, then
+8. **`create`, `update`, `delete`.** The page cache is warmed again, then
    20,000 transitions of each kind are applied, sampled per block.
 
 Every time row is a median over its samples, and every sample is kept in the

@@ -172,6 +172,11 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         ("references_proof", "warm"),
         ("point_proof_bytes", "warm"),
         ("references_proof_bytes", "warm"),
+        ("point_get", "settled"),
+        ("point_query_proof", "settled"),
+        ("references_proof", "settled"),
+        ("point_proof_bytes", "settled"),
+        ("references_proof_bytes", "settled"),
         ("point_get", "cold"),
         ("point_query_proof", "cold"),
         ("references_proof", "cold"),
@@ -361,8 +366,10 @@ fn a_run_of_both_engines_gives_one_grove_and_the_same_charges() {
         assert!(lignindb.row("node_record_value_share", phase).is_none());
     }
     for id in ["point_proof_bytes", "references_proof_bytes"] {
-        let row = lignindb.row(id, "warm").unwrap();
-        assert_eq!(row.value, rocksdb.row(id, "warm").unwrap().value, "{id}");
+        for phase in ["warm", "settled"] {
+            let row = lignindb.row(id, phase).unwrap();
+            assert_eq!(row.value, rocksdb.row(id, phase).unwrap().value, "{id}");
+        }
     }
     for (id, phase) in [
         ("point_get", "warm"),
@@ -441,7 +448,8 @@ fn the_command_writes_a_report() {
 }
 
 /// The warm rows are measured again over the databases a run kept: the
-/// same grove, so the same proofs, and nothing but the warm rows.
+/// same grove, so the same proofs, and nothing but the warm rows, in the
+/// phase of the settled state, which a run measures too.
 #[test]
 fn the_warm_reads_are_measured_again_over_a_kept_database() {
     let scratch = tempfile::tempdir().unwrap();
@@ -500,13 +508,18 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
                 "references_proof_bytes"
             ]
         );
-        assert!(read.rows.iter().all(|row| row.phase == "warm"));
+        assert!(read.rows.iter().all(|row| row.phase == "settled"));
+        // The run has the settled rows beside the ones after the load.
+        for row in &read.rows {
+            assert!(ran.row(&row.id, "settled").is_some(), "{}", row.id);
+            assert!(ran.row(&row.id, "warm").is_some(), "{}", row.id);
+        }
         for (id, samples) in [
             ("point_get", 4),
             ("point_query_proof", 4),
             ("references_proof", 2),
         ] {
-            let row = read.row(id, "warm").unwrap();
+            let row = read.row(id, "settled").unwrap();
             assert_eq!(row.samples.len(), samples, "{id}");
             assert!(row.value > 0.0, "{id}");
         }
@@ -514,7 +527,7 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
         // documents and owners in the same order.
         for id in ["point_proof_bytes", "references_proof_bytes"] {
             assert_eq!(
-                read.row(id, "warm").unwrap().samples,
+                read.row(id, "settled").unwrap().samples,
                 ran.row(id, "warm").unwrap().samples,
                 "{id}"
             );
@@ -524,7 +537,7 @@ fn the_warm_reads_are_measured_again_over_a_kept_database() {
     // The second engine's rows carry their ratio to RocksDB's.
     if let Some(second) = reads.engines.get(1) {
         assert!(second
-            .row("point_get", "warm")
+            .row("point_get", "settled")
             .unwrap()
             .ratio_to_rocksdb
             .is_some());

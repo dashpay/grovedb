@@ -17,7 +17,8 @@
 //! `--updates`, `--deletes`, `--point-reads`, `--reference-reads`,
 //! `--warmup-reads`, `--cold-reads`, `--checkpoints`, `--reopens`.
 //! `reads` takes the options of `run` and measures the point gets, the
-//! point proofs and the proofs of 100 references over the databases that a
+//! point proofs and the proofs of 100 references, as rows of the phase
+//! `settled`, over the databases that a
 //! `run --keep` with the same `--scratch`, `--seed`, `--documents` and
 //! `--owners` and with `--creates 0 --updates 0 --deletes 0` left there.
 //! `compare` takes `--tolerance FRACTION` (default 0.10).

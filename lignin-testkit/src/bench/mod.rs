@@ -221,6 +221,7 @@ pub const STACK_BYTES: usize = 64 << 20;
 /// 2. At size: `size_on_disk`, warm reads after warm-up reads, the proof
 ///    sizes (the first proof of each kind is verified against the root
 ///    hash), checkpoints, a flush, the size and checkpoints again, reopens,
+///    the warm reads once more in the settled state ([`run::SETTLED`]),
 ///    and cold reads. Then every file is read once and the warm-up reads
 ///    are repeated, so the writes start warm.
 /// 3. `create`, `update`, `delete`: the writes at size, sampled per block.
@@ -233,7 +234,8 @@ pub fn run(options: &RunOptions) -> Result<Report, BenchError> {
 /// the databases that a run with `keep` left in the scratch directory.
 /// The settings are that run's seed, documents and owners; it applied no
 /// creates, updates or deletes after its load. The report holds the
-/// warm rows and nothing else, and reads back and compares as any other.
+/// warm rows of the settled state ([`run::SETTLED`]) and nothing else,
+/// and reads back and compares as any other.
 pub fn reads(options: &RunOptions) -> Result<Report, BenchError> {
     options.check_engine_settings()?;
     on_the_benchmark_thread(options, Rows::WarmReads)

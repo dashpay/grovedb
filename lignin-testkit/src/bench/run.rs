@@ -5,8 +5,9 @@
 //! 1. **Load** (`load`): the contract set-up block, untimed, then
 //!    `documents` creates, 20 per block. Bulk load, and every count and
 //!    measured row averaged over the whole load.
-//! 2. **At size** (`at-size`, `warm`, `cold`): the size on disk, warm point
-//!    gets and proofs, checkpoints, a flush, reopens, then cold reads.
+//! 2. **At size** (`at-size`, `warm`, `settled`, `cold`): the size on disk,
+//!    warm point gets and proofs right after the load, checkpoints, a flush,
+//!    reopens, the warm reads again in the settled state, then cold reads.
 //! 3. **Writes at size** (`create`, `update`, `delete`): `measured_creates`
 //!    more creates, then `updates` replacements and `deletes` deletions,
 //!    with per-block samples.
@@ -1017,21 +1018,33 @@ fn warm_up<E: Engine>(
     Ok(())
 }
 
-/// The warm rows of `engine`: untimed warm-up reads, then the timed point
-/// gets, point proofs and proofs of 100 references with the proof sizes.
-/// The first proof of each kind is checked against `root_hash`.
+/// The phase of the warm reads that are made right after the load, with
+/// whatever each engine's background work has not done yet: the state
+/// the plan's recorded values were taken in.
+pub const WARM: &str = "warm";
+
+/// The phase of the warm reads in the settled state: after a flush, with
+/// the engine's background work idle, and after the database was closed
+/// and opened again. A node reads a database in this state.
+pub const SETTLED: &str = "settled";
+
+/// The warm rows of `engine` in `phase` ([`WARM`] or [`SETTLED`]): untimed
+/// warm-up reads, then the timed point gets, point proofs and proofs of 100
+/// references with the proof sizes. The first proof of each kind is
+/// checked against `root_hash`.
 fn warm_rows<E: Engine>(
     engine: &E,
     reads: &mut Reads,
     settings: &Settings,
     root_hash: &[u8; 32],
     grove_version: &GroveVersion,
+    phase: &str,
     rows: &mut Vec<Row>,
 ) -> Result<(), BenchError> {
     let loaded = settings.documents;
     warm_up(engine, reads, settings, grove_version)?;
 
-    let mut get_meter = Meter::new(settings, "warm-get");
+    let mut get_meter = Meter::new(settings, &format!("{phase}-get"));
     let mut get_us = Vec::new();
     for _ in 0..settings.point_reads {
         let (elapsed, _) =
@@ -1040,7 +1053,7 @@ fn warm_rows<E: Engine>(
     }
     rows.push(time_row(
         "point_get",
-        "warm",
+        phase,
         Unit::Micros,
         get_us,
         get_meter.finish(),
@@ -1069,7 +1082,7 @@ fn warm_rows<E: Engine>(
             rows_per_proof,
             grove_version,
         )?;
-        let mut meter = Meter::new(settings, &format!("warm-{}", kind.id()));
+        let mut meter = Meter::new(settings, &format!("{phase}-{}", kind.id()));
         let mut times = Vec::new();
         let mut sizes = Vec::new();
         for _ in 0..count {
@@ -1079,7 +1092,7 @@ fn warm_rows<E: Engine>(
         }
         rows.push(time_row(
             kind.id(),
-            "warm",
+            phase,
             Unit::Micros,
             times,
             meter.finish(),
@@ -1096,7 +1109,7 @@ fn warm_rows<E: Engine>(
         ));
         rows.push(sampled_count_row(
             size_id,
-            "warm",
+            phase,
             "B",
             sizes,
             "length of each proof GroveDb::prove_query returned for the timed reads",
@@ -1107,7 +1120,9 @@ fn warm_rows<E: Engine>(
 
 /// Measures the warm rows alone over the `E` database that an earlier run
 /// kept in `settings.scratch/<engine>` (`run --keep`), opened as it was
-/// left. The settings name the documents that run loaded: its seed, its
+/// left: after a flush, with the background work idle, closed and opened
+/// again. So the rows are of the phase [`SETTLED`]. The settings name the
+/// documents that run loaded: its seed, its
 /// documents and its owners, with no creates, updates or deletes after
 /// the load, so every document a read asks for is there.
 pub fn read_engine<E: Engine>(
@@ -1133,6 +1148,7 @@ pub fn read_engine<E: Engine>(
         settings,
         &root_hash,
         grove_version,
+        SETTLED,
         &mut rows,
     )?;
     Ok(EngineReport {
@@ -1251,6 +1267,7 @@ fn measure<E: Engine>(
         settings,
         &root_hash_after_load,
         grove_version,
+        WARM,
         &mut rows,
     )?;
 
@@ -1289,6 +1306,22 @@ fn measure<E: Engine>(
         u64::from(settings.reopens),
         "Instant around opening the database again after closing it; the OS page cache is warm",
     ));
+
+    // The settled state: the flush is made, the background work is idle
+    // again after the checkpoints, and the database is opened anew.
+    engine.wait_for_background()?;
+    drop(engine);
+    engine = E::open(dir)?;
+    engine.settle()?;
+    warm_rows(
+        &engine,
+        &mut reads,
+        settings,
+        &root_hash_after_load,
+        grove_version,
+        SETTLED,
+        &mut rows,
+    )?;
 
     let mut cold_open_ms = Vec::new();
     let mut cold_open_meter = Meter::new(settings, "cold-open");
