@@ -115,22 +115,42 @@ const COVERED: [(&str, &[&str]); 23] = [
 ];
 
 /// Words that the code hands to a message of those types as a value, by
-/// the file and the words before each: the string literal after each is
-/// quoted in the messages chapter too.
-const REASONS: [(&str, &str); 12] = [
-    ("lignindb/src/db/open.rs", "tree("),
-    ("lignindb/src/db/open.rs", "column("),
-    ("lignindb/src/db/mod.rs", "let ended = "),
-    ("lignindb/src/checkpoint/files.rs", "CheckpointError::io("),
-    ("lignindb/src/checkpoint/create.rs", "reason: "),
-    ("lignindb/src/db/open.rs", "OpenError::create("),
-    ("lignindb/src/db/open.rs", "OpenError::catalog("),
-    ("lignindb/src/db/open.rs", "OpenError::io("),
-    ("lignindb/src/db/open.rs", "what: "),
-    ("lignindb/src/db/open.rs", "let what = "),
-    ("lignindb/src/db/open.rs", "read(key::LAYOUT, "),
-    ("lignindb/src/db/mod.rs", "OpenError::catalog("),
+/// the file, the words before each, and the message they fill: the string
+/// literal after each is quoted in a row of the messages chapter that
+/// quotes that message too, so a reason quoted for one message does not
+/// stand for the same word of another.
+const REASONS: [(&str, &str, &str); 12] = [
+    ("lignindb/src/db/open.rs", "tree(", FIRST_COMMIT),
+    ("lignindb/src/db/open.rs", "column(", FIRST_COMMIT),
+    (
+        "lignindb/src/db/mod.rs",
+        "let ended = ",
+        "cannot start the background work: ",
+    ),
+    (
+        "lignindb/src/checkpoint/files.rs",
+        "CheckpointError::io(",
+        "could not … …: …",
+    ),
+    (
+        "lignindb/src/checkpoint/create.rs",
+        "reason: ",
+        "log file … …",
+    ),
+    (
+        "lignindb/src/db/open.rs",
+        "OpenError::create(",
+        FIRST_COMMIT,
+    ),
+    ("lignindb/src/db/open.rs", "OpenError::catalog(", KEYSPACES),
+    ("lignindb/src/db/open.rs", "OpenError::io(", "cannot … …: …"),
+    ("lignindb/src/db/open.rs", "what: ", KEYSPACES),
+    ("lignindb/src/db/open.rs", "let what = ", KEYSPACES),
+    ("lignindb/src/db/open.rs", "read(key::LAYOUT, ", KEYSPACES),
+    ("lignindb/src/db/mod.rs", "OpenError::catalog(", KEYSPACES),
 ];
+const FIRST_COMMIT: &str = "the first commit of the database (";
+const KEYSPACES: &str = "the record of the keyspaces: ";
 
 /// Words of those types that fill a place of a longer message of theirs,
 /// which the chapter quotes with `…` there.
@@ -1198,10 +1218,15 @@ fn defaults() -> BTreeMap<String, String> {
 fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
     let root = repository();
     let chapter = read(&operator_dir().join("messages.md"));
-    let quoted: BTreeSet<String> = parse(&chapter)
-        .prose
+    let prose = parse(&chapter).prose;
+    let quoted: BTreeSet<String> = prose
         .iter()
         .flat_map(|(_, line)| code_spans(line))
+        .collect();
+    let rows: Vec<BTreeSet<String>> = prose
+        .iter()
+        .filter(|(_, line)| line.starts_with('|'))
+        .map(|(_, line)| code_spans(line).into_iter().collect())
         .collect();
     let mut missing = Vec::new();
     let mut covered = 0;
@@ -1222,7 +1247,7 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
             }
         }
     }
-    for (file, before) in REASONS {
+    for (file, before, message) in REASONS {
         let source = read(&root.join(file));
         for (at, _) in source.match_indices(before) {
             let rest = source[at + before.len()..].trim_start();
@@ -1236,8 +1261,13 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
                 continue;
             }
             covered += 1;
-            if !quoted.contains(&pattern) {
-                missing.push(format!("{file} (after {before:?}): `{pattern}`"));
+            if !rows
+                .iter()
+                .any(|row| row.contains(&pattern) && row.contains(message))
+            {
+                missing.push(format!(
+                    "{file} (after {before:?}): `{pattern}`, in a row with `{message}`"
+                ));
             }
         }
     }
