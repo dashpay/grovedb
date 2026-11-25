@@ -22,10 +22,7 @@
 //! node of the root Merk ([`four_steps`]) and a delete that changes the
 //! root by a rotation ([`rotation`]).
 
-use std::{
-    fmt::Debug,
-    panic::{catch_unwind, AssertUnwindSafe},
-};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use grovedb_costs::{CostResult, OperationCost};
 use grovedb_merk::proofs::Query;
@@ -33,6 +30,7 @@ use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use super::{
     append_only::{check, verified, Answer, History},
+    whole::Whole,
     Lignin,
 };
 use crate::{
@@ -135,7 +133,7 @@ impl<'db, E: Engine> Run<'db, E> {
     /// Takes in a write of elements and the root hash that `through` reads
     /// after it. A write that the history does not make leaves
     /// [`NOT_MADE`] in its place, and the root hash is read all the same.
-    fn write<T: Debug>(
+    fn write<T: Whole>(
         &mut self,
         name: &str,
         through: TransactionArg<'db, '_, E>,
@@ -165,7 +163,7 @@ impl<'db, E: Engine> Run<'db, E> {
 
     /// Takes in a call that is no write of an element, and the root hash
     /// after it.
-    fn other<T: Debug>(&mut self, name: &str, call: impl FnOnce() -> CostResult<T, Error>) {
+    fn other<T: Whole>(&mut self, name: &str, call: impl FnOnce() -> CostResult<T, Error>) {
         if self.panicked {
             return;
         }

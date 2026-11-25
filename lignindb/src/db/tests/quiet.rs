@@ -216,6 +216,19 @@ fn the_cleaner_and_the_reclaimer_begin_at_the_first_commit_or_when_asked() {
     }
 }
 
+/// `options` with a loop of write-back that leaves no page for a later
+/// turn (`FlushConfig::max_deferred`): for the tests that wait for the
+/// loop to have written what an open left.
+fn leaving_no_page(mut options: Options) -> Options {
+    let size = options.page_size.unwrap_or(PageSize::DEFAULT);
+    let flush = options.flush.unwrap_or(FlushConfig::new(size));
+    options.flush = Some(FlushConfig {
+        max_deferred: 0,
+        ..flush
+    });
+    options
+}
+
 /// A turn of the open that fails does not fail the open, and the thread
 /// that opens makes no turn after it. The first file that the session
 /// opens to write a segment is refused, once: it is the opening thread
@@ -232,10 +245,10 @@ fn a_turn_of_the_open_that_fails_leaves_its_work_to_the_loop() {
     unwritten_checkpoint(os, &dir.path().join("live"), &target, 20);
     let watched = Watched::default();
     watched.refuse_the_next_segment_of(&target);
-    let options = Options {
+    let options = leaving_no_page(Options {
         vfs: Arc::new(watched.clone()),
         ..options()
-    };
+    });
     let opened = Db::open(&target, &options).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(opened.reopen(), None::<Reopen>);
     let store = &opened.shared.store;
@@ -440,6 +453,7 @@ fn the_release_of_a_reserve_starts_no_cleaning_where_no_commit_was_asked() {
 #[test]
 fn a_turn_of_the_open_that_is_refused_for_room_releases_no_reserve() {
     let (fs, options) = device(93, KEPT);
+    let options = leaving_no_page(options);
     let dir = Path::new(DIR);
     {
         let earlier = open_at_rest(dir, &options).expect("a new database");

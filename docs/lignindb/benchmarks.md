@@ -39,6 +39,9 @@ a count: that the run counted none, or, where the report says that `perf` was
 counting, that `perf` gave none. A gate that compares instructions passes the
 option.
 
+`--set KEY=VALUE` changes one setting of LigninDB, or the harness's pacing
+of it, for the run ("LigninDB's settings" below).
+
 Smaller runs take `--documents`, `--owners`, `--creates`, `--updates`,
 `--deletes` and the sample counts (`--point-reads`, `--reference-reads`,
 `--warmup-reads`, `--cold-reads`, `--checkpoints`, `--reopens`). The 100-reference
@@ -172,19 +175,98 @@ The harness drives engines through `bench::Engine`, its own small interface:
 
 `bench::LigninDbEngine` (`bench/lignindb.rs`) implements it over
 `GroveDb<LigninEngine>`, opened as `Engine::open` opens it, with the default
-options. Its `Counters` come from one reading of `lignin-store::stats`
+options unless the run sets one (below). Its `Counters` come from one reading of `lignin-store::stats`
 through `Counters::from(&StoreStats)`, as the table in `bench/engine.rs`
 lists:
 
 - log bytes and groups;
 - value cells and hash records;
-- flusher and cleaner bytes;
+- write-back's bytes, and the cleaner's, which the harness takes from the
+  cleaner's own counts in the same reading (the details below);
 - page reads and cache hits;
 - keyed lookups and hashes, which the tree layer counts in the store's
   `Stats`.
 
-Its background work is idle once no page version waits to be written back
-and the flusher and the cleaner have written nothing for a second.
+Its background work counts as idle once a turn of write-back that began
+after the wait did has ended, no value waits for its place, and five readings
+of the stats in a row, each a fifth of the quiet time after the one before,
+found no turn of write-back under way and the same counts of what write-back,
+the cleaner and the reclaimer have written, moved and given back. The quiet
+time is a second, or three idle times of the engine's loops where a setting
+makes that longer. That is a sample of those counts and no more: the one turn
+the harness witnesses is write-back's, and it cannot tell whether the cleaner
+or the reclaimer ran in that time, nor that nothing is left for them. The
+pages that write-back leaves for a later turn wait on: they are counted in
+the phase in which they are written, and what is written when the database is
+closed is in no phase.
+
+A turn of the background work that failed ends the run with an error. The
+harness looks for one where it reads the engine's stats: after every commit,
+at each look of its waits, and where it reads the counters of a phase. A
+session counts its failed turns from 0, so a turn that failed while the
+database was opened is found at the first of those readings; a failure after
+the last reading of a session is not seen.
+
+Beside the counters it reports **details**, each as a measured row
+`<detail>_per_transition` of every write phase, from the same reading as the
+counters. They say where the logged and the background bytes went:
+
+| Details | What they split |
+| --- | --- |
+| `log_group_bytes`, `log_page_step_bytes`, `log_mark_bytes` | the bytes logged: commit groups, the records of background page steps (a value given its place, a regrouped or cleaned value given its new pointer, a reclaiming step), checkpoint marks. `log_page_steps` counts the steps. |
+| `log_inserts`, `log_insert_bytes`, `log_removes`, `log_values`, `log_value_bytes` | what the commit groups carry of cells put into pages (a new node's, and a cell carried from another page, repeated whole), of cells taken out, and of out-of-line values (new ones, and those of carried cells, repeated) |
+| `segment_bytes`, `value_log_bytes`, `regroup_bytes`, `table_checkpoint_bytes` | the flush bytes: every block write-back appended to a segment (also one whose link the page table then refused, which is dead), new values in the value log, the values a regrouping appended again, table-checkpoint files |
+| `cleaner_block_bytes`, `cleaner_value_bytes` | the compaction bytes, which for LigninDB are the sum of these two and not the store's own count of the cleaner's appends. The cleaner counts a block once it has pointed the page at the copy or found the link gone, and the values of a file once its pass over the file has ended. A copy that is appended and not counted so yet is in no row until it is, in however many readings |
+| `base_blocks`, `base_payload_bytes`, `delta_blocks`, `delta_payload_bytes`, `consolidations`, `runs_refused` | the blocks: base images and runs of deltas, before compression; how many images were written because a chain had reached a threshold, and how many because a run was refused |
+| `flat_blocks`, `flat_block_bytes` | the images among the base images that are of flat pages, and the bytes they take in their segments |
+| `versions_held_for_readers` | page versions that were kept in memory and got no block of their own: their changes go into the block of a later version of their page, or into none where the page is freed first |
+| `values_appended`, `value_payload_bytes`, `values_regrouped`, `regroup_copies_left`, `regroup_left_bytes`, `values_given_up` | the values: those appended for a commit and their bytes, those a regrouping moved, the copies of a regrouping that no cell had been given when it returned (a step is refused where the page is no longer the frame whose values were copied, because a commit superseded it, a write transaction holds a copy of it or a page step replaced it, and where the cell holds that value no more; after a refusal of the first kind the remaining steps are not tried) with the bytes of their values, and those given up. The two regroup counts are of regroupings that ended without an error. The bytes of every copy that was appended, moved or left, in a regrouping that failed or not, are in `regroup_bytes` |
+| `table_checkpoints`, `cleaner_checkpoints`, `log_files_dropped`, `room_waits` | table checkpoints in all and those the cleaner asked for, log files, and commits that waited for write-back |
+| `cleaner_blocks_moved`, `cleaner_values_moved`, `cleaner_bytes_trimmed`, `cleaner_bytes_dropped`, `cleaner_segments_dropped`, `cleaner_value_files_dropped` | what the cleaner moved and gave back |
+| `pages_freed`, `value_reads` | pages the reclaimer freed; values read from the value log |
+
+It also reports **gauges**, read once after every commit of a write phase and
+given as they are, not per transition: `log_held_mean` and `log_held_max`, the
+log that no table checkpoint covers, which is about what a recovery after a
+crash at that moment replays (it also reads the headers of the log's files and
+what a file holds before the first group that is not covered); and
+`page_versions_waiting_mean` and `page_versions_waiting_max`, the page
+versions that wait to be written back as write-back tells them, each of which
+holds a frame of the pool. Both are what the engine's `Watch` says at the
+reading, which a pass that is under way has not brought up to date.
+
+**What no count holds.** LigninDB writes its manifest anew whenever the files
+it names or their lengths change, a footer at the end of each sealed segment
+and a header at the start of each log file, segment and value-log file. None
+of them is in `physical_bytes_per_transition` (a table-checkpoint file is
+counted whole, its header with it). On Linux, on a file system that counts
+writes, `process_write_bytes_per_transition` is another count of what the
+process wrote, with them in it. It is a check beside the engine's counts, not
+their sum plus those bytes: the file system counts the pages it writes, not
+the appends.
+
+### LigninDB's settings
+
+`--set KEY=VALUE` opens LigninDB with one setting changed, in a run that
+measures LigninDB: a threshold of write-back or of the cleaner, the size of
+the buffer pool or of a log file, an idle time, or the harness's own `pace`.
+`bench/lignindb.rs` lists the keys and the option each sets. A report records
+the settings of its run (`method.engine_settings`), and `lignin-bench table`
+prints them. A key that names no setting, a value its setting cannot take,
+and a setting in a run that does not measure LigninDB are refused before
+anything is measured, by the tool and by `bench::run` alike. RocksDB takes no
+setting.
+
+`pace` is the harness's own. LigninDB's write-back is woken by every commit,
+and a turn of it writes the pages that are due, so in a run that applies
+blocks back to back the number of commits a turn finds follows the machine.
+With `--set pace=block` the harness waits after every commit, outside every
+timed region, until a turn of write-back that began after the commit has
+ended and no value waits for its place: write-back has a turn for every
+block by itself, as where blocks come seconds apart, and writes in it the
+pages it does not leave for a later turn. The cleaner and the
+reclaimer are not waited for. `pace=free`, the default, applies blocks back
+to back, which is how the RocksDB baseline is measured.
 
 A run with `--engine rocksdb --engine lignindb` reports every row of both
 engines, with each LigninDB row's ratio to RocksDB's in the same run. With no

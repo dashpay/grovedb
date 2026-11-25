@@ -51,6 +51,7 @@ mod root_keys;
 mod scopes;
 mod side_by_side;
 mod sync;
+mod whole;
 
 use grovedb_costs::OperationCost;
 use grovedb_merk::store::{lignin::hash::MerkHashRules, NodeStore};
@@ -274,7 +275,7 @@ fn history<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
             let answer = $call;
             let cost = answer.cost.clone();
             let value = answer.unwrap();
-            answers.push(($name, cost, format!("{value:?}")));
+            answers.push(($name, cost, whole::text(&value)));
             let root = db.root_hash(None, v);
             answers.push(("root", root.cost.clone(), format!("{:?}", root.unwrap())));
         }};

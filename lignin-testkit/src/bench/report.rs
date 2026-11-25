@@ -86,6 +86,11 @@ pub struct Method {
     pub perf_instructions: bool,
     /// Whether thread CPU time was read beside wall time.
     pub thread_cpu_time: bool,
+    /// What the engines were asked beyond their defaults, each as
+    /// `KEY=VALUE`. Empty in a run that asked nothing, and in a report
+    /// from before there were settings.
+    #[serde(default)]
+    pub engine_settings: Vec<String>,
 }
 
 /// What one engine measured.
@@ -683,6 +688,7 @@ mod tests {
                 cold_method: ColdMethod::Reopen,
                 perf_instructions: false,
                 thread_cpu_time: false,
+                engine_settings: Vec::new(),
             },
             engines,
         }

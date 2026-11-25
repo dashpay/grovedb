@@ -221,9 +221,16 @@ impl<'s, L: StepLog> TreeOwners<'s, L> {
         for (index, &(from, to)) in moves.iter().enumerate() {
             match self.step(store, page, born, from, to, &mut miscount) {
                 Ok(Ok(())) => done.moved += 1,
-                Ok(Err(Refusal::OwnerGone)) => done.gone += 1,
+                Ok(Err(Refusal::OwnerGone)) => {
+                    done.gone += 1;
+                    done.left_bytes += u64::from(to.value_len());
+                }
                 Ok(Err(Refusal::Busy)) => {
-                    done.busy += (moves.len() - index) as u64;
+                    let rest = &moves[index..];
+                    done.busy += rest.len() as u64;
+                    done.left_bytes += (rest.iter())
+                        .map(|(_, copy)| u64::from(copy.value_len()))
+                        .sum::<u64>();
                     break;
                 }
                 Err(error) => {
@@ -316,6 +323,9 @@ pub struct Regrouped {
     /// page since its values were copied, or a write transaction held a
     /// private copy of it.
     pub busy: u64,
+    /// The bytes of the values counted in `gone` and `busy`, whose copies
+    /// no cell points at.
+    pub left_bytes: u64,
     /// How the page's values lay before.
     pub before: Locality,
     /// How they lie now.

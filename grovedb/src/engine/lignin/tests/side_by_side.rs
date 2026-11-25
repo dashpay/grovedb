@@ -52,7 +52,7 @@ fn owned(path: &[&[u8]]) -> Vec<Vec<u8>> {
 /// What a read of `element` is taken in as (`History::element`).
 fn read_as(element: Element, v: &GroveVersion) -> String {
     let bytes = element.serialize(v).expect("the bytes of an element");
-    format!("{:?}", Ok::<_, Error>((element, bytes)))
+    super::whole::text(&Ok::<_, Error>((element, bytes)))
 }
 
 /// What a read of `rows` by a query that skipped none is taken in as
@@ -63,7 +63,7 @@ fn rows_as(rows: &[(&[u8], Element)], v: &GroveVersion) -> String {
         (key.to_vec(), (element.clone(), bytes))
     };
     let rows: Vec<_> = rows.iter().map(row).collect();
-    format!("{:?}", Ok::<_, Error>((rows, 0u16)))
+    super::whole::text(&Ok::<_, Error>((rows, 0u16)))
 }
 
 /// The answer of the call named `call`.
@@ -300,7 +300,7 @@ fn a_conversion_beside_a_transaction_that_wrote_fails_its_commit_as_on_rocksdb()
 /// after a conflict. A call that fails in any other way is no call of
 /// this history, on either engine. A clear is taken in with no cost: it
 /// returns none.
-fn in_a_met_transaction<T: std::fmt::Debug, E: Engine>(
+fn in_a_met_transaction<T: super::whole::Whole, E: Engine>(
     h: &mut History<'_, E>,
     name: String,
     answer: CostResult<T, Error>,

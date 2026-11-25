@@ -325,8 +325,9 @@ fn first_of(mut plans: Vec<CrashPlan>, first: CrashPlan) -> Vec<CrashPlan> {
 
 /// The tuning of a store, by turns: the pages a replay keeps, the window a
 /// recovery reads the log through, the pool, the runs a chain may have,
-/// so that one session finds chains that another's thresholds allowed, and
-/// the dead space the cleaner leaves.
+/// so that one session finds chains that another's thresholds allowed, the
+/// pages a turn of write-back leaves for a later turn, and the dead space
+/// the cleaner leaves.
 fn tuning_of(turn: u64) -> Tuning {
     let small = Tuning::small();
     let max_chain_deltas = [2, 0, 5][((turn / 12) % 3) as usize];
@@ -336,6 +337,7 @@ fn tuning_of(turn: u64) -> Tuning {
         pool_capacity: [small.pool_capacity, 96 << 10][((turn / 6) % 2) as usize],
         flush: FlushConfig {
             max_chain_deltas,
+            max_deferred: [3, 0, 1][((turn / 2) % 3) as usize],
             ..small.flush
         },
         cleaner: CleanerConfig {

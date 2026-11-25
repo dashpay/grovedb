@@ -16,7 +16,8 @@
 //! Measured rows ([`RowKind::Measured`]) are bytes and sizes that are not:
 //! `bytes_logged_per_transition`, `physical_bytes_per_transition`,
 //! `flush_bytes_per_transition`, `compaction_bytes_per_transition`,
-//! `process_write_bytes_per_transition` and `size_on_disk`. Where a log file
+//! `process_write_bytes_per_transition`, `size_on_disk`, and every row an
+//! engine adds for one of its [`Detail`]s. Where a log file
 //! starts, what a flush or compaction writes and in which phase it is seen,
 //! which obsolete files are gone, and what the rest of the process wrote
 //! all follow the schedule. Time rows depend on the machine. Each row
@@ -34,6 +35,7 @@
 //! | `hashes_per_transition` | write phases | calls | `OperationCost::hash_node_calls` |
 //! | `engine_hashes_per_transition` | write phases | calls | [`Counters::hashes`], where the engine counts them |
 //! | `node_record_*_share` | write phases | fraction | [`NodeAnatomy`], where the engine writes node records |
+//! | `<detail>_per_transition` | write phases | the detail's | [`Engine::details`]: where LigninDB's logged and background bytes went |
 //! | `size_on_disk` | `at-size`, `flushed` | B | file lengths in the database directory |
 //! | `point_proof_bytes`, `references_proof_bytes` | `warm` | B | proof lengths |
 //! | `wall_per_transition` | write phases | µs | apply time over transitions |
@@ -89,7 +91,7 @@ use grovedb_version::version::GroveVersion;
 #[cfg(grovedb_engine_seam)]
 pub use self::lignindb::LigninDbEngine;
 pub use self::{
-    engine::{Block, Counters, Engine, NodeAnatomy},
+    engine::{Block, Counters, Detail, Engine, EngineSettings, NodeAnatomy},
     machine::{ColdMethod, Machine},
     report::{compare, Agreement, Report, Row, RowKind},
     rocksdb::RocksDbEngine,
@@ -186,6 +188,25 @@ pub struct RunOptions {
     pub grove_version: &'static GroveVersion,
 }
 
+impl RunOptions {
+    /// Refuses a setting that no engine of the run takes, and a setting
+    /// that the engine which takes settings cannot take. [`run`] asks
+    /// this before anything is measured.
+    pub fn check_engine_settings(&self) -> Result<(), BenchError> {
+        let settings = &self.settings.engine;
+        if settings.is_empty() {
+            return Ok(());
+        }
+        #[cfg(grovedb_engine_seam)]
+        if self.engines.contains(&EngineChoice::LigninDb) {
+            return lignindb::Tuning::new(settings).map(drop);
+        }
+        Err(BenchError::Check(
+            "--set: no engine of this run takes a setting".to_string(),
+        ))
+    }
+}
+
 /// A thread big enough for GroveDB's recursion on deep paths.
 pub const STACK_BYTES: usize = 64 << 20;
 
@@ -204,6 +225,7 @@ pub const STACK_BYTES: usize = 64 << 20;
 ///    are repeated, so the writes start warm.
 /// 3. `create`, `update`, `delete`: the writes at size, sampled per block.
 pub fn run(options: &RunOptions) -> Result<Report, BenchError> {
+    options.check_engine_settings()?;
     std::fs::create_dir_all(&options.settings.scratch)
         .map_err(|error| BenchError::io("creating the scratch directory", error))?;
     let options = options.clone();

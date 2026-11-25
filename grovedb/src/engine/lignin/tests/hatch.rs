@@ -195,7 +195,7 @@ fn all_of(path: &[&[u8]], under: Option<Query>) -> PathQuery {
 type Answer = (String, String, OperationCost);
 
 /// Takes in a call that has to succeed, and gives what it returned.
-fn answered<T: std::fmt::Debug>(
+fn answered<T: super::whole::Whole>(
     answers: &mut Vec<Answer>,
     name: &str,
     call: grovedb_costs::CostResult<T, crate::Error>,
@@ -204,7 +204,7 @@ fn answered<T: std::fmt::Debug>(
     let value = call
         .unwrap()
         .unwrap_or_else(|error| panic!("{name}: {error:?}"));
-    answers.push((name.to_owned(), format!("{value:?}"), cost));
+    answers.push((name.to_owned(), super::whole::text(&value), cost));
     value
 }
 
@@ -446,7 +446,7 @@ fn counted_answers<E: Engine>(db: &GroveDb<E>) -> Vec<Answer> {
     );
     answers.push((
         "no item".to_owned(),
-        format!("{:?}", absent.value),
+        super::whole::text(&absent.value),
         absent.cost,
     ));
 

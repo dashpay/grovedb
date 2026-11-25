@@ -676,8 +676,8 @@ fn a_deleted_tree_leaves_no_entry_and_the_checker_finds_the_store_sound() {
     }
 }
 
-fn shown<T: std::fmt::Debug>(answer: CostResult<T, Error>) -> CostResult<String, Error> {
-    answer.map_ok(|answer| format!("{answer:?}"))
+fn shown<T: super::whole::Whole>(answer: CostResult<T, Error>) -> CostResult<String, Error> {
+    answer.map_ok(|answer| super::whole::text(&answer))
 }
 
 /// Whether the walk of `v` for the trees in a tree takes every record of

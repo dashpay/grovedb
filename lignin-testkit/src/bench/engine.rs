@@ -15,12 +15,12 @@
 //!
 //! | `Counters` field | RocksDB | LigninDB |
 //! | --- | --- | --- |
-//! | `log_bytes` | bytes appended to the write-ahead log | bytes of log groups |
+//! | `log_bytes` | bytes appended to the write-ahead log | bytes appended to the log: commit groups, page steps and checkpoint marks |
 //! | `log_groups` | write batches in the log | log groups |
-//! | `node_records`, `node_record_bytes` | puts to the default column family | value cells and hash records |
-//! | `other_records`, `other_record_bytes` | every other log entry | flat keyspace records |
-//! | `flush_bytes` | SST bytes written by flushes | bytes written by the flusher |
-//! | `compaction_bytes` | SST bytes written by compactions | bytes written by the cleaner |
+//! | `node_records`, `node_record_bytes` | puts to the default column family | page deltas of tree pages, and their bytes with those of out-of-line values |
+//! | `other_records`, `other_record_bytes` | every other log entry | changes of flat pages |
+//! | `flush_bytes` | SST bytes written by flushes | bytes written by write-back: blocks, values, table checkpoints |
+//! | `compaction_bytes` | SST bytes written by compactions | bytes of the copies the cleaner has counted the outcome of: `bench/lignindb.rs` takes them from the cleaner's own counts, not from this mapping |
 //! | `page_reads`, `cache_hits` | not available | buffer pool misses and hits |
 //! | `keyed_lookups` | not available | searches by key that went on below the root of a Merk |
 //! | `hashes` | not available | hashes the tree counted |
@@ -62,6 +62,14 @@ pub trait Engine: Sized {
 
     /// Opens the database in `dir`, creating it if the directory is empty.
     fn open(dir: &Path) -> Result<Self, BenchError>;
+
+    /// Opens the database in `dir` as the run's `settings` ask. An engine
+    /// that takes no setting opens as [`Engine::open`] does, whatever they
+    /// are: a run of two engines hands both the same settings.
+    fn open_with(dir: &Path, settings: &EngineSettings) -> Result<Self, BenchError> {
+        let _ = settings;
+        Self::open(dir)
+    }
 
     /// The directory the database lives in.
     fn dir(&self) -> &Path;
@@ -106,6 +114,22 @@ pub trait Engine: Sized {
     /// The engine's running totals since it was opened.
     fn counters(&mut self) -> Result<Counters, BenchError>;
 
+    /// Counts the engine keeps beside its [`Counters`], as running totals
+    /// since it was opened, in the same order at every call: where the
+    /// bytes of the counters went, and what the background work did. Each
+    /// becomes a measured row of every write phase.
+    fn details(&mut self) -> Result<Vec<Detail>, BenchError> {
+        Ok(Vec::new())
+    }
+
+    /// What the engine has seen of its own state since the last call, as
+    /// means and peaks over the commits in between, in the same order at
+    /// every call. Each becomes a measured row of a write phase under its
+    /// own id, as it is and not per transition.
+    fn gauges(&mut self) -> Result<Vec<Detail>, BenchError> {
+        Ok(Vec::new())
+    }
+
     /// How the Merk node records written since the engine was opened
     /// divide up, for an engine that writes whole node records. Read after
     /// [`Engine::counters`].
@@ -123,6 +147,59 @@ pub trait Block {
 
     /// Commits the block.
     fn commit(self) -> Result<(), BenchError>;
+}
+
+/// A count of an engine beside its [`Counters`] ([`Engine::details`]),
+/// or a reading of its state ([`Engine::gauges`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Detail {
+    /// The row of a detail is `<id>_per_transition`, and the row of a
+    /// gauge is `<id>`.
+    pub id: &'static str,
+    /// The unit of the count.
+    pub unit: &'static str,
+    /// The running total.
+    pub total: u64,
+    /// Where the count comes from.
+    pub source: &'static str,
+}
+
+/// What a run asks of its engines beyond their defaults, as the keys and
+/// values of `--set KEY=VALUE`, in the order given. The engine that takes
+/// settings says which keys there are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EngineSettings(Vec<(String, String)>);
+
+impl EngineSettings {
+    /// Adds `pair`, a `KEY=VALUE`. A key that was set before is set anew.
+    pub fn set(&mut self, pair: &str) -> Result<(), BenchError> {
+        let (key, value) = pair
+            .split_once('=')
+            .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+            .ok_or_else(|| BenchError::Check(format!("--set takes KEY=VALUE, not {pair:?}")))?;
+        self.0.retain(|(set, _)| set != key);
+        self.0.push((key.to_string(), value.to_string()));
+        Ok(())
+    }
+
+    /// The keys with their values.
+    pub fn pairs(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
+
+    /// Each setting as `KEY=VALUE`, for a report.
+    pub fn list(&self) -> Vec<String> {
+        self.pairs()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect()
+    }
+
+    /// Whether nothing is set.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 /// Physical work an engine reports, as running totals since it was opened.
@@ -290,5 +367,46 @@ impl NodeAnatomy {
             link_hash_bytes: self.link_hash_bytes.saturating_sub(earlier.link_hash_bytes),
             other_bytes: self.other_bytes.saturating_sub(earlier.other_bytes),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench::RocksDbEngine;
+
+    #[test]
+    fn settings_are_keys_with_values_and_the_last_of_a_key_stands() {
+        let mut settings = EngineSettings::default();
+        assert!(settings.is_empty());
+        settings.set("chain_deltas=8").unwrap();
+        settings.set("pace=block").unwrap();
+        settings.set("chain_deltas=16").unwrap();
+        assert!(!settings.is_empty());
+        assert_eq!(settings.list(), ["pace=block", "chain_deltas=16"]);
+        assert_eq!(
+            settings.pairs().collect::<Vec<_>>(),
+            [("pace", "block"), ("chain_deltas", "16")]
+        );
+        for pair in ["", "pace", "=block", "pace="] {
+            assert_eq!(
+                settings.set(pair).unwrap_err().to_string(),
+                format!("--set takes KEY=VALUE, not {pair:?}")
+            );
+        }
+        assert_eq!(settings.list().len(), 2, "a refused pair sets nothing");
+    }
+
+    /// An engine that takes no setting opens whatever the run's settings
+    /// are, and has no details.
+    #[test]
+    fn an_engine_without_settings_or_details_ignores_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut settings = EngineSettings::default();
+        settings.set("pace=block").unwrap();
+        let mut engine = RocksDbEngine::open_with(dir.path(), &settings).unwrap();
+        assert_eq!(engine.dir(), dir.path());
+        assert_eq!(engine.details().unwrap(), Vec::new());
+        assert_eq!(engine.gauges().unwrap(), Vec::new());
     }
 }

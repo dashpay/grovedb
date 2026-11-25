@@ -9,6 +9,8 @@
 //! `run` options: `--out FILE` (default: standard output), `--scratch DIR`
 //! (default: `$TMPDIR/lignin-bench`), `--engine NAME` (`rocksdb` or
 //! `lignindb`; repeatable, measured in the order named; default `rocksdb`),
+//! `--set KEY=VALUE` (repeatable; a setting of LigninDB, as
+//! `bench/lignindb.rs` lists them, in a run that measures it),
 //! `--label TEXT`, `--commit SHA`, `--perf`, `--keep`, and the
 //! sizes of [`Settings`]: `--seed`, `--documents`, `--owners`, `--creates`,
 //! `--updates`, `--deletes`, `--point-reads`, `--reference-reads`,
@@ -108,6 +110,7 @@ pub fn parse_run(args: &[String]) -> Result<(RunOptions, Option<PathBuf>), Bench
                         EngineChoice::named(value)
                             .ok_or_else(|| BenchError::Check(format!("no engine {value:?}")))?,
                     ),
+                    "--set" => settings.engine.set(value)?,
                     "--seed" => settings.seed = parse_number(flag, value)?,
                     "--documents" => settings.documents = parse_number(flag, value)?,
                     "--owners" => settings.owners = parse_number(flag, value)?,
@@ -129,6 +132,7 @@ pub fn parse_run(args: &[String]) -> Result<(RunOptions, Option<PathBuf>), Bench
         options.engines.push(EngineChoice::RocksDb);
     }
     options.settings.check()?;
+    options.check_engine_settings()?;
     Ok((options, out))
 }
 
@@ -189,6 +193,9 @@ pub fn table(report: &Report) -> String {
     );
     if let Some(no_counts) = no_counts(report) {
         let _ = writeln!(out, "{no_counts}");
+    }
+    if !report.method.engine_settings.is_empty() {
+        let _ = writeln!(out, "settings: {}", report.method.engine_settings.join(" "));
     }
     for engine in &report.engines {
         let _ = writeln!(
@@ -351,6 +358,45 @@ mod tests {
         );
         let (alone, _) = parse_run(&args("--engine lignindb")).unwrap();
         assert_eq!(alone.engines, vec![EngineChoice::LigninDb]);
+        assert!(alone.settings.engine.is_empty());
+    }
+
+    #[cfg(grovedb_engine_seam)]
+    #[test]
+    fn settings_parse_for_a_run_that_measures_lignindb() {
+        let (options, _) = parse_run(&args(
+            "--engine rocksdb --engine lignindb --set chain_deltas=4 --set pace=block",
+        ))
+        .unwrap();
+        assert_eq!(
+            options.settings.engine.list(),
+            ["chain_deltas=4", "pace=block"]
+        );
+        let method = options
+            .settings
+            .method(crate::bench::ColdMethod::Reopen, false);
+        assert_eq!(method.engine_settings, ["chain_deltas=4", "pace=block"]);
+        for (line, message) in [
+            (
+                "--engine lignindb --set pace",
+                "--set takes KEY=VALUE, not \"pace\"",
+            ),
+            (
+                "--engine lignindb --set colour=red",
+                "LigninDB has no setting \"colour\"",
+            ),
+            ("--engine lignindb --set", "--set needs a value"),
+            (
+                "--set pace=block",
+                "--set: no engine of this run takes a setting",
+            ),
+            (
+                "--engine rocksdb --set pace=block",
+                "--set: no engine of this run takes a setting",
+            ),
+        ] {
+            assert_eq!(parse_run(&args(line)).unwrap_err().to_string(), message);
+        }
     }
 
     #[test]

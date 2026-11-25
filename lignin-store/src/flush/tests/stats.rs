@@ -42,6 +42,11 @@ fn a_commit_is_counted_by_its_records_and_its_bytes() {
     );
     assert_eq!(first.other_records, 1);
     assert!(first.other_record_bytes > 0);
+    // Two cells were put into a page, and one value travels out of line.
+    let told = &first.flush;
+    assert_eq!((told.insert_records, told.remove_records), (2, 0));
+    assert!(told.insert_record_bytes > 0 && told.insert_record_bytes < first.node_record_bytes);
+    assert_eq!((told.values_logged, told.value_logged_bytes), (1, 900));
     assert_eq!(first.flush_bytes, 0, "nothing written back yet");
 
     db.wb().pass().expect("a pass");
@@ -53,9 +58,10 @@ fn a_commit_is_counted_by_its_records_and_its_bytes() {
         passed.log_bytes,
         passed.log.group_bytes + passed.log.change_bytes
     );
+    assert_eq!(passed.flush.appended_bytes, passed.flush.stored_bytes);
     assert_eq!(
         passed.flush_bytes,
-        passed.flush.stored_bytes + passed.flush.value_stored_bytes
+        passed.flush.appended_bytes + passed.flush.value_stored_bytes
     );
     assert_eq!(passed.log_groups, 2, "a page step is no commit");
 
@@ -79,13 +85,36 @@ fn a_commit_is_counted_by_its_records_and_its_bytes() {
     assert!(checkpointed.flush.checkpoint_bytes > 0);
     assert_eq!(
         checkpointed.flush_bytes,
-        checkpointed.flush.stored_bytes
+        checkpointed.flush.appended_bytes
             + checkpointed.flush.value_stored_bytes
             + checkpointed.flush.checkpoint_bytes
     );
     assert_eq!(checkpointed.log_bytes, checkpointed.log.bytes());
     assert_eq!(checkpointed.watch.log_held, 0);
     assert!(checkpointed.watch.log_held_by().is_empty());
+
+    // A pass and a checkpoint that a caller makes are no turns. A turn is
+    // counted when it begins and again when it has ended.
+    let watch = &checkpointed.watch;
+    assert_eq!((watch.turns_begun, watch.turns_ended), (0, 0));
+    db.wb().tick().expect("a turn");
+    db.wb().tick().expect("a turn");
+    let watch = read(&db, &stats).watch;
+    assert_eq!((watch.turns_begun, watch.turns_ended), (2, 2));
+    assert_eq!((db.state.turns_begun(), watch.turns_failed), (2, 0));
+
+    // A hash put no cell in and took none out. A cell that leaves is one
+    // record that takes it out.
+    let before = read(&db, &stats).flush;
+    assert_eq!((before.insert_records, before.remove_records), (2, 0));
+    db.commit(&[Op::Remove {
+        page: page(1),
+        slot: slot(1),
+    }]);
+    let told = read(&db, &stats).flush;
+    assert_eq!((told.insert_records, told.remove_records), (2, 1));
+    assert_eq!(told.insert_record_bytes, before.insert_record_bytes);
+    assert_eq!((told.values_logged, told.value_logged_bytes), (1, 900));
 }
 
 /// Reads of the pool are counted as hits and as reads from storage, and
@@ -236,7 +265,11 @@ fn waits_for_room_are_counted_with_their_length() {
 /// checkpoint is installed until the store is opened again.
 #[test]
 fn a_segment_sync_that_fails_is_counted() {
-    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    let always_due = FlushConfig {
+        checkpoint_log_bytes: 1,
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (fs, db) = Db::on_sim(always_due, LogOptions::default());
     let stats = Stats::new();
     db.commit(&[insert((1, 1), b"a", long(1, 900))]);
     db.wb().checkpoint().expect("a checkpoint");
@@ -251,6 +284,16 @@ fn a_segment_sync_that_fails_is_counted() {
     );
     db.wb().checkpoint().expect_err("the sync fails");
     let reading = read(&db, &stats);
+    // A checkpoint that a caller takes is no turn. A turn that fails is
+    // told as failed where it is told as ended.
+    assert_eq!(reading.watch.turns_failed, 0);
+    db.commit(&[hash((1, 1), 2)]);
+    db.wb().tick().expect_err("the segments are not durable");
+    let watch = read(&db, &stats).watch;
+    assert_eq!(
+        (watch.turns_begun, watch.turns_ended, watch.turns_failed),
+        (1, 1, 1)
+    );
     assert_eq!(reading.watch.segment_syncs_failed, 1);
     assert_eq!(reading.watch.checkpoints_failed, 1);
     assert!(reading.watch.segments_not_durable);

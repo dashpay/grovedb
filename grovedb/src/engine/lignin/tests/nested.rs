@@ -38,7 +38,10 @@ use grovedb_storage::RawIterator;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignindb::{Db, Options};
 
-use super::LigninEngine;
+use super::{
+    whole::{text, Whole},
+    LigninEngine,
+};
 use crate::{
     engine::Engine,
     reference_path::ReferencePathType,
@@ -139,15 +142,13 @@ pub(super) struct Log {
 }
 
 impl Log {
-    pub(super) fn answer<T: std::fmt::Debug>(
-        &mut self,
-        name: String,
-        answer: CostResult<T, Error>,
-    ) {
+    /// Takes in what a call answered: its cost, and what it returned or
+    /// how it failed as a text that holds all of it ([`Whole`]).
+    pub(super) fn answer<T: Whole>(&mut self, name: String, answer: CostResult<T, Error>) {
         let cost = answer.cost.clone();
         let value = answer.unwrap();
         self.refused += usize::from(value.is_err());
-        self.answers.push((name, cost, format!("{value:?}")));
+        self.answers.push((name, cost, text(&value)));
     }
 
     /// The answer of the last call, as text.

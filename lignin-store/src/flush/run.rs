@@ -160,9 +160,13 @@ impl WriteBack<'_> {
         Some(turns.progress)
     }
 
-    /// One turn of the background loop: the log is rolled and synced if
-    /// that is due, a pass is made, and a table checkpoint is taken if one
-    /// is due.
+    /// One turn that a caller makes: the log is rolled and synced if that
+    /// is due, a pass is made, and a table checkpoint is taken if one is
+    /// due. The pass leaves no page for a later turn by choice: what it
+    /// cannot write waits as ever (a page under the private copy of a
+    /// write transaction, a page whose value has no place yet). The turns
+    /// of the background loop are these, with a pass that leaves pages
+    /// ([`Self::tick_deferring`]).
     ///
     /// The pass is made whatever became of the log, so that a committer
     /// that waits for room is never left waiting. No checkpoint is tried
@@ -170,21 +174,33 @@ impl WriteBack<'_> {
     /// that a write transaction holds back ([`Pass::blocked`]): it would
     /// be put off. The first error of the turn is returned.
     pub fn tick(&self) -> Result<Tick, FlushError> {
-        self.counted_turn().1
+        self.counted_turn(false).1
     }
 
-    /// [`Self::tick`], with whether the turn moved anything on, which it
-    /// can have done though it failed.
-    fn counted_turn(&self) -> (bool, Result<Tick, FlushError>) {
+    /// One turn as the background loop makes it ([`Self::run`]):
+    /// [`Self::tick`], with a pass that leaves the pages that changed last
+    /// for a later turn
+    /// ([`FlushConfig::max_deferred`](super::FlushConfig::max_deferred)),
+    /// unless a table checkpoint is due. Whoever drives write-back with no
+    /// loop, and wants what a store in use does, makes these.
+    pub fn tick_deferring(&self) -> Result<Tick, FlushError> {
+        self.counted_turn(true).1
+    }
+
+    /// A turn, with whether it moved anything on, which it can have done
+    /// though it failed. `deferring` says whether its pass may leave pages
+    /// for a later turn.
+    fn counted_turn(&self, deferring: bool) -> (bool, Result<Tick, FlushError>) {
         let state = self.state;
         let number = {
             let mut turns = lock(&state.turns);
             turns.begun += 1;
             turns.begun
         };
-        let (progress, turn) = self.turn();
+        let (progress, turn) = self.turn(deferring);
         let mut turns = lock(&state.turns);
         turns.ended = number;
+        turns.failed += u64::from(turn.is_err());
         turns.progress = progress;
         drop(turns);
         state.turned.notify_all();
@@ -202,7 +218,7 @@ impl WriteBack<'_> {
         failed: &mut dyn FnMut(FlushError),
     ) -> Option<Duration> {
         let state = self.state;
-        let (progressed, turn) = self.counted_turn();
+        let (progressed, turn) = self.counted_turn(true);
         match turn {
             Ok(_) => {
                 *in_vain = 0;
@@ -222,10 +238,16 @@ impl WriteBack<'_> {
 
     /// One turn, and whether it moved anything on, which it can have done
     /// though it failed.
-    fn turn(&self) -> (bool, Result<Tick, FlushError>) {
+    fn turn(&self, deferring: bool) -> (bool, Result<Tick, FlushError>) {
         let rolled = self.roll_log();
         let synced = self.sync_log_if_due();
-        let (pass, passed) = self.pass_through();
+        // A table checkpoint needs every page written, so a turn in which
+        // one is due leaves none.
+        let leave = match deferring && !self.checkpoint_due() {
+            true => self.deferral(),
+            false => 0,
+        };
+        let (pass, passed) = self.pass_through(leave);
         let turn = rolled.and_then(|rolled| {
             synced?;
             passed?;
@@ -246,7 +268,7 @@ impl WriteBack<'_> {
         (progress, turn)
     }
 
-    /// The background loop: [`Self::tick`], again and again, until
+    /// The background loop: [`Self::tick_deferring`], again and again, until
     /// [`Self::stop`] is called. Between two turns it sleeps until it is
     /// woken ([`Self::wake`]) or the idle time of the configuration has
     /// passed. A turn that fails is counted ([`FlushStats::errors`]), its

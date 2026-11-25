@@ -7,7 +7,7 @@ use std::{
 };
 
 use lignin_format::{
-    delta::DeltaRun,
+    delta::{Delta, DeltaRun},
     segment::{BlockContent, Compression, FRAME_LEN},
     wal::{Change, Entry, FlatRun, Record, Removed},
     CommitVersion, FormatVersion, PageId, PageSize, SlotId,
@@ -17,7 +17,7 @@ use super::{
     config::{count, max_run_len, Counters},
     error::FlushError,
     page::{self, PageKind},
-    state::{lock, Changes, Files, FlushState, Untrimmed},
+    state::{lock, Changes, Files, FlushState, Rested, Untrimmed},
 };
 use crate::{
     alloc::Pins,
@@ -67,9 +67,9 @@ pub trait PageValues: Sync {
     /// to `to`, back to back in scan order, calls `cover`, which makes the
     /// copies durable and has the manifest cover them, and then gives each
     /// cell the pointer to its copy, each in a page step whose record goes
-    /// to the log through [`WriteBack::append_change`]. Returns how many
-    /// values it moved. A page that a write transaction holds a private
-    /// copy of is left as it is.
+    /// to the log through [`WriteBack::append_change`]. Returns what
+    /// became of the copies ([`Regroup`]). A page that a write transaction
+    /// holds a private copy of is left as it is.
     ///
     /// Write-back calls this, under an operation guard, for a page it is
     /// about to write a new base image of, after it has placed the page's
@@ -80,7 +80,40 @@ pub trait PageValues: Sync {
         page: PageId,
         to: &mut ValueWriter,
         cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
-    ) -> Result<u64, RegroupError>;
+    ) -> Result<Regroup, RegroupError>;
+}
+
+/// What a regrouping of one page's values did, where it ended without
+/// an error ([`PageValues::regroup`]). A regrouping that fails tells
+/// nothing of its copies: the cells that were given theirs before the
+/// error keep them, and the other copies are dead space.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Regroup {
+    /// Values whose cells hold the pointers to their copies.
+    pub moved: u64,
+    /// Copies that no cell had been given when the regrouping returned.
+    /// A step that is to give a cell its copy is refused where the page
+    /// is no longer the frame whose values were copied (a commit has
+    /// superseded it, a write transaction holds a private copy of it, or
+    /// a page step has replaced the frame, be it for another cell), and
+    /// where the cell holds that value no more. After a refusal of the
+    /// first kind the steps that remain are not tried, and their copies
+    /// are left with it. They are dead space.
+    pub left: u64,
+    /// The bytes of the values of those copies, without their record
+    /// headers.
+    pub left_bytes: u64,
+}
+
+impl Regroup {
+    /// A regrouping that moved `moved` values and left no copy.
+    pub const fn moved(moved: u64) -> Self {
+        Self {
+            moved,
+            left: 0,
+            left_bytes: 0,
+        }
+    }
 }
 
 /// The parts of one open store that write-back works on.
@@ -129,6 +162,10 @@ pub struct Pass {
     /// has a pending value, or bytes attached that could not be taken
     /// off.
     pub blocked: usize,
+    /// Pages whose current version the pass left for a later one,
+    /// because they are among those that changed last
+    /// ([`FlushConfig::max_deferred`](super::FlushConfig::max_deferred)).
+    pub deferred: usize,
     /// Page versions that still wait: the pool lists them as owed.
     pub waiting: usize,
 }
@@ -172,6 +209,10 @@ pub(super) struct Round {
     oldest_pin: CommitVersion,
     /// Whether the values of a page are still regrouped in this pass.
     regroups: bool,
+    /// How many pages the pass may leave for a later one.
+    leave: usize,
+    /// The pages it leaves: their current version is not written.
+    deferred: BTreeSet<PageId>,
     /// The first error that did not end the pass.
     failed: Option<FlushError>,
     /// The pages that their bytes kept from being written.
@@ -195,6 +236,11 @@ impl Round {
 struct Told {
     node_records: usize,
     node_bytes: usize,
+    inserts: usize,
+    insert_bytes: usize,
+    removes: usize,
+    values: usize,
+    value_bytes: usize,
     other_records: usize,
     other_bytes: usize,
 }
@@ -205,6 +251,16 @@ impl Told {
             Entry::Tree(run) => {
                 self.node_records += run.deltas().len();
                 self.node_bytes += run.encoded_len() - DeltaRun::HEADER_LEN;
+                for delta in run.deltas() {
+                    match delta {
+                        Delta::Insert { .. } => {
+                            self.inserts += 1;
+                            self.insert_bytes += delta.encoded_len();
+                        }
+                        Delta::Remove { .. } => self.removes += 1,
+                        _ => {}
+                    }
+                }
             }
             Entry::Flat(run) => {
                 self.other_records += run.changes().len();
@@ -218,9 +274,44 @@ impl Told {
         count(&counters.groups, 1);
         count(&counters.node_records, self.node_records as u64);
         count(&counters.node_record_bytes, self.node_bytes as u64);
+        count(&counters.insert_records, self.inserts as u64);
+        count(&counters.insert_record_bytes, self.insert_bytes as u64);
+        count(&counters.remove_records, self.removes as u64);
+        count(&counters.values_logged, self.values as u64);
+        count(&counters.value_logged_bytes, self.value_bytes as u64);
         count(&counters.other_records, self.other_records as u64);
         count(&counters.other_record_bytes, self.other_bytes as u64);
     }
+}
+
+/// The pages of `owed` that a pass which may leave `leave` pages leaves
+/// for a later one. With more pages than that, flat pages are left before
+/// tree pages, since every block of a flat page is its whole image, and
+/// among the pages of one kind those whose newest version is the newest:
+/// the ones that have waited longest are written. `is_flat` says whether
+/// the page whose newest version is the one given is a flat page, and is
+/// asked only where there are more pages than may be left.
+fn left_for_later(
+    owed: &BTreeMap<PageId, Vec<CommitVersion>>,
+    leave: usize,
+    is_flat: impl Fn(PageId, CommitVersion) -> bool,
+) -> BTreeSet<PageId> {
+    if leave == 0 {
+        return BTreeSet::new();
+    }
+    if owed.len() <= leave {
+        return owed.keys().copied().collect();
+    }
+    let mut newest: Vec<(bool, CommitVersion, PageId)> = owed
+        .iter()
+        .filter_map(|(&page, versions)| {
+            let born = *versions.last()?;
+            Some((is_flat(page, born), born, page))
+        })
+        .collect();
+    newest.sort_unstable();
+    newest.drain(..newest.len().saturating_sub(leave));
+    newest.into_iter().map(|(.., page)| page).collect()
 }
 
 /// What a test does after a look.
@@ -235,6 +326,9 @@ thread_local! {
     /// the page in between.
     pub(super) static AFTER_THE_LOOK: std::cell::RefCell<Option<AfterTheLook>> =
         const { std::cell::RefCell::new(None) };
+    /// The pages whose pending values the passes of this thread have
+    /// looked for.
+    pub(super) static PENDING_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// What one look at a page works on: the frames of its unwritten versions,
@@ -391,10 +485,19 @@ impl<'s> WriteBack<'s> {
                 .map_err(|source| FlushError::Log(LogError::Refused { offset, source }))?;
             match record {
                 Record::Part(part) => parts.push(part),
-                Record::Value(part) => told.node_bytes += part.data().len(),
+                Record::Value(part) => {
+                    let len = part.data().len();
+                    told.node_bytes += len;
+                    told.values += usize::from(part.part() == 0);
+                    told.value_bytes += len;
+                }
                 _ => {}
             }
             offset += len;
+        }
+
+        for entry in parts.iter().flat_map(|part| part.entries()) {
+            told.entry(&entry);
         }
 
         let logged = group.len() as u64;
@@ -406,13 +509,13 @@ impl<'s> WriteBack<'s> {
             .fetch_add(logged, Ordering::Relaxed);
         kept.group_at(version.get(), at, before);
         for entry in parts.iter().flat_map(|part| part.entries()) {
-            told.entry(&entry);
             match entry {
                 Entry::Tree(run) => {
                     match run.created() {
                         None => {
                             let records = &run.as_bytes()[DeltaRun::HEADER_LEN..];
-                            kept.committed(run.page(), version.get(), records);
+                            let most = max_run_len(self.size);
+                            kept.committed(run.page(), version.get(), records, most);
                         }
                         Some(_) => kept.forget(run.page()),
                     }
@@ -467,7 +570,8 @@ impl<'s> WriteBack<'s> {
                     if let Some((delta, born)) = delta {
                         let mut records = Vec::with_capacity(delta.encoded_len());
                         if delta.encode_into(&mut records).is_ok() {
-                            lock(&self.state.kept).stepped(step.page(), born, &records);
+                            let most = max_run_len(self.size);
+                            lock(&self.state.kept).stepped(step.page(), born, &records, most);
                         }
                     }
                 }
@@ -476,7 +580,8 @@ impl<'s> WriteBack<'s> {
                     (None, Some(Removed::Tree(run))) => {
                         if let Some(born) = born(reclaim.page()) {
                             let records = &run.as_bytes()[DeltaRun::HEADER_LEN..];
-                            lock(&self.state.kept).stepped(reclaim.page(), born, records);
+                            let most = max_run_len(self.size);
+                            lock(&self.state.kept).stepped(reclaim.page(), born, records, most);
                         }
                     }
                     (None, _) => {}
@@ -542,17 +647,32 @@ impl<'s> WriteBack<'s> {
     /// errors. Whatever the pass returns, what it wrote and linked
     /// stands, and it can be called again.
     pub fn pass(&self) -> Result<Pass, FlushError> {
-        let (pass, result) = self.pass_through();
+        let (pass, result) = self.pass_through(0);
         result.map(|()| pass)
     }
 
-    /// One pass, with what it did even if it ended with an error.
-    pub(super) fn pass_through(&self) -> (Pass, Result<(), FlushError>) {
+    /// How many pages a turn of the background loop leaves for a later
+    /// turn: what the configuration says, and no more than half of the
+    /// page versions that may wait or a quarter of the pool's frames,
+    /// which a version that waits takes one of.
+    pub fn deferral(&self) -> usize {
+        let config = &self.state.config;
+        config
+            .max_deferred
+            .min(config.max_unwritten / 2)
+            .min(self.stores.pool.frames() / 4)
+    }
+
+    /// One pass that leaves up to `leave` pages for a later one, with what
+    /// it did even if it ended with an error.
+    pub(super) fn pass_through(&self, leave: usize) -> (Pass, Result<(), FlushError>) {
         let mut files = lock(&self.state.files);
         let mut round = Round {
             pass: Pass::default(),
             oldest_pin: self.stores.versions.oldest_pin(),
             regroups: self.stores.page_values.is_some(),
+            leave,
+            deferred: BTreeSet::new(),
             failed: None,
             failing: BTreeSet::new(),
         };
@@ -571,7 +691,28 @@ impl<'s> WriteBack<'s> {
     }
 
     fn pass_with(&self, files: &mut Files, round: &mut Round) -> Result<(), FlushError> {
-        let owed = self.owed();
+        let mut owed = self.owed();
+        let pool = self.stores.pool;
+        let rested = &files.rested;
+        round.deferred = left_for_later(&owed, round.leave, |page, born| {
+            match rested.get(&page).filter(|rests| rests.born == born) {
+                Some(rests) => rests.flat,
+                None => (pool.get_version(page, born)).is_some_and(|frame| !is_tree(&frame)),
+            }
+        });
+        // A page that an earlier pass left, and found with nothing to do
+        // for it, is not looked at while it is left again with the same
+        // version waiting: no commit has changed it since, and a page
+        // step gives a page no pending value. So of the pages that rest
+        // on, a turn reads no more than their place in the list of what
+        // waits.
+        let deferred = &round.deferred;
+        (files.rested).retain(|page, rests| {
+            deferred.contains(page)
+                && (owed.get(page)).is_some_and(|waits| waits[..] == [rests.born])
+        });
+        owed.retain(|page, _| !files.rested.contains_key(page));
+        round.pass.deferred += files.rested.len();
         // The pages that have no pending value are written whatever
         // becomes of the values of the others.
         if let Err(error) = self.append_pending(files, &owed, round) {
@@ -700,6 +841,17 @@ impl<'s> WriteBack<'s> {
                     stripped = without;
                     frame = &stripped;
                 }
+                if round.deferred.contains(&page) {
+                    // The versions before it that no reader can ask for
+                    // are noted as kept for readers: the block of this
+                    // one will hold them. The others have their blocks.
+                    round.pass.deferred += 1;
+                    if look.frames.len() == 1 {
+                        let flat = !is_tree(frame);
+                        files.rested.insert(page, Rested { born, flat });
+                    }
+                    return Ok(None);
+                }
             } else {
                 let successor = look.frames.get(index + 1).map(PageRef::born);
                 let unneeded = successor.is_some_and(|next| round.oldest_pin >= next);
@@ -801,21 +953,33 @@ impl<'s> WriteBack<'s> {
             return Ok(0);
         };
         let writer = self.value_writer(&mut files.values)?;
+        let began = writer.end();
         let mut cover = |writer: &mut ValueWriter| -> Result<(), FlushError> {
             writer.sync()?;
             values.commit(&mut *self.manifest()?)?;
             Ok(())
         };
-        let mut moved = Ok(0);
-        versions.guarded(&mut || moved = page_values.regroup(page, writer, &mut cover));
-        match moved {
-            Ok(moved) => {
-                count(&self.state.counters.values_regrouped, moved);
-                Ok(moved)
+        let mut done = Ok(Regroup::default());
+        versions.guarded(&mut || done = page_values.regroup(page, writer, &mut cover));
+        // The copies are in the file whatever became of the regrouping.
+        let counters = &self.state.counters;
+        count(
+            &counters.regroup_stored_bytes,
+            writer.end().saturating_sub(began),
+        );
+        match done {
+            Ok(done) => {
+                count(&counters.values_regrouped, done.moved);
+                count(&counters.regroup_copies_left, done.left);
+                count(&counters.regroup_left_bytes, done.left_bytes);
+                Ok(done.moved)
             }
             Err(source) => {
-                // The copies are given up, and the next value goes to
-                // another file: a sync of this one may have failed.
+                // Nothing is counted of this regrouping but the bytes
+                // it appended: the cells that were given their copies
+                // keep them, and the other copies are dead space. The
+                // next value goes to another file: a sync of this one
+                // may have failed.
                 self.give_up_value_file(files);
                 Err(FlushError::Regroup { page, source })
             }
@@ -993,6 +1157,10 @@ impl<'s> WriteBack<'s> {
             count(&counters.stored_bytes, u64::from(location.len));
         } else {
             self.linked_image(files, page, born, location, form == Form::Consolidation);
+            if !is_tree(frame) {
+                count(&counters.flat_blocks, 1);
+                count(&counters.flat_stored_bytes, u64::from(location.len));
+            }
         }
         match pool.mark_written(frame) {
             // A page step replaced the frame while its block was written:
@@ -1196,7 +1364,11 @@ impl<'s> WriteBack<'s> {
         }
         let writer = files.segment.as_mut().expect("a segment was just made");
         match writer.append(page, content, compression, payload) {
-            Ok(location) => Ok(location),
+            Ok(location) => {
+                let counters = &self.state.counters;
+                count(&counters.appended_bytes, u64::from(location.len));
+                Ok(location)
+            }
             Err(SegmentStoreError::SegmentFull { .. }) => {
                 let full = files.segment.take().expect("the segment that is full");
                 self.seal(files, full)?;
