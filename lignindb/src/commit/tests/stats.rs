@@ -1,13 +1,20 @@
 //! The open write transactions in the counts of the store
 //! (`lignin_store::stats`, D-091 item 1): what a commit and a rollback end.
 
-use std::time::Duration;
+use std::{
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use lignin_store::stats::Holder;
 
 use super::{aux, records};
 use crate::{
-    commit::{CommitError, NoStaleHashes},
+    commit::{
+        state::{CommitState, Spent},
+        CommitError, CommitStats, Committed, NoStaleHashes,
+    },
     txn::{
         tests::{put, store::Db},
         WriteTxn,
@@ -116,4 +123,92 @@ fn a_write_transaction_counts_as_open_while_it_has_a_write() {
     drop(second);
     assert_eq!(stats.open_writes(), (0, None));
     assert_eq!(db.pool.census().private, 0);
+}
+
+/// The five times of [`CommitStats`], in the order of [`Spent`].
+fn times(stats: CommitStats) -> [Duration; 5] {
+    [
+        stats.lock_waited,
+        stats.counts_waited,
+        stats.appending,
+        stats.placing,
+        stats.reclaiming,
+    ]
+}
+
+/// Time is counted under what it was spent on, and under nothing else:
+/// each of the five times of [`CommitStats`] grows by at least what its
+/// thread spent, and the other four stay.
+#[test]
+fn time_is_counted_under_what_it_was_spent_on() {
+    const SPENT: Duration = Duration::from_millis(2);
+    let state = CommitState::new();
+    assert_eq!(times(state.stats()), [Duration::ZERO; 5]);
+    let all = [
+        Spent::LockWait,
+        Spent::CountsWait,
+        Spent::Appending,
+        Spent::Placing,
+        Spent::Reclaiming,
+    ];
+    for (at, what) in all.into_iter().enumerate() {
+        for _ in 0..2 {
+            let before = times(state.stats());
+            let began = Instant::now();
+            thread::sleep(SPENT);
+            state.spent(what, began);
+            let after = times(state.stats());
+            for other in 0..all.len() {
+                match other == at {
+                    true => assert!(after[at] >= before[at] + SPENT, "{what:?}: {after:?}"),
+                    false => assert_eq!(after[other], before[other], "{what:?}"),
+                }
+            }
+        }
+    }
+}
+
+/// A commit counts the time from where it is about to take the commit
+/// lock until it has it ([`CommitStats::lock_waited`]). The lock is held
+/// here when the commit says that it is about to take it, and for `HELD`
+/// longer, so at least that long is counted, whatever the schedule.
+#[test]
+fn a_commit_counts_its_wait_for_the_commit_lock() {
+    const HELD: Duration = Duration::from_millis(20);
+    let (db, versions) = Db::new(64);
+    let committer = db.committer(&versions);
+    let state = committer.state();
+    assert_eq!(times(committer.stats()), [Duration::ZERO; 5]);
+
+    let (at_the_lock, arrived) = mpsc::channel();
+    state.run_before_lock(move || {
+        let _ = at_the_lock.send(());
+    });
+    let committed = thread::scope(|threads| {
+        let lock = state.lock();
+        let commit = threads.spawn(|| {
+            let txn = committer.path().begin();
+            let scope = txn.scope().expect("a scope");
+            let batch = records(vec![put(aux(1), b"a", b"v")]);
+            batch.with(|batch| scope.apply(batch)).expect("a write");
+            scope.merge();
+            committer.commit(&txn, &mut NoStaleHashes)
+        });
+        // A commit that never comes to the lock fails the test here: the
+        // lock is given back as this leaves, and the commit ends.
+        let arrived = arrived.recv_timeout(Duration::from_secs(60));
+        arrived.expect("the commit is at the lock");
+        thread::sleep(HELD);
+        drop(lock);
+        commit.join().expect("the commit ends")
+    });
+    state.run_before_lock(|| {});
+    assert!(matches!(committed, Ok(Committed::Published(_))));
+
+    let stats = committer.stats();
+    assert_eq!(stats.published, 1);
+    assert!(stats.lock_waited >= HELD, "{stats:?}");
+    // The commit appended its group, which took some time, and waited
+    // for nothing else that is counted apart.
+    assert!(stats.appending > Duration::ZERO, "{stats:?}");
 }

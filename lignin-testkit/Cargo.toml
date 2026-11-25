@@ -47,5 +47,5 @@ grovedb-merk = { version = "7.0.0", path = "../merk", features = ["lignin_storag
 # `corpus/record-at-pin.sh` takes this line out of its copy of this manifest.
 lignin-tools = { version = "7.0.0", path = "../lignin-tools", features = ["migrate"] }
 lignindb = { version = "7.0.0", path = "../lignindb", features = ["testing"] }
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "time"] }
 syn = { version = "2", features = ["full", "visit"] }

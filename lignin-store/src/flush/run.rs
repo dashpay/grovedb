@@ -10,9 +10,27 @@ use super::{
     checkpoint::Checkpointed,
     config::count,
     error::FlushError,
-    state::lock,
+    state::{lock, FlushState},
     write_back::{Pass, Stores, WriteBack},
 };
+
+/// Says that the background loop has ended when it is dropped, so
+/// however the loop ends: by a stop, or by a panic of a turn or of what
+/// was given to be told of a failed turn. It says so under the lock on
+/// the turns, under which whoever waits for a turn looks whether a loop is
+/// running before it waits, and wakes the waiters then.
+struct Ended<'a>(&'a FlushState);
+
+impl Drop for Ended<'_> {
+    fn drop(&mut self) {
+        let state = self.0;
+        let turns = lock(&state.turns);
+        state.running.store(false, Ordering::Release);
+        state.stopping.store(false, Ordering::Release);
+        drop(turns);
+        state.turned.notify_all();
+    }
+}
 
 /// What a committer that asked for room was told
 /// ([`WriteBack::wait_for_room`]).
@@ -269,14 +287,22 @@ impl WriteBack<'_> {
     pub fn run(&self, mut failed: impl FnMut(FlushError)) {
         let state = self.state;
         state.running.store(true, Ordering::Release);
+        let _ended = Ended(state);
         let mut in_vain = 0;
         while !state.stopping.load(Ordering::Acquire) {
             let failed_wait = self.paced_turn(&mut in_vain, &mut failed);
             state.sleep(failed_wait);
         }
-        state.running.store(false, Ordering::Release);
-        state.stopping.store(false, Ordering::Release);
-        state.turned.notify_all();
+    }
+
+    /// Whether a background loop is running: [`Self::run`] has said so at
+    /// its first instruction and has not ended, by a stop or by a panic.
+    /// A caller that finds no
+    /// room while none is running makes the turn itself
+    /// ([`Self::wait_for_room`]), so whoever runs the loop on a thread of
+    /// its own waits for this before it lets anybody commit.
+    pub fn is_running(&self) -> bool {
+        self.state.running.load(Ordering::Acquire)
     }
 
     /// Wakes the background loop for a turn: after a commit was published,

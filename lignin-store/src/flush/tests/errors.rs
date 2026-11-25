@@ -257,7 +257,9 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
             let stats = db.stats();
             assert_eq!((stats.values_appended, stats.values_placed), (1, 0));
             assert_eq!(db.pending(page(1)).len(), 1);
-            assert_eq!(db.wb().place_ready().expect("put off again"), 0);
+            // No private copy held the value back: it is a pass's to
+            // offer again, and a committer's call tries no step.
+            assert_eq!(db.wb().place_ready().expect("no step is tried"), 0);
         } else {
             assert!(torn);
             passed.expect("a pass");
@@ -295,7 +297,9 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
 /// The log fails the record of a page step and cannot find out what
 /// became of it. The record may be in the log, so nothing is installed,
 /// the value keeps its hold, and the call says that the log takes nothing
-/// more in this session: every call after it says so too.
+/// more in this session: the turn that the test makes after it says so
+/// too. A committer's call, which has no step to try here, is answered
+/// none.
 #[test]
 fn a_page_step_whose_record_is_unsettled_is_reported_and_keeps_its_hold() {
     let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
@@ -325,7 +329,10 @@ fn a_page_step_whose_record_is_unsettled_is_reported_and_keeps_its_hold() {
     assert_eq!(db.shape(page(2)), "B");
     db.check_warm();
 
-    unsettled(db.wb().place_ready());
+    // No private copy held the value back, so it is a pass's to offer
+    // again and no committer's.
+    assert_eq!(db.wb().place_ready().expect("no step is tried"), 0);
+    assert_eq!(db.state.listed(), (1, 0));
     unsettled(db.wb().tick().map(|tick| tick.pass.placed));
     assert_eq!(db.state.placing.lock().expect("what is ready").len(), 1);
     assert_eq!(db.stats().values_given_up, 0);
@@ -631,6 +638,55 @@ fn a_committer_whose_loop_has_ended_makes_the_pass_itself() {
     });
     assert_eq!(db.state.unwritten(), 0);
     db.check_cold();
+}
+
+/// A loop that ends by a panic has ended like one that was stopped: it
+/// is not said to run any more, so whoever finds no room makes the turn
+/// itself and does not wait for a loop that is gone.
+#[test]
+fn a_loop_that_ends_by_a_panic_is_not_said_to_run() {
+    let config = FlushConfig {
+        idle: std::time::Duration::from_millis(2),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let (fs, db) = Db::on_sim(config, LogOptions::default());
+    db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
+    db.wb().pass().expect("a pass");
+    let first = db.chain(page(1))[0].location().expect("a block").file;
+    db.commit(&[hash((1, 1), 1)]);
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpKind::Append)
+            .at(FileNames::SEGMENT.path(db_dir(), first)),
+    );
+
+    let wb = db.wb();
+    assert!(!wb.is_running());
+    // The first turn fails, and what is told of it panics. A loop that
+    // is told of nothing is stopped, so that the test fails then and
+    // does not hang.
+    let (told, entered) = std::sync::mpsc::channel();
+    let (entered, ended) = std::thread::scope(|scope| {
+        let run = scope.spawn(|| {
+            // A loop that ends before it tells of anything ends the wait.
+            let told = told;
+            wb.run(|error| {
+                let _ = told.send(());
+                panic!("{error}")
+            });
+        });
+        let entered = entered.recv_timeout(std::time::Duration::from_secs(60));
+        if entered.is_err() {
+            wb.stop();
+        }
+        (entered, run.join())
+    });
+    assert!(
+        entered.is_ok(),
+        "the loop told of no failed turn within a minute"
+    );
+    assert!(ended.is_err(), "the loop ended with no panic");
+    assert!(!wb.is_running());
 }
 
 /// A loop that is stopped before it begins ends at once, and the next one

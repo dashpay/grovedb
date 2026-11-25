@@ -6,6 +6,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Mutex, MutexGuard, PoisonError, TryLockError,
     },
+    time::{Duration, Instant},
 };
 
 use lignin_format::CommitVersion;
@@ -52,6 +53,33 @@ pub struct CommitStats {
     /// Errors of write-back in a turn that a committer made or waited for,
     /// after its commit or its rollback. They change no commit.
     pub write_back_errors: u64,
+    /// How long commits waited for the commit lock, in all: for another
+    /// commit, and for whoever else takes that lock (a checkpoint's
+    /// sample, a reclaiming that loads a directory handle again).
+    pub lock_waited: Duration,
+    /// How long commits waited for the lock on the counts of live values
+    /// where they take it for the place of their group, in all, with the
+    /// commit lock held: for a page step of the background work or of
+    /// another committer's placing, for the mark of a table checkpoint or
+    /// for a turn of the log. A commit whose sync
+    /// policy has it sync the log takes that lock again for a moment
+    /// there, which is not counted.
+    pub counts_waited: Duration,
+    /// How long commits spent in
+    /// [`LogStore::append_group`](lignin_store::wal::LogStore::append_group),
+    /// in all: the check of the group, the log's own lock, and the append
+    /// to the log's file with whatever the system has it wait for.
+    pub appending: Duration,
+    /// How long committers spent placing values after their commits and
+    /// their rollbacks, in all
+    /// ([`WriteBack::place_ready`](lignin_store::flush::WriteBack::place_ready)),
+    /// with what that call waits for. The wait for room
+    /// that follows it is counted by write-back
+    /// ([`FlushStats::room_waited`](lignin_store::flush::FlushStats::room_waited)).
+    pub placing: Duration,
+    /// How long committers spent reclaiming versions that nobody pins,
+    /// after their commits, in all.
+    pub reclaiming: Duration,
 }
 
 #[derive(Debug, Default)]
@@ -66,6 +94,11 @@ struct Counters {
     rollbacks: AtomicU64,
     stalls: AtomicU64,
     write_back_errors: AtomicU64,
+    lock_waited_nanos: AtomicU64,
+    counts_waited_nanos: AtomicU64,
+    appending_nanos: AtomicU64,
+    placing_nanos: AtomicU64,
+    reclaiming_nanos: AtomicU64,
 }
 
 /// What the commits of one open database share: the commit lock, whether
@@ -206,6 +239,11 @@ impl CommitState {
             rollbacks: read(&counters.rollbacks),
             stalls: read(&counters.stalls),
             write_back_errors: read(&counters.write_back_errors),
+            lock_waited: Duration::from_nanos(read(&counters.lock_waited_nanos)),
+            counts_waited: Duration::from_nanos(read(&counters.counts_waited_nanos)),
+            appending: Duration::from_nanos(read(&counters.appending_nanos)),
+            placing: Duration::from_nanos(read(&counters.placing_nanos)),
+            reclaiming: Duration::from_nanos(read(&counters.reclaiming_nanos)),
         }
     }
 
@@ -267,6 +305,20 @@ impl CommitState {
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Counts the time since `began` as spent on `what`.
+    pub(super) fn spent(&self, what: Spent, began: Instant) {
+        let counters = &self.counters;
+        let counter = match what {
+            Spent::LockWait => &counters.lock_waited_nanos,
+            Spent::CountsWait => &counters.counts_waited_nanos,
+            Spent::Appending => &counters.appending_nanos,
+            Spent::Placing => &counters.placing_nanos,
+            Spent::Reclaiming => &counters.reclaiming_nanos,
+        };
+        let nanos = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        counter.fetch_add(nanos, Ordering::Relaxed);
+    }
 }
 
 impl fmt::Debug for CommitState {
@@ -276,6 +328,17 @@ impl fmt::Debug for CommitState {
             .field("stats", &self.stats())
             .finish_non_exhaustive()
     }
+}
+
+/// The parts of a committer's time that are counted apart
+/// ([`CommitStats`]).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Spent {
+    LockWait,
+    CountsWait,
+    Appending,
+    Placing,
+    Reclaiming,
 }
 
 /// One thing a commit counts.
