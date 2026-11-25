@@ -2,7 +2,7 @@
 //! and an index of them by record key (`transactions.md` WT2, WT3).
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{hash_map, BTreeMap, HashMap, HashSet},
     ops::Bound,
 };
 
@@ -564,9 +564,33 @@ pub(crate) struct WriteSet {
     /// made after it.
     kept: Arena,
     units: HashMap<Unit, UnitIndex>,
+    /// The subtrees the set has an entry under, in the order of their
+    /// prefixes, each with how many of its units are in `units` and with
+    /// the number it was given when it came ([`Self::written`]). A subtree
+    /// comes in with its first unit and goes with its last, where the
+    /// writes after a mark are taken out.
+    written: BTreeMap<Subtree, Written>,
+    /// The same subtrees by the number each was given when it came
+    /// ([`Self::written_after`]).
+    came: BTreeMap<u64, Subtree>,
+    /// How many times a subtree came to be one the set has an entry
+    /// under: the number of the one that came last. It never goes back.
+    first_writes: u64,
     met: usize,
     /// The serial of the operation that was added last. It never goes back.
     serial: u64,
+}
+
+/// What the set keeps of a subtree it has an entry under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Written {
+    /// How many units of the subtree the set has an entry in.
+    units: u32,
+    /// The number the subtree was given when the set came to have an
+    /// entry under it ([`WriteSet::first_writes`]). A subtree that the
+    /// set stopped having an entry under, and has one under again, has
+    /// another.
+    came: u64,
 }
 
 /// What the drops and the clears of one subtree say of the subtrees below
@@ -840,6 +864,13 @@ impl WriteSet {
                 }
                 if index.keys.is_empty() && index.ranges.is_empty() {
                     self.units.remove(&unit);
+                    let written = self.written.get_mut(&unit.subtree);
+                    let written = written.expect("the subtree of a unit is counted");
+                    written.units -= 1;
+                    if written.units == 0 {
+                        self.came.remove(&written.came);
+                        self.written.remove(&unit.subtree);
+                    }
                 }
             }
             if self.leaving.last() == Some(&id) {
@@ -932,6 +963,8 @@ impl WriteSet {
         self.arena.clear();
         self.kept.clear();
         self.units.clear();
+        self.written.clear();
+        self.came.clear();
         self.met = 0;
     }
 
@@ -967,6 +1000,28 @@ impl WriteSet {
         own.into_iter().chain(below).collect()
     }
 
+    /// The index of `unit`, which is made where the set has none: the
+    /// unit's subtree is counted among those the set has an entry under
+    /// (`written`), and is numbered where this is its first unit.
+    fn index_of(&mut self, unit: Unit) -> &mut UnitIndex {
+        match self.units.entry(unit) {
+            hash_map::Entry::Occupied(index) => index.into_mut(),
+            hash_map::Entry::Vacant(free) => {
+                match self.written.get_mut(&unit.subtree) {
+                    Some(written) => written.units += 1,
+                    None => {
+                        self.first_writes += 1;
+                        let came = self.first_writes;
+                        self.written
+                            .insert(unit.subtree, Written { units: 1, came });
+                        self.came.insert(came, unit.subtree);
+                    }
+                }
+                free.insert(UnitIndex::default())
+            }
+        }
+    }
+
     fn push(&mut self, unit: Unit, key: &[u8], kind: Kind, first_write: CommitVersion) -> EntryId {
         let id = EntryId::try_from(self.entries.len()).expect("fewer than 2^32 writes");
         let mut entry = Entry {
@@ -979,10 +1034,10 @@ impl WriteSet {
         };
         if kind.is_range() {
             for unit in Self::covered(&self.arena, &entry) {
-                self.units.entry(unit).or_default().ranges.push(id);
+                self.index_of(unit).ranges.push(id);
             }
         } else {
-            let index = self.units.entry(unit).or_default();
+            let index = self.index_of(unit);
             entry.prev = match index.keys.get_mut(key) {
                 Some(newest) => Some(std::mem::replace(newest, id)),
                 None => {
@@ -1944,12 +1999,41 @@ impl WriteSet {
         self.left
     }
 
-    /// The subtrees the transaction has an entry under, in any column.
+    /// The subtrees the transaction has an entry under, in any column,
+    /// in the order of their prefixes. The set keeps them in that order:
+    /// nothing is sorted for the call, which costs what it yields. A
+    /// build that holds them to the old way (`held`) makes them that way
+    /// as well, at each call.
     pub(crate) fn written(&self) -> impl Iterator<Item = Subtree> + '_ {
-        let mut subtrees: Vec<Subtree> = self.units.keys().map(|unit| unit.subtree).collect();
-        subtrees.sort_unstable();
-        subtrees.dedup();
-        subtrees.into_iter()
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_written();
+        self.written.keys().copied()
+    }
+
+    /// Whether the transaction has an entry under `subtree`, in any
+    /// column: one lookup.
+    pub(crate) fn writes_under(&self, subtree: &Subtree) -> bool {
+        self.written.contains_key(subtree)
+    }
+
+    /// How many times a subtree came to be one the set has an entry
+    /// under, since the set was made. It never goes back: not where
+    /// writes are taken out, and not where the transaction ends its
+    /// writes. Whoever keeps what it made of the subtrees of
+    /// [`Self::written`] keeps this number beside it, and asks for those
+    /// that came since ([`Self::written_after`]).
+    pub(crate) fn first_writes(&self) -> u64 {
+        self.first_writes
+    }
+
+    /// Those of [`Self::written`] that came to be subtrees the set has an
+    /// entry under after [`Self::first_writes`] was `count`, in the order
+    /// they came. A subtree that the set stopped having an entry under
+    /// since, and has one under again, is among them. The call costs a
+    /// lookup and what it yields.
+    pub(crate) fn written_after(&self, count: u64) -> impl Iterator<Item = Subtree> + '_ {
+        let after = (Bound::Excluded(count), Bound::Unbounded);
+        self.came.range(after).map(|(_, subtree)| *subtree)
     }
 
     /// The nearest subtree after `from` in the order of the prefixes, or
@@ -2729,13 +2813,57 @@ mod held {
     //! ([`WriteSet::host_of`]). The counts of what the drops and the
     //! clears take, and of the names of the moves, are held to the
     //! lists they are counted from wherever an answer of the directory
-    //! is held that is made from them (`opened::held`). That is so in
-    //! a test build of this crate, and in a build with the feature
-    //! `held_reads`.
+    //! is held that is made from them (`opened::held`). And the
+    //! subtrees that the set keeps in order are held, at every call of
+    //! [`WriteSet::written`], to those of its units, sorted, as that
+    //! call made them before, and the numbers they were given when they
+    //! came to each other. That is so in a test build of this crate,
+    //! and in a build with the feature `held_reads`.
 
     use super::*;
 
     impl WriteSet {
+        /// The subtrees the set has an entry under, as
+        /// [`WriteSet::written`] made them before the set kept them in
+        /// order: those of every unit, sorted, each once.
+        fn written_by_sort(&self) -> Vec<Subtree> {
+            let mut subtrees: Vec<Subtree> = self.units.keys().map(|unit| unit.subtree).collect();
+            subtrees.sort_unstable();
+            subtrees.dedup();
+            subtrees
+        }
+
+        /// Holds the subtrees that [`WriteSet::written`] gives to
+        /// those it gave before ([`Self::written_by_sort`]), in their
+        /// order, the count of each to its units, and the number each
+        /// was given when it came to the subtrees by their numbers
+        /// ([`WriteSet::written_after`]): each subtree has one number,
+        /// which no other has and which is none after the last that
+        /// was given.
+        pub(super) fn hold_written(&self) {
+            let kept: Vec<Subtree> = self.written.keys().copied().collect();
+            assert_eq!(
+                kept,
+                self.written_by_sort(),
+                "the subtrees the set has an entry under"
+            );
+            let mut counted: BTreeMap<Subtree, u32> = BTreeMap::new();
+            for unit in self.units.keys() {
+                *counted.entry(unit.subtree).or_default() += 1;
+            }
+            let units: BTreeMap<Subtree, u32> = (self.written.iter())
+                .map(|(subtree, written)| (*subtree, written.units))
+                .collect();
+            assert_eq!(units, counted, "the units of each subtree");
+            let came: BTreeMap<u64, Subtree> = (self.written.iter())
+                .map(|(subtree, written)| (written.came, *subtree))
+                .collect();
+            assert_eq!(self.came, came, "the subtrees by when they came");
+            assert_eq!(came.len(), self.written.len(), "one number each");
+            let last = came.keys().next_back().copied().unwrap_or(0);
+            assert!(last <= self.first_writes, "no number after the last");
+        }
+
         pub(crate) fn moves_by_every_name(&self, subtree: &Subtree) -> bool {
             (self.moved.iter()).any(|id| self.names(*id).place(subtree).is_some())
         }
@@ -2944,6 +3072,14 @@ mod tests {
                 assert_eq!(set.len(), model.len(), "seed {seed}");
                 assert_eq!(set.is_empty(), model.is_empty());
                 assert_eq!(set.ops(), model.len());
+                // The subtrees with an entry, in the order of their
+                // prefixes: those of the writes that are left.
+                let mut written: Vec<Subtree> = (model.iter())
+                    .map(|(write, ..)| write.write().unit().subtree)
+                    .collect();
+                written.sort_unstable();
+                written.dedup();
+                assert_eq!(set.written().collect::<Vec<_>>(), written, "seed {seed}");
                 let met = model.iter().filter(|(.., met)| *met).count();
                 assert_eq!(set.met(), met, "seed {seed}: the overlap set");
                 let mut expected_keys = KeySet::new();
@@ -3022,6 +3158,130 @@ mod tests {
             assert!(set.is_empty() && set.met() == 0 && set.bytes() == 0);
             assert_eq!(set.own(unit(0), b"a"), Own::Unwritten);
         }
+    }
+
+    /// The subtrees the set has an entry under are kept in the order of
+    /// their prefixes: each comes in with its first unit, whichever write
+    /// makes it, and goes with its last, through a drop that covers a
+    /// subtree written below it, a move, rollbacks to a mark, and the end
+    /// of the writes.
+    #[test]
+    fn the_written_subtrees_are_kept_in_order() {
+        let subtree = |name: u8| Subtree::new([name; 32]);
+        let put = |set: &mut WriteSet, name: u8, column: Column| {
+            let records = [RecordWrite::Put {
+                unit: Unit::new(column, subtree(name)),
+                key: b"k",
+                value: b"v",
+            }];
+            let batch = Batch {
+                records: &records,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[], &[], &[], &[], &[]);
+        };
+        let whole = |set: &mut WriteSet, write: SubtreeWrite<'_>, cut: &[u8], left: &[u8]| {
+            let (cut, left): (Vec<Subtree>, Vec<Subtree>) = (
+                cut.iter().copied().map(subtree).collect(),
+                left.iter().copied().map(subtree).collect(),
+            );
+            let subtrees = [write];
+            let batch = Batch {
+                subtrees: &subtrees,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[], &cut, &left, &[], &[]);
+        };
+        let written = |set: &WriteSet| -> Vec<Subtree> { set.written().collect() };
+        let names = |names: &[u8]| -> Vec<Subtree> { names.iter().copied().map(subtree).collect() };
+        let after = |set: &WriteSet, count: u64| -> Vec<Subtree> {
+            // Every one of them is a subtree the set has an entry under.
+            let after: Vec<Subtree> = set.written_after(count).collect();
+            assert!(after.iter().all(|subtree| set.writes_under(subtree)));
+            after
+        };
+
+        let mut set = WriteSet::new();
+        assert_eq!(written(&set), names(&[]));
+        assert_eq!((set.first_writes(), after(&set, 0)), (0, names(&[])));
+        // Two columns of one subtree are one subtree, and the order is
+        // that of the prefixes, not of the writes.
+        put(&mut set, 9, Column::Aux);
+        put(&mut set, 3, Column::Aux);
+        put(&mut set, 9, Column::Meta);
+        assert_eq!(written(&set), names(&[3, 9]));
+        // By when they came, the order is that of the writes.
+        assert_eq!((set.first_writes(), after(&set, 0)), (2, names(&[9, 3])));
+        assert_eq!(after(&set, 1), names(&[3]));
+        assert!(set.writes_under(&subtree(3)) && !set.writes_under(&subtree(5)));
+        let first = set.mark();
+        // A drop is an entry under its own subtree, which nothing was
+        // written under, and under the one it cuts.
+        let dropped = SubtreeWrite::Drop {
+            subtree: subtree(5),
+        };
+        whole(&mut set, dropped, &[3], &[]);
+        assert_eq!(written(&set), names(&[3, 5, 9]));
+        // The subtree that the drop cut had an entry before: it did not
+        // come again.
+        assert_eq!((set.first_writes(), after(&set, 2)), (3, names(&[5])));
+        let second = set.mark();
+        put(&mut set, 1, Column::Roots);
+        put(&mut set, 5, Column::Aux);
+        // A clear, of the data column of its subtree alone.
+        let cleared = SubtreeWrite::Clear {
+            subtree: subtree(7),
+        };
+        whole(&mut set, cleared, &[], &[]);
+        assert_eq!(written(&set), names(&[1, 3, 5, 7, 9]));
+        // The writes after the second mark go: the drop keeps the
+        // subtree it names, which the put after it was under as well.
+        assert_eq!((set.first_writes(), after(&set, 3)), (5, names(&[1, 7])));
+        assert!(set.rewind(second));
+        assert_eq!(written(&set), names(&[3, 5, 9]));
+        // What went is among none of them, and the count stays.
+        assert_eq!((set.first_writes(), after(&set, 3)), (5, names(&[])));
+        // The moves of an operation are an entry under every prefix they
+        // name, on either side, and under each that left with them.
+        let moved = SubtreeWrite::Move {
+            from: subtree(4),
+            to: subtree(8),
+            host: HostPut {
+                subtree: subtree(9),
+                key: b"host",
+                position: 0,
+            },
+            read: None,
+            below: &[(subtree(2), subtree(6))],
+        };
+        whole(&mut set, moved, &[], &[11]);
+        assert_eq!(written(&set), names(&[2, 3, 4, 5, 6, 8, 9, 11]));
+        // The drop and the move go: the subtree that the drop named has
+        // no unit left, and the one it cut keeps its own.
+        let moved = set.first_writes();
+        assert_eq!(after(&set, 5), names(&[4, 2, 8, 6, 11]));
+        assert!(set.rewind(first));
+        assert_eq!(written(&set), names(&[3, 9]));
+        assert_eq!((set.first_writes(), after(&set, 2)), (moved, names(&[])));
+        // A subtree that comes again has another number: whoever took
+        // the subtrees up to the count as it was is given it again.
+        put(&mut set, 5, Column::Data);
+        assert_eq!(written(&set), names(&[3, 5, 9]));
+        assert_eq!(
+            (set.first_writes(), after(&set, moved)),
+            (moved + 1, names(&[5]))
+        );
+        // The end of the writes takes every subtree out and leaves the
+        // count where it is.
+        set.clear();
+        assert_eq!(written(&set), names(&[]));
+        assert_eq!(
+            (set.first_writes(), after(&set, 0)),
+            (moved + 1, names(&[]))
+        );
+        put(&mut set, 2, Column::Aux);
+        assert_eq!(written(&set), names(&[2]));
+        assert_eq!(after(&set, moved + 1), names(&[2]));
     }
 
     /// A mark is refused once a write from before it went, whatever was

@@ -34,6 +34,7 @@ mod left_behind;
 mod legacy;
 #[cfg(feature = "rocksdb_storage")]
 mod made_again;
+mod many_drops;
 mod many_moves;
 mod many_trees;
 #[cfg(target_os = "linux")]
