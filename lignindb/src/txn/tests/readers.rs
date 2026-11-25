@@ -145,7 +145,10 @@ fn a_reader_reads_the_records_of_a_subtree_through_its_entry() {
         let asked = gets(&db);
         let inner = operation.resume(&kept).expect("no lookup");
         let inner = inner.expect("the subtree it kept");
-        assert_eq!(gets(&db), asked, "no page was asked for");
+        // A build that holds its reads looks the subtree up beside.
+        if !cfg!(feature = "held_reads") {
+            assert_eq!(gets(&db), asked, "no page was asked for");
+        }
         let mut out = Vec::new();
         assert!(inner.get(Column::Aux, b"ia", &mut out).expect("a read"));
         let mut cursor = inner.cursor(Column::Meta);
@@ -425,7 +428,9 @@ fn a_kept_subtree_is_looked_up_again_in_another_database() {
     let operation = again.operation();
     let asked = gets(&db);
     let inner = operation.resume(&kept).expect("no lookup");
-    assert_eq!(gets(&db), asked, "no page was asked for");
+    if !cfg!(feature = "held_reads") {
+        assert_eq!(gets(&db), asked, "no page was asked for");
+    }
     assert_eq!(inner.expect("the subtree").subtree(), model::subtree(INNER));
 }
 

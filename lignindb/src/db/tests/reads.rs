@@ -769,3 +769,78 @@ fn a_handle_that_was_read_for_another_merk_fails_the_hold() {
     let (_, of_the_other, _) = came(&open(2), &at, None).expect("a node");
     came(&open(1), &at, Some(of_the_other));
 }
+
+/// What a reader keeps of a subtree is of one version of one database and
+/// of no reader: an operation of another snapshot of that version resumes
+/// from it with the entry the directory has, and an operation at another
+/// version, or of another database, looks the subtree up.
+#[test]
+fn a_kept_subtree_is_resumed_by_any_reader_of_its_version() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 23, 40));
+    let first = db.snapshot();
+    let (kept, entry) = {
+        let operation = first.operation();
+        let opened = operation.open(subtree(1)).expect("a lookup");
+        let opened = opened.expect("entered");
+        let entry = opened.entry().clone();
+        (opened.keep(), entry)
+    };
+    assert_eq!(kept.subtree(), subtree(1));
+    let value_len = |opened: &crate::snapshot::Opened<'_, '_>, number: u32| {
+        shown(opened, &key(b'k', number)).map(|(_, value, _)| value.len())
+    };
+
+    // Another snapshot of the same version.
+    let second = db.snapshot();
+    assert_eq!(second.version(), first.version());
+    {
+        let operation = second.operation();
+        let resumed = operation.resume(&kept).expect("a lookup");
+        let resumed = resumed.expect("entered");
+        assert_eq!(*resumed.entry(), entry);
+        assert_eq!(
+            (value_len(&resumed, 3), value_len(&resumed, 30)),
+            (Some(40), None)
+        );
+    }
+
+    // A later version has another Merk under the subtree. An operation of
+    // it looks the subtree up, and one of the earlier version resumes.
+    Writes {
+        merks: vec![(subtree(1), Merk::sized(b'k', 31, 41))],
+        ..Writes::default()
+    }
+    .commit(&db);
+    let later = db.snapshot();
+    assert!(later.version() > first.version());
+    {
+        let operation = later.operation();
+        let resumed = operation.resume(&kept).expect("a lookup");
+        let resumed = resumed.expect("entered");
+        assert_ne!(*resumed.entry(), entry);
+        assert_eq!(
+            (value_len(&resumed, 3), value_len(&resumed, 30)),
+            (Some(41), Some(41))
+        );
+        let operation = first.operation();
+        let resumed = operation.resume(&kept).expect("a lookup");
+        let resumed = resumed.expect("entered");
+        assert_eq!(*resumed.entry(), entry);
+        assert_eq!(
+            (value_len(&resumed, 3), value_len(&resumed, 30)),
+            (Some(40), None)
+        );
+    }
+
+    // Another database, at the same version, with no subtree under the
+    // prefix: what was kept in this one opens nothing there.
+    let other_dir = temp();
+    let other = Db::open(other_dir.path(), &options()).expect("a new database");
+    plant(&other, subtree(2), Merk::sized(b'k', 5, 9));
+    let elsewhere = other.snapshot();
+    assert_eq!(elsewhere.version(), first.version());
+    let operation = elsewhere.operation();
+    assert!(operation.resume(&kept).expect("a lookup").is_none());
+}
