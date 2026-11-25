@@ -18,6 +18,8 @@ use lignin_tree::{
     value::{read_placed, read_value, ValueBuf},
 };
 
+#[cfg(any(test, feature = "held_reads"))]
+use super::pages::held;
 use super::{
     check::check,
     commits::Watch,
@@ -965,8 +967,10 @@ impl<'s> WriteTxn<'s> {
     /// `subtree` is: `handle`, which the transaction showed the node with
     /// when the caller read it for that Merk. It is for a caller that
     /// will name the node by its key alone in a later write, as the
-    /// delete of a node does: where the place is taken and is good still
-    /// at that write, the write does not look for the key
+    /// delete of a node does: that write can then follow the place, and
+    /// not look for the key. Nothing of that is promised: the place has
+    /// to be taken, to be kept still when the write names the key, and
+    /// to be good then, and not every write asks for it
     /// (`super::places`, "What a told place is good for").
     ///
     /// What is told is a hint for that write and nothing more. It is
@@ -977,10 +981,10 @@ impl<'s> WriteTxn<'s> {
     /// answered from a told place, and it changes nothing the transaction
     /// found or wrote under the key. It is dropped, with no effect, where
     /// the handle is of another lease than the transaction reads under,
-    /// where the transaction keeps a place of the key already, and where
-    /// the key is new to a table that has taken as many keys as it
-    /// takes, or as many bytes of keys. The call does not say whether
-    /// the place was taken.
+    /// where its table has something of the key already, and where the
+    /// key is new to the table and it has no room for it, by the number
+    /// of its keys or by their bytes. The call does not say whether the
+    /// place was taken.
     ///
     /// As with every handle a caller names, a cell does not say which
     /// Merk it is in: a good handle of another Merk whose node has the
@@ -3026,10 +3030,14 @@ impl<'s> WriteTxn<'s> {
                 Some(at)
             }
             (None, Some(Some(at))) => {
+                #[cfg(any(test, feature = "held_reads"))]
+                held::to_the_search(&mut pages, &subtree, root, key, held::Answer::Kept(at))?;
                 state.placed += 1;
                 Some(at)
             }
             (None, Some(None)) => {
+                #[cfg(any(test, feature = "held_reads"))]
+                held::to_the_search(&mut pages, &subtree, root, key, held::Answer::Absent)?;
                 state.keyed += 1;
                 None
             }

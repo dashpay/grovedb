@@ -1663,10 +1663,10 @@ fn a_read_from_before_a_met_write_is_dated_as_it_was_once_the_write_is_out() {
 /// before (`crate::txn::places`). The write names the nodes it writes
 /// again with the handles of a read from before the commit that met it,
 /// which have ended, and the node it adds with no handle, so each is
-/// looked for by its key. Reads of the transaction had searched for
-/// every one of them under the lease of its frames, and it kept what
-/// they found, of the added one that it has no cell: the write searches
-/// for each of them below the root once more.
+/// looked for by its key. Of those below the root, reads of the
+/// transaction had searched for each under the lease of its frames, and
+/// it kept what they found, of the added one that it has no cell: the
+/// write searches for each of those once more.
 #[test]
 fn a_met_write_follows_no_place_of_the_lease_before_it() {
     bed(Stored::InCell, |bed| {

@@ -4,43 +4,51 @@
 //! A node that is asked for by its key, with no handle or with one that
 //! has ended, is found from the root of its Merk, one cell for each level
 //! ([`find`](super::pages::find)). GroveDB opens the Merks of a path anew
-//! for every batch of a block, and reads the element that hosts each by
-//! its key, again in every batch whose path goes through that Merk, and
-//! a batch in between may have written the node. So the transaction
-//! keeps, for each key that a read searched for, the handle it last had
-//! of the node, through its own writes of that node, and follows that
-//! handle where a read or a write names the key and no handle that is
-//! good (`tree-layout.md` P5, `transactions.md` PN8).
+//! for every batch of a block. Where it opens a Merk that is there
+//! already and that an element hosts, it reads that element by its key,
+//! and does so again in every batch whose path goes through the Merk; a
+//! batch in between may have written the node. So the transaction keeps
+//! a table of what its reads by key found, through its own writes of
+//! those nodes, and a read or a write that looks for the cell of a key
+//! can be answered from it (`tree-layout.md` P5, `transactions.md` PN8).
+//!
+//! # What the table promises
+//!
+//! The table is a cache, and two things of it are promises:
+//!
+//! - a place that the transaction kept from a read or from a write
+//!   leads, where it is followed, to the cell that the search by the key
+//!   comes to, and so does a told place where the caller told a handle
+//!   that it was shown for the node of that Merk ("What a place is good
+//!   for", "What a told place is good for");
+//! - where the table says that a key has no cell, and that is taken,
+//!   the search finds none ("What a key with no cell is good for").
+//!
+//! "What holds the table to the search" says how a build checks both at
+//! every answer. Nothing else is promised: not that the table has an
+//! entry of a key, not that it has one still, and not that a given read
+//! or write asks it. No caller may count on a search being spared.
 //!
 //! # What is kept
 //!
-//! - **A node that a read by its key searched for and found**: the
-//!   handle of the cell it found.
-//! - **A key under which such a read found no cell**, in a Merk that
-//!   has a root.
-//! - **A node that a write of the transaction put under a key the table
-//!   has**, where the write left it: the handle that the write reports
-//!   ([`Applied::nodes`]). The table has a key from the first read of
-//!   the node under it that searched for it under the table's lease, as
-//!   `WriteTxn::node` does with no handle or with one that has ended,
-//!   and a cursor that stands on a key the transaction wrote, or from
-//!   the first place told of it that the table took, until the table is
-//!   emptied, whatever was forgotten of the key since. A key that is
-//!   longer than the table's whole buffer ([`KEPT_KEY_BYTES`]) is not
-//!   taken. The search that a write or a commit makes for a key it
-//!   names gives the table no key, and neither does one in pages that
-//!   are read under another lease, as a committed read's is.
-//! - **A node whose place a caller told** ([`WriteTxn::place`]): the
-//!   handle it named, for a write that names the key and no handle. See
-//!   "What a told place is good for".
+//! The table has entries, one for a key of a subtree. An entry has the
+//! handle of the node under the key (a place), or that no cell is under
+//! the key, or a handle that a caller told, or nothing.
 //!
-//! A node that a write put under a key the table does not have is not
-//! kept ([`Places::renew`]): a write keeps nothing for a key that no
-//! read searched for and no place was taken of. Such a node is found by
-//! a search where it is asked for by its key, as a node the transaction
-//! never wrote is, until the table has a place of it. A node that is
-//! reached from its parent needs no place here: the cell of the parent
-//! says where it is.
+//! Entries are made by reads of a node by its key that search for it
+//! ([`Places::put`], [`Places::put_absent`]) and by places that a caller
+//! tells ([`Places::tell`]). A write makes none. It may renew an
+//! existing entry with a reported handle or forget its contents
+//! ([`Places::renew`], [`Places::forget`],
+//! [`Places::forget_subtree`]). The table holds at most a number of keys
+//! and of their bytes ([`KEPT_PLACES`], [`KEPT_KEY_BYTES`]).
+//!
+//! Which read, told place or write does which of these, and when the
+//! table is emptied, is what those functions and their callers in
+//! `frames` and `txn` do. None of it is a promise, and the tests of
+//! `txn::tests::places` hold the cases that the count of keyed lookups
+//! rests on. A node that is reached from its parent needs no place here:
+//! the cell of the parent says where it is.
 //!
 //! # What a place is good for
 //!
@@ -89,31 +97,32 @@
 //!
 //! - it is taken only where the table has nothing of the key, so it
 //!   changes nothing that a search or a write put there, and of two that
-//!   are told for one key the first stands;
+//!   are told for one key, the second while the table has the first, the
+//!   first stands;
 //! - it is not taken where the handle is of another lease than the pages
 //!   are read under, or where the key is new to a table that is full,
 //!   by its keys ([`KEPT_PLACES`]) or by their bytes
 //!   ([`KEPT_KEY_BYTES`]): it is dropped, and nothing else changes. A
-//!   full table has room for it where it has the key already with
-//!   nothing kept of it: a key that it searched for or was told of, and
-//!   has forgotten since;
-//! - **a write** that names the key with no good handle follows it as it
-//!   follows a handle the write names itself, after the same check, and
-//!   one that puts the node keeps where it leaves it, as under a key
-//!   that was searched for: that place is the write's, and answers a
-//!   read;
-//! - **no read is answered from it**: a read by key searches, and what it
-//!   finds takes the told place's entry.
+//!   full table has room for it where it has an entry of the key
+//!   already with nothing in it;
+//! - **a write** that names the key with no good handle can follow it,
+//!   while the entry has the told handle still, as it follows a handle
+//!   the write names itself, after the same check. One that puts the
+//!   node does to the entry what a write does to any ("What is kept"):
+//!   a place that it leaves there is the write's, and can answer a read;
+//! - **no read is answered from it**: what a read by key finds by its
+//!   search takes the told place's entry.
 //!
 //! # What a key with no cell is good for
 //!
 //! That no cell is under a key is no hint: it is taken as it was found.
 //! So it is kept only while it holds, by whoever keeps the table:
 //!
-//! - a cell comes to be under a key of a Merk by a write that puts the
-//!   node, which keeps its place in the entry that says the key has no
-//!   cell ([`Places::renew`]), or by a load of the whole Merk, which
-//!   forgets what is kept of the subtree ([`Places::forget_subtree`]);
+//! - in transaction pages, a put replaces or forgets a current-lease
+//!   absence mark ([`Places::renew`], [`Places::forget`]), and a
+//!   whole-Merk load forgets the subtree's entries
+//!   ([`Places::forget_subtree`]). A write that the transaction keeps
+//!   as records only, with no page of its own, gives no key a cell;
 //! - a write that gives a Merk another prefix, and one that drops or
 //!   clears a Merk, are made under a new lease
 //!   (`lignin_tree::node::Lease`); one that may leave a cell of a Merk
@@ -125,9 +134,18 @@
 //!
 //! A table is of one lease: every handle in it was issued under that
 //! lease, and what it says of a key was found under it. It answers
-//! nothing under another lease, the first search that is kept under
-//! another empties it, and a write under another keeps nothing in it. So
-//! nothing has to empty a table where a lease ends.
+//! nothing under another lease, it is emptied before anything is put
+//! into it under another, and a write under another keeps nothing in it.
+//! So nothing has to empty a table where a lease ends.
+//!
+//! # What holds the table to the search
+//!
+//! In a test build of this crate, and in a build with its feature
+//! `held_reads`, every answer that is taken from the table is held to
+//! the search from the root that it stands for, and a difference panics
+//! with both (`super::pages::held`): the cell of a place that a read or
+//! a write follows, that a key has no cell, and the cell of a told place
+//! that a write follows.
 //!
 //! [`Applied::nodes`]: super::Applied::nodes
 //! [`MerkWrite`]: super::MerkWrite

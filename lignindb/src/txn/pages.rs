@@ -101,6 +101,17 @@ pub(crate) fn find<P: NodePages>(
     root: Option<CellAddress>,
     key: &[u8],
 ) -> Result<Option<CellAddress>, TxnError> {
+    search(pages, root, key, true)
+}
+
+/// The search of [`find`], which is told to the counts of the store where
+/// `counted` says so.
+fn search<P: NodePages>(
+    pages: &mut P,
+    root: Option<CellAddress>,
+    key: &[u8],
+    counted: bool,
+) -> Result<Option<CellAddress>, TxnError> {
     let mut next = root;
     for level in 0..MAX_DEPTH {
         let Some(address) = next else {
@@ -117,7 +128,8 @@ pub(crate) fn find<P: NodePages>(
         match step.ok_or(NodeError::NoNode { address })? {
             None => return Ok(Some(address)),
             Some(child) => {
-                if level == 0
+                if counted
+                    && level == 0
                     && child.is_some()
                     && let Some(stats) = pages.stats()
                 {
@@ -132,6 +144,104 @@ pub(crate) fn find<P: NodePages>(
         // of the key: no node is under it.
         None => Ok(None),
         Some(_) => Err(TxnError::Damaged("a Merk deeper than any tree of nodes")),
+    }
+}
+
+#[cfg(any(test, feature = "held_reads"))]
+pub(crate) mod held {
+    //! What a transaction's table of places answers of a key
+    //! (`super::super::places`) is held, at every answer, to the search
+    //! that it stands for ([`find`]): the cell that the key leads to from
+    //! the root of its Merk, or none. That is so of a place that is
+    //! followed, for a read and for a write, of a key that the table has
+    //! with no cell, and of a place that a caller told and a write
+    //! follows. A difference panics with both answers. It is so in a test
+    //! build of this crate, and in a build with the feature `held_reads`,
+    //! by which the tests of another crate hold the answers over their
+    //! own calls.
+    //!
+    //! The search of the hold is not counted as a keyed lookup, as that
+    //! of [`find`] is. It reads the cells from the root to the key, which
+    //! the answer did not: the store counts those reads of pages as it
+    //! counts any other, and one that fails ends the call with its error.
+
+    #[cfg(test)]
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::txn::key::Subtree;
+
+    /// What the table answered.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Answer {
+        /// The cell of a place that it kept.
+        Kept(CellAddress),
+        /// No cell: a search had found none.
+        Absent,
+        /// The cell of a place that a caller told.
+        Told(CellAddress),
+    }
+
+    /// How often an answer of the table was held to the search on this
+    /// thread.
+    #[cfg(test)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Compared {
+        /// A place that the table kept was followed.
+        pub(crate) kept: u64,
+        /// The table had the key with no cell.
+        pub(crate) absent: u64,
+        /// A place that a caller told was followed.
+        pub(crate) told: u64,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static COMPARED: Cell<Compared> = const {
+            Cell::new(Compared {
+                kept: 0,
+                absent: 0,
+                told: 0,
+            })
+        };
+    }
+
+    /// The counts of this thread since they were last taken.
+    #[cfg(test)]
+    pub(crate) fn compared() -> Compared {
+        COMPARED.replace(Compared::default())
+    }
+
+    /// Holds what the table answered of `key` in the Merk `subtree`,
+    /// whose root cell is at `root`, to the search from that root.
+    pub(crate) fn to_the_search<P: NodePages>(
+        pages: &mut P,
+        subtree: &Subtree,
+        root: Option<CellAddress>,
+        key: &[u8],
+        answer: Answer,
+    ) -> Result<(), TxnError> {
+        let found = search(pages, root, key, false)?;
+        let answered = match answer {
+            Answer::Kept(at) | Answer::Told(at) => Some(at),
+            Answer::Absent => None,
+        };
+        assert!(
+            found == answered,
+            "the table of places answers {answer:?} of the key {key:02x?} in {subtree:?}, and \
+             the search from the root {root:?} finds {found:?}",
+        );
+        #[cfg(test)]
+        COMPARED.with(|compared| {
+            let mut counts = compared.get();
+            match answer {
+                Answer::Kept(_) => counts.kept += 1,
+                Answer::Absent => counts.absent += 1,
+                Answer::Told(_) => counts.told += 1,
+            }
+            compared.set(counts);
+        });
+        Ok(())
     }
 }
 

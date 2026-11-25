@@ -32,10 +32,13 @@ testing = ["dep:tempfile"]
 # two are compared at every call that both answer, at the cost of the old
 # one, and a difference panics, as does an answer that could only be made
 # the old way. A read that fails in either ends the call with its error
-# before they are compared. It is on in this crate's own tests. A run of
-# another crate's tests switches it on to hold the answers over that
-# crate's calls (`--features lignindb/held_reads`), and nothing else does:
-# no feature of any crate turns it on.
+# before they are compared. In the same way, what a transaction's table
+# of places answers of a key is held, at every answer, to the search from
+# the root of the Merk that it stands for (`txn::pages::held`). It is on
+# in this crate's own tests. A run of another crate's tests switches it
+# on to hold the answers over that crate's calls (`--features
+# lignindb/held_reads`), and nothing else does: no feature of any crate
+# turns it on.
 held_reads = []
 
 [target.'cfg(loom)'.dependencies]

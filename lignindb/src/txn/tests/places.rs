@@ -1,25 +1,21 @@
 //! Where a transaction last saw its nodes (`crate::txn::places`,
-//! `transactions.md` PN8): a node that a read searched for by its key is
-//! read and written again with no search from the root of its Merk,
-//! through the writes of it, a key that a read found to have no cell is
-//! not searched for again, and neither is taken across what ends a
-//! lease. A node that was written under a key that no read searched for
-//! and nothing was told of is not kept. Every read gives what the read
-//! rule names.
+//! `transactions.md` PN8): what makes an entry of the table of places,
+//! what a write, a removal and a load do to one, what empties the table,
+//! and that neither a place nor a key with no cell is taken across what
+//! ends a lease. Every read gives what the read rule names.
 //!
 //! And what a caller tells of a node's place ([`WriteTxn::place`]): a
-//! hint for the write that names the key and no handle. The cases of
-//! `told_and_not` are run twice, with the telling and without it, on
-//! stores that are otherwise the same: the two end with the same records
-//! and the same counts of the transaction, and differ by the searches
-//! the place spared. The cases of what a table takes of a told place
-//! are run once.
+//! hint for the write that names the key and no handle. The cases that
+//! go through `told_and_not` are run twice, with the telling and without
+//! it, on stores that are otherwise the same: the two end with the same
+//! records and the same counts of the transaction, and differ by the
+//! searches the place spared.
 
 use lignin_format::tree_page::Side;
 use lignin_tree::node::{Lease, NodeHandle};
 
 use super::{
-    super::frames::probe,
+    super::{frames::probe, pages::held},
     load::whole,
     model::{self, records, value, OwnedSubtree},
     store::{Db, Outcome, Rng},
@@ -702,6 +698,11 @@ fn a_told_place_ends_with_its_cell_and_with_its_lease() {
             tx.txn.place(merk(1), gone, handle);
         }
         world.edit(tx, 1, |items| drop(items.remove(&beside)));
+        assert_ne!(
+            walked(world, tx, 1, gone),
+            handle,
+            "the told handle has ended"
+        );
     });
     assert!(left.0 == left.1 && left.1 > 0, "{left:?}");
 
@@ -1105,6 +1106,65 @@ fn a_commit_of_a_merk_takes_no_new_lease() {
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
+}
+
+/// What the table answers is held to the search from the root of the
+/// Merk in this build (`pages::held`): the place that a read follows and
+/// a key that has no cell, with no frames and with them, and a place
+/// that was told and that a write follows. The search of the hold is
+/// counted as no keyed lookup.
+#[test]
+fn every_answer_of_the_table_is_held_to_the_search_from_the_root() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(71);
+    fill(&mut world, &mut rng, 1, 60);
+    let tx = world.begin();
+    let there = below_the_root(&world, &tx, 1, b"");
+    let none = below_no_node(&world, &tx, 1);
+    for framed in [false, true] {
+        if framed {
+            world.write(&tx, vec![put(model::unit(Column::Aux, 9), b"k", b"v")]);
+        }
+        read(&tx, 1, &there).expect("a node");
+        assert_eq!(read(&tx, 1, &none), None);
+        held::compared();
+        let before = searches(&world);
+        read(&tx, 1, &there).expect("a node");
+        assert_eq!(read(&tx, 1, &none), None);
+        let compared = held::compared();
+        let expected = held::Compared {
+            kept: 1,
+            absent: 1,
+            told: 0,
+        };
+        assert_eq!(compared, expected, "{framed}");
+        assert_eq!(searches(&world), before, "{framed}");
+    }
+    let gone = below_the_root(&world, &tx, 1, &there);
+    tx.txn.place(merk(1), &gone, walked(&world, &tx, 1, &gone));
+    held::compared();
+    world.edit(&tx, 1, |items| drop(items.remove(&gone)));
+    assert_eq!(held::compared().told, 1);
+    world.check(&tx);
+}
+
+/// A place that is told for a key of one Merk, and that is of the node
+/// which another Merk has under the same key, passes every check of a
+/// handle ([`WriteTxn::place`]): the write would take that cell for the
+/// node's. The hold fails the write, with the cell that was told and the
+/// cell that the key leads to.
+#[test]
+fn the_hold_fails_a_told_place_that_is_of_another_merk() {
+    let failed = std::panic::catch_unwind(|| {
+        removal(true, true, |world, tx, gone, _| {
+            tx.txn.place(merk(1), gone, walked(world, tx, 2, gone));
+        })
+    });
+    let failed = failed.expect_err("the hold fails the removal");
+    let message = failed.downcast_ref::<String>().expect("a message");
+    assert!(message.contains("answers Told("), "{message}");
+    assert!(message.contains("finds Some("), "{message}");
 }
 
 /// A write that cuts a branch off can put a node of that branch in the

@@ -28,6 +28,8 @@ use lignin_tree::{
     value::{read_placed, TreeValues, ValueBuf, ValueSource},
 };
 
+#[cfg(any(test, feature = "held_reads"))]
+use super::pages::held as places_held;
 use super::{
     below::Below,
     error::{BatchError, Differs, HostName, TxnError, WholeFault},
@@ -787,19 +789,33 @@ impl Resolver<'_> {
         key: &[u8],
     ) -> Result<Option<CellAddress>, TxnError> {
         let lease = tree.lease();
-        match seen.get(lease, &self.merks[merk].subtree, key) {
+        let (subtree, root) = (&self.merks[merk].subtree, self.roots[merk]);
+        let place = seen.get(lease, subtree, key);
+        match place {
             // What a caller told is followed by a write as a handle that
             // the write names is.
             Some(Place::At(handle) | Place::Told(handle)) => {
                 if let Some(at) = follow(tree, lease, handle, key) {
+                    #[cfg(any(test, feature = "held_reads"))]
+                    {
+                        let answer = match place {
+                            Some(Place::Told(_)) => places_held::Answer::Told(at),
+                            _ => places_held::Answer::Kept(at),
+                        };
+                        places_held::to_the_search(tree, subtree, root, key, answer)?;
+                    }
                     return Ok(Some(at));
                 }
             }
             // A Merk with no root has no cell, whatever was found of it.
-            Some(Place::Absent) if self.roots[merk].is_some() => return Ok(None),
+            Some(Place::Absent) if root.is_some() => {
+                #[cfg(any(test, feature = "held_reads"))]
+                places_held::to_the_search(tree, subtree, root, key, places_held::Answer::Absent)?;
+                return Ok(None);
+            }
             _ => {}
         }
-        find(tree, self.roots[merk], key)
+        find(tree, root, key)
     }
 
     /// The node of the Merk `merk` that the batch writes under `key`, by
@@ -1809,10 +1825,28 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         match self.seen.get(lease, subtree, key) {
             Some(Place::At(handle)) => {
                 if let Some(at) = follow(&mut self.tree, lease, handle, key) {
+                    #[cfg(any(test, feature = "held_reads"))]
+                    places_held::to_the_search(
+                        &mut self.tree,
+                        subtree,
+                        root,
+                        key,
+                        places_held::Answer::Kept(at),
+                    )?;
                     return Ok((Some(at), true));
                 }
             }
-            Some(Place::Absent) => return Ok((None, true)),
+            Some(Place::Absent) => {
+                #[cfg(any(test, feature = "held_reads"))]
+                places_held::to_the_search(
+                    &mut self.tree,
+                    subtree,
+                    root,
+                    key,
+                    places_held::Answer::Absent,
+                )?;
+                return Ok((None, true));
+            }
             // No read is answered from what a caller told.
             Some(Place::Told(_)) | None => {}
         }

@@ -124,8 +124,9 @@ A build of LigninDB from before that rule counted every search by key of a
 Merk that has a node, the ones that its root answered among them. A report of
 such a build names `searches by key` in the source of the row, where a report
 of this one names `searches by key that went on below the root of a Merk`. The
-older row is larger for the same searches, so `lignin-bench compare` of an
-older report with a newer one shows a change of the row that is one of the
+older row counts every search that the newer one counts and, beyond those,
+each search that the root of a Merk answered. So `lignin-bench compare` of an
+older report with a newer one can show a change of the row that is one of the
 count and not of the work.
 
 ### RocksDB's counters
