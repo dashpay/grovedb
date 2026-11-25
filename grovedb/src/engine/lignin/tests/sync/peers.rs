@@ -1033,9 +1033,18 @@ impl Asked {
             .map(|(_, case)| case);
         // The seed at the offset `k` of the range is the case `count + k`
         // of the run: the first offset of the shard, and every `of`th
-        // from it.
+        // from it. The first is `index` less the remainder of `count`,
+        // taken around `of`, with no sum that could pass the largest
+        // number: `index` and the remainder are both below `of`.
         let (first, step) = match self.shard {
-            Some((index, of)) => ((index + of - count % of) % of, of),
+            Some((index, of)) => {
+                let behind = count % of;
+                let first = match index >= behind {
+                    true => index - behind,
+                    false => of - (behind - index),
+                };
+                (first, of)
+            }
             None => (0, 1),
         };
         let seeded =
