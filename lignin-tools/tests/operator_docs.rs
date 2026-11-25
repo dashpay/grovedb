@@ -519,9 +519,12 @@ const FORMS: [&[&str]; 12] = [
     &["migrate", "S"],
 ];
 
-/// Whether `lignin` has the subcommand `name`.
+/// Whether `lignin` has the subcommand `name`: a form of it here, which
+/// the tool's parser takes.
 fn has_subcommand(name: &str) -> bool {
-    FORMS.iter().any(|form| form[0] == name)
+    FORMS
+        .iter()
+        .any(|form| form[0] == name && args::parse(&os(form)).is_ok())
 }
 
 /// Whether some command line of `subcommand` (of any, with none) takes
@@ -963,12 +966,58 @@ fn patterns_below(path: &Path) -> Vec<String> {
         .map(|entry| entry.path())
         .collect();
     entries.sort();
+    let tests = test_modules(path);
     for entry in entries {
+        let module = entry
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned());
+        if module.is_some_and(|module| tests.contains(&module)) {
+            continue;
+        }
         if entry.is_dir() || entry.extension().is_some_and(|extension| extension == "rs") {
             found.extend(patterns_below(&entry));
         }
     }
     found
+}
+
+/// The modules of the directory `dir` that its module file declares for
+/// tests alone (`#[cfg(test)] mod name;`): their files are code of tests.
+fn test_modules(dir: &Path) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let files = ["mod.rs", "lib.rs", "main.rs"].map(|name| dir.join(name));
+    for file in files.into_iter().chain([dir.with_extension("rs")]) {
+        let Ok(source) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for (at, _) in source.match_indices("#[cfg(") {
+            let rest = &source[at..];
+            if !rest.starts_with("#[cfg(test)]") && !rest.starts_with("#[cfg(all(test,") {
+                continue;
+            }
+            // The item after this attribute and any others.
+            let mut item = rest;
+            while let Some(attribute) = item.trim_start().strip_prefix("#[") {
+                item = attribute.split_once(']').map_or("", |(_, after)| after);
+            }
+            let item = item.trim_start();
+            let item = ["pub(crate) ", "pub(super) ", "pub "]
+                .iter()
+                .find_map(|visibility| item.strip_prefix(visibility))
+                .unwrap_or(item);
+            let Some(declared) = item.strip_prefix("mod ") else {
+                continue;
+            };
+            let name: String = declared
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if declared[name.len()..].trim_start().starts_with(';') {
+                names.insert(name);
+            }
+        }
+    }
+    names
 }
 
 /// The targets of the links of a line of prose.
