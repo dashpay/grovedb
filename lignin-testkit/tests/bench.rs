@@ -4,13 +4,46 @@
 //! `lignin-bench` binary; this checks that a run produces every row of the
 //! prediction table, that its count rows come out the same in a second run,
 //! and that the report reads back and compares.
+//!
+//! A run of these tests asks for instruction counts where `perf` counts
+//! them on the machine, and measures without them where it counts none:
+//! there a run that asks for them is refused.
+
+use std::sync::OnceLock;
 
 use grovedb_version::version::GroveVersion;
 use lignin_testkit::bench::{
-    cli, compare, run, EngineChoice, Report, RowKind, RunOptions, Settings,
+    cli, compare, machine::Perf, run, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
+/// Whether `perf` counts the instructions of a thread here: what the probe
+/// says by which a run that asks for instruction counts is refused where
+/// `perf` counts none. It is asked once for the tests of this file.
+fn perf_counts() -> bool {
+    static COUNTS: OnceLock<bool> = OnceLock::new();
+    *COUNTS.get_or_init(|| {
+        let scratch = tempfile::tempdir().unwrap();
+        Perf::works(scratch.path())
+    })
+}
+
+/// Prints the instructions of every row of `report` that has a count.
+fn print_counts(report: &Report) {
+    for engine in &report.engines {
+        for row in &engine.rows {
+            if let Some(instructions) = row.instructions_per_sample {
+                let (name, phase, id) = (&engine.engine, &row.phase, &row.id);
+                println!("{name} {phase} {id}: {instructions:.0} instructions a sample");
+            }
+        }
+    }
+}
+
 fn small(scratch: std::path::PathBuf) -> Settings {
+    let perf = perf_counts();
+    if !perf {
+        println!("`perf` counts no instructions here: this run measures without them");
+    }
     Settings {
         seed: 3,
         documents: 2_000,
@@ -24,7 +57,7 @@ fn small(scratch: std::path::PathBuf) -> Settings {
         cold_reads: 2,
         checkpoints: 2,
         reopens: 2,
-        perf: true,
+        perf,
         scratch,
         keep: false,
     }
@@ -88,6 +121,8 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     let scratch = tempfile::tempdir().unwrap();
     let first = run(&options(scratch.path().join("first"))).unwrap();
     let second = run(&options(scratch.path().join("second"))).unwrap();
+    assert_eq!(first.method.perf_instructions, perf_counts());
+    print_counts(&first);
 
     assert_eq!(first.engines.len(), 1);
     let engine = &first.engines[0];
@@ -274,6 +309,7 @@ fn a_run_of_both_engines_gives_one_grove_and_the_same_charges() {
     let mut options = options(scratch.path().join("both"));
     options.engines.push(EngineChoice::LigninDb);
     let report = run(&options).unwrap();
+    print_counts(&report);
 
     let [rocksdb, lignindb] = &report.engines[..] else {
         panic!("{} engines were measured", report.engines.len());
@@ -386,6 +422,23 @@ fn the_command_writes_a_report() {
         .unwrap_err()
         .to_string()
         .starts_with("writing /nonexistent/dir/report.json"));
+}
+
+#[test]
+fn a_run_that_asks_for_instructions_is_refused_where_perf_counts_none() {
+    if perf_counts() {
+        println!("`perf` counts instructions here: no run is refused for asking");
+        return;
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let mut options = options(scratch.path().join("asked"));
+    options.settings.perf = true;
+    let error = run(&options).unwrap_err();
+    assert!(error.to_string().starts_with("--perf: "), "{error}");
+    assert!(
+        !scratch.path().join("asked").join("rocksdb").exists(),
+        "nothing was measured"
+    );
 }
 
 #[test]
