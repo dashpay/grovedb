@@ -157,6 +157,24 @@ InsertOrReplace, or a GroveDB-level `InsertIfNotExists` of a tree, onto a path
 that already holds a populated tree; or `batch_insert_empty_tree_if_not_exists`
 stops checking stored and pending state before it queues the insert.
 
+## Root-path delete of a non-empty tree on grove versions 1 to 3
+
+The finding below is real on GROVE_V1..V3 and absent from GROVE_V4 on. It is
+left unfixed on purpose. Those versions are live, so a fix would change the
+resulting root hash and would need a version gate, and it would protect a
+delete that no production caller makes.
+
+| Issue | Claim | Why not real |
+|---|---|---|
+| [#1065](https://github.com/dashpay/grovedb/issues/1065) (closed, not planned) | On GROVE_V1..V3, `GroveDb::delete` at the **root path** of a tree that holds elements, with `allow_deleting_non_empty_trees: true`, leaves the root Merk's root-key record pointing at the wrong node whenever the delete changes that Merk's root node (the deleted tree was the root node, or a rotation follows). Afterwards the grove reads empty or in part: trees that were never deleted answer `PathKeyNotFound`, the root hash changes (all zeroes in the first case), the state survives a reopen, and `verify_grovedb` reports nothing. | Accurate as described; the issue carries a test that reproduces both cases on `develop`. The cause is the version-0 delete (`grovedb/src/operations/delete/delete_internal_on_transaction/v0.rs:268`), which reopens the Merk that holds the deleted tree with `Merk::open_layered_with_root_key`. At the root path that Merk is the base Merk, and `Merk::commit` writes the root-key record only when `merk_type.requires_root_storage_update()` holds (`merk/src/merk/mod.rs:485`), which is false for a Merk opened as layered. Below the root path the parent element carries the root key, so the defect does not appear there. GROVE_V4 and GROVE_V5 are correct: they set the `delete_internal_on_transaction` slot to `2` (`grovedb-version/src/version/v4.rs:591`), and that handler (`delete_internal_on_transaction/v2.rs`) opens the containing Merk by path, which at the root path is a base Merk, and hands that already-open Merk to the shared `delete_prepared_ordinary_v1` (`delete_internal_on_transaction/v1.rs`). Nothing on that route reopens the root Merk as layered, so the commit writes the root-key record. Drive cannot reach it: its `grove_delete` passes `allow_deleting_non_empty_trees: false` (`packages/rs-drive/src/util/grove_operations/grove_delete/v0/mod.rs` in dashpay/platform), its one production delete that passes `true` removes a document type's tree under a contract's documents path (`packages/rs-drive/src/drive/contract/migration/apply_contract_rebuilding_document_types.rs`), and its root-level trees are structural trees created at genesis and never deleted. This is the same version-0 reopen behind the wrong-tree-type and wrong-link-hash behavior of [#686](https://github.com/dashpay/grovedb/issues/686), which the v0 module header documents; that header does not mention the root key. |
+
+**Becomes real if:** Drive or another production caller on GROVE_V1..V3
+deletes a non-empty tree at the root path with
+`allow_deleting_non_empty_trees: true`; a replay of mainnet's or testnet's
+historical blocks meets such a delete; or GROVE_V4 or a later version sets
+the `delete_internal_on_transaction` slot back to `0`. A caller outside Platform that needs
+this delete on GROVE_V1..V3 should empty the tree first or move to GROVE_V4.
+
 ## Version-gating and build hygiene reported as vulnerabilities
 
 | Issue | Claim | Why not real |
