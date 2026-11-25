@@ -911,6 +911,44 @@ fn every_command_names_what_the_workspace_has() {
 }
 
 #[test]
+fn every_block_of_commands_is_bash() {
+    let mut faults = Vec::new();
+    let mut blocks = 0;
+    for (name, text) in documents() {
+        for fence in parse(&text)
+            .fences
+            .iter()
+            .filter(|fence| fence.info == "sh")
+        {
+            blocks += 1;
+            let mut bash = std::process::Command::new("bash")
+                .arg("-n")
+                .stdin(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("bash");
+            {
+                use std::io::Write as _;
+                let stdin = bash.stdin.as_mut().expect("the stdin of bash");
+                stdin
+                    .write_all(fence.body.join("\n").as_bytes())
+                    .expect("the block");
+            }
+            let output = bash.wait_with_output().expect("bash -n");
+            if !output.status.success() {
+                faults.push(format!(
+                    "{name}:{}: {}",
+                    fence.line,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+        }
+    }
+    assert!(blocks > 10, "only {blocks} blocks were read");
+    assert!(faults.is_empty(), "{}", faults.join("\n"));
+}
+
+#[test]
 fn every_quoted_message_is_in_the_code() {
     let root = repository();
     let speakers: BTreeSet<String> = SPEAKERS
