@@ -29,7 +29,7 @@ use grovedb::GroveDb;
 use super::{
     case::Case,
     close::{self, Closes},
-    families::{Counts, Family, Known},
+    families::{AtALeftRecord, Counts, Family, Known},
     state::{first_difference, pending_drop_paths, stored, Listing, Place, Record},
 };
 use crate::{
@@ -279,6 +279,21 @@ pub struct Tally {
     /// What the checks of the candidate's store at the ends of the cases
     /// came to ([`super::close`]).
     pub closes: Closes,
+    /// The cases that met nothing of a named open difference and were
+    /// compared to their end. A fuzzing run counts them, and the two
+    /// below, of the cases it did not interrupt.
+    pub clean: u64,
+    /// The cases that ended at an answer of a named open difference.
+    pub ended: u64,
+    /// The cases in which something of a named open difference was
+    /// passed over: stored records that differ, or an answer at which
+    /// no case ends.
+    pub passed: u64,
+    /// What the reference's own check answered at the end of the cases
+    /// that ended at a write which the reference alone took
+    /// ([`Family::TakenBelowPlainDelete`]): how often it found nothing,
+    /// reported places, and failed.
+    pub reference_checks: [u64; 3],
 }
 
 impl Tally {
@@ -292,6 +307,12 @@ impl Tally {
         self.cut_short += other.cut_short;
         self.families.add(&other.families);
         self.closes.add(&other.closes);
+        self.clean += other.clean;
+        self.ended += other.ended;
+        self.passed += other.passed;
+        for (sum, more) in self.reference_checks.iter_mut().zip(other.reference_checks) {
+            *sum += more;
+        }
     }
 }
 
@@ -315,6 +336,42 @@ pub struct Run {
     pub ended_with: Option<Divergence>,
     /// The steps that both engines answered alike with an error.
     pub failed_steps: Vec<usize>,
+    /// The answers the engines gave differently in the cost of a batch
+    /// that removes or replaces a tree over records RocksDB kept, each of
+    /// which was passed over ([`Family::KeptRecordsCost`]).
+    pub passed_costs: Vec<Divergence>,
+    /// The answers of a write below a plain delete that both engines
+    /// refused, differently in the cost or the error, each of which was
+    /// passed over ([`Family::RefusedBelowPlainDelete`]).
+    pub passed_refusals: Vec<Divergence>,
+    /// What the reference's own check (`verify_grovedb`) answered in a
+    /// case that ended at a write which the reference alone took
+    /// ([`Family::TakenBelowPlainDelete`]): asked in the reference's
+    /// block right after that write, which the block holds, and before
+    /// the block is dropped with the case. The case is not held to it.
+    pub reference_check: Option<ReferenceCheck>,
+}
+
+/// What the reference's own check answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceCheck {
+    /// It found nothing.
+    Nothing,
+    /// It reported places.
+    Places,
+    /// It failed.
+    Failed,
+}
+
+impl ReferenceCheck {
+    /// What a report says of it.
+    pub fn said(self) -> &'static str {
+        match self {
+            ReferenceCheck::Nothing => "found nothing",
+            ReferenceCheck::Places => "reported places",
+            ReferenceCheck::Failed => "failed",
+        }
+    }
 }
 
 /// What an engine did when it was asked for something: to apply an
@@ -599,6 +656,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
     // The places of the named open differences that the case has made.
     let mut known = Known::default();
     let failed_steps = std::cell::RefCell::new(Vec::new());
+    let passed_costs = std::cell::RefCell::new(Vec::new());
+    let passed_refusals = std::cell::RefCell::new(Vec::new());
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
             tally,
@@ -608,6 +667,9 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             ended_at: None,
             ended_with: None,
             failed_steps: failed_steps.take(),
+            passed_costs: passed_costs.take(),
+            passed_refusals: passed_refusals.take(),
+            reference_check: None,
         })
     };
     let diverged = |tally, step, parts, reference, candidate| {
@@ -623,6 +685,9 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         tally.cut_short = 1;
         ended(tally, None, Some(format!("at step {step}, {why}")), false)
     };
+    // The root hash of each engine after the last operation that has
+    // one.
+    let mut roots: (Option<[u8; 32]>, Option<[u8; 32]>) = (None, None);
     for (step, op) in case.ops.iter().enumerate() {
         tally.families = known.counts();
         if interrupted() {
@@ -630,13 +695,41 @@ fn compared<A: StreamEngine, B: StreamEngine>(
         }
         // Asked of the reference before the operation: a read of its
         // block's state, which changes nothing.
-        let (over, over_indexed, under_an_insert_only) = catching(|| {
+        let (
+            over,
+            over_indexed,
+            under_an_insert_only,
+            plain_deletes,
+            root_delete,
+            kept,
+            no_element,
+            below_plain_deletes,
+            under_a_left_record,
+            under_a_dedicated_insert,
+        ) = catching(|| {
             let (db, version) = (reference_db, case.grove_version);
             let block = reference_runner.transactions().block();
+            let candidate = (candidate_db, candidate_runner.transactions().block());
+            let kept = known.kept_below_a_removed_tree((db, block), candidate, op, version);
+            let no_element =
+                known.named_by_a_kept_record_alone((db, block), candidate, op, version);
+            let under_a_left_record =
+                known.under_a_left_record((db, block), candidate, op, version);
+            let plain_deletes = Known::trees_under_a_plain_delete(db, block, op, version);
+            let below_plain_deletes = Known::records_below(db, block, &plain_deletes, version);
+            let under_a_dedicated_insert =
+                Known::tree_under_a_dedicated_insert((db, block), candidate, op, version);
             (
                 Known::trees_under(db, block, op, version),
                 Known::indexed_under(db, block, op, version),
                 Known::indexed_under_an_insert_only(db, block, op, version),
+                plain_deletes,
+                Known::trees_under_a_root_delete(db, block, op, version),
+                kept,
+                no_element,
+                below_plain_deletes,
+                under_a_left_record,
+                under_a_dedicated_insert,
             )
         })
         .unwrap_or_default();
@@ -656,6 +749,8 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
         };
         let parts = differences(&was.step, &is.step);
+        // Whether an answer that differs is passed over at this step.
+        let mut passed_over = false;
         if !parts.is_empty() {
             // An answer that differs at an operation which names a place
             // of a named open difference, or in which the candidate
@@ -676,12 +771,73 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                 let held = known.through_a_proof(op, reference, candidate, case.grove_version);
                 held.then_some(Family::DroppedTreeProof)
             };
+            // The candidate refuses a write of the root Merk whose
+            // root-key record a delete of the case left behind.
+            let root_key =
+                || known.family_of_root_key_refusal(op, reference, candidate, &is.remarks);
+            // The reference was charged for reading the records it kept
+            // below a tree that the batch removes.
+            // Whether each engine has the root hash it had before.
+            let unchanged =
+                roots.0.is_some() && was.step.root_hash == roots.0 && is.step.root_hash == roots.1;
+            let cost = || {
+                // Where both refused the batch: each has the root hash
+                // it had, and both refused after the look.
+                let (was_said, is_said) = (&was.remarks, &is.remarks);
+                let after_the_look =
+                    unchanged && known.refused_after_the_look(op, &kept, was_said, is_said);
+                Known::family_of_cost(&kept, &was.step, &is.step, &parts, after_the_look)
+            };
+            let refused_write = || {
+                // The reference read what the candidate did not: it
+                // was charged more bytes loaded, and no fewer seeks and
+                // hash calls.
+                let (more, less) = (&was.step.cost, &is.step.cost);
+                let reference_read_more = more.storage_loaded_bytes > less.storage_loaded_bytes
+                    && more.seek_count >= less.seek_count
+                    && more.hash_node_calls >= less.hash_node_calls;
+                let at = AtALeftRecord {
+                    subtrees: &under_a_left_record,
+                    reference_said: &was.remarks,
+                    candidate_said: &is.remarks,
+                    reference_read_more,
+                    in_the_order_listed: Known::looks_in_the_order_listed(case.grove_version),
+                };
+                known.family_of_refused_write(op, reference, candidate, &parts, unchanged, &at)
+            };
+            // The reference took a write into a subtree that it opened by
+            // a record it kept.
+            let taken_write = || {
+                let said = &is.remarks;
+                Known::family_of_taken_write(op, &no_element, reference, candidate, said)
+            };
             let family = refusal
-                .or_else(|| known.family_of_answer(op, taken))
+                .or_else(root_key)
+                .or_else(cost)
+                .or_else(refused_write)
+                .or_else(taken_write)
+                .or_else(|| known.family_of_answer(op, taken, &parts))
                 .or_else(through_a_proof);
-            if let Some(family) = family {
+            let Some(family) = family else {
+                return diverged(tally, step, parts, lines(&was), lines(&is));
+            };
+            if family.ends_a_case() {
                 known.ended_at(family, case.seed);
                 tally.families = known.counts();
+                // Where the reference alone took the write, what its own
+                // check answers with that write in its block is kept,
+                // and the case is not held to it.
+                let reference_check = (family == Family::TakenBelowPlainDelete).then(|| {
+                    let block = reference_runner.transactions().block();
+                    let version = case.grove_version;
+                    let checked =
+                        catching(|| reference_db.verify_grovedb(Some(block), true, false, version));
+                    match checked {
+                        Ok(Ok(issues)) if issues.is_empty() => ReferenceCheck::Nothing,
+                        Ok(Ok(_)) => ReferenceCheck::Places,
+                        Ok(Err(_)) | Err(_) => ReferenceCheck::Failed,
+                    }
+                });
                 let ended_with = Divergence {
                     step,
                     parts,
@@ -696,12 +852,93 @@ fn compared<A: StreamEngine, B: StreamEngine>(
                     ended_at: Some(family),
                     ended_with: Some(ended_with),
                     failed_steps: failed_steps.take(),
+                    passed_costs: passed_costs.take(),
+                    passed_refusals: passed_refusals.take(),
+                    reference_check,
                 });
             }
-            return diverged(tally, step, parts, lines(&was), lines(&is));
+            // A read below a plain delete, or a batch that differs in
+            // what it was charged for reading there: neither left the
+            // engines in different states, so it is counted and the case
+            // goes on, as after an operation both answered alike.
+            known.passed_an_answer(family, case.seed);
+            let passed = || Divergence {
+                step,
+                parts: parts.clone(),
+                reference: lines(&was),
+                candidate: lines(&is),
+            };
+            match family {
+                Family::KeptRecordsCost => passed_costs.borrow_mut().push(passed()),
+                Family::RefusedBelowPlainDelete => passed_refusals.borrow_mut().push(passed()),
+                _ => {}
+            }
+            passed_over = true;
+            tally.families = known.counts();
         }
+        // A dedicated insert over a tree that both engines refused
+        // alike, after which the reference alone reads the tree as
+        // empty: the stated difference of such an insert. The case ends
+        // here, counted.
+        let swept = under_a_dedicated_insert.as_ref().is_some_and(|child| {
+            let refused_alike = parts.is_empty() && was.step.failed();
+            let left = || {
+                let reference = (reference_db, reference_runner.transactions().block());
+                let candidate = (candidate_db, candidate_runner.transactions().block());
+                Known::swept_by_a_refused_insert(reference, candidate, child, case.grove_version)
+            };
+            refused_alike && catching(left).unwrap_or(false)
+        });
+        if swept {
+            known.came_to_a_refused_insert();
+            let family = Family::SweptByARefusedInsert;
+            known.ended_at(family, case.seed);
+            tally.families = known.counts();
+            // Both engines refused the insert alike: it is a common
+            // failure.
+            failed_steps.borrow_mut().push(step);
+            tally.failed += 1;
+            let ended_with = Divergence {
+                step,
+                parts: vec![Part::Stored],
+                reference: lines(&was),
+                candidate: lines(&is),
+            };
+            return Ok(Run {
+                tally,
+                divergence: None,
+                cut_short: None,
+                interrupted: false,
+                ended_at: Some(family),
+                ended_with: Some(ended_with),
+                failed_steps: failed_steps.take(),
+                passed_costs: passed_costs.take(),
+                passed_refusals: passed_refusals.take(),
+                reference_check: None,
+            });
+        }
+        // The root hash each engine has now, for the next operation: a
+        // read has none, and leaves it.
+        let before = roots;
+        roots = (
+            was.step.root_hash.or(roots.0),
+            is.step.root_hash.or(roots.1),
+        );
+        // A record that a plain delete left is no longer one where the
+        // operation names its key, unless the reference refused the
+        // operation and has the root hash it had.
+        let root_changed = was.step.root_hash.is_some() && roots.0 != before.0;
+        known.forgets(op, !was.step.failed(), root_changed);
         if !was.step.failed() {
-            known.took(op, over);
+            known.wrote(op, root_changed);
+            // The trees a plain delete of the batch removed of which the
+            // reference still holds a record, as its block sees it now.
+            let left = catching(|| {
+                let block = reference_runner.transactions().block();
+                Known::left_a_record(reference_db, block, plain_deletes)
+            });
+            known.took(op, over, left.unwrap_or_default(), root_delete);
+            known.left_records(below_plain_deletes);
         }
         // The trees whose flat drop has a pending record now, as the
         // reference's block sees it: the places of the family of a
@@ -724,10 +961,13 @@ fn compared<A: StreamEngine, B: StreamEngine>(
             known.made_again(standing.unwrap_or_default());
         }
         tally.families = known.counts();
-        if was.step.failed() {
+        // An answer that was passed over is no common failure, though
+        // both engines may have failed: they differ in it.
+        let failed_alike = was.step.failed() && !passed_over;
+        if failed_alike {
             failed_steps.borrow_mut().push(step);
         }
-        tally.failed += u64::from(was.step.failed());
+        tally.failed += u64::from(failed_alike);
         tally.proofs += u64::from(was.step.proof.is_some());
 
         let last = step + 1 == case.ops.len();
@@ -954,6 +1194,7 @@ mod tests {
                 cut_short: 0,
                 families: Counts::default(),
                 closes: Closes::default(),
+                ..Tally::default()
             }
         );
         let once = with(Stored::AtTheEnd);
@@ -1136,6 +1377,127 @@ mod tests {
             Op::Commit,
         ]);
         assert_eq!(records(deleted), committed);
+    }
+
+    /// A tree with two items is dropped flat and the drop committed; the
+    /// next block makes the tree again and writes one of the keys, and
+    /// a drain is called before the block commits. The reference's
+    /// drain deletes the range of the dropped prefix beside the block,
+    /// and its commit is a conflict. A candidate that keeps the dropped
+    /// tree's records, and whose drain frees nothing, takes the commit
+    /// with no failure: a difference at a commit is of no family, and
+    /// the run ends there as a divergence. The same holds where the
+    /// tree was dropped again before the drain after it was first
+    /// dropped empty, where it was dropped in a block that is rolled
+    /// back, and for a tree of flat records. The stand-in as it is
+    /// refuses each of these commits as the reference does.
+    #[test]
+    fn a_commit_taken_after_a_drain_that_freed_nothing_is_a_divergence() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: at.iter().map(|segment| segment.to_vec()).collect(),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let ops = vec![
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![1])),
+            insert(&[b"d"], b"j", Element::new_item(vec![2])),
+            Op::Commit,
+            Op::Write(Write::DropFlat {
+                path: Vec::new(),
+                key: b"d".to_vec(),
+            }),
+            Op::Commit,
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![3])),
+            Op::FlushPendingDrops,
+            Op::Commit,
+        ];
+        let drop_it = || {
+            Op::Write(Write::DropFlat {
+                path: Vec::new(),
+                key: b"d".to_vec(),
+            })
+        };
+        let delete = |key: &[u8]| {
+            Op::Write(Write::Delete {
+                path: vec![b"d".to_vec()],
+                key: key.to_vec(),
+            })
+        };
+        let last_block = || {
+            [
+                insert(&[], b"d", Element::empty_tree()),
+                insert(&[b"d"], b"k", Element::new_item(vec![3])),
+                Op::FlushPendingDrops,
+                Op::Commit,
+            ]
+        };
+        // The tree is dropped while it holds nothing, so an engine that
+        // keeps what a drop was to free holds nothing below it then. It
+        // is made again, filled and dropped again before any drain, so
+        // its record never leaves the pending ones.
+        let mut dropped_again = vec![
+            insert(&[], b"d", Element::empty_tree()),
+            Op::Commit,
+            drop_it(),
+            Op::Commit,
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![1])),
+            insert(&[b"d"], b"j", Element::new_item(vec![2])),
+            drop_it(),
+            Op::Commit,
+        ];
+        dropped_again.extend(last_block());
+        // A block makes the tree again over the records that were kept,
+        // writes and deletes each of them, and drops the tree while the
+        // block reads nothing below it. The block is rolled back, and
+        // the records are there as before.
+        let mut given_up = ops[..6].to_vec();
+        given_up.extend([
+            insert(&[], b"d", Element::empty_tree()),
+            insert(&[b"d"], b"k", Element::new_item(vec![4])),
+            insert(&[b"d"], b"j", Element::new_item(vec![5])),
+            delete(b"k"),
+            delete(b"j"),
+            drop_it(),
+            Op::Transaction(TransactionOp::Rollback),
+        ]);
+        given_up.extend(last_block());
+        // The tree keeps flat records and no node.
+        let mut of_flat_records = a_filled_log();
+        of_flat_records.extend([
+            drop_the_log(),
+            Op::Commit,
+            a_filled_log().swap_remove(0),
+            a_filled_log().swap_remove(1),
+            Op::FlushPendingDrops,
+            Op::Commit,
+        ]);
+        for (what, ops) in [
+            ("dropped once", ops),
+            ("dropped again before a drain", dropped_again),
+            ("dropped empty in a block that is rolled back", given_up),
+            ("a tree of flat records", of_flat_records),
+        ] {
+            let commit = ops.len() - 1;
+            let keeps = StandIn::side(Fault::Unreclaimed);
+            let run = compared(&case(ops.clone()), &rocksdb(), &keeps, Stored::AtTheEnd);
+            assert_eq!(run.ended_at, None, "{what}");
+            let divergence = run.divergence.expect("the commit that one engine took");
+            assert_eq!(divergence.step, commit, "{what}");
+            assert!(divergence.parts.contains(&Part::Error), "{divergence:?}");
+            let conflict = "failed Commit::Conflict".to_string();
+            assert!(divergence.reference.contains(&conflict), "{divergence:?}");
+            let failed = |line: &String| line.starts_with("failed ");
+            assert!(!divergence.candidate.iter().any(failed), "{divergence:?}");
+
+            let run = compared(&case(ops), &rocksdb(), &stand_in(), Stored::AtTheEnd);
+            assert_eq!((run.divergence, run.ended_at), (None, None), "{what}");
+            assert_eq!(run.failed_steps, [commit], "{what}");
+        }
     }
 
     /// An engine whose flush frees nothing answers every operation as the
@@ -1432,6 +1794,10 @@ mod tests {
             cut_short: 6,
             families: Counts::default(),
             closes: Closes::default(),
+            clean: 7,
+            ended: 8,
+            passed: 9,
+            reference_checks: [1, 2, 3],
         };
         tally.add(&tally.clone());
         assert_eq!(
@@ -1445,6 +1811,10 @@ mod tests {
                 cut_short: 12,
                 families: Counts::default(),
                 closes: Closes::default(),
+                clean: 14,
+                ended: 16,
+                passed: 18,
+                reference_checks: [2, 4, 6],
             }
         );
     }

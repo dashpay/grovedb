@@ -66,7 +66,7 @@
 //! `CostContext` returns the value and cannot fail): the walk is no
 //! operation of the stream.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb::{
     element::indexed::IndexAxis,
@@ -455,6 +455,106 @@ pub fn a_secondary_holds_a_row<'db, E: StreamEngine>(
         .iter()
         .filter(|record| record.keyspace == Keyspace::Nodes);
     Ok(rows.next().is_some())
+}
+
+/// Whether a record is stored under the path `path` as `transaction`
+/// sees `db`, whether or not an element leads to it: a node, an aux
+/// record or a meta record under the prefix of the subtree at that path.
+pub fn a_record_is_under<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+) -> Result<bool, String> {
+    let place = Place {
+        path: path.to_vec(),
+        secondary: None,
+        data: Keyspace::Nodes,
+    };
+    let mut records = Vec::new();
+    list(db.engine(), transaction, &place, true, &mut records)?;
+    Ok(!records.is_empty())
+}
+
+/// Whether a node record is stored under `key` in the subtree at `path`
+/// as `transaction` sees `db`, whether or not an element leads to it.
+pub fn a_node_is_under<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+    key: &[u8],
+) -> Result<bool, String> {
+    let place = Place {
+        path: path.to_vec(),
+        secondary: None,
+        data: Keyspace::Nodes,
+    };
+    let mut records = Vec::new();
+    list(db.engine(), transaction, &place, true, &mut records)?;
+    let mut nodes = (records.iter()).filter(|record| record.keyspace == Keyspace::Nodes);
+    Ok(nodes.any(|record| record.key == key))
+}
+
+/// A node record by the path of its subtree and its key.
+pub type NodeKey = (Vec<Vec<u8>>, Vec<u8>);
+
+/// The node records at and below `path` as `transaction` sees `db`,
+/// whether or not an element leads to them, each by the path of its
+/// subtree and its key: those under the prefix of the subtree at `path`,
+/// and those under the path of every key among them whose record is the
+/// element of a tree that keeps a Merk, and so on down. That is the
+/// walk GroveDB makes for the elements of a tree that take part in
+/// backward references. None where there are more than `most`.
+pub fn node_keys_below<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+    most: usize,
+    grove_version: &GroveVersion,
+) -> Result<Option<BTreeSet<NodeKey>>, String> {
+    let records = node_records_below(db, transaction, path, most, grove_version)?;
+    Ok(records.map(|records| records.into_keys().collect()))
+}
+
+/// The node records of [`node_keys_below`], each with whether its record
+/// is the element of a tree that keeps a Merk: the walk opens the
+/// subtree under such a key, and GroveDB charges the hash of a path for
+/// each subtree it opens.
+pub fn node_records_below<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    path: &[Vec<u8>],
+    most: usize,
+    grove_version: &GroveVersion,
+) -> Result<Option<BTreeMap<NodeKey, bool>>, String> {
+    let mut found = BTreeMap::new();
+    let mut queue = vec![path.to_vec()];
+    while let Some(path) = queue.pop() {
+        let place = Place {
+            path: path.clone(),
+            secondary: None,
+            data: Keyspace::Nodes,
+        };
+        let mut records = Vec::new();
+        list(db.engine(), transaction, &place, true, &mut records)?;
+        for record in records {
+            if record.keyspace != Keyspace::Nodes {
+                continue;
+            }
+            let element = Element::raw_decode(&record.value, grove_version);
+            let keeps_a_merk =
+                element.is_ok_and(|tree| tree.is_any_tree() && !tree.uses_non_merk_data_storage());
+            if keeps_a_merk {
+                let mut below = path.clone();
+                below.push(record.key.clone());
+                queue.push(below);
+            }
+            found.insert((path.clone(), record.key), keeps_a_merk);
+            if found.len() > most {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(found))
 }
 
 /// The paths of the trees whose flat drops have a pending record as

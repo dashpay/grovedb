@@ -39,6 +39,7 @@ mod many_trees;
 mod moves;
 mod nested;
 mod over;
+mod plain_delete;
 mod queries;
 #[cfg(feature = "rocksdb_storage")]
 mod refused;

@@ -25,7 +25,7 @@ use std::{
 use super::{
     case::{Case, Shape},
     families::Family,
-    pair::{catching, run, Divergence, Side, Stored, Tally},
+    pair::{catching, run, Divergence, ReferenceCheck, Side, Stored, Tally},
     shrink::{shrink, Budget, Shrunk},
 };
 use crate::{
@@ -132,10 +132,17 @@ pub struct Summary {
     /// engines panicked, or neither could be observed.
     pub first_cut_short: Option<String>,
     /// The cases that ended at a step that is counted apart
-    /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`]):
-    /// the family, the seed of the case and the step, in the order of the
-    /// seeds.
-    pub apart: Vec<(Family, u64, usize)>,
+    /// ([`Family::DroppedTreeProof`], [`Family::InsertOnlyOverIndexed`],
+    /// [`Family::RootKeyLeftBehind`], [`Family::TakenBelowPlainDelete`],
+    /// [`Family::SweptByARefusedInsert`]),
+    /// and those that passed over an
+    /// answer that is ([`Family::KeptRecordsCost`],
+    /// [`Family::RefusedBelowPlainDelete`], by the first such step of
+    /// the case): the family, the seed of the case and the step, in the
+    /// order of the seeds, and for a case that ended at a write which
+    /// the reference alone took what the reference's own check answered
+    /// with that write ([`super::pair::Run::reference_check`]).
+    pub apart: Vec<(Family, u64, usize, Option<ReferenceCheck>)>,
 }
 
 /// The bytes of the files under `dir`. A file that goes while it is
@@ -210,14 +217,48 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 settings.stored,
                 &abandoned,
             )?;
-            tally.lock().expect("no worker panics").add(&run.tally);
+            // An interrupted run is no case of the run's: what it met
+            // of the families is not counted, nor listed apart.
+            let whole = !run.interrupted;
+            let mut compared = run.tally;
+            if !whole {
+                compared.families = Default::default();
+            } else if run.divergence.is_none() {
+                // Of the cases the run counts: those it did not
+                // interrupt and that did not end it.
+                let met = &run.tally.families;
+                let to_its_end = run.ended_at.is_none() && run.cut_short.is_none();
+                compared.clean = u64::from(met.is_empty() && to_its_end);
+                compared.ended = u64::from(run.ended_at.is_some());
+                compared.passed = u64::from(met.passed_over());
+                if let Some(check) = run.reference_check {
+                    compared.reference_checks[check as usize] = 1;
+                }
+            }
+            tally.lock().expect("no worker panics").add(&compared);
             if let (
-                Some(family @ (Family::DroppedTreeProof | Family::InsertOnlyOverIndexed)),
+                Some(
+                    family @ (Family::DroppedTreeProof
+                    | Family::InsertOnlyOverIndexed
+                    | Family::RootKeyLeftBehind
+                    | Family::TakenBelowPlainDelete
+                    | Family::SweptByARefusedInsert),
+                ),
                 Some(ended),
             ) = (run.ended_at, &run.ended_with)
             {
                 let mut apart = apart.lock().expect("no worker panics");
-                apart.push((family, case.seed, ended.step));
+                apart.push((family, case.seed, ended.step, run.reference_check));
+            }
+            let passed = [
+                (Family::KeptRecordsCost, run.passed_costs.first()),
+                (Family::RefusedBelowPlainDelete, run.passed_refusals.first()),
+            ];
+            for (family, first) in passed {
+                if let (Some(first), true) = (first, whole) {
+                    let mut apart = apart.lock().expect("no worker panics");
+                    apart.push((family, case.seed, first.step, None));
+                }
             }
             // An interrupted run is no case of the run's, but for what
             // the check of the candidate's store found at its end.
@@ -332,7 +373,7 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 }
             });
     let mut apart = apart.into_inner().expect("no worker panics");
-    apart.sort_unstable_by_key(|(_, seed, _)| *seed);
+    apart.sort_unstable_by_key(|(_, seed, ..)| *seed);
     Ok(Summary {
         progress,
         finding,
@@ -413,6 +454,12 @@ mod tests {
         );
         assert_eq!(summary.progress.tally.cut_short, 0);
         assert_eq!(summary.first_cut_short, None);
+        // Both engines are RocksDB: no case ends at a named open
+        // difference or has something of one passed over, and a case
+        // that made no place of one is clean.
+        let tally = &summary.progress.tally;
+        assert_eq!((tally.ended, tally.passed), (0, 0));
+        assert!((1..=12).contains(&tally.clean), "{}", tally.clean);
         assert!(reports > 0);
         assert_eq!(
             std::fs::read_dir(scratch.path())

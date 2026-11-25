@@ -41,6 +41,8 @@
 //! blocks are interleaved and how the stream is damaged are drawn from the
 //! seed. A stream as generated applies without a failure. A damaged one
 //! asks for what an engine refuses, and both have to refuse it alike.
+//! Some cases take one stream more, of a history that no workload makes
+//! and a named open difference of the engines begins with ([`scenes`]).
 //!
 //! # The engines
 //!
@@ -103,6 +105,7 @@ pub mod families;
 pub mod fuzz;
 pub mod history;
 pub mod pair;
+pub mod scenes;
 pub mod shrink;
 pub mod state;
 
@@ -111,6 +114,7 @@ pub use self::{
     engines::{Candidate, Fault, Reference, StandIn},
     families::{Counts, Family},
     fuzz::{fuzz, Finding, Settings, Summary},
-    pair::{run, Divergence, Part, Run, Side, Stored, Tally},
+    pair::{run, Divergence, Part, ReferenceCheck, Run, Side, Stored, Tally},
+    scenes::{Placing, Scene},
     shrink::{shrink, Budget, Shrunk},
 };

@@ -131,6 +131,7 @@ fn the_corpus_streams_answer_alike_on_rocksdb_and_on_lignindb() {
                 sources: Vec::new(),
                 arrangement: Arrangement::Sequential,
                 mutations: Vec::new(),
+                scene: None,
             };
             (spec.grove_version.protocol_version, spec.name, case)
         })

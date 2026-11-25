@@ -4,10 +4,9 @@
 //! RocksDB leaves records behind where GroveDB changes one element and
 //! does not clear what hung under it, and reads them again later. LigninDB
 //! drops a subtree with its element, and refuses a write that would put
-//! such records to use. Four such histories are ruled as
-//! open differences that are put to the maintainer of GroveDB, and are no
-//! defect of an engine until that is answered. Each is a [`Family`]. Three
-//! have a rule that is a path:
+//! such records to use. Such histories are ruled as stated differences,
+//! and are no defect of an engine. Each is a [`Family`]. Four have a rule
+//! that is a path:
 //!
 //! - [`Family::WrittenOver`]: an element was put over a tree that held
 //!   elements. The family is the subtree of that tree, and every subtree
@@ -27,6 +26,25 @@
 //!   ([`pending_drop_paths`](super::state::pending_drop_paths)): an
 //!   answer is of the family by the records as they were before its
 //!   operation.
+//!
+//! - [`Family::BelowPlainDelete`]: a batch's plain delete removed a
+//!   tree that held elements, which a plain delete does not look at, and
+//!   RocksDB kept a record under the tree's path. The family is the
+//!   subtree at that path and every subtree below it, also once a tree
+//!   is made at the path again. It is the narrowest of the four: of an
+//!   answer it has a read alone, and of a read its result, its error and
+//!   its cost ([`Known::family_of_answer`]). The read is one of a
+//!   subtree at such a place: a read of one key by the subtree it reads
+//!   in, so that a read of the removed tree's own element in the tree
+//!   above is none, and a query by its own subtree and those below that
+//!   it reads. A read that returns a proof or the root of an append-only
+//!   tree as its result is none either, and a difference in it ends
+//!   the run. A read that is of the family ends no case: it is counted
+//!   and passed over, for a read changes nothing, and the case goes on
+//!   to the tree that is made again and the writes into it. A write
+//!   that names such a place, the root hash after it, and a proof with
+//!   its cost are compared as anywhere else, and a difference there
+//!   ends the run, but for the three kinds of a write below.
 //!
 //! Of the family of a dropped tree one more kind of a step is counted
 //! apart, by the owner's ruling D-348, of an answer alone:
@@ -51,7 +69,159 @@
 //! flat drop's caller instead
 //! ([`Shape::keeps_the_drop_contract`](super::case::Shape)).
 //!
-//! The fourth has no place, and is of an answer alone:
+//! One difference at such a tree is of no family: a conflict that the
+//! reference alone answers to the commit of a block which wrote into
+//! the subtree of a dropped tree before a drain reclaimed the record of
+//! its drop. A drain writes beside the open block, and RocksDB's deletes
+//! the range of the dropped prefix. No rule holds a difference at a
+//! commit: the run ends there as a divergence.
+//!
+//! One family is of no answer that differs (GROVE-04-F3, D-422):
+//!
+//! - [`Family::SweptByARefusedInsert`]: a dedicated insert into an
+//!   indexed tree, over a child that is a tree, makes two writes of its
+//!   transaction: it removes what the child held, and then puts the
+//!   element. Where the put is refused, both engines answer alike, and
+//!   RocksDB keeps the removal in the caller's transaction, with the
+//!   old element over a subtree that holds nothing; LigninDB rolls the
+//!   removal back and keeps the child as it was. The root hash is the
+//!   same. The case ends at such an insert, counted
+//!   ([`Known::swept_by_a_refused_insert`]).
+//!
+//! Of a place below a plain delete a refused write is counted apart, by
+//! the owner's ruling D-386:
+//!
+//! - [`Family::RefusedBelowPlainDelete`]: a write of elements into a
+//!   subtree at or below such a place which both engines refuse. RocksDB
+//!   gets further before it refuses, because it finds the records it
+//!   kept, so the cost of the refusal differs, and on grove versions 4
+//!   and 5 the error. Such a step is counted and passed over where the
+//!   engines differ in the cost or the error and in nothing else, each
+//!   engine has the root hash it had before the write, one at least of
+//!   the subtrees the write names is at or below such a place, and
+//!   every other is the subtree a removed tree was in, with what the
+//!   caller of a partial batch adds among them; or, for a batch of
+//!   plain deletes that also writes elsewhere: the subtree that the
+//!   batch opens first (on grove versions 1 to 3 its deepest, alone at
+//!   its depth; from grove version 4 on that of the operation listed
+//!   first, in a case that has met no element with backward
+//!   references) is under a
+//!   record that a plain delete left, which the reference holds as a
+//!   tree that keeps a Merk and LigninDB does not hold
+//!   ([`Known::under_a_left_record`]); both answers are `InvalidPath`;
+//!   LigninDB's remark is GroveDB's words for no element above that
+//!   subtree and the reference's is the same words for a path that
+//!   the batch opens later (a shallower one, or from grove version 4
+//!   on the subtree of an operation listed later), each printed so by
+//!   no other path of the batch; and the reference was charged more bytes loaded than
+//!   LigninDB and no fewer seeks and hash calls. RocksDB read the kept
+//!   record, opened the subtree by it and refused at a level it came
+//!   to afterwards. At the next walk
+//!   every stored record outside the family's places is compared; what
+//!   is in no hash and inside a place is not
+//!   ([`Known::family_of_refused_write`]).
+//! - [`Family::TakenBelowPlainDelete`]: a tree is made again at such a
+//!   path and a key under which the old tree held a tree is not written
+//!   again. GroveDB reads an element by its key under the prefix of its
+//!   subtree, so RocksDB finds the record it kept, opens the subtree
+//!   under that key and takes a write into it, though no element of
+//!   the tree made again leads there; LigninDB has no such subtree and
+//!   refuses with `InvalidPath`. The groves differ from there, so the
+//!   case ends there, counted apart (the owner's ruling D-390), where
+//!   all of this holds ([`Known::named_by_a_kept_record_alone`],
+//!   [`Known::family_of_taken_write`]): the operation is a direct
+//!   insert ([`Write::Insert`]), a batch ([`Op::Batch`]) or a batch with
+//!   the flags callbacks ([`Op::FlagsBatch`]), which the runner applies
+//!   in the block the engines are read in, and no other kind, also no
+//!   handover batch; one of the subtrees it writes into is such that
+//!   LigninDB reads an element under every key of its path but the
+//!   last, and under the last answers that it reads none, the subtree
+//!   above it is at or below such a place, the reference held a node
+//!   record under that key below the tree right before the plain
+//!   delete that removed it, the case has not forgotten the record
+//!   since, the reference holds a node record under the key now and
+//!   LigninDB holds none, and no operation of the batch puts an element
+//!   under that key; the reference took the write; LigninDB's answer is
+//!   the error `InvalidPath`; and the refusal is about that subtree,
+//!   which for a direct insert is the one it writes into and for a
+//!   batch is the one LigninDB names, in GroveDB's words for a batch at
+//!   a path whose element it cannot read, where no other path that
+//!   the batch opens prints so (the words print a path as text, in
+//!   which two paths can read alike), the batch lists nothing but
+//!   plain deletes and puts, made whatever the key holds, of elements
+//!   that are no references, and the case has met no element that
+//!   takes part in backward references, so that the Merks the batch
+//!   opens by the element above them are those of its operations and
+//!   the ones above them. That the record is one the
+//!   delete left is so taken from what the case did, and not from what
+//!   the engines hold ([`Known::forgets`]): the case forgets a record
+//!   where an operation that the reference took, or refused with
+//!   another root hash than it had, names its key (a direct insert and
+//!   an operation of a batch with a key name one key; a direct delete
+//!   names its key and what is below it; a move both of its keys and
+//!   what is below them; an operation of a batch with no key, an
+//!   append, every key at or below its path; any other direct write
+//!   every key at or below the subtree it writes), and it forgets
+//!   every record at a rollback of the block and at a commit that the
+//!   reference refused. What the reference's own check answers in its
+//!   block right after the write is kept with the seed and the step,
+//!   and the case is not held to it. A write that one engine takes and
+//!   the other refuses and that is of no family ends the run.
+//!
+//! One kind of a write is counted apart, by the owner's rulings D-382
+//! and D-386, of a cost alone:
+//!
+//! - [`Family::KeptRecordsCost`]: on grove versions 4 and 5 a batch
+//!   looks, before it removes a tree that holds elements by an
+//!   operation that is to check backward references, at every element
+//!   of the tree for one that takes part in such a reference
+//!   (`grovedb/src/batch/backward_references.rs`, "A removal whose
+//!   contents nothing in this batch reads is scanned";
+//!   `GroveDb::backward_reference_participants`). The look walks the
+//!   records under the prefix of the tree and of every tree in it that
+//!   keeps a Merk, so RocksDB reads there the records it kept of a tree
+//!   that a plain delete removed before, and is charged a seek and the
+//!   bytes of each, and, where such a record is the element of a tree
+//!   that keeps a Merk, a seek in the subtree it opens under it and
+//!   the hash of that subtree's path (D-394), which is one hash call
+//!   for every 64 bytes begun of the path's message.
+//!   A step is of this family, and is counted and passed over, where
+//!   all of this holds ([`Known::kept_below_a_removed_tree`],
+//!   [`Known::family_of_cost`]): the grove version is 4 or 5; the
+//!   operation is a batch that lists a plain delete, or a put that is
+//!   made whatever the key holds, at a key it names once, of a path at,
+//!   above or below a place of [`Family::BelowPlainDelete`] or of
+//!   [`Family::WrittenOver`], whichever kept the records; at or
+//!   below that path the reference holds, before the batch, a node
+//!   record that the candidate does not hold; the engines differ in the
+//!   cost of the batch and in no other part; and the costs differ in
+//!   the seeks, the bytes loaded and the hash calls alone, the
+//!   reference's being no smaller in any, and its hash calls the larger
+//!   by no more than GroveDB charges for the paths of the subtrees
+//!   under the records the reference alone holds there that are the
+//!   element of a tree that keeps a Merk (D-403): a bound on the sum,
+//!   within which a count that is off by another cause passes.
+//!   The batch is a whole batch of checked
+//!   operations ([`Op::Batch`] that lists no flat drop) which both
+//!   engines took, or, where it lists plain deletes alone, both refused
+//!   with their root hashes as they were and in the same words, for no
+//!   element above the subtree of an operation that the batch lists
+//!   after every such removal ([`Known::refused_after_the_look`]: the
+//!   batch looks at its operations in the order listed, so both looked
+//!   through the trees before they refused), the candidate reads at the path, before it, a tree
+//!   that keeps a Merk and whose element names a root, which is the
+//!   tree GroveDB looks through, and every record that the reference
+//!   holds more is in a subtree at or below such a place, on the walk
+//!   GroveDB makes: under the tree's prefix and that of every tree in
+//!   it that keeps a Merk, not under a tree of flat records. The
+//!   outcome, the bytes added, replaced and removed and the root hash
+//!   are compared, and the hash calls within that bound. A cost that
+//!   differs otherwise in a write that both engines take ends the run,
+//!   or, where the first of the places the write names that is of a
+//!   family is one of the first three families' ([`Known::family_of_answer`]
+//!   asks of that one place alone), the case.
+//!
+//! Three have no place, and are of an answer alone:
 //!
 //! - [`Family::IndexedOverIndexed`]: on grove versions 1 to 3, which leave
 //!   the records of the old tree where they are, an operation puts an
@@ -73,6 +243,26 @@
 //!   [`Known::family_of_insert_only_refusal`]), the case ends there,
 //!   counted apart (the owner's ruling D-354). Any other operation that
 //!   the candidate so refuses on those versions is a divergence.
+//! - [`Family::RootKeyLeftBehind`]: on grove versions 1 to 3 the delete
+//!   of a tree that holds elements, by `GroveDb::delete` at the root
+//!   path, leaves the root-key record of the root Merk naming the old
+//!   root where the delete changes that root. RocksDB takes the next
+//!   write of a node of the root Merk, and LigninDB refuses it. A case
+//!   ends there, counted apart, where all of this holds
+//!   ([`Known::trees_under_a_root_delete`],
+//!   [`Known::family_of_root_key_refusal`]): the case is of one of those
+//!   grove versions; both engines took, with the same answer, such a
+//!   delete of a tree in which the reference read an element before it;
+//!   the operation is a write of elements, which the reference takes;
+//!   and the candidate answers `NotSupported` in the words of that
+//!   refusal for the root Merk, whole, with a record that does not name
+//!   the root. A put that both engines take after the delete shows that
+//!   the record names the root, and ends what the delete began: a
+//!   refusal after it is of no family until another such delete.
+//!   Whether the delete changed the root is not asked of the
+//!   reference: the words are the candidate's. Every answer before the
+//!   refusal is compared, and the candidate's store is checked when the
+//!   case has ended.
 //!
 //! A case keeps the paths it made so ([`Known`]), from the operations both
 //! engines took. Of a batch it counts the operations by a rule about its
@@ -80,7 +270,11 @@
 //! batch adds last only where the batch has an operation of its own and
 //! the reference took it. A put or a flat drop at a key that the batch
 //! names twice makes no place of a family; the operations still name
-//! that key where an answer is compared. Nothing else is of a family:
+//! that key where an answer is compared. A plain delete makes a place
+//! where the reference still holds a record under the tree's path once
+//! the batch is applied, as its block sees it: a batch that deletes what
+//! the tree holds before the tree leaves none. Nothing else is of a
+//! family:
 //!
 //! - **What is stored.** The records of a subtree of a family are not
 //!   compared. Where the two engines hold different records there, the
@@ -90,6 +284,9 @@
 //!   operation that names a place of a family, the case ends there, is
 //!   counted for the family, and is no divergence of the run. They differ
 //!   there because the read takes the records under a prefix as they are.
+//!   Below a plain delete that holds for a read alone, where the engines
+//!   differ in its result, its error or its cost and in nothing else,
+//!   and the case does not end: the read is counted and passed over.
 //!   A query names the subtree it is of and every subtree below it that
 //!   it reads: one under a key its items select, where the branch of that
 //!   key has a subquery path or a subquery to go down by, and so on down
@@ -105,18 +302,32 @@
 //!
 //! The counts are in the [`Tally`](super::pair::Tally) of a run
 //! ([`Counts`]): the cases that made a place of a family, or for the
-//! fourth those in which the reference took such a put, those with a stored
+//! families of an indexed tree over an indexed tree those in which the
+//! reference took such a put, for that of the root-key record those in
+//! which both engines took such a delete, those with a stored
 //! difference passed over and those ended at an answer, and for the last
 //! two the seed of one such case.
 
+use std::collections::BTreeSet;
+
+use grovedb_costs::OperationCost;
+use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
+use grovedb_path::SubtreePath;
+use grovedb_storage::prefix::build_prefix;
 use grovedb_version::version::GroveVersion;
 
-use grovedb::{Element, GroveDb, SubqueryBranch};
+use grovedb::{operations::proof::util::hex_to_ascii, Element, GroveDb, SubqueryBranch};
 
+use super::pair::Part;
 use super::state::Record;
-use super::state::{a_secondary_holds_a_row, Keyspace};
+use super::state::{
+    a_node_is_under, a_record_is_under, a_secondary_holds_a_row, node_keys_below,
+    node_records_below, Keyspace, NodeKey,
+};
 use crate::golden::step::{Outcome, Proof, Proved, Step, Value, Verification};
-use crate::workload::{BatchOp, Db, Op, Path, Prove, Read, StreamEngine, TransactionOp, Tx, Write};
+use crate::workload::{
+    BatchOp, Db, Op, Path, Prove, Read, StreamEngine, TransactionOp, TreeRead, Tx, Write,
+};
 
 /// A named open difference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -139,10 +350,160 @@ pub enum Family {
     /// 5 by an insert that its caller knows not to replace, which the
     /// candidate refuses.
     InsertOnlyOverIndexed,
+    /// What is at and below the path of a tree that a batch's plain
+    /// delete removed while it held elements: the reads there.
+    BelowPlainDelete,
+    /// A write after a delete at the root path that left the root-key
+    /// record of the root Merk behind, on grove versions 1 to 3, which
+    /// the candidate refuses.
+    RootKeyLeftBehind,
+    /// The cost of a whole batch of checked operations that removes or
+    /// replaces a tree at or below which RocksDB holds records it kept,
+    /// below a plain delete or below an element written over a tree, on
+    /// grove versions 4 and 5: the seeks, the bytes loaded, and the
+    /// hash calls, up to what the paths of the subtrees cost that the
+    /// batch opens under such records.
+    KeptRecordsCost,
+    /// A write of elements at or below the path of a tree that a batch's
+    /// plain delete removed while it held elements, which both engines
+    /// refuse: the cost and the error of the refusal.
+    RefusedBelowPlainDelete,
+    /// A write of elements into a subtree at or below such a path that
+    /// only a record RocksDB kept leads to, which RocksDB takes and the
+    /// candidate refuses.
+    TakenBelowPlainDelete,
+    /// A dedicated insert into an indexed tree, over a child that is a
+    /// tree with elements, that both engines refuse alike after the
+    /// removal of what the child held: RocksDB keeps the removal in the
+    /// caller's transaction and LigninDB rolls it back.
+    SweptByARefusedInsert,
 }
 
 /// How many families there are.
 const FAMILIES: usize = Family::ALL.len();
+
+/// What the engines said of a batch that both refused, for the one
+/// shape in which the candidate refused at a record that a plain delete
+/// left and the reference further on ([`Known::family_of_refused_write`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AtALeftRecord<'a> {
+    /// The subtree of the batch under such a record
+    /// ([`Known::under_a_left_record`]), if there is one.
+    pub subtrees: &'a [Path],
+    /// The remarks of the reference at the step.
+    pub reference_said: &'a [String],
+    /// The remarks of the candidate at the step.
+    pub candidate_said: &'a [String],
+    /// Whether the reference was charged more bytes loaded than the
+    /// candidate, and no fewer seeks and hash calls.
+    pub reference_read_more: bool,
+    /// Whether the grove version is one on which a batch of plain
+    /// deletes looks at its operations in the order they are listed
+    /// before it applies any ([`Known::looks_in_the_order_listed`]):
+    /// the fourth and later. On the earlier ones it opens its subtrees
+    /// from the deepest level up.
+    pub in_the_order_listed: bool,
+}
+
+/// The paths that a batch `op` opens where it lists nothing but
+/// operations that open their own path and those above it
+/// ([`opens_its_own_paths_alone`]): the subtree of each of its
+/// operations and each subtree above one.
+fn opened_by(op: &Op) -> BTreeSet<Path> {
+    let mut opened = BTreeSet::new();
+    for subtree in written_subtrees(op, true) {
+        for depth in 1..=subtree.len() {
+            opened.insert(subtree[..depth].to_vec());
+        }
+    }
+    opened
+}
+
+/// Whether a batch `op` lists nothing but plain deletes and puts, made
+/// whatever the key holds, of elements that are no references. Where
+/// the store holds no element that takes part in backward references,
+/// the Merks that such a batch opens by the element above them are
+/// those of [`opened_by`]: a reference makes a batch open the subtree
+/// of what it points at, a delete or a put over an element with
+/// backward references that of the element at the other end, and what
+/// the other kinds of operation open is not looked into here.
+fn opens_its_own_paths_alone(op: &Op) -> bool {
+    op.batch_ops().all(|batch_op| match batch_op {
+        BatchOp::Delete { .. } => true,
+        BatchOp::InsertOrReplace { element, .. } => !element.is_reference(),
+        _ => false,
+    })
+}
+
+/// Whether one of the remarks `said` is the refusal of a batch for no
+/// element above `subtree` ([`refuses_for_no_element_above`]), and no
+/// other path that `op` opens ([`opened_by`]) prints so. The words
+/// print a path and a key as text, in which two paths can read alike:
+/// a remark that two paths of the batch could have produced says
+/// nothing, whatever those paths are.
+fn says_no_element_above_alone(op: &Op, said: &[String], subtree: &Path) -> bool {
+    let words = |subtree: &Path| {
+        let (key, above) = subtree.split_last()?;
+        Some(refuses_for_no_element_above(above, key))
+    };
+    let Some(so) = words(subtree) else {
+        return false;
+    };
+    let another = |other: &Path| other != subtree && words(other).as_ref() == Some(&so);
+    said.contains(&so) && !opened_by(op).iter().any(another)
+}
+
+/// The places at which a batch `op` can put an element: those that its
+/// operations name, but for the operations that only remove one.
+fn places_put_at(op: &Op) -> Vec<Path> {
+    let removes = |batch_op: &&BatchOp| {
+        matches!(
+            batch_op,
+            BatchOp::Delete { .. } | BatchOp::DeleteTree { .. } | BatchOp::DropFlat { .. }
+        )
+    };
+    op.batch_ops()
+        .filter(|batch_op| !removes(batch_op))
+        .flat_map(keyed)
+        .collect()
+}
+
+/// What an engine says where a batch writes into the subtree under `key`
+/// in the subtree at `above` and no element is read there, as a remark of
+/// the runner has it: GroveDB's words where it opens the Merk of a
+/// batch's path by the element above it (`grovedb/src/batch/mod.rs`,
+/// "could not get key for parent of subtree for batch").
+fn refuses_for_no_element_above(above: &[Vec<u8>], key: &[u8]) -> String {
+    let path: Vec<String> = above.iter().map(|segment| hex_to_ascii(segment)).collect();
+    format!(
+        "failed: invalid path: could not get key for parent of subtree for batch at path [{}] \
+         for key {}",
+        path.join("/"),
+        hex_to_ascii(key)
+    )
+}
+
+/// The trees a batch removes or replaces over records that the
+/// reference kept ([`Known::kept_below_a_removed_tree`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeptBelow {
+    /// The trees.
+    pub trees: Vec<Path>,
+    /// The hash calls GroveDB charges for the paths of the subtrees
+    /// under the node records that the reference alone holds at or
+    /// below them and that are the element of a tree which keeps a
+    /// Merk: for each such subtree what `build_prefix` charges for its
+    /// path, one call for every 64 bytes begun of the path's message.
+    pub path_hashes: u64,
+}
+
+/// The first grove version on which a batch looks through a tree that
+/// it removes for elements that take part in backward references.
+const FIRST_VERSION_THAT_LOOKS_THROUGH_A_REMOVED_TREE: u32 = 4;
+
+/// The most node records at and below a tree that
+/// [`Known::kept_below_a_removed_tree`] lists of an engine.
+const MOST_LISTED_BELOW: usize = 4096;
 
 /// The last grove version on which GroveDB leaves the records of an
 /// indexed tree where they are when an element is put over it.
@@ -150,13 +511,19 @@ const LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS: u32 = 3;
 
 impl Family {
     /// Every family.
-    pub const ALL: [Family; 6] = [
+    pub const ALL: [Family; 12] = [
         Family::WrittenOver,
         Family::BelowFlatDrop,
         Family::DroppedTree,
         Family::IndexedOverIndexed,
         Family::DroppedTreeProof,
         Family::InsertOnlyOverIndexed,
+        Family::BelowPlainDelete,
+        Family::RootKeyLeftBehind,
+        Family::KeptRecordsCost,
+        Family::RefusedBelowPlainDelete,
+        Family::TakenBelowPlainDelete,
+        Family::SweptByARefusedInsert,
     ];
 
     /// What a report calls the family.
@@ -175,7 +542,41 @@ impl Family {
                 "an indexed tree written over an indexed tree by an insert known not to replace, \
                  grove versions 4 and 5"
             }
+            Family::BelowPlainDelete => {
+                "below a tree that a batch's plain delete removed while it held elements"
+            }
+            Family::RootKeyLeftBehind => {
+                "a write after a delete at the root path that left the root-key record behind, \
+                 grove versions 1 to 3"
+            }
+            Family::KeptRecordsCost => {
+                "the cost of a checked batch that removes or replaces a tree over records that \
+                 RocksDB kept, grove versions 4 and 5"
+            }
+            Family::RefusedBelowPlainDelete => {
+                "a write that both engines refuse at or below a tree that a batch's plain delete \
+                 removed while it held elements"
+            }
+            Family::TakenBelowPlainDelete => {
+                "a write below a tree that a batch's plain delete removed, into a subtree that \
+                 only a record RocksDB kept leads to, which RocksDB takes and LigninDB refuses"
+            }
+            Family::SweptByARefusedInsert => {
+                "a dedicated insert into an indexed tree over a tree with elements, refused by \
+                 both after its removal, which RocksDB keeps and LigninDB rolls back"
+            }
         }
+    }
+
+    /// Whether a case ends at an answer of the family. Below a plain
+    /// delete it does not: the answer is of a read, which changes
+    /// nothing, or of a write that differs in what it was charged for
+    /// reading and in nothing it wrote, and is passed over.
+    pub fn ends_a_case(self) -> bool {
+        !matches!(
+            self,
+            Family::BelowPlainDelete | Family::KeptRecordsCost | Family::RefusedBelowPlainDelete
+        )
     }
 
     fn index(self) -> usize {
@@ -186,6 +587,12 @@ impl Family {
             Family::IndexedOverIndexed => 3,
             Family::DroppedTreeProof => 4,
             Family::InsertOnlyOverIndexed => 5,
+            Family::BelowPlainDelete => 6,
+            Family::RootKeyLeftBehind => 7,
+            Family::KeptRecordsCost => 8,
+            Family::RefusedBelowPlainDelete => 9,
+            Family::TakenBelowPlainDelete => 10,
+            Family::SweptByARefusedInsert => 11,
         }
     }
 }
@@ -194,17 +601,28 @@ impl Family {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     /// The cases that made a place of the family: an element put over a
-    /// tree that held elements, or a flat drop of a tree, whatever it
-    /// held; for the two families of an indexed tree over an indexed tree
-    /// the cases in which the reference took such a put, whatever the
-    /// candidate answered; and for a dropped tree through a proof, which
-    /// is counted apart, the cases that ended there.
+    /// tree that held elements, a flat drop of a tree, whatever it
+    /// held, or a batch's plain delete of a tree that left a record
+    /// under its path; for the two families of an indexed tree over an
+    /// indexed tree the cases in which the reference took such a put,
+    /// whatever the candidate answered; for the root-key record left
+    /// behind the cases in which both engines took a delete at the root
+    /// path of a tree that held elements, whether or not it changed the
+    /// root; and for a dropped tree through a proof and for the cost of
+    /// a batch that removes a tree made again below a plain delete,
+    /// which are counted apart, the cases that came to such a step;
+    /// and for a dedicated insert refused after its removal the cases
+    /// that came to one.
     pub histories: [u64; FAMILIES],
     /// The cases in which the engines stored different records in a
     /// subtree of the family, which were passed over.
     pub stored: [u64; FAMILIES],
     /// The cases that ended at an answer the engines gave differently at
-    /// an operation that names a place of the family.
+    /// an operation that names a place of the family. For the family
+    /// below a plain delete, the cases with a read that the engines
+    /// answered differently there, which was passed over and ended no
+    /// case, and for the cost of a batch that removes a tree made again
+    /// there, the cases with such a cost, passed over likewise.
     pub answers: [u64; FAMILIES],
     /// The seed of a case counted in `stored`: of the first whose counts
     /// were added.
@@ -236,9 +654,24 @@ impl Counts {
         self.stored.iter().sum()
     }
 
-    /// The cases that ended at an answer of a family.
+    /// The cases with an answer of a family, a case counted once for
+    /// each family it has one of: those that ended there, and for a
+    /// family at whose answers no case ends ([`Family::ends_a_case`])
+    /// those that passed one over.
     pub fn answer_differences(&self) -> u64 {
         self.answers.iter().sum()
+    }
+
+    /// The cases with an answer of `family`.
+    pub fn answers_of(&self, family: Family) -> u64 {
+        self.answers[family.index()]
+    }
+
+    /// Whether something was passed over: stored records that differ, or
+    /// an answer of a family at whose answers no case ends.
+    pub fn passed_over(&self) -> bool {
+        let passed = |family: &Family| !family.ends_a_case() && self.answers_of(*family) > 0;
+        self.stored_differences() > 0 || Family::ALL.iter().any(passed)
     }
 
     /// The counts, a line for each family that has one.
@@ -253,9 +686,16 @@ impl Counts {
             })
             .map(|family| {
                 let at = family.index();
+                let answers = match family {
+                    Family::BelowPlainDelete => "with a read that differs passed over",
+                    Family::KeptRecordsCost => "with such a cost passed over",
+                    Family::RefusedBelowPlainDelete => "with such a refusal passed over",
+                    Family::SweptByARefusedInsert => "ended there",
+                    _ => "ended at an answer that differs",
+                };
                 format!(
                     "open difference, {}: {} cases made it, {} with stored records that differ \
-                     passed over{}, {} ended at an answer that differs{}",
+                     passed over{}, {} {answers}{}",
                     family.name(),
                     self.histories[at],
                     self.stored[at],
@@ -280,10 +720,98 @@ fn refusal_of_rows_left(key: &[u8]) -> String {
     )
 }
 
+/// The words of LigninDB's refusal of a write of a node of a Merk whose
+/// root-key record does not name its root, after the keys it names
+/// (`RootLeftBehind::refusal` of `merk/src/store/lignin/mod.rs`).
+const REFUSAL_OF_A_ROOT_KEY_LEFT_BEHIND: &str =
+    ": no node of a Merk is written where its root-key record was read and does not name its \
+     root. On grove versions 1 to 3 the delete of a tree that holds elements leaves the record \
+     so where it changes the root of the Merk the tree was in \
+     (grovedb/src/operations/delete/delete_internal_on_transaction/v0.rs, GroveDB #686 and #1065)";
+
+/// Whether `remark` is, whole, the message the corpus runner records
+/// where LigninDB refuses a write of a node of the root Merk because its
+/// root-key record does not name its root: the record absent or naming
+/// a key, and the root under another key, each in lowercase hex as the
+/// refusal writes it.
+fn refuses_for_the_root_key_left_behind(remark: &str) -> bool {
+    let root_merk = hex::encode(build_prefix(SubtreePath::from(&[] as &[&[u8]])).unwrap());
+    let opening =
+        format!("failed: not supported: lignindb: the root-key record of Merk {root_merk} ");
+    let a_key = |rest: &'_ str| -> Option<usize> {
+        let hex = |byte: &u8| matches!(byte, b'0'..=b'9' | b'a'..=b'f');
+        let digits = rest.bytes().take_while(hex).count();
+        (digits % 2 == 0).then_some(digits)
+    };
+    let parsed = || {
+        let rest = remark.strip_prefix(&opening)?;
+        let (record, rest) = match rest.strip_prefix("is absent") {
+            Some(rest) => (None, rest),
+            None => {
+                let rest = rest.strip_prefix("names the key ")?;
+                let (key, rest) = rest.split_at(a_key(rest)?);
+                (Some(key), rest)
+            }
+        };
+        let rest = rest.strip_prefix(", and the root of that Merk is the node under the key ")?;
+        let (root, rest) = rest.split_at(a_key(rest)?);
+        Some(record != Some(root) && rest == REFUSAL_OF_A_ROOT_KEY_LEFT_BEHIND)
+    };
+    parsed().unwrap_or(false)
+}
+
+/// Whether `op` is a write of elements: a direct write other than of an
+/// aux record, or a batch of any kind.
+fn writes_elements(op: &Op) -> bool {
+    match op {
+        Op::Write(Write::PutAux { .. } | Write::DeleteAux { .. }) => false,
+        Op::Write(_)
+        | Op::Batch(_)
+        | Op::PartialBatch(_)
+        | Op::FlagsBatch(_)
+        | Op::FlagsPartialBatch(_)
+        | Op::FlagsHandoverBatch(_) => true,
+        Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => false,
+    }
+}
+
 /// The places of the families that one case has made.
 #[derive(Clone, Debug, Default)]
 pub struct Known {
     over: Vec<Path>,
+    /// The trees that a batch's plain delete removed while they held
+    /// elements, a record of which the reference kept.
+    plain_deletes: Vec<Path>,
+    /// The node records the reference held at or below such a tree
+    /// right before the plain delete that removed it, less every one at
+    /// whose key the case has written since ([`Known::left_records`],
+    /// [`Known::forgets`]): the records that the delete left with no
+    /// element leading to them, by what the case did and not by what an
+    /// engine holds now.
+    left_records: BTreeSet<NodeKey>,
+    /// `left_records` as it was at the last commit that the reference
+    /// took, and nothing before the first: what a rollback of the block
+    /// returns the case to ([`Known::forgets`]).
+    left_at_commit: BTreeSet<NodeKey>,
+    /// Every path at which an operation of the case, whatever it was
+    /// answered, drops a tree flat: where a drain may delete the
+    /// records that RocksDB kept ([`Known::forgets`]).
+    asked_to_drop_flat: Vec<Path>,
+    /// Whether an operation of the case has carried an element that
+    /// takes part in backward references (an item that keeps them, or
+    /// a bidirectional reference), whatever it was answered. From
+    /// grove version 4 on, a batch that deletes or replaces such an
+    /// element opens the subtrees of the elements at the other end,
+    /// which no operation of the batch names: in such a case the words
+    /// of a refusal are held to no path, and no write that the
+    /// reference alone takes, and no cost of a refused batch, is of a
+    /// family.
+    backward_references: bool,
+    /// Whether both engines took a delete at the root path of a tree
+    /// that held elements, on a grove version that can leave the
+    /// root-key record behind there, and no write since that both took
+    /// and that changed the root hash.
+    root_delete: bool,
     flat_drops: Vec<Path>,
     /// The trees among `flat_drops` whose drop has a pending record, as
     /// [`Known::pending`] was last told.
@@ -410,6 +938,122 @@ fn flat_drops(op: &Op) -> Vec<Path> {
     }
     drops.retain(|place| named_once(op, place));
     drops
+}
+
+/// The trees a batch `op` removes by a plain delete, as the families
+/// count them for an operation the reference takes ([`counted`],
+/// [`named_once`]).
+fn plain_deletes(op: &Op) -> Vec<Path> {
+    let mut deletes = Vec::new();
+    for batch_op in counted(op, true) {
+        if let BatchOp::Delete { path, key } = batch_op {
+            deletes.push(joined(path, key));
+        }
+    }
+    deletes.retain(|place| named_once(op, place));
+    deletes
+}
+
+/// Whether `transaction` reads in `db` a tree at `place` as empty, and
+/// nothing where it cannot ask: where no tree is there, or the read
+/// fails.
+fn reads_empty<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    place: &Path,
+    grove_version: &GroveVersion,
+) -> Option<bool> {
+    db.is_empty_tree(place.as_slice(), Some(transaction), grove_version)
+        .value
+        .ok()
+}
+
+/// Whether `transaction` reads in `db` a tree at `place` that holds an
+/// element.
+fn holds_elements<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    place: &Path,
+    grove_version: &GroveVersion,
+) -> bool {
+    let Some((key, above)) = place.split_last() else {
+        return false;
+    };
+    let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+    let element = db
+        .get_raw(
+            above.as_slice().into(),
+            key,
+            Some(transaction),
+            grove_version,
+        )
+        .value;
+    if !element.is_ok_and(|element| element.is_any_tree()) {
+        return false;
+    }
+    let place: Vec<&[u8]> = place.iter().map(Vec::as_slice).collect();
+    db.is_empty_tree(place.as_slice(), Some(transaction), grove_version)
+        .value
+        .is_ok_and(|empty| !empty)
+}
+
+/// The subtrees `op` writes elements into: of a direct write the subtree
+/// it names, and of a batch that of each operation the families count
+/// for it, where `taken` says whether the reference took it
+/// ([`counted`]).
+fn written_subtrees(op: &Op, taken: bool) -> Vec<Path> {
+    let mut subtrees = Vec::new();
+    if let Op::Write(write) = op {
+        match write {
+            Write::Insert { path, .. }
+            | Write::Delete { path, .. }
+            | Write::ClearSubtree { path }
+            | Write::Append { path, .. }
+            | Write::DropFlat { path, .. }
+            | Write::InsertIfNotExists { path, .. }
+            | Write::InsertIfChanged { path, .. }
+            | Write::DeleteIfEmptyTree { path, .. }
+            | Write::DeleteUpTree { path, .. }
+            | Write::DeleteBuilt { path, .. }
+            | Write::IndexedInsert { path, .. }
+            | Write::IndexedDelete { path, .. }
+            | Write::ReconcileIndexed { path }
+            | Write::CommitmentInsert { path, .. }
+            | Write::SectionalDelete { path, .. }
+            | Write::SectionalDeleteUpTree { path, .. }
+            | Write::ConvertToBigSumTree { path, .. } => subtrees.push(path.clone()),
+            Write::PutAux { .. } | Write::DeleteAux { .. } => {}
+        }
+    }
+    subtrees.extend(counted(op, taken).map(|batch_op| batch_op.path().clone()));
+    subtrees
+}
+
+/// Whether `transaction` reads in `db` a tree at `place` that keeps a
+/// Merk and whose element names a root: the tree a batch of grove
+/// version 4 or 5 looks through before it removes it.
+fn names_a_root_in_a_merk<'db, E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: &Tx<'db, E>,
+    place: &Path,
+    grove_version: &GroveVersion,
+) -> bool {
+    let Some((key, above)) = place.split_last() else {
+        return false;
+    };
+    let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+    let element = db
+        .get_raw(
+            above.as_slice().into(),
+            key,
+            Some(transaction),
+            grove_version,
+        )
+        .value;
+    element.is_ok_and(|tree| {
+        let root = tree.root_key_and_tree_type();
+        !tree.uses_non_merk_data_storage() && root.is_some_and(|(root, _)| root.is_some())
+    })
 }
 
 fn read_places(read: &Read, places: &mut Vec<Path>) {
@@ -612,30 +1256,537 @@ impl Known {
         op: &Op,
         grove_version: &GroveVersion,
     ) -> Vec<Path> {
-        let holds_elements = |place: &Path| {
-            let Some((key, above)) = place.split_last() else {
+        let mut trees = puts(op);
+        trees.retain(|place| holds_elements(db, transaction, place, grove_version));
+        trees
+    }
+
+    /// The trees that hold elements, as `transaction` reads `db`, among
+    /// those that a batch `op` removes by a plain delete: asked before
+    /// the operation is applied.
+    pub fn trees_under_a_plain_delete<'db, E: StreamEngine>(
+        db: &'db Db<E>,
+        transaction: &Tx<'db, E>,
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> Vec<Path> {
+        let mut trees = plain_deletes(op);
+        trees.retain(|place| holds_elements(db, transaction, place, grove_version));
+        trees
+    }
+
+    /// Those of `trees` under whose path `transaction` reads a record in
+    /// `db` ([`a_record_is_under`]): asked of the reference once a batch
+    /// that removed them by a plain delete
+    /// ([`Known::trees_under_a_plain_delete`]) is applied, and handed to
+    /// [`Known::took`]. Where the reference cannot be read, none.
+    pub fn left_a_record<'db, E: StreamEngine>(
+        db: &'db Db<E>,
+        transaction: &Tx<'db, E>,
+        mut trees: Vec<Path>,
+    ) -> Vec<Path> {
+        trees.retain(|tree| a_record_is_under(db, transaction, tree).is_ok_and(|left| left));
+        trees
+    }
+
+    /// The trees that `op`, a whole batch of checked operations
+    /// ([`Op::Batch`] that lists no flat drop), removes by a plain
+    /// delete or replaces by a put that is made whatever the key holds,
+    /// on a grove version from the fourth on, where `candidate` reads a
+    /// tree that keeps a Merk and whose element names a root, and at or
+    /// below which `reference` holds node records that `candidate` does
+    /// not hold, each as its block sees it ([`node_keys_below`]), every
+    /// one of them in a subtree at or below a place where RocksDB kept
+    /// records (of [`Family::BelowPlainDelete`] or
+    /// [`Family::WrittenOver`]): asked before the operation is applied.
+    /// A tree at or below which an engine holds
+    /// more than [`MOST_LISTED_BELOW`] records, or cannot be read, is
+    /// none. A batch of operations that declare no check looks through
+    /// nothing before it removes a tree, and has none. A partial batch
+    /// has none either: this family is of whole batches alone, whatever
+    /// a partial batch looks through. With the trees, what the paths of the subtrees cost in
+    /// hash calls that the look opens under the records which the
+    /// reference alone holds at or below them: under each that is the
+    /// element of a tree that keeps a Merk ([`KeptBelow::path_hashes`]).
+    pub fn kept_below_a_removed_tree<'db, A: StreamEngine, B: StreamEngine>(
+        &self,
+        reference: (&'db Db<A>, &Tx<'db, A>),
+        candidate: (&'db Db<B>, &Tx<'db, B>),
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> KeptBelow {
+        // A flat drop is the one operation of such a batch that declares
+        // no check: a batch that lists one is not a batch of checked
+        // operations.
+        let checked = |batch_op: &BatchOp| !matches!(batch_op, BatchOp::DropFlat { .. });
+        let checked_and_whole = matches!(op, Op::Batch(_)) && op.batch_ops().all(checked);
+        let no_place = self.plain_deletes.is_empty() && self.over.is_empty();
+        if grove_version.protocol_version < FIRST_VERSION_THAT_LOOKS_THROUGH_A_REMOVED_TREE
+            || !checked_and_whole
+            || no_place
+        {
+            return KeptBelow::default();
+        }
+        let mut trees = plain_deletes(op);
+        trees.extend(puts(op));
+        trees.retain(|tree| {
+            let (db, transaction) = candidate;
+            names_a_root_in_a_merk(db, transaction, tree, grove_version)
+        });
+        // A record is one that a plain delete or an element written
+        // over a tree left where its subtree is at or below the place
+        // of one.
+        let kept = |(subtree, _): &&NodeKey| {
+            let mut places = self.plain_deletes.iter().chain(&self.over);
+            places.any(|place| subtree.starts_with(place))
+        };
+        // The records the reference alone holds that are the element of
+        // a tree that keeps a Merk, each once though two of the trees
+        // hold it.
+        let mut merks = BTreeSet::new();
+        trees.retain(|tree| {
+            let most = MOST_LISTED_BELOW;
+            let was = node_records_below(reference.0, reference.1, tree, most, grove_version);
+            let is = node_keys_below(candidate.0, candidate.1, tree, most, grove_version);
+            match (was, is) {
+                (Ok(Some(was)), Ok(Some(is))) => {
+                    let more: Vec<&NodeKey> = was.keys().filter(|key| !is.contains(*key)).collect();
+                    let counts = !more.is_empty() && more.iter().all(kept);
+                    if counts {
+                        merks.extend(more.into_iter().filter(|key| was[*key]).cloned());
+                    }
+                    counts
+                }
+                _ => false,
+            }
+        });
+        let path_hashes = merks.iter().map(|(subtree, key)| {
+            let opened = joined(subtree, key);
+            let segments: Vec<&[u8]> = opened.iter().map(Vec::as_slice).collect();
+            let prefix = build_prefix(SubtreePath::from(segments.as_slice()));
+            u64::from(prefix.cost.hash_node_calls)
+        });
+        KeptBelow {
+            path_hashes: path_hashes.sum(),
+            trees,
+        }
+    }
+
+    /// The family of a differing answer to a batch that removes the
+    /// trees `kept` ([`Known::kept_below_a_removed_tree`]), which the
+    /// engines answered with `reference` and `candidate` and differently
+    /// in `parts`: [`Family::KeptRecordsCost`] where there is such a
+    /// tree, both engines took the batch, or both refused it with the
+    /// same error and with `refused_after_the_look` each has the root
+    /// hash it had and refused at an operation that the batch lists
+    /// after the removals ([`Known::refused_after_the_look`]),
+    /// they differ in the cost and in
+    /// no other part, and the costs differ in the seeks, the bytes
+    /// loaded and the hash calls alone, the reference's being no smaller
+    /// in any, and its hash calls the larger by no more than the paths
+    /// of the subtrees cost that the look opens under the records it
+    /// alone holds ([`KeptBelow::path_hashes`]; D-394, D-403). None
+    /// otherwise.
+    pub fn family_of_cost(
+        kept: &KeptBelow,
+        reference: &Step,
+        candidate: &Step,
+        parts: &[Part],
+        refused_after_the_look: bool,
+    ) -> Option<Family> {
+        let (was, is) = (&reference.cost, &candidate.cost);
+        let read_alone = OperationCost {
+            seek_count: was.seek_count,
+            storage_loaded_bytes: was.storage_loaded_bytes,
+            hash_node_calls: was.hash_node_calls,
+            ..is.clone()
+        } == *was;
+        let more =
+            was.seek_count >= is.seek_count && was.storage_loaded_bytes >= is.storage_loaded_bytes;
+        let opened = was.hash_node_calls.checked_sub(is.hash_node_calls);
+        let opened = opened.is_some_and(|hashes| u64::from(hashes) <= kept.path_hashes);
+        let alike = match (&reference.outcome, &candidate.outcome) {
+            (Outcome::Returned(_), Outcome::Returned(_)) => true,
+            (Outcome::Failed(was), Outcome::Failed(is)) => was == is && refused_after_the_look,
+            _ => false,
+        };
+        (!kept.trees.is_empty() && alike && parts == [Part::Cost] && read_alone && more && opened)
+            .then_some(Family::KeptRecordsCost)
+    }
+
+    /// Whether a batch `op` that both engines refused looked through the
+    /// trees `kept` ([`Known::kept_below_a_removed_tree`]) on both
+    /// engines before it was refused, as far as the refusals show it.
+    ///
+    /// On grove versions 4 and 5 a batch of plain deletes looks at its
+    /// operations in the order they are listed, before it applies any:
+    /// it opens the subtree of each, and looks through the tree that
+    /// the operation removes. So both engines looked through every
+    /// such tree where: `op` is a whole batch that lists plain deletes
+    /// and nothing else; the case has met no element that takes part
+    /// in backward references; both engines said the same words,
+    /// GroveDB's for no element above a subtree
+    /// ([`refuses_for_no_element_above`]), which no other path of the
+    /// batch prints so ([`says_no_element_above_alone`]); and the
+    /// first operation of the batch into that subtree is listed after
+    /// the delete of each of the trees. A batch that is refused at an
+    /// operation before such a delete, or by the engines at different
+    /// operations, has not looked on both.
+    pub fn refused_after_the_look(
+        &self,
+        op: &Op,
+        kept: &KeptBelow,
+        reference_said: &[String],
+        candidate_said: &[String],
+    ) -> bool {
+        let deletes_alone = matches!(op, Op::Batch(_))
+            && (op.batch_ops()).all(|batch_op| matches!(batch_op, BatchOp::Delete { .. }));
+        if !deletes_alone || self.backward_references || kept.trees.is_empty() {
+            return false;
+        }
+        let refused_at = op.batch_ops().position(|batch_op| {
+            let subtree = batch_op.path();
+            says_no_element_above_alone(op, reference_said, subtree)
+                && says_no_element_above_alone(op, candidate_said, subtree)
+        });
+        let removed_at = |tree: &Path| {
+            op.batch_ops().position(|batch_op| match batch_op {
+                BatchOp::Delete { path, key } => joined(path, key) == *tree,
+                _ => false,
+            })
+        };
+        refused_at.is_some_and(|refused_at| {
+            (kept.trees.iter()).all(|tree| removed_at(tree).is_some_and(|at| at < refused_at))
+        })
+    }
+
+    /// The subtree that `op` writes into and whose own element is a
+    /// record that a plain delete left, where `op` is of the one shape
+    /// in which the order of its opens is known: none, or one.
+    ///
+    /// - On the first three grove versions a batch of plain deletes
+    ///   opens its subtrees from the deepest level up, and opens nothing
+    ///   before: there the subtree is deeper than every other subtree
+    ///   the batch writes into. From the fourth on such a batch looks at
+    ///   its operations in the order they are listed, before it applies
+    ///   any: there the subtree is that of the first operation listed,
+    ///   and the case has met no element that takes part in backward
+    ///   references.
+    /// - `op` is a batch or a batch with the flags callbacks that lists
+    ///   plain deletes and nothing else: it puts no tree, follows no
+    ///   reference, and opens the paths of [`opened_by`] alone.
+    /// - Either way the subtree is the first that the batch opens.
+    /// - The record under the subtree's key in the subtree above is one
+    ///   the case remembers ([`Known::left_records`],
+    ///   [`Known::forgets`]), which `reference` holds as the element of
+    ///   a tree that keeps a Merk, so that it can open the subtree by
+    ///   it, and `candidate` does not hold.
+    ///
+    /// Asked before the operation is applied. The tree that the delete
+    /// removed need not have been made again: GroveDB opens the Merk of
+    /// a batch's path by the element right above it and by nothing
+    /// higher.
+    pub fn under_a_left_record<'db, A: StreamEngine, B: StreamEngine>(
+        &self,
+        reference: (&'db Db<A>, &Tx<'db, A>),
+        candidate: (&'db Db<B>, &Tx<'db, B>),
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> Vec<Path> {
+        let deletes_alone = matches!(op, Op::Batch(_) | Op::FlagsBatch(_))
+            && (op.batch_ops()).all(|batch_op| matches!(batch_op, BatchOp::Delete { .. }));
+        let listed = Self::looks_in_the_order_listed(grove_version);
+        if self.left_records.is_empty() || !deletes_alone || (listed && self.backward_references) {
+            return Vec::new();
+        }
+        let mut subtrees = written_subtrees(op, true);
+        subtrees.sort();
+        subtrees.dedup();
+        let deepest = subtrees.iter().map(Vec::len).max().unwrap_or(0);
+        let alone = subtrees.iter().filter(|path| path.len() == deepest).count() == 1;
+        let first_listed = op.batch_ops().next().map(BatchOp::path);
+        subtrees.retain(|subtree| {
+            let Some((key, above)) = subtree.split_last() else {
                 return false;
             };
-            let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
-            let element = db
-                .get_raw(
-                    above.as_slice().into(),
-                    key,
-                    Some(transaction),
-                    grove_version,
-                )
-                .value;
-            if !element.is_ok_and(|element| element.is_any_tree()) {
+            let record = (above.to_vec(), key.clone());
+            let opened_first = match listed {
+                true => first_listed == Some(subtree),
+                false => alone && subtree.len() == deepest,
+            };
+            if !opened_first || !self.left_records.contains(&record) {
                 return false;
             }
-            let place: Vec<&[u8]> = place.iter().map(Vec::as_slice).collect();
-            db.is_empty_tree(place.as_slice(), Some(transaction), grove_version)
-                .value
-                .is_ok_and(|empty| !empty)
+            let (db, transaction) = reference;
+            let most = MOST_LISTED_BELOW;
+            let kept = node_records_below(db, transaction, above, most, grove_version);
+            let a_tree = matches!(kept, Ok(Some(kept)) if kept.get(&record) == Some(&true));
+            a_tree && a_node_is_under(candidate.0, candidate.1, above, key) == Ok(false)
+        });
+        subtrees
+    }
+
+    /// Whether a batch of plain deletes looks at its operations in the
+    /// order they are listed before it applies any, on `grove_version`:
+    /// from the fourth on.
+    pub fn looks_in_the_order_listed(grove_version: &GroveVersion) -> bool {
+        grove_version.protocol_version >= FIRST_VERSION_THAT_LOOKS_THROUGH_A_REMOVED_TREE
+    }
+
+    /// The family of a differing answer to `op` which the engines
+    /// answered with `reference` and `candidate` and differently in
+    /// `parts`: [`Family::RefusedBelowPlainDelete`] where `op` is a write
+    /// of elements, both engines refused it, they differ in the cost or
+    /// the error and in no other part, with `unchanged` the root hash of
+    /// each engine after it is that engine's own from before it, and
+    /// one of two holds.
+    ///
+    /// - One at least of the subtrees it writes into
+    ///   ([`written_subtrees`]) is at or below a place of
+    ///   [`Family::BelowPlainDelete`] and every other is the subtree such
+    ///   a removed tree was in. The subtrees are those of every
+    ///   operation the batch lists, with what the caller of a partial
+    ///   batch adds: how far a refused batch came is not known.
+    /// - `at` holds ([`AtALeftRecord`]): `op` is a batch of plain
+    ///   deletes whose first opened subtree is under a record that a
+    ///   plain delete left ([`Known::under_a_left_record`]); both
+    ///   answers are `InvalidPath`; the candidate's remark is GroveDB's
+    ///   for no element above that subtree, and the reference's is
+    ///   GroveDB's for no element above a path that the batch opens
+    ///   later (on the first three grove versions another, shallower
+    ///   path; from the fourth on the subtree of an operation that is
+    ///   listed after the first one into that subtree), each printed so
+    ///   by no other path of the batch
+    ///   ([`says_no_element_above_alone`]); and the reference was
+    ///   charged more bytes loaded than the candidate and no fewer seeks
+    ///   and hash calls. The candidate refused at the first subtree the
+    ///   batch opens, whose element it does not hold; the reference
+    ///   read the record it kept there, opened the subtree, and refused
+    ///   at a level it came to afterwards.
+    ///
+    /// None otherwise: a write that one engine takes is of no family
+    /// here.
+    pub fn family_of_refused_write(
+        &self,
+        op: &Op,
+        reference: &Outcome,
+        candidate: &Outcome,
+        parts: &[Part],
+        unchanged: bool,
+        at: &AtALeftRecord,
+    ) -> Option<Family> {
+        let refused = |outcome: &Outcome| matches!(outcome, Outcome::Failed(_));
+        let of_the_refusal = |part: &Part| matches!(part, Part::Cost | Part::Error);
+        let below = |path: &Path| self.plain_deletes.iter().any(|tree| path.starts_with(tree));
+        let above = |path: &Path| {
+            let was_in = |tree: &Path| tree.split_last().is_some_and(|(_, above)| above == path);
+            self.plain_deletes.iter().any(was_in)
         };
-        let mut trees = puts(op);
-        trees.retain(holds_elements);
-        trees
+        let subtrees = written_subtrees(op, true);
+        let within =
+            subtrees.iter().any(below) && subtrees.iter().all(|path| below(path) || above(path));
+        let invalid =
+            |outcome: &Outcome| matches!(outcome, Outcome::Failed(error) if error == "InvalidPath");
+        let at_a_left_record = || {
+            let said_of = |other: &Path| says_no_element_above_alone(op, at.reference_said, other);
+            let listed_at =
+                |path: &Path| op.batch_ops().position(|batch_op| batch_op.path() == path);
+            let further_on = |subtree: &Path| match at.in_the_order_listed {
+                false => (opened_by(op).iter())
+                    .any(|other| other.len() < subtree.len() && said_of(other)),
+                true => op.batch_ops().map(BatchOp::path).any(|other| {
+                    other != subtree && listed_at(subtree) < listed_at(other) && said_of(other)
+                }),
+            };
+            invalid(reference)
+                && invalid(candidate)
+                && at.reference_read_more
+                && at.subtrees.iter().any(|subtree| {
+                    says_no_element_above_alone(op, at.candidate_said, subtree)
+                        && further_on(subtree)
+                })
+        };
+        (writes_elements(op)
+            && refused(reference)
+            && refused(candidate)
+            && unchanged
+            && !parts.is_empty()
+            && parts.iter().all(of_the_refusal)
+            && (within || at_a_left_record()))
+        .then_some(Family::RefusedBelowPlainDelete)
+    }
+
+    /// The subtrees that `op` writes elements into ([`written_subtrees`])
+    /// and that only a record which a plain delete left names. `op` is a
+    /// direct insert ([`Write::Insert`]), a batch ([`Op::Batch`]) or a
+    /// batch with the flags callbacks ([`Op::FlagsBatch`]), which the
+    /// runner applies in the block that `reference` and `candidate` are
+    /// read in; a partial batch, a handover batch and every other
+    /// operation have none, and so has one that puts a reference or
+    /// lists any operation but plain deletes and puts that are made
+    /// whatever the key holds ([`opens_its_own_paths_alone`]): what
+    /// such an operation opens is not looked into here. A case that has
+    /// met an element which takes part in backward references has none
+    /// either: from grove version 4 on a delete or a put over such an
+    /// element opens the subtree of the element at the other end.
+    /// Asked before the operation is applied.
+    ///
+    /// A subtree is so named where `candidate` reads an element under
+    /// every key of its path but the last, and under the last answers
+    /// that there is none (a read that fails says nothing); the subtree
+    /// above it is at or below a place of [`Family::BelowPlainDelete`];
+    /// the node record under that last key is one the reference held
+    /// below a tree right before the plain delete that removed it and
+    /// that the case has not forgotten since ([`Known::left_records`],
+    /// [`Known::forgets`]); `reference` holds a node record under the
+    /// key now, and `candidate` holds none; and no operation of the
+    /// batch puts an element under that key ([`places_put_at`]): a batch
+    /// that puts the tree brings its own, and a refusal of it is no
+    /// evidence of a kept record. GroveDB reads an element by its key under the
+    /// prefix of its subtree, so RocksDB finds such a record though no
+    /// element of the tree made again leads to it.
+    pub fn named_by_a_kept_record_alone<'db, A: StreamEngine, B: StreamEngine>(
+        &self,
+        reference: (&'db Db<A>, &Tx<'db, A>),
+        candidate: (&'db Db<B>, &Tx<'db, B>),
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> Vec<Path> {
+        let in_the_block = matches!(
+            op,
+            Op::Write(Write::Insert { .. }) | Op::Batch(_) | Op::FlagsBatch(_)
+        );
+        let a_reference = |element: &Element| element.is_reference();
+        let direct_reference =
+            matches!(op, Op::Write(Write::Insert { element, .. }) if a_reference(element));
+        if self.left_records.is_empty()
+            || self.backward_references
+            || !in_the_block
+            || direct_reference
+            || !opens_its_own_paths_alone(op)
+        {
+            return Vec::new();
+        }
+        let put_at = places_put_at(op);
+        let mut subtrees = written_subtrees(op, true);
+        subtrees.sort();
+        subtrees.dedup();
+        let (db, transaction) = candidate;
+        // Whether the candidate reads an element under the key: none
+        // where the read fails.
+        let reads = |above: &[Vec<u8>], key: &[u8]| {
+            let segments: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
+            let above = segments.as_slice().into();
+            let read = db.get_raw_optional(above, key, Some(transaction), grove_version);
+            read.value.ok().map(|element| element.is_some())
+        };
+        subtrees.retain(|subtree| {
+            let Some((key, above)) = subtree.split_last() else {
+                return false;
+            };
+            let record = (above.to_vec(), key.clone());
+            if !self.left_records.contains(&record) || put_at.contains(subtree) {
+                return false;
+            }
+            let leads_there = (1..subtree.len()).all(|depth| {
+                let (key, above) = subtree[..depth].split_last().expect("a key");
+                reads(above, key) == Some(true)
+            });
+            leads_there
+                && reads(above, key) == Some(false)
+                && self
+                    .plain_deletes
+                    .iter()
+                    .any(|tree| above.starts_with(tree))
+                && a_node_is_under(reference.0, reference.1, above, key) == Ok(true)
+                && a_node_is_under(db, transaction, above, key) == Ok(false)
+        });
+        subtrees
+    }
+
+    /// The family of a differing answer to `op`, a write of elements, of
+    /// whose subtrees `named` are named by a record that a plain delete
+    /// left and by nothing else ([`Known::named_by_a_kept_record_alone`]),
+    /// which the engines answered with `reference` and `candidate`, the
+    /// candidate with the remarks `said`:
+    /// [`Family::TakenBelowPlainDelete`] where the reference took the
+    /// write, the candidate's answer is the error `InvalidPath`, and the
+    /// refusal is about such a subtree. For a direct insert that is the
+    /// one subtree it writes into. For a batch, which may write into
+    /// other subtrees too, the candidate must say so, in GroveDB's words
+    /// for a batch at a path whose element it cannot read, with the path
+    /// and the key of such a subtree ([`refuses_for_no_element_above`]),
+    /// where no other path that the batch opens prints so
+    /// ([`says_no_element_above_alone`]): a refusal in other words, or
+    /// one that may be for another path, is of no family here. None
+    /// otherwise.
+    pub fn family_of_taken_write(
+        op: &Op,
+        named: &[Path],
+        reference: &Outcome,
+        candidate: &Outcome,
+        said: &[String],
+    ) -> Option<Family> {
+        let taken = matches!(reference, Outcome::Returned(_));
+        let refused = matches!(candidate, Outcome::Failed(error) if error == "InvalidPath");
+        let about_one = match op {
+            Op::Write(Write::Insert { path, .. }) => named.contains(path),
+            Op::Batch(_) | Op::FlagsBatch(_) => named
+                .iter()
+                .any(|subtree| says_no_element_above_alone(op, said, subtree)),
+            _ => false,
+        };
+        (taken && refused && about_one).then_some(Family::TakenBelowPlainDelete)
+    }
+
+    /// Whether `op` is a delete by `GroveDb::delete` at the root path, on
+    /// a grove version up to the third, of a tree in which `transaction`
+    /// reads an element in `db`: asked before the operation is applied,
+    /// and handed to [`Known::took`] once both engines took it. Such a
+    /// delete leaves the root-key record of the root Merk behind where
+    /// it changes that Merk's root, which is not asked here.
+    pub fn trees_under_a_root_delete<'db, E: StreamEngine>(
+        db: &'db Db<E>,
+        transaction: &Tx<'db, E>,
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> bool {
+        if grove_version.protocol_version > LAST_VERSION_THAT_LEAVES_THE_OLD_ROWS {
+            return false;
+        }
+        let Op::Write(Write::Delete { path, key } | Write::SectionalDelete { path, key }) = op
+        else {
+            return false;
+        };
+        path.is_empty() && holds_elements(db, transaction, &joined(path, key), grove_version)
+    }
+
+    /// The family of a differing answer to `op` which the reference gave
+    /// as `reference` and the candidate as `candidate`, with the
+    /// messages `said`: [`Family::RootKeyLeftBehind`] where the case has
+    /// a delete at the root path of a tree that held elements
+    /// ([`Known::trees_under_a_root_delete`]) which both engines took,
+    /// with no write since that both took and that changed the root
+    /// hash ([`Known::wrote`]), `op` is a
+    /// write of elements, the reference took it, the candidate's answer
+    /// is the error `NotSupported`, and one of its messages is, whole,
+    /// the refusal of a write of a node of the root Merk whose root-key
+    /// record does not name its root. None otherwise.
+    pub fn family_of_root_key_refusal(
+        &self,
+        op: &Op,
+        reference: &Outcome,
+        candidate: &Outcome,
+        said: &[String],
+    ) -> Option<Family> {
+        let taken = matches!(reference, Outcome::Returned(_));
+        let refused = matches!(candidate, Outcome::Failed(error) if error == "NotSupported");
+        let in_those_words = || {
+            said.iter()
+                .any(|remark| refuses_for_the_root_key_left_behind(remark))
+        };
+        (self.root_delete && writes_elements(op) && taken && refused && in_those_words())
+            .then_some(Family::RootKeyLeftBehind)
     }
 
     /// The places at which `op` puts an indexed tree where `transaction`
@@ -797,20 +1948,241 @@ impl Known {
         (taken && refused && !over.is_empty()).then_some(Family::IndexedOverIndexed)
     }
 
-    /// Both engines took `op` and answered it alike: its flat drops and
-    /// the trees it put an element over ([`Known::trees_under`]) are
-    /// places of their families from here on.
-    pub fn took(&mut self, op: &Op, over: Vec<Path>) {
+    /// Both engines took `op` and answered it alike: its flat drops, the
+    /// trees it put an element over ([`Known::trees_under`]) and the
+    /// trees `plain_deletes` that it removed by a plain delete and left
+    /// a record of ([`Known::left_a_record`]) are places of their
+    /// families from here on, and with `root_delete` the case has a
+    /// delete at the root path of a tree that held elements
+    /// ([`Known::trees_under_a_root_delete`]).
+    pub fn took(&mut self, op: &Op, over: Vec<Path>, plain_deletes: Vec<Path>, root_delete: bool) {
         if !over.is_empty() {
             self.counts.histories[Family::WrittenOver.index()] = 1;
         }
         self.over.extend(over);
+        if !plain_deletes.is_empty() {
+            self.counts.histories[Family::BelowPlainDelete.index()] = 1;
+        }
+        self.plain_deletes.extend(plain_deletes);
+        if root_delete {
+            self.counts.histories[Family::RootKeyLeftBehind.index()] = 1;
+            self.root_delete = true;
+        }
         let drops = flat_drops(op);
         if !drops.is_empty() {
             self.counts.histories[Family::BelowFlatDrop.index()] = 1;
             self.counts.histories[Family::DroppedTree.index()] = 1;
         }
         self.flat_drops.extend(drops);
+    }
+
+    /// The node records `db` holds at or below `trees` as `transaction`
+    /// sees them: asked of the reference before an operation for the
+    /// trees its plain deletes remove ([`Known::trees_under_a_plain_delete`]),
+    /// and handed to [`Known::left_records`] once both engines took it.
+    /// A tree with more than [`MOST_LISTED_BELOW`] records, or one that
+    /// cannot be read, gives none.
+    pub fn records_below<'db, E: StreamEngine>(
+        db: &'db Db<E>,
+        transaction: &Tx<'db, E>,
+        trees: &[Path],
+        grove_version: &GroveVersion,
+    ) -> Vec<NodeKey> {
+        let mut records = Vec::new();
+        for tree in trees {
+            let most = MOST_LISTED_BELOW;
+            if let Ok(Some(below)) = node_keys_below(db, transaction, tree, most, grove_version) {
+                records.extend(below);
+            }
+        }
+        records
+    }
+
+    /// Both engines took an operation before which the reference held
+    /// `records` below the trees its plain deletes removed
+    /// ([`Known::records_below`]): those at or below a place of
+    /// [`Family::BelowPlainDelete`] are records that a plain delete
+    /// left. Called after [`Known::took`], which makes the places.
+    pub fn left_records(&mut self, records: Vec<NodeKey>) {
+        let places = &self.plain_deletes;
+        let left = |(subtree, _): &NodeKey| places.iter().any(|tree| subtree.starts_with(tree));
+        self.left_records.extend(records.into_iter().filter(left));
+    }
+
+    /// The case came to `op`, which the reference took (`taken`) or
+    /// refused, with (`root_changed`) or without another root hash than
+    /// it had: a record that a plain delete left is no longer one where
+    /// the operation can have put an element under its key, so that a
+    /// record written since is never taken for one that was left.
+    ///
+    /// - A commit that the reference took keeps the records as they
+    ///   are then, for a rollback.
+    /// - A rollback of the block and an abandoned block, whatever they
+    ///   are answered, return the case to the committed state: the
+    ///   records are again those of the last commit that the reference
+    ///   took, and none where it took none. What the block added, a
+    ///   delete of the block left; what it forgot for a write of the
+    ///   block, it wrote in a block that is gone.
+    /// - An operation that commits by itself (a conversion in a
+    ///   transaction of its own, [`Op::commits_by_itself`]) is no write
+    ///   of the block: it writes into the committed state beside it,
+    ///   and carries its new hash up through a node of every tree above
+    ///   the one it writes. Whatever it is answered, it forgets every
+    ///   record, also those of the last commit.
+    /// - A rollback to a savepoint, which can undo the delete itself,
+    ///   forgets every record, whatever it was answered; a later
+    ///   rollback of the block still returns those of the last commit.
+    /// - A commit that the reference refused, after which the runner
+    ///   begins a new block on the committed state, forgets every
+    ///   record, also those of the last commit.
+    /// - A drain writes beside the block, also into what a rollback
+    ///   returns to: whatever it is answered, it forgets, among the
+    ///   records and among those of the last commit, every record at or
+    ///   below a path at which an operation of the case, whatever it
+    ///   was answered, drops a tree flat. RocksDB's drain deletes the
+    ///   range under the prefix of such a tree, with what it kept there.
+    /// - A write that the reference refused and that left its root hash
+    ///   as it was put no element that an element leads to, and forgets
+    ///   nothing.
+    /// - Any other direct insert forgets the record under the key it
+    ///   names. A direct delete forgets the record under its key and
+    ///   every record below that key. Any other direct write forgets
+    ///   every record at or below the subtree it writes into.
+    /// - An operation of a batch, also one that the caller of a partial
+    ///   batch adds, forgets the record under the key it names; a move
+    ///   forgets every record at or below either of its two keys, since
+    ///   it puts a subtree with what it holds under the new one; and an
+    ///   operation with no key forgets every record at or below its
+    ///   path.
+    ///
+    /// Called before [`Known::left_records`].
+    pub fn forgets(&mut self, op: &Op, taken: bool, root_changed: bool) {
+        let at_or_below = |records: &mut BTreeSet<NodeKey>, path: &Path| {
+            records.retain(|(subtree, key)| !joined(subtree, key).starts_with(path));
+        };
+        let takes_part = |element: &&Element| element.supports_backward_references();
+        if op.elements().iter().any(takes_part) {
+            self.backward_references = true;
+        }
+        if let Op::Write(Write::DropFlat { path, key }) = op {
+            self.asked_to_drop_flat.push(joined(path, key));
+        }
+        for batch_op in op.batch_ops() {
+            if let BatchOp::DropFlat { path, key, .. } = batch_op {
+                self.asked_to_drop_flat.push(joined(path, key));
+            }
+        }
+        if op.commits_by_itself() {
+            self.left_records.clear();
+            self.left_at_commit.clear();
+            return;
+        }
+        match op {
+            Op::Commit if taken => self.left_at_commit = self.left_records.clone(),
+            Op::Commit => {
+                self.left_records.clear();
+                self.left_at_commit.clear();
+            }
+            Op::Transaction(TransactionOp::Rollback | TransactionOp::Abandon) => {
+                self.left_records = self.left_at_commit.clone();
+            }
+            Op::FlushPendingDrops => {
+                for tree in &self.asked_to_drop_flat {
+                    at_or_below(&mut self.left_records, tree);
+                    at_or_below(&mut self.left_at_commit, tree);
+                }
+            }
+            _ => {}
+        }
+        let records = &mut self.left_records;
+        let wrote = taken || root_changed;
+        match op {
+            Op::Read(_) | Op::FlushPendingDrops | Op::Commit => {}
+            Op::Transaction(TransactionOp::RollbackToSavepoint) => records.clear(),
+            Op::Transaction(_) => {}
+            _ if !wrote => {}
+            Op::Write(Write::Insert { path, key, .. }) => {
+                records.remove(&(path.clone(), key.clone()));
+            }
+            Op::Write(Write::Delete { path, key }) => at_or_below(records, &joined(path, key)),
+            Op::Write(_) => {
+                for path in written_subtrees(op, true) {
+                    at_or_below(records, &path);
+                }
+            }
+            Op::Batch(_)
+            | Op::PartialBatch(_)
+            | Op::FlagsBatch(_)
+            | Op::FlagsPartialBatch(_)
+            | Op::FlagsHandoverBatch(_) => {
+                for batch_op in op.batch_ops() {
+                    let keyed = keyed(batch_op);
+                    if keyed.is_empty() {
+                        at_or_below(records, batch_op.path());
+                    }
+                    let moved = matches!(batch_op, BatchOp::Move { .. });
+                    for place in keyed {
+                        match place.split_last() {
+                            Some(_) if moved => at_or_below(records, &place),
+                            Some((key, above)) => {
+                                records.remove(&(above.to_vec(), key.clone()));
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The tree under the key of a dedicated insert into an indexed
+    /// tree: where `op` is such an insert (`Write::IndexedInsert`) and
+    /// each engine's block reads, under the key it names, a tree that
+    /// holds elements. Asked before the operation is applied. None for
+    /// any other operation, and where either engine reads there no
+    /// tree, an empty one, or cannot read.
+    pub fn tree_under_a_dedicated_insert<'db, A: StreamEngine, B: StreamEngine>(
+        reference: (&'db Db<A>, &Tx<'db, A>),
+        candidate: (&'db Db<B>, &Tx<'db, B>),
+        op: &Op,
+        grove_version: &GroveVersion,
+    ) -> Option<Path> {
+        let Op::Write(Write::IndexedInsert { path, key, .. }) = op else {
+            return None;
+        };
+        let child = joined(path, key);
+        let held = holds_elements(reference.0, reference.1, &child, grove_version)
+            && holds_elements(candidate.0, candidate.1, &child, grove_version);
+        held.then_some(child)
+    }
+
+    /// Whether a dedicated insert over the tree `child`
+    /// ([`Known::tree_under_a_dedicated_insert`]), which both engines
+    /// refused with the same answer, left the stated difference of such
+    /// an insert (GROVE-04-F3): asked after the operation, of each
+    /// engine's block. The reference reads the tree as empty, since it
+    /// keeps in the caller's transaction the removal that the insert
+    /// made before its put was refused, and the candidate reads it as
+    /// holding elements, as before the call. With any other pair of
+    /// reads, also one that fails, it did not.
+    ///
+    /// The case ends at such an insert, counted
+    /// ([`Family::SweptByARefusedInsert`]).
+    pub fn swept_by_a_refused_insert<'db, A: StreamEngine, B: StreamEngine>(
+        reference: (&'db Db<A>, &Tx<'db, A>),
+        candidate: (&'db Db<B>, &Tx<'db, B>),
+        child: &Path,
+        grove_version: &GroveVersion,
+    ) -> bool {
+        let swept = reads_empty(reference.0, reference.1, child, grove_version);
+        let kept = reads_empty(candidate.0, candidate.1, child, grove_version);
+        swept == Some(true) && kept == Some(false)
+    }
+
+    /// The case came to a dedicated insert that was refused after its
+    /// removal ([`Known::swept_by_a_refused_insert`]).
+    pub fn came_to_a_refused_insert(&mut self) {
+        self.counts.histories[Family::SweptByARefusedInsert.index()] = 1;
     }
 
     /// Whether the case has dropped a tree flat.
@@ -957,10 +2329,13 @@ impl Known {
             return Some(Family::DroppedTree);
         }
         let below = |drop: &Path| path.len() > drop.len() && path.starts_with(drop);
-        self.flat_drops
-            .iter()
-            .any(below)
-            .then_some(Family::BelowFlatDrop)
+        if self.flat_drops.iter().any(below) {
+            return Some(Family::BelowFlatDrop);
+        }
+        let removed = |tree: &Path| path.starts_with(tree);
+        (self.plain_deletes.iter())
+            .any(removed)
+            .then_some(Family::BelowPlainDelete)
     }
 
     /// The family of a subtree below that of `query` which the query
@@ -978,16 +2353,80 @@ impl Known {
         }
         // Below a dropped tree: the query reads the tree's own subtree
         // and goes on into one under it.
-        (self.flat_drops.iter())
-            .any(|drop| read(drop) == Some(true))
-            .then_some(Family::BelowFlatDrop)
+        if (self.flat_drops.iter()).any(|drop| read(drop) == Some(true)) {
+            return Some(Family::BelowFlatDrop);
+        }
+        (self.plain_deletes.iter())
+            .any(|tree| read(tree).is_some())
+            .then_some(Family::BelowPlainDelete)
     }
 
-    /// The family an answer to `op` is of, where `taken` says whether the
-    /// reference took the operation: that of the first place the
-    /// operation names that is of one ([`places`]), and else, for a
-    /// query, that of a subtree below its own that it reads.
-    pub fn family_of_answer(&self, op: &Op, taken: bool) -> Option<Family> {
+    /// The family an answer to `op` that differs in `parts` is of, where
+    /// `taken` says whether the reference took the operation: that of
+    /// the first place the operation names that is of one ([`places`]),
+    /// and else, for a query, that of a subtree below its own that it
+    /// reads. Where that is [`Family::BelowPlainDelete`], the answer is
+    /// of it only where the operation is a read and the engines differ
+    /// in its result, its error or its cost and in no other part: else
+    /// it is of no family.
+    pub fn family_of_answer(&self, op: &Op, taken: bool, parts: &[Part]) -> Option<Family> {
+        let family = self.family_named(op, taken)?;
+        if family != Family::BelowPlainDelete {
+            return Some(family);
+        }
+        let (Op::Read(read)
+        | Op::Transaction(TransactionOp::SnapshotRead(read) | TransactionOp::BlockRead(read))) = op
+        else {
+            return None;
+        };
+        let of_the_read = |part: &Part| matches!(part, Part::Result | Part::Error | Part::Cost);
+        (parts.iter().all(of_the_read) && self.reads_below_a_plain_delete(read)).then_some(family)
+    }
+
+    /// Whether `read` takes the records of a subtree at or below a plain
+    /// delete as they are, and returns neither a proof nor the root of
+    /// an append-only tree as its result: a read of one key in such a
+    /// subtree, of whether such a tree is empty, of an append-only tree
+    /// there, or a query of such a subtree or of one above that reads
+    /// one below its own ([`reads`]). A read of a key in the tree above
+    /// the removed tree, also of the removed tree's own key, reads no
+    /// such subtree.
+    fn reads_below_a_plain_delete(&self, read: &Read) -> bool {
+        let below = |path: &Path| self.plain_deletes.iter().any(|tree| path.starts_with(tree));
+        match read {
+            Read::Prove(_)
+            | Read::Tree {
+                read: TreeRead::MmrRootHash | TreeRead::DenseRootHash | TreeRead::CommitmentAnchor,
+                ..
+            }
+            | Read::GetAux { .. }
+            | Read::AuxByPrefix { .. } => false,
+            Read::Get { path, .. }
+            | Read::HasRaw { path, .. }
+            | Read::Fetch { path, .. }
+            | Read::IsEmptyTree { path }
+            | Read::Tree { path, .. } => below(path),
+            Read::SumBudget { query, .. } => below(&query.path),
+            Read::Query(_)
+            | Read::PathQuery { .. }
+            | Read::Rows { .. }
+            | Read::KeysOptional { .. }
+            | Read::ItemValues { .. }
+            | Read::SumValues { .. }
+            | Read::BigSum { .. }
+            | Read::Many { .. } => queries(read).iter().any(|query| {
+                let goes_into = |tree: &Path| {
+                    let down = tree.strip_prefix(query.path.as_slice());
+                    down.is_some_and(|down| reads(&query.query.query, down, false).is_some())
+                };
+                below(&query.path) || self.plain_deletes.iter().any(goes_into)
+            }),
+        }
+    }
+
+    /// The family of the first place `op` names that is of one, and else,
+    /// for a query, that of a subtree below its own that it reads.
+    fn family_named(&self, op: &Op, taken: bool) -> Option<Family> {
         let named = places(op, taken)
             .iter()
             .find_map(|place| self.family(place));
@@ -1049,9 +2488,37 @@ impl Known {
         (reference, candidate)
     }
 
+    /// The case with the seed `seed` has an answer of `family`, one at
+    /// which no case ends ([`Family::ends_a_case`]), that the engines
+    /// gave differently, which is passed over.
+    pub fn passed_an_answer(&mut self, family: Family, seed: u64) {
+        let at = family.index();
+        if family != Family::BelowPlainDelete {
+            self.counts.histories[at] = 1;
+        }
+        self.counts.answers[at] = 1;
+        self.counts.answer_seed[at] = Some(seed);
+    }
+
+    /// Both engines took `op`, and with `root_changed` the root hash
+    /// after it is another than before it. Where `op` is a write of
+    /// elements, that ends what an earlier delete at the root path
+    /// began: a write that changes the root hash writes a node of the
+    /// root Merk, and LigninDB writes none while the root-key record
+    /// does not name its root. Called before [`Known::took`], which
+    /// begins it again where `op` is itself such a delete.
+    pub fn wrote(&mut self, op: &Op, root_changed: bool) {
+        if writes_elements(op) && root_changed {
+            self.root_delete = false;
+        }
+    }
+
     /// The case with the seed `seed` ended at an answer of `family`.
     pub fn ended_at(&mut self, family: Family, seed: u64) {
-        if family == Family::DroppedTreeProof {
+        if matches!(
+            family,
+            Family::DroppedTreeProof | Family::TakenBelowPlainDelete
+        ) {
             self.counts.histories[family.index()] = 1;
         }
         self.counts.answers[family.index()] = 1;
@@ -1079,7 +2546,7 @@ mod tests {
     impl Known {
         /// The family of an answer to an operation the reference took.
         fn family_of_taken(&self, op: &Op) -> Option<Family> {
-            self.family_of_answer(op, true)
+            self.family_of_answer(op, true, &[Part::Result])
         }
     }
 
@@ -1204,15 +2671,18 @@ mod tests {
         // The family has no place: no path is of it, and no stored record.
         let mut known = Known::default();
         known.came_to_indexed_over_indexed(&over);
-        assert_eq!(known.counts().histories, [0, 0, 0, 1, 0, 0]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(known.family(&over[0]), None);
         let differs = [record(&[b"t", b"indexed"], 1)];
         let (was, is) = known.passed_over(7, &differs, &[]);
         assert_eq!((was.len(), is.len()), (1, 0));
-        assert_eq!(known.counts().stored, [0; 6]);
+        assert_eq!(known.counts().stored, [0; 12]);
         known.ended_at(Family::IndexedOverIndexed, 11);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 1, 0, 0]);
+        assert_eq!(counts.answers, [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[3], Some(11));
         assert_eq!(
             counts.lines(),
@@ -1407,10 +2877,13 @@ mod tests {
         // The family has no place, and no stored record is of it.
         let mut known = Known::default();
         known.came_to_insert_only_over_indexed(&over);
-        assert_eq!(known.counts().histories, [0, 0, 0, 0, 0, 1]);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(known.family(&over[0]), None);
         known.ended_at(Family::InsertOnlyOverIndexed, 13);
-        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 1]);
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         assert_eq!(known.counts().answer_seed[5], Some(13));
     }
 
@@ -1463,14 +2936,14 @@ mod tests {
             let (was, is) = known.passed_over(7, &differs, &differs[..1]);
             assert_eq!((was.len(), is.len()), (2, 1), "{elsewhere:?}");
         }
-        assert_eq!(known.counts().stored, [0; 6]);
+        assert_eq!(known.counts().stored, [0; 12]);
 
         // A stored difference in the dropped tree's own subtree is passed
         // over and counted, but not in the record of its drop.
         let kept = [record(&[b"c"], 1), record(&[b"a", b"dropped"], 1)];
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (1, 1));
-        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0, 0]);
+        assert_eq!(known.counts().stored, [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(known.counts().stored_seed[..4], [None, None, Some(7), None]);
         let mut drop_record = record(&[b"a", b"dropped"], 1);
         drop_record.keyspace = Keyspace::DropRecord;
@@ -1502,6 +2975,101 @@ mod tests {
         let (was, is) = known.passed_over(7, &kept, &kept[..1]);
         assert_eq!((was.len(), is.len()), (2, 1));
         assert_eq!(known.family(&below), Some(Family::BelowFlatDrop));
+    }
+
+    /// The tree under a dedicated insert is asked for an insert through
+    /// the method of an indexed tree alone, where both engines read a
+    /// tree with an element under its key; and the insert left the
+    /// stated difference where, after it, the reference reads that tree
+    /// as empty and the candidate as holding elements, and with no
+    /// other pair of reads.
+    #[test]
+    fn a_refused_dedicated_insert_swept_the_tree_where_the_reference_alone_reads_it_empty() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let dedicated = |key: &[u8]| {
+            Op::Write(Write::IndexedInsert {
+                path: path(&[b"top"]),
+                key: key.to_vec(),
+                element: Element::empty_sum_tree(),
+                tree: IndexedTree::Sum,
+            })
+        };
+        for grove_version in GROVE_VERSIONS.iter() {
+            // Two groves that differ in what the tree `g` holds.
+            let (full_dir, swept_dir) = (scratch(), scratch());
+            let full: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(full_dir.path()).expect("a database");
+            let swept: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(swept_dir.path()).expect("a database");
+            let mut in_full = Transactions::new(&full);
+            let mut in_swept = Transactions::new(&swept);
+            let both = [
+                insert(&[], b"top", Element::empty_tree()),
+                insert(&[b"top"], b"g", Element::empty_tree()),
+                insert(&[b"top"], b"e", Element::empty_tree()),
+                insert(&[b"top"], b"i", Element::new_item(vec![1])),
+            ];
+            let held = insert(&[b"top", b"g"], b"n", Element::new_item(vec![1]));
+            for op in both.iter().chain([&held]) {
+                (in_full.apply(op, grove_version).unwrap())
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            }
+            for op in &both {
+                (in_swept.apply(op, grove_version).unwrap())
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            }
+            let (full, swept) = ((&full, in_full.block()), (&swept, in_swept.block()));
+            let child = path(&[b"top", b"g"]);
+            let under =
+                |op: &Op| Known::tree_under_a_dedicated_insert(full, full, op, grove_version);
+            assert_eq!(under(&dedicated(b"g")), Some(child.clone()));
+            for other in [
+                dedicated(b"e"),
+                dedicated(b"i"),
+                dedicated(b"absent"),
+                insert(&[b"top"], b"g", Element::empty_sum_tree()),
+                Op::Batch(vec![BatchOp::InsertOrReplace {
+                    path: path(&[b"top"]),
+                    key: b"g".to_vec(),
+                    element: Element::empty_sum_tree(),
+                }]),
+                Op::Commit,
+            ] {
+                assert_eq!(under(&other), None, "{other:?}");
+            }
+            // An engine that reads the tree as empty before the insert.
+            let op = dedicated(b"g");
+            let asked = Known::tree_under_a_dedicated_insert(full, swept, &op, grove_version);
+            assert_eq!(asked, None);
+            let asked = Known::tree_under_a_dedicated_insert(swept, full, &op, grove_version);
+            assert_eq!(asked, None);
+
+            let left = |reference, candidate, child: &Path| {
+                Known::swept_by_a_refused_insert(reference, candidate, child, grove_version)
+            };
+            assert!(left(swept, full, &child));
+            assert!(!left(full, full, &child));
+            assert!(!left(swept, swept, &child));
+            assert!(!left(full, swept, &child));
+            // No tree at the place on one engine, or on both.
+            assert!(!left(swept, full, &path(&[b"top", b"i"])));
+            assert!(!left(swept, full, &path(&[b"top", b"absent"])));
+        }
+        let mut known = Known::default();
+        known.came_to_a_refused_insert();
+        assert_eq!(known.counts().histories[11], 1);
+        assert_eq!(known.counts().answers[11], 0);
+        assert!(!known.counts().passed_over());
+        known.ended_at(Family::SweptByARefusedInsert, 9);
+        assert_eq!(known.counts().answers[11], 1);
+        assert_eq!(known.counts().answer_seed[11], Some(9));
+        assert!(Family::SweptByARefusedInsert.ends_a_case());
     }
 
     /// A step is of a dropped tree through a proof where the operation
@@ -1562,7 +3130,7 @@ mod tests {
             path: path(&[b"t"]),
             key: b"again".to_vec(),
         });
-        known.took(&drop, Vec::new());
+        known.took(&drop, Vec::new(), Vec::new(), false);
         // Dropped, and no record told: not pending, so not made again.
         known.made_again(vec![again.clone()]);
         assert!(!known.through_a_proof(&asked, &answered, &answered, grove_version));
@@ -1713,8 +3281,8 @@ mod tests {
         // The case that ends there is counted for the kind alone.
         known.ended_at(Family::DroppedTreeProof, 5);
         let counts = known.counts();
-        assert_eq!(counts.answers, [0, 0, 0, 0, 1, 0]);
-        assert_eq!(counts.histories, [0, 1, 1, 0, 1, 0]);
+        assert_eq!(counts.answers, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.histories, [0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[4], Some(5));
     }
 
@@ -1781,8 +3349,8 @@ mod tests {
             key: b"over".to_vec(),
             element: Element::empty_tree(),
         }]);
-        known.took(&drop, Vec::new());
-        known.took(&put, vec![path(&[b"b", b"over"])]);
+        known.took(&drop, Vec::new(), Vec::new(), false);
+        known.took(&put, vec![path(&[b"b", b"over"])], Vec::new(), false);
         known
     }
 
@@ -1824,6 +3392,8 @@ mod tests {
                 element: Element::empty_tree(),
             }]),
             Vec::new(),
+            Vec::new(),
+            false,
         );
         assert_eq!(none.family(&path(&[b"b", b"over"])), None);
         assert!(none.counts().is_empty());
@@ -1847,11 +3417,11 @@ mod tests {
         let (was, is) = known.passed_over(7, &reference, &candidate);
         assert_eq!(was, is);
         let counts = known.counts();
-        assert_eq!(counts.stored, [1, 1, 0, 0, 0, 0]);
+        assert_eq!(counts.stored, [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.stored_seed[..4], [Some(7), Some(7), None, None]);
         assert_eq!(
             (counts.histories, counts.answers),
-            ([1, 1, 1, 0, 0, 0], [0; 6])
+            ([1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0; 12])
         );
         assert_eq!(counts.stored_differences(), 2);
         assert_eq!(counts.answer_differences(), 0);
@@ -1873,7 +3443,7 @@ mod tests {
             let (was, is) = known.passed_over(7, &reference, &candidate);
             assert_eq!(was, vec![same.clone(), elsewhere]);
             assert_eq!(is, vec![same.clone()]);
-            assert_eq!(known.counts().stored, [0; 6]);
+            assert_eq!(known.counts().stored, [0; 12]);
         }
     }
 
@@ -2105,7 +3675,10 @@ mod tests {
         assert!(puts(&nothing_of_its_own).is_empty());
         assert!(flat_drops(&nothing_of_its_own).is_empty());
         assert_eq!(known.family_of_taken(&nothing_of_its_own), None);
-        assert_eq!(known.family_of_answer(&nothing_of_its_own, false), None);
+        assert_eq!(
+            known.family_of_answer(&nothing_of_its_own, false, &[Part::Result]),
+            None
+        );
         let one_of_its_own = added(vec![BatchOp::InsertOnly {
             path: path(&[b"c"]),
             key: b"k".to_vec(),
@@ -2114,12 +3687,18 @@ mod tests {
         assert_eq!(puts(&one_of_its_own).len(), 2);
         assert_eq!(flat_drops(&one_of_its_own), vec![path(&[b"a", b"dropped"])]);
         assert_eq!(known.family_of_taken(&one_of_its_own), over);
-        assert_eq!(known.family_of_answer(&one_of_its_own, false), None);
+        assert_eq!(
+            known.family_of_answer(&one_of_its_own, false, &[Part::Result]),
+            None
+        );
         let own_over = added(vec![BatchOp::Delete {
             path: path(&[b"b"]),
             key: b"over".to_vec(),
         }]);
-        assert_eq!(known.family_of_answer(&own_over, false), over);
+        assert_eq!(
+            known.family_of_answer(&own_over, false, &[Part::Result]),
+            over
+        );
         // A put or a flat drop at a key that another operation of the
         // batch names as well is not counted: one can take the place of
         // the other. The operations still name the place.
@@ -2180,10 +3759,10 @@ mod tests {
         one.ended_at(Family::WrittenOver, 9);
         counts.add(&one.counts());
         counts.add(&one.counts());
-        assert_eq!(counts.answers, [2, 0, 0, 0, 0, 0]);
+        assert_eq!(counts.answers, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(counts.answer_seed[..4], [Some(9), None, None, None]);
         assert_eq!(counts.answer_differences(), 2);
-        assert_eq!(counts.histories, [2, 2, 2, 0, 0, 0]);
+        assert_eq!(counts.histories, [2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
         let lines = counts.lines();
         assert_eq!(lines.len(), 3);
         assert!(lines[0].starts_with(
@@ -2192,5 +3771,1683 @@ mod tests {
              differs (seed 0x9)"
         ));
         assert!(Counts::default().lines().is_empty());
+    }
+
+    /// Below a tree that a plain delete removed, an answer is of the
+    /// family where its operation is a read, also one in the block or
+    /// through a snapshot, and the engines differ in the result, the
+    /// error or the cost of the read and in nothing else. A write there,
+    /// and a read that differs in its proof or in a root hash, are of no
+    /// family. Where the place is also one of an element written over a
+    /// tree, that family has every operation.
+    #[test]
+    fn below_a_plain_delete_a_read_is_of_the_family_by_its_result_and_its_cost_alone() {
+        let removed = path(&[b"p", b"t"]);
+        let delete = Op::Batch(vec![BatchOp::Delete {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+        }]);
+        assert_eq!(plain_deletes(&delete), vec![removed.clone()]);
+        let mut known = Known::default();
+        known.took(&delete, Vec::new(), vec![removed.clone()], false);
+        let family = Some(Family::BelowPlainDelete);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+        );
+        let of_it: [&[&[u8]]; 2] = [&[b"p", b"t"], &[b"p", b"t", b"below"]];
+        for of in of_it {
+            assert_eq!(known.family(&path(of)), family, "{of:?}");
+        }
+        let of_none: [&[&[u8]]; 4] = [&[b"p"], &[b"p", b"u"], &[b"t"], &[]];
+        for elsewhere in of_none {
+            assert_eq!(known.family(&path(elsewhere)), None, "{elsewhere:?}");
+        }
+
+        let has = || Read::HasRaw {
+            path: removed.clone(),
+            key: vec![1],
+        };
+        let reads = [
+            Op::Read(has()),
+            Op::Transaction(TransactionOp::BlockRead(has())),
+            Op::Transaction(TransactionOp::SnapshotRead(has())),
+        ];
+        let of_a_read: [&[Part]; 4] = [
+            &[Part::Result],
+            &[Part::Cost],
+            &[Part::Result, Part::Cost],
+            &[Part::Error, Part::Cost],
+        ];
+        let of_more: [&[Part]; 5] = [
+            &[Part::RootHash],
+            &[Part::Result, Part::Proof],
+            &[Part::ProofCost],
+            &[Part::Cost, Part::RootHash],
+            &[Part::Panic],
+        ];
+        for read in &reads {
+            for parts in of_a_read {
+                assert_eq!(known.family_of_answer(read, true, parts), family);
+                assert_eq!(known.family_of_answer(read, false, parts), family);
+            }
+            for parts in of_more {
+                assert_eq!(known.family_of_answer(read, true, parts), None);
+            }
+        }
+        let write = Op::Batch(vec![BatchOp::InsertOrReplace {
+            path: removed.clone(),
+            key: vec![1],
+            element: Element::empty_sum_tree(),
+        }]);
+        let made_again = Op::Write(Write::Insert {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+            element: Element::empty_tree(),
+        });
+        for parts in of_a_read {
+            assert_eq!(known.family_of_answer(&write, true, parts), None);
+            assert_eq!(known.family_of_answer(&made_again, true, parts), None);
+        }
+
+        // A read of the removed tree's own key reads the tree above, and
+        // is of no family; so is a read that returns a proof or the root
+        // of an append-only tree as its result.
+        let in_the_tree_above = [
+            Read::HasRaw {
+                path: path(&[b"p"]),
+                key: b"t".to_vec(),
+            },
+            Read::Get {
+                path: path(&[b"p"]),
+                key: b"t".to_vec(),
+            },
+            Read::Fetch {
+                path: path(&[b"p"]),
+                key: b"t".to_vec(),
+                fetch: crate::workload::Fetch::Raw,
+                cache: true,
+            },
+        ];
+        let everything =
+            grovedb::PathQuery::new_unsized(removed.clone(), grovedb::Query::new_range_full());
+        let as_its_result = [
+            Read::Prove(Prove::PathQuery(Box::new(everything.clone()))),
+            Read::Prove(Prove::Many(vec![everything])),
+            Read::Tree {
+                path: removed.clone(),
+                read: TreeRead::MmrRootHash,
+            },
+            Read::Tree {
+                path: removed.clone(),
+                read: TreeRead::DenseRootHash,
+            },
+            Read::Tree {
+                path: removed.clone(),
+                read: TreeRead::CommitmentAnchor,
+            },
+        ];
+        for read in in_the_tree_above.into_iter().chain(as_its_result) {
+            for op in [
+                Op::Read(read.clone()),
+                Op::Transaction(TransactionOp::BlockRead(read.clone())),
+                Op::Transaction(TransactionOp::SnapshotRead(read.clone())),
+            ] {
+                for parts in of_a_read {
+                    assert_eq!(known.family_of_answer(&op, true, parts), None, "{op:?}");
+                }
+            }
+        }
+        let below_it = [
+            Read::IsEmptyTree {
+                path: removed.clone(),
+            },
+            Read::Get {
+                path: path(&[b"p", b"t", b"below"]),
+                key: vec![1],
+            },
+            Read::Tree {
+                path: removed.clone(),
+                read: TreeRead::MmrLeafCount,
+            },
+        ];
+        for read in below_it {
+            let op = Op::Read(read);
+            assert_eq!(known.family_of_answer(&op, true, &[Part::Result]), family);
+        }
+
+        // A query of the tree above is of the family where it goes down
+        // into the tree, and of none where it reads the tree above alone.
+        let range = |below: bool| {
+            Op::Read(Read::Query(crate::workload::Query {
+                path: path(&[b"p"]),
+                items: vec![crate::workload::QueryItem::RangeFull],
+                subquery_path: None,
+                subquery_all: below,
+                limit: None,
+                left_to_right: true,
+                raw: true,
+            }))
+        };
+        assert_eq!(
+            known.family_of_answer(&range(true), true, &[Part::Result]),
+            family
+        );
+        assert_eq!(
+            known.family_of_answer(&range(false), true, &[Part::Result]),
+            None
+        );
+
+        // A key that the batch names twice is no place.
+        let twice = Op::Batch(vec![
+            BatchOp::Delete {
+                path: path(&[b"p"]),
+                key: b"t".to_vec(),
+            },
+            BatchOp::InsertOrReplace {
+                path: path(&[b"p"]),
+                key: b"t".to_vec(),
+                element: Element::empty_tree(),
+            },
+        ]);
+        assert!(plain_deletes(&twice).is_empty());
+
+        // An element written over a tree at the same path: that family,
+        // for any operation.
+        known.took(&made_again, vec![removed.clone()], Vec::new(), false);
+        let over = Some(Family::WrittenOver);
+        assert_eq!(known.family_of_answer(&write, true, &[Part::Cost]), over);
+        assert_eq!(
+            known.family_of_answer(&reads[0], true, &[Part::Proof]),
+            over
+        );
+    }
+
+    /// A plain delete of a batch makes a place where the reference read
+    /// a tree with an element at the key before the batch and still
+    /// holds a record under the tree's path after it: not for a tree
+    /// with nothing in it, an item, a key that holds nothing, or a tree
+    /// whose elements the same batch deletes.
+    #[test]
+    fn a_plain_delete_makes_a_place_where_the_reference_kept_a_record_of_a_tree() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let delete = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+            path: path(at),
+            key: key.to_vec(),
+        };
+        for grove_version in GROVE_VERSIONS.iter().take(4) {
+            let dir = scratch();
+            let db: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(dir.path()).expect("a database");
+            let mut transactions = Transactions::new(&db);
+            let mut apply = |op: &Op| {
+                transactions
+                    .apply(op, grove_version)
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            };
+            for op in [
+                insert(&[], b"p", Element::empty_tree()),
+                insert(&[b"p"], b"filled", Element::empty_tree()),
+                insert(&[b"p", b"filled"], &[1], Element::empty_sum_tree()),
+                insert(&[b"p"], b"emptied", Element::empty_tree()),
+                insert(&[b"p", b"emptied"], &[1], Element::empty_sum_tree()),
+                insert(&[b"p"], b"empty", Element::empty_tree()),
+                insert(&[b"p"], b"item", Element::new_item(vec![1])),
+                Op::Commit,
+            ] {
+                apply(&op);
+            }
+            let batch = Op::Batch(vec![
+                delete(&[b"p"], b"filled"),
+                delete(&[b"p", b"emptied"], &[1]),
+                delete(&[b"p"], b"emptied"),
+                delete(&[b"p"], b"empty"),
+                delete(&[b"p"], b"item"),
+                delete(&[b"p"], b"absent"),
+            ]);
+            let number = grove_version.protocol_version;
+            let before =
+                Known::trees_under_a_plain_delete(&db, transactions.block(), &batch, grove_version);
+            let held = vec![path(&[b"p", b"filled"]), path(&[b"p", b"emptied"])];
+            assert_eq!(before, held, "grove version {number}");
+            transactions
+                .apply(&batch, grove_version)
+                .unwrap()
+                .unwrap_or_else(|error| panic!("the batch on {number}: {error}"));
+            let left = Known::left_a_record(&db, transactions.block(), before);
+            assert_eq!(
+                left,
+                vec![path(&[b"p", b"filled"])],
+                "grove version {number}"
+            );
+        }
+    }
+
+    /// The delete that can leave the root-key record behind is one by
+    /// `GroveDb::delete` at the root path, on a grove version up to the
+    /// third, of a tree that holds an element.
+    #[test]
+    fn a_delete_at_the_root_path_of_a_tree_with_an_element_is_asked_on_versions_1_to_3() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let delete = |at: &[&[u8]], key: &[u8]| {
+            Op::Write(Write::Delete {
+                path: path(at),
+                key: key.to_vec(),
+            })
+        };
+        for grove_version in GROVE_VERSIONS.iter() {
+            let dir = scratch();
+            let db: GroveDb<RocksDbEngine> =
+                GroveDb::open_with_engine(dir.path()).expect("a database");
+            let mut transactions = Transactions::new(&db);
+            for op in [
+                insert(&[], b"filled", Element::empty_tree()),
+                insert(&[b"filled"], b"k", Element::new_item(vec![1])),
+                insert(&[b"filled"], b"below", Element::empty_tree()),
+                insert(&[b"filled", b"below"], b"k", Element::new_item(vec![1])),
+                insert(&[], b"empty", Element::empty_tree()),
+                insert(&[], b"item", Element::new_item(vec![1])),
+                Op::Commit,
+            ] {
+                transactions
+                    .apply(&op, grove_version)
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+            }
+            let asked = |op: &Op| {
+                Known::trees_under_a_root_delete(&db, transactions.block(), op, grove_version)
+            };
+            let kept = grove_version.protocol_version <= 3;
+            assert_eq!(asked(&delete(&[], b"filled")), kept);
+            let sectional = Op::Write(Write::SectionalDelete {
+                path: Vec::new(),
+                key: b"filled".to_vec(),
+            });
+            assert_eq!(asked(&sectional), kept);
+            let in_a_batch = Op::Batch(vec![BatchOp::Delete {
+                path: Vec::new(),
+                key: b"filled".to_vec(),
+            }]);
+            for other in [
+                delete(&[], b"empty"),
+                delete(&[], b"item"),
+                delete(&[], b"absent"),
+                delete(&[b"filled"], b"below"),
+                in_a_batch,
+            ] {
+                assert!(!asked(&other), "{other:?}");
+            }
+        }
+    }
+
+    /// An answer is of the family of the root-key record left behind
+    /// where the case has such a delete, the reference took the
+    /// operation, and the candidate refused it in the words of that
+    /// refusal for the root Merk, whole.
+    #[test]
+    fn the_refusal_for_a_root_key_record_left_behind_is_matched_whole() {
+        let root_merk = "0".repeat(64);
+        let said = |merk: &str, record: &str, root: &str, rest: &str| {
+            format!(
+                "failed: not supported: lignindb: the root-key record of Merk {merk} {record}, \
+                 and the root of that Merk is the node under the key {root}{rest}"
+            )
+        };
+        let whole = REFUSAL_OF_A_ROOT_KEY_LEFT_BEHIND;
+        for refusal in [
+            said(&root_merk, "is absent", "62", whole),
+            said(&root_merk, "names the key 61", "6263", whole),
+            said(&root_merk, "names the key ", "62", whole),
+        ] {
+            assert!(refuses_for_the_root_key_left_behind(&refusal), "{refusal}");
+        }
+        let cut = &whole[..whole.len() - 1];
+        for other in [
+            // A record that names the root, and a key in uppercase.
+            said(&root_merk, "names the key 62", "62", whole),
+            said(&root_merk, "names the key ", "", whole),
+            said(&root_merk, "names the key 6A", "62", whole),
+            said(&root_merk, "is absent", "6B", whole),
+            said(&"1".repeat(64), "is absent", "62", whole),
+            said(&root_merk, "is absent", "62", cut),
+            said(&root_merk, "is absent", "62", &format!("{whole} and more")),
+            said(&root_merk, "is absent", "6", whole),
+            said(&root_merk, "names the key 6", "62", whole),
+            said(&root_merk, "names the key zz", "62", whole),
+            said(&root_merk, "is gone", "62", whole),
+            format!("first: {}", said(&root_merk, "is absent", "62", whole)),
+            String::new(),
+        ] {
+            assert!(!refuses_for_the_root_key_left_behind(&other), "{other}");
+        }
+
+        let words = vec![said(&root_merk, "is absent", "62", whole)];
+        let took = Outcome::Returned(Value::Nothing);
+        let refused = Outcome::Failed("NotSupported".to_string());
+        let family = Some(Family::RootKeyLeftBehind);
+        let delete = Op::Write(Write::Delete {
+            path: Vec::new(),
+            key: b"t".to_vec(),
+        });
+        let put = Op::Write(Write::Insert {
+            path: Vec::new(),
+            key: b"n".to_vec(),
+            element: Element::empty_tree(),
+        });
+        let batch = Op::Batch(vec![BatchOp::Delete {
+            path: path(&[b"a"]),
+            key: b"k".to_vec(),
+        }]);
+        let mut known = Known::default();
+        let of = |known: &Known, op: &Op, was: &Outcome, is: &Outcome, said: &[String]| {
+            known.family_of_root_key_refusal(op, was, is, said)
+        };
+        assert_eq!(of(&known, &put, &took, &refused, &words), None);
+        known.took(&delete, Vec::new(), Vec::new(), true);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+        );
+        assert_eq!(of(&known, &put, &took, &refused, &words), family);
+        assert_eq!(of(&known, &batch, &took, &refused, &words), family);
+        assert_eq!(of(&known, &delete, &took, &refused, &words), family);
+        let corrupted = Outcome::Failed("CorruptedData".to_string());
+        let other_words = vec!["failed: not supported: lignindb: something else".to_string()];
+        assert_eq!(of(&known, &put, &refused, &refused, &words), None);
+        assert_eq!(of(&known, &put, &took, &corrupted, &words), None);
+        assert_eq!(of(&known, &put, &took, &took, &words), None);
+        assert_eq!(of(&known, &put, &took, &refused, &other_words), None);
+        assert_eq!(of(&known, &put, &took, &refused, &[]), None);
+        // The refusal of an operation that writes no element is of no
+        // family: a read, a step on the transaction, a commit, a write
+        // of an aux record.
+        let read = Read::Get {
+            path: Vec::new(),
+            key: b"a".to_vec(),
+        };
+        for other in [
+            Op::Read(read.clone()),
+            Op::Transaction(TransactionOp::BlockRead(read)),
+            Op::Transaction(TransactionOp::SetSavepoint),
+            Op::Commit,
+            Op::Write(Write::PutAux {
+                key: b"k".to_vec(),
+                value: vec![1],
+            }),
+        ] {
+            assert_eq!(
+                of(&known, &other, &took, &refused, &words),
+                None,
+                "{other:?}"
+            );
+        }
+        // A write that both took and that left the root hash as it was,
+        // and a step that is no write of elements, leave it; a write
+        // that both took and that changed the root hash ends it, a
+        // conditional insert that wrote among them, though the case
+        // stays counted; and another such delete begins it again.
+        known.wrote(&batch, false);
+        known.wrote(&Op::Transaction(TransactionOp::Rollback), true);
+        known.wrote(&Op::Commit, true);
+        assert_eq!(of(&known, &put, &took, &refused, &words), family);
+        let conditional = Op::Write(Write::InsertIfNotExists {
+            path: Vec::new(),
+            key: b"vacant".to_vec(),
+            element: Element::empty_tree(),
+            return_existing: false,
+        });
+        known.wrote(&conditional, true);
+        assert_eq!(of(&known, &put, &took, &refused, &words), None);
+        known.took(&delete, Vec::new(), Vec::new(), true);
+        assert_eq!(of(&known, &put, &took, &refused, &words), family);
+        known.wrote(&put, true);
+        assert_eq!(of(&known, &put, &took, &refused, &words), None);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+        );
+        known.took(&delete, Vec::new(), Vec::new(), true);
+        assert_eq!(of(&known, &put, &took, &refused, &words), family);
+        // It is of an answer alone: no path is of it.
+        assert_eq!(known.family(&[]), None);
+        known.ended_at(Family::RootKeyLeftBehind, 9);
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    }
+
+    /// A cost is of the family of a plain delete of a tree made again
+    /// where the batch removes such a tree, the engines differ in the
+    /// cost alone, and the costs differ in the seeks, the bytes loaded
+    /// and the hash calls alone, the reference's the larger, its hash
+    /// calls by no more than the trees that keep a Merk among the
+    /// records it alone holds. Without any one of these it is of no
+    /// family.
+    #[test]
+    fn a_cost_is_of_the_family_by_the_seeks_the_bytes_loaded_and_the_subtrees_opened() {
+        let step = |seeks: u32, loaded: u64, hashes: u32, removed: u32| {
+            Step {
+            cost: OperationCost {
+                seek_count: seeks,
+                storage_loaded_bytes: loaded,
+                hash_node_calls: hashes,
+                storage_cost: grovedb_costs::storage_cost::StorageCost {
+                    added_bytes: 0,
+                    replaced_bytes: 75,
+                    removed_bytes:
+                        grovedb_costs::storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval(
+                            removed,
+                        ),
+                },
+                ..OperationCost::default()
+            },
+            outcome: Outcome::Returned(Value::Nothing),
+            root_hash: Some([1; 32]),
+            proof: None,
+        }
+        };
+        let kept = KeptBelow {
+            trees: vec![path(&[b"p", b"t"])],
+            path_hashes: 0,
+        };
+        let family = Some(Family::KeptRecordsCost);
+        let cost = [Part::Cost];
+        let is = step(10, 966, 8, 142);
+        for was in [
+            step(11, 1147, 8, 142),
+            step(11, 966, 8, 142),
+            step(10, 967, 8, 142),
+        ] {
+            assert_eq!(Known::family_of_cost(&kept, &was, &is, &cost, true), family);
+        }
+        let was = step(11, 1147, 8, 142);
+        // No such tree, another part, another field of the cost, and a
+        // candidate that was charged more.
+        let none = KeptBelow::default();
+        assert_eq!(Known::family_of_cost(&none, &was, &is, &cost, true), None);
+        // A hash call for each subtree that the reference alone opens:
+        // one more than those, and fewer than the candidate's, are of
+        // no family.
+        let two = KeptBelow {
+            path_hashes: 2,
+            ..kept.clone()
+        };
+        for hashes in [8, 9, 10] {
+            let was = step(12, 1400, hashes, 142);
+            assert_eq!(Known::family_of_cost(&two, &was, &is, &cost, true), family);
+        }
+        for hashes in [7, 11] {
+            let was = step(12, 1400, hashes, 142);
+            assert_eq!(Known::family_of_cost(&two, &was, &is, &cost, true), None);
+        }
+        let hashes_alone = step(10, 966, 9, 142);
+        assert_eq!(
+            Known::family_of_cost(&two, &hashes_alone, &is, &cost, true),
+            family
+        );
+        let parts = [Part::Cost, Part::RootHash];
+        assert_eq!(Known::family_of_cost(&kept, &was, &is, &parts, true), None);
+        assert_eq!(
+            Known::family_of_cost(&kept, &was, &is, &[Part::Result], true),
+            None
+        );
+        for other in [step(11, 1147, 9, 142), step(11, 1147, 8, 215)] {
+            assert_eq!(Known::family_of_cost(&kept, &other, &is, &cost, true), None);
+        }
+        for less in [step(9, 1147, 8, 142), step(11, 900, 8, 142)] {
+            assert_eq!(Known::family_of_cost(&kept, &less, &is, &cost, true), None);
+        }
+        // A batch that both engines refuse with the same error, after
+        // the look through the tree, is of the family; one that they
+        // refuse with different errors, or of which that is not known,
+        // is of none.
+        let refused = |mut step: Step, error: &str| {
+            step.outcome = Outcome::Failed(error.to_string());
+            step
+        };
+        let invalid = "InvalidPath";
+        let (was_refused, is_refused) =
+            (refused(was.clone(), invalid), refused(is.clone(), invalid));
+        let of = Known::family_of_cost;
+        assert_eq!(of(&kept, &was_refused, &is_refused, &cost, true), family);
+        assert_eq!(of(&kept, &was_refused, &is_refused, &cost, false), None);
+        let otherwise = refused(is.clone(), "PathKeyNotFound");
+        assert_eq!(of(&kept, &was_refused, &otherwise, &cost, true), None);
+        assert_eq!(of(&kept, &was_refused, &is, &cost, true), None);
+        assert_eq!(of(&kept, &was, &is_refused, &cost, true), None);
+        // Whether a refused batch looked: plain deletes alone, both
+        // refusals in GroveDB's words for no element above the subtree
+        // of an operation that is listed after the removal.
+        let delete = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+            path: path(at),
+            key: key.to_vec(),
+        };
+        let words = |at: &str, key: &str| {
+            let text = "failed: invalid path: could not get key for parent of subtree for batch";
+            vec![format!("{text} at path [{at}] for key {key}")]
+        };
+        let never = words("p", "never");
+        let after = Op::Batch(vec![delete(&[b"p"], b"t"), delete(&[b"p", b"never"], &[1])]);
+        let known = Known::default();
+        let looked = |op: &Op, kept: &KeptBelow, was: &[String], is: &[String]| {
+            known.refused_after_the_look(op, kept, was, is)
+        };
+        assert!(looked(&after, &kept, &never, &never));
+        // Refused before the removal; at an operation between two
+        // removals; in different words, in other words, or with a
+        // remark on one side alone; with no such tree; with a put in
+        // the batch; and a batch of another kind.
+        let before = Op::Batch(vec![delete(&[b"p", b"never"], &[1]), delete(&[b"p"], b"t")]);
+        assert!(!looked(&before, &kept, &never, &never));
+        let two = KeptBelow {
+            trees: vec![path(&[b"p", b"t"]), path(&[b"p", b"u"])],
+            path_hashes: 0,
+        };
+        let between = Op::Batch(vec![
+            delete(&[b"p"], b"t"),
+            delete(&[b"p", b"never"], &[1]),
+            delete(&[b"p"], b"u"),
+        ]);
+        assert!(!looked(&between, &two, &never, &never));
+        assert!(looked(&between, &kept, &never, &never));
+        let elsewhere = words("p/t", "0x01");
+        assert!(!looked(&after, &kept, &never, &elsewhere));
+        assert!(!looked(&after, &kept, &elsewhere, &elsewhere));
+        assert!(!looked(&after, &kept, &never, &[]));
+        assert!(!looked(&after, &KeptBelow::default(), &never, &never));
+        let with_a_put = Op::Batch(vec![
+            delete(&[b"p"], b"t"),
+            delete(&[b"p", b"never"], &[1]),
+            BatchOp::InsertOrReplace {
+                path: path(&[b"p"]),
+                key: b"x".to_vec(),
+                element: Element::new_item(vec![1]),
+            },
+        ]);
+        assert!(!looked(&with_a_put, &kept, &never, &never));
+        let flags = Op::FlagsBatch(vec![delete(&[b"p"], b"t"), delete(&[b"p", b"never"], &[1])]);
+        assert!(!looked(&flags, &kept, &never, &never));
+        // And a case that has met an element with backward references.
+        let mut met = Known::default();
+        let item = Element::new_item_allowing_bidirectional_references(vec![1]);
+        let carries = Op::Write(Write::Insert {
+            path: path(&[b"p"]),
+            key: b"j".to_vec(),
+            element: item,
+        });
+        met.forgets(&carries, false, false);
+        assert!(!met.refused_after_the_look(&after, &kept, &never, &never));
+        let mut known = Known::default();
+        known.passed_an_answer(Family::KeptRecordsCost, 5);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        known.passed_an_answer(Family::BelowPlainDelete, 5);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0]);
+    }
+
+    /// A refusal is of the family of a write that both engines refuse
+    /// below a plain delete where the operation writes elements into a
+    /// subtree at or below such a place, both engines failed, and they
+    /// differ in the cost or the error alone. Without any one of these
+    /// it is of no family.
+    #[test]
+    fn a_write_that_both_engines_refuse_below_a_plain_delete_is_of_its_family() {
+        let delete = Op::Batch(vec![BatchOp::Delete {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+        }]);
+        let mut known = Known::default();
+        known.took(&delete, Vec::new(), vec![path(&[b"p", b"t"])], false);
+        let put = |at: &[&[u8]], key: &[u8]| BatchOp::InsertOrReplace {
+            path: path(at),
+            key: key.to_vec(),
+            element: Element::new_item(vec![1]),
+        };
+        let below = Op::Batch(vec![put(&[b"p", b"t", &[1]], b"k")]);
+        let invalid = Outcome::Failed("InvalidPath".to_string());
+        let not_found = Outcome::Failed("PathKeyNotFound".to_string());
+        let took = Outcome::Returned(Value::Nothing);
+        let family = Some(Family::RefusedBelowPlainDelete);
+        let of = |op: &Op, was: &Outcome, is: &Outcome, parts: &[Part]| {
+            known.family_of_refused_write(op, was, is, parts, true, &AtALeftRecord::default())
+        };
+        assert_eq!(of(&below, &invalid, &invalid, &[Part::Cost]), family);
+        let both = [Part::Cost, Part::Error];
+        assert_eq!(of(&below, &not_found, &invalid, &both), family);
+        assert_eq!(of(&below, &not_found, &invalid, &[Part::Error]), family);
+        // Into the tree's own subtree, by a direct write, and by a
+        // batch that also writes into the subtree the tree was in.
+        let direct = Op::Write(Write::Insert {
+            path: path(&[b"p", b"t"]),
+            key: vec![1],
+            element: Element::empty_sum_tree(),
+        });
+        let mixed = Op::Batch(vec![put(&[b"p"], b"x"), put(&[b"p", b"t"], &[1])]);
+        let partial = Op::PartialBatch(PartialBatch {
+            ops: vec![put(&[b"p", b"t"], &[1])],
+            add_on: Vec::new(),
+            pause_height: None,
+        });
+        for op in [&direct, &mixed, &partial] {
+            assert_eq!(of(op, &invalid, &invalid, &[Part::Cost]), family, "{op:?}");
+        }
+        // One engine took it; the root hash differs too; nothing
+        // differs; a write into the tree above, of the removed tree's
+        // own key; a write elsewhere; a read; an operation that a
+        // partial batch's caller adds.
+        assert_eq!(of(&below, &took, &invalid, &[Part::Error]), None);
+        assert_eq!(of(&below, &invalid, &took, &[Part::Error]), None);
+        let with_the_root = [Part::Cost, Part::RootHash];
+        assert_eq!(of(&below, &invalid, &invalid, &with_the_root), None);
+        assert_eq!(of(&below, &invalid, &invalid, &[]), None);
+        let above = Op::Batch(vec![put(&[b"p"], b"t")]);
+        let elsewhere = Op::Batch(vec![put(&[b"q", b"t"], b"k")]);
+        // A batch that also writes into another subtree: its refusal
+        // may be of that one. And a root hash that changed on an engine.
+        let beside = Op::Batch(vec![put(&[b"q"], b"k"), put(&[b"p", b"t"], &[1])]);
+        assert_eq!(of(&beside, &invalid, &invalid, &[Part::Cost]), None);
+        let changed = known.family_of_refused_write(
+            &below,
+            &invalid,
+            &invalid,
+            &[Part::Cost],
+            false,
+            &AtALeftRecord::default(),
+        );
+        assert_eq!(changed, None);
+        let read = Op::Read(Read::HasRaw {
+            path: path(&[b"p", b"t"]),
+            key: vec![1],
+        });
+        let added = Op::PartialBatch(PartialBatch {
+            ops: vec![put(&[b"q"], b"k")],
+            add_on: vec![put(&[b"p", b"t"], &[1])],
+            pause_height: None,
+        });
+        // And a partial batch whose caller adds a write elsewhere: how
+        // far a refused batch came is not known.
+        let adds_elsewhere = Op::PartialBatch(PartialBatch {
+            ops: vec![put(&[b"p", b"t"], &[1])],
+            add_on: vec![put(&[b"q"], b"k")],
+            pause_height: None,
+        });
+        for op in [&above, &elsewhere, &read, &added, &adds_elsewhere] {
+            assert_eq!(of(op, &invalid, &invalid, &[Part::Cost]), None, "{op:?}");
+        }
+        // A batch of plain deletes that also writes elsewhere is of
+        // the family where its deepest subtree is under a record that
+        // a plain delete left, the candidate's refusal names that
+        // subtree in GroveDB's words and the reference's a shallower
+        // path of the batch, and the reference read more.
+        let delete = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+            path: path(at),
+            key: key.to_vec(),
+        };
+        let mixed = Op::Batch(vec![
+            delete(&[b"p", b"never"], &[1]),
+            delete(&[b"p", b"t", &[1]], b"k"),
+        ]);
+        let left = vec![path(&[b"p", b"t", &[1]])];
+        let words = |at: &str, key: &str| {
+            let text = "failed: invalid path: could not get key for parent of subtree for batch";
+            vec![format!("{text} at path [{at}] for key {key}")]
+        };
+        let (at_the_record, further_on) = (words("p/t", "0x01"), words("p", "never"));
+        let cost = [Part::Cost];
+        let at = AtALeftRecord {
+            subtrees: &left,
+            reference_said: &further_on,
+            candidate_said: &at_the_record,
+            reference_read_more: true,
+            in_the_order_listed: false,
+        };
+        let (was, is) = (&invalid, &invalid);
+        let of_left = |op: &Op, was: &Outcome, is: &Outcome, at: &AtALeftRecord| {
+            known.family_of_refused_write(op, was, is, &cost, true, at)
+        };
+        assert_eq!(of_left(&mixed, was, is, &at), family);
+        // Not with another error on either side, where one engine took
+        // it, with a root hash that changed, or where the reference
+        // was not charged for reading more.
+        assert_eq!(of_left(&mixed, &not_found, is, &at), None);
+        assert_eq!(of_left(&mixed, was, &not_found, &at), None);
+        assert_eq!(of_left(&mixed, &took, is, &at), None);
+        let changed = known.family_of_refused_write(&mixed, was, is, &cost, false, &at);
+        assert_eq!(changed, None);
+        let read_no_more = AtALeftRecord {
+            reference_read_more: false,
+            ..at
+        };
+        assert_eq!(of_left(&mixed, was, is, &read_no_more), None);
+        // Not with no such subtree, in other words on either side,
+        // where the reference refused at the same subtree or at none
+        // that the batch opens, or at one that is no shallower.
+        let none = AtALeftRecord {
+            subtrees: &[],
+            ..at
+        };
+        assert_eq!(of_left(&mixed, was, is, &none), None);
+        let other = words("p/t", "0x02");
+        for (reference_said, candidate_said) in [
+            (&further_on, &other),
+            (&other, &at_the_record),
+            (&at_the_record, &at_the_record),
+            (&words("q", "never"), &at_the_record),
+        ] {
+            let said = AtALeftRecord {
+                reference_said,
+                candidate_said,
+                ..at
+            };
+            assert_eq!(of_left(&mixed, was, is, &said), None, "{said:?}");
+        }
+        let as_deep = Op::Batch(vec![
+            delete(&[b"p", b"never", &[2]], &[1]),
+            delete(&[b"p", b"t", &[1]], b"k"),
+        ]);
+        let at_as_deep = AtALeftRecord {
+            reference_said: &words("p/never", "0x02"),
+            ..at
+        };
+        assert_eq!(of_left(&as_deep, was, is, &at_as_deep), None);
+        // From grove version 4 on the order is the one listed: the
+        // reference's refusal is for the subtree of an operation that
+        // is listed after the one into the kept subtree, whatever its
+        // depth; not for one listed before it.
+        let listed = AtALeftRecord {
+            in_the_order_listed: true,
+            ..at
+        };
+        let kept_first = Op::Batch(vec![
+            delete(&[b"p", b"t", &[1]], b"k"),
+            delete(&[b"p", b"never"], &[1]),
+        ]);
+        assert_eq!(of_left(&kept_first, was, is, &listed), family);
+        assert_eq!(of_left(&mixed, was, is, &listed), None);
+        let listed_as_deep = AtALeftRecord {
+            in_the_order_listed: true,
+            ..at_as_deep
+        };
+        let as_deep_kept_first = Op::Batch(vec![
+            delete(&[b"p", b"t", &[1]], b"k"),
+            delete(&[b"p", b"never", &[2]], &[1]),
+        ]);
+        assert_eq!(
+            of_left(&as_deep_kept_first, was, is, &listed_as_deep),
+            family
+        );
+        assert_eq!(of_left(&as_deep, was, is, &listed_as_deep), None);
+        // A tree under the one key `p/t` prints as the tree `t` in
+        // `p` does: a batch that writes into both says nothing by
+        // those words, also where both are under such a record.
+        let reads_alike = Op::Batch(vec![
+            delete(&[b"p", b"never"], &[1]),
+            delete(&[b"p/t", &[1]], b"k"),
+            delete(&[b"p", b"t", &[1]], b"k"),
+        ]);
+        assert_eq!(of_left(&reads_alike, was, is, &at), None);
+        let both = vec![path(&[b"p/t", &[1]]), path(&[b"p", b"t", &[1]])];
+        let at_both = AtALeftRecord {
+            subtrees: &both,
+            ..at
+        };
+        assert_eq!(of_left(&reads_alike, was, is, &at_both), None);
+        // A case with no such place.
+        let none = Known::default();
+        let parts = [Part::Cost];
+        assert_eq!(
+            none.family_of_refused_write(&below, was, is, &parts, true, &AtALeftRecord::default()),
+            None
+        );
+        known.passed_an_answer(Family::RefusedBelowPlainDelete, 3);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
+        assert!(known.counts().passed_over());
+    }
+
+    /// A write is of the family of a write that RocksDB alone takes
+    /// where the reference took it, the candidate refused it with
+    /// `InvalidPath`, and the refusal is about a subtree that only a
+    /// record a plain delete left names: of a direct insert the subtree
+    /// it writes into, of a batch one that the candidate names in
+    /// GroveDB's words for a path whose element it cannot read.
+    #[test]
+    fn a_write_that_the_reference_alone_takes_is_of_its_family_by_the_subtree_and_the_refusal() {
+        let held = path(&[b"removed", b"t", &[1]]);
+        let subtrees = vec![held.clone()];
+        let took = Outcome::Returned(Value::Nothing);
+        let invalid = Outcome::Failed("InvalidPath".to_string());
+        let family = Some(Family::TakenBelowPlainDelete);
+        let put = |at: &Path, key: &[u8]| BatchOp::InsertOrReplace {
+            path: at.clone(),
+            key: key.to_vec(),
+            element: Element::new_item(vec![1]),
+        };
+        let elsewhere = path(&[b"q"]);
+        let batch = Op::Batch(vec![put(&elsewhere, b"k"), put(&held, b"k")]);
+        let flags = Op::FlagsBatch(vec![put(&held, b"k")]);
+        let direct = Op::Write(Write::Insert {
+            path: held.clone(),
+            key: b"k".to_vec(),
+            element: Element::new_item(vec![1]),
+        });
+        // GroveDB's words, with the path and the key as it prints them.
+        let words = "failed: invalid path: could not get key for parent of subtree for batch at \
+                     path [removed/t] for key 0x01";
+        assert_eq!(refuses_for_no_element_above(&held[..2], &[1]), words);
+        let said = vec!["a remark".to_string(), words.to_string()];
+        let of = |op: &Op, named: &[Path], was: &Outcome, is: &Outcome, said: &[String]| {
+            Known::family_of_taken_write(op, named, was, is, said)
+        };
+        for op in [&batch, &flags] {
+            assert_eq!(of(op, &subtrees, &took, &invalid, &said), family, "{op:?}");
+            // A refusal in other words, or about another path or key.
+            assert_eq!(of(op, &subtrees, &took, &invalid, &[]), None, "{op:?}");
+            let about_another = [
+                words.replace("[removed/t]", "[q]"),
+                words.replace("0x01", "0x02"),
+                words.replace("for batch", "for a batch"),
+                format!("{words} "),
+            ];
+            for other in about_another {
+                assert_eq!(of(op, &subtrees, &took, &invalid, &[other]), None);
+            }
+        }
+        // A batch that also writes into a subtree whose path prints as
+        // that of the kept one does: its words say nothing.
+        // And neither do those of one that writes below a key which
+        // prints as the key `01` does.
+        for alike in [
+            path(&[b"removed/t", &[1]]),
+            path(&[b"removed", b"t", b"0x01"]),
+        ] {
+            let reads_alike = Op::Batch(vec![put(&alike, b"k"), put(&held, b"k")]);
+            assert_eq!(of(&reads_alike, &subtrees, &took, &invalid, &said), None);
+            // Also where both are subtrees that a kept record names.
+            let both = vec![alike.clone(), held.clone()];
+            assert_eq!(of(&reads_alike, &both, &took, &invalid, &said), None);
+        }
+        // A direct insert writes into one subtree: its refusal is about
+        // that one, in whatever words.
+        assert_eq!(of(&direct, &subtrees, &took, &invalid, &[]), family);
+        let into_another = Op::Write(Write::Insert {
+            path: elsewhere.clone(),
+            key: b"k".to_vec(),
+            element: Element::new_item(vec![1]),
+        });
+        assert_eq!(of(&into_another, &subtrees, &took, &invalid, &said), None);
+        // No such subtree, another error, both refused, the candidate
+        // alone took it, both took it, and an operation of another
+        // kind.
+        assert_eq!(of(&batch, &[], &took, &invalid, &said), None);
+        assert_eq!(of(&direct, &[], &took, &invalid, &said), None);
+        let other = Outcome::Failed("PathKeyNotFound".to_string());
+        assert_eq!(of(&batch, &subtrees, &took, &other, &said), None);
+        assert_eq!(of(&batch, &subtrees, &invalid, &invalid, &said), None);
+        assert_eq!(of(&batch, &subtrees, &invalid, &took, &said), None);
+        assert_eq!(of(&batch, &subtrees, &took, &took, &said), None);
+        let partial = Op::PartialBatch(PartialBatch {
+            ops: vec![put(&held, b"k")],
+            add_on: Vec::new(),
+            pause_height: None,
+        });
+        assert_eq!(of(&partial, &subtrees, &took, &invalid, &said), None);
+        assert!(Family::TakenBelowPlainDelete.ends_a_case());
+        let mut known = Known::default();
+        known.ended_at(Family::TakenBelowPlainDelete, 4);
+        assert_eq!(
+            known.counts().histories,
+            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+        );
+        assert_eq!(known.counts().answers, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
+        assert!(!known.counts().passed_over());
+    }
+
+    /// The subtrees a write goes into that count for a write the
+    /// reference alone takes: each at or below a place of a plain
+    /// delete, under a key whose record the reference held below the
+    /// tree before the delete, which the case has not forgotten since,
+    /// which the reference holds and the candidate does not, in a
+    /// direct insert or a batch. And what makes a case forget a record.
+    #[test]
+    fn a_subtree_counts_where_only_a_record_that_a_plain_delete_left_names_it() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let put = |at: &[&[u8]], key: &[u8]| {
+            Op::Batch(vec![BatchOp::InsertOrReplace {
+                path: path(at),
+                key: key.to_vec(),
+                element: Element::new_item(vec![1]),
+            }])
+        };
+        let delete = Op::Batch(vec![BatchOp::Delete {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+        }]);
+        let delete_tree = Op::Batch(vec![BatchOp::DeleteTree {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+            tree_type: grovedb::TreeType::NormalTree,
+        }]);
+        for grove_version in GROVE_VERSIONS.iter() {
+            let dirs = [scratch(), scratch()];
+            let open = |dir: &tempfile::TempDir| -> GroveDb<RocksDbEngine> {
+                GroveDb::open_with_engine(dir.path()).expect("a database")
+            };
+            let (reference, candidate) = (open(&dirs[0]), open(&dirs[1]));
+            let mut on_reference = Transactions::new(&reference);
+            let mut on_candidate = Transactions::new(&candidate);
+            // `t` with a sum tree `held`, removed, by a plain delete on
+            // the reference, which keeps `held`, and with what it holds
+            // on the candidate; then made again with another key.
+            let sum_tree = Element::empty_sum_tree;
+            let ops = [
+                (insert(&[], b"p", Element::empty_tree()), None),
+                (insert(&[b"p"], b"t", Element::empty_tree()), None),
+                (insert(&[b"p", b"t"], b"held", sum_tree()), None),
+                (insert(&[b"p"], b"u", Element::empty_tree()), None),
+                (Op::Commit, None),
+                (delete.clone(), Some(delete_tree.clone())),
+                (Op::Commit, None),
+                (insert(&[b"p"], b"t", Element::empty_tree()), None),
+                (insert(&[b"p", b"t"], b"other", sum_tree()), None),
+                (Op::Commit, None),
+            ];
+            for (op, on_the_candidate) in ops {
+                let other = on_the_candidate.unwrap_or_else(|| op.clone());
+                for (transactions, op) in [(&mut on_reference, &op), (&mut on_candidate, &other)] {
+                    transactions
+                        .apply(op, grove_version)
+                        .unwrap()
+                        .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+                }
+            }
+            // A tree `fresh` that the reference alone holds in the tree
+            // made again, as if the candidate had lost it: no record
+            // that the plain delete left.
+            let fresh = insert(&[b"p", b"t"], b"fresh", sum_tree());
+            on_reference
+                .apply(&fresh, grove_version)
+                .unwrap()
+                .unwrap_or_else(|error| panic!("{fresh:?}: {error}"));
+            let held = (path(&[b"p", b"t"]), b"held".to_vec());
+            let mut known = Known::default();
+            known.took(&delete, Vec::new(), vec![path(&[b"p", b"t"])], false);
+            // The places alone, with no record of the history: nothing.
+            let asked_of = |known: &Known, op: &Op| {
+                known.named_by_a_kept_record_alone(
+                    (&reference, on_reference.block()),
+                    (&candidate, on_candidate.block()),
+                    op,
+                    grove_version,
+                )
+            };
+            assert!(asked_of(&known, &put(&[b"p", b"t", b"held"], b"k")).is_empty());
+            // A record outside the places is none that a delete left.
+            known.left_records(vec![held.clone(), (path(&[b"p", b"u"]), b"held".to_vec())]);
+            assert_eq!(known.left_records.len(), 1);
+            let asked = |op: &Op| asked_of(&known, op);
+            assert!(asked(&put(&[b"p", b"t", b"fresh"], b"k")).is_empty());
+            // Both read the new tree and its sum tree `other`: nothing.
+            assert!(asked(&put(&[b"p", b"t"], b"k")).is_empty());
+            assert!(asked(&put(&[b"p", b"t", b"other"], b"k")).is_empty());
+            // The subtree under the key whose record the reference kept.
+            let kept = path(&[b"p", b"t", b"held"]);
+            assert_eq!(asked(&put(&[b"p", b"t", b"held"], b"k")), [kept]);
+            // Under a key that holds no element and no kept record,
+            // outside the place, a read, and a case with no place.
+            assert!(asked(&put(&[b"p", b"t", b"absent"], b"k")).is_empty());
+            assert!(asked(&put(&[b"p", b"u", b"held"], b"k")).is_empty());
+            let read = Op::Read(Read::HasRaw {
+                path: path(&[b"p", b"t", b"held"]),
+                key: b"k".to_vec(),
+            });
+            assert!(asked(&read).is_empty());
+            let none = Known::default().named_by_a_kept_record_alone(
+                (&reference, on_reference.block()),
+                (&candidate, on_candidate.block()),
+                &put(&[b"p", b"t", b"held"], b"k"),
+                grove_version,
+            );
+            assert!(none.is_empty());
+            // A direct insert counts as a whole batch does; a batch
+            // that also writes into a subtree both engines read, and a
+            // partial batch, have none.
+            let batch_op = |at: &[&[u8]], key: &[u8]| BatchOp::InsertOrReplace {
+                path: path(at),
+                key: key.to_vec(),
+                element: Element::new_item(vec![1]),
+            };
+            let direct = insert(&[b"p", b"t", b"held"], b"k", Element::new_item(vec![1]));
+            assert_eq!(asked(&direct), [path(&[b"p", b"t", b"held"])]);
+            let twice = Op::FlagsBatch(vec![
+                batch_op(&[b"p", b"t", b"held"], b"k"),
+                batch_op(&[b"p", b"t", b"held"], b"l"),
+            ]);
+            assert_eq!(asked(&twice), [path(&[b"p", b"t", b"held"])]);
+            // Of a batch that also writes into a subtree both engines
+            // read, the one subtree: whether a refusal is about it is
+            // asked of the refusal.
+            let with_another = Op::Batch(vec![
+                batch_op(&[b"p", b"u"], b"k"),
+                batch_op(&[b"p", b"t", b"held"], b"k"),
+            ]);
+            assert_eq!(asked(&with_another), [path(&[b"p", b"t", b"held"])]);
+            let handover = Op::FlagsHandoverBatch(crate::workload::HandoverBatch {
+                ops: vec![batch_op(&[b"p", b"t", b"held"], b"k")],
+                full_handover_owners: Default::default(),
+            });
+            assert!(asked(&handover).is_empty());
+            // A batch that puts a tree under the key itself brings its
+            // own tree; one that deletes the key does not.
+            let makes_it = Op::Batch(vec![
+                BatchOp::InsertOrReplace {
+                    path: path(&[b"p", b"t"]),
+                    key: b"held".to_vec(),
+                    element: sum_tree(),
+                },
+                batch_op(&[b"p", b"t", b"held"], b"k"),
+            ]);
+            assert!(asked(&makes_it).is_empty());
+            // A batch that puts a reference, and one that lists another
+            // kind of operation, open other paths than their own.
+            let points_elsewhere = Element::new_reference(
+                grovedb::reference_path::ReferencePathType::AbsolutePathReference(path(&[
+                    b"p", b"u", b"k",
+                ])),
+            );
+            let follows = Op::Batch(vec![
+                BatchOp::InsertOrReplace {
+                    path: path(&[b"p", b"u"]),
+                    key: b"r".to_vec(),
+                    element: points_elsewhere.clone(),
+                },
+                batch_op(&[b"p", b"t", b"held"], b"k"),
+            ]);
+            assert!(asked(&follows).is_empty());
+            let direct_reference = insert(&[b"p", b"t", b"held"], b"r", points_elsewhere);
+            assert!(asked(&direct_reference).is_empty());
+            let conditional = Op::Batch(vec![
+                BatchOp::InsertIfNotExists {
+                    path: path(&[b"p", b"u"]),
+                    key: b"k".to_vec(),
+                    element: Element::new_item(vec![1]),
+                },
+                batch_op(&[b"p", b"t", b"held"], b"k"),
+            ]);
+            assert!(asked(&conditional).is_empty());
+            let removes_it = Op::Batch(vec![
+                batch_op(&[b"p", b"t", b"held"], b"k"),
+                BatchOp::Delete {
+                    path: path(&[b"p", b"t"]),
+                    key: b"held".to_vec(),
+                },
+            ]);
+            assert_eq!(asked(&removes_it), [path(&[b"p", b"t", b"held"])]);
+            // The subtree of a batch of plain deletes under a record
+            // that a delete left, which the reference holds as a tree:
+            // on grove versions 1 to 3, where it is the deepest of the
+            // batch alone. None for a batch with a put, for a direct
+            // insert, where another subtree is as deep, or where the
+            // case has forgotten the record.
+            let delete_in = |at: &[&[u8]], key: &[u8]| BatchOp::Delete {
+                path: path(at),
+                key: key.to_vec(),
+            };
+            let under = |known: &Known, op: &Op| {
+                known.under_a_left_record(
+                    (&reference, on_reference.block()),
+                    (&candidate, on_candidate.block()),
+                    op,
+                    grove_version,
+                )
+            };
+            let deletes = Op::Batch(vec![
+                delete_in(&[b"p", b"never"], b"k"),
+                delete_in(&[b"p", b"t", b"held"], b"k"),
+            ]);
+            // On grove versions 1 to 3 the deepest subtree of the batch;
+            // from 4 on that of the operation listed first.
+            let kept_first = Op::Batch(vec![
+                delete_in(&[b"p", b"t", b"held"], b"k"),
+                delete_in(&[b"p", b"never"], b"k"),
+            ]);
+            let the_subtree = vec![path(&[b"p", b"t", b"held"])];
+            let listed = Known::looks_in_the_order_listed(grove_version);
+            let (deepest, first) = match listed {
+                true => (Vec::new(), the_subtree.clone()),
+                false => (the_subtree.clone(), the_subtree.clone()),
+            };
+            assert_eq!(under(&known, &deletes), deepest);
+            assert_eq!(under(&known, &kept_first), first);
+            let mut met = known.clone();
+            let item = Element::new_item_allowing_bidirectional_references(vec![1]);
+            met.forgets(&insert(&[b"p", b"u"], b"j", item), false, false);
+            let with_references = match listed {
+                true => Vec::new(),
+                false => the_subtree.clone(),
+            };
+            assert_eq!(under(&met, &kept_first), with_references);
+            assert!(under(&known, &with_another).is_empty());
+            assert!(under(&known, &removes_it).is_empty());
+            assert!(under(&known, &direct).is_empty());
+            let as_deep = Op::Batch(vec![
+                delete_in(&[b"p", b"u", b"x"], b"k"),
+                delete_in(&[b"p", b"t", b"held"], b"k"),
+            ]);
+            assert!(under(&known, &as_deep).is_empty());
+            assert!(under(&Known::default(), &deletes).is_empty());
+            let partial = Op::PartialBatch(PartialBatch {
+                ops: vec![batch_op(&[b"p", b"t", b"held"], b"k")],
+                add_on: Vec::new(),
+                pause_height: None,
+            });
+            assert!(asked(&partial).is_empty());
+            // An operation that names the key of the record and that
+            // the reference took, or refused with another root hash
+            // than it had, ends it; one that names another key, a
+            // commit and a read do not.
+            let below = put(&[b"p", b"t", b"held"], b"k");
+            let rollback = Op::Transaction(TransactionOp::Rollback);
+            let delete_it = Op::Write(Write::Delete {
+                path: path(&[b"p", b"t"]),
+                key: b"held".to_vec(),
+            });
+            let clears = Op::Write(Write::ClearSubtree {
+                path: path(&[b"p", b"t"]),
+            });
+            let names_it = [
+                insert(&[b"p", b"t"], b"held", sum_tree()),
+                put(&[b"p", b"t"], b"held"),
+                Op::PartialBatch(PartialBatch {
+                    ops: vec![batch_op(&[b"p"], b"x")],
+                    add_on: vec![batch_op(&[b"p", b"t"], b"held")],
+                    pause_height: None,
+                }),
+                delete_it,
+                clears,
+                Op::Batch(vec![BatchOp::Move {
+                    path: path(&[b"p"]),
+                    key: b"u".to_vec(),
+                    new_key: b"t".to_vec(),
+                }]),
+                Op::Batch(vec![BatchOp::Move {
+                    path: path(&[b"p"]),
+                    key: b"t".to_vec(),
+                    new_key: b"w".to_vec(),
+                }]),
+                rollback.clone(),
+            ];
+            for op in &names_it {
+                for (taken, root_changed) in [(true, true), (true, false), (false, true)] {
+                    let mut forgot = known.clone();
+                    forgot.forgets(op, taken, root_changed);
+                    assert!(asked_of(&forgot, &below).is_empty(), "{op:?}");
+                }
+                // Refused by the reference, with the root hash it had:
+                // nothing was put under the key. A rollback forgets
+                // whatever it is answered.
+                let mut refused = known.clone();
+                refused.forgets(op, false, false);
+                let kept = usize::from(*op != rollback);
+                assert_eq!(asked_of(&refused, &below).len(), kept, "{op:?}");
+            }
+            // A commit that the reference refused: the runner goes on
+            // from the committed state, in which the delete may not be.
+            let mut lost_its_block = known.clone();
+            lost_its_block.forgets(&Op::Commit, false, false);
+            assert!(asked_of(&lost_its_block, &below).is_empty());
+            let names_another = [
+                insert(&[b"p", b"t"], b"other", sum_tree()),
+                insert(&[b"p"], b"t", Element::empty_tree()),
+                put(&[b"p", b"t"], b"k"),
+                put(&[b"p", b"t", b"held"], b"k"),
+                Op::Commit,
+                read,
+            ];
+            for op in names_another {
+                let mut still = known.clone();
+                still.forgets(&op, true, true);
+                assert_eq!(asked_of(&still, &below).len(), 1, "{op:?}");
+            }
+            // A case that has met an element with backward references
+            // has no such subtree, whatever it was answered there.
+            let mut met = known.clone();
+            let item = Element::new_item_allowing_bidirectional_references(vec![1]);
+            met.forgets(&insert(&[b"p", b"u"], b"j", item), false, false);
+            assert!(asked_of(&met, &below).is_empty());
+            assert_eq!(asked_of(&known, &below).len(), 1);
+        }
+    }
+
+    /// A rollback of the block and an abandoned block return the
+    /// records that a plain delete left to those the case knew at the
+    /// last commit the reference took: a record that a commit made
+    /// durable is remembered, also where the block wrote under its key,
+    /// and one that a delete of the block left is forgotten. A write
+    /// that was committed stays forgotten. With no commit taken before,
+    /// nothing is remembered. A commit that the reference refused
+    /// forgets every record, also for a rollback after it; a rollback
+    /// to a savepoint forgets every record, and a rollback of the block
+    /// after it returns those of the last commit. A drain forgets,
+    /// also for a rollback after it, the records at or below a path at
+    /// which the case came to a flat drop, whatever that was answered,
+    /// and no other.
+    #[test]
+    fn a_rollback_returns_the_records_a_plain_delete_left_to_those_of_the_last_commit_taken() {
+        let durable: NodeKey = (path(&[b"p", b"t"]), b"k".to_vec());
+        let of_the_block: NodeKey = (path(&[b"p", b"u"]), b"k".to_vec());
+        let both = [durable.clone(), of_the_block.clone()];
+        let alone = vec![durable.clone()];
+        let rollback = Op::Transaction(TransactionOp::Rollback);
+        let abandon = Op::Transaction(TransactionOp::Abandon);
+        let back = Op::Transaction(TransactionOp::RollbackToSavepoint);
+        let insert_at = |record: &NodeKey| {
+            Op::Write(Write::Insert {
+                path: record.0.clone(),
+                key: record.1.clone(),
+                element: Element::new_item(vec![1]),
+            })
+        };
+        let left = |known: &Known| known.left_records.iter().cloned().collect::<Vec<_>>();
+        let places = || vec![path(&[b"p", b"t"]), path(&[b"p", b"u"])];
+        // A case in which a plain delete left `durable` before a commit
+        // that the reference took.
+        let committed = || {
+            let mut known = Known {
+                plain_deletes: places(),
+                ..Known::default()
+            };
+            known.left_records(vec![durable.clone()]);
+            known.forgets(&Op::Commit, true, false);
+            known
+        };
+        for (end, taken) in [
+            (&rollback, true),
+            (&rollback, false),
+            (&abandon, true),
+            (&abandon, false),
+        ] {
+            // Made durable before the block: remembered. Left by a
+            // delete of the block: forgotten.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            assert_eq!(left(&known), both);
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), alone, "{end:?}");
+
+            // A write of the block under the key of the durable record
+            // goes with the block.
+            let mut known = committed();
+            known.forgets(&insert_at(&durable), true, true);
+            assert!(left(&known).is_empty());
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), alone, "{end:?}");
+
+            // A write that was committed stays.
+            let mut known = committed();
+            known.forgets(&insert_at(&durable), true, true);
+            known.forgets(&Op::Commit, true, true);
+            known.forgets(end, taken, false);
+            assert!(left(&known).is_empty(), "{end:?}");
+
+            // A record of a block that was committed is durable too.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&Op::Commit, true, true);
+            known.forgets(&insert_at(&of_the_block), true, true);
+            assert_eq!(left(&known), alone);
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), both, "{end:?}");
+
+            // No commit taken before: nothing is remembered.
+            let mut known = Known {
+                plain_deletes: places(),
+                ..Known::default()
+            };
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(end, taken, false);
+            assert!(left(&known).is_empty(), "{end:?}");
+
+            // A commit that the reference refused forgets every record,
+            // also for a rollback after it.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&Op::Commit, false, false);
+            assert!(left(&known).is_empty());
+            known.forgets(end, taken, false);
+            assert!(left(&known).is_empty(), "{end:?}");
+
+            // A rollback to a savepoint forgets every record; a commit
+            // after it keeps none, and a rollback of the block after it
+            // returns those of the last commit.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&back, taken, false);
+            assert!(left(&known).is_empty());
+            let mut then_committed = known.clone();
+            then_committed.forgets(&Op::Commit, true, false);
+            then_committed.forgets(end, taken, false);
+            assert!(left(&then_committed).is_empty(), "{end:?}");
+            known.forgets(end, taken, false);
+            assert_eq!(left(&known), alone, "{end:?}");
+        }
+
+        // An operation that commits by itself forgets every record,
+        // also for a rollback after it, whatever it was answered.
+        let by_itself = |own_transaction: bool| {
+            Op::Write(Write::ConvertToBigSumTree {
+                path: path(&[b"q"]),
+                key: b"elsewhere".to_vec(),
+                own_transaction,
+            })
+        };
+        for (taken, root_changed) in [(true, true), (true, false), (false, false)] {
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&by_itself(true), taken, root_changed);
+            assert!(left(&known).is_empty());
+            for end in [&rollback, &abandon, &Op::Commit] {
+                let mut ended = known.clone();
+                ended.forgets(end, true, false);
+                assert!(left(&ended).is_empty(), "{end:?}");
+            }
+            // The same conversion in the block's transaction is a write
+            // of the block, and forgets what is at or below its subtree.
+            let mut known = committed();
+            known.left_records(vec![of_the_block.clone()]);
+            known.forgets(&by_itself(false), taken, root_changed);
+            assert_eq!(left(&known), both);
+            known.forgets(&rollback, true, false);
+            assert_eq!(left(&known), alone);
+        }
+
+        // A drain forgets the records at or below a path at which the
+        // case came to a flat drop, among those of the last commit too.
+        let drop_flat = |above: &[u8]| {
+            Op::Write(Write::DropFlat {
+                path: path(&[above]),
+                key: b"t".to_vec(),
+            })
+        };
+        let in_a_batch = Op::Batch(vec![BatchOp::DropFlat {
+            path: path(&[b"p"]),
+            key: b"t".to_vec(),
+            tree_type: grovedb::TreeType::NormalTree,
+        }]);
+        let added_last = Op::PartialBatch(PartialBatch {
+            ops: Vec::new(),
+            add_on: vec![BatchOp::DropFlat {
+                path: path(&[b"p"]),
+                key: b"t".to_vec(),
+                tree_type: grovedb::TreeType::NormalTree,
+            }],
+            pause_height: None,
+        });
+        let above = Op::Batch(vec![BatchOp::DropFlat {
+            path: Vec::new(),
+            key: b"p".to_vec(),
+            tree_type: grovedb::TreeType::NormalTree,
+        }]);
+        let drain = Op::FlushPendingDrops;
+        for (drop, taken, kept) in [
+            (&in_a_batch, true, vec![of_the_block.clone()]),
+            (&in_a_batch, false, vec![of_the_block.clone()]),
+            (&added_last, false, vec![of_the_block.clone()]),
+            (&drop_flat(b"p"), false, vec![of_the_block.clone()]),
+            (&above, false, Vec::new()),
+            (&drop_flat(b"q"), false, both.to_vec()),
+        ] {
+            for drained in [true, false] {
+                let mut known = committed();
+                known.left_records(vec![of_the_block.clone()]);
+                known.forgets(&Op::Commit, true, false);
+                known.forgets(drop, taken, false);
+                assert_eq!(left(&known), both, "{drop:?}");
+                known.forgets(&drain, drained, false);
+                assert_eq!(left(&known), kept, "{drop:?}");
+                known.forgets(&rollback, true, false);
+                assert_eq!(left(&known), kept, "{drop:?}");
+            }
+        }
+        // A drain in a case with no flat drop forgets nothing.
+        let mut known = committed();
+        known.forgets(&drain, true, false);
+        assert_eq!(left(&known), alone);
+        known.forgets(&rollback, true, false);
+        assert_eq!(left(&known), alone);
+    }
+
+    /// The trees a batch removes by a plain delete, or replaces by a
+    /// put, that count for the cost: on grove versions 4 and 5, at,
+    /// above or below a place where records were kept, where the
+    /// reference holds a node record at or below the path that the
+    /// candidate does not hold, also one below a tree that the new tree
+    /// holds under an old key.
+    #[test]
+    fn a_tree_made_again_counts_for_the_cost_where_the_reference_kept_a_record_below_it() {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            Op::Write(Write::Insert {
+                path: path(at),
+                key: key.to_vec(),
+                element,
+            })
+        };
+        let delete = |key: &[u8]| {
+            Op::Batch(vec![BatchOp::Delete {
+                path: path(&[b"p"]),
+                key: key.to_vec(),
+            }])
+        };
+        let delete_tree = |key: &[u8]| {
+            Op::Batch(vec![BatchOp::DeleteTree {
+                path: path(&[b"p"]),
+                key: key.to_vec(),
+                tree_type: grovedb::TreeType::NormalTree,
+            }])
+        };
+        for grove_version in GROVE_VERSIONS.iter() {
+            // Two databases with the same elements: in `kept` the trees
+            // were removed by a plain delete, in `clean` with what they
+            // held.
+            let dirs = [scratch(), scratch()];
+            let open = |dir: &tempfile::TempDir| -> GroveDb<RocksDbEngine> {
+                GroveDb::open_with_engine(dir.path()).expect("a database")
+            };
+            let (kept, clean) = (open(&dirs[0]), open(&dirs[1]));
+            let mut on_kept = Transactions::new(&kept);
+            let mut on_clean = Transactions::new(&clean);
+            let mut both = |plain: &Op, whole: &Op| {
+                for (transactions, op) in [(&mut on_kept, plain), (&mut on_clean, whole)] {
+                    transactions
+                        .apply(op, grove_version)
+                        .unwrap()
+                        .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+                }
+            };
+            let sum_tree = Element::empty_sum_tree;
+            for op in [
+                insert(&[], b"p", Element::empty_tree()),
+                // `other`: an item under a key the new tree does not write.
+                insert(&[b"p"], b"other", Element::empty_tree()),
+                insert(&[b"p", b"other"], &[0], Element::new_item(vec![1])),
+                // `same`: the key is written again.
+                insert(&[b"p"], b"same", Element::empty_tree()),
+                insert(&[b"p", b"same"], &[1], sum_tree()),
+                // `deep`: the key is written again, and a record is below it.
+                insert(&[b"p"], b"deep", Element::empty_tree()),
+                insert(&[b"p", b"deep"], &[1], sum_tree()),
+                insert(&[b"p", b"deep", &[1]], b"sum", Element::new_sum_item(4)),
+                // `bare` is made again with nothing in it, and `item` as
+                // an item.
+                insert(&[b"p"], b"bare", Element::empty_tree()),
+                insert(&[b"p", b"bare"], &[0], Element::new_item(vec![1])),
+                insert(&[b"p"], b"item", Element::empty_tree()),
+                insert(&[b"p", b"item"], &[0], Element::new_item(vec![1])),
+                Op::Commit,
+            ] {
+                both(&op, &op);
+            }
+            let mut known = Known::default();
+            for tree in [&b"other"[..], b"same", b"deep", b"bare", b"item"] {
+                let place = path(&[b"p", tree]);
+                both(&delete(tree), &delete_tree(tree));
+                known.took(&delete(tree), Vec::new(), vec![place], false);
+            }
+            for op in [
+                Op::Commit,
+                insert(&[b"p"], b"other", Element::empty_tree()),
+                insert(&[b"p", b"other"], &[1], sum_tree()),
+                insert(&[b"p"], b"same", Element::empty_tree()),
+                insert(&[b"p", b"same"], &[1], sum_tree()),
+                insert(&[b"p"], b"deep", Element::empty_tree()),
+                insert(&[b"p", b"deep"], &[1], sum_tree()),
+                insert(&[b"p"], b"new", Element::empty_tree()),
+                insert(&[b"p", b"new"], &[1], sum_tree()),
+                insert(&[b"p"], b"bare", Element::empty_tree()),
+                insert(&[b"p"], b"item", Element::new_item(vec![2])),
+                Op::Commit,
+            ] {
+                both(&op, &op);
+            }
+            let asked_of = |op: &Op| {
+                known.kept_below_a_removed_tree(
+                    (&kept, on_kept.block()),
+                    (&clean, on_clean.block()),
+                    op,
+                    grove_version,
+                )
+            };
+            let asked = |op: &Op| asked_of(op).trees;
+            let number = grove_version.protocol_version;
+            // What the reference kept there are items: the look opens no
+            // subtree more for them.
+            assert_eq!(asked_of(&delete(b"other")).path_hashes, 0, "{number}");
+            let expected = |tree: &[u8]| match number {
+                4 | 5 => vec![path(&[b"p", tree])],
+                _ => Vec::new(),
+            };
+            assert_eq!(asked(&delete(b"other")), expected(b"other"), "{number}");
+            assert_eq!(asked(&delete(b"deep")), expected(b"deep"), "{number}");
+            // Every key written again, a tree that is no such place, a
+            // delete of a tree with what it holds, and a put.
+            assert!(asked(&delete(b"same")).is_empty(), "{number}");
+            assert!(asked(&delete(b"new")).is_empty(), "{number}");
+            assert!(asked(&delete_tree(b"other")).is_empty(), "{number}");
+            // A tree made again that holds nothing, an item at the path,
+            // a batch of operations that declare no check, and a partial
+            // batch: nothing is looked through.
+            assert!(asked(&delete(b"bare")).is_empty(), "{number}");
+            assert!(asked(&delete(b"item")).is_empty(), "{number}");
+            let plain = || {
+                vec![BatchOp::Delete {
+                    path: path(&[b"p"]),
+                    key: b"other".to_vec(),
+                }]
+            };
+            assert!(asked(&Op::FlagsBatch(plain())).is_empty(), "{number}");
+            let partial = Op::PartialBatch(PartialBatch {
+                ops: plain(),
+                add_on: Vec::new(),
+                pause_height: None,
+            });
+            assert!(asked(&partial).is_empty(), "{number}");
+            // A put that replaces such a tree is looked through as a
+            // delete of it is, and so is a delete of the tree above;
+            // a conditional insert is not.
+            let put = Op::Batch(vec![BatchOp::InsertOrReplace {
+                path: path(&[b"p"]),
+                key: b"other".to_vec(),
+                element: Element::new_item(vec![1]),
+            }]);
+            assert_eq!(asked(&put), expected(b"other"), "{number}");
+            let above = Op::Batch(vec![BatchOp::Delete {
+                path: Vec::new(),
+                key: b"p".to_vec(),
+            }]);
+            let the_tree_above = match number {
+                4 | 5 => vec![path(&[b"p"])],
+                _ => Vec::new(),
+            };
+            assert_eq!(asked(&above), the_tree_above, "{number}");
+            let conditional = Op::Batch(vec![BatchOp::InsertIfNotExists {
+                path: path(&[b"p"]),
+                key: b"other".to_vec(),
+                element: Element::new_item(vec![1]),
+            }]);
+            assert!(asked(&conditional).is_empty(), "{number}");
+            // A flat drop beside the delete: no batch of checked
+            // operations.
+            let beside_a_flat_drop = Op::Batch(vec![
+                BatchOp::Delete {
+                    path: path(&[b"p"]),
+                    key: b"other".to_vec(),
+                },
+                BatchOp::DropFlat {
+                    path: path(&[b"p"]),
+                    key: b"new".to_vec(),
+                    tree_type: grovedb::TreeType::NormalTree,
+                },
+            ]);
+            assert!(asked(&beside_a_flat_drop).is_empty(), "{number}");
+            // A case whose one place is `same`, every key of which was
+            // written again: the records the reference kept under the
+            // other trees are of no place of it, so the tree above them
+            // does not count.
+            let mut one_place = Known::default();
+            let same = vec![path(&[b"p", b"same"])];
+            one_place.took(&delete(b"same"), Vec::new(), same, false);
+            let above_them = one_place.kept_below_a_removed_tree(
+                (&kept, on_kept.block()),
+                (&clean, on_clean.block()),
+                &above,
+                grove_version,
+            );
+            assert_eq!(above_them, KeptBelow::default(), "{number}");
+            // The place of an element written over a tree counts as
+            // that of a plain delete does, and a case with no place has
+            // no such tree.
+            let mut written_over = Known::default();
+            let over = vec![path(&[b"p", b"other"])];
+            written_over.took(&delete(b"other"), over, Vec::new(), false);
+            let none = Known::default();
+            let of = |known: &Known| {
+                let kept = known.kept_below_a_removed_tree(
+                    (&kept, on_kept.block()),
+                    (&clean, on_clean.block()),
+                    &delete(b"other"),
+                    grove_version,
+                );
+                kept.trees
+            };
+            assert_eq!(of(&written_over), expected(b"other"), "{number}");
+            assert!(of(&none).is_empty(), "{number}");
+        }
     }
 }
