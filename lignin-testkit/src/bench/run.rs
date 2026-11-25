@@ -594,7 +594,10 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
                 "lookups",
                 lookups as f64,
                 n,
-                &format!("{engine} engine counters: searches by key"),
+                &format!(
+                    "{engine} engine counters: searches by key that went on below the root \
+                     of a Merk"
+                ),
             ),
             None => count_row(
                 "keyed_lookups_per_transition",

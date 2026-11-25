@@ -10,6 +10,7 @@
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
+    hash::{BuildHasherDefault, Hasher},
 };
 
 use lignin_format::{
@@ -29,6 +30,61 @@ use super::{
 /// placed yet, or a node it deletes.
 pub(super) const NOWHERE: usize = usize::MAX;
 
+/// The hasher of the planner's maps. Their keys are a page id, or a page
+/// id with a slot: small integers, which are mixed word by word and not
+/// hashed as bytes. A map of the planner is asked for a key and never
+/// walked, so nothing of a plan follows from the order of one.
+#[derive(Debug, Default, Clone, Copy)]
+struct Mixed(u64);
+
+impl Mixed {
+    fn mix(&mut self, word: u64) {
+        self.0 = self
+            .0
+            .wrapping_add(word)
+            .wrapping_mul(0xF135_7AEA_2E62_A9C5);
+    }
+}
+
+impl Hasher for Mixed {
+    /// A product has its best bits on top, and a table takes the place of
+    /// a key from the low ones.
+    fn finish(&self) -> u64 {
+        self.0.rotate_left(26)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.mix(u64::from(*byte));
+        }
+    }
+
+    fn write_u16(&mut self, word: u16) {
+        self.mix(u64::from(word));
+    }
+
+    fn write_u32(&mut self, word: u32) {
+        self.mix(u64::from(word));
+    }
+}
+
+type Mixing = BuildHasherDefault<Mixed>;
+
+/// How many cells a plan comes to know for each cell its write names, as
+/// the first size of its map of them: a write reads the fragments of the
+/// cells it names. More than this costs the map a growth, and nothing
+/// else.
+const KNOWN_FOR_ONE: usize = 16;
+
+/// The same for the pages of those cells.
+const PAGES_FOR_ONE: usize = 4;
+
+/// The most cells of a write that its plan's maps are sized for before
+/// the plan is made. A write that names more starts with maps of this
+/// size, which grow: what a write names is not held to be true before it
+/// is planned, and a size made of it must not be one that cannot be had.
+const SIZED_FOR: usize = 1 << 16;
+
 const SLOT: usize = TreePage::SLOT_LEN;
 
 /// Up to this many parts every choice of parts is compared (V2).
@@ -45,6 +101,66 @@ pub(super) enum Via {
 pub(super) struct Kid {
     pub cell: usize,
     pub via: Via,
+}
+
+/// How many kids a cell keeps in itself: two links and one hosted root.
+const KIDS_INLINE: usize = 3;
+
+/// What a cell points at, in the order it was told: a slice of [`Kid`]s
+/// that asks the allocator for nothing while the cell has no more than
+/// [`KIDS_INLINE`] of them.
+#[derive(Debug)]
+pub(super) struct Kids {
+    inline: [Kid; KIDS_INLINE],
+    len: usize,
+    /// Every kid, once there are more than the cell keeps in itself.
+    spilled: Vec<Kid>,
+}
+
+impl Kids {
+    const fn new() -> Self {
+        let none = Kid {
+            cell: NOWHERE,
+            via: Via::Link(Side::Left),
+        };
+        Self {
+            inline: [none; KIDS_INLINE],
+            len: 0,
+            spilled: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, kid: Kid) {
+        if self.len < KIDS_INLINE {
+            self.inline[self.len] = kid;
+        } else {
+            if self.len == KIDS_INLINE {
+                self.spilled.extend_from_slice(&self.inline);
+            }
+            self.spilled.push(kid);
+        }
+        self.len += 1;
+    }
+}
+
+impl std::ops::Deref for Kids {
+    type Target = [Kid];
+
+    fn deref(&self) -> &[Kid] {
+        match self.len <= KIDS_INLINE {
+            true => &self.inline[..self.len],
+            false => &self.spilled,
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a Kids {
+    type IntoIter = std::slice::Iter<'a, Kid>;
+    type Item = &'a Kid;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
 }
 
 /// One cell the plan knows: a node of the write, a cell the write removes,
@@ -74,7 +190,7 @@ pub(super) struct Cell {
     /// root of its fragment whatever its page holds, and stays in its page.
     anchored: bool,
     /// What the cell points at after the write.
-    pub kids: Vec<Kid>,
+    pub kids: Kids,
     /// The rule that carried the cell last.
     pub cause: Option<Cause>,
 }
@@ -196,9 +312,9 @@ pub(super) struct Plan<'w> {
     /// for nothing else: the cell that pointed at them was a host that is
     /// behind (T3).
     pub unmarked: Vec<CellAddress>,
-    known: HashMap<CellAddress, usize>,
-    page_of: HashMap<PageId, usize>,
-    removed: HashSet<CellAddress>,
+    known: HashMap<CellAddress, usize, Mixing>,
+    page_of: HashMap<PageId, usize, Mixing>,
+    removed: HashSet<CellAddress, Mixing>,
 }
 
 struct Planner<'p, 'w, P> {
@@ -220,7 +336,7 @@ struct Planner<'p, 'w, P> {
     /// Whether the write met a host that is behind (T3).
     met_behind: bool,
     /// The roots the write lets go of ([`Write::dropped`]).
-    dropped: HashSet<CellAddress>,
+    dropped: HashSet<CellAddress, Mixing>,
 }
 
 /// Plans `write` on the pages as they are.
@@ -230,6 +346,7 @@ pub(super) fn plan<'w, P: Pages>(
     pages: &mut P,
     write: &'w Write<'w>,
 ) -> Result<Plan<'w>, FragmentError> {
+    let named = (write.nodes.len() + write.removed.len()).min(SIZED_FOR);
     let mut planner = Planner {
         layout: *layout,
         hints,
@@ -242,9 +359,12 @@ pub(super) fn plan<'w, P: Pages>(
             roots: Vec::new(),
             unpointed: Vec::new(),
             unmarked: Vec::new(),
-            known: HashMap::new(),
-            page_of: HashMap::new(),
-            removed: HashSet::new(),
+            known: HashMap::with_capacity_and_hasher(KNOWN_FOR_ONE * named, Mixing::default()),
+            page_of: HashMap::with_capacity_and_hasher(PAGES_FOR_ONE * named, Mixing::default()),
+            removed: HashSet::with_capacity_and_hasher(
+                write.removed.len().min(SIZED_FOR),
+                Mixing::default(),
+            ),
         },
         held: Vec::new(),
         shrunk: Vec::new(),
@@ -698,7 +818,7 @@ impl<P: Pages> Planner<'_, '_, P> {
             removed: false,
             free: false,
             anchored: false,
-            kids: Vec::new(),
+            kids: Kids::new(),
             cause: None,
         });
         if let Some(address) = origin {
@@ -888,10 +1008,10 @@ impl<P: Pages> Planner<'_, '_, P> {
         self.up(cell).is_some() || self.plan.cells[cell].free
     }
 
-    fn kids_in(&self, cell: usize, page: usize) -> Vec<usize> {
+    /// The kids of `cell` that the plan has in `page`, in their order.
+    fn kids_in(&self, cell: usize, page: usize) -> impl Iterator<Item = usize> + '_ {
         let kids = self.plan.cells[cell].kids.iter().map(|kid| kid.cell);
-        kids.filter(|kid| self.plan.cells[*kid].page == page)
-            .collect()
+        kids.filter(move |kid| self.plan.cells[*kid].page == page)
     }
 
     /// The root of the fragment `cell` is in.
@@ -1188,7 +1308,7 @@ impl<P: Pages> Planner<'_, '_, P> {
         parts: &mut Vec<(usize, usize)>,
     ) -> Result<(), FragmentError> {
         self.read(cell)?;
-        let below = self.kids_in(cell, page);
+        let below: Vec<usize> = self.kids_in(cell, page).collect();
         if let Some(above) = above {
             self.lift(cell, above, Cause::Split)?;
         }
@@ -1283,4 +1403,98 @@ fn choose(parts: &[(usize, usize)], target: usize) -> Vec<usize> {
 pub(super) fn choose_parts(parts: &[usize], target: usize) -> Vec<usize> {
     let parts: Vec<(usize, usize)> = parts.iter().map(|bytes| (0, *bytes)).collect();
     choose(&parts, target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kid(cell: usize) -> Kid {
+        let via = match cell % 3 {
+            0 => Via::Link(Side::Left),
+            1 => Via::Link(Side::Right),
+            _ => Via::Hosted(cell as u8),
+        };
+        Kid { cell, via }
+    }
+
+    fn hash_of(key: impl std::hash::Hash) -> u64 {
+        let mut hasher = Mixed::default();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The keys of the planner's maps, the cells of many pages and the
+    /// pages themselves, get hashes of their own, and a table of any size
+    /// up to a thousand places finds them spread over its places: none
+    /// holds more than a few times its share.
+    #[test]
+    fn the_keys_of_the_planners_maps_are_spread() {
+        let page = |raw: u32| PageId::new(raw).expect("not zero");
+        let slot = |raw: u16| SlotId::new(raw).expect("not zero");
+        let mut hashes = HashSet::new();
+        for places in [16usize, 128, 1024] {
+            let mut cells = vec![0u32; places];
+            let mut pages = vec![0u32; places];
+            for raw in 1..=400u32 {
+                pages[hash_of(page(raw)) as usize % places] += 1;
+                hashes.insert(hash_of(page(raw)));
+                for at in 1..=64u16 {
+                    let address = CellAddress::new(page(raw), slot(at));
+                    cells[hash_of(address) as usize % places] += 1;
+                    hashes.insert(hash_of(address));
+                }
+            }
+            let share = |keys: usize| (keys / places).max(1) as u32;
+            let most = |counts: &[u32]| counts.iter().copied().max().unwrap_or(0);
+            assert!(
+                most(&cells) <= 3 * share(400 * 64),
+                "{places}: {}",
+                most(&cells)
+            );
+            assert!(most(&pages) <= 8 * share(400), "{places}: {}", most(&pages));
+            // The tag of a key is taken from the top of its hash.
+            let mut tags = [0u32; 128];
+            for raw in 1..=400u32 {
+                tags[(hash_of(page(raw)) >> 57) as usize] += 1;
+            }
+            assert!(most(&tags) <= 16, "{}", most(&tags));
+        }
+        assert_eq!(hashes.len(), 400 + 400 * 64);
+        // A key of bytes is mixed byte by byte.
+        let bytes = |key: &[u8]| {
+            let mut hasher = Mixed::default();
+            hasher.write(key);
+            hasher.finish()
+        };
+        assert_ne!(bytes(b"ab"), bytes(b"ba"));
+        assert_ne!(bytes(b"a"), bytes(b""));
+    }
+
+    /// A cell's kids are the slice of what was pushed, in that order,
+    /// whether the cell keeps them in itself or not.
+    #[test]
+    fn kids_are_what_was_pushed_in_their_order() {
+        for count in 0..=2 * KIDS_INLINE + 1 {
+            let mut kids = Kids::new();
+            assert!(kids.is_empty());
+            for cell in 0..count {
+                kids.push(kid(cell));
+                assert_eq!(kids.len(), cell + 1);
+            }
+            let cells: Vec<usize> = kids.iter().map(|kid| kid.cell).collect();
+            assert_eq!(cells, (0..count).collect::<Vec<_>>());
+            let back: Vec<usize> = kids.iter().rev().map(|kid| kid.cell).collect();
+            assert_eq!(back, (0..count).rev().collect::<Vec<_>>());
+            for (at, found) in (&kids).into_iter().enumerate() {
+                assert_eq!((found.cell, found.via), (at, kid(at).via));
+            }
+            assert_eq!(kids.get(count).map(|kid| kid.cell), None);
+            assert_eq!(
+                kids.spilled.capacity() == 0,
+                count <= KIDS_INLINE,
+                "{count} kids"
+            );
+        }
+    }
 }

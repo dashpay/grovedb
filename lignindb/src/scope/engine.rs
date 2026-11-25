@@ -747,10 +747,14 @@ impl<'s> WriteTxn<'s> {
     /// at the end. While the operations are applied, every host whose key
     /// is that of an element that was marked at some point is taken to be
     /// behind.
+    ///
+    /// The frames are made under `lease`, which no frames were made under
+    /// before (`Frames::new`).
     pub(super) fn build<'g>(
         path: &WritePath<'s>,
         guard: &'g OperationGuard<'s>,
         at: CommitVersion,
+        lease: Lease,
         set: &WriteSet,
         scopes: &Scopes,
         loaded: &mut Loaded,
@@ -758,7 +762,7 @@ impl<'s> WriteTxn<'s> {
         // No cell of the frames that are made here holds a value that a
         // load appended for the frames before.
         loaded.begin_layout();
-        let mut frames = Frames::new(path, guard, at)?;
+        let mut frames = Frames::new(path, guard, at, lease)?;
         frames.tree.behind_keys = (scopes.ever_marked().into_iter())
             .map(|(_, key)| key)
             .collect();

@@ -22,7 +22,7 @@
 //! | `flush_bytes` | SST bytes written by flushes | bytes written by the flusher |
 //! | `compaction_bytes` | SST bytes written by compactions | bytes written by the cleaner |
 //! | `page_reads`, `cache_hits` | not available | buffer pool misses and hits |
-//! | `keyed_lookups` | not available | searches by key the tree counted |
+//! | `keyed_lookups` | not available | searches by key that went on below the root of a Merk |
 //! | `hashes` | not available | hashes the tree counted |
 //!
 //! The rows from `node_records`, `node_record_bytes`, `other_records`,
@@ -152,7 +152,8 @@ pub struct Counters {
     pub page_reads: Option<u64>,
     /// Page reads served by the cache, where the engine counts them.
     pub cache_hits: Option<u64>,
-    /// Searches by key, where the engine counts them. GroveDB's
+    /// Searches by key that went on below the root of a Merk, where the
+    /// engine counts them. GroveDB's
     /// `seek_count` is the same on every engine, so it cannot show the
     /// lookups an engine saves (PERF-03).
     #[serde(default)]

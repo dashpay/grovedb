@@ -42,8 +42,8 @@ pub(crate) trait NodePages {
         read: impl FnOnce(NodePage<'_>) -> R,
     ) -> Result<R, TxnError>;
 
-    /// The counts of the store these pages are of, which are told of every
-    /// search by key from the root of a Merk ([`find`]).
+    /// The counts of the store these pages are of, which are told of each
+    /// search by key that goes on below the root of a Merk ([`find`]).
     fn stats(&self) -> Option<&Stats>;
 }
 
@@ -90,19 +90,30 @@ impl NodePages for CommittedPages<'_, '_> {
 /// a node's and to the right where it is larger (`transactions.md` RD5).
 ///
 /// This is the keyed lookup that a kept location is the shortcut for
-/// (PN8). It reads one cell for each level, and a search of a Merk that
-/// has a node is counted as one keyed lookup of the store
-/// ([`Stats::count_keyed_lookups`]).
+/// (PN8). It reads one cell for each level. A search that goes on to a
+/// cell below the root's is counted as one keyed lookup of the store
+/// ([`Stats::count_keyed_lookups`]), whether or not it finds a node. One
+/// that the root's cell answers is not, whether the root has the key or
+/// has no child on the side of the key: the root is where the subtree
+/// directory says it is, and no link was followed for the key.
 pub(crate) fn find<P: NodePages>(
     pages: &mut P,
     root: Option<CellAddress>,
     key: &[u8],
 ) -> Result<Option<CellAddress>, TxnError> {
-    if let Some(stats) = pages.stats().filter(|_| root.is_some()) {
-        stats.count_keyed_lookups(1);
-    }
+    search(pages, root, key, true)
+}
+
+/// The search of [`find`], which is told to the counts of the store where
+/// `counted` says so.
+fn search<P: NodePages>(
+    pages: &mut P,
+    root: Option<CellAddress>,
+    key: &[u8],
+    counted: bool,
+) -> Result<Option<CellAddress>, TxnError> {
     let mut next = root;
-    for _ in 0..MAX_DEPTH {
+    for level in 0..MAX_DEPTH {
         let Some(address) = next else {
             return Ok(None);
         };
@@ -116,10 +127,170 @@ pub(crate) fn find<P: NodePages>(
         })?;
         match step.ok_or(NodeError::NoNode { address })? {
             None => return Ok(Some(address)),
-            Some(child) => next = child,
+            Some(child) => {
+                if counted
+                    && level == 0
+                    && child.is_some()
+                    && let Some(stats) = pages.stats()
+                {
+                    stats.count_keyed_lookups(1);
+                }
+                next = child;
+            }
         }
     }
-    Err(TxnError::Damaged("a Merk deeper than any tree of nodes"))
+    match next {
+        // The last cell that a search comes to has no child on the side
+        // of the key: no node is under it.
+        None => Ok(None),
+        Some(_) => Err(TxnError::Damaged("a Merk deeper than any tree of nodes")),
+    }
+}
+
+#[cfg(any(test, feature = "held_reads"))]
+pub(crate) mod held {
+    //! What a transaction's table of places answers of a key
+    //! (`super::super::places`) is held, at every answer, to the search
+    //! that it stands for ([`find`]): the cell that the key leads to from
+    //! the root of its Merk, or none. That is so of a place that is
+    //! followed, for a read and for a write, of a key that the table has
+    //! with no cell, and of a place that a caller told and a write
+    //! follows. A difference panics with both answers. It is so in a test
+    //! build of this crate, and in a build with the feature `held_reads`,
+    //! by which the tests of another crate hold the answers over their
+    //! own calls.
+    //!
+    //! The search of the hold is not counted as a keyed lookup, as that
+    //! of [`find`] is. It reads the cells from the root to the key, which
+    //! the answer did not: the store counts those reads of pages as it
+    //! counts any other, and one that fails ends the call with its error.
+
+    #[cfg(test)]
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::txn::key::Subtree;
+
+    /// What the table answered.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Answer {
+        /// The cell of a place that it kept.
+        Kept(CellAddress),
+        /// No cell: a search had found none.
+        Absent,
+        /// The cell of a place that a caller told.
+        Told(CellAddress),
+    }
+
+    /// How often an answer of the table was held to the search on this
+    /// thread.
+    #[cfg(test)]
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Compared {
+        /// A place that the table kept was followed.
+        pub(crate) kept: u64,
+        /// The table had the key with no cell.
+        pub(crate) absent: u64,
+        /// A place that a caller told was followed.
+        pub(crate) told: u64,
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        static COMPARED: Cell<Compared> = const {
+            Cell::new(Compared {
+                kept: 0,
+                absent: 0,
+                told: 0,
+            })
+        };
+    }
+
+    /// The counts of this thread since they were last taken.
+    #[cfg(test)]
+    pub(crate) fn compared() -> Compared {
+        COMPARED.replace(Compared::default())
+    }
+
+    /// Holds what the table answered of `key` in the Merk `subtree`,
+    /// whose root cell is at `root`, to the search from that root.
+    pub(crate) fn to_the_search<P: NodePages>(
+        pages: &mut P,
+        subtree: &Subtree,
+        root: Option<CellAddress>,
+        key: &[u8],
+        answer: Answer,
+    ) -> Result<(), TxnError> {
+        let found = search(pages, root, key, false)?;
+        let answered = match answer {
+            Answer::Kept(at) | Answer::Told(at) => Some(at),
+            Answer::Absent => None,
+        };
+        assert!(
+            found == answered,
+            "the table of places answers {answer:?} of the key {key:02x?} in {subtree:?}, and \
+             the search from the root {root:?} finds {found:?}",
+        );
+        #[cfg(test)]
+        COMPARED.with(|compared| {
+            let mut counts = compared.get();
+            match answer {
+                Answer::Kept(_) => counts.kept += 1,
+                Answer::Absent => counts.absent += 1,
+                Answer::Told(_) => counts.told += 1,
+            }
+            compared.set(counts);
+        });
+        Ok(())
+    }
+}
+
+/// The handle of the node whose cell is at `address`, as these pages show
+/// it.
+pub(crate) fn handle_at<P: NodePages>(
+    pages: &mut P,
+    address: CellAddress,
+) -> Result<NodeHandle, TxnError> {
+    let handle = pages.page(address.page(), |page| {
+        page.node(address.slot()).map(|node| node.handle())
+    })?;
+    Ok(handle.ok_or(NodeError::NoNode { address })?)
+}
+
+/// The cells that the cell at `at` links, on the left and on the right.
+pub(crate) fn linked_children<P: NodePages>(
+    pages: &mut P,
+    at: CellAddress,
+) -> Result<[Option<CellAddress>; 2], TxnError> {
+    let children = pages.page(at.page(), |page| {
+        let node = page.node(at.slot())?;
+        Some([Side::Left, Side::Right].map(|side| node.link(side).map(|link| link.child)))
+    })?;
+    Ok(children.ok_or(NodeError::NoNode { address: at })?)
+}
+
+/// The cell that the cell at `parent` links on `side`, if that cell has
+/// the key `key`.
+pub(crate) fn linked_child<P: NodePages>(
+    pages: &mut P,
+    parent: CellAddress,
+    side: Side,
+    key: &[u8],
+) -> Result<Option<CellAddress>, TxnError> {
+    let child = pages.page(parent.page(), |page| {
+        let node = page.node(parent.slot())?;
+        Some(node.link(side).map(|link| link.child))
+    })?;
+    let Some(child) = child.ok_or(NodeError::NoNode { address: parent })? else {
+        return Ok(None);
+    };
+    let same = pages.page(child.page(), |page| {
+        page.node(child.slot()).map(|node| node.key() == key)
+    })?;
+    match same.ok_or(NodeError::NoNode { address: child })? {
+        true => Ok(Some(child)),
+        false => Ok(None),
+    }
 }
 
 /// Reads the key of each child of the cell at `at` from the child's cell
@@ -272,8 +443,8 @@ impl<'s> TreePages<'s> {
         }
     }
 
-    /// The same pages, which tell `stats` of every search by key from the
-    /// root of a Merk.
+    /// The same pages, which tell `stats` of each search by key that goes
+    /// on below the root of a Merk.
     pub(crate) fn counted_in(mut self, stats: &'s Stats) -> Self {
         self.stats = Some(stats);
         self

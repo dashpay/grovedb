@@ -2,7 +2,14 @@
 //! reorganisations leaves the logical tree, its keys, values and shape,
 //! unchanged.
 
-use super::{grove::Grove, *};
+use std::fmt::Write as _;
+
+use lignin_format::tree_page::{Side, TreePage};
+
+use super::{
+    grove::{digest, Grove},
+    *,
+};
 
 /// Drives a grove with random writes and compares the pages with it.
 struct Run {
@@ -317,4 +324,142 @@ fn a_tree_that_only_grows_fills_its_pages_as_the_layout_says() {
     );
     assert_eq!(counters.carries[Cause::Delete].cells, 0);
     assert_eq!(counters.created, 6000);
+}
+
+/// Where the pages have every cell: each page with its cells by their
+/// slots, and of each cell its key, where its links lead, the roots it
+/// hosts and whether it is the root of a fragment. Returns the pages, the
+/// cells, the hosted roots and the digest of that listing.
+fn placement(mem: &Mem) -> (usize, usize, usize, String) {
+    let (mut cells, mut hosted) = (0, 0);
+    let mut listing = String::new();
+    for (id, frame) in &mem.frames {
+        let page = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+        writeln!(listing, "page {id}").expect("a line");
+        for (slot, cell) in page.cells() {
+            cells += 1;
+            write!(listing, " slot {slot} key {:02x?}", cell.key()).expect("a line");
+            for side in [Side::Left, Side::Right] {
+                match cell.link(side) {
+                    Some(link) => write!(listing, " {}", link.child).expect("a line"),
+                    None => listing.push_str(" -"),
+                }
+            }
+            for root in cell.hosted_roots() {
+                hosted += usize::from(root.is_some());
+                match root {
+                    Some(root) => write!(listing, " hosts {root}").expect("a line"),
+                    None => listing.push_str(" hosts none"),
+                }
+            }
+            if cell.is_fragment_root() {
+                listing.push_str(" root");
+            }
+            listing.push('\n');
+        }
+    }
+    let digest: String = (digest(&[listing.as_bytes()]).iter())
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    (mem.frames.len(), cells, hosted, digest)
+}
+
+/// The layout is a decision (`tree-layout.md`): seeded runs of writes
+/// under the proposed layout leave every cell in the page and the slot
+/// that are held here, with its links, the roots it hosts and the roots
+/// of the fragments. A change of the planner that is meant to leave the
+/// layout alone passes this unchanged. One that moves a cell of these
+/// runs fails it, and whoever makes it decides the new layout and writes
+/// its digests here.
+///
+/// The pages are those of the test, in memory: nothing but a run's own
+/// steps changes them. The runs are of three page sizes, the size of a
+/// store's pages among them, and in two of them a written node whose
+/// value is kept, and waits for its place, states that value again.
+#[test]
+fn seeded_runs_leave_every_cell_where_the_layout_was_decided() {
+    // The seed, the page size, the steps and whether a value that waits
+    // is stated again; then the pages, the cells, the hosted roots and
+    // the digest.
+    type Held = (
+        (u64, usize, usize, bool),
+        (usize, usize, usize, &'static str),
+    );
+    const HELD: [Held; 5] = [
+        (
+            (20_261_124, 8192, 4000, false),
+            (
+                50,
+                1162,
+                46,
+                "d6655613345762911bee31d801ba5ae40b7887f9f6d3f3ab75a938deba54e979",
+            ),
+        ),
+        (
+            (20_261_125, 16_384, 6000, false),
+            (
+                35,
+                1743,
+                83,
+                "e88428d301ffd56ef51e08105892a09dc40fd6b3e8d291d808fa05abbad625ee",
+            ),
+        ),
+        (
+            (20_261_126, 32_768, 9000, false),
+            (
+                25,
+                2523,
+                119,
+                "799de81d7fbbb12d10118d43b522e70201c5d7e018d9b55a38be0faa72174304",
+            ),
+        ),
+        (
+            (20_261_127, 8192, 4000, true),
+            (
+                46,
+                1201,
+                65,
+                "b48948b21bdb0ab1d30f1fcd79aa03efa6e5a1e943c8c788489f6b8f1924939e",
+            ),
+        ),
+        (
+            (20_261_128, 16_384, 6000, true),
+            (
+                35,
+                1720,
+                62,
+                "bdd8e7a55fe274ce47cff6a84397e3b8aa354647b805819f87a39bf00fcbb052",
+            ),
+        ),
+    ];
+    let mut found = Vec::new();
+    for ((seed, size, steps, restate), _) in HELD {
+        let size = PageSize::new(size).expect("a page size");
+        let mut run = Run::new(size, seed);
+        run.grove.restate = restate;
+        for step in 0..steps {
+            run.step();
+            if step % 1000 == 999 {
+                run.grove.check();
+            }
+        }
+        run.grove.check();
+        let (pages, cells, hosted, digest) = placement(&run.grove.mem);
+        assert!(
+            pages > 12 && cells > 600 && hosted > 20,
+            "the run of {seed} spans pages and hosts Merks: {pages} pages, {cells} cells, \
+             {hosted} hosted roots"
+        );
+        found.push((
+            (seed, size.get(), steps, restate),
+            (pages, cells, hosted, digest),
+        ));
+    }
+    let found: Vec<_> = (found.iter())
+        .map(|(run, (pages, cells, hosted, digest))| (*run, (*pages, *cells, *hosted, &digest[..])))
+        .collect();
+    assert_eq!(
+        found, HELD,
+        "the layout of the tree pages is not the one that was decided"
+    );
 }

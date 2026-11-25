@@ -38,7 +38,9 @@ pub struct StoreStats {
     pub cache_hits: u64,
     /// Hashes the tree computed.
     pub hashes: u64,
-    /// Searches by key from a tree's root.
+    /// Searches by key from a tree's root that went on below the root. A
+    /// node that is reached by its address, and the root that a search
+    /// begins at, are none.
     pub keyed_lookups: u64,
     /// Values read from the value log by their pointers: by readers,
     /// write transactions and the invariant checker, and not by the

@@ -429,6 +429,16 @@ impl LigninChangeSet {
         !self.nodes.is_empty() || !self.removed.is_empty()
     }
 
+    /// Whether the change set is of the subtree under `prefix`.
+    pub(super) fn is_of(&self, prefix: &Prefix) -> bool {
+        self.subtree.prefix == *prefix
+    }
+
+    /// The keys of the nodes the change set removes.
+    pub(super) fn removed_keys(&self) -> impl Iterator<Item = &[u8]> {
+        self.removed.iter().map(|(key, _)| &key[..])
+    }
+
     fn into_merk(self, anchored: bool) -> MerkChange {
         MerkChange {
             subtree: self.subtree.prefix,

@@ -100,7 +100,7 @@ only.
 | `bytes_handed_per_transition` | B | engine: key and value bytes of every record written |
 | `bytes_logged_per_transition` | B | engine: bytes appended to the write-ahead log |
 | `physical_bytes_per_transition` | B | engine: log plus flush plus compaction (cleaner) bytes |
-| `keyed_lookups_per_transition` | lookups | engine: searches by key, where it counts them; else `OperationCost::seek_count`, less one per record written |
+| `keyed_lookups_per_transition` | lookups | engine: searches by key that went on below the root of a Merk, where it counts them; else `OperationCost::seek_count`, less one per record written |
 | `seeks_per_transition` | seeks | `OperationCost::seek_count` |
 | `hashes_per_transition` | calls | `OperationCost::hash_node_calls` |
 | `engine_hashes_per_transition` | calls | engine: hashes computed, where it counts them (LigninDB only) |
@@ -115,7 +115,19 @@ GroveDB's storage layer charges one seek for every record it writes. So, for
 an engine that does not count its lookups (RocksDB), `keyed_lookups_per_transition`
 subtracts the records the engine logged, which leaves the lookups. GroveDB's
 charges are the same on every engine, so they cannot show the lookups LigninDB
-saves (PERF-03); LigninDB counts them itself.
+saves; LigninDB counts them itself. It counts a search from the root of a Merk
+that follows a link for the key. A node that is reached through a location
+that was kept, and the root itself, which the subtree directory names by its
+address, are no lookups.
+
+A build of LigninDB from before that rule counted every search by key of a
+Merk that has a node, the ones that its root answered among them. A report of
+such a build names `searches by key` in the source of the row, where a report
+of this one names `searches by key that went on below the root of a Merk`. The
+older row counts every search that the newer one counts and, beyond those,
+each search that the root of a Merk answered. So `lignin-bench compare` of an
+older report with a newer one can show a change of the row that is one of the
+count and not of the work.
 
 ### RocksDB's counters
 
@@ -220,6 +232,32 @@ ones two runs of one commit with the same settings agree on exactly. A report fr
 measured kind still reads back, and against a newer report its rows are
 compared as the newer one classes them; a binary from before it cannot read
 a newer report.
+
+## Large batches
+
+The reference workload applies batches of some tens of records. `bench::batches`
+times two batches of thousands of operations, on one engine after the other,
+each in a write transaction of its own: the application of the batch and the
+commit. The time of the application includes the making of GroveDB's operations
+out of the workload's, which is the same work on both engines.
+
+- **moves**: trees under twelve parents, each with one item, and one batch that
+  moves every tree to another key of its parent;
+- **mixed**: a tree of items under each parent, and one batch over them of
+  which a third replaces an item, a third deletes one and the rest puts a new
+  one.
+
+Each time is of one batch, so it is a result of one run and not a median of
+samples. GroveDB's charges for each batch and the root hash after it are the
+same on both engines, which the small form of the test asserts on every run.
+The measurement is the ignored test, at ten thousand moves and ten thousand
+mixed operations, five times on each engine in turn:
+
+```sh
+cargo test --release -p lignin-testkit --test bench batches_of_ten_thousand -- --ignored --nocapture
+```
+
+It is no part of a `lignin-bench` report.
 
 ## RocksDB baseline and the plan's recorded values
 

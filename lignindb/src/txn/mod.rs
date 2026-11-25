@@ -107,8 +107,14 @@
 //!
 //! A change set names its nodes, their children and its root by key, as
 //! Merk hands records to storage (ST6), and the transaction finds what
-//! each key names: a node of the same batch, or a cell that is found by a
-//! hint that is still good ([`NodePut::at`]) or by its key. All change sets
+//! each key names: a node of the same batch, or a cell. The cell of a
+//! written node is found by a hint that is still good ([`NodePut::at`]),
+//! where the transaction last saw the node ("Locations that are kept"),
+//! or by its key. The cell of a child that the batch does not write is
+//! the child that the cell of the linking node has on that side, where
+//! that cell has the child's key: a link that a write leaves as it was
+//! leads there, and no key is searched for. Any other child is found as
+//! a written node is, with no hint. All change sets
 //! of one batch are one write of the tree layer
 //! ([`Fragments::apply`](lignin_tree::fragment::Fragments::apply)), so a
 //! host points at the root of the Merk it hosts as the whole batch leaves
@@ -390,7 +396,71 @@
 //! frames, when its frames are made again (a rebase, a rollback to a mark,
 //! a failed operation), and when it is rolled back. A handle of another
 //! lease is not followed, and the node is found by its key. No address is
-//! handed out that is not inside a handle.
+//! handed out that is not inside a handle. Three writes take a new lease
+//! in frames that stay: one that drops, clears or moves a Merk, whose
+//! cells stay in their pages; one whose change set may leave a cell of a
+//! Merk in its page and out of the tree, for the same reason
+//! ([`MerkWrite`], "Only written nodes are looked at"), which takes the
+//! lease when the write is made, so that the handles the write reports
+//! end with the others; and one that keeps a value which a commit has
+//! replaced since the read that the write names, or may have, for the
+//! date of its handles and not for their places ("A kept value and the
+//! read it is of").
+//!
+//! One lease is taken over: the frames that a first write makes, over the
+//! version the transaction read last and with no write to lay out, are
+//! read under the lease it read the committed pages of that version
+//! under. Their pages are those pages until the write changes them, so a
+//! handle of that lease names in the frames the cell it named, and the
+//! nodes that a writer read before its first write are written where
+//! their handles say. Such a read is of the lease of the frames in what
+//! a lease decides of a kept value as well: no commit was taken in
+//! between the two. The transaction reads committed pages under another
+//! lease from then on.
+//!
+//! **The transaction keeps where it saw nodes** (`places`). GroveDB opens
+//! the Merks of a path anew for every batch of a block. Where it opens a
+//! Merk that is there already and that an element hosts, it reads that
+//! element by its key, with no handle, again in every batch whose path
+//! goes through the Merk. So, for the lease it reads under, the
+//! transaction keeps a table of what its reads by key found: handles of
+//! nodes, which its own writes of those nodes keep current, and keys
+//! under which no cell was found. A read by key and a write that names a
+//! node with no good hint can be answered from it. The table is a cache:
+//! `places` says what it promises (that a handle of it which is
+//! followed, and a key that it marks as having no cell, agree with the
+//! search from the root) and, in outline, what it keeps, and nothing
+//! else of it is a contract. A handle of the table is followed like any
+//! other, while it is good, so one that has ended costs the search it
+//! was kept to spare.
+//!
+//! A caller can tell the transaction a place as well
+//! ([`WriteTxn::place`]), for a node it will name by its key alone in a
+//! later write, as the delete of a node does. What is told is a hint for
+//! that write: it is checked like a handle the write names, it takes the
+//! place of nothing the transaction found or wrote, and no read is
+//! answered from it (`places`, "What a told place is good for").
+//!
+//! That no cell is under a key is no hint: where the table says so of a
+//! key and is asked, it is taken as it was found. That is kept right as
+//! follows. A
+//! cell comes to be under a key of a Merk by a write of the transaction
+//! that puts the node, which takes the mark out of the key's entry, or
+//! by a load of the whole Merk, which takes it out of every entry of the
+//! subtree. Whatever else could give a key a cell is
+//! behind a new lease: a commit that the transaction takes in, frames
+//! that are made again, and a write that drops, clears or moves a Merk
+//! or leaves a cell of one out of its tree.
+//! What is kept is of one lease, answers under no other, and is emptied
+//! before anything is put into it under another: a write under another
+//! keeps nothing in it. What the transaction found before its first write
+//! goes to its frames where they take its lease over (above).
+//!
+//! A search that the root of a Merk answers, or that ends there with no
+//! child on the side of the key, is no search by key in the store's
+//! counts (`lignin_store::stats`): the root is where the subtree
+//! directory says, and no key chose a link. A search that goes on below
+//! the root is counted once.
 //!
 //! # A kept value and the read it is of
 //!
@@ -437,12 +507,14 @@
 //!     last commit or rollback;
 //!   - a read that is more commits before the write than the transaction
 //!     keeps key sets of (64, `reads::KEPT_COMMITS`);
-//!   - a handle of the frames on which a write was made that was itself
-//!     met in this way. The handles that write reported are of the
-//!     write's version and name bytes the writer never read. They would
-//!     pass for reads once a rollback has taken the write out. So the
-//!     lease of those frames is forgotten, and with it the reads that
-//!     were made through them.
+//!   - a handle that a write reported which was itself met in this way.
+//!     The handles that write reported are of the write's version and
+//!     name bytes the writer never read. They would pass for reads once
+//!     a rollback has taken the write out. So a write that is met is
+//!     made under a lease of its own, which is never dated. What the
+//!     transaction read before that write, through its frames or of the
+//!     committed pages, is of the lease that ended there and keeps its
+//!     date.
 //! - **A keep that names no read** of a node the transaction has not
 //!   written, whose value is the committed state's, is refused
 //!   ([`BatchError::NoRead`]). No page and no entry of the write set is
@@ -554,6 +626,10 @@
 //!   spilled to a file (WT4 allows it, and does not ask for it).
 //! - **Page ids** of the pages it made, until its commit publishes them or
 //!   its frames are given up (ID1).
+//! - **Where it saw nodes** ("Locations that are kept"): a table of at
+//!   most 65,536 entries and 16 MiB of their keys, each entry with a
+//!   handle, a mark that its key has no cell, or nothing. `places` says
+//!   what is put there and when the table is emptied.
 //! - **A watch on the key sets of commits** ([`Commits`]), from its first
 //!   write, from the first read that shows it a node, or from the first
 //!   cursor it opens over a Merk, whichever comes first. A cursor watches
@@ -737,6 +813,7 @@ pub(crate) mod load;
 mod opened;
 mod pages;
 mod path;
+mod places;
 pub(crate) mod reads;
 #[allow(clippy::module_inception)]
 mod txn;

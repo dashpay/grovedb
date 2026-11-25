@@ -812,9 +812,15 @@ fn every_node_merk_writes_is_one_write_of_its_key() {
     assert!(kinds.iter().all(|seen| *seen > 20), "{kinds:?}");
 }
 
+/// The reads of a node that the transaction answered by a search or where
+/// it had kept the node, whether they named the node by its key alone or
+/// by a handle that had ended, and those that followed a handle.
 fn reads(transaction: &WriteTxn<'_>) -> (u64, u64) {
     let stats = transaction.stats();
-    (stats.keyed_reads, stats.handles_followed)
+    (
+        stats.keyed_reads + stats.places_followed,
+        stats.handles_followed,
+    )
 }
 
 /// Opens the Merk under `root`, writes `value` at the bottom of it, and
@@ -880,6 +886,142 @@ fn a_link_is_followed_to_where_its_node_was_seen() {
     let transaction = path.begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
     write_at_the_bottom(&transaction, &writer, &root, b"committed");
+}
+
+/// A node that a Merk removes is named by its key alone in its change
+/// set. A handle of a write transaction tells the transaction where it saw
+/// the node, and the write that removes the node looks for no key: in a
+/// transaction that reads committed pages until it writes, and in one that
+/// has its frames. The handle of a write scope tells nothing, and the same
+/// write looks for the one key.
+#[test]
+fn a_removed_node_is_found_where_its_handle_saw_it() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let lookups = || path.stats().store.keyed_lookups;
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let mut root = None;
+    let nodes: Vec<_> = (0..200).map(|n| basic(n, &[n as u8; 30])).collect();
+    commit(&writer, &ROOT, &mut root, &nodes);
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+
+    // Removes the node under `key` through a Merk on a deferred handle of
+    // `view`, and returns the keys that the application of the batch
+    // looked for.
+    fn remove(
+        view: LigninView<'_>,
+        root: &mut Option<Vec<u8>>,
+        key: u64,
+        lookups: &dyn Fn() -> u64,
+    ) -> u64 {
+        let staged = LigninBatch::new();
+        let store = LigninNodeStore::deferred(view, ROOT, Some(&staged));
+        let mut merk = open_layered(store, root.clone());
+        apply(&mut merk, &[(be(key), Op::Delete)]);
+        *root = merk.root_key();
+        drop(merk);
+        let before = lookups();
+        staged.apply(view).unwrap().expect("the batch is applied");
+        lookups() - before
+    }
+
+    let transaction = path.begin();
+    assert_eq!(remove((&transaction).into(), &mut root, 137, &lookups), 0);
+    assert!(transaction.stats().base.is_some(), "it has frames now");
+    assert_eq!(remove((&transaction).into(), &mut root, 61, &lookups), 0);
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    assert_eq!(remove((&writer).into(), &mut root, 12, &lookups), 1);
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let left = Merk::open_layered_with_root_key(
+        LigninNodeStore::read_only(&writer, ROOT),
+        root,
+        TreeType::NormalTree,
+        NO_VALUE_DEFINED_COST,
+        version(),
+    );
+    let left = left.unwrap().expect("the Merk opens");
+    for key in [137, 61, 12] {
+        assert!(!left.storage.has_node(&be(key)).unwrap().unwrap(), "{key}");
+    }
+    assert!(left.storage.has_node(&be(13)).unwrap().unwrap());
+}
+
+/// A handle knows where the nodes of its own subtree are, and a location
+/// does not say which Merk its cell is in. Two Merks have a node under the
+/// same key, and the handle of each has read its own. A change set of the
+/// second that is handed on through the handle of the first gets no
+/// location from that handle and leaves it none: the write puts the node
+/// of the second Merk, the node of the first is as it was, and what the
+/// first handle holds of its own node is what it held. Nor is the second
+/// Merk's node taken to have been read as the element of a tree because
+/// the first handle read its own node under that key so.
+#[test]
+fn a_handle_has_no_location_for_a_change_set_of_another_subtree() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let other = LigninSubtree::alone([7; 32]);
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let (mut root, mut other_root) = (None, None);
+    let tree = grovedb_element::Element::empty_tree();
+    let tree = basic(900, &tree.serialize(version()).expect("an element"));
+    let mine = (0..200).map(|n| basic(n, &[n as u8; 30]));
+    let mine: Vec<_> = mine.chain([tree.clone()]).collect();
+    let theirs = (0..200).map(|n| basic(n, &[!(n as u8); 30]));
+    let theirs: Vec<_> = theirs.chain([tree]).collect();
+    commit(&writer, &ROOT, &mut root, &mine);
+    commit(&writer, &other, &mut other_root, &theirs);
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+
+    let transaction = path.begin();
+    let key = be(137);
+    let here = LigninNodeStore::immediate(&transaction, ROOT);
+    let there = LigninNodeStore::immediate(&transaction, other.clone());
+    let node_of = |store: &LigninNodeStore<'_>| {
+        let read = store.get_node(&key, NO_VALUE_DEFINED_COST, version());
+        read.unwrap().unwrap().expect("the node is stored")
+    };
+    let (own, foreign) = (node_of(&here), node_of(&there));
+    assert_eq!(own.value_as_slice(), [137; 30]);
+    assert_eq!(foreign.value_as_slice(), [!137; 30]);
+    let held = here.hints.borrow().get(key.as_slice()).copied();
+    assert!(held.is_some(), "the handle has read its node");
+
+    let mut change_set = there.change_set();
+    let prepared = change_set.prepare_node(&foreign, NodeChange::ValueWritten);
+    change_set.put_node(&key, prepared, None).unwrap();
+    here.commit(change_set).unwrap().expect("the write is made");
+    assert_eq!(here.hints.borrow().get(key.as_slice()).copied(), held);
+    assert_eq!(node_of(&here).value_as_slice(), [137; 30]);
+    assert_eq!(node_of(&there).value_as_slice(), [!137; 30]);
+
+    // What a handle read as the element of a tree dates a drop or a move
+    // under that node of its own Merk. A change set of the other subtree
+    // that removes the node under the same key there is not read so.
+    let tree = be(900);
+    let staged = LigninBatch::new();
+    let here = LigninNodeStore::deferred(&transaction, ROOT, Some(&staged));
+    let there = LigninNodeStore::deferred(&transaction, other.clone(), Some(&staged));
+    let read = here.get_node(&tree, NO_VALUE_DEFINED_COST, version());
+    read.unwrap()
+        .unwrap()
+        .expect("the element of the tree is stored");
+    for removing in [&there, &here] {
+        let mut change_set = removing.change_set();
+        change_set.delete_node(&tree, None);
+        (here.commit(change_set).unwrap()).expect("the change set is staged");
+    }
+    let settled = staged.settle(&transaction).unwrap();
+    let settled = settled.expect("a settled batch");
+    assert!(settled.read_as_tree(&ROOT.prefix, &tree));
+    assert!(!settled.read_as_tree(&other.prefix, &tree));
 }
 
 #[test]
@@ -2599,15 +2741,17 @@ fn a_node_whose_children_its_reader_is_not_shown_is_refused_at_once() {
     first.rollback();
 }
 
-/// What the reader's own transaction does can end a location and give
-/// the next read of the node the same location again. A scope reads a
-/// node. A scope beside it writes a record of another subtree, which
-/// gives the transaction frames of its own, under another lease: the
-/// read of the first child finds the location ended. The scope beside
-/// rolls its write back and the frames go: the node is read at the
-/// location it had. Then a commit of another transaction lands, and the
-/// location ends a second time. Nothing here is damage, and the third
-/// read of the node answers it whole, at the cost of one read.
+/// What the reader's own transaction does can end a location. A scope
+/// reads a node. A scope beside it writes a record of another subtree,
+/// which gives the transaction frames of its own, under the lease the
+/// node was read under: the read of the first child follows the
+/// location. The scope beside rolls its write back, and the frames go
+/// with their lease: the read of the second child finds the location
+/// ended. The node is read again, and the same is done once more: a
+/// scope beside writes, the first child is read through the location,
+/// the scope rolls back, and the location has ended for the second
+/// child. No other transaction commits. Nothing here is damage, and the
+/// third read of the node answers it whole, at the cost of one read.
 #[test]
 fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_whole() {
     let beside = Beside::new();
@@ -2624,8 +2768,8 @@ fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_who
     let sibling = std::sync::Mutex::new(None);
     let reads = AtomicUsize::new(0);
     let between = |gap: Gap| match (gap, reads.load(Ordering::Relaxed)) {
-        (Gap::Read, 0) => {
-            reads.store(1, Ordering::Relaxed);
+        (Gap::Read, done @ (0 | 2)) => {
+            reads.store(done + 1, Ordering::Relaxed);
             let other = LigninWriter::new(transaction.scope().unwrap());
             {
                 let third = LigninSubtree::alone([2; 32]);
@@ -2635,14 +2779,10 @@ fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_who
             }
             *sibling.lock().unwrap() = Some(other);
         }
-        (Gap::Ended, 1) => {
-            reads.store(2, Ordering::Relaxed);
+        (Gap::Found, done @ (1 | 3)) => {
+            reads.store(done + 1, Ordering::Relaxed);
             let other: LigninWriter<'_, '_> = sibling.lock().unwrap().take().expect("a scope");
             other.into_scope().rollback();
-        }
-        (Gap::Read, 2) => {
-            reads.store(3, Ordering::Relaxed);
-            beside.land();
         }
         _ => {}
     };
@@ -2652,14 +2792,19 @@ fn a_node_whose_location_ended_twice_by_what_its_own_transaction_did_is_read_who
     let node = read.value.unwrap().expect("the root is stored");
     assert_eq!(node.encode(), quiet_node);
     assert_eq!(read.cost, quiet_cost);
-    assert_eq!(reads.load(Ordering::Relaxed), 3);
-    // Three tries: the location of the first ended twice, and the third
-    // read the node under another lease.
-    assert_eq!(view.asked.counts(), [3, 4, 2]);
+    assert_eq!(reads.load(Ordering::Relaxed), 4);
+    assert_eq!(beside.landed.load(Ordering::Relaxed), 0);
+    // Three tries, each under a lease of its own: the first and the
+    // second found one child before their location ended, and the third
+    // both.
+    assert_eq!(view.asked.counts(), [3, 6, 2]);
     let parents = view.asked.parents();
+    assert_eq!(parents.len(), 6);
     assert_eq!(parents[0], parents[1]);
     assert_ne!(parents[1].handle().lease(), parents[2].handle().lease());
     assert_eq!(parents[2], parents[3]);
+    assert_ne!(parents[3].handle().lease(), parents[4].handle().lease());
+    assert_eq!(parents[4], parents[5]);
 }
 
 /// A reader beside a writer that commits as fast as it can. Each commit
@@ -4050,4 +4195,54 @@ fn a_record_that_is_kept_outside_its_subtree_is_charged_in_the_place_of_its_own_
     let (kept_outside, in_its_subtree) = (refused(true), refused(false));
     assert_eq!(kept_outside, in_its_subtree);
     assert_eq!(kept_outside.seek_count, 2, "the first was charged before");
+}
+
+/// How a handle's writer began, and the path the handle was opened by,
+/// are of the handle's own subtree, as its locations are. A handle that
+/// was opened by a path over a Merk with no node stages the first node
+/// of that Merk, and a change set of another subtree that removes a node
+/// of a Merk which has many, in either order. The settled batch says of
+/// the other subtree neither that its writer began with no node nor the
+/// path of the handle, and of the handle's own subtree it says both.
+#[test]
+fn a_handle_gives_a_change_set_of_another_subtree_neither_its_path_nor_how_it_began() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let other = LigninSubtree::alone([7; 32]);
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let mut other_root = None;
+    let theirs: Vec<_> = (0..20).map(|n| basic(n, &[n as u8; 30])).collect();
+    commit(&writer, &other, &mut other_root, &theirs);
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+
+    for own_first in [true, false] {
+        let transaction = path.begin();
+        let own = LigninSubtree::alone([223; 32]);
+        let staged = LigninBatch::new();
+        staged.enter(&own, b"tree").unwrap();
+        let told = vec![b"a".to_vec()];
+        let here = LigninNodeStore::deferred(&transaction, own.clone(), Some(&staged));
+        let mut merk = open_layered(here.at_path(told.clone()), None);
+        let there = LigninNodeStore::deferred(&transaction, other.clone(), Some(&staged));
+        let mut foreign = there.change_set();
+        foreign.delete_node(&be(3), None);
+        if own_first {
+            apply(&mut merk, &[basic(1, b"one")]);
+        }
+        (merk.storage.commit(foreign).unwrap()).expect("the change set is staged");
+        if !own_first {
+            apply(&mut merk, &[basic(1, b"one")]);
+        }
+        drop(merk);
+        let settled = staged.settle(&transaction).unwrap();
+        let settled = settled.expect("a settled batch");
+        assert!(settled.began_empty(&own.prefix), "{own_first}");
+        assert_eq!(settled.path(&own.prefix), Some(told.as_slice()));
+        assert!(settled.writes_merk(&other.prefix), "{own_first}");
+        assert!(!settled.began_empty(&other.prefix), "{own_first}");
+        assert_eq!(settled.path(&other.prefix), None, "{own_first}");
+        transaction.rollback().expect("no scope is open");
+    }
 }

@@ -1612,6 +1612,108 @@ fn a_handle_that_a_met_write_reported_dates_no_read() {
     }
 }
 
+/// A write that is met ends no read that was made before it. It is made
+/// under a lease of its own, and what the transaction read before it, of
+/// the committed pages its frames are then made over or through frames it
+/// had, is dated as it was. Once a rollback has taken the met write out, a
+/// keep by the handles of such a read is answered from the commits since
+/// that read, and the transaction commits.
+#[test]
+fn a_read_from_before_a_met_write_is_dated_as_it_was_once_the_write_is_out() {
+    for framed in [false, true] {
+        bed(Stored::InCell, |bed| {
+            let node = bed.node.clone();
+            let tx = bed.world.begin();
+            let own = usize::from(framed);
+            // The read that a commit outside meets.
+            let (batch, kept) = adding(&bed.world, &tx, bed.len);
+            assert!(kept.contains(&node));
+            let early = read_now(&tx, &batch);
+            bed.rewrite_outside(&[&tx]);
+            if framed {
+                bed.world.write(&tx, vec![put(aux(7), b"own", b"1")]);
+            }
+
+            // The same change read again, at the version the met write is
+            // made at: of the committed pages, by a transaction that has
+            // no frames yet, or through its frames.
+            let (batch, kept) = adding(&bed.world, &tx, bed.len);
+            assert!(kept.contains(&node));
+            let late = read_now(&tx, &batch);
+            assert_eq!(tx.txn.stats().base.is_some(), framed);
+            tx.txn.set_savepoint().expect("no scope is open");
+
+            // The write by the early read is met, and is taken back.
+            bed.keep(&tx, &early, std::slice::from_ref(&node));
+            tx.txn.rollback_to_savepoint().expect("a savepoint is set");
+            tx.model.borrow_mut().writes.truncate(own);
+            let stats = tx.txn.stats();
+            assert_eq!((stats.writes, stats.overlapped), (own, 0), "{framed}");
+
+            // The write by the later read: no commit wrote a key of it
+            // since, and nothing is met.
+            bed.keep(&tx, &late, &[]);
+            assert!(matches!(bed.end(tx), Outcome::Committed(_)), "{framed}");
+        });
+    }
+}
+
+/// A met write is made under a lease of its own, and it follows nothing
+/// that the transaction kept of where it saw its nodes under the lease
+/// before (`crate::txn::places`). The write names the nodes it writes
+/// again with the handles of a read from before the commit that met it,
+/// which have ended, and the node it adds with no handle, so each is
+/// looked for by its key. Of those below the root, reads of the
+/// transaction had searched for each under the lease of its frames, and
+/// it kept what they found, of the added one that it has no cell: the
+/// write searches for each of those once more.
+#[test]
+fn a_met_write_follows_no_place_of_the_lease_before_it() {
+    bed(Stored::InCell, |bed| {
+        let node = bed.node.clone();
+        let tx = bed.world.begin();
+        let (batch, kept) = adding(&bed.world, &tx, bed.len);
+        assert!(kept.contains(&node));
+        let early = read_now(&tx, &batch);
+        bed.rewrite_outside(&[&tx]);
+        bed.world.write(&tx, vec![put(aux(7), b"own", b"1")]);
+
+        // What the write names below the root: the nodes above the added
+        // one, and the added one, which has no cell.
+        let named: Vec<Vec<u8>> = (batch.merks[0].nodes.iter())
+            .map(|(key, ..)| key.clone())
+            .filter(|key| *key != node)
+            .collect();
+        assert!(named.len() > 1, "{named:?}");
+        let searches = |bed: &Bed<'_>| bed.db.stats.keyed_lookups();
+        let there = |key: &[u8]| {
+            let read = |view: Option<NodeView<'_>>| view.is_some();
+            (tx.txn.node(model::subtree(MERK), key, read)).expect("a read")
+        };
+        // Under the lease of the frames each is searched for once, and
+        // kept: where it is, or that it has no cell.
+        for key in &named {
+            let before = searches(bed);
+            let found = there(key);
+            assert_eq!(searches(bed) - before, 1, "{key:?}");
+            assert_eq!(there(key), found);
+            assert_eq!(searches(bed) - before, 1, "{key:?}");
+        }
+        assert_eq!(
+            named.iter().filter(|key| there(key)).count(),
+            named.len() - 1
+        );
+
+        // With the places of the lease before it the write would search
+        // for none of them.
+        let before = searches(bed);
+        bed.keep(&tx, &early, std::slice::from_ref(&node));
+        assert_eq!(searches(bed) - before, named.len() as u64);
+        tx.txn.rollback().expect("no scope is open");
+        tx.forget();
+    });
+}
+
 /// The transaction goes on watching when a rollback takes its last write
 /// out, while it remembers a lease: the key sets of the commits after that
 /// are what a keep by an earlier handle is answered from.

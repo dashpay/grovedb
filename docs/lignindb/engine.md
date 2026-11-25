@@ -156,7 +156,7 @@ Applying a batch has two steps, because the partial batch needs them apart ([fin
 
 `apply_batch` does both. The partial batch settles what is staged so far (`batch.take_pending()`), reports the cost to its caller, lets the caller add operations that are staged into the same batch, settles those, and applies the group once.
 
-`apply_write_group` and `apply_batch` return `Applied`. An engine that places nodes when their batch is applied (LigninDB, [P5 of the tree layout](tree-layout.md)) reports the locations of the written nodes there, for Merks that stay open. On RocksDB it is `()`. GroveDB drops it today: no Merk outlives the batch it wrote into. PERF-03 is the first user.
+`apply_write_group` and `apply_batch` return `Applied`. An engine that places nodes when their batch is applied (LigninDB, [P5 of the tree layout](tree-layout.md)) reports the locations of the written nodes there, for Merks that stay open. On RocksDB it is `()`. GroveDB drops it: no Merk outlives the batch it wrote into. Where the next batch opens a Merk that is there already and that an element hosts, it reads that element by its key, whether this batch wrote that node or not. A write transaction of LigninDB has a table of places of its own, from which a read that names such an element by its key can be answered (`lignindb::txn::places` says what the table promises and, in outline, what it keeps; [transactions.md](transactions.md), PN8).
 
 ### Write scopes
 
@@ -1305,7 +1305,7 @@ The type is for the time in which a node runs on one engine or the other by its 
 | GROVE-10 | State sync on the engine: [State sync](#state-sync). A test engine that wraps another forwards `adopt_restored_subtrees`, as `RefusedReads` does: the trait provides a call that does nothing, and a restore into a subtree that was not entered is refused where its Merk is handed over. |
 | GROVE-09 | Done: see [Dump and load](#dump-and-load). `raw_storage` and `ingest_subtree_sst` are on the RocksDB engine only, and Platform compiles against them until OPS-03. |
 | GROVE-12 | The root-key records of all subtrees but the root Merk's are in one unit of exclusion: [The root-key record of a subtree](#the-root-key-record-of-a-subtree). `open_write_scope` and `scope_transaction`: an operation runs in a scope when it is given the scope's view. The `Send` bounds are asked for where a scope is sent. |
-| PERF-03 | `Applied`, returned by the application of a batch. |
+| PERF-03 | Done without `Applied`: GroveDB keeps no Merk open over the application of a batch, and a write transaction of LigninDB keeps locations of nodes in a table of its own, through its writes of them (`lignindb::txn`, "Locations that are kept"). |
 | OPS-10 | `EitherEngine` goes with the RocksDB engine: [It goes with RocksDB](#it-goes-with-rocksdb). |
 | OPS-03 | `grovedb::Error::is_commit_conflict()` in place of the match on `rocksdb::ErrorKind::Busy`. `GroveDb::set_savepoint` and `rollback_to_savepoint` in place of the methods of `Tx`. The devnet snapshot on `dump_subtree`, `load_subtree` and `subtree_root_as`: [Dump and load](#dump-and-load), "What Platform's port calls". |
 

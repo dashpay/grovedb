@@ -414,6 +414,14 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
     /// transaction wrote there, without its value's bytes.
     fn committed_node(&self, subtree: &Prefix, key: &[u8]) -> Result<Option<StoredNode>, Error>;
 
+    /// Tells a write transaction where the node under `key` of `subtree`
+    /// was last seen, ahead of a write that names the node by its key
+    /// alone: the delete of a node. It is a hint for that write, checked
+    /// before it is followed as the location of a put is, and no read is
+    /// answered from it (`WriteTxn::place`). A view that only reads, and
+    /// the writer of a write scope, take nothing.
+    fn place(&self, _subtree: &Prefix, _key: &[u8], _location: Location) {}
+
     /// The child a link of the node at `parent` leads to.
     fn child(&self, subtree: &Prefix, parent: Location, left: bool) -> Result<Child, Error>;
 
@@ -2235,6 +2243,9 @@ pub(super) trait Reader: Sync {
     ) -> Result<T, Error>;
 
     fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError>;
+
+    /// [`Access::place`]: nothing, but for a write transaction.
+    fn told(&self, _subtree: Subtree, _key: &[u8], _handle: NodeHandle) {}
 }
 
 impl<'t, 's> Reader for LigninWriter<'t, 's> {
@@ -2307,6 +2318,10 @@ impl Reader for WriteTxn<'_> {
         let cursor = self.merk_cursor_by_kind(subtree, keeps_flat_records)?;
         Ok(Box::new(TxnWalk(cursor)))
     }
+
+    fn told(&self, subtree: Subtree, key: &[u8], handle: NodeHandle) {
+        self.place(subtree, key, handle);
+    }
 }
 
 impl<A: Reader + super::flat::FlatAccess> Access for A {
@@ -2326,6 +2341,10 @@ impl<A: Reader + super::flat::FlatAccess> Access for A {
 
     fn committed_node(&self, subtree: &Prefix, key: &[u8]) -> Result<Option<StoredNode>, Error> {
         self.reading(|reads| read_committed_node(reads, subtree, key))
+    }
+
+    fn place(&self, subtree: &Prefix, key: &[u8], location: Location) {
+        self.told(Subtree::new(*subtree), key, location.handle());
     }
 
     fn child(&self, subtree: &Prefix, parent: Location, left: bool) -> Result<Child, Error> {

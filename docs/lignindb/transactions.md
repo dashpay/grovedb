@@ -791,6 +791,18 @@ for a private frame, the frame itself:
   in its page, and a freed slot can be given to another cell, even to one
   with the same key. So finding the expected key at a location does not
   show that the location is still good.
+- Every location into a private frame ends at a write of the same
+  transaction that leaves a cell of a Merk in its page and out of the
+  Merk's tree, or may. There are two kinds. One drops, clears or moves a
+  Merk. In the other, a cell loses the link that led to it, and is not
+  removed by the change set, is not the root after it, and is not linked
+  again from the root by the nodes of the change set (`MerkWrite`, "Only
+  written nodes are looked at"). A cell that is left out keeps its key, and
+  a later write could link it again where no search from the root finds it.
+  A write of the second kind ends the locations that it reports of its own
+  nodes with the others: a node that it wrote can be in a branch it cut
+  off. A write that is of the first kind alone makes its report under the
+  lease that it took: this rule ends none of the locations it reports.
 - A location is never kept outside the handle it was read through.
 
 The engine must make it impossible to follow a location that is no longer
@@ -798,7 +810,22 @@ good: an operation that is handed one must be able to tell, and must then
 find the record by its key (RD5) instead. One way: the transaction counts
 the commits it has observed and its own rebases and rollbacks, a location
 carries the count at which it was issued, and a mismatch means "resolve by
-key". TXN-03 and MERK-01 choose the mechanism.
+key". TXN-03 and MERK-01 choose the mechanism. As built, a write
+transaction also keeps such locations itself, in a table of places
+(`lignindb::txn::places` says of which nodes, and what its own writes do to
+them), and follows them under the same check (`lignindb::txn`, "Locations
+that are kept").
+
+A caller can tell a write transaction a location too, for a node that it
+will name by its key alone in a later write, as the delete of a Merk node
+does (`WriteTxn::place`). A told location is a location the caller holds,
+and this rule is the whole of what it is good for: that write may follow
+it, after the check, and finds the node by its key otherwise. It
+is the answer to no read, it takes the place of nothing the transaction
+found or wrote under the key, and it ends with the lease it was told
+under. The caller may assume of it what it may assume of a handle it names
+in a put, and no more: the handle must be one it was shown for a node of
+that Merk, because a cell does not say which Merk it is in.
 
 ## 6. Page versions
 
@@ -3918,8 +3945,8 @@ are listed so the owner can overrule one before code depends on it.
 20. **An operation is the size of one storage call** (section 1, RD4), so
     that the read rule is exactly as fine-grained as RocksDB's.
 21. **A location kept between operations must be checked before it is
-    followed** (PN8). This binds the path cache of PERF-03 and the scope
-    caches of GROVE-12.
+    followed** (PN8). This binds the locations a write transaction keeps
+    in its table of places, and the scope caches of GROVE-12.
 22. **The log decides whether a commit happened** (CM9): the engine applies
     recovery's own test to the group. A group that passes is published even
     if the call that wrote it reported an error, and a commit reported as

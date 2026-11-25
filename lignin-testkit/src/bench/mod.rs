@@ -29,7 +29,7 @@
 //! | `bytes_handed_per_transition` | write phases | B | [`Counters::node_record_bytes`] and [`Counters::other_record_bytes`] |
 //! | `bytes_logged_per_transition` | write phases | B | [`Counters::log_bytes`] |
 //! | `physical_bytes_per_transition` | write phases | B | [`Counters::physical_bytes`] |
-//! | `keyed_lookups_per_transition` | write phases | lookups | [`Counters::keyed_lookups`] where the engine counts them; else `OperationCost::seek_count` less one per record logged |
+//! | `keyed_lookups_per_transition` | write phases | lookups | [`Counters::keyed_lookups`] where the engine counts them, which are its searches by key that went on below the root of a Merk; else `OperationCost::seek_count` less one per record logged |
 //! | `seeks_per_transition` | write phases | seeks | `OperationCost::seek_count` |
 //! | `hashes_per_transition` | write phases | calls | `OperationCost::hash_node_calls` |
 //! | `engine_hashes_per_transition` | write phases | calls | [`Counters::hashes`], where the engine counts them |
@@ -72,6 +72,7 @@
 //! start. A row during which `perf` fails later keeps its time and has no
 //! count, and a table says so where no row of it has one.
 
+pub mod batches;
 pub mod cli;
 pub mod engine;
 #[cfg(grovedb_engine_seam)]
