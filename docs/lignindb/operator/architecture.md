@@ -194,9 +194,11 @@ section 12).
    file with its valid length.
 3. **The table checkpoint** is loaded: where each page's blocks are, as
    of the version it covers.
-4. **The log is replayed** from the checkpoint's place up to the last
-   commit whose group the log holds whole. A group that was cut by the
-   crash does not count. The pages that the log changes are rebuilt in
+4. **The log is replayed** from the first item of the oldest log file
+   the manifest keeps, since commits that the checkpoint does not cover
+   can lie before the place it was taken at, up to the last commit whose
+   group the log holds whole. What the checkpoint covers already is
+   skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
 5. **The session begins**: the files of earlier sessions are named closed
    in a new manifest, the log goes on in a new file of its own, and the
@@ -204,9 +206,13 @@ section 12).
    back.
 
 So the database opens at one committed version, never a part of one, and
-never one older than the newest that was made durable. A file that does
-not read, or does not hold what the manifest says, stops the open with
-an error that names it ([messages](messages.md#in-a-recovery)).
+never one older than the newest that was made durable. A file that the
+open reads (the manifest, the table checkpoint, the log, and the blocks
+of the pages that replay changes) and that does not read, or does not
+hold what the manifest says, stops the open with an error that names it
+([messages](messages.md#in-a-recovery)). The open does not read every
+page: a block that nothing reads at the open is checked when it is read,
+and `lignin verify` reads them all.
 
 ## When a session must be opened again
 

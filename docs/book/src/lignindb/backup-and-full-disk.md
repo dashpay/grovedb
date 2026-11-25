@@ -32,6 +32,9 @@ defines what the later ones use to write a path again with every link
 followed (`cd -P`, so that `..` is taken after the links), and to refuse
 two paths of which one is the other or lies inside it, compared by the
 directories they are (`-ef`) and by names that differ in case alone.
+A copy claims its directory first with `mkdir`, which fails where
+anything is there already, and then copies the files into it, so that a
+copy never lands inside a directory that something else made.
 Each procedure below names the paths it uses, and the directory each new
 path is to be in has to be there.
 
@@ -43,9 +46,14 @@ plain_path() {
 real_dir() {
   local d
   plain_path "$1" || return 1
-  d=$(cd -P -- "$1" && pwd -P) || return 1
+  d=$(cd -P -- "$1" && pwd -P && echo .) || return 1
+  d=${d%$'\n.'}
   plain_path "$d" || return 1
   printf '%s\n' "$d"
+}
+claim_dir() {
+  plain_path "$1" || return 1
+  mkdir -- "$1" || { echo "$1 is there already, or cannot be made: choose another path" >&2; return 1; }
 }
 real_new() {
   local d
@@ -102,11 +110,11 @@ closed):
 
 ```sh
 : "${DB:?set DB to the directory of the database}" "${BACKUP:?set BACKUP to where the backup is to be}"
-if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
 DB=$(real_dir "$DB")
 BACKUP=$(real_new "$BACKUP")
 apart "$DB" "$BACKUP"
-cp -a "$DB" "$BACKUP"
+claim_dir "$BACKUP"
+cp -a "$DB/." "$BACKUP/"
 sync
 lignin manifest "$BACKUP"
 ```
@@ -153,12 +161,12 @@ once a restore of it has passed `lignin verify` (below).
 
    ```sh
    : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}" "${BACKUP:?set BACKUP to where the backup is to be}"
-   if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
    CHECKPOINT=$(real_dir "$CHECKPOINT")
    BACKUP=$(real_new "$BACKUP")
    apart "$CHECKPOINT" "$BACKUP"
    lignin manifest "$CHECKPOINT"
-   cp -a "$CHECKPOINT" "$BACKUP"
+   claim_dir "$BACKUP"
+   cp -a "$CHECKPOINT/." "$BACKUP/"
    if [ "$(uname -s)" = Linux ]; then
      find "$BACKUP" \( -type f -o -type d \) -exec sync {} +
      d=$(dirname -- "$BACKUP")
@@ -176,22 +184,11 @@ once a restore of it has passed `lignin verify` (below).
    `sync` cannot be given a file and can return before the files are
    written, take a copy as durable once the node has stopped and the
    copy's device has been ejected, or the system shut down.
-4. **Delete the checkpoint.** Until it is deleted it keeps the bytes of
-   every file the live database has let go of since it was made. The
-   application deletes it with the deletion of the engine it runs:
-   `GroveDb::<LigninEngine>::delete_checkpoint_with_engine(path)`, or
-   `EitherEngine::delete_checkpoint_of(EngineKind::Lignin, path)` where it
-   chooses the engine at the open. `GroveDb::delete_checkpoint` deletes
-   with the build's default engine, which is RocksDB in a build of both
-   engines unless the build sets it otherwise ([engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md#the-default-engine)).
-   LigninDB's deletion can remove more than a checkpoint, the directory
-   `path.creating` beside it among what it removes: it is given the
-   checkpoint's path and nothing else. Or the checkpoint's directory is
-   removed once no handle has it open:
-
-   ```sh
-   rm -rf "${CHECKPOINT:?}"
-   ```
+4. **Check the copy**: restore it once and verify it, as the next section
+   says.
+5. **Then delete the checkpoint** ([below](#delete-the-checkpoint-of-a-backup)),
+   and not before: until the copy is durable and its restore has passed
+   `lignin verify`, the checkpoint is the one whole copy of that version.
 
 ## Check a backup, and restore one
 
@@ -204,11 +201,11 @@ is durable once synced as a stopped database's backup is.
 
 ```sh
 : "${BACKUP:?set BACKUP to the backup}" "${RESTORE:?set RESTORE to where it is to be restored}"
-if [ -e "$RESTORE" ] || [ -L "$RESTORE" ]; then echo "$RESTORE is there already: the copy would go into it"; false; fi
 BACKUP=$(real_dir "$BACKUP")
 RESTORE=$(real_new "$RESTORE")
 apart "$BACKUP" "$RESTORE"
-cp -a "$BACKUP" "$RESTORE"
+claim_dir "$RESTORE"
+cp -a "$BACKUP/." "$RESTORE/"
 if [ "$(uname -s)" = Linux ]; then
   find "$RESTORE" \( -type f -o -type d \) -exec sync {} +
   d=$(dirname -- "$RESTORE")
@@ -237,17 +234,45 @@ lignin verify "$RESTORE"
 **What a backup holds** is what was copied. A copy of a stopped
 database's directory with `cp -a` holds the whole directory: the
 engine's files, the reserve (`RESERVE`, below) and whatever the
-application keeps there. A copy of a checkpoint holds what the
-checkpoint holds: the engine's files and no file of the application's.
+application keeps there. A link in the directory is copied as a link,
+and not what it points to: a file of the application's that is kept
+elsewhere and linked from there is backed up where it is kept. A copy
+of a checkpoint holds what the checkpoint holds: the engine's files and
+no file of the application's.
+
+### Delete the checkpoint of a backup
+
+Once the copy of a checkpoint is durable (on macOS: the node stopped and
+the copy's device ejected, or the system shut down) and its restore has
+passed `lignin verify`, delete the checkpoint. Until it is deleted it
+keeps the bytes of every file the live database has let go of since it
+was made. The application deletes it with the deletion of the engine it
+runs: `GroveDb::<LigninEngine>::delete_checkpoint_with_engine(path)`, or
+`EitherEngine::delete_checkpoint_of(EngineKind::Lignin, path)` where it
+chooses the engine at the open. `GroveDb::delete_checkpoint` deletes
+with the build's default engine, which is RocksDB in a build of both
+engines unless the build sets it otherwise ([engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md#the-default-engine)).
+LigninDB's deletion can remove more than a checkpoint, the directory
+`path.creating` beside it among what it removes: it is given the
+checkpoint's path and nothing else. Or the checkpoint's directory, as
+the copy's block wrote it with its links followed, is removed once no
+handle has it open:
+
+```sh
+: "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}"
+CHECKPOINT=$(real_dir "$CHECKPOINT")
+rm -rf "${CHECKPOINT:?}"
+```
+
 
 ### What a cut-short copy or checkpoint leaves
 
 | Left | What it is | What to do |
 | --- | --- | --- |
 | a copy that `cp` or `sync` did not finish, with or without a `MANIFEST` | a copy that was cut short: `cp` writes the files in no set order, so its manifest says nothing of the rest | remove it, and copy again |
-| a directory whose name ends in `.creating`, beside a checkpoint's path | what a creation of a checkpoint at that path left, when it was cut short or failed, where one was made there. It is never opened, and it holds disk space. The name alone does not say who made the directory | where you know that a creation of a checkpoint at that path failed or was cut short (its error said so, or the node stopped during one) and none is being made now, remove that directory by itself. Otherwise look at what it holds first, and remove nothing you cannot account for. Keep nothing of your own under a name that ends in `.creating`: a creation at the path takes over whatever such a directory holds, and the deletion of a checkpoint at the path removes it |
-| a directory that holds `MANIFEST.deleting` and no `MANIFEST` | a deletion that was cut short, where that entry is a manifest and a deletion of this directory was under way: a deletion renames the manifest to that name before it removes any file. The names alone do not say that a deletion was meant | where you know that this directory was being deleted, the deletion of [step 4](#back-up-a-running-node) finishes it (it refuses the directory where the entry is no manifest). Where you do not know that, delete and rename nothing: some of its files may be gone, and the database is restored from a backup |
-| a directory that holds both `MANIFEST.deleting` and `MANIFEST` | no deletion leaves this, since it renames the manifest first: something else made the entry beside a database | if the database is to be kept, remove the entry `MANIFEST.deleting` and nothing else. The deletion of [step 4](#back-up-a-running-node) would remove the whole database: it goes by the manifest it finds, not by the entry's name |
+| a directory whose name ends in `.creating`, beside a checkpoint's path | what a creation of a checkpoint at that path left, when it was cut short or failed, where one was made there. It is never opened, and it holds disk space. The name alone does not say who made the directory | the engine takes any directory of that name for a creation's, whoever made it. Remove it only where you know that nothing but checkpoints of GroveDB is ever made under that name at that path, and that none is being made now; otherwise remove nothing you cannot account for. Keep nothing of your own under a name that ends in `.creating`: a creation at the path takes over whatever such a directory holds, and the deletion of a checkpoint at the path removes it |
+| a directory that holds `MANIFEST.deleting` and no `MANIFEST` | a deletion that was cut short, where that entry is a manifest and a deletion of this directory was under way: a deletion renames the manifest to that name before it removes any file. The names alone do not say that a deletion was meant | where you know that this directory was being deleted, the deletion of [the checkpoint](#delete-the-checkpoint-of-a-backup) finishes it (it refuses the directory where the entry is no manifest). Where you do not know that, delete and rename nothing: some of its files may be gone, and the database is restored from a backup |
+| a directory that holds both `MANIFEST.deleting` and `MANIFEST` | no deletion leaves this, since it renames the manifest first: something else made one of the two entries, and either can be the database's manifest | remove and rename nothing, and do not open the directory: restore the database from a backup, or report it with what each entry is. The deletion of [the checkpoint](#delete-the-checkpoint-of-a-backup) would remove the whole database: it goes by the manifest it finds, not by the entry's name |
 
 ## The device is full
 
