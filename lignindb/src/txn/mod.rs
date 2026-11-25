@@ -312,7 +312,11 @@
 //!     transaction dropped or cleared;
 //!   - what the transaction itself had written below is covered by the
 //!     entry of the drop, which names those subtrees, so that it is gone
-//!     also where the same transaction enters the subtree again.
+//!     also where the same transaction enters the subtree again. The
+//!     frames say which they are from an index of the written subtrees
+//!     by the Merks they are below (`below`): a written subtree is asked
+//!     of the directory where the index comes to list it, and where it
+//!     is listed under a Merk that a batch takes.
 //! - **A drop ends every handle that was read before it** (PN8): the
 //!   cells of the Merk stay in their pages, and a handle into them would
 //!   still be followed.
@@ -722,6 +726,7 @@
 //!   answer it which hosts are behind from the marks.
 
 mod arena;
+mod below;
 mod check;
 mod commits;
 mod cursor;

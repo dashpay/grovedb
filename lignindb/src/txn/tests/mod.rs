@@ -5,6 +5,7 @@ pub(crate) mod store;
 pub(crate) use super::testing as store;
 
 mod acceptance;
+mod below;
 mod both_kinds;
 mod converted;
 mod drops;
@@ -296,6 +297,7 @@ impl<'s> World<'s> {
             rebuilds: 0,
             handles_followed: 0,
             keyed_reads: 0,
+            below_opened: 0,
             ..stats
         };
         assert_eq!(

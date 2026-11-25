@@ -29,6 +29,7 @@ use lignin_tree::{
 };
 
 use super::{
+    below::Below,
     error::{BatchError, Differs, HostName, TxnError, WholeFault},
     key::{Column, Subtree},
     load::{
@@ -43,7 +44,7 @@ use super::{
         Applied, Batch, Entering, HostNode, HostPut, Hosted, LinkPut, MerkWrite, Moving,
         RecordWrite, RootPut, SubtreeWrite, ValuePut,
     },
-    write_set::Again,
+    write_set::{Again, WriteSet},
 };
 use crate::snapshot::OperationGuard;
 
@@ -161,6 +162,52 @@ pub(crate) mod probe {
     /// such a cell.
     pub(crate) fn counts() -> (u64, u64) {
         (TAKEN.get(), CHAINED.get())
+    }
+}
+
+/// How often what [`Frames::below`] found by the index of the frames was
+/// held to what every written subtree says, for the tests of this thread.
+#[cfg(all(test, not(loom)))]
+pub(crate) mod held {
+    use std::cell::Cell;
+
+    /// The calls that were held, on this thread.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Compared {
+        /// Every call that was held.
+        pub(crate) calls: u64,
+        /// Those of a batch that takes a Merk with a node: the index was
+        /// asked.
+        pub(crate) asked: u64,
+        /// Those that found a subtree below.
+        pub(crate) found: u64,
+        /// The subtrees that were found below, over all the calls.
+        pub(crate) subtrees: u64,
+    }
+
+    thread_local! {
+        static COMPARED: Cell<Compared> = const {
+            Cell::new(Compared {
+                calls: 0,
+                asked: 0,
+                found: 0,
+                subtrees: 0,
+            })
+        };
+    }
+
+    pub(super) fn count(asked: bool, subtrees: usize) {
+        let mut compared = COMPARED.get();
+        compared.calls += 1;
+        compared.asked += u64::from(asked);
+        compared.found += u64::from(subtrees > 0);
+        compared.subtrees += subtrees as u64;
+        COMPARED.set(compared);
+    }
+
+    /// What was held on this thread since it began.
+    pub(crate) fn compared() -> Compared {
+        COMPARED.get()
     }
 }
 
@@ -299,6 +346,11 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// The subtrees that the batch which was applied last dropped because
     /// it found them entered ([`SubtreeWrite::DropIfEntered`]).
     took: Vec<Subtree>,
+    /// Which of the subtrees that the write set has an entry under are
+    /// asked whether they are below a Merk that a batch takes
+    /// ([`Self::below`], `super::below`). It is of the directory of these
+    /// frames, so it is made again with them, and starts empty.
+    pub(crate) written_below: Below,
 }
 
 /// A batch as these frames lay it out ([`Frames::lay`]): with a plain drop
@@ -812,6 +864,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             renewed: self.renewed,
             stored: self.stored,
             took: self.took,
+            written_below: self.written_below,
         }
     }
 }
@@ -857,6 +910,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             renewed: HashMap::new(),
             stored: Vec::new(),
             took: Vec::new(),
+            written_below: Below::default(),
             base: at,
         })
     }
@@ -1333,17 +1387,142 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(entry.filter(|entry| !view.below_leaving(entry)))
     }
 
-    /// Those of `written` that are below a Merk that `batch` drops or
-    /// clears, as the directory has them before the batch: what the
-    /// transaction wrote there goes with the drop.
+    /// Those of the subtrees that `set` has an entry under
+    /// ([`WriteSet::written`]) that are below a Merk which `batch` drops
+    /// or clears, as the directory has them before the batch, in the
+    /// order of their prefixes: what the transaction wrote there goes
+    /// with the drop.
+    ///
+    /// Only a Merk with a node takes what is below it
+    /// ([`Subtrees::below_leaving`]): a clear of one with no node leaves
+    /// what is entered below it, and a drop of one is refused where a
+    /// subtree is. So for a batch that takes no Merk with a node the
+    /// answer is none, and nothing is asked for it. For one that takes
+    /// such a Merk, the index of these frames is brought up to date
+    /// ([`Self::list_written`]), and of the subtrees that it lists under
+    /// the ids of the Merks which the batch takes, each that `set` has
+    /// an entry under is asked of the directory, once ([`Below`]). One
+    /// that `set` has no entry under any more is forgotten, unopened.
+    /// `opened` counts the entries of the directory that are opened for
+    /// the two: one for each subtree that is asked.
     pub(crate) fn below(
-        &self,
+        &mut self,
         batch: &Batch<'_>,
-        written: impl Iterator<Item = Subtree>,
+        set: &WriteSet,
+        opened: &mut u64,
     ) -> Result<Vec<Subtree>, TxnError> {
         let laid = self.lay(batch, None)?;
         let laid = laid.as_ref().map(Laid::batch);
         let view = self.subtrees(laid.as_ref().unwrap_or(batch))?;
+        let below = self.below_listed(&view, set, opened)?;
+        #[cfg(any(test, feature = "held_reads"))]
+        self.held_to_every_written(&view, set, &below)?;
+        Ok(below)
+    }
+
+    /// [`Self::below`], for a batch whose drops and clears are `view`'s.
+    fn below_listed(
+        &mut self,
+        view: &Subtrees,
+        set: &WriteSet,
+        opened: &mut u64,
+    ) -> Result<Vec<Subtree>, TxnError> {
+        let taking = view.leaving.iter().filter(|left| left.root.is_some());
+        let taking: Vec<MerkId> = taking.map(|left| left.entry.id()).collect();
+        if taking.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.list_written(set, opened)?;
+        let index = &self.written_below;
+        let mut asked: Vec<Subtree> = taking.iter().flat_map(|id| index.under(*id)).collect();
+        asked.sort_unstable();
+        asked.dedup();
+        let mut below = Vec::new();
+        for subtree in asked {
+            // A scope that was not laid out took its writes with it: the
+            // set has no entry under the subtree any more.
+            if !set.writes_under(&subtree) {
+                self.written_below.forget(&subtree);
+                continue;
+            }
+            let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+            *opened += 1;
+            if entry.is_some_and(|entry| view.below_leaving(&entry)) {
+                below.push(subtree);
+            }
+        }
+        Ok(below)
+    }
+
+    /// Brings the index of what the transaction wrote below a Merk up to
+    /// date with the directory as it is ([`Below`]): the subtrees that
+    /// `set` has an entry under and numbered after the count the index
+    /// last took are asked, and then the subtrees that the batches which
+    /// were applied since said to ask again. A read that fails ends the
+    /// call, and leaves what was not asked to the next one.
+    fn list_written(&mut self, set: &WriteSet, opened: &mut u64) -> Result<(), TxnError> {
+        for subtree in set.written_after(self.written_below.taken()) {
+            self.ask_below(set, subtree, opened)?;
+        }
+        self.written_below.take(set.first_writes());
+        for subtree in self.written_below.again() {
+            self.ask_below(set, subtree, opened)?;
+        }
+        Ok(())
+    }
+
+    /// Asks the directory for `subtree` and lists it in the index under
+    /// the ids of the Merks that its entry has it below, or under
+    /// nothing where no entry in use is under its prefix. A subtree that
+    /// `set` has no entry under is forgotten, and nothing is opened for
+    /// it.
+    fn ask_below(
+        &mut self,
+        set: &WriteSet,
+        subtree: Subtree,
+        opened: &mut u64,
+    ) -> Result<(), TxnError> {
+        if !set.writes_under(&subtree) {
+            self.written_below.forget(&subtree);
+            return Ok(());
+        }
+        let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+        *opened += 1;
+        let above = entry.as_ref().map(Entry::lineage);
+        self.written_below
+            .list(subtree, above.into_iter().flatten());
+        Ok(())
+    }
+
+    /// Says to the index of what the transaction wrote below a Merk what
+    /// a batch that was applied did to the directory ([`Below`], "When it
+    /// changes"): which of the subtrees it has asked are asked again.
+    /// `view` is what the batch did to subtrees as a whole, as it was
+    /// found before the batch.
+    fn ask_below_again(&mut self, view: &Subtrees) {
+        let index = &mut self.written_below;
+        for left in &view.leaving {
+            if left.root.is_some() {
+                index.left(left.entry.id());
+            }
+            if left.dropped {
+                index.ask_again(&left.subtree);
+            }
+        }
+        let moved = view.moved.keys().chain(&view.taken);
+        for subtree in moved.chain(&view.entering) {
+            index.ask_again(subtree);
+        }
+    }
+
+    /// [`Self::below`] as it was made before the frames had an index:
+    /// every subtree of `written` is opened in the directory and asked.
+    #[cfg(any(test, feature = "held_reads"))]
+    fn below_of_every_written(
+        &self,
+        view: &Subtrees,
+        written: impl Iterator<Item = Subtree>,
+    ) -> Result<Vec<Subtree>, TxnError> {
         let mut below = Vec::new();
         for subtree in written {
             let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
@@ -1352,6 +1531,34 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             }
         }
         Ok(below)
+    }
+
+    /// Holds `below`, what [`Self::below`] found by the index, to what
+    /// every subtree that `set` has an entry under says
+    /// ([`Self::below_of_every_written`]): the same subtrees in the same
+    /// order, or a panic that shows both. That is so in a test build of
+    /// this crate, and in a build with the feature `held_reads`. A read
+    /// of the directory that fails here ends the call with its error
+    /// before the two are compared.
+    #[cfg(any(test, feature = "held_reads"))]
+    fn held_to_every_written(
+        &self,
+        view: &Subtrees,
+        set: &WriteSet,
+        below: &[Subtree],
+    ) -> Result<(), TxnError> {
+        let every = self.below_of_every_written(view, set.written())?;
+        assert_eq!(
+            below, every,
+            "what the transaction wrote below a Merk that a batch takes: by the index of the \
+             frames, and by every subtree the write set has an entry under"
+        );
+        #[cfg(all(test, not(loom)))]
+        held::count(
+            view.leaving.iter().any(|left| left.root.is_some()),
+            below.len(),
+        );
+        Ok(())
     }
 
     /// Whether `subtree`, once the subtrees of `batch` have left, are
@@ -1872,6 +2079,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             };
             done.map_err(Refused::dirty)?;
         }
+        self.ask_below_again(&view);
         Ok(applied)
     }
 

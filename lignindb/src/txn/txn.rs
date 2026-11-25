@@ -78,6 +78,13 @@ pub struct TxnStats {
     /// How many reads of a node found it by its key: in the write set, or
     /// down from the root of its Merk.
     pub keyed_reads: u64,
+    /// How many entries of the subtree directory the transaction opened to
+    /// say what it had written below a Merk that a batch of it drops or
+    /// clears (`transactions.md` CV9): one for each subtree it asked,
+    /// whether to list it in the index of its frames or because the index
+    /// lists it under such a Merk (`txn::below`). A test bounds the work
+    /// of such batches by it.
+    pub below_opened: u64,
 }
 
 /// What a transaction keeps between its operations.
@@ -181,6 +188,10 @@ struct State<'s> {
     rebuilds: u64,
     followed: u64,
     keyed: u64,
+    /// The entries of the directory that were opened to say what the
+    /// transaction wrote below a Merk ([`TxnStats::below_opened`]), over
+    /// every layout of its frames.
+    below_opened: u64,
 }
 
 impl State<'_> {
@@ -865,6 +876,7 @@ impl<'s> WriteTxn<'s> {
                 rebuilds: 0,
                 followed: 0,
                 keyed: 0,
+                below_opened: 0,
             }),
         }
     }
@@ -929,6 +941,7 @@ impl<'s> WriteTxn<'s> {
             rebuilds: state.rebuilds,
             handles_followed: state.followed,
             keyed_reads: state.keyed,
+            below_opened: state.below_opened,
         }
     }
 
@@ -1032,6 +1045,26 @@ impl<'s> WriteTxn<'s> {
     #[cfg(test)]
     pub(crate) fn refuse_look(&self) {
         self.lock().refuse_look = true;
+    }
+
+    /// What the index of the frames holds of the subtrees that the
+    /// transaction wrote below a Merk (`super::below`), and the id that
+    /// the directory of the frames has each of `subtrees` under: for a
+    /// test. `None` for a transaction with no frames.
+    #[cfg(all(test, not(loom)))]
+    pub(crate) fn below_shown(
+        &self,
+        subtrees: &[Subtree],
+    ) -> Option<(super::below::Shown, Vec<Option<MerkId>>)> {
+        let mut state = self.lock();
+        let guard = self.path.versions.guard();
+        let frames = Woken::wake(&mut state.frames, &guard)?;
+        let id = |subtree: &Subtree| {
+            let entry = frames.entry(subtree).expect("a read of the directory");
+            entry.map(|entry| entry.id())
+        };
+        let ids = subtrees.iter().map(id).collect();
+        Some((frames.written_below.shown(), ids))
     }
 
     /// Brings the transaction to the commits that were published up to
@@ -1294,7 +1327,7 @@ impl<'s> WriteTxn<'s> {
         // What the transaction wrote below a Merk that the batch drops or
         // clears goes with it: the directory says which, before the batch.
         let cut = match batch.has_leaves() {
-            true => match frames.below(batch, state.set.written()) {
+            true => match frames.below(batch, &state.set, &mut state.below_opened) {
                 Ok(cut) => cut,
                 // The batch is refused before anything is applied: the
                 // refusal is told as one of the application is.

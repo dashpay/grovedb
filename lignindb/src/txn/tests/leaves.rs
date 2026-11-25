@@ -16,6 +16,11 @@
 //! scopes that are rolled back; reads by a scope whose writes are kept
 //! in the write set, which a move refuses; and commits, after which the
 //! next transaction reads another version of the directory.
+//!
+//! The same transactions hold what the frames find of the subtrees that
+//! a transaction wrote below a Merk which a batch drops or clears: at
+//! every such batch, what the index of the frames gives is compared with
+//! what every written subtree says (`Frames::below`, `txn::below`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,7 +30,10 @@ use super::{
     subtrees::{aux, Held, Items},
     *,
 };
-use crate::txn::opened::held::{compared, Compared};
+use crate::txn::{
+    frames::held as below_held,
+    opened::held::{compared, Compared},
+};
 
 /// The prefixes of a run: none is entered where the run begins.
 const POOL: [u8; 16] = {
@@ -38,7 +46,7 @@ const POOL: [u8; 16] = {
     pool
 };
 
-fn sub(name: u8) -> Subtree {
+pub(super) fn sub(name: u8) -> Subtree {
     model::subtree(name)
 }
 
@@ -60,18 +68,18 @@ type Noted = Box<dyn FnOnce(&mut Account)>;
 
 /// What one batch changes in the Merks of a run, by Merk.
 #[derive(Default)]
-struct Changes {
+pub(super) struct Changes {
     edits: BTreeMap<u8, Vec<Edit>>,
     /// The subtree that the node under a key of a Merk hosts once the
     /// batch is applied, where the batch says so.
-    hosted: BTreeMap<(u8, Vec<u8>), u8>,
+    pub(super) hosted: BTreeMap<(u8, Vec<u8>), u8>,
     /// The Merks that the batch changes with no change set: one that it
     /// clears. The nodes that host them are written again as well.
-    cleared: Vec<u8>,
+    pub(super) cleared: Vec<u8>,
 }
 
 impl Changes {
-    fn edit(&mut self, name: u8, edit: impl FnOnce(&mut Items) + 'static) {
+    pub(super) fn edit(&mut self, name: u8, edit: impl FnOnce(&mut Items) + 'static) {
         self.edits.entry(name).or_default().push(Box::new(edit));
     }
 
@@ -99,7 +107,7 @@ impl Changes {
     /// and one for each Merk above one of those, whose node that hosts
     /// the Merk below is written again and names it, as the element of a
     /// tree is written wherever its Merk changed. `held` takes them in.
-    fn merks(mut self, held: &mut Held, stamp: u8) -> Vec<OwnedMerk> {
+    pub(super) fn merks(mut self, held: &mut Held, stamp: u8) -> Vec<OwnedMerk> {
         let changed: Vec<u8> = self.edits.keys().copied().collect();
         for name in changed.into_iter().chain(std::mem::take(&mut self.cleared)) {
             self.write_hosts_of(held, name, stamp);
@@ -544,21 +552,31 @@ fn run(seed: u64, steps: usize, made: &mut Made) {
 }
 
 /// The runs of `seeds`, with what they made and what was compared in
-/// them.
-fn runs(seeds: std::ops::Range<u64>) -> (Made, Compared) {
+/// them: of the answers of the subtrees' hosts, and of what the frames
+/// found below a Merk that a batch took.
+fn runs(seeds: std::ops::Range<u64>) -> (Made, Compared, below_held::Compared) {
     compared();
+    // The test's own thread: nothing was held on it before.
+    assert_eq!(below_held::compared(), below_held::Compared::default());
     let mut made = Made::default();
     for seed in seeds {
         run(seed, 60, &mut made);
     }
     let compared = compared();
-    println!("compared: {compared:?}; {made:?}");
-    (made, compared)
+    let below = below_held::compared();
+    println!("compared: {compared:?}; {below:?}; {made:?}");
+    (made, compared, below)
 }
 
 /// What each quarter of the runs has to have made and compared, so that
 /// none of the kinds of transaction is missing from it.
-fn assert_made(made: &Made, compared: &Compared) {
+fn assert_made(made: &Made, compared: &Compared, below: &below_held::Compared) {
+    // What the frames found below a Merk that a batch took: every batch
+    // with a drop or a clear was held, the index was asked for those
+    // that took a Merk with a node, and some of those found subtrees
+    // that the transaction had written below it.
+    assert!(below.calls > 7_500 && below.asked > 3_000);
+    assert!(below.found > 1_400 && below.subtrees > 2_000);
     assert_eq!(
         compared.unanswered, 0,
         "the hosts answer in every sound directory"
@@ -587,24 +605,24 @@ fn assert_made(made: &Made, compared: &Compared) {
 
 #[test]
 fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_first_quarter_of_the_runs() {
-    let (made, compared) = runs(0..750);
-    assert_made(&made, &compared);
+    let (made, compared, below) = runs(0..750);
+    assert_made(&made, &compared, &below);
 }
 
 #[test]
 fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_second_quarter_of_the_runs() {
-    let (made, compared) = runs(750..1_500);
-    assert_made(&made, &compared);
+    let (made, compared, below) = runs(750..1_500);
+    assert_made(&made, &compared, &below);
 }
 
 #[test]
 fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_third_quarter_of_the_runs() {
-    let (made, compared) = runs(1_500..2_250);
-    assert_made(&made, &compared);
+    let (made, compared, below) = runs(1_500..2_250);
+    assert_made(&made, &compared, &below);
 }
 
 #[test]
 fn the_hosts_of_a_subtree_answer_as_every_prefix_does_in_the_last_quarter_of_the_runs() {
-    let (made, compared) = runs(2_250..3_000);
-    assert_made(&made, &compared);
+    let (made, compared, below) = runs(2_250..3_000);
+    assert_made(&made, &compared, &below);
 }
