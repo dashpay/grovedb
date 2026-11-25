@@ -85,9 +85,10 @@ first line of the block below, `set -euo pipefail`, before anything
 else. From then on a command that fails, a variable that is not set and
 a pipeline whose first command fails (before its report reaches `tee`)
 end that shell, so that no later command runs on what a failed one left.
-To go on after a failure, start `bash` again, run this first block,
-`export` the variables of steps 2 and 4 again, and go on with the step
-that failed.
+To go on after a failure, start `bash` again, run this block and the
+block of step 2 again (it clones nothing that is there and builds only
+what changed, and puts `lignin` on the path), `export` the four paths as
+step 4 printed them, and go on with the step that failed.
 
 ```sh
 set -euo pipefail
@@ -96,104 +97,6 @@ if ! command -v cargo >/dev/null; then
   . "${CARGO_HOME:-$HOME/.cargo}/env"
 fi
 cargo --version
-```
-
-## 2. Set the variables
-
-Set two variables before the next block:
-
-- `GROVEDB_REF`: the GroveDB release your node runs, as a tag or a
-  branch of `https://github.com/dashpay/grovedb`. The tool is built from
-  the same release, so that it reads and writes what your node does.
-- `WORK`: a directory for the source code, the build and the reports of
-  each step. The build takes a few GiB.
-
-The block makes `WORK` absolute, since it changes into the source
-directory to build. It clones the repository where no clone is there
-yet, and then fetches `GROVEDB_REF` and checks it out, so that a clone
-that a run before left behind is moved to the release as well. It names
-where Cargo builds (`CARGO_TARGET_DIR`), so that the `lignin` it puts
-first on the path is the one it built. Give the paths of step 4 as
-absolute paths too.
-
-```sh
-: "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
-: "${WORK:?set WORK to a directory for the build and the reports}"
-mkdir -p "$WORK/reports"
-WORK=$(cd "$WORK" && pwd)
-if [ ! -d "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
-cd "$WORK/grovedb"
-if [ -n "$(git status --porcelain)" ]; then echo "$WORK/grovedb has changes of its own: give a WORK with no clone in it"; false; fi
-git fetch --depth 1 origin "$GROVEDB_REF"
-git checkout --detach FETCH_HEAD
-git log -1 --format='building GroveDB at %H'
-export CARGO_TARGET_DIR="$WORK/grovedb/target"
-cargo build --release -p lignin-tools --features migrate
-export PATH="$CARGO_TARGET_DIR/release:$PATH"
-lignin help
-```
-
-`lignin help` prints every subcommand. A build without the feature
-`migrate` has every subcommand but `migrate`, and says so when it is
-asked for it.
-
-## 3. Rehearse on a database of the repository
-
-This step is optional, and worth the few minutes: it runs every later
-step on a small RocksDB GroveDB that the repository's benchmark tool
-makes, so that you see each report before you meet it on your node's
-database. The tool is `lignin-bench` (`docs/lignindb/benchmarks.md`),
-which writes the plan's reference workload: a tree of documents and an
-index of a reference to each by its owner, here 20,000 documents over
-200 owners, with creates, updates and deletes after them. With
-`lignin-bench run --keep` its database stays in
-`$WORK/rehearsal/rocksdb`. **The benchmark removes what it finds at
-`rocksdb` and `rocksdb-checkpoint` in its scratch directory**, so the
-block refuses a `$WORK/rehearsal` that is there already. Its report goes
-to a file; nothing in it is needed below.
-
-```sh
-if [ -e "$WORK/rehearsal" ]; then echo "$WORK/rehearsal is there already, and the benchmark would remove what it holds: choose another WORK"; false; fi
-cargo build --release -p lignin-testkit --bin lignin-bench
-lignin-bench run --engine rocksdb --keep --scratch "$WORK/rehearsal" --out "$WORK/rehearsal.json" --documents 20000 --owners 200 --creates 200 --updates 200 --deletes 200 --point-reads 20 --reference-reads 5 --warmup-reads 20 --cold-reads 1 --checkpoints 1 --reopens 1 > "$WORK/reports/rehearsal.txt"
-SOURCE="$WORK/rehearsal/rocksdb"
-TARGET="$WORK/rehearsal-lignindb/database"
-BACKUP="$WORK/rehearsal-backup/database"
-RESTORE="$WORK/rehearsal-restore/database"
-mkdir "$WORK/rehearsal-lignindb" "$WORK/rehearsal-backup" "$WORK/rehearsal-restore"
-```
-
-For your node's own migration, skip this block and set the four
-variables of step 4 yourself.
-
-## 4. Stop the node and name the directories
-
-Stop the node, as its own documentation says, and make sure that no
-other process uses its database: not the node, not a second instance of
-it, not a backup job. Where the source has a `LOCK` file, `migrate`
-holds a lock on it for as long as it runs: a process that has the source
-open is refused (`a process has it open`), and a node that is started
-meanwhile cannot open it. A writer whose `LOCK` file was replaced while
-it ran is not seen that way, since the new file says nothing of it.
-
-Then name four paths. `SOURCE` is there; `TARGET`, `BACKUP` and
-`RESTORE` are not there yet, and the directory each of them is to be in
-has to be there: make it first.
-
-- `SOURCE`: the directory of the node's RocksDB GroveDB, the one that
-  holds `CURRENT`, `MANIFEST-…` and the `.sst` files. A RocksDB
-  checkpoint of it can be the source as well: the migration then holds
-  the state of that checkpoint, and a node started on it goes on from
-  there.
-- `TARGET`: where the LigninDB database is to be.
-- `BACKUP`: where the backup of step 8 is to be, best on another device.
-- `RESTORE`: where step 9 restores that backup to check it.
-
-```sh
-: "${SOURCE:?set SOURCE to the RocksDB directory of the stopped node}"
-: "${TARGET:?set TARGET to where the LigninDB database is to be}"
-: "${BACKUP:?set BACKUP to where the backup of the new database is to be}"
-: "${RESTORE:?set RESTORE to where the backup is to be restored once}"
 plain_path() {
   case "$1" in *$'\n'*) echo "a path with a line break in it is not taken: $1" >&2; return 1 ;; esac
 }
@@ -236,6 +139,115 @@ apart() {
     done
   done
 }
+```
+
+The functions at the end of the block are what the later steps use to
+write a path again with every link followed (`cd -P`, so that a `..` is
+taken after the links), to refuse a path with a line break in it, to
+refuse two paths of which one is the other or lies inside it (compared
+by the directories they are, `-ef`, and by names that differ in case
+alone), and to claim a new directory with `mkdir`, which fails where
+anything is there already.
+
+## 2. Set the variables
+
+Set two variables before the next block:
+
+- `GROVEDB_REF`: the GroveDB release your node runs, as a tag or a
+  branch of `https://github.com/dashpay/grovedb`. The tool is built from
+  the same release, so that it reads and writes what your node does.
+- `WORK`: a directory for the source code, the build and the reports of
+  each step. The build takes a few GiB.
+
+The block makes `WORK` absolute, since it changes into the source
+directory to build. It clones the repository where no clone is there
+yet, refuses one with changes of its own, and then fetches
+`GROVEDB_REF` from the repository's own address and checks it out, so
+that a clone that a run before left behind is moved to the release as
+well, whatever remote it names. It names
+where Cargo builds (`CARGO_TARGET_DIR`), so that the `lignin` it puts
+first on the path is the one it built. Give the paths of step 4 as
+absolute paths too.
+
+```sh
+: "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
+: "${WORK:?set WORK to a directory for the build and the reports}"
+mkdir -p "$WORK/reports"
+WORK=$(real_dir "$WORK")
+if [ ! -d "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
+cd "$WORK/grovedb"
+if [ -n "$(git status --porcelain)" ]; then echo "$WORK/grovedb has changes of its own: give a WORK with no clone in it"; false; fi
+git fetch --depth 1 https://github.com/dashpay/grovedb.git "$GROVEDB_REF"
+git checkout --detach FETCH_HEAD
+git log -1 --format='building GroveDB at %H'
+export CARGO_TARGET_DIR="$WORK/grovedb/target"
+cargo build --release -p lignin-tools --features migrate
+export PATH="$CARGO_TARGET_DIR/release:$PATH"
+lignin help
+```
+
+`lignin help` prints every subcommand. A build without the feature
+`migrate` has every subcommand but `migrate`, and says so when it is
+asked for it.
+
+## 3. Rehearse on a database of the repository
+
+This step is optional, and worth the few minutes: it runs every later
+step on a small RocksDB GroveDB that the repository's benchmark tool
+makes, so that you see each report before you meet it on your node's
+database. The tool is `lignin-bench` (`docs/lignindb/benchmarks.md`),
+which writes the plan's reference workload: a tree of documents and an
+index of a reference to each by its owner, here 20,000 documents over
+200 owners, with creates, updates and deletes after them. With
+`lignin-bench run --keep` its database stays in
+`$WORK/rehearsal/rocksdb`. **The benchmark removes what it finds at
+`rocksdb` and `rocksdb-checkpoint` in its scratch directory**, so the
+block claims `$WORK/rehearsal` with `mkdir` first, which fails where it
+is there already. Its report goes
+to a file; nothing in it is needed below.
+
+```sh
+claim_dir "$WORK/rehearsal"
+cargo build --release -p lignin-testkit --bin lignin-bench
+lignin-bench run --engine rocksdb --keep --scratch "$WORK/rehearsal" --out "$WORK/rehearsal.json" --documents 20000 --owners 200 --creates 200 --updates 200 --deletes 200 --point-reads 20 --reference-reads 5 --warmup-reads 20 --cold-reads 1 --checkpoints 1 --reopens 1 > "$WORK/reports/rehearsal.txt"
+SOURCE="$WORK/rehearsal/rocksdb"
+TARGET="$WORK/rehearsal-lignindb/database"
+BACKUP="$WORK/rehearsal-backup/database"
+RESTORE="$WORK/rehearsal-restore/database"
+mkdir "$WORK/rehearsal-lignindb" "$WORK/rehearsal-backup" "$WORK/rehearsal-restore"
+```
+
+For your node's own migration, skip this block and set the four
+variables of step 4 yourself.
+
+## 4. Stop the node and name the directories
+
+Stop the node, as its own documentation says, and make sure that no
+other process uses its database: not the node, not a second instance of
+it, not a backup job. Where the source has a `LOCK` file, `migrate`
+holds a lock on it for as long as it runs: a process that has the source
+open is refused (`a process has it open`), and a node that is started
+meanwhile cannot open it. A writer whose `LOCK` file was replaced while
+it ran is not seen that way, since the new file says nothing of it.
+
+Then name four paths. `SOURCE` is there; `TARGET`, `BACKUP` and
+`RESTORE` are not there yet, and the directory each of them is to be in
+has to be there: make it first.
+
+- `SOURCE`: the directory of the node's RocksDB GroveDB, the one that
+  holds `CURRENT`, `MANIFEST-…` and the `.sst` files. A RocksDB
+  checkpoint of it can be the source as well: the migration then holds
+  the state of that checkpoint, and a node started on it goes on from
+  there.
+- `TARGET`: where the LigninDB database is to be.
+- `BACKUP`: where the backup of step 8 is to be, best on another device.
+- `RESTORE`: where step 9 restores that backup to check it.
+
+```sh
+: "${SOURCE:?set SOURCE to the RocksDB directory of the stopped node}"
+: "${TARGET:?set TARGET to where the LigninDB database is to be}"
+: "${BACKUP:?set BACKUP to where the backup of the new database is to be}"
+: "${RESTORE:?set RESTORE to where the backup is to be restored once}"
 for path in "$TARGET" "$BACKUP" "$RESTORE"; do
   if [ -e "$path" ] || [ -L "$path" ]; then echo "$path is there already: choose another path"; false; fi
   if [ ! -d "$(dirname -- "$path")" ]; then echo "$(dirname -- "$path") is not there: make it first"; false; fi
@@ -264,7 +276,7 @@ The survey reads every record of the source, says what it holds and
 whether it can be migrated, and writes nothing.
 
 ```sh
-lignin migrate "$SOURCE" --survey | tee "$WORK/reports/survey.txt"
+lignin migrate "$SOURCE" --survey 2>&1 | tee "$WORK/reports/survey.txt"
 ```
 
 Read its report before you go on:
@@ -316,7 +328,7 @@ Read its report before you go on:
 ## 6. Migrate
 
 ```sh
-lignin migrate "$SOURCE" "$TARGET" | tee "$WORK/reports/migrate.txt"
+lignin migrate "$SOURCE" "$TARGET" 2>&1 | tee "$WORK/reports/migrate.txt"
 ```
 
 The run surveys the source again, loads the target a commit at a time,
@@ -391,14 +403,20 @@ survey_hash=$(sed -n 's/^  root hash: //p' "$WORK/reports/survey.txt")
 target_hash=$(sed -n 's/^migrate: compared .* root_hash=\([0-9a-f]*\) seconds=.*/\1/p' "$WORK/reports/migrate.txt")
 if [ -n "$survey_hash" ] && [ "$survey_hash" = "$target_hash" ]; then echo "the same root hash: $target_hash"; else echo "THE ROOT HASHES DIFFER: survey $survey_hash, target $target_hash"; false; fi
 if [ "$(sed -n '1s/;[^;]*$//p' "$WORK/reports/survey.txt")" = "$(sed -n '1s/;[^;]*$//p' "$WORK/reports/migrate.txt")" ]; then echo "the same RocksDB identity and last write in both runs"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
-grep ': loaded, compared and verified$' "$WORK/reports/migrate.txt"
+grep -F -x "migrated $SOURCE into $TARGET: loaded, compared and verified" "$WORK/reports/migrate.txt"
 ```
 
 Each of these prints the line it found, or fails: `grep` with no line
 found, the two comparisons with the words THE ROOT HASHES DIFFER or
-THE SOURCE CHANGED BETWEEN THE TWO RUNS. The last command is the run's
-last line; where step 6 says that a run was stopped before it, that
-command alone finds nothing, and the others hold. The first comparison
+THE SOURCE CHANGED BETWEEN THE TWO RUNS. Step 7 reads the report of the
+run that ended with status 0 (where a run before it failed, that is the
+report the retry of step 6 wrote: name it in place of `migrate.txt`).
+The last command looks for the run's last line, which names this
+`SOURCE` and this `TARGET`, so that the report is held to the database
+you are about to start the node on. Where step 6 says that a run was
+stopped after it gave the database its name and before that line, the
+last command alone finds nothing: the database at `TARGET` is then the
+one that run made, and the others and `lignin verify` below decide. The first comparison
 reads the root hash from the line `migrate: compared subtrees=…` alone and holds
 the
 root hash that the survey of step 5 read from the source to the one the
@@ -408,7 +426,7 @@ the sequence number of its last write. Where they are the same, no
 write reached the source between the two runs. That the target has the source's root hash is
 what `differing=0` says; the migration also refuses a source that
 changes while it reads it. Do not start the node on a target for which
-one of them fails.
+one of them fails, but for the last one in the case just said.
 
 Then check the target once more on its own, with the checker of
 `lignin verify`. It opens the database, closes it, and checks the store
@@ -451,8 +469,8 @@ lignin manifest "$BACKUP"
 
 `lignin manifest` reads the backup's manifest without opening the
 database, and lists the files it names with the length the manifest
-gives each; a file that is not there is marked `MISSING`, and one that
-is shorter `SHORT`. It exits 0 either way, and reads no page: step 9 is
+gives each; a file that is not there is marked `, MISSING`, and one
+that is shorter `, SHORT: … bytes on disk`. It exits 0 either way, and reads no page: step 9 is
 the check of the backup.
 
 ## 9. Restore the backup once, and open it
@@ -477,8 +495,12 @@ the path that step 4 printed for `RESTORE`.
 
 ## 10. Start the node on LigninDB
 
-Point the node at `TARGET` and select the LigninDB engine, as the
-application's configuration says. On GroveDB's side, an application
+**First**, put into `TARGET` what the application keeps in its RocksDB
+directory beside RocksDB's own files, as the application's
+documentation says: the migration carries GroveDB's records and nothing
+else, and `SOURCE` keeps its own copy for the way back. Then point the
+node at `TARGET` and select the LigninDB engine, as the application's
+configuration says. On GroveDB's side, an application
 opens a database on LigninDB with
 `GroveDb::from_engine(EitherEngine::open_with(path, &EngineChoice::Lignin(options))?)`,
 or with `LigninEngine::open_with(path, &options)`

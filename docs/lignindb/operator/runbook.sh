@@ -28,12 +28,23 @@ if [ $# -ne 1 ]; then
 fi
 : "${GROVEDB_REF:?set GROVEDB_REF to the tag or branch the runbook builds from}"
 work=$1
+case "$work" in *$'\n'*)
+    echo "runbook.sh: a WORK with a line break in it is not taken" >&2
+    exit 2
+    ;;
+esac
 if [ -e "$work" ] && [ -n "$(ls -A "$work")" ]; then
     echo "runbook.sh: $work is not empty" >&2
     exit 2
 fi
 mkdir -p "$work"
-work=$(cd "$work" && pwd)
+work=$(cd "$work" && pwd -P && echo .)
+work=${work%$'\n.'}
+case "$work" in *$'\n'*)
+    echo "runbook.sh: WORK resolves to a path with a line break in it" >&2
+    exit 2
+    ;;
+esac
 
 for document in "${others[@]}"; do
     if grep -q '^ *```sh' "$here/$document"; then

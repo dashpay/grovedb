@@ -127,8 +127,8 @@ backup is relied on once a restore of it has passed `lignin verify`,
 and that check can be answered from the system's cache: a restore on
 another machine reads what the device holds. `lignin manifest`
 reads the backup's manifest without opening it and lists the files it
-names, marking one that is not there `MISSING` and one that is shorter
-`SHORT`; it exits 0 either way, and reads no page. A backup is relied on
+names, marking one that is not there `, MISSING` and one that is
+shorter `, SHORT: … bytes on disk`; it exits 0 either way, and reads no page. A backup is relied on
 once a restore of it has passed `lignin verify` (below).
 
 ## Back up a running node
@@ -164,6 +164,7 @@ once a restore of it has passed `lignin verify` (below).
    CHECKPOINT=$(real_dir "$CHECKPOINT")
    BACKUP=$(real_new "$BACKUP")
    apart "$CHECKPOINT" "$BACKUP"
+   printf 'CHECKPOINT %s\nBACKUP     %s\n' "$CHECKPOINT" "$BACKUP"
    lignin manifest "$CHECKPOINT"
    claim_dir "$BACKUP"
    cp -a "$CHECKPOINT/." "$BACKUP/"
@@ -257,12 +258,16 @@ LigninDB's deletion can remove more than a checkpoint, the directory
 `path.creating` beside it among what it removes: it is given the
 checkpoint's path and nothing else. Or the checkpoint's directory, as
 the copy's block wrote it with its links followed, is removed once no
-handle has it open:
+handle has it open. Give the block that path as the copy's block printed
+it: it refuses a path that is a link now, or no directory, since what is
+there is then not what was copied.
 
 ```sh
-: "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}"
-CHECKPOINT=$(real_dir "$CHECKPOINT")
-rm -rf "${CHECKPOINT:?}"
+: "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint, as the copy's block wrote it}"
+plain_path "$CHECKPOINT"
+if [ -L "$CHECKPOINT" ] || [ ! -d "$CHECKPOINT" ]; then echo "$CHECKPOINT is a link or no directory now: it is not what was copied"; false; fi
+if [ "$(real_dir "$CHECKPOINT")" != "$CHECKPOINT" ]; then echo "$CHECKPOINT is not the path the copy's block wrote: give that one"; false; fi
+rm -rf -- "$CHECKPOINT"
 ```
 
 

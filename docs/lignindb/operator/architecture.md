@@ -103,9 +103,12 @@ every commit hashes up to the root of the grove, as on RocksDB.
    hashes on the path to the root, each in its cell. The transaction
    reads its own writes; nobody else sees them
    ([transactions.md](../transactions.md), section 7).
-3. **The commit** checks for a conflict with commits made since the
-   transaction began, the rule of RocksDB's optimistic transactions, and
-   appends one group to the log: the new values, the changes to the
+3. **The commit** fails with a conflict where a commit outside the
+   transaction wrote a key after the transaction first wrote it, the rule
+   of RocksDB's optimistic transactions, and where it kept the committed
+   value of a Merk node that a commit outside wrote after the
+   transaction read it ([transactions.md](../transactions.md#82-the-conflict-rule)).
+   Otherwise it appends one group to the log: the new values, the changes to the
    pages, and one record for each hash that changed. Then the new
    version is published at once to every later reader. Under the default
    sync policy the log is not synced at the commit; it is made durable by
@@ -200,15 +203,19 @@ section 12).
    group the log holds whole. What the checkpoint covers already is
    skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
-5. **The session begins**: the files of earlier sessions are named closed
+5. **The keyspaces are found**: the open reads the record of where the
+   flat keyspaces are and the subtree directory, whatever replay changed
+   ([messages](messages.md#at-an-open) has what each refusal says).
+6. **The session begins**: the files of earlier sessions are named closed
    in a new manifest, the log goes on in a new file of its own, and the
    three background threads start. Write-back writes what replay brought
    back.
 
 So the database opens at one committed version, never a part of one, and
 never one older than the newest that was made durable. A file that the
-open reads (the manifest, the table checkpoint, the log, and the blocks
-of the pages that replay changes) and that does not read, or does not
+open reads (the manifest, the table checkpoint, the log, the blocks of
+the pages that replay changes, the record of the keyspaces and the
+subtree directory) and that does not read, or does not
 hold what the manifest says, stops the open with an error that names it
 ([messages](messages.md#in-a-recovery)). The open does not read every
 page: a block that nothing reads at the open is checked when it is read,
