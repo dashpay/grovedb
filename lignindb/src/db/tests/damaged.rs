@@ -59,7 +59,8 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Debug,
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Read, Write},
+    os::unix::fs::OpenOptionsExt,
     panic::{self, AssertUnwindSafe},
     path::{Component, Path, PathBuf},
     sync::{
@@ -72,10 +73,10 @@ use std::{
 
 use lignin_format::{tree_page::Side, Checksum, FileHeader};
 use lignin_io::StdVfs;
-use lignin_store::cleaner::CleanerConfig;
+use lignin_store::{cleaner::CleanerConfig, flush::Checkpointed};
 use lignin_tree::value::ValueBuf;
 
-use super::{halt_background, image, options, temp, wait_for};
+use super::{halt_background, image, options, temp};
 use crate::{
     backup::{
         tests::world::{batch, commit, drawn, first, height, key, value, State, SUBTREES},
@@ -138,14 +139,17 @@ enum Shape {
     /// Merks whose values are out of line and were rewritten, so that the
     /// value log holds dead values beside the live ones.
     Values,
-    /// A checkpoint of a database that went on writing.
+    /// A checkpoint of a database that went on writing, made behind a
+    /// table checkpoint: its segments hold the pages of the commits
+    /// before it.
     Checkpoint,
     /// A database after drops, the rounds of the reclaimer that took at
     /// least one dropped Merk out in full, and passes of the cleaner.
     Cleaned,
     /// A database whose process was killed: the files as they were while
-    /// the session was open, with segments that write-back wrote and
-    /// commits behind them.
+    /// the session was open, when each of its threads had ended the turn
+    /// it was in. No close was made: what was written back by then is in
+    /// the segments, and the rest is the log's alone.
     Killed,
 }
 
@@ -238,18 +242,20 @@ struct Made {
     state: State,
 }
 
-/// Waits until write-back, on its thread, has written a block into a
-/// segment of `db`. The counts of the session do not say which file a turn
-/// wrote into, so the directory is looked at.
-fn written_back(db: &Db) {
-    let segments = db.dir().join("seg");
-    wait_for("a segment that write-back wrote a block into", || {
-        fs::read_dir(&segments).is_ok_and(|entries| {
-            (entries.flatten())
-                .filter_map(|entry| entry.metadata().ok())
-                .any(|file| file.len() > FileHeader::ENCODED_LEN as u64)
-        })
-    });
+/// Has write-back take a table checkpoint of `db` now, on this thread.
+/// The manifest then vouches for the blocks that the segments hold of
+/// every commit so far: bytes that a segment holds behind the length the
+/// manifest names for it are no part of a checkpoint of the directory
+/// that copies its files, and a file of that copy could be a header
+/// alone. No write transaction is open, so no page that has to be in the
+/// table checkpoint is held back and the attempt is not put off
+/// ([`Checkpointed::PutOff`]).
+fn table_checkpoint(db: &Db) {
+    let installed = db.shared.write_back().checkpoint();
+    assert!(
+        matches!(installed, Ok(Checkpointed::Installed { .. })),
+        "{installed:?}"
+    );
 }
 
 /// Makes the commits of `shape`, and what else the shape asks of the
@@ -297,7 +303,7 @@ fn make(shape: Shape, db: Option<(&Db, &Path)>) -> State {
         }
         Shape::Checkpoint => {
             if let Some((db, place)) = db {
-                written_back(db);
+                table_checkpoint(db);
                 (db.checkpoint(&place.join("checkpoint"), CheckpointOptions::default()))
                     .expect("a checkpoint");
             }
@@ -338,13 +344,7 @@ fn make(shape: Shape, db: Option<(&Db, &Path)>) -> State {
             }
             maker.drawn(3);
         }
-        Shape::Killed => {
-            maker.drawn(5);
-            if let Some((db, _)) = db {
-                written_back(db);
-            }
-            maker.drawn(3);
-        }
+        Shape::Killed => maker.drawn(8),
     }
     held.unwrap_or(maker.state)
 }
@@ -391,15 +391,49 @@ fn made(shape: Shape) -> Made {
     Made { files, state }
 }
 
+/// The flag with which `open` does not wait where a named pipe with no
+/// writer is at the path, on the systems whose number for it is written
+/// out here: Linux on x86-64 and on AArch64, and macOS.
+const O_NONBLOCK: Option<i32> = if cfg!(target_os = "macos") {
+    Some(0x0004)
+} else if cfg!(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+)) {
+    Some(0o4000)
+} else {
+    None
+};
+
 /// The image that is kept at `kept`, or `None` where none is. An image
 /// that is there and is not one to damage ends the run: whoever runs the
 /// campaign removes it.
+///
+/// The directory of the images is one that anybody may have written into.
+/// The entry is opened so that the open does not wait on a named pipe, on
+/// the systems [`O_NONBLOCK`] is known for, and it is the handle that is
+/// asked what it is of: an entry that is no regular file is not read.
 fn kept_image(kept: &Path) -> Option<Files> {
-    let bytes = match fs::read(kept) {
-        Ok(bytes) => bytes,
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    if let Some(flag) = O_NONBLOCK {
+        options.custom_flags(flag);
+    }
+    let mut file = match options.open(kept) {
+        Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return None,
         Err(error) => panic!("the image kept at {}: {error}", kept.display()),
     };
+    let is_regular = file.metadata().is_ok_and(|entry| entry.is_file());
+    assert!(
+        is_regular,
+        "the entry at {} is no regular file: remove it",
+        kept.display()
+    );
+    let mut bytes = Vec::new();
+    if let Err(error) = file.read_to_end(&mut bytes) {
+        panic!("the image kept at {}: {error}", kept.display());
+    }
     match decode(&bytes).and_then(|files| usable(&files).map(|()| files)) {
         Ok(files) => Some(files),
         Err(why) => panic!(
@@ -410,18 +444,21 @@ fn kept_image(kept: &Path) -> Option<Files> {
 }
 
 /// Keeps `files` at `kept` unless an image is kept there, and returns the
-/// image that is. Each writer writes a file of its own and gives it the
-/// name with a hard link, which is made only where the name is free: the
-/// image of the first writer is the one that every writer and every later
-/// reader has.
+/// image that is. Each writer writes a file that it alone made, under a
+/// name that was free when it made it, and gives it the image's name with
+/// a hard link, which is made only where that name is free: the image of
+/// the first writer is the one that every writer and every later reader
+/// has. So it is for writers that share the directory and nothing else,
+/// not a process id either.
 fn keep(kept: &Path, files: &Files) -> Files {
-    static WRITERS: AtomicUsize = AtomicUsize::new(0);
-    let writer = WRITERS.fetch_add(1, Ordering::Relaxed);
-    let unfinished = kept.with_extension(format!("{}-{writer}.tmp", std::process::id()));
-    fs::create_dir_all(kept.parent().expect("a directory")).expect("a directory");
-    fs::write(&unfinished, encode(files)).expect("the image is written");
-    let named = fs::hard_link(&unfinished, kept);
-    fs::remove_file(&unfinished).expect("the writer's own file goes");
+    let dir = kept.parent().expect("a directory");
+    fs::create_dir_all(dir).expect("a directory");
+    let mut own = tempfile::NamedTempFile::new_in(dir).expect("a file of the writer's own");
+    own.write_all(&encode(files)).expect("the image is written");
+    let named = fs::hard_link(own.path(), kept);
+    // The writer's own name goes; the image, if this writer named it,
+    // stays under its name.
+    drop(own);
     match named {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
@@ -855,8 +892,10 @@ thread_local! {
     static RAISED: RefCell<Option<Vec<Raised>>> = const { RefCell::new(None) };
 }
 
-/// How many cases run now. The cases of a process run one at a time, on
-/// the thread of the one test that runs them.
+/// How many cases have an answer that is waited for now. The cases of a
+/// process are run one at a time, by the one test that runs them. The
+/// thread of a case that did not end in its time goes on, and is counted
+/// here no more.
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 /// How many panics of other threads are kept for the text of a finding.
@@ -1252,8 +1291,9 @@ fn opened(dir: &Path) -> Result<Db, String> {
 }
 
 /// Closes `db` and checks the store that is still, with what it keeps
-/// beside its pages. A close joins the threads of the session, and says
-/// which of them panicked.
+/// beside its pages. A close joins the three threads of the session, and
+/// where any of them panicked it names one: the first of the reclaimer,
+/// the cleaner and write-back.
 fn closed(db: Db) -> Result<(), String> {
     let report = db.close_and_verify(None).map_err(|error| match error {
         DbError::Panicked(thread) => format!("{PANICKED}: the {thread} thread"),
@@ -1384,8 +1424,9 @@ fn run(files: Files, state: State, seed: u64) -> Option<Vec<(&'static str, Said)
     }
 }
 
-/// The steps of a case in the order they are made on a directory that
-/// opens.
+/// The steps of a case on a directory that opens, in the order their
+/// answers are told. That is the order they are made in, but for one: the
+/// checkpoint is made before the backup of it, and told behind it.
 const STEPS: [&str; 14] = [
     "open",
     "reads",
@@ -1405,9 +1446,10 @@ const STEPS: [&str; 14] = [
 
 /// Makes the steps of a case on the directory of each shape with nothing
 /// changed, [`CONTROLS`] times with a write of its own each, and on one
-/// whose manifest ends behind its header. On the first every step returns;
-/// on the second the open is refused, and so are the backup and the second
-/// open. Neither is counted as a case.
+/// whose manifest ends behind its header. On the first every step returns.
+/// On the second the open is refused for its manifest, the backup finds
+/// no database, and the second open is refused as the first. Neither is
+/// counted as a case.
 fn controls(made: &[Made]) {
     for (shape, made) in SHAPES.iter().zip(made) {
         for seed in 0..CONTROLS {
@@ -1434,15 +1476,15 @@ fn controls(made: &[Made]) {
             .truncate(FileHeader::ENCODED_LEN);
         let said = run(files, made.state.clone(), 0)
             .unwrap_or_else(|| panic!("{what}: did not end in {CASE_LIMIT:?}"));
-        let steps: Vec<&str> = said.iter().map(|(step, _)| *step).collect();
-        assert_eq!(steps, ["open", "backup", "open again"], "{what}");
-        for (step, said) in &said {
-            assert!(
-                matches!(said, Said::Answered(_)),
-                "{what}: {step}: {}",
-                said.told()
-            );
-        }
+        let answers: Vec<(&str, String)> = (said.iter())
+            .map(|(step, said)| (*step, said.name()))
+            .collect();
+        let refused = [
+            ("open", "error Manifest".to_owned()),
+            ("backup", "error NotADatabase".to_owned()),
+            ("open again", "error Manifest".to_owned()),
+        ];
+        assert_eq!(answers, refused, "{what}");
     }
 }
 
@@ -1573,6 +1615,7 @@ fn the_engine_answers_on_directories_damaged_under_right_checksums() {
     let mut tally = Tally::default();
     let began = Instant::now();
     let mut last = seeds.start;
+    let mut unended = false;
     for seed in seeds.clone() {
         if until.is_some_and(|until| Instant::now() >= until) {
             break;
@@ -1603,6 +1646,7 @@ fn the_engine_answers_on_directories_damaged_under_right_checksums() {
         }
         if said.is_none() {
             // The thread of the case is still there, with its session.
+            unended = true;
             break;
         }
         if tally.cases % 5000 == 0 {
@@ -1615,8 +1659,9 @@ fn the_engine_answers_on_directories_damaged_under_right_checksums() {
             );
         }
     }
-    if let Some(current) = &current {
-        // No case is under way any more.
+    if let Some(current) = current.filter(|_| !unended) {
+        // No case is under way any more. The seed of one that did not end
+        // stays written, since its thread can still be running.
         let _ = fs::remove_file(current);
     }
     tally.show();
