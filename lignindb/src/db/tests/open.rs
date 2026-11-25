@@ -1515,9 +1515,10 @@ fn a_store_subdirectory_that_is_a_link_is_refused_and_not_followed() {
 
 /// A named pipe in the place of a file that an open opens by its name is
 /// refused before it is opened, so the open does not wait on it: the lock
-/// file, the manifest, the two files of a reserve, and a file the manifest
-/// names in its store subdirectory. A link in such a place is not followed
-/// either. The directory is left as it was.
+/// file, the manifest, the two files of a reserve, a file the manifest
+/// names in its store subdirectory, and the table checkpoint it names. A
+/// link in such a place is not followed either. The directory is left as
+/// it was.
 #[test]
 fn a_pipe_or_a_link_in_the_place_of_a_file_is_refused_and_not_opened() {
     use std::os::unix::fs::FileTypeExt;
@@ -1543,6 +1544,8 @@ fn a_pipe_or_a_link_in_the_place_of_a_file_is_refused_and_not_opened() {
         FileKind::ValueLog => FileNames::VALUE_LOG,
         kind => panic!("{kind:?}"),
     };
+    let table = (manifest.table_checkpoint()).expect("the table checkpoint of a close");
+    let tables = FileNames::PAGE_TABLE;
     let own = |name: &str| (dir.clone(), dir.join(name));
     let cases = [
         own(ManifestStore::FILE_NAME),
@@ -1550,6 +1553,7 @@ fn a_pipe_or_a_link_in_the_place_of_a_file_is_refused_and_not_opened() {
         own(Reserve::FILE_NAME),
         own(Reserve::UNFINISHED_FILE_NAME),
         (names.dir(&dir), names.path(&dir, named.id())),
+        (tables.dir(&dir), tables.path(&dir, table.file())),
     ];
     for (lists, entry) in &cases {
         for is_pipe in [true, false] {

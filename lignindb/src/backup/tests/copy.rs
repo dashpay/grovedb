@@ -845,7 +845,9 @@ fn first_named(source: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
 }
 
 /// A source in which a symbolic link or a named pipe stands where the copy
-/// reads a file, or a link where a store subdirectory is, is refused
+/// reads a file (the lock file, the manifest, a file the manifest names
+/// and the table checkpoint it names), or a link where the store
+/// subdirectory of a named file is, is refused
 /// before anything is made. The link is not followed, whatever it leads
 /// to (here, to the very entry it replaced), so that a copy holds no byte
 /// from outside its source; and the pipe is not opened, so that the copy
@@ -860,6 +862,11 @@ fn a_source_with_a_link_or_a_pipe_where_the_copy_reads_is_refused() {
     let source = place.path().join("db");
     on_disk(&source, 91);
     let (named, subdirectory) = first_named(&source);
+    let table = {
+        let manifest = read_manifest(&lignin_io::StdVfs, &source).expect("the manifest");
+        let table = (manifest.table_checkpoint()).expect("the table checkpoint of a close");
+        FileNames::PAGE_TABLE.path(&source, table.file())
+    };
     let target = place.path().join("copy");
     let copy = {
         let (source, target) = (source.clone(), target.clone());
@@ -877,6 +884,8 @@ fn a_source_with_a_link_or_a_pipe_where_the_copy_reads_is_refused() {
         (&manifest, true),
         (&named, false),
         (&named, true),
+        (&table, false),
+        (&table, true),
         (&subdirectory, false),
     ] {
         // The entry goes outside the source, and a link to it, or a
