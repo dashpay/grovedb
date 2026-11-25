@@ -36,22 +36,20 @@ pub(crate) struct Opened {
     /// For the subtrees it was looked up for: whether the data column
     /// holds a record under the subtree at this version.
     unlinked: HashMap<Subtree, bool>,
-    /// Which of the subtrees that the transaction has written this
-    /// version has below a Merk, for a transaction that is served by key:
-    /// made when it is first asked for.
-    written: Option<Box<WrittenBelow>>,
     /// While a call is held (`held`): the subtrees whose entries it
     /// asked for, opened before or not.
     #[cfg(any(test, feature = "held_reads"))]
     asked: Option<Vec<Subtree>>,
 }
 
-/// What a transaction that is served by key keeps, with the directory of
+/// What a transaction that is served by key keeps, for the directory of
 /// one committed version, of the subtrees it has written: which of them
 /// it took in as standing as the committed ones, and under which
 /// Merks the version has those. A batch that drops or clears a subtree
 /// finds by it which written subtrees to ask whether they are below
-/// (`ByKey::cut` in `super::txn`).
+/// (`ByKey::cut` in `super::txn`). A transaction has one, in its state
+/// beside the handle of the directory that it read last: it is no part
+/// of that handle ([`Opened`]).
 ///
 /// **The rule.** When it has been brought up to date for a batch, every
 /// subtree that the set has an entry under, that the batch does not drop
@@ -87,12 +85,15 @@ pub(crate) struct Opened {
 /// as the committed one does not come to stand so while every operation
 /// stays in the set and the version is this one.
 ///
-/// **It is begun again, empty,** where an operation was taken out of the
-/// set since it was begun ([`WriteSet::taken_out`]). It is of one
-/// version, as the handle that keeps it: the handle of another version
-/// begins its own.
+/// **It is begun again, empty,** by a batch that asks it with the
+/// directory of another version than the one it is of ([`Self::at`]),
+/// and by one that asks it where an operation was taken out of the set
+/// since it was begun ([`WriteSet::taken_out`]).
 #[derive(Debug, Default)]
 pub(crate) struct WrittenBelow {
+    /// The version whose directory this is of: none before a batch
+    /// began it.
+    pub(crate) at: Option<CommitVersion>,
     /// The written subtrees that were asked and not forgotten, each
     /// under the ids of the Merks it is below, and how many first writes
     /// of the set were taken. The subtrees to ask again are those that
@@ -123,7 +124,6 @@ impl Opened {
                 directory: path.directory_at(at)?,
                 entries: HashMap::new(),
                 unlinked: HashMap::new(),
-                written: None,
                 #[cfg(any(test, feature = "held_reads"))]
                 asked: None,
             });
@@ -235,12 +235,6 @@ impl Opened {
     /// The version the handle is of.
     pub(crate) const fn version(&self) -> CommitVersion {
         self.at
-    }
-
-    /// Which written subtrees this version has below a Merk, as a
-    /// transaction that is served by key keeps it ([`WrittenBelow`]).
-    pub(crate) fn written_below(&mut self) -> &mut WrittenBelow {
-        self.written.get_or_insert_with(Box::default)
     }
 
     /// Whether the data column holds a record under `subtree` at this

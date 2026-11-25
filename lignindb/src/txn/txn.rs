@@ -147,6 +147,11 @@ struct State<'s> {
     /// with the subtrees that were opened through it: for the committed
     /// records the transaction reads beside its own.
     directory: Option<Opened>,
+    /// What the transaction keeps, where it is served by key, of the
+    /// written subtrees that one committed version has below a Merk
+    /// ([`WrittenBelow`]): of the version of the batch that asked it
+    /// last, and of none before a batch asked.
+    written: WrittenBelow,
     /// The version and the number of operations of the write set at which
     /// the frames could not be made: the write set names what the
     /// committed state does not hold.
@@ -793,8 +798,9 @@ impl<'a, 's> ByKey<'a, 's> {
     /// the set enters it. Where it is the committed one, its entry of the
     /// version has, among the ids of the Merks it is below, the id of the
     /// Merk that the version has under a subtree of `leaving`
-    /// ([`Opened::below_taken`]), and the list that is kept with the
-    /// directory of the version has it under that id ([`WrittenBelow`]).
+    /// ([`Opened::below_taken`]), and the list of the version, which the
+    /// transaction keeps in `written`, has it under that id
+    /// ([`WrittenBelow`]).
     /// So [`Self::below`] is asked of two kinds of subtrees outside
     /// `leaving`: every one that the set enters and has an entry under
     /// ([`WriteSet::entered`]), however it stands, and every one that the
@@ -802,7 +808,8 @@ impl<'a, 's> ByKey<'a, 's> {
     /// subtrees.
     ///
     /// **The list is brought up to date first.** It is begun again where
-    /// an operation was taken out of the set since it was begun. The
+    /// it is of another version than the one this reads, and where an
+    /// operation was taken out of the set since it was begun. The
     /// subtrees that were put off, and those that the set has numbered
     /// since the list took its count, are asked: one that `leaving` names
     /// is put off, one that stands as the committed one is opened and
@@ -835,12 +842,14 @@ impl<'a, 's> ByKey<'a, 's> {
     /// A written subtree that is asked nothing here has no read made for
     /// it: a read that the walk makes for it, and that fails, ends the
     /// call of the walk and not this one.
-    fn cut(&mut self, leaving: &[Subtree]) -> Result<Vec<Subtree>, TxnError> {
+    fn cut(
+        &mut self,
+        written: &mut WrittenBelow,
+        leaving: &[Subtree],
+    ) -> Result<Vec<Subtree>, TxnError> {
         #[cfg(any(test, feature = "held_reads"))]
         self.opened.note_asked();
-        let mut written = std::mem::take(self.opened.written_below());
-        let cut = self.cut_listed(&mut written, leaving);
-        *self.opened.written_below() = written;
+        let cut = self.cut_listed(written, leaving);
         #[cfg(any(test, feature = "held_reads"))]
         {
             let asked = self.opened.asked();
@@ -851,15 +860,18 @@ impl<'a, 's> ByKey<'a, 's> {
         cut
     }
 
-    /// [`Self::cut`], with the list of the version in `written`.
+    /// What [`Self::cut`] answers, before it is held to the walk over
+    /// every written subtree.
     fn cut_listed(
         &mut self,
         written: &mut WrittenBelow,
         leaving: &[Subtree],
     ) -> Result<Vec<Subtree>, TxnError> {
         let (set, end) = (self.set, self.set.ops());
-        if written.taken_out != set.taken_out() {
+        let at = Some(self.opened.version());
+        if written.at != at || written.taken_out != set.taken_out() {
             *written = WrittenBelow {
+                at,
                 taken_out: set.taken_out(),
                 ..WrittenBelow::default()
             };
@@ -1149,6 +1161,7 @@ impl<'s> WriteTxn<'s> {
                 lease_at: None,
                 seen: Places::default(),
                 directory: None,
+                written: WrittenBelow::default(),
                 stuck: None,
                 stopped: None,
                 looks: HashMap::new(),
@@ -1408,11 +1421,12 @@ impl<'s> WriteTxn<'s> {
         Some((frames.written_below.shown(), ids))
     }
 
-    /// What the transaction keeps, with the directory of the committed
-    /// version it read last, of the written subtrees that the version
-    /// has below a Merk ([`WrittenBelow`]), and the id that this version
-    /// has each of `subtrees` under: for a test. `None` where no
-    /// directory of a version is kept.
+    /// What the transaction keeps of the written subtrees that the
+    /// committed version it read last has below a Merk
+    /// ([`WrittenBelow`]), and the id that this version has each of
+    /// `subtrees` under: for a test. Where what it keeps is of another
+    /// version, which the next batch that asks begins again, an empty
+    /// one is shown. `None` where no directory of a version is kept.
     #[cfg(all(test, not(loom)))]
     #[allow(clippy::type_complexity)]
     pub(crate) fn cut_shown(
@@ -1421,13 +1435,20 @@ impl<'s> WriteTxn<'s> {
     ) -> Option<(super::below::Shown, Vec<Subtree>, Vec<Option<MerkId>>)> {
         let mut state = self.lock();
         let guard = self.path.versions.guard();
-        let opened = state.directory.as_mut()?;
+        let State {
+            directory, written, ..
+        } = &mut *state;
+        let opened = directory.as_mut()?;
         let id = |subtree: &Subtree| {
             let id = opened.id(&self.path, &guard, subtree);
             id.expect("a read of the directory")
         };
         let ids = subtrees.iter().map(id).collect();
-        let written = opened.written_below();
+        let none = WrittenBelow::default();
+        let written = match written.at == Some(opened.version()) {
+            true => &*written,
+            false => &none,
+        };
         let standing = written.standing.iter().copied().collect();
         Some((written.list.shown(), standing, ids))
     }
@@ -3152,8 +3173,13 @@ impl<'s> WriteTxn<'s> {
         if leaving.is_empty() {
             return Ok(Vec::new());
         }
-        let State { directory, set, .. } = state;
-        ByKey::new(&self.path, &op.guard, op.at, set, directory)?.cut(&leaving)
+        let State {
+            directory,
+            set,
+            written,
+            ..
+        } = state;
+        ByKey::new(&self.path, &op.guard, op.at, set, directory)?.cut(written, &leaving)
     }
 
     /// Shows `read` the node under `key` as the transaction has it: in its

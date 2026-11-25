@@ -10,7 +10,7 @@
 //! (`Frames::below`), and the tests count those comparisons.
 //!
 //! The last tests are of a transaction that a commit met, whose writes
-//! are taken by key: what it keeps of the written subtrees with the
+//! are taken by key: what it keeps of the written subtrees for the
 //! directory of the committed version (`WrittenBelow`), and how many
 //! subtrees a batch that drops or clears one asks whether they are below
 //! (`ByKey::cut`). Each such batch is held to the walk over every written
@@ -320,7 +320,7 @@ impl<'w, 's> Grove<'w, 's> {
         assert_eq!(self.index(), None, "no frames");
     }
 
-    /// What the transaction keeps, with the directory of the committed
+    /// What the transaction keeps, for the directory of the committed
     /// version it read last, of the written subtrees that the version
     /// has below a Merk (`WrittenBelow`), by the names of the subtrees:
     /// the list, and the subtrees that it took in as standing as the
@@ -920,7 +920,7 @@ fn a_batch_by_key_asks_the_written_subtrees_that_can_be_below_what_it_takes() {
     assert_eq!(cut_held::compared(), cut(1, 4, 7, 0));
 
     // A commit beside the transaction: the list is of the version, and
-    // is begun again with the directory of the next. Every written
+    // the batch that asks at the next begins it again. Every written
     // subtree is asked how it stands, and the four that stand as the
     // committed ones are listed.
     let other = world.begin();
@@ -990,6 +990,50 @@ fn the_list_by_key_is_begun_again_where_a_write_is_taken_out_of_the_set() {
     grove.clear(A);
     assert_eq!(cut_held::compared(), cut(1, 1, 3, 1));
     assert!(!grove.reads(C), "the record went with the subtree");
+}
+
+/// The list is of one version, and a batch that asks at another begins
+/// it again: the next version can have a written subtree below another
+/// Merk. The transaction writes into `E`, and a clear of another
+/// subtree lists `E` under the Merk of the outermost one. A commit
+/// beside the transaction drops the outermost subtree and enters it and
+/// `E` again, so that the next version has `E` below a Merk with another
+/// id. A drop of the outermost subtree then finds `E` below it.
+#[test]
+fn the_list_by_key_is_begun_again_at_another_version() {
+    let (db, versions) = Db::new(256);
+    let world = World::new(&db, &versions);
+    let mut grove = planted(&world);
+    grove.write(E, 2);
+    Grove::record(&grove.tx, E, b"mine");
+    grove.meet();
+    let tops = |grove: &Grove<'_, '_>| grove.names.values().filter(|name| **name == TOP).count();
+
+    grove.clear(L1);
+    let listed: [(u8, &[u8]); 2] = [(TOP, &[]), (E, &[TOP])];
+    assert_eq!(grove.kept(), (index(&listed, &[], 2), vec![TOP, E]));
+    assert_eq!(cut_held::compared(), cut(1, 0, 2, 0));
+    assert_eq!(tops(&grove), 1);
+
+    let mut beside = Grove::new(&world);
+    beside.held = grove.committed.clone();
+    beside.drop(TOP);
+    beside.enter(TOP, None);
+    beside.enter(E, Some(TOP));
+    beside.commit_kept();
+
+    // The transaction reads at the next version. What it keeps is of
+    // the version before until a batch asks, and is shown as an empty
+    // list of this one.
+    assert!(grove.reads(E));
+    assert_eq!(grove.kept(), (index(&[], &[], 0), vec![]));
+    assert_eq!(tops(&grove), 2, "the Merk of the subtree has another id");
+
+    // The subtree of the clear has an entry in the set by now, so two
+    // written subtrees are outside the one that the batch drops.
+    grove.drop(TOP);
+    assert_eq!(cut_held::compared(), cut(1, 1, 2, 1));
+    assert!(!grove.reads(E), "the record went with the subtree");
 }
 
 /// Where nothing that the transaction has written stands as the
