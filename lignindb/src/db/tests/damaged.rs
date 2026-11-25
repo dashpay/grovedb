@@ -12,17 +12,32 @@
 //!
 //! Each case then does with the directory what a node does with its own:
 //! the open, every read of a write transaction and of a snapshot, cursors
-//! in both directions, the checker, a write and its commit, write-back, the
-//! reclaimer and the cleaner, a checkpoint and a backup of it, the close, a
-//! backup of the closed directory, and a second open.
+//! in both directions, the checker, a write and its commit, a flush of the
+//! log, rounds of the reclaimer and a pass of the cleaner, a checkpoint and
+//! a backup of it, the close, a backup of the closed directory, and a
+//! second open. Write-back makes its turns on its own thread while the
+//! session is open, and the close makes the last.
 //!
 //! An error is an answer, and so is a read that returns what was not
 //! written: the directory is damaged. What is a finding:
 //!
-//! - a panic that is raised in the engine's code, on the thread of the case
-//!   or on a thread of the session,
+//! - a panic that is raised in the engine's code on the thread of the
+//!   case,
+//! - a thread of the session that panicked, which the session says when
+//!   it is closed ([`DbError::Panicked`]),
 //! - a walk that takes more steps than [`WALK_LIMIT`],
 //! - a case that does not end within [`CASE_LIMIT`].
+//!
+//! A panic that a fixture of the tests raises, where a damaged store does
+//! not answer it as a sound one does, is counted under the place it was
+//! raised at and is no finding.
+//!
+//! Before its cases a run makes the same steps on the directory of each
+//! shape with nothing changed, where every one of them returns, and on one
+//! whose manifest ends behind its header, which no open takes. So a
+//! directory that is no sound database before it is damaged, and a step
+//! that could return on no directory, fail the run there and are not
+//! counted among the answers to damage.
 //!
 //! A process that is ended by a signal (a stack that overflows, memory that
 //! is not there) is a finding that the test cannot report: the seed of the
@@ -35,17 +50,20 @@
 //! (`FINDING`), whose directory it keeps in `LIGNIN_DAMAGE_OUT`. With
 //! `LIGNIN_DAMAGE_IMAGES` the directories that are damaged are read from
 //! that directory, and made and kept there where they are missing, so that
-//! a seed is the same case in every process that reads them.
+//! a seed is the same case in every process that reads them: an image is
+//! kept once, and where two processes make one, both read the one that was
+//! named first.
 
 use std::{
-    cell::Cell,
-    collections::BTreeMap,
+    cell::RefCell,
+    collections::{BTreeMap, VecDeque},
     fmt::Debug,
     fs,
+    io::ErrorKind,
     panic::{self, AssertUnwindSafe},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicUsize, Ordering},
         mpsc, Arc, Mutex, Once, PoisonError,
     },
     thread,
@@ -57,7 +75,7 @@ use lignin_io::StdVfs;
 use lignin_store::cleaner::CleanerConfig;
 use lignin_tree::value::ValueBuf;
 
-use super::{image, options, temp};
+use super::{halt_background, image, options, temp, wait_for};
 use crate::{
     backup::{
         tests::world::{batch, commit, drawn, first, height, key, value, State, SUBTREES},
@@ -65,6 +83,7 @@ use crate::{
     },
     checkpoint::CheckpointOptions,
     commit::Committed,
+    db::DbError,
     txn::{
         tests::{
             model::{self, OwnedBatch, OwnedSubtree},
@@ -91,6 +110,19 @@ const CASE_LIMIT: Duration = Duration::from_secs(120);
 /// The cases of the test where no range of seeds is given.
 const SHORT: u64 = 96;
 
+/// How many times the steps are made on the directory of each shape with
+/// nothing changed, each time with another write.
+const CONTROLS: u64 = 4;
+
+/// How many times the reclaimer and the cleaner are asked for a turn
+/// behind the drops of [`Shape::Cleaned`].
+const CLEANED_ROUNDS: usize = 8;
+
+/// How many draws of a file and a change a case is given to find a change
+/// that the file takes. A directory of these tests has a file that takes
+/// one in a few.
+const DRAWS: usize = 10_000;
+
 /// The files of a database directory by their paths from it: the bytes of
 /// a file, and `None` for a directory.
 type Files = BTreeMap<PathBuf, Option<Vec<u8>>>;
@@ -108,10 +140,12 @@ enum Shape {
     Values,
     /// A checkpoint of a database that went on writing.
     Checkpoint,
-    /// A database after drops, their reclaiming and passes of the cleaner.
+    /// A database after drops, the rounds of the reclaimer that took at
+    /// least one dropped Merk out in full, and passes of the cleaner.
     Cleaned,
     /// A database whose process was killed: the files as they were while
-    /// the session was open.
+    /// the session was open, with segments that write-back wrote and
+    /// commits behind them.
     Killed,
 }
 
@@ -204,6 +238,20 @@ struct Made {
     state: State,
 }
 
+/// Waits until write-back, on its thread, has written a block into a
+/// segment of `db`. The counts of the session do not say which file a turn
+/// wrote into, so the directory is looked at.
+fn written_back(db: &Db) {
+    let segments = db.dir().join("seg");
+    wait_for("a segment that write-back wrote a block into", || {
+        fs::read_dir(&segments).is_ok_and(|entries| {
+            (entries.flatten())
+                .filter_map(|entry| entry.metadata().ok())
+                .any(|file| file.len() > FileHeader::ENCODED_LEN as u64)
+        })
+    });
+}
+
 /// Makes the commits of `shape`, and what else the shape asks of the
 /// session where there is one, whose checkpoint goes into `place`.
 /// Returns the state that the directory of the shape holds.
@@ -249,6 +297,7 @@ fn make(shape: Shape, db: Option<(&Db, &Path)>) -> State {
         }
         Shape::Checkpoint => {
             if let Some((db, place)) = db {
+                written_back(db);
                 (db.checkpoint(&place.join("checkpoint"), CheckpointOptions::default()))
                     .expect("a checkpoint");
             }
@@ -263,32 +312,39 @@ fn make(shape: Shape, db: Option<(&Db, &Path)>) -> State {
                     }
                 });
             }
-            if let Some((db, _)) = db {
-                db.flush().expect("write-back");
-            }
+            // The Merks that the session has reclaimed in full, before
+            // the drops and behind them: the count is the session's, so
+            // only what is reclaimed from here on is the drops'.
+            let reclaimed = |db: &Db| db.stats().reclaimed.merks;
+            let before = db.map(|(db, _)| reclaimed(db));
             for name in 4..=SUBTREES {
                 maker.records(Vec::new(), vec![OwnedSubtree::Drop(model::subtree(name))]);
             }
-            if let Some((db, _)) = db {
-                // The drops are reclaimed and the cleaner gives back what
-                // they left dead, on its thread or in the passes asked for
-                // here.
-                let began = Instant::now();
-                let gave_back = |db: &Db| {
-                    let cleaner = db.stats().cleaner;
-                    cleaner.segments_dropped + cleaner.blocks_moved + cleaner.links_trimmed
-                };
-                while gave_back(db) == 0 {
-                    assert!(began.elapsed() < Duration::from_secs(60), "{}", db.stats());
-                    db.flush().expect("write-back");
-                    let _ = db.reclaim();
+            if let (Some((db, _)), Some(before)) = (db, before) {
+                // Rounds of the reclaimer and passes of the cleaner that
+                // are asked for here, as many as are named, whatever the
+                // threads of the session have made of them by now.
+                for _ in 0..CLEANED_ROUNDS {
+                    db.flush().expect("the log is synced");
+                    let round = db.reclaim();
+                    assert!(!round.failed, "{round:?}\n{}", db.stats());
                     db.clean().expect("a pass of the cleaner");
-                    thread::sleep(Duration::from_millis(2));
                 }
+                let stats = db.stats();
+                assert!(
+                    stats.reclaimed.merks > before,
+                    "no dropped Merk was reclaimed in full\n{stats}"
+                );
             }
             maker.drawn(3);
         }
-        Shape::Killed => maker.drawn(8),
+        Shape::Killed => {
+            maker.drawn(5);
+            if let Some((db, _)) = db {
+                written_back(db);
+            }
+            maker.drawn(3);
+        }
     }
     held.unwrap_or(maker.state)
 }
@@ -297,9 +353,9 @@ fn make(shape: Shape, db: Option<(&Db, &Path)>) -> State {
 fn made(shape: Shape) -> Made {
     let kept = std::env::var_os("LIGNIN_DAMAGE_IMAGES")
         .map(|dir| PathBuf::from(dir).join(format!("{shape:?}.image")));
-    if let Some(bytes) = kept.as_ref().and_then(|kept| fs::read(kept).ok()) {
+    if let Some(files) = kept.as_deref().and_then(kept_image) {
         return Made {
-            files: decode(&bytes),
+            files,
             state: make(shape, None),
         };
     }
@@ -307,9 +363,15 @@ fn made(shape: Shape) -> Made {
     let dir = place.path().join("db");
     let db = Db::open(&dir, &making()).expect("a new database");
     let state = make(shape, Some((&db, place.path())));
-    let mut files = match shape {
-        // The files as they are while the session is open.
-        Shape::Killed => image(&dir),
+    let files = match shape {
+        // The files as they are while the session is open and no thread
+        // of it writes: each has ended behind the turn it was in, so the
+        // files are those of one moment. The handle is dropped with no
+        // close, as a process that is killed ends.
+        Shape::Killed => {
+            halt_background(&db);
+            image(&dir)
+        }
         Shape::Checkpoint => {
             db.close().expect("the session ends");
             image(&place.path().join("checkpoint"))
@@ -319,15 +381,77 @@ fn made(shape: Shape) -> Made {
             image(&dir)
         }
     };
-    if let Some(kept) = kept {
-        let unfinished = kept.with_extension(format!("{}.tmp", std::process::id()));
-        fs::create_dir_all(kept.parent().expect("a directory")).expect("a directory");
-        fs::write(&unfinished, encode(&files)).expect("the image is written");
-        fs::rename(&unfinished, &kept).expect("the image is named");
-        // Whoever wrote the name last wrote the image that is read.
-        files = decode(&fs::read(&kept).expect("the image is read"));
+    let files = match &kept {
+        Some(kept) => keep(kept, &files),
+        None => files,
+    };
+    if let Err(why) = usable(&files) {
+        panic!("the directory of {shape:?} that was made is not one to damage: {why}");
     }
     Made { files, state }
+}
+
+/// The image that is kept at `kept`, or `None` where none is. An image
+/// that is there and is not one to damage ends the run: whoever runs the
+/// campaign removes it.
+fn kept_image(kept: &Path) -> Option<Files> {
+    let bytes = match fs::read(kept) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => panic!("the image kept at {}: {error}", kept.display()),
+    };
+    match decode(&bytes).and_then(|files| usable(&files).map(|()| files)) {
+        Ok(files) => Some(files),
+        Err(why) => panic!(
+            "the image kept at {} is not one to damage ({why}): remove it",
+            kept.display()
+        ),
+    }
+}
+
+/// Keeps `files` at `kept` unless an image is kept there, and returns the
+/// image that is. Each writer writes a file of its own and gives it the
+/// name with a hard link, which is made only where the name is free: the
+/// image of the first writer is the one that every writer and every later
+/// reader has.
+fn keep(kept: &Path, files: &Files) -> Files {
+    static WRITERS: AtomicUsize = AtomicUsize::new(0);
+    let writer = WRITERS.fetch_add(1, Ordering::Relaxed);
+    let unfinished = kept.with_extension(format!("{}-{writer}.tmp", std::process::id()));
+    fs::create_dir_all(kept.parent().expect("a directory")).expect("a directory");
+    fs::write(&unfinished, encode(files)).expect("the image is written");
+    let named = fs::hard_link(&unfinished, kept);
+    fs::remove_file(&unfinished).expect("the writer's own file goes");
+    match named {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(error) => panic!("the image is named {}: {error}", kept.display()),
+    }
+    kept_image(kept).expect("an image is kept")
+}
+
+/// Whether `files` are a database directory that the cases can damage: a
+/// manifest with a record, and every file of a kind under the checksums
+/// that [`seal`] writes.
+fn usable(files: &Files) -> Result<(), String> {
+    let manifest = files.get(Path::new("MANIFEST")).and_then(Option::as_ref);
+    if !manifest.is_some_and(|bytes| !frames(Kind::Manifest, bytes).is_empty()) {
+        return Err("it has no manifest with a record".to_owned());
+    }
+    for (path, bytes) in files {
+        let (Some(bytes), Some(kind)) = (bytes, kind_of(path)) else {
+            continue;
+        };
+        let mut sealed = bytes.clone();
+        seal(kind, &mut sealed);
+        if sealed != *bytes {
+            return Err(format!(
+                "{} is not under the checksums the engine writes",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn encode(files: &Files) -> Vec<u8> {
@@ -347,26 +471,43 @@ fn encode(files: &Files) -> Vec<u8> {
     out
 }
 
-fn decode(mut bytes: &[u8]) -> Files {
+/// The files of an image, or why the bytes are none. A kept image is read
+/// from a directory that anybody may have written into: an image that is
+/// cut is told, and so is a path that would not be written below the
+/// directory of a case.
+fn decode(mut bytes: &[u8]) -> Result<Files, String> {
     let mut files = Files::new();
     while !bytes.is_empty() {
-        let (len, rest) = bytes.split_first_chunk::<4>().expect("a length");
-        let (path, rest) = rest.split_at(u32::from_le_bytes(*len) as usize);
-        let (len, rest) = rest.split_first_chunk::<8>().expect("a length");
-        let path = PathBuf::from(std::str::from_utf8(path).expect("a path"));
+        let (len, rest) = bytes
+            .split_first_chunk::<4>()
+            .ok_or("the length of a path is cut")?;
+        let len = u32::from_le_bytes(*len) as usize;
+        let (path, rest) = rest.split_at_checked(len).ok_or("a path is cut")?;
+        let (len, rest) = rest
+            .split_first_chunk::<8>()
+            .ok_or("the length of a file is cut")?;
+        let path = Path::new(std::str::from_utf8(path).map_err(|_| "a path is no text")?);
+        let mut parts = path.components();
+        let below = parts.all(|part| matches!(part, Component::Normal(_)));
+        if !below || path.as_os_str().is_empty() {
+            return Err(format!("{} is no path below a directory", path.display()));
+        }
         bytes = match u64::from_le_bytes(*len) {
             u64::MAX => {
-                files.insert(path, None);
+                files.insert(path.to_path_buf(), None);
                 rest
             }
             len => {
-                let (file, rest) = rest.split_at(len as usize);
-                files.insert(path, Some(file.to_vec()));
+                let len = usize::try_from(len).ok();
+                let (file, rest) = len
+                    .and_then(|len| rest.split_at_checked(len))
+                    .ok_or("a file is cut")?;
+                files.insert(path.to_path_buf(), Some(file.to_vec()));
                 rest
             }
         };
     }
-    files
+    Ok(files)
 }
 
 /// The kind of a file of a database directory, by its place and its name.
@@ -664,7 +805,7 @@ impl Case {
 /// one of them changed and sealed, which is then another file than it was.
 fn damaged(seed: u64, shape: Shape, made: &Made) -> (Case, Files) {
     let mut rng = Rng::new(seed ^ 0xda3a_9ed0_0000_0000);
-    loop {
+    for _ in 0..DRAWS {
         let kind = KINDS[rng.below(KINDS.len())];
         let of_kind: Vec<&PathBuf> = (made.files.iter())
             .filter(|(path, bytes)| bytes.is_some() && kind_of(path) == Some(kind))
@@ -695,6 +836,7 @@ fn damaged(seed: u64, shape: Shape, made: &Made) -> (Case, Files) {
         };
         return (case, files);
     }
+    panic!("seed {seed}: no file of {shape:?} took a change in {DRAWS} draws");
 }
 
 /// Where a panic was raised, and what it said.
@@ -707,42 +849,74 @@ struct Raised {
 }
 
 thread_local! {
-    /// Whether this thread runs a case.
-    static WATCHED: Cell<bool> = const { Cell::new(false) };
+    /// The panics that were raised on this thread since it began a case
+    /// and that no step has taken yet, in the order they were raised.
+    /// `None` on a thread that runs no case.
+    static RAISED: RefCell<Option<Vec<Raised>>> = const { RefCell::new(None) };
 }
 
-/// Whether a case runs.
-static RUNS: AtomicBool = AtomicBool::new(false);
+/// How many cases run now. The cases of a process run one at a time, on
+/// the thread of the one test that runs them.
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
-/// The panics of the case that runs, in the order they were raised.
-static RAISED: Mutex<Vec<Raised>> = Mutex::new(Vec::new());
+/// How many panics of other threads are kept for the text of a finding.
+const BESIDE_KEPT: usize = 16;
 
+/// The last panics that were raised while a case ran on a thread that is
+/// not the case's. The hook cannot say whose such a thread is: a session
+/// of the case has threads, and so has every other test of the process.
+/// So none of these is a finding. A thread of the case's session that
+/// panicked is told by the session at its close, and these are then what
+/// the finding has to show for it.
+static BESIDE: Mutex<VecDeque<Raised>> = Mutex::new(VecDeque::new());
+
+fn beside() -> std::sync::MutexGuard<'static, VecDeque<Raised>> {
+    BESIDE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The panics of this thread that no step has taken yet.
 fn raised() -> Vec<Raised> {
-    std::mem::take(&mut *RAISED.lock().unwrap_or_else(PoisonError::into_inner))
+    RAISED
+        .with(|raised| raised.borrow_mut().as_mut().map(std::mem::take))
+        .unwrap_or_default()
 }
 
-/// Records the panics of the thread that runs a case, and those that are
-/// raised while a case runs on a thread that is no test's: the threads of
-/// a session have names of their own, and a test's thread has the path of
-/// its test. Every other panic is left to the hook that was there.
+/// Keeps the panics of a thread that runs a case, which are that case's,
+/// and says nothing of them. A panic of any other thread is passed to the
+/// hook that was there, as if this one were not, and is kept beside the
+/// case that runs, if one does ([`BESIDE`]).
 fn watch_panics() {
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
         let before = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
-            let thread = thread::current().name().unwrap_or("").to_owned();
-            let of_a_session = RUNS.load(Ordering::Acquire) && !thread.contains("::");
-            if !WATCHED.with(Cell::get) && !of_a_session {
-                return before(info);
-            }
             let at = info.location();
             let raised = Raised {
                 file: at.map_or_else(String::new, |at| at.file().to_owned()),
                 line: at.map_or(0, |at| at.line()),
                 message: info.payload_as_str().unwrap_or("no message").to_owned(),
-                thread,
+                thread: thread::current().name().unwrap_or("").to_owned(),
             };
-            (RAISED.lock().unwrap_or_else(PoisonError::into_inner)).push(raised);
+            // A thread whose own record is gone, or is borrowed, runs no
+            // step of a case at this moment.
+            let of_a_case = RAISED.try_with(|kept| match kept.try_borrow_mut().as_deref_mut() {
+                Ok(Some(kept)) => {
+                    kept.push(raised.clone());
+                    true
+                }
+                _ => false,
+            });
+            if of_a_case.unwrap_or(false) {
+                return;
+            }
+            if RUNNING.load(Ordering::Acquire) > 0 {
+                let mut seen = beside();
+                if seen.len() == BESIDE_KEPT {
+                    seen.pop_front();
+                }
+                seen.push_back(raised);
+            }
+            before(info);
         }));
     });
 }
@@ -759,9 +933,16 @@ enum Said {
     Fixture(Raised),
     /// A walk took more steps than the directory has records.
     Endless(String),
-    /// A panic in the engine's code.
+    /// A panic in the engine's code, on the thread of the case.
     Panicked(Raised),
+    /// A thread of the session panicked: what the session said of it, and
+    /// the panics of other threads that were seen while the case ran.
+    Session(String),
 }
+
+/// What the engine's error of a thread that panicked is called
+/// ([`DbError::Panicked`]).
+const PANICKED: &str = "Panicked";
 
 impl Raised {
     fn told(&self) -> String {
@@ -777,7 +958,10 @@ impl Raised {
 
 impl Said {
     fn is_a_finding(&self) -> bool {
-        matches!(self, Self::Endless(_) | Self::Panicked(_))
+        matches!(
+            self,
+            Self::Endless(_) | Self::Panicked(_) | Self::Session(_)
+        )
     }
 
     /// The outcome in full.
@@ -788,17 +972,22 @@ impl Said {
             Self::Fixture(raised) => format!("in a fixture, {}", raised.told()),
             Self::Endless(what) => what.clone(),
             Self::Panicked(raised) => raised.told(),
+            Self::Session(what) => what.clone(),
         }
     }
 
-    /// The outcome with no place and no text, for the counts.
+    /// The outcome with no text, for the counts: a fixture's panic by the
+    /// place it was raised at, which says what the fixture expected.
     fn name(&self) -> String {
         match self {
             Self::Returned => "returned".to_owned(),
             Self::Answered(kind) => format!("error {kind}"),
-            Self::Fixture(_) => "a fixture's panic".to_owned(),
+            Self::Fixture(raised) => {
+                format!("a fixture's panic at {}:{}", raised.file, raised.line)
+            }
             Self::Endless(_) => "ENDLESS".to_owned(),
             Self::Panicked(_) => "PANICKED".to_owned(),
+            Self::Session(_) => "A THREAD OF THE SESSION PANICKED".to_owned(),
         }
     }
 }
@@ -815,10 +1004,11 @@ fn kind(error: impl Debug) -> String {
     shown[..end.unwrap_or(shown.len())].to_owned()
 }
 
-/// Runs `step` and says how it ended. A panic of a thread of the session
-/// while the step ran is the step's.
+/// Runs `step` on the thread of a case and says how it ended. The panics
+/// it takes are those of this thread since the step before it: every one
+/// of them was raised in a step, since a panic outside one ends the case
+/// ([`run`]).
 fn ended(step: impl FnOnce() -> Result<(), String>) -> Said {
-    raised();
     let caught = panic::catch_unwind(AssertUnwindSafe(step));
     let raised = raised();
     let of_the_engine = raised
@@ -829,6 +1019,12 @@ fn ended(step: impl FnOnce() -> Result<(), String>) -> Said {
     }
     match (caught, raised.first()) {
         (Ok(Ok(())), _) => Said::Returned,
+        (Ok(Err(kind)), _) if kind.starts_with(PANICKED) => {
+            let seen: Vec<String> = beside().iter().map(Raised::told).collect();
+            Said::Session(format!(
+                "the session answered {kind}; on other threads while the case ran: {seen:?}"
+            ))
+        }
         (Ok(Err(kind)), _) => Said::Answered(kind),
         (Err(_), Some(raised)) if raised.message.starts_with(ENDLESS) => {
             Said::Endless(raised.message.clone())
@@ -1056,9 +1252,13 @@ fn opened(dir: &Path) -> Result<Db, String> {
 }
 
 /// Closes `db` and checks the store that is still, with what it keeps
-/// beside its pages.
+/// beside its pages. A close joins the threads of the session, and says
+/// which of them panicked.
 fn closed(db: Db) -> Result<(), String> {
-    let report = db.close_and_verify(None).map_err(kind)?;
+    let report = db.close_and_verify(None).map_err(|error| match error {
+        DbError::Panicked(thread) => format!("{PANICKED}: the {thread} thread"),
+        error => kind(error),
+    })?;
     match report.is_sound() {
         true => Ok(()),
         false => Err("unsound".to_owned()),
@@ -1097,7 +1297,7 @@ fn drill(dir: &Path, place: &Path, state: &State, seed: u64) -> Vec<(&'static st
             commit(db, &batch, false).map(drop).map_err(kind)
         });
         said.push(("write", write));
-        said.push(("write-back", ended(|| db.flush().map(drop).map_err(kind))));
+        said.push(("flush", ended(|| db.flush().map(drop).map_err(kind))));
         let reclaim = ended(|| {
             for _ in 0..4 {
                 let _ = db.reclaim();
@@ -1143,37 +1343,107 @@ fn write(dir: &Path, files: &Files) {
 }
 
 /// Runs the case of `files` on a thread of its own and returns how each
-/// step ended, or `None` if the case did not end within [`CASE_LIMIT`].
-/// With `keep`, the damaged directory is kept there as it was given to the
-/// open.
-fn run(
-    files: Files,
-    state: State,
-    seed: u64,
-    keep: Option<PathBuf>,
-) -> Option<Vec<(&'static str, Said)>> {
+/// step ended, or `None` if the case did not end within [`CASE_LIMIT`]:
+/// its directory is written, the steps are made and the directory is
+/// removed within that time. A panic of the thread outside a step is the
+/// harness's own, and ends the run with what it said.
+fn run(files: Files, state: State, seed: u64) -> Option<Vec<(&'static str, Said)>> {
     watch_panics();
+    beside().clear();
     let (sender, receiver) = mpsc::channel();
     let case = move || {
-        WATCHED.with(|watched| watched.set(true));
-        let place = temp();
-        let dir = place.path().join("db");
-        write(&dir, &files);
-        if let Some(keep) = keep {
-            write(&keep, &files);
-        }
-        let _ = sender.send(drill(&dir, place.path(), &state, seed));
+        RAISED.with(|raised| *raised.borrow_mut() = Some(Vec::new()));
+        let said = panic::catch_unwind(AssertUnwindSafe(|| {
+            let place = temp();
+            let dir = place.path().join("db");
+            write(&dir, &files);
+            drill(&dir, place.path(), &state, seed)
+        }));
+        let said = said.map_err(|_| {
+            let raised: Vec<String> = raised().iter().map(Raised::told).collect();
+            raised.join("; ")
+        });
+        let _ = sender.send(said);
     };
-    RUNS.store(true, Ordering::Release);
+    RUNNING.fetch_add(1, Ordering::AcqRel);
     let thread = (thread::Builder::new().name("a damaged directory".to_owned()))
         .spawn(case)
         .expect("a thread");
-    let said = receiver.recv_timeout(CASE_LIMIT).ok();
-    if said.is_some() {
-        let _ = thread.join();
+    let said = receiver.recv_timeout(CASE_LIMIT);
+    RUNNING.fetch_sub(1, Ordering::AcqRel);
+    match said {
+        Ok(Ok(said)) => {
+            let _ = thread.join();
+            Some(said)
+        }
+        Ok(Err(why)) => panic!("seed {seed}: the harness panicked outside a step: {why}"),
+        Err(mpsc::RecvTimeoutError::Timeout) => None,
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("seed {seed}: the thread of the case ended with no answer")
+        }
     }
-    RUNS.store(false, Ordering::Release);
-    said
+}
+
+/// The steps of a case in the order they are made on a directory that
+/// opens.
+const STEPS: [&str; 14] = [
+    "open",
+    "reads",
+    "snapshot reads",
+    "check",
+    "write",
+    "flush",
+    "reclaim",
+    "clean",
+    "check after the write",
+    "backup of a checkpoint",
+    "checkpoint",
+    "close",
+    "backup",
+    "open again",
+];
+
+/// Makes the steps of a case on the directory of each shape with nothing
+/// changed, [`CONTROLS`] times with a write of its own each, and on one
+/// whose manifest ends behind its header. On the first every step returns;
+/// on the second the open is refused, and so are the backup and the second
+/// open. Neither is counted as a case.
+fn controls(made: &[Made]) {
+    for (shape, made) in SHAPES.iter().zip(made) {
+        for seed in 0..CONTROLS {
+            let what = format!("{shape:?} with nothing changed, the write of seed {seed}");
+            let said = run(made.files.clone(), made.state.clone(), seed)
+                .unwrap_or_else(|| panic!("{what}: did not end in {CASE_LIMIT:?}"));
+            let steps: Vec<&str> = said.iter().map(|(step, _)| *step).collect();
+            assert_eq!(steps, STEPS, "{what}");
+            for (step, said) in &said {
+                assert!(
+                    matches!(said, Said::Returned),
+                    "{what}: {step}: {}",
+                    said.told()
+                );
+            }
+        }
+        let what = format!("{shape:?} with a manifest that ends behind its header");
+        let mut files = made.files.clone();
+        let manifest = files
+            .get_mut(Path::new("MANIFEST"))
+            .and_then(Option::as_mut);
+        manifest
+            .expect("a manifest")
+            .truncate(FileHeader::ENCODED_LEN);
+        let said = run(files, made.state.clone(), 0)
+            .unwrap_or_else(|| panic!("{what}: did not end in {CASE_LIMIT:?}"));
+        let steps: Vec<&str> = said.iter().map(|(step, _)| *step).collect();
+        assert_eq!(steps, ["open", "backup", "open again"], "{what}");
+        for (step, said) in &said {
+            assert!(
+                matches!(said, Said::Answered(_)),
+                "{what}: {step}: {}",
+                said.told()
+            );
+        }
+    }
 }
 
 /// The range of seeds that `LIGNIN_DAMAGE_SEEDS=first..end` names, or the
@@ -1239,15 +1509,18 @@ impl Tally {
 }
 
 /// The seal writes the checksums that the engine wrote, and reaches every
-/// byte of every file: a file that is sealed with nothing changed is the
-/// file it was, and the frames that the seal walks end where the file
-/// ends. So a change anywhere in a file is under a right checksum after
-/// the seal, unless the change itself ends the walk.
+/// byte of every file the engine wrote: a file of a directory of these
+/// tests that is sealed with nothing changed is the file it was, and the
+/// frames that the seal walks end where the file ends. So a change
+/// anywhere in such a file is under a right checksum after the seal,
+/// unless the change itself ends the walk: a length that is changed can
+/// leave bytes behind the last frame that fits, which no checksum covers
+/// and no frame of the file holds.
 #[test]
 fn a_sealed_file_is_as_the_engine_wrote_it() {
     for shape in SHAPES {
         let made = made(shape);
-        let mut kinds = BTreeMap::new();
+        let mut kinds: BTreeMap<Kind, (u64, usize)> = BTreeMap::new();
         for (path, bytes) in &made.files {
             let (Some(bytes), Some(kind)) = (bytes, kind_of(path)) else {
                 continue;
@@ -1255,16 +1528,22 @@ fn a_sealed_file_is_as_the_engine_wrote_it() {
             let mut sealed = bytes.clone();
             seal(kind, &mut sealed);
             assert!(sealed == *bytes, "{shape:?}: {}", path.display());
-            let walked = frames(kind, bytes)
-                .last()
-                .map_or(FileHeader::ENCODED_LEN, |last| last.1);
-            let (files, behind): &mut (u64, usize) = kinds.entry(kind).or_default();
+            let frames = frames(kind, bytes);
+            let walked = frames.last().map_or(FileHeader::ENCODED_LEN, |last| last.1);
+            assert_eq!(
+                walked,
+                bytes.len(),
+                "{shape:?}: the frames of {} end before the file does",
+                path.display()
+            );
+            let (files, framed) = kinds.entry(kind).or_default();
             *files += 1;
-            *behind += bytes.len() - walked.min(bytes.len());
+            *framed += frames.len();
         }
-        println!("SEALED {shape:?}: files and bytes behind the last frame, by kind: {kinds:?}");
+        println!("SEALED {shape:?}: files and frames by kind: {kinds:?}");
         for kind in [Kind::Manifest, Kind::Log, Kind::Segment] {
-            assert!(kinds.contains_key(&kind), "{shape:?} has no {kind:?}");
+            let framed = kinds.get(&kind).map_or(0, |(_, framed)| *framed);
+            assert!(framed > 0, "{shape:?} has no frame of {kind:?}");
         }
     }
 }
@@ -1275,15 +1554,22 @@ fn a_sealed_file_is_as_the_engine_wrote_it() {
 #[test]
 fn the_engine_answers_on_directories_damaged_under_right_checksums() {
     let seeds = seeds();
-    let short = std::env::var_os("LIGNIN_DAMAGE_SEEDS").is_none();
     let out = std::env::var_os("LIGNIN_DAMAGE_OUT").map(PathBuf::from);
     let until = std::env::var("LIGNIN_DAMAGE_SECONDS")
         .ok()
         .map(|seconds| Instant::now() + Duration::from_secs(seconds.parse().expect("seconds")));
+    // The whole of the short range, which no clock cuts.
+    let short = std::env::var_os("LIGNIN_DAMAGE_SEEDS").is_none() && until.is_none();
     if let Some(out) = &out {
         fs::create_dir_all(out).expect("a directory");
     }
+    let current = (out.as_ref()).map(|out| out.join(format!("current-{}", std::process::id())));
     let made: Vec<Made> = SHAPES.into_iter().map(made).collect();
+    controls(&made);
+    println!(
+        "CONTROLS shapes={} unchanged={CONTROLS} each, and one with no record in its manifest",
+        SHAPES.len()
+    );
     let mut tally = Tally::default();
     let began = Instant::now();
     let mut last = seeds.start;
@@ -1295,12 +1581,11 @@ fn the_engine_answers_on_directories_damaged_under_right_checksums() {
         let shape = SHAPES[(seed % SHAPES.len() as u64) as usize];
         let made = &made[shape as usize];
         let (case, files) = damaged(seed, shape, made);
-        if let Some(out) = &out {
-            let current = out.join(format!("current-{}", std::process::id()));
+        if let Some(current) = &current {
             fs::write(current, format!("{}\n", case.told())).expect("the case is written");
         }
         let findings = tally.findings.len();
-        let said = run(files.clone(), made.state.clone(), seed, None);
+        let said = run(files.clone(), made.state.clone(), seed);
         tally.take(&case, said.as_deref());
         if tally.findings.len() > findings {
             for finding in &tally.findings[findings..] {
@@ -1330,6 +1615,10 @@ fn the_engine_answers_on_directories_damaged_under_right_checksums() {
             );
         }
     }
+    if let Some(current) = &current {
+        // No case is under way any more.
+        let _ = fs::remove_file(current);
+    }
     tally.show();
     println!(
         "CAMPAIGN seeds={}..{last} cases={} findings={} seconds={}",
@@ -1338,31 +1627,18 @@ fn the_engine_answers_on_directories_damaged_under_right_checksums() {
         tally.findings.len(),
         began.elapsed().as_secs()
     );
-    if short {
-        // What the short run is taken to have met. How many of its opens
-        // are refused, and how many of the stores that open are found
-        // unsound, is the layout's of the files that were made, which the
-        // threads of the making sessions decide between them: the counts
-        // are printed above and not asserted.
-        for shape in SHAPES {
-            assert!(tally.shapes.contains_key(&shape), "no case of {shape:?}");
-        }
-        for kind in KINDS {
-            assert!(tally.kinds.contains_key(&kind), "no case of {kind:?}");
-        }
-        let said = |step: &'static str, said: &str| {
-            let count = tally.steps.get(&(step, said.to_owned()));
-            assert!(count.is_some(), "no case whose {step} {said}");
-        };
-        said("open", "returned");
-        said("check", "returned");
-        said("write", "returned");
-        said("close", "returned");
-        said("backup", "returned");
-        said("open again", "returned");
-        let refused = (tally.steps.iter())
-            .any(|((step, said), _)| *step == "open" && said.starts_with("error"));
-        assert!(refused, "no case whose open was refused");
-    }
     assert!(tally.findings.is_empty(), "{:#?}", tally.findings);
+    if short {
+        // The seeds of the short range take the shapes in turn. Which
+        // file of a directory a seed changes, and what the engine answers
+        // to the change, is the layout's of the files that were made,
+        // which the threads of the making sessions decide between them:
+        // those counts are printed above and not asserted. What a step
+        // answers on a directory that is sound, and on one that no open
+        // takes, is asserted of the controls.
+        let each = SHORT / SHAPES.len() as u64;
+        for shape in SHAPES {
+            assert_eq!(tally.shapes.get(&shape), Some(&each), "{shape:?}");
+        }
+    }
 }
