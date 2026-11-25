@@ -77,7 +77,7 @@ The rest:
 | `manifest: …` | the manifest could not be read, written or replaced; the words of [the files](#the-files-at-an-open) follow | as those words say | `lignindb/src/db/error.rs` |
 | `recovery: …` | the store could not be recovered; the words of [the recovery](#in-a-recovery) follow | as those words say | `lignindb/src/db/error.rs` |
 | `the first commit of the database (…): …` | the first commit of a new database failed. The next open makes it again | fix what the words after it say, and open again | `lignindb/src/db/error.rs` |
-| `the record of the keyspaces: …` | the record of where the flat keyspaces are could not be read, or is not what this build writes | a damaged database: restore from a backup, and report it with what `lignin verify` says | `lignindb/src/db/error.rs` |
+| `the record of the keyspaces: …` | the record of where the flat keyspaces are could not be read, or is not what this build writes | open with the GroveDB release that wrote the database; if that is this one, the database is damaged: restore from a backup, and report it | `lignindb/src/db/error.rs` |
 | `cannot start the background work: …` | the system refused a thread | raise the process's thread limit, and open again | `lignindb/src/db/error.rs` |
 | `… was changed while it was being opened, and a lock file may have been made in it: …` | a new database was to be made, and something wrote into the directory meanwhile | find what did; the words after it say what the directory is now | `lignindb/src/db/error.rs` |
 
@@ -119,7 +119,9 @@ version. These words follow `recovery: `.
 Two kinds are told apart (`RecoveryError::is_damage`). **A file
 operation that failed** (the first group below) leaves the directory as
 the next open expects it: fix what the system says, and open again. The
-buffer pool's refusals are in that group too, and say what to do.
+buffer pool's refusals are in that group too, and say what to do. A
+message of that group that comes again at the next open, with nothing
+for the system to fix, is damage as well.
 **Damage** (the second group) is a store whose files do not hold what
 they must: restore the database from a backup, keep the damaged
 directory, and report it with what `lignin verify` says of it (where
