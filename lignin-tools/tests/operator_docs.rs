@@ -67,7 +67,27 @@ const SPEAKERS: [&str; 10] = [
 /// The error types of an open, a recovery, a commit, the end of a
 /// session, a close, a checkpoint and the tool, by the file their
 /// `Display` is in: the messages chapter quotes every message of each.
-const COVERED: [(&str, &[&str]); 7] = [
+const COVERED: [(&str, &[&str]); 15] = [
+    ("lignin-format/src/error.rs", &["FormatError"]),
+    (
+        "lignin-store/src/table/error.rs",
+        &["LinkError", "PageTableError"],
+    ),
+    (
+        "lignin-store/src/values/error.rs",
+        &["Miscount", "ValueStoreError"],
+    ),
+    ("lignin-store/src/load/error.rs", &["LoadError"]),
+    (
+        "lignin-store/src/alloc/error.rs",
+        &["AllocError", "RecoveryError"],
+    ),
+    (
+        "lignin-store/src/cache/error.rs",
+        &["CacheError", "StepRefusal"],
+    ),
+    ("lignin-store/src/flush/error.rs", &["FlushError"]),
+    ("lignin-store/src/cleaner/error.rs", &["CleanerError"]),
     (
         "lignin-store/src/segment/error.rs",
         &["SegmentStoreError", "ManifestChange"],
@@ -91,7 +111,7 @@ const COVERED: [(&str, &[&str]); 7] = [
 const PARTS: [&str; 1] = ["up to …"];
 
 /// The first words of the commands a document can name in a code span.
-const COMMANDS: [&str; 19] = [
+const COMMANDS: [&str; 20] = [
     "lignin",
     "lignin-bench",
     "cargo",
@@ -111,6 +131,7 @@ const COMMANDS: [&str; 19] = [
     "bash",
     "rustup",
     "pwd",
+    "cd",
 ];
 
 fn repository() -> PathBuf {
@@ -996,7 +1017,13 @@ fn defaults() -> BTreeMap<String, String> {
     } = cleaner.unwrap_or(CleanerConfig::new());
     let migrate = read(&repository().join("lignin-tools/src/migrate/mod.rs"));
     assert!(
-        migrate.contains("Some(machine / 2)") && migrate.contains("starts_with(\"MemTotal:\")"),
+        [
+            "Some(machine / 2)",
+            "starts_with(\"MemTotal:\")",
+            "read_to_string(\"/proc/meminfo\")"
+        ]
+        .iter()
+        .all(|line| migrate.contains(line)),
         "the limit of a migration is no longer half of the machine's memory"
     );
     let memory_limit =
