@@ -40,13 +40,66 @@
 //! reads as nothing: the cases with many operations in one process then
 //! show the first of them only. Run under a memory limit, a case that
 //! outgrows the limit is killed and prints nothing.
+//!
+//! `LIGNIN_MEMORY_DIR` names the directory of the database, which is then
+//! left where it is: with it, a case that a memory limit had killed leaves
+//! its database to `the_database_that_a_killed_operation_left`, which
+//! opens it again, checks it, and counts what it holds.
 
-use std::fs;
+use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use grovedb_version::version::GroveVersion;
 
-use super::{nested::open, LigninEngine};
+use super::{
+    nested::{check, open},
+    LigninEngine,
+};
 use crate::{batch::QualifiedGroveDbOp, Element, Engine, GroveDb};
+
+/// An engine with what it counts of its log, where it counts it.
+trait Counted: Engine {
+    /// The bytes of the groups that the commits of the session appended to
+    /// the log so far, on an engine that counts them.
+    fn logged(db: &GroveDb<Self>) -> Option<u64>;
+
+    /// Every count the engine keeps of its session, as it shows them, on
+    /// an engine that keeps such counts: where the bytes that the process
+    /// wrote went (the log, write-back, the cleaner).
+    fn counts(db: &GroveDb<Self>) -> Option<String>;
+}
+
+impl Counted for LigninEngine {
+    fn logged(db: &GroveDb<Self>) -> Option<u64> {
+        Some(db.engine().database().stats().commits.group_bytes)
+    }
+
+    fn counts(db: &GroveDb<Self>) -> Option<String> {
+        let stats = db.engine().database().stats();
+        Some(format!("{stats}\n{:?}\n{:?}", stats.store, stats.cleaner))
+    }
+}
+
+#[cfg(feature = "rocksdb_storage")]
+impl Counted for crate::RocksDbEngine {
+    fn logged(_: &GroveDb<Self>) -> Option<u64> {
+        None
+    }
+
+    fn counts(_: &GroveDb<Self>) -> Option<String> {
+        None
+    }
+}
+
+/// The bytes that the process has given to the system to write so far,
+/// to any file and from any thread (`wchar` of `/proc/self/io`): the log
+/// of either engine among them, and what a thread of the engine wrote in
+/// the background meanwhile.
+fn written() -> u64 {
+    let io = fs::read_to_string("/proc/self/io").expect("the counts of the process");
+    let line = io.lines().find(|line| line.starts_with("wchar:"));
+    let bytes = line.and_then(|line| line.split_whitespace().nth(1));
+    bytes.and_then(|bytes| bytes.parse().ok()).expect("a count")
+}
 
 /// The resident set of the process now, and its peak since the last
 /// [`forget_the_peak`], in kibibytes.
@@ -171,10 +224,28 @@ fn batch<E: Engine>(db: &GroveDb<E>, operations: usize, v: &GroveVersion) {
     applied.0.expect("the batch");
 }
 
+/// One small put beside large items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Put {
+    /// How far the resident set grew while it ran, in kibibytes.
+    growth_kb: u64,
+    /// The bytes its commit appended to the log, where the engine counts
+    /// them.
+    logged: u64,
+    /// The bytes the process gave to the system to write while it ran.
+    written: u64,
+    /// The resident set before it, in kibibytes.
+    before_kb: u64,
+    /// Which of the puts it was.
+    number: usize,
+}
+
 /// `count` items of `len` bytes in one Merk, and then 256 items of 8
 /// bytes put one by one between them: the growth of each of those puts,
-/// the largest first.
-fn beside<E: Engine>(db: &GroveDb<E>, len: usize, count: usize, v: &GroveVersion) {
+/// the largest first, with what the put of the largest growth appended to
+/// the log, and what the puts append and write at their median and
+/// together.
+fn beside<E: Counted>(db: &GroveDb<E>, len: usize, count: usize, v: &GroveVersion) {
     let case = format!("beside:{len}:{count}");
     put(db, &[], b"tree", Element::empty_tree(), v);
     let at: [&[u8]; 1] = [b"tree"];
@@ -187,40 +258,73 @@ fn beside<E: Engine>(db: &GroveDb<E>, len: usize, count: usize, v: &GroveVersion
             v,
         );
     }
-    let mut growths = Vec::new();
-    for n in 0..256usize {
-        // Between the large items, at another place each time.
-        let key = ((n * 7919 % (count * 16)) as u32 | 1).to_be_bytes();
-        let small = item(8, 9);
-        forget_the_peak();
-        let (before, _) = resident();
-        put(db, &at, &key, small, v);
-        growths.push((resident().1.saturating_sub(before), n));
+    for line in E::counts(db).unwrap_or_default().lines() {
+        println!("COUNTS before the small puts: {line}");
     }
-    growths.sort_unstable_by(|one, other| other.cmp(one));
+    let mut puts = Vec::new();
+    for number in 0..256usize {
+        // Between the large items, at another place each time.
+        let key = ((number * 7919 % (count * 16)) as u32 | 1).to_be_bytes();
+        let small = item(8, 9);
+        println!("PUT case={case} number={number} begins");
+        forget_the_peak();
+        let (before_kb, _) = resident();
+        let (logged, wrote) = (E::logged(db), written());
+        put(db, &at, &key, small, v);
+        puts.push(Put {
+            growth_kb: resident().1.saturating_sub(before_kb),
+            logged: (E::logged(db).zip(logged)).map_or(0, |(now, then)| now - then),
+            written: written() - wrote,
+            before_kb,
+            number,
+        });
+    }
+    for line in E::counts(db).unwrap_or_default().lines() {
+        println!("COUNTS after the small puts: {line}");
+    }
+    puts.sort_unstable_by(|one, other| other.cmp(one));
     let large_kb = (len / 1024) as u64;
-    let over = growths
-        .iter()
-        .filter(|(kb, _)| *kb >= large_kb.max(1024))
+    let over = (puts.iter())
+        .filter(|put| put.growth_kb >= large_kb.max(1024))
         .count();
+    let median = |of: fn(&Put) -> u64| {
+        let mut all: Vec<u64> = puts.iter().map(of).collect();
+        all.sort_unstable();
+        all[all.len() / 2]
+    };
+    let most = puts[0];
     println!(
         "MEMORY case={case} operation=small-put input_bytes=12 growth_kb={} at_put={} \
+         before_kb={} logged_bytes={} written_bytes={} \
          puts_that_grew_by_a_large_item_or_more={over} large_item_kb={large_kb} \
-         the_eight_largest_kb={:?}",
-        growths[0].0,
-        growths[0].1,
-        growths
-            .iter()
-            .take(8)
-            .map(|(kb, _)| *kb)
-            .collect::<Vec<_>>()
+         the_eight_largest_kb={:?} most_logged_bytes={} most_written_bytes={} \
+         median_growth_kb={} median_logged_bytes={} median_written_bytes={} \
+         all_logged_bytes={} all_written_bytes={}",
+        most.growth_kb,
+        most.number,
+        most.before_kb,
+        most.logged,
+        most.written,
+        (puts.iter().take(8))
+            .map(|put| put.growth_kb)
+            .collect::<Vec<_>>(),
+        puts.iter().map(|put| put.logged).max().unwrap_or(0),
+        puts.iter().map(|put| put.written).max().unwrap_or(0),
+        median(|put| put.growth_kb),
+        median(|put| put.logged),
+        median(|put| put.written),
+        puts.iter().map(|put| put.logged).sum::<u64>(),
+        puts.iter().map(|put| put.written).sum::<u64>(),
     );
 }
 
-fn run<E: Engine>(case: &str) {
+fn run<E: Counted>(case: &str) {
     let v = GroveVersion::latest();
-    let dir = tempfile::tempdir().expect("a directory");
-    let db = open::<E>(dir.path());
+    // A directory of the run's own, which goes with it, or the one that
+    // is named, which stays.
+    let own = tempfile::tempdir().expect("a directory");
+    let dir = std::env::var_os("LIGNIN_MEMORY_DIR").map_or(own.path().to_path_buf(), PathBuf::from);
+    let db = open::<E>(&dir);
     let number = |text: &str| -> usize { text.parse().expect("a number") };
     match case.split(':').collect::<Vec<_>>().as_slice() {
         ["key"] => key(&db, v),
@@ -230,6 +334,60 @@ fn run<E: Engine>(case: &str) {
         ["beside", len, count] => beside(&db, number(len), number(count), v),
         _ => panic!("no case {case}"),
     }
+}
+
+/// What a process left that was killed while it made a small put of the
+/// case `beside` on LigninDB, in the directory `LIGNIN_MEMORY_DIR`: the
+/// physical checker finds the store sound, the database opens, GroveDB's
+/// own verification finds nothing, every large item is read whole, and
+/// the small items that are there are counted. `LIGNIN_MEMORY_CASE` is the
+/// case the killed process ran.
+#[test]
+#[ignore = "a check of what a killed measurement left"]
+fn the_database_that_a_killed_operation_left() {
+    let v = GroveVersion::latest();
+    let dir = PathBuf::from(std::env::var_os("LIGNIN_MEMORY_DIR").expect("LIGNIN_MEMORY_DIR"));
+    let case = std::env::var("LIGNIN_MEMORY_CASE").expect("LIGNIN_MEMORY_CASE");
+    let number = |text: &str| -> usize { text.parse().expect("a number") };
+    let (len, count) = match case.split(':').collect::<Vec<_>>().as_slice() {
+        ["beside", len, count] => (number(len), number(count)),
+        _ => panic!("no case {case}"),
+    };
+    check(&dir, v);
+    let db = open::<LigninEngine>(&dir);
+    let issues = db
+        .verify_grovedb(None, true, false, v)
+        .expect("a verification");
+    assert!(issues.is_empty(), "{} issues", issues.len());
+    let at: [&[u8]; 1] = [b"tree"];
+    for n in 0..count {
+        let key = (n as u32 * 16).to_be_bytes();
+        let read = db.get(&at, &key, None, v).unwrap().expect("a large item");
+        assert_eq!(read, item(len, n as u8), "the large item {n}");
+    }
+    // The small puts are made in order, each a commit: the small items
+    // that are there are those of the first puts, with none left out and
+    // none of a later put. Two puts can be of one key, so the items can
+    // be those of more than one count of puts.
+    let key_of = |number: usize| ((number * 7919 % (count * 16)) as u32 | 1).to_be_bytes();
+    let there: BTreeSet<[u8; 4]> = (0..256)
+        .map(key_of)
+        .filter(|key| db.get(&at, key, None, v).unwrap().is_ok())
+        .collect();
+    let made: Vec<usize> = (0..=256)
+        .filter(|made| (0..*made).map(key_of).collect::<BTreeSet<_>>() == there)
+        .collect();
+    println!(
+        "LEFT case={case} sound=true issues=0 large_items={count} small_items={} \
+         small_puts_made={:?}..={:?}",
+        there.len(),
+        made.first(),
+        made.last()
+    );
+    assert!(
+        !made.is_empty(),
+        "the small items are not those of the first puts"
+    );
 }
 
 /// One operation of the case that `LIGNIN_MEMORY_CASE` names, on the
