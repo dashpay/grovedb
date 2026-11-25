@@ -161,7 +161,7 @@ pub(crate) mod held {
     //! own calls.
     //!
     //! An evaluation of stale hashes inside a transaction
-    //! (`super::super::txn`, `evaluate.rs`) comes to its cells through
+    //! (`evaluate.rs`) comes to its cells through
     //! the links of their parents and the pointers of their hosts, and
     //! keeps each node it made a hash of in the write set under the
     //! node's key, in the Merk it took the cell to be of. Each such cell

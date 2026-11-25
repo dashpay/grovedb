@@ -1207,7 +1207,8 @@ impl HashRules for Refusing<'_> {
 /// A rule that refuses a hash ends the call with its error, and adds
 /// nothing (WT10): every hash that was stale is stale, with the bytes its
 /// writer stated, wherever the evaluation stopped. Where a hash was
-/// stored before the error, the frames are made again from the write set.
+/// stored before the error, the frames are made again from the write
+/// set, and have the hashes that an earlier call made.
 #[test]
 fn a_call_that_a_rule_refuses_adds_nothing() {
     let (db, versions) = Db::new(96);
@@ -1215,6 +1216,15 @@ fn a_call_that_a_rule_refuses_adds_nothing() {
     let mut rng = Rng::new(118);
     planted(&mut world, &mut rng);
     let tx = world.begin();
+    // The hashes of another Merk, which an earlier call made.
+    let other = left(&world, &tx, 5, |items| {
+        for index in 0..9 {
+            items.insert(key(index), value(&mut rng, 40));
+        }
+    });
+    world.apply(&tx, &batch(vec![other])).expect("another Merk");
+    let made_before = evaluate_merged(&world, &tx, 5);
+    assert!(made_before.is_some());
     let merk = changed(&world, &tx, &mut rng, 1, 0);
     let to_make = calls_for(&merk) as usize + 1;
     world.apply(&tx, &batch(vec![merk])).expect("the change");
@@ -1239,6 +1249,7 @@ fn a_call_that_a_rule_refuses_adds_nothing() {
         assert_eq!(calls.load(Ordering::Relaxed), left as u64);
         // The read makes the frames again where they were given up.
         assert_eq!(stale_in(&world, &tx, 1), stale, "after {left} calls");
+        assert_eq!(stale_in(&world, &tx, 5), BTreeSet::new(), "{left}");
         for key in &stale {
             let (_, value_hash, kv_hash, _) = shown(&tx, 1, key);
             assert_eq!((value_hash, kv_hash), (UNMADE, UNMADE), "{key:?}, {left}");
@@ -1276,7 +1287,93 @@ fn a_call_that_a_rule_refuses_adds_nothing() {
     );
     assert_eq!(calls.load(Ordering::Relaxed), to_make as u64);
     assert_eq!(tx.txn.stats().stale_nodes, 0);
+    let other = tx.txn.evaluate(sub(5), &mut Rules(&calls));
+    assert_eq!(other.expect("a hash"), made_before);
     assert!(committed(db.commit(&versions, &tx.txn).expect("a commit")));
+}
+
+/// Rules that panic at their call number `at`.
+struct Panicking<'a> {
+    rules: Rules<'a>,
+    at: u64,
+}
+
+impl Panicking<'_> {
+    fn count(&mut self) {
+        assert!(
+            self.rules.0.load(Ordering::Relaxed) != self.at,
+            "a rule of the test panics"
+        );
+    }
+}
+
+impl HashRules for Panicking<'_> {
+    fn value_hash(
+        &mut self,
+        node: NodeRef<'_>,
+        value: &[u8],
+        hosted: &[Option<Hash>],
+    ) -> Result<Hash, Refusal> {
+        self.count();
+        self.rules.value_hash(node, value, hosted)
+    }
+
+    fn kv_hash(&mut self, key: &[u8], value_hash: &Hash) -> Result<Hash, Refusal> {
+        self.count();
+        self.rules.kv_hash(key, value_hash)
+    }
+
+    fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
+        self.count();
+        self.rules.node_hash(node)
+    }
+}
+
+/// Rules that panic leave the transaction usable, as any operation that
+/// panics does: the frames may hold hashes that the write set does not,
+/// and are made again from it. Every hash that was stale is stale, and
+/// the next call makes them.
+#[test]
+fn a_call_whose_rules_panic_adds_nothing() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(123);
+    planted(&mut world, &mut rng);
+    let tx = world.begin();
+    let merk = changed(&world, &tx, &mut rng, 1, 0);
+    let to_make = calls_for(&merk) + 1;
+    world.apply(&tx, &batch(vec![merk])).expect("the change");
+    let stale = stale_in(&world, &tx, 1);
+    let root_hash = expected(&world, &tx, 1);
+    let held = held_by(&tx);
+
+    for at in [0, to_make / 2, to_make - 1] {
+        let calls = std::sync::atomic::AtomicU64::new(0);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut rules = Panicking {
+                rules: Rules(&calls),
+                at,
+            };
+            tx.txn.evaluate(sub(1), &mut rules)
+        }));
+        assert!(panicked.is_err(), "the rules panic at their call {at}");
+        assert_eq!(calls.load(Ordering::Relaxed), at);
+        assert_eq!(stale_in(&world, &tx, 1), stale, "after {at} calls");
+        for key in &stale {
+            assert_eq!(shown(&tx, 1, key).1, UNMADE, "{key:?}, {at}");
+        }
+        let now = held_by(&tx);
+        assert_eq!(
+            (now.writes, now.stale_nodes),
+            (held.writes, held.stale_nodes)
+        );
+    }
+    // The frames were made again after each.
+    assert_eq!(held_by(&tx).rebuilds, held.rebuilds + 3);
+    assert_eq!(evaluate_merged(&world, &tx, 1), root_hash);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
 }
 
 /// A subtree that the test enters itself, with no host.
@@ -1731,5 +1828,217 @@ fn a_host_that_points_at_the_root_of_a_cleared_merk_refuses_the_call() {
     );
     world.check(&tx);
     assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+}
+
+/// The shortest value that the store of these tests puts out of line.
+const LONG: usize = lignin_tree::value::InlinePolicy::DEFAULT_THRESHOLD + 1;
+
+/// A value hash is made from the value wherever it is: in its cell, with
+/// the transaction that wrote it, and where a node keeps the value that
+/// the committed state has out of line.
+#[test]
+fn a_value_hash_is_made_from_a_value_that_is_not_in_its_cell() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(120);
+    let made = world.edit_outside(
+        1,
+        |items| {
+            for index in 0..30 {
+                let len = match index % 3 {
+                    0 => LONG + 40 * index,
+                    _ => 50,
+                };
+                items.insert(key(index), value(&mut rng, len));
+            }
+        },
+        &[],
+    );
+    assert!(committed(made));
+    let calls = || db.counts.rule_calls.load(Ordering::Relaxed);
+    let evaluated = || db.counts.stale_nodes.load(Ordering::Relaxed);
+
+    let tx = world.begin();
+    let merk = left(&world, &tx, 1, |items| {
+        // New values out of line and in their cells, and a node less:
+        // the nodes above them are written with their values kept.
+        items.insert(key(100), value(&mut rng, LONG * 3));
+        items.insert(key(101), value(&mut rng, 20));
+        items.insert(key(6), value(&mut rng, LONG + 7));
+        items.remove(&key(14));
+    });
+    let kept_long = merk.nodes.iter().filter(|(key, node, stated)| {
+        !stated && node.value.len() >= LONG && merk.stale.contains_key(key)
+    });
+    assert!(
+        kept_long.count() > 0,
+        "a node keeps a committed value that is out of line"
+    );
+    let to_make = calls_for(&merk);
+    world.apply(&tx, &batch(vec![merk])).expect("the change");
+    let root_hash = expected(&world, &tx, 1);
+    let before = calls();
+    assert_eq!(evaluate_merged(&world, &tx, 1), root_hash);
+    assert_eq!(calls() - before, to_make + 1);
+    world.check(&tx);
+
+    // Frames that are made again read the kept values where they are.
+    world.edit_outside(2, |items| drop(items.insert(key(1), vec![1; 30])), &[&tx]);
+    world.check(&tx);
+    assert_eq!(tx.txn.stats().stale_nodes, 0);
+    let before = (calls(), evaluated());
+    assert!(committed(world.commit(tx, &[])));
+    assert_eq!((calls(), evaluated()), before);
+    world.check_committed();
+}
+
+/// The marks of cells that a later write carried to another page are
+/// where the cells are, and the call finds them there: thirty small
+/// Merks whose nodes have stale hashes, under elements with stale value
+/// hashes, in a Merk that then grows until its pages are cut, so that
+/// hosts go to other pages and take their Merks along. One call for the
+/// Merk above makes the hashes of all of them, each Merk kept as an
+/// operation of its own that leaves its root where its host points.
+#[test]
+fn the_call_finds_the_stale_hashes_of_cells_that_were_carried() {
+    use super::trees::{child, element, hosted_batch, PARENT};
+
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(121);
+    let calls = || db.counts.rule_calls.load(Ordering::Relaxed);
+    let evaluated = || db.counts.stale_nodes.load(Ordering::Relaxed);
+
+    let tx = world.begin();
+    let all: Vec<usize> = (0..30).collect();
+    let mut made = hosted_batch(
+        &world,
+        &tx,
+        &all,
+        &mut |index, items| {
+            for node in 0..1 + index % 3 {
+                items.insert(vec![b'n', node as u8], value(&mut rng, 40));
+            }
+        },
+        &mut |_| {},
+    );
+    made.merks.iter_mut().for_each(leave);
+    let stale: usize = made.merks.iter().map(|merk| merk.nodes.len()).sum();
+    world.apply(&tx, &made).expect("the Merks are made");
+    assert_eq!(tx.txn.stats().stale_nodes, stale);
+    let page_of = |tx: &Tx<'_>, index: usize| {
+        let root = vec![b'n', 0];
+        let handle = tx.txn.node(sub(child(index)), &root, handle_of);
+        handle.expect("a read").expect("a cell").page()
+    };
+    let before: Vec<_> = all.iter().map(|index| page_of(&tx, *index)).collect();
+
+    // The parent grows, with the hashes of what is written left again,
+    // and its pages are cut. No batch that makes it grow names one of
+    // the small Merks.
+    let mut carried = 0;
+    for round in 0..6 {
+        let mut grown = hosted_batch(&world, &tx, &[], &mut |_, _| {}, &mut |items| {
+            for index in 0..40 {
+                let mut key = element(rng.below(30));
+                key.extend_from_slice(format!("-{round}-{index}").as_bytes());
+                items.insert(key, value(&mut rng, 150));
+            }
+        });
+        assert_eq!(grown.merks.len(), 1, "the parent alone is written");
+        grown.merks.iter_mut().for_each(leave);
+        carried += world
+            .apply(&tx, &grown)
+            .expect("the parent grows")
+            .carried
+            .len();
+    }
+    let moved = (all.iter()).filter(|index| page_of(&tx, **index) != before[**index]);
+    let moved = moved.count();
+    assert!(moved > 0 && carried >= moved, "{moved} of {carried} cells");
+    let stale = tx.txn.stats().stale_nodes;
+    assert!(stale > 100, "{stale} nodes have a stale hash");
+
+    let hashes: Vec<Option<Hash>> = (all.iter())
+        .map(|index| expected(&world, &tx, child(*index)))
+        .collect();
+    let root_hash = expected(&world, &tx, PARENT);
+    let reached: Vec<u8> = std::iter::once(PARENT)
+        .chain(all.iter().map(|index| child(*index)))
+        .collect();
+    let scope = tx.txn.scope().expect("a scope");
+    held::compared();
+    let hash = evaluate(&world, &tx, &scope, PARENT, &reached);
+    assert_eq!(hash.expect("the hashes are made"), root_hash);
+    scope.merge();
+    // Each cell is where its key leads to, in the Merk it is kept under.
+    assert_eq!(held::compared().evaluated, stale as u64);
+    assert_eq!(tx.txn.stats().stale_nodes, 0);
+    world.check(&tx);
+    for (index, hash) in all.iter().zip(&hashes) {
+        let before = calls();
+        assert_eq!(evaluate_merged(&world, &tx, child(*index)), *hash);
+        assert_eq!(calls() - before, 1);
+    }
+
+    // Frames that are made again lay each of those operations out, with
+    // the roots of the small Merks where their hosts point.
+    let rebuilds = tx.txn.stats().rebuilds;
+    world.edit_outside(2, |items| drop(items.insert(key(1), vec![1; 30])), &[&tx]);
+    world.check(&tx);
+    let stats = tx.txn.stats();
+    assert_eq!((stats.rebuilds, stats.stale_nodes), (rebuilds + 1, 0));
+    let before = (calls(), evaluated());
+    assert!(committed(world.commit(tx, &[])));
+    assert_eq!((calls(), evaluated()), before);
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// The call goes down through stale hashes only, as the evaluation of
+/// the tree layer does: a stale hash that no stale hash above it leads
+/// to is not come to. Where a writer states the hashes of the root with
+/// stale hashes left below it, the call reads the root, makes nothing,
+/// and the hashes below are the commit's to make.
+#[test]
+fn a_stale_hash_that_no_stale_hash_leads_to_is_left_for_the_commit() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(122);
+    planted(&mut world, &mut rng);
+    let calls = || db.counts.rule_calls.load(Ordering::Relaxed);
+    let evaluated = || db.counts.stale_nodes.load(Ordering::Relaxed);
+
+    let tx = world.begin();
+    let merk = changed(&world, &tx, &mut rng, 1, 0);
+    world.apply(&tx, &batch(vec![merk])).expect("the change");
+    // A second writer makes every hash of what it writes, the root among
+    // it, and states for a child the hash that the rules make of it.
+    let above = world.merk(&tx, 1, |items| drop(items.insert(key(900), vec![5; 40])));
+    let root = (above.root.clone().flatten())
+        .or_else(|| model::records(&items(&world, &tx, 1)).0)
+        .expect("a root");
+    assert!(above.nodes.iter().any(|(key, ..)| *key == root));
+    world
+        .apply(&tx, &batch(vec![above]))
+        .expect("the root is written");
+    let stale = stale_in(&world, &tx, 1);
+    assert!(!stale.is_empty() && !stale.contains(&root), "{stale:?}");
+    assert_eq!(tx.txn.stats().stale_nodes, stale.len());
+
+    // The call reads the root's cell, whose hashes are the ones the
+    // rules make: it gives the root hash, and makes no other hash.
+    let (held, before) = (held_by(&tx), calls());
+    let hash = tx.txn.evaluate(sub(1), &mut Rules(&db.counts.rule_calls));
+    assert_eq!(hash.expect("a hash"), expected(&world, &tx, 1));
+    assert_eq!(calls() - before, 1);
+    assert_eq!(held_by(&tx), held);
+    assert_eq!(stale_in(&world, &tx, 1), stale);
+
+    // The commit makes what is left.
+    let before = evaluated();
+    assert!(committed(world.commit(tx, &[])));
+    assert_eq!(evaluated() - before, stale.len() as u64);
     world.check_committed();
 }

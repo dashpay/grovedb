@@ -391,9 +391,10 @@
 //!
 //! # An evaluation before the commit
 //!
-//! A writer that leaves hashes to the engine cannot read a node it wrote
-//! so until they are made, and has no root hash before its commit. So a
-//! Merk's stale hashes can be asked for inside the transaction
+//! A hash that a write left to the engine is no hash until it is made
+//! ([`NodeView::stale`]), and the commit makes it: until then a reader
+//! has the node without it, and its Merk has no root hash. So a Merk's
+//! stale hashes can be asked for inside the transaction
 //! ([`Scope::evaluate`], [`WriteTxn::evaluate`]), with the rules of the
 //! caller, as the commit is given them.
 //!
@@ -455,17 +456,29 @@
 //! **Claims** (SC3). The call is a read of the Merk's entry, then a write
 //! of every Merk it makes a hash in, and a read of every other Merk whose
 //! root it hashes for the value hash of a host. A scope claims the first
-//! before it reads anything, and the others together or not at all,
-//! before a hash is made: they are taken as those of a batch with a
-//! change set of each Merk it writes, in which a node names the Merks it
-//! reads as hosted. A call that is refused the others keeps its read of
-//! the Merk it was asked for. A scope that keeps its writes in the write
-//! set has them laid out first ([`Scope::lay_out`]), since the hashes are
-//! made in cells. Through the transaction itself the call is a read of a
-//! scope that ends with the call, and makes a hash only while no scope is
-//! open ([`TxnError::ScopeOpen`]).
+//! before anything of the Merk is read, and the others together or not
+//! at all, before a hash is made: they are taken as those of a batch
+//! with a change set of each Merk it writes, in which a node names the
+//! Merks it reads as hosted. A call that is refused the others keeps its
+//! read of the Merk it was asked for.
 //!
-//! **Where it is refused.** Nothing is changed by any of these:
+//! Which Merks those others are is not the caller's to say: the call
+//! finds them, from the pointers of the hosts and the subtree directory,
+//! and looks at the cells it would come to in them, before it has their
+//! claims. It answers nothing from that look unless the claims are
+//! granted, and then no other open scope has written what it looked at.
+//!
+//! A scope that keeps its writes in the write set has them laid out
+//! first ([`Scope::lay_out`]), since the hashes are made in cells.
+//! Through the transaction itself the call is a read of a scope that
+//! ends with the call, and makes a hash only while no scope is open
+//! ([`TxnError::ScopeOpen`]).
+//!
+//! **Where it is refused.** None of these makes a hash, changes a page
+//! or adds a write. The writes of a scope that were laid out for the call
+//! stay laid out, and the claims that it was granted before the refusal
+//! stay with it, as those of a batch that is refused for what it says do
+//! ([`crate::scope`]):
 //!
 //! - a subtree that is not entered ([`BatchError::NotEntered`]);
 //! - a transaction that serves its records by key: a conflict where a
@@ -496,7 +509,9 @@
 //! before the error, the frames hold what the write set does not: they
 //! are given up and made again from it, so every hash that was stale is
 //! stale, and every node handle read through the transaction has ended
-//! (PN8). Where it had stored none, the frames stay.
+//! (PN8). Where it had stored none, the frames stay. Rules that panic
+//! are an operation that panics: the frames are made again, whatever was
+//! stored.
 //!
 //! **What the made hashes rest on.** A hash is made from what the
 //! transaction reads when the call is made: its own nodes, and the
@@ -515,7 +530,11 @@
 //! writes each once. It adds one entry to the write set for each such
 //! node, with the node's key, feature, hashes and links
 //! ([`TxnStats::writes`] counts them). It walks nothing else that the
-//! transaction wrote.
+//! transaction wrote: `tests/evaluate_scale.rs` holds the entries and
+//! the calls of the rules to that for a transaction of many changes with
+//! a call after each, through the engine as its users open it, and has
+//! a measurement of the time at 2,000 and at 8,000 changes, which is run
+//! by hand.
 //!
 //! The operations of a call are laid out again as any change set of
 //! nodes, by the tree type of no subtree: they put a node only where one

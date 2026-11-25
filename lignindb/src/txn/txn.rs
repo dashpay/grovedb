@@ -4280,7 +4280,10 @@ macro_rules! reads {
         /// a hash is made only while no scope is open
         /// ([`TxnError::ScopeOpen`]): a write goes through a scope (SC1).
         ///
-        /// It is refused, with nothing changed:
+        /// It is refused before a hash is made, with no page and no
+        /// write of the transaction changed. What a scope was granted
+        /// before the refusal stays with it, as the claims of a batch
+        /// that is refused for what it says do:
         ///
         /// - for a subtree that is not entered
         ///   ([`BatchError::NotEntered`]);
