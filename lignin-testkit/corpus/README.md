@@ -86,6 +86,8 @@ repair of those versions leaves in storage (case 13 below).
 ```text
 cargo test -p lignin-testkit --test golden                           replay, as CI does
 cargo run --release -p lignin-testkit --bin lignin-golden -- replay  the same, as a command
+cargo run --release -p lignin-testkit --bin lignin-golden -- replay --engine lignindb
+                                                                     replay on LigninDB
 cargo run --release -p lignin-testkit --bin lignin-golden -- record  record the whole corpus again
 cargo run --release -p lignin-testkit --bin lignin-golden -- dump --out DIR
 cargo run --release -p lignin-testkit --bin lignin-golden -- list
@@ -93,9 +95,12 @@ cargo run --release -p lignin-testkit --bin lignin-golden -- list
 
 `--only NAME` and `--grove-version N` select traces, `--reference` selects
 the reference scale, `--scratch DIR` says where the databases are created and
-`--jobs N` how many traces run at once. `record` exits with 1 when a
-generated workload records an operation that fails or a proof that does not
-verify, and `replay` when anything differs.
+`--jobs N` how many traces run at once. `--engine lignindb` runs a replay
+or a dump on LigninDB in place of RocksDB; a replay on LigninDB compares
+what LigninDB answers with the files RocksDB recorded. `record` runs on
+RocksDB only. `record` exits with 1 when
+a generated workload records an operation that fails or a proof that does
+not verify, and `replay` when anything differs.
 
 **When a replay differs** it names the trace, the step and the part of the
 step (cost, result, root hash, proof), and prints that step in full as it
@@ -108,6 +113,10 @@ lignin-golden dump --only documents --grove-version 3 --out /tmp/now      (this 
 lignin-golden dump --only documents --grove-version 3 --out /tmp/pinned   (the pinned commit)
 diff /tmp/pinned/v3/documents.trace /tmp/now/v3/documents.trace
 ```
+
+A replay on LigninDB that differs where the replay on RocksDB does not is
+looked into on one checkout: dump the trace with `--engine lignindb` and
+without it, and compare the two files.
 
 **When to record again.** `record` regenerates every file for whatever
 `Workload::suite` returns, so a workload added to the suite needs nothing

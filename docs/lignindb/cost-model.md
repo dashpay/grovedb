@@ -562,7 +562,7 @@ The rules of sections 6 and 7 are therefore executed by the code that owns them,
 
 ```text
 $ lignin-testkit/cost-model-storage/check.sh
-golden corpus: 430 traces replayed, 430 as recorded (235858 steps), 0 not
+golden corpus: 430 traces replayed on the cost model, 430 as recorded (235858 steps), 0 not
 ```
 
 The replay is BASE-02's: it compares the cost, the result, the root hash and the proof of every step with the committed corpus, and names the first step and part that differ. A green replay on the model therefore also says that the model gave the same answers as RocksDB wherever the corpus looks: every result read, every root hash and every proof. It does not say that the two states are equal record by record; an aux or meta record that nothing reads would not be noticed.

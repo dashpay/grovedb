@@ -10,13 +10,14 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 
 | Job | Runner | What it runs | By hand |
 | --- | --- | --- | --- |
-| Test Ubuntu (1/3 to 3/3) | Linux x86_64 | the workspace but the two imported crates `grovedb-bincode` and `grovedb-bincode-derive` (the job Bincode tests them when they change), with every feature, in three shards, with coverage (`cargo llvm-cov nextest`): every suite on its first engine, the LigninDB crates' tests among them, the golden corpus replayed (`lignin-testkit --test golden`), the differential fuzzer's acceptance test (`--test diff`), the short form of the store crash campaign with its planted defects (`--test crash`) and the short form of the engine crash campaign (`--test engine_crash`, `--test engine_restore_mark`, `--test engine_thread_panic`) | `cargo test --workspace --exclude grovedb-bincode --exclude grovedb-bincode-derive --all-features`, which runs the doc tests too |
+| Test Ubuntu (1/3 to 3/3) | Linux x86_64 | the workspace but the two imported crates `grovedb-bincode` and `grovedb-bincode-derive` (the job Bincode tests them when they change), with every feature, in three shards, with coverage (`cargo llvm-cov nextest`): every suite on its first engine, the LigninDB crates' tests among them, the golden corpus replayed (`lignin-testkit --test golden`), the corpus's streams on RocksDB and on LigninDB side by side (`--test pair_replay`), the differential fuzzer's acceptance test (`--test diff`), the short form of the store crash campaign with its planted defects (`--test crash`) and the short form of the engine crash campaign (`--test engine_crash`, `--test engine_restore_mark`, `--test engine_thread_panic`) | `cargo test --workspace --exclude grovedb-bincode --exclude grovedb-bincode-derive --all-features`, which runs the doc tests too |
 | Test *package* on *engine* | Linux x86_64 | each suite on each engine of its registry but the first ([`test-engines.md`](test-engines.md)) | `.github/scripts/engine-suites.sh run` |
 | LigninDB on Linux aarch64 | `ubuntu-24.04-arm` | the LigninDB crates' tests, then the tests of Merk's node store on LigninDB | `.github/scripts/lignin-ci.sh test` |
 | LigninDB on macOS aarch64 | `macos-15` | the same | the same |
 | LigninDB loom models | Linux x86_64 | the loom models of the buffer pool (`lignin-store` `cache::tests::races`), the write scopes and the snapshots (`lignindb` `scope::tests::model`, `snapshot::tests::loom`), and the pool and the page ids under the real versions, with a page that is freed while write-back holds it (`lignindb` `models`), at the bounds the models set | `lignin-ci.sh loom` |
 | LigninDB Miri and fuzz targets | `ubuntu-latest` | Miri over `lignin-io` under Stacked Borrows, the ring of its direct I/O path and the buffer pool under both borrow models, and the checksum's software path; a build of the fuzz targets of `lignin-format` | `lignin-ci.sh miri`, `lignin-ci.sh fuzz-targets` |
 | Cost model replay | Linux x86_64 | the golden corpus replayed on the cost model ([`cost-model.md`](cost-model.md)) | `lignin-ci.sh cost-model` |
+| Golden corpus on LigninDB | Linux x86_64 | the golden corpus of the standard scale replayed on LigninDB and compared with its files ("The corpus gate") | `lignin-ci.sh corpus --engine lignindb` |
 | Linting | Linux x86_64 | clippy, every target type-checked, and three steps below | |
 | | | the feature sets that must build apart | `lignin-ci.sh features` |
 | | | the LigninDB crates' documentation with warnings denied, but `lignin-testkit`'s | `lignin-ci.sh docs` |
@@ -27,6 +28,21 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 ### Both engines on every pull request
 
 A pull request that changes either engine runs the suites of both. Detect Changes does not look at which crate changed: a change of code other than doc comments runs every job above. The RocksDB side is GroveDB's, Merk's and the storage crate's suites (the shards and the per-engine jobs); the LigninDB side is the LigninDB crates' tests, which include the corpus replayed through the LigninDB node store (`lignin-testkit/tests/merk_store.rs`), on all three platforms. LigninDB is registered as an engine of Merk's suite (MERK-08) and of GroveDB's (GROVE-10), so the per-engine jobs run both suites on it: the matrix of `test-engines` is read from the registries, and `Test grovedb on lignin` is one more job of the size of `Test grovedb on pinned-reads` ([test-engines.md](test-engines.md#grovedb-on-lignindb)).
+
+### The corpus gate
+
+The golden corpus is what RocksDB answered at the commit it is pinned to (`lignin-testkit/corpus/README.md`). A replay runs each trace again on a fresh database and compares every step with the file: the cost, the result, the name of an error, the root hash and the bytes of each proof. A file holds the BLAKE3 digest of the whole bytes of every step, taken over the trace (`TraceDigest`), so a difference in any byte of any step fails the replay. Beside it, a trace of the standard scale has a short line for each step, which names the parts of a step that differ, and the million-document stream of a trace of the reference scale has a digest of the steps so far every 1,000 steps, so that the first digest that differs names the interval of the first step that differs. A trace whose file is missing or unreadable fails the replay too, and a replay of a whole scale fails on a file of a trace the plan no longer has.
+
+| Job | Engine | Traces | Fails on |
+| --- | --- | --- | --- |
+| Test Ubuntu, `--test golden` | RocksDB | the standard scale | a step that differs from the file |
+| Golden corpus on LigninDB | LigninDB | the standard scale | a step that differs from the file |
+| Test Ubuntu, `--test pair_replay` | both | the streams of the standard scale | a step that LigninDB answers differently from RocksDB, what the two store at the end, and an unsound store at the close |
+| Cost model replay | the cost model | the standard scale | a step that differs from the file |
+| Corpus of the reference scale (nightly) | RocksDB and LigninDB, a job each | the reference scale, with the two named proofs | a step that differs from the file |
+| Corpus from its pinned engine (nightly) | the pinned RocksDB | the standard scale | a file that the pinned engine does not record again as committed |
+
+The job on LigninDB runs `lignin-golden replay --engine lignindb` in a release build. For each trace that differs, the report lists its first five differences. On the standard scale a step whose short line differs is named with the parts that differ, and the first such step is printed in full as LigninDB gave it; on the reference scale a checkpoint that differs names an interval of the stream. A difference in the operation stream or in the digest at the end of the trace names no step of its own. The trace's lines end with the `lignin-golden dump --engine lignindb` command that writes the trace on LigninDB with its steps in full (on the reference scale, the steps of a range), to compare with the same dump on RocksDB.
 
 ### The platforms of DEC-06
 
@@ -108,7 +124,7 @@ Each of those jobs prints the runner's cores, memory, swap and free disk at its 
 | Job | Nightly | On such a pull request | By hand |
 | --- | --- | --- | --- |
 | Differential fuzzer | one hour, RocksDB against the engine that stands in for LigninDB (VER-01, D-113 item 7), from a seed of its own each night (the run's id, which the log names) | two minutes, seed 1 | `lignin-ci.sh diff-fuzz 3600 --seed N` |
-| Corpus of the reference scale | the five traces of a million documents | grove version 5 | `lignin-ci.sh corpus-reference` |
+| Corpus of the reference scale | the five traces of a million documents, on RocksDB and on LigninDB, a job each | grove version 5 on each | `lignin-ci.sh corpus-reference --engine rocksdb`, `--engine lignindb` |
 | Corpus from its pinned engine | the corpus recorded again from the commit of `develop` its traces name, through `record-at-pin.sh`, and compared with the committed one byte for byte (D-107) | grove version 5 | `lignin-ci.sh corpus-at-pin` |
 | Decoder fuzzing | five minutes for each fuzz target of `lignin-format` (FMT-08), from its seeds | 20 seconds each | `lignin-ci.sh fuzz-decoders 300` |
 | Miri | the file layer under both borrow models and every checksum test; the pool's races under 64 of Miri's schedules, both borrow models | the races under 4 | `lignin-ci.sh miri --full`, `lignin-ci.sh miri-schedules 64` |

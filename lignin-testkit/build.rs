@@ -20,6 +20,9 @@ const PINNED_FORM: &str = "LIGNIN_TESTKIT_PINNED_FORM";
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(grovedb_engine_seam)");
+    // Set by `cost-model-storage/check.sh`, where the storage crate under
+    // GroveDB's default engine is the cost model.
+    println!("cargo::rustc-check-cfg=cfg(lignin_cost_model)");
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR"));
     let seam = manifest_dir.join("../grovedb/src/engine/mod.rs");

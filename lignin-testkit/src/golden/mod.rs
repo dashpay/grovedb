@@ -73,7 +73,11 @@
 //! every trace holding it has to be recorded again, the reference scale
 //! included.
 //!
-//! Another engine is opened in one place, `record`'s `fresh_database`.
+//! A recording, a replay and a dump choose their engine in one place,
+//! [`record::record`], which runs a trace on the [`Engine`](record::Engine)
+//! it is given: RocksDB, which the corpus is recorded from, or LigninDB,
+//! which a replay holds to it (`lignin-golden replay --engine lignindb`).
+//! [`record::each_step`] runs on RocksDB.
 
 pub mod cli;
 pub mod corpus;
@@ -109,6 +113,9 @@ pub enum Error {
     },
     /// The engine commit could not be read from git.
     Git(String),
+    /// What was asked cannot be done, as a recording of the corpus from
+    /// an engine other than RocksDB.
+    Refused(String),
 }
 
 impl Error {
@@ -132,7 +139,7 @@ impl fmt::Display for Error {
         match self {
             Error::Engine { what, message } => write!(f, "the engine failed {what}: {message}"),
             Error::Io { path, message } => write!(f, "{}: {message}", path.display()),
-            Error::Git(message) => write!(f, "{message}"),
+            Error::Git(message) | Error::Refused(message) => write!(f, "{message}"),
         }
     }
 }
@@ -158,6 +165,10 @@ mod tests {
         assert_eq!(
             Error::Git("git failed".to_string()).to_string(),
             "git failed"
+        );
+        assert_eq!(
+            Error::Refused("not from here".to_string()).to_string(),
+            "not from here"
         );
         let _: &dyn std::error::Error = &engine;
     }

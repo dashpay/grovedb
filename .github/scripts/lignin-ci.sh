@@ -32,6 +32,11 @@
 #                                    and every test of the checksum
 #   lignin-ci.sh fuzz-targets        build the fuzz targets of lignin-format
 #   lignin-ci.sh cost-model          the golden corpus replayed on the cost model
+#   lignin-ci.sh corpus [ARGS]       the golden corpus of the standard scale
+#                                    replayed and compared with its files;
+#                                    ARGS follow `lignin-golden replay`
+#                                    (`--engine lignindb` replays it on
+#                                    LigninDB)
 #
 # The nightly runs, which take longer:
 #
@@ -39,6 +44,7 @@
 #                                         follow `lignin-diff fuzz`
 #   lignin-ci.sh corpus-reference [ARGS]  the corpus of the reference scale;
 #                                         ARGS follow `lignin-golden replay`
+#                                         (`--engine lignindb` as above)
 #   lignin-ci.sh corpus-at-pin [ARGS]     the corpus recorded again from the
 #                                         engine it is pinned to, compared
 #                                         with the committed one; ARGS follow
@@ -505,6 +511,12 @@ diff-fuzz)
     shift 2
     say "lignin-diff fuzz --duration $seconds $*"
     cargo run --release -p lignin-testkit --bin lignin-diff -- fuzz --duration "$seconds" "$@"
+    ;;
+
+corpus)
+    shift
+    say "lignin-golden replay $*"
+    cargo run --release -p lignin-testkit --bin lignin-golden -- replay "$@"
     ;;
 
 corpus-reference)

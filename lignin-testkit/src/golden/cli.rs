@@ -9,6 +9,7 @@ use std::{
 use super::{
     corpus::{self, corpus_dir, engine_commit, repository_dir, Selection, Settings, Written},
     plan::Scale,
+    record::Engine,
     Error,
 };
 
@@ -33,6 +34,9 @@ options:
                       directory)
   --jobs N            how many traces run at once (default: one per
                       processor, eight at most)
+  --engine NAME       replay and dump: the engine to run on, rocksdb (the
+                      default) or lignindb; the corpus is recorded from
+                      rocksdb
   --out DIR           dump: the directory to write into
   --steps FROM..TO    dump: only these steps in full, the rest as the corpus
                       has them (the way to look into the reference scale)
@@ -98,6 +102,7 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
             "--corpus" => invocation.corpus = PathBuf::from(value()?),
             "--scratch" => invocation.settings.scratch = PathBuf::from(value()?),
             "--jobs" => jobs = Some(number(value()?)?.max(1) as usize),
+            "--engine" => invocation.settings.engine = Engine::named(&value()?)?,
             "--out" => invocation.out = Some(PathBuf::from(value()?)),
             "--steps" => {
                 let value = value()?;
@@ -120,6 +125,9 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
     }
     if command != Command::Dump && (invocation.out.is_some() || invocation.steps.is_some()) {
         return Err("`--out` and `--steps` are options of dump".to_string());
+    }
+    if command == Command::Record && invocation.settings.engine != Engine::RocksDb {
+        return Err("the corpus is recorded from rocksdb only".to_string());
     }
     Ok(invocation)
 }
@@ -280,6 +288,7 @@ mod tests {
                 settings: Settings {
                     scratch: PathBuf::from("/s"),
                     jobs: 3,
+                    engine: Engine::RocksDb,
                 },
                 out: Some(PathBuf::from("/o")),
                 steps: Some(2000..3000),
@@ -338,7 +347,19 @@ mod tests {
                 "dump --out /o --steps a..9",
                 "`a..9` is not a range FROM..TO",
             ),
-            ("record --engine abc", "`--engine` is not an option"),
+            (
+                "replay --engine abc",
+                "`abc` is not an engine: rocksdb or lignindb",
+            ),
+            ("replay --engine", "`--engine` needs a value"),
+            (
+                "record --engine lignindb",
+                if cfg!(grovedb_engine_seam) {
+                    "the corpus is recorded from rocksdb only"
+                } else {
+                    "this GroveDB has no LigninDB engine"
+                },
+            ),
         ] {
             let (code, text) = output(line);
             assert_eq!(code, 2, "{line}");
@@ -396,8 +417,23 @@ mod tests {
         assert_eq!(code, 0, "{text}");
         assert_eq!(
             text,
-            "golden corpus: 1 traces replayed, 1 as recorded (10 steps), 0 not\n"
+            format!(
+                "golden corpus: 1 traces replayed on {}, 1 as recorded (10 steps), 0 not\n",
+                Engine::RocksDb
+            )
         );
+        #[cfg(grovedb_engine_seam)]
+        {
+            let (code, text) = output(&format!("replay {scope} --corpus {at} --engine lignindb"));
+            assert_eq!(
+                (code, text.as_str()),
+                (
+                    0,
+                    "golden corpus: 1 traces replayed on LigninDB, 1 as recorded (10 steps), 0 \
+                     not\n"
+                )
+            );
+        }
 
         let (code, text) = output(&format!("dump {scope} --out {}", dumped.path().display()));
         assert_eq!(code, 0, "{text}");
