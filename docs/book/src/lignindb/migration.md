@@ -37,8 +37,9 @@ database that step 3 makes: the commands here are the ones that were run.
 holds (`Merk nodes:`). The plan's acceptance for the migrator (OPS-02 in
 [task register 3](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583786))
 is at least 40,000 elements a second on the reference shape, measured on
-a rented machine with dedicated processors, with a database of many
-small Merks reported beside it. Every run ends with a line that says what it took,
+a rented machine with dedicated processors (the least of 20 runs was
+40,357); the plan records that a database of many small Merks loads
+about 5% slower at the default setting. Every run ends with a line that says what it took,
 `migrate: done target=… seconds=…`, with `elements_per_second=…` for a
 run that made the whole target, so the rehearsal of step 3 on your own
 machine gives you a rate to plan with.
@@ -161,7 +162,9 @@ Set two variables before the next block:
 
 The block makes `WORK` absolute, since it changes into the source
 directory to build. It clones the repository where no clone is there
-yet, refuses one with changes of its own, and then fetches
+yet, refuses a `grovedb` that is no clone of its own (a directory inside
+another repository, as `WORK` being a GroveDB checkout makes it) and one
+with changes of its own, and then fetches
 `GROVEDB_REF` from the repository's own address and checks it out, so
 that a clone that a run before left behind is moved to the release as
 well, whatever remote it names. It names
@@ -174,7 +177,8 @@ absolute paths too.
 : "${WORK:?set WORK to a directory for the build and the reports}"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
-if [ ! -d "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
+if [ ! -e "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
+if [ "$(git -C "$WORK/grovedb" rev-parse --show-toplevel)" != "$(real_dir "$WORK/grovedb")" ]; then echo "$WORK/grovedb is no clone of its own (it lies inside another repository): give a WORK with no grovedb in it"; false; fi
 cd "$WORK/grovedb"
 if [ -n "$(git status --porcelain)" ]; then echo "$WORK/grovedb has changes of its own: give a WORK with no clone in it"; false; fi
 git fetch --depth 1 https://github.com/dashpay/grovedb.git "$GROVEDB_REF"
@@ -344,7 +348,7 @@ seconds (or as `--progress` says) a line says where the load stands:
 | Exit status | What it means | What to do |
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
-| 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, but in two cases: the error says that the database got that name and the name could not be made durable; or it refuses the target as one that is there (`the target … is there and …`), which is also what a run that was given a `TARGET` an earlier run had already named answers | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, keep this report and send the next run's to another file: that run makes the name durable and then refuses the target as one that is there. Where a run was stopped after it gave the database its name and before you read its last line, the next run refuses the target too. A database that a migration put at `TARGET` is whole; run step 7's commands on the report of the run that made it, where it has its lines, and `lignin verify` on the target |
+| 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, but in two cases: the error says that the database got that name and the name could not be made durable; or it refuses the target as one that is there (`the target … is there and …`), which is also what a run that was given a `TARGET` an earlier run had already named answers | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there. That database is whole, but no report of a run that finished is held to it (step 7): migrate again into a new `TARGET`, and leave that one where it is until you know what it holds |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
 
@@ -413,20 +417,20 @@ run that ended with status 0 (where a run before it failed, that is the
 report the retry of step 6 wrote: name it in place of `migrate.txt`).
 The last command looks for the run's last line, which names this
 `SOURCE` and this `TARGET`, so that the report is held to the database
-you are about to start the node on. Where step 6 says that a run was
-stopped after it gave the database its name and before that line, the
-last command alone finds nothing: the database at `TARGET` is then the
-one that run made, and the others and `lignin verify` below decide. The first comparison
-reads the root hash from the line `migrate: compared subtrees=…` alone and holds
-the
-root hash that the survey of step 5 read from the source to the one the
-migration read from it. The second holds the first line of each report,
-up to its last `;`, to the other: the source's path, its RocksDB identity and
-the sequence number of its last write. Where they are the same, no
-write reached the source between the two runs. That the target has the source's root hash is
-what `differing=0` says; the migration also refuses a source that
-changes while it reads it. Do not start the node on a target for which
-one of them fails, but for the last one in the case just said.
+you are about to start the node on. A run that was stopped after it gave
+the database its name and before that line leaves a report that cannot
+be held to what is at `TARGET`: then migrate again into a new `TARGET`,
+and leave the old one where it is until you know what it holds. The
+first comparison reads the root hash from the line
+`migrate: compared subtrees=…` alone and holds the root hash that the
+survey of step 5 read from the source to the one the migration read
+from it. The second holds the first line of each report, up to its last
+`;`, to the other: the source's path, its RocksDB identity and the
+sequence number of its last write. Where they are the same, no write
+reached the source between the two runs. That the target has the
+source's root hash is what `differing=0` says; the migration also
+refuses a source that changes while it reads it. Do not start the node
+on a target for which one of them fails.
 
 Then check the target once more on its own, with the checker of
 `lignin verify`. It opens the database, closes it, and checks the store
@@ -541,6 +545,8 @@ Remove `SOURCE` only when the node has run on LigninDB for as long as you
 want a way back, and after a backup of the LigninDB database
 ([backup and full disk](backup-and-full-disk.md)). **The migration
 carries GroveDB's records and nothing else**: a file that the
-application keeps in the RocksDB directory beside RocksDB's own is not
-in `TARGET`. Move what the application keeps there before `SOURCE` goes,
-as its documentation says.
+application keeps in the RocksDB directory beside RocksDB's own was put
+into `TARGET` at step 10, from where the node has kept it since. The
+copies in `SOURCE` are those of the migration: do not copy them over
+`TARGET`'s, and keep or remove them with `SOURCE`, as the application's
+documentation says.

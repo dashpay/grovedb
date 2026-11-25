@@ -50,7 +50,7 @@ a checkpoint on LigninDB does (`GroveDb::<LigninEngine>::open_checkpoint_with_en
 or `GroveDb::open_checkpoint` where LigninDB is the build's default
 engine), and what every `lignin` subcommand but
 `manifest`, `segments` and `migrate` does. Through `lignin` the words
-come after `lignin: the database did not open: `.
+come after `the database did not open: `, behind the tool's `lignin: `.
 
 The first group says that the directory is not one this build opens.
 Each is found before anything is written: **the directory is as it was**,
@@ -79,12 +79,13 @@ The rest:
 | `cannot … …: …` | the file layer refused an operation: the word after `cannot` is `lock`, `list`, `create`, `look at` or `sync the directory`, then the path and the system's words | fix what the system says (permissions, a device that is full or read-only), and open again | `lignindb/src/db/error.rs` |
 | `manifest: …` | the manifest could not be read, written or replaced; the words of [the files](#the-files-at-an-open) follow | as those words say | `lignindb/src/db/error.rs` |
 | `recovery: …` | the store could not be recovered; the words of [the recovery](#in-a-recovery) follow | as those words say | `lignindb/src/db/error.rs` |
-| `the first commit of the database (…): …` | the first commit of a new database failed. The next open makes it again | fix what the words after it say, and open again | `lignindb/src/db/error.rs` |
-| `the counts`, `the directory`, `the first manifest`, `the group`, `the install`, `the keyspace of unlinked pages`, `the log`, `the page ids`, `the sync of the log`, `the version` | the step that follows `the first commit of the database (`: what of a new database's first commit failed | as for `the first commit of the database (…): …` | `lignindb/src/db/open.rs` |
+| `the first commit of the database (…): …` | the first commit of a new database failed. The next open makes it again, unless its group is whole in the log: then the recovery of that open has it | fix what the words after it say, and open again | `lignindb/src/db/error.rs` |
+| `the catalog`, `the data column`, `the aux column`, `the roots column`, `the meta column`, `the counts`, `the directory`, `the first manifest`, `the group`, `the install`, `the keyspace of unlinked pages`, `the log`, `the page ids`, `the sync of the log`, `the version` | the step that follows `the first commit of the database (`: what of a new database's first commit failed | as for `the first commit of the database (…): …` | `lignindb/src/db/open.rs` |
 | `the record of the keyspaces: …`, or `the record of the keyspaces: …: …` | the record of where the flat keyspaces are could not be read, or is not what this build writes; the words after it say which | where they are the system's, fix what they say and open again; where the record is not what this build writes, open with the GroveDB release that wrote the database, and if that is this one, keep the directory, restore from a backup, and report it | `lignindb/src/db/error.rs` |
 | `the first page of the store is not the catalog's`, `it has no layout`, `its layout is not one this build reads`, `a keyspace has no root page`, `the subtree directory` | the reason that follows `the record of the keyspaces: `: what of the record, or of the subtree directory it names, could not be read or is not what this build writes | as for `the record of the keyspaces: …` | `lignindb/src/db/open.rs` |
 | `what earlier drops left` | the same, for the record of the drops that earlier sessions had not reclaimed | the same | `lignindb/src/db/mod.rs` |
-| `cannot start the background work: …` | the system refused a thread | raise the process's thread limit, and open again | `lignindb/src/db/error.rs` |
+| `cannot start the background work: …` | the system refused a thread, or the thread of write-back ended before its loop ran; the words after it say which | where the system refused it, raise the process's thread limit and open again; otherwise open again, and report it where it comes again | `lignindb/src/db/error.rs` |
+| `the thread of write-back ended before its loop was seen to run` | after `cannot start the background work: `: write-back's thread ended at once | open again; report it where it comes again | `lignindb/src/db/mod.rs` |
 | `… was changed while it was being opened, and a lock file may have been made in it: …` | a new database was to be made, and something wrote into the directory meanwhile | find what did; the words after it say what the directory is now | `lignindb/src/db/error.rs` |
 
 Through `EitherEngine`, the engine chosen at the open, these come before
@@ -304,7 +305,7 @@ A commit that meets the end itself says so in words of its own:
 | `the page table: …` | after `the commit was not made: `: the page table refused what the commit was to install | open again; report it if it comes again | `lignindb/src/commit/error.rs` |
 | `a stale hash could not be made: …` | after `the commit was not made: `: a hash that was stale could not be made at the commit | report it with the whole message | `lignindb/src/commit/error.rs` |
 | `the place of the group in the log was taken again and again while the commit held the lock on the value counts` | after `the commit was not made: `: the log gave the group a place and gave it away again, more often than a commit tries; something appends to the log without the lock the commit holds | a defect: report it with the whole message | `lignindb/src/commit/error.rs` |
-| `a commit outside the transaction wrote a key after the transaction first wrote it` | a conflict: the application makes its reads and writes again (GroveDB answers it as `conflict: …`) | nothing | `lignindb/src/commit/error.rs` |
+| `a commit outside the transaction wrote a key after the transaction first wrote it` | a conflict: the application makes its reads and writes again (GroveDB answers it as its conflict, `Error::Commit(CommitError::Conflict)`) | nothing | `lignindb/src/commit/error.rs` |
 | `the commit was refused: …` | a write of the transaction was refused at its commit; the words say why, and the transaction is open | nothing for the database; the application's | `lignindb/src/commit/error.rs` |
 | `a scope of the transaction is open` | the application committed a transaction whose write scope it had not ended | nothing for the database; the application's | `lignindb/src/commit/error.rs` |
 | `the transaction has a pending mark left` | the application committed a transaction that a mark of it still waits in | nothing for the database; the application's | `lignindb/src/commit/error.rs` |
@@ -335,11 +336,11 @@ GroveDB the words follow `lignindb: `; a refusal for the name is
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
-| `… is there already, and a checkpoint is made in a new directory` | the path is taken: a checkpoint, a file or an empty directory | give a new path, or remove what is there | `lignindb/src/checkpoint/error.rs` |
+| `… is there already, and a checkpoint is made in a new directory` | the path is taken: a checkpoint, a file or an empty directory | give a new path. Remove nothing that is there unless you know what it is: the refusal says only that something has that name | `lignindb/src/checkpoint/error.rs` |
 | `… has no directory above it to make the checkpoint in, or no name there` | the directory above the path is not there | make it first | `lignindb/src/checkpoint/error.rs` |
 | `… has a name that checkpoints are built under, and none is made there` | the path ends in `.creating` | give another name | `lignindb/src/checkpoint/error.rs` |
 | `… is locked, as a directory that a checkpoint is being built in` | another creation at the same path is running | wait for it | `lignindb/src/checkpoint/error.rs` |
-| `… was not found to be the directory whose lock is held, with what was put into it, and nothing was given the name of the target` | the build directory `….creating` was replaced during the creation, by something other than the creation | find out what replaced it before anything else; make the checkpoint again only where you can account for what that directory holds ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)), since a creation takes over what it finds there | `lignindb/src/checkpoint/error.rs` |
+| `… was not found to be the directory whose lock is held, with what was put into it, and nothing was given the name of the target` | the build directory `….creating` is not what the creation locked and filled: it was replaced, or holds an entry the creation did not make | find out what replaced it before anything else; make the checkpoint again only where you can account for what that directory holds ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)), since a creation takes over what it finds there | `lignindb/src/checkpoint/error.rs` |
 | `… is not listed as a file, and none was made there: the lock of its directory was not taken` | the entry `LOCK` of the build directory `….creating` is no file: something other than a creation made that directory, or put that entry there | remove nothing, and do not make the checkpoint at that path again until you can account for what the directory holds ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)): a creation takes over what it finds there | `lignindb/src/checkpoint/error.rs` |
 | `the session takes no commit, and no checkpoint is made of it: …` | the session has ended ([When a session ends](#when-a-session-ends)); through GroveDB it ends `…: no checkpoint is made before the database is opened again` | open again | `lignindb/src/checkpoint/error.rs` |
 | `…: no checkpoint is made before the database is opened again` | GroveDB's end of the two refusals that need an open | open again | `grovedb/src/engine/lignin/checkpoint.rs` |
@@ -353,7 +354,7 @@ GroveDB the words follow `lignindb: `; a refusal for the name is
 | `the log: …` | the log refused to be held for the checkpoint, or to say what its files are; the log's words follow | as those words say; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 | `… is not the plain name of a file in the database directory` | a file that the application asked a checkpoint to carry beside the store's is named otherwise than by one plain name | the application's | `lignindb/src/checkpoint/error.rs` |
 | `the manifest of the checkpoint could not be written: …` | the checkpoint's manifest could not be encoded | report it | `lignindb/src/checkpoint/error.rs` |
-| `could not … …: …` | the file layer refused an operation of the creation or the removal; the system's words follow | fix what the system says; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
+| `could not … …: …` | the file layer refused an operation of the creation or the removal: the words after `could not` are one of `append to`, `create`, `create the directory`, `link`, `list`, `lock`, `look at`, `look for`, `look for the lock file in`, `make durable what is in`, `measure`, `open`, `read`, `remove`, `remove the directory`, `rename`, `sync the directory`, `write`, then the path and the system's words | fix what the system says; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 
 The deletion of a checkpoint refuses, and removes nothing, with:
 

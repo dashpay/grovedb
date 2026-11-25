@@ -164,7 +164,8 @@ once a restore of it has passed `lignin verify` (below).
    CHECKPOINT=$(real_dir "$CHECKPOINT")
    BACKUP=$(real_new "$BACKUP")
    apart "$CHECKPOINT" "$BACKUP"
-   printf 'CHECKPOINT %s\nBACKUP     %s\n' "$CHECKPOINT" "$BACKUP"
+   CHECKPOINT_INODE=$(ls -di -- "$CHECKPOINT" | awk '{print $1}')
+   printf 'CHECKPOINT       %s\nCHECKPOINT_INODE %s\nBACKUP           %s\n' "$CHECKPOINT" "$CHECKPOINT_INODE" "$BACKUP"
    lignin manifest "$CHECKPOINT"
    claim_dir "$BACKUP"
    cp -a "$CHECKPOINT/." "$BACKUP/"
@@ -258,15 +259,19 @@ LigninDB's deletion can remove more than a checkpoint, the directory
 `path.creating` beside it among what it removes: it is given the
 checkpoint's path and nothing else. Or the checkpoint's directory, as
 the copy's block wrote it with its links followed, is removed once no
-handle has it open. Give the block that path as the copy's block printed
-it: it refuses a path that is a link now, or no directory, since what is
-there is then not what was copied.
+handle has it open. Give the block that path and its inode as the copy's
+block printed them (`CHECKPOINT`, `CHECKPOINT_INODE`): it refuses a path
+that is a link now, no directory, another path once its links are
+followed, or another directory than the one that was copied, since what
+is there is then not what was copied.
 
 ```sh
 : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint, as the copy block printed it}"
 plain_path "$CHECKPOINT"
 if [ -L "$CHECKPOINT" ] || [ ! -d "$CHECKPOINT" ]; then echo "$CHECKPOINT is a link or no directory now: it is not what was copied"; false; fi
 if [ "$(real_dir "$CHECKPOINT")" != "$CHECKPOINT" ]; then echo "$CHECKPOINT is not the path the copy's block wrote: give that one"; false; fi
+: "${CHECKPOINT_INODE:?set CHECKPOINT_INODE as the copy block printed it}"
+if [ "$(ls -di -- "$CHECKPOINT" | awk '{print $1}')" != "$CHECKPOINT_INODE" ]; then echo "$CHECKPOINT is another directory than the one that was copied"; false; fi
 rm -rf -- "$CHECKPOINT"
 ```
 
@@ -309,8 +314,11 @@ reserve, below.
 
      A running session that keeps a reserve removes it itself, at the
      first refusal for room it is told of.
-   - Delete checkpoints that are no longer needed: each keeps every file
-     the database has let go of since it was made.
+   - Delete checkpoints that are no longer needed, as
+     [their deletion](#delete-the-checkpoint-of-a-backup) says: a
+     checkpoint of a backup only once its copy is durable and its restore
+     has passed `lignin verify`. A checkpoint keeps the files it links,
+     which the database would otherwise let go of as it writes on.
    - End what holds old versions: a snapshot kept for long, a write
      transaction left open (the application's).
    - Move away what is not the database's.
@@ -396,8 +404,9 @@ it. Three things take the bound away:
 
 ### Space that does not come back
 
-- **A checkpoint that is kept** keeps the files it shares with the live
-  database. Delete it once its backup is made.
+- **A checkpoint that is kept** keeps the files it links, which the
+  live database would otherwise let go of. Delete it as
+  [its deletion](#delete-the-checkpoint-of-a-backup) says.
 - **A crash while a dropped Merk was being reclaimed** leaves the rest of
   that Merk's cells in their pages: space, and no state. `lignin verify`
   counts them, and they do not make the store unsound. A database that is

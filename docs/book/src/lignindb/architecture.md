@@ -205,13 +205,14 @@ section 12).
    group the log holds whole. What the checkpoint covers already is
    skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
-5. **The keyspaces are found**: the open reads the record of where the
+5. **The session's files**: the files of earlier sessions are named
+   closed in a new manifest, and the log goes on in a new file of its
+   own. An open that fails after this has written to the directory.
+6. **The keyspaces are found**: the open reads the record of where the
    flat keyspaces are and the subtree directory, whatever replay changed
    ([messages](messages.md#at-an-open) has what each refusal says).
-6. **The session begins**: the files of earlier sessions are named closed
-   in a new manifest, the log goes on in a new file of its own, and the
-   three background threads start. Write-back writes what replay brought
-   back.
+7. **The session begins**: the three background threads start, and
+   write-back writes what replay brought back.
 
 So the database opens at one committed version, never a part of one, and
 never one older than the newest that was made durable. A file that the
