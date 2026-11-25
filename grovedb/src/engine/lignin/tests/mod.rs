@@ -43,6 +43,8 @@ mod moves;
 mod nested;
 mod over;
 mod plain_delete;
+#[cfg(all(target_os = "linux", feature = "rocksdb_storage"))]
+mod proof_stack;
 mod queries;
 #[cfg(feature = "rocksdb_storage")]
 mod refused;

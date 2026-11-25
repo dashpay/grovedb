@@ -346,7 +346,7 @@ The last row covers commits, reads, proofs, cursors, the side records, the root 
 
 ### Handles
 
-A handle is of one subtree, named by its 32 bytes, opened on a view (`LigninView`) in one of three modes.
+A handle is of one subtree, named by its 32 bytes, opened on a view (`LigninView`) in one of three modes. A `LigninNodeStore` is one pointer to what it holds, a block of its own: a `Merk` holds its handle in place and is no larger for what the handle holds, and the prover holds the `Merk` of a level in the function that calls itself for every tree inside a tree of a query. `a_proof_takes_no_more_stack_on_lignindb_than_on_rocksdb` (`grovedb/src/engine/lignin/tests/proof_stack.rs`) compares the stack of a proof on the two engines.
 
 | Handle | Reads | Writes |
 | --- | --- | --- |

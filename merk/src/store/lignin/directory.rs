@@ -157,7 +157,7 @@ impl LigninNodeStore<'_> {
     /// scope of the transaction writes the subtree's Merk. It has no
     /// counterpart in the cost rules and is charged nothing.
     pub fn entry(&self) -> Result<Option<LigninEntry>, Error> {
-        self.access.subtree(&self.subtree.prefix)
+        self.held.access.subtree(&self.held.subtree.prefix)
     }
 
     /// Enters the handle's subtree in the subtree directory as a tree of
@@ -169,13 +169,13 @@ impl LigninNodeStore<'_> {
     /// applies a change set or a record. An enter is no write of a record,
     /// so it is charged nothing.
     pub fn enter(&self, tree_type: TreeType) -> Result<(), Error> {
-        match self.mode {
+        match self.held.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused("an enter through a handle that only reads"))
             }
-            Mode::Deferred(Some(batch)) => batch.enter_tree(&self.subtree, tree_type),
+            Mode::Deferred(Some(batch)) => batch.enter_tree(&self.held.subtree, tree_type),
             Mode::Immediate => {
-                let enter = entering(&self.subtree, &tree_type_bytes(tree_type), false)?;
+                let enter = entering(&self.held.subtree, &tree_type_bytes(tree_type), false)?;
                 let write = Write {
                     subtrees: vec![enter],
                     ..Write::default()
@@ -202,13 +202,13 @@ impl LigninNodeStore<'_> {
     /// the host's cell has the old order until a write states what the
     /// host hosts.
     pub fn convert(&self, tree_type: TreeType) -> Result<(), Error> {
-        match self.mode {
+        match self.held.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused("a conversion through a handle that only reads"))
             }
-            Mode::Deferred(Some(batch)) => batch.convert_tree(&self.subtree, tree_type),
+            Mode::Deferred(Some(batch)) => batch.convert_tree(&self.held.subtree, tree_type),
             Mode::Immediate => {
-                let convert = converting(&self.subtree, &tree_type_bytes(tree_type))?;
+                let convert = converting(&self.held.subtree, &tree_type_bytes(tree_type))?;
                 let write = Write {
                     subtrees: vec![convert],
                     ..Write::default()
@@ -249,19 +249,19 @@ impl LigninNodeStore<'_> {
         hosted: &[[u8; 32]],
         above: &[LigninHost],
     ) -> Result<(), Error> {
-        if !matches!(self.mode, Mode::Immediate) {
+        if !matches!(self.held.mode, Mode::Immediate) {
             return Err(refused(
                 "the Merks of a host are named through a handle that does not write at once",
             ));
         }
         let element = LigninHost {
-            subtree: self.subtree.prefix,
+            subtree: self.held.subtree.prefix,
             key: key.to_vec(),
             hosted: hosted.to_vec(),
         };
         let hosts: Vec<LigninHost> = std::iter::once(element)
             .chain(above.iter().cloned())
             .collect();
-        self.access.name_hosted(&hosts)
+        self.held.access.name_hosted(&hosts)
     }
 }

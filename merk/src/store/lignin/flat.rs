@@ -394,7 +394,7 @@ impl<'db> LigninKeyspace<'_, 'db> {
         value: Option<&[u8]>,
         cost: Option<KeyValueStorageCost>,
     ) -> CostResult<(), StorageError> {
-        let subtree = self.store.subtree.clone();
+        let subtree = self.store.held.subtree.clone();
         let change_set = LigninChangeSet::of_record(subtree, self.keyspace, key, value, cost);
         (self.store.submit(change_set, "a write", false)).map_err(storage_error)
     }
@@ -438,9 +438,9 @@ impl<'db> FlatStore for LigninKeyspace<'_, 'db> {
 
     fn cursor(&self) -> Self::Cursor<'_> {
         let store = self.store;
-        let own = &store.subtree.prefix;
-        let left = Left::of(store.left_behind, self.keyspace, own);
-        LigninFlatCursor::open(store.access.records(self.keyspace, own), left)
+        let own = &store.held.subtree.prefix;
+        let left = Left::of(store.held.left_behind, self.keyspace, own);
+        LigninFlatCursor::open(store.held.access.records(self.keyspace, own), left)
     }
 
     /// Removes every record of the keyspace: the walk of the trait, at its
@@ -490,9 +490,9 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
     }
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        let own = &self.subtree.prefix;
-        let left = Left::of(self.left_behind, Keyspace::Data, own);
-        LigninFlatCursor::open(self.access.records(Keyspace::Data, own), left)
+        let own = &self.held.subtree.prefix;
+        let left = Left::of(self.held.left_behind, Keyspace::Data, own);
+        LigninFlatCursor::open(self.held.access.records(Keyspace::Data, own), left)
     }
 
     /// Removes every record of the subtree's data, in one of two ways:
@@ -552,7 +552,7 @@ impl LigninNodeStore<'_> {
     /// keyspace ([`FlatStore::clear`]).
     fn clear_nodes(&self) -> CostResult<(), StorageError> {
         let mut cost = OperationCost::default();
-        if !matches!(self.mode, Mode::Deferred(Some(_))) {
+        if !matches!(self.held.mode, Mode::Deferred(Some(_))) {
             return Err(StorageError::NotSupported(
                 "lignindb: the removal of the nodes of a Merk as the records of a flat keyspace, \
                  through a handle that does not stage its writes"
