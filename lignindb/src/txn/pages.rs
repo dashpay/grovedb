@@ -160,6 +160,14 @@ pub(crate) mod held {
     //! by which the tests of another crate hold the answers over their
     //! own calls.
     //!
+    //! An evaluation of stale hashes inside a transaction
+    //! (`super::super::txn`, `evaluate.rs`) comes to its cells through
+    //! the links of their parents and the pointers of their hosts, and
+    //! keeps each node it made a hash of in the write set under the
+    //! node's key, in the Merk it took the cell to be of. Each such cell
+    //! is held to the same search: the key leads to it from the root of
+    //! that Merk.
+    //!
     //! The search of the hold is not counted as a keyed lookup, as that
     //! of [`find`] is. It reads the cells from the root to the key, which
     //! the answer did not: the store counts those reads of pages as it
@@ -180,6 +188,9 @@ pub(crate) mod held {
         Absent,
         /// The cell of a place that a caller told.
         Told(CellAddress),
+        /// The cell of a node that an evaluation made a hash of, which it
+        /// keeps in the write set under the node's key.
+        Evaluated(CellAddress),
     }
 
     /// How often an answer of the table was held to the search on this
@@ -193,6 +204,9 @@ pub(crate) mod held {
         pub(crate) absent: u64,
         /// A place that a caller told was followed.
         pub(crate) told: u64,
+        /// A node that an evaluation made a hash of was kept in the
+        /// write set.
+        pub(crate) evaluated: u64,
     }
 
     #[cfg(test)]
@@ -202,6 +216,7 @@ pub(crate) mod held {
                 kept: 0,
                 absent: 0,
                 told: 0,
+                evaluated: 0,
             })
         };
     }
@@ -223,13 +238,17 @@ pub(crate) mod held {
     ) -> Result<(), TxnError> {
         let found = search(pages, root, key, false)?;
         let answered = match answer {
-            Answer::Kept(at) | Answer::Told(at) => Some(at),
+            Answer::Kept(at) | Answer::Told(at) | Answer::Evaluated(at) => Some(at),
             Answer::Absent => None,
+        };
+        let whose = match answer {
+            Answer::Evaluated(_) => "an evaluation keeps",
+            Answer::Kept(_) | Answer::Told(_) | Answer::Absent => "the table of places answers",
         };
         assert!(
             found == answered,
-            "the table of places answers {answer:?} of the key {key:02x?} in {subtree:?}, and \
-             the search from the root {root:?} finds {found:?}",
+            "{whose} {answer:?} of the key {key:02x?} in {subtree:?}, and the search from the \
+             root {root:?} finds {found:?}",
         );
         #[cfg(test)]
         COMPARED.with(|compared| {
@@ -238,6 +257,7 @@ pub(crate) mod held {
                 Answer::Kept(_) => counts.kept += 1,
                 Answer::Absent => counts.absent += 1,
                 Answer::Told(_) => counts.told += 1,
+                Answer::Evaluated(_) => counts.evaluated += 1,
             }
             compared.set(counts);
         });

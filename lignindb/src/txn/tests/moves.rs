@@ -13,14 +13,14 @@ use super::{
 };
 
 /// A Merk with no host, whose nodes host the subtrees of these tests.
-const TOP: u8 = ENTERED + 40;
+pub(super) const TOP: u8 = ENTERED + 40;
 /// The subtree that the node `a` of `TOP` hosts, and the one that its
 /// node `in` hosts.
-const A: u8 = ENTERED + 41;
-const A_IN: u8 = ENTERED + 42;
+pub(super) const A: u8 = ENTERED + 41;
+pub(super) const A_IN: u8 = ENTERED + 42;
 /// The prefixes of the two under the key `b` of `TOP`, and under `c`.
-const B: u8 = ENTERED + 43;
-const B_IN: u8 = ENTERED + 44;
+pub(super) const B: u8 = ENTERED + 43;
+pub(super) const B_IN: u8 = ENTERED + 44;
 const C: u8 = ENTERED + 45;
 const C_IN: u8 = ENTERED + 46;
 /// A subtree with no node under the node `e` of `A`, the prefix it would
@@ -85,7 +85,7 @@ fn nested<'s>(
 
 /// Commits a grove: `TOP` with two items, and under its node `key` the
 /// subtree `name` with `inner` below it ([`nested`]).
-fn grove<'s>(world: &mut World<'s>, key: &[u8], name: u8, inner: u8) {
+pub(super) fn grove<'s>(world: &mut World<'s>, key: &[u8], name: u8, inner: u8) {
     let tx = world.begin();
     let top = world.merk(&tx, TOP, |items| {
         items.insert(b"x".to_vec(), vec![9; 30]);
@@ -107,7 +107,7 @@ fn grove<'s>(world: &mut World<'s>, key: &[u8], name: u8, inner: u8) {
 /// before and afterwards, and then those of the subtrees below it that
 /// the move names. The move names the read of the old host that is made
 /// here.
-fn rename<'s>(
+pub(super) fn rename<'s>(
     world: &World<'s>,
     tx: &Tx<'s>,
     from: &[u8],
@@ -143,7 +143,7 @@ fn moving(to: &[u8], read: Option<NodeHandle>, pairs: &[(u8, u8)]) -> OwnedSubtr
 /// A change of the Merk at the end of `path`, with every host above it
 /// written in the same batch, each naming the Merk it hosts again: `path`
 /// has, from `TOP` down, each Merk with the key of the node that hosts it.
-fn edit_at<'s>(
+pub(super) fn edit_at<'s>(
     world: &World<'s>,
     tx: &Tx<'s>,
     path: &[(u8, &[u8])],

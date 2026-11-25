@@ -68,8 +68,9 @@ pub struct TxnStats {
     /// transaction's commit writes: its own new values, and those of cells
     /// it carried to another page.
     pub value_pages: usize,
-    /// The nodes of its frames that have a stale hash, for its commit to
-    /// evaluate. None on existing GroveVersions.
+    /// The nodes of its frames that have a stale hash, for an evaluation
+    /// that is asked for or for its commit to make. None on existing
+    /// GroveVersions.
     pub stale_nodes: usize,
     /// How many times the frames were made again from the write set: after
     /// a commit outside the transaction (WT7), a rollback to a mark, or an
@@ -1991,22 +1992,27 @@ impl<'s> WriteTxn<'s> {
         if state.set.met() > 0 {
             return BatchError::MovedByKey { subtree }.into();
         }
-        if let Some((at, _)) = state.stuck.filter(|(_, ops)| *ops == state.set.ops()) {
-            // The refusal that stopped the layout is told again as it was
-            // kept: frames that are made again lay out every load they
-            // come to, and append its values again.
-            if let Some(refused) = state.kept_refusal() {
-                return refused;
-            }
-            let mut loaded = Loaded::default();
-            let (set, scopes) = (&state.set, &state.scopes);
-            let lease = Lease::take();
-            let frames = Self::build(&self.path, guard, at, lease, set, scopes, &mut loaded);
-            if let Err(refused) = frames {
-                return refused;
-            }
+        if let Some(refused) = self.layout_refused(state, guard) {
+            return refused;
         }
         BatchError::MoveBeside { subtree }.into()
+    }
+
+    /// The refusal of the layout of the transaction's writes, where they
+    /// cannot be laid out over the version it reads, and `None` where no
+    /// layout of all of them was stopped or one is made now.
+    fn layout_refused(&self, state: &State<'s>, guard: &OperationGuard<'s>) -> Option<TxnError> {
+        let (at, _) = state.stuck.filter(|(_, ops)| *ops == state.set.ops())?;
+        // The refusal that stopped the layout is told again as it was
+        // kept: frames that are made again lay out every load they come
+        // to, and append its values again.
+        if let Some(refused) = state.kept_refusal() {
+            return Some(refused);
+        }
+        let mut loaded = Loaded::default();
+        let (set, scopes) = (&state.set, &state.scopes);
+        let lease = Lease::take();
+        Self::build(&self.path, guard, at, lease, set, scopes, &mut loaded).err()
     }
 
     /// Whether `who` is answered from the write set over the committed
@@ -4241,6 +4247,68 @@ macro_rules! reads {
         ) -> Result<$crate::txn::MerkCursor<'_, 's>, TxnError> {
             $crate::txn::Cursor::merk(self.txn(), self.who(), subtree, Some(flat))
         }
+
+        /// Makes the stale hashes of the Merk `subtree` with `rules`, and
+        /// returns the Merk's root hash: what the rules make of the cell
+        /// of its root node, or `None` for a Merk with no node
+        /// (`lignin_tree::hash`, `transactions.md` CM3 step 5;
+        /// `crate::txn`, "An evaluation before the commit").
+        ///
+        /// Every stale hash that the evaluation of the root comes to is
+        /// made once and stored in its cell: of the nodes of the Merk,
+        /// and of the nodes of each Merk that one of them hosts where
+        /// the value hash of the host is stale. A node that is read
+        /// afterwards has those hashes, and none of them is stale
+        /// ([`NodeView::stale`]). A commit that follows makes none of
+        /// them again. Where the root has no stale hash, the call reads
+        /// the root's cell, changes nothing and adds nothing.
+        ///
+        /// **It is a write** of every node it makes a hash of: of the
+        /// node as its cell has it afterwards, with every hash stated
+        /// and the value kept. The writes are one operation of the write
+        /// set for each Merk. So a rollback to a savepoint from before
+        /// the call takes the made hashes out with the other writes
+        /// after it, the rollback of the scope that made the call does,
+        /// and frames that are made again have them again.
+        ///
+        /// Through a scope it claims a read of `subtree`, as a read of
+        /// its entry does, and then, together or not at all, a write of
+        /// each Merk it makes a hash in and a read of each other Merk
+        /// whose root it hashes (SC3). A scope that keeps its writes in
+        /// the write set has them laid out first ([`Scope::lay_out`]),
+        /// also where the call is then refused. Through the transaction,
+        /// a hash is made only while no scope is open
+        /// ([`TxnError::ScopeOpen`]): a write goes through a scope (SC1).
+        ///
+        /// It is refused, with nothing changed:
+        ///
+        /// - for a subtree that is not entered
+        ///   ([`BatchError::NotEntered`]);
+        /// - as a conflict, where a commit outside has met a write of
+        ///   the transaction ([`BatchError::EvaluatedByKey`]), and with
+        ///   the refusal of the layout where its writes cannot be laid
+        ///   out;
+        /// - where a host with a stale value hash is behind the roots
+        ///   it hosts: it is marked pending, or points at the root that
+        ///   a Merk had before it was cleared ([`TxnError::Hash`] of
+        ///   [`HostBehind`](lignin_tree::hash::HashError::HostBehind)).
+        ///
+        /// Where a rule refuses a hash, or a page or a value is not
+        /// read, the error is [`TxnError::Hash`], the write set is what
+        /// it was, and every hash that was stale is stale. If a hash was
+        /// stored before the error, the frames are made again from the
+        /// write set, and every node handle read through the transaction
+        /// has ended (PN8).
+        ///
+        /// `rules` are called inside the operation: they must not call
+        /// the transaction.
+        pub fn evaluate<R: lignin_tree::hash::HashRules>(
+            &self,
+            subtree: Subtree,
+            rules: &mut R,
+        ) -> Result<Option<lignin_format::tree_page::Hash>, TxnError> {
+            self.txn().evaluate_in(self.who(), subtree, rules)
+        }
     };
 }
 
@@ -4254,6 +4322,9 @@ impl<'s> WriteTxn<'s> {
 
 #[path = "../scope/engine.rs"]
 mod scopes;
+
+#[path = "evaluate.rs"]
+mod evaluate;
 
 pub use scopes::Scope;
 
