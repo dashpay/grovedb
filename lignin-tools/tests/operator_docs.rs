@@ -114,6 +114,20 @@ const COVERED: [(&str, &[&str]); 23] = [
     ("lignin-tools/src/error.rs", &["ToolError"]),
 ];
 
+/// Words that the code hands to a message of those types as a value, by
+/// the file and the words before each: the string literal after each is
+/// quoted in the messages chapter too.
+const REASONS: [(&str, &str); 8] = [
+    ("lignindb/src/checkpoint/create.rs", "reason: "),
+    ("lignindb/src/db/open.rs", "OpenError::create("),
+    ("lignindb/src/db/open.rs", "OpenError::catalog("),
+    ("lignindb/src/db/open.rs", "OpenError::io("),
+    ("lignindb/src/db/open.rs", "what: "),
+    ("lignindb/src/db/open.rs", "let what = "),
+    ("lignindb/src/db/open.rs", "read(key::LAYOUT, "),
+    ("lignindb/src/db/mod.rs", "OpenError::catalog("),
+];
+
 /// Words of those types that fill a place of a longer message of theirs,
 /// which the chapter quotes with `…` there.
 const PARTS: [&str; 1] = ["up to …"];
@@ -354,6 +368,10 @@ fn words(line: &str) -> Vec<String> {
                     }
                     word.push(c);
                 }
+            }
+            '>' | '<' if in_word && word.chars().all(|c| c.is_ascii_digit()) => {
+                in_word = false;
+                break;
             }
             '|' | ';' | '&' | '>' | '<' => break,
             c if c.is_whitespace() => {
@@ -1156,6 +1174,26 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
             }
         }
     }
+    for (file, before) in REASONS {
+        let source = read(&root.join(file));
+        for (at, _) in source.match_indices(before) {
+            let rest = source[at + before.len()..].trim_start();
+            if !rest.starts_with('"') {
+                continue;
+            }
+            let Some(pattern) = literal_patterns(rest).into_iter().next() else {
+                continue;
+            };
+            let words = pattern.chars().filter(|c| c.is_alphabetic()).count();
+            if words < 3 || !pattern.contains(' ') {
+                continue;
+            }
+            covered += 1;
+            if !quoted.contains(&pattern) {
+                missing.push(format!("{file} (after {before:?}): `{pattern}`"));
+            }
+        }
+    }
     println!("{covered} messages of the error types quoted");
     assert!(covered > 50, "only {covered} messages were read");
     assert!(
@@ -1285,6 +1323,10 @@ fn the_readers_of_the_documents_read_what_they_say() {
     assert_eq!(
         words(r#"lignin migrate "$SOURCE" --survey | tee "$(dirname "$X")""#),
         ["lignin", "migrate", "$SOURCE", "--survey"]
+    );
+    assert_eq!(
+        words("lignin stats \"$DB\" 2>&1 | tee x"),
+        ["lignin", "stats", "$DB"]
     );
     let source = "let a = 'x'; // \"no\"\nwrite!(f, \"{} holds no \\\n     database {{here}}: {source}\"); r#\"raw \"q\"\"#";
     assert_eq!(
