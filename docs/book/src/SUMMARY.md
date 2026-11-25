@@ -24,6 +24,11 @@
 - [The CommitmentTree](commitment-tree.md)
 - [The DenseAppendOnlyFixedSizeTree](dense-tree.md)
 - [Quantum Cryptography — Post-Quantum Threat Analysis](quantum-cryptography.md)
+- [Running a Node on LigninDB — How It Works](lignindb/architecture.md)
+    - [Migrating a Node from RocksDB](lignindb/migration.md)
+    - [Backup, Restore, and a Full Disk](lignindb/backup-and-full-disk.md)
+    - [Messages at an Open, a Checkpoint and a Recovery](lignindb/messages.md)
+    - [Tuning](lignindb/tuning.md)
 
 ---
 
