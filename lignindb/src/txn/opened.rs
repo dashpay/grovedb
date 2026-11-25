@@ -1,12 +1,14 @@
 //! The subtree directory of one committed version, as a transaction or a
 //! cursor reads through it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use lignin_format::{CellAddress, CommitVersion};
 use lignin_tree::directory::{Directory, Entry, MerkId};
 
-use super::{error::TxnError, key::Subtree, path::WritePath, unlinked, write_set::WriteSet};
+use super::{
+    below::Below, error::TxnError, key::Subtree, path::WritePath, unlinked, write_set::WriteSet,
+};
 use crate::snapshot::OperationGuard;
 
 /// A handle on the subtree directory of one committed version, and the
@@ -34,6 +36,75 @@ pub(crate) struct Opened {
     /// For the subtrees it was looked up for: whether the data column
     /// holds a record under the subtree at this version.
     unlinked: HashMap<Subtree, bool>,
+    /// Which of the subtrees that the transaction has written this
+    /// version has below a Merk, for a transaction that is served by key:
+    /// made when it is first asked for.
+    written: Option<Box<WrittenBelow>>,
+    /// While a call is held (`held`): the subtrees whose entries it
+    /// asked for, opened before or not.
+    #[cfg(any(test, feature = "held_reads"))]
+    asked: Option<Vec<Subtree>>,
+}
+
+/// What a transaction that is served by key keeps, with the directory of
+/// one committed version, of the subtrees it has written: which of them
+/// it took in as standing as the committed ones, and under which
+/// Merks the version has those. A batch that drops or clears a subtree
+/// finds by it which written subtrees to ask whether they are below
+/// (`ByKey::cut` in `super::txn`).
+///
+/// **The rule.** When it has been brought up to date for a batch, every
+/// subtree that the set has an entry under, that the batch does not drop
+/// or clear, and that stands as the committed one after every operation
+/// of the set, is one of [`Self::standing`], and [`Self::list`] has it
+/// under the id of each Merk that its entry of the version has it below:
+/// under none where the version has no entry in use under its prefix.
+///
+/// **What it holds beyond that changes no answer.** What was taken in is
+/// kept as it stood then. A subtree that has come to stand otherwise
+/// since, by a drop, by an enter or with a subtree above it, stays in it
+/// until a batch meets it there, asks how it stands, and forgets it:
+/// listed under nothing, none of the subtrees that were asked, and none
+/// of [`Self::standing`]. A clear of a subtree leaves how it stands as
+/// it was, and the subtree listed as it is. So a subtree that is found
+/// here is asked again before anything is answered of it.
+///
+/// **A subtree is taken into it once.** The set numbers a subtree when it
+/// comes to have an entry under it ([`WriteSet::written_after`]). The
+/// first batch after that which brings this up to date, and does not
+/// itself drop or clear the subtree, asks how it stands. Where that is as
+/// the committed one, it is listed. Where it is not, it is left out, and
+/// is not asked for this again. A batch that brings this up to date and
+/// itself drops or clears a subtree that was not asked yet puts it off:
+/// the list has it under nothing, marked for the next batch that brings
+/// this up to date, which asks it or, taking it as well, puts it off.
+///
+/// A subtree that is left out is none that the rule names from there on.
+/// What makes a subtree the transaction's own, or takes it, is an
+/// operation of the set, and whether an enter of a subtree if it was
+/// absent found the subtree is said by the operations up to the one that
+/// made the enter, and by the version. So a subtree that does not stand
+/// as the committed one does not come to stand so while every operation
+/// stays in the set and the version is this one.
+///
+/// **It is begun again, empty,** where an operation was taken out of the
+/// set since it was begun ([`WriteSet::taken_out`]). It is of one
+/// version, as the handle that keeps it: the handle of another version
+/// begins its own.
+#[derive(Debug, Default)]
+pub(crate) struct WrittenBelow {
+    /// The written subtrees that were asked and not forgotten, each
+    /// under the ids of the Merks it is below, and how many first writes
+    /// of the set were taken. The subtrees to ask again are those that
+    /// were put off.
+    pub(crate) list: Below,
+    /// The subtrees that the list took in as standing as the committed
+    /// ones and has not forgotten since: those that it lists and has
+    /// not put off.
+    pub(crate) standing: BTreeSet<Subtree>,
+    /// How many times operations had been taken out of the set when
+    /// this was begun.
+    pub(crate) taken_out: u64,
 }
 
 impl Opened {
@@ -52,6 +123,9 @@ impl Opened {
                 directory: path.directory_at(at)?,
                 entries: HashMap::new(),
                 unlinked: HashMap::new(),
+                written: None,
+                #[cfg(any(test, feature = "held_reads"))]
+                asked: None,
             });
         }
         Ok(slot.as_mut().expect("it was loaded"))
@@ -65,6 +139,10 @@ impl Opened {
         guard: &OperationGuard<'s>,
         subtree: &Subtree,
     ) -> Result<(), TxnError> {
+        #[cfg(any(test, feature = "held_reads"))]
+        if let Some(asked) = &mut self.asked {
+            asked.push(*subtree);
+        }
         if !self.entries.contains_key(subtree) {
             let pages = path.committed(guard, self.at);
             let entry = self.directory.open(&pages, subtree.as_bytes())?;
@@ -157,6 +235,12 @@ impl Opened {
     /// The version the handle is of.
     pub(crate) const fn version(&self) -> CommitVersion {
         self.at
+    }
+
+    /// Which written subtrees this version has below a Merk, as a
+    /// transaction that is served by key keeps it ([`WrittenBelow`]).
+    pub(crate) fn written_below(&mut self) -> &mut WrittenBelow {
+        self.written.get_or_insert_with(Box::default)
     }
 
     /// Whether the data column holds a record under `subtree` at this
@@ -575,6 +659,19 @@ pub(crate) mod held {
     }
 
     impl Opened {
+        /// Notes, from here on, every subtree whose entry is asked for,
+        /// whether it was opened before or not, in place of what was
+        /// noted.
+        pub(crate) fn note_asked(&mut self) {
+            self.asked = Some(Vec::new());
+        }
+
+        /// The subtrees that were noted, in the order they were asked
+        /// for. None is noted from here on.
+        pub(crate) fn asked(&mut self) -> Vec<Subtree> {
+            self.asked.take().unwrap_or_default()
+        }
+
         /// The answer as it was made: no for a set with no move and
         /// for a subtree that a move names, by every name of every
         /// move, and otherwise by opening every source.

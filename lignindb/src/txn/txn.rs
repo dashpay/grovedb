@@ -27,7 +27,7 @@ use super::{
     frames::{stored_key, Awake, Frames, Parked, Woken},
     key::{Column, KeySet, Subtree, Unit},
     load::{cover, is_load, spill, Loaded},
-    opened::Opened,
+    opened::{Opened, WrittenBelow},
     pages::{child_keys, find, follow, handle_at, CommittedPages, NodePages},
     path::WritePath,
     places::{Place, Places},
@@ -645,10 +645,19 @@ impl<'a, 's> ByKey<'a, 's> {
     /// own here also where a subtree above it left since: no drop names
     /// it, and [`Self::below`] says whether one took it.
     fn standing(&mut self, subtree: Subtree, end: usize) -> Result<Standing, TxnError> {
+        if let Some(stands) = self.stands.get(&(subtree, end)) {
+            return Ok(*stands);
+        }
         // What is asked, and under it what each answer waits for. An
         // answer waits only for answers of fewer operations, so the line
-        // ends.
-        let mut wanted = vec![(subtree, end)];
+        // ends. An answer that waits for none is given at once.
+        let mut wanted = match self.try_standing(subtree, end)? {
+            Step::Done(stands) => {
+                self.stands.insert((subtree, end), stands);
+                return Ok(stands);
+            }
+            Step::Needs(first) => vec![(subtree, end), first],
+        };
         while let Some(&(subtree, end)) = wanted.last() {
             if self.stands.contains_key(&(subtree, end)) {
                 wanted.pop();
@@ -770,6 +779,273 @@ impl<'a, 's> ByKey<'a, 's> {
             stands = self.stands.get(&(at, end)).copied();
         }
         Ok(Step::Done(false))
+    }
+
+    /// Those of the subtrees the set has an entry under that are below
+    /// one of `leaving`, the subtrees that a batch drops or clears, and
+    /// are none of them: each as [`Self::below`] says of it where it is
+    /// taken as it stands after every operation, in the order of the
+    /// prefixes.
+    ///
+    /// **Which subtrees are asked.** A written subtree that is below a
+    /// subtree of `leaving` stands as the transaction's own or as the
+    /// committed one. Where it is the transaction's own, an operation of
+    /// the set enters it. Where it is the committed one, its entry of the
+    /// version has, among the ids of the Merks it is below, the id of the
+    /// Merk that the version has under a subtree of `leaving`
+    /// ([`Opened::below_taken`]), and the list that is kept with the
+    /// directory of the version has it under that id ([`WrittenBelow`]).
+    /// So [`Self::below`] is asked of two kinds of subtrees outside
+    /// `leaving`: every one that the set enters and has an entry under
+    /// ([`WriteSet::entered`]), however it stands, and every one that the
+    /// list has under the id of such a Merk. They can be all the written
+    /// subtrees.
+    ///
+    /// **The list is brought up to date first.** It is begun again where
+    /// an operation was taken out of the set since it was begun. The
+    /// subtrees that were put off, and those that the set has numbered
+    /// since the list took its count, are asked: one that `leaving` names
+    /// is put off, one that stands as the committed one is opened and
+    /// listed under what its entry says, and any other is left out. A
+    /// read that fails there ends the call, and the list has taken
+    /// nothing of the subtrees that were asked at this call.
+    ///
+    /// **What is asked of the directory.** Where the walk over every
+    /// written subtree answers (`Self::cut_by_every_written`: `below` of
+    /// each written subtree outside `leaving`, in the order of the
+    /// prefixes), every entry that this asks for is one that the walk
+    /// asks for at the same call. So a call that the walk answers is
+    /// answered here. Where a read fails, the two can end at different
+    /// entries: this asks in another order, and the walk ends at its
+    /// first read that fails.
+    ///
+    /// Entries are asked for in three places. Bringing the list up to
+    /// date asks how a written subtree outside `leaving` stands, and
+    /// opens one that stands as the committed one: the walk does both
+    /// for that subtree. The ids of the Merks under `leaving` are looked
+    /// up only where a subtree of [`WrittenBelow::standing`] outside
+    /// `leaving` still stands as the committed one, which is asked of
+    /// them until one does, and those that do not are forgotten: for
+    /// such a subtree the walk opens every subtree of `leaving`. And
+    /// `below` of each subtree that is asked makes the reads it makes in
+    /// the walk, which can open the hosts of a subtree that is the
+    /// transaction's own and the subtrees of `leaving`, whatever the
+    /// list holds.
+    ///
+    /// A written subtree that is asked nothing here has no read made for
+    /// it: a read that the walk makes for it, and that fails, ends the
+    /// call of the walk and not this one.
+    fn cut(&mut self, leaving: &[Subtree]) -> Result<Vec<Subtree>, TxnError> {
+        #[cfg(any(test, feature = "held_reads"))]
+        self.opened.note_asked();
+        let mut written = std::mem::take(self.opened.written_below());
+        let cut = self.cut_listed(&mut written, leaving);
+        *self.opened.written_below() = written;
+        #[cfg(any(test, feature = "held_reads"))]
+        {
+            let asked = self.opened.asked();
+            if let Ok(cut) = &cut {
+                self.held_to_every_written(leaving, cut, &asked)?;
+            }
+        }
+        cut
+    }
+
+    /// [`Self::cut`], with the list of the version in `written`.
+    fn cut_listed(
+        &mut self,
+        written: &mut WrittenBelow,
+        leaving: &[Subtree],
+    ) -> Result<Vec<Subtree>, TxnError> {
+        let (set, end) = (self.set, self.set.ops());
+        if written.taken_out != set.taken_out() {
+            *written = WrittenBelow {
+                taken_out: set.taken_out(),
+                ..WrittenBelow::default()
+            };
+        }
+        // What is asked, each with how the list takes it: `None` for one
+        // that is put off, `Some(None)` for one that does not stand as
+        // the committed one, and otherwise the ids of the Merks that the
+        // version has it below.
+        let mut asked = Vec::new();
+        let put_off = written.list.again().into_iter();
+        for subtree in put_off.chain(set.written_after(written.list.taken())) {
+            let listed = match leaving.contains(&subtree) {
+                true => None,
+                false => Some(match self.standing(subtree, end)? {
+                    Standing::Committed => {
+                        let above = self.opened.lineage(self.path, self.guard, &subtree)?;
+                        Some(above.unwrap_or_default())
+                    }
+                    Standing::Gone | Standing::Own(_) => None,
+                }),
+            };
+            asked.push((subtree, listed));
+        }
+        for (subtree, listed) in asked {
+            match listed {
+                None => {
+                    written.list.list(subtree, std::iter::empty());
+                    written.list.ask_again(&subtree);
+                }
+                Some(None) => written.list.forget(&subtree),
+                Some(Some(above)) => {
+                    written.list.list(subtree, above.into_iter());
+                    written.standing.insert(subtree);
+                }
+            }
+        }
+        written.list.take(set.first_writes());
+
+        // Whether a written subtree outside `leaving` stands as the
+        // committed one: those that stood so are asked until one does.
+        let stands = loop {
+            let outside = |subtree: &&Subtree| !leaving.contains(subtree);
+            let Some(subtree) = written.standing.iter().find(outside).copied() else {
+                break false;
+            };
+            if self.standing(subtree, end)? == Standing::Committed {
+                break true;
+            }
+            written.standing.remove(&subtree);
+            written.list.forget(&subtree);
+        };
+        let mut ask = BTreeSet::new();
+        if stands {
+            for left in leaving {
+                if let Some(id) = self.opened.id(self.path, self.guard, left)? {
+                    ask.extend(written.list.under(id));
+                }
+            }
+        }
+        ask.extend(set.entered().filter(|entered| set.writes_under(entered)));
+        let mut cut = Vec::new();
+        for subtree in ask {
+            if leaving.contains(&subtree) {
+                continue;
+            }
+            #[cfg(test)]
+            cut_held::asked();
+            if self.below(subtree, leaving, None)? {
+                cut.push(subtree);
+            }
+            if self.stands.get(&(subtree, end)) != Some(&Standing::Committed) {
+                written.standing.remove(&subtree);
+                written.list.forget(&subtree);
+            }
+        }
+        Ok(cut)
+    }
+}
+
+/// [`ByKey::cut`] is held, at every call, to the answer that asks every
+/// subtree the set has an entry under, in a test build of this crate and
+/// in a build with the feature `held_reads`. A read of the directory
+/// that fails ends the call with its error before anything is compared.
+#[cfg(any(test, feature = "held_reads"))]
+impl ByKey<'_, '_> {
+    /// [`Self::cut`] by every subtree the set has an entry under: each
+    /// that is none of `leaving` is asked whether it is below one.
+    fn cut_by_every_written(&mut self, leaving: &[Subtree]) -> Result<Vec<Subtree>, TxnError> {
+        let set = self.set;
+        let mut cut = Vec::new();
+        for written in set.written().filter(|written| !leaving.contains(written)) {
+            if self.below(written, leaving, None)? {
+                cut.push(written);
+            }
+        }
+        Ok(cut)
+    }
+
+    /// Holds `cut`, which [`Self::cut`] answered after it asked for the
+    /// entries of `asked`, to [`Self::cut_by_every_written`]: the two
+    /// answer the same, and the walk asks for every entry of `asked`.
+    /// How the subtrees stand is worked out again for the walk, so that
+    /// what it asks for is all that it rests on.
+    fn held_to_every_written(
+        &mut self,
+        leaving: &[Subtree],
+        cut: &[Subtree],
+        asked: &[Subtree],
+    ) -> Result<(), TxnError> {
+        self.stands.clear();
+        self.opened.note_asked();
+        let by_every = self.cut_by_every_written(leaving);
+        let asked_by_every: HashSet<Subtree> = self.opened.asked().into_iter().collect();
+        let by_every = by_every?;
+        assert_eq!(
+            cut, by_every,
+            "the written subtrees below {leaving:?}: by the list of the version, and by every \
+             written subtree"
+        );
+        let alone: Vec<&Subtree> = (asked.iter())
+            .filter(|asked| !asked_by_every.contains(asked))
+            .collect();
+        assert!(
+            alone.is_empty(),
+            "the entries of {alone:?} were asked for by the list of the version alone, for a batch \
+             that takes {leaving:?}"
+        );
+        #[cfg(test)]
+        {
+            let outside = |written: &Subtree| !leaving.contains(written);
+            cut_held::count(self.set.written().filter(outside).count(), cut.len());
+        }
+        Ok(())
+    }
+}
+
+/// What the calls of [`ByKey::cut`] on this thread asked, for a test.
+#[cfg(test)]
+pub(crate) mod cut_held {
+    use std::cell::Cell;
+
+    /// The calls that were held, on this thread.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub(crate) struct Compared {
+        /// Every call that was held.
+        pub(crate) calls: u64,
+        /// The subtrees that were asked whether they are below: in the
+        /// calls that were held, and in a call that a read which failed
+        /// ended, which is none of `calls`.
+        pub(crate) asked: u64,
+        /// The subtrees that the walk over every written subtree asked
+        /// that of: those the set had an entry under, outside what the
+        /// batch took.
+        pub(crate) written: u64,
+        /// The subtrees that were found below.
+        pub(crate) found: u64,
+    }
+
+    thread_local! {
+        static COMPARED: Cell<Compared> = const {
+            Cell::new(Compared {
+                calls: 0,
+                asked: 0,
+                written: 0,
+                found: 0,
+            })
+        };
+    }
+
+    pub(super) fn asked() {
+        let mut compared = COMPARED.get();
+        compared.asked += 1;
+        COMPARED.set(compared);
+    }
+
+    pub(super) fn count(written: usize, found: usize) {
+        let mut compared = COMPARED.get();
+        compared.calls += 1;
+        compared.written += written as u64;
+        compared.found += found as u64;
+        COMPARED.set(compared);
+    }
+
+    /// What was held on this thread since this was last asked.
+    pub(crate) fn compared() -> Compared {
+        COMPARED.replace(Compared::default())
     }
 }
 
@@ -1130,6 +1406,30 @@ impl<'s> WriteTxn<'s> {
         };
         let ids = subtrees.iter().map(id).collect();
         Some((frames.written_below.shown(), ids))
+    }
+
+    /// What the transaction keeps, with the directory of the committed
+    /// version it read last, of the written subtrees that the version
+    /// has below a Merk ([`WrittenBelow`]), and the id that this version
+    /// has each of `subtrees` under: for a test. `None` where no
+    /// directory of a version is kept.
+    #[cfg(all(test, not(loom)))]
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn cut_shown(
+        &self,
+        subtrees: &[Subtree],
+    ) -> Option<(super::below::Shown, Vec<Subtree>, Vec<Option<MerkId>>)> {
+        let mut state = self.lock();
+        let guard = self.path.versions.guard();
+        let opened = state.directory.as_mut()?;
+        let id = |subtree: &Subtree| {
+            let id = opened.id(&self.path, &guard, subtree);
+            id.expect("a read of the directory")
+        };
+        let ids = subtrees.iter().map(id).collect();
+        let written = opened.written_below();
+        let standing = written.standing.iter().copied().collect();
+        Some((written.list.shown(), standing, ids))
     }
 
     /// Brings the transaction to the commits that were published up to
@@ -2841,7 +3141,7 @@ impl<'s> WriteTxn<'s> {
 
     /// Those of the subtrees the transaction has written that are below
     /// one that `batch` drops or clears, where the transaction has no
-    /// frames to ask ([`ByKey::below`]).
+    /// frames to ask ([`ByKey::cut`]).
     fn cut(
         &self,
         state: &mut State<'s>,
@@ -2853,14 +3153,7 @@ impl<'s> WriteTxn<'s> {
             return Ok(Vec::new());
         }
         let State { directory, set, .. } = state;
-        let mut by_key = ByKey::new(&self.path, &op.guard, op.at, set, directory)?;
-        let mut cut = Vec::new();
-        for written in set.written().filter(|written| !leaving.contains(written)) {
-            if by_key.below(written, &leaving, None)? {
-                cut.push(written);
-            }
-        }
-        Ok(cut)
+        ByKey::new(&self.path, &op.guard, op.at, set, directory)?.cut(&leaving)
     }
 
     /// Shows `read` the node under `key` as the transaction has it: in its

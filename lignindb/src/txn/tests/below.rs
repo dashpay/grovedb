@@ -8,6 +8,14 @@
 //! were opened for it (`TxnStats::below_opened`). Every answer that the
 //! index gives is held to what every written subtree says
 //! (`Frames::below`), and the tests count those comparisons.
+//!
+//! The last tests are of a transaction that a commit met, whose writes
+//! are taken by key: what it keeps of the written subtrees with the
+//! directory of the committed version (`WrittenBelow`), and how many
+//! subtrees a batch that drops or clears one asks whether they are below
+//! (`ByKey::cut`). Each such batch is held to the walk over every written
+//! subtree: by its answer, and by the entries of the directory it asked
+//! for, each of which the walk asks for as well.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -20,7 +28,10 @@ use super::{
     subtrees::{aux, Held},
     *,
 };
-use crate::txn::frames::held::{compared, Compared};
+use crate::txn::{
+    frames::held::{compared, Compared},
+    txn::cut_held,
+};
 
 const TOP: u8 = ENTERED + 30;
 const A: u8 = ENTERED + 31;
@@ -272,6 +283,84 @@ impl<'w, 's> Grove<'w, 's> {
     /// The entries of the directory that were opened for the index.
     fn opened(&self) -> u64 {
         self.tx.txn.stats().below_opened
+    }
+
+    /// Writes a record under `name`, by `value`, through `tx`.
+    fn record(tx: &Tx<'s>, name: u8, value: &[u8]) {
+        let record = OwnedBatch {
+            records: vec![put(aux(name), b"k", value)],
+            ..OwnedBatch::default()
+        };
+        let scope = tx.txn.scope().expect("a scope");
+        let applied = record.through(&scope).with(|batch| scope.apply(batch));
+        applied.expect("the record is written");
+        scope.merge();
+    }
+
+    /// Whether the transaction reads the record that [`Self::record`]
+    /// wrote under `name`.
+    fn reads(&self, name: u8) -> bool {
+        let mut value = Vec::new();
+        let read = self.tx.txn.get(aux(name), b"k", &mut value);
+        read.expect("a read")
+    }
+
+    /// Has a commit meet the transaction: the transaction writes a
+    /// record under `TOP`, and a transaction beside it commits one under
+    /// the same key. From here on the transaction has no frames, and
+    /// its writes are taken by key.
+    fn meet(&mut self) {
+        Self::record(&self.tx, TOP, b"mine");
+        let other = self.world.begin();
+        Self::record(&other, TOP, b"theirs");
+        let outcome = self.world.db.commit(self.world.versions, &other.txn);
+        assert!(matches!(outcome, Ok(Outcome::Committed(_))), "{outcome:?}");
+        self.read();
+        assert!(self.tx.txn.stats().overlapped > 0);
+        assert_eq!(self.index(), None, "no frames");
+    }
+
+    /// What the transaction keeps, with the directory of the committed
+    /// version it read last, of the written subtrees that the version
+    /// has below a Merk (`WrittenBelow`), by the names of the subtrees:
+    /// the list, and the subtrees that it took in as standing as the
+    /// committed ones and has not forgotten. One of them that has come
+    /// to stand otherwise since is in it until a batch meets it there.
+    fn kept(&mut self) -> (Option<Index>, Vec<u8>) {
+        kept_by(&self.tx, &mut self.names)
+    }
+}
+
+/// [`Grove::kept`] of the transaction `tx`, with the ids that were seen
+/// in `names`.
+fn kept_by(tx: &Tx<'_>, names: &mut HashMap<MerkId, u8>) -> (Option<Index>, Vec<u8>) {
+    let subtrees = NAMES.map(sub);
+    let shown = tx.txn.cut_shown(&subtrees);
+    let (shown, standing, ids) = shown.expect("the directory of a version");
+    for (name, id) in NAMES.into_iter().zip(ids) {
+        if let Some(id) = id {
+            names.insert(id, name);
+        }
+    }
+    let name = |subtree: &Subtree| subtree.as_bytes()[0];
+    let listed = shown.listed.iter().map(|(subtree, above)| {
+        let above = above.iter().map(|id| names[id]).collect();
+        (name(subtree), above)
+    });
+    let index = Index {
+        listed: listed.collect(),
+        again: shown.again.iter().map(name).collect(),
+        taken: shown.taken,
+    };
+    (Some(index), standing.iter().map(name).collect())
+}
+
+fn cut(calls: u64, asked: u64, written: u64, found: u64) -> cut_held::Compared {
+    cut_held::Compared {
+        calls,
+        asked,
+        written,
+        found,
     }
 }
 
@@ -756,4 +845,227 @@ fn a_scope_that_was_not_laid_out_takes_the_frames_with_the_last_write() {
     assert_eq!(txn.stats().writes, 0);
     assert!(txn.below_shown(&[]).is_none());
     first.rollback();
+}
+
+/// A transaction that is served by key lists the written subtrees that
+/// stood as the committed ones when it asked them, by the Merks the
+/// committed version has them below, and a batch that drops or clears a
+/// subtree asks those that are listed under its Merk, and those that the
+/// transaction entered and wrote into. The transaction writes into `D`
+/// and `E`, enters `X` under `C` and writes into it, and is met. Each
+/// batch after that is counted: how many subtrees it asked whether they
+/// are below, beside how many the set had an entry under outside the
+/// subtree that the batch took. What is kept is read after some of the
+/// batches, as the batch left it when it asked, before it was added:
+/// after the drop of `B` it still has `B` and `D`, which that drop took.
+#[test]
+fn a_batch_by_key_asks_the_written_subtrees_that_can_be_below_what_it_takes() {
+    let (db, versions) = Db::new(256);
+    let world = World::new(&db, &versions);
+    let mut grove = planted(&world);
+    grove.write(D, 2);
+    grove.write(E, 2);
+    grove.enter(X, Some(C));
+    grove.write(X, 1);
+    for name in [D, X] {
+        Grove::record(&grove.tx, name, b"mine");
+    }
+    grove.meet();
+    assert_eq!(cut_held::compared(), cut(0, 0, 0, 0));
+
+    // A clear of a subtree that nothing is below. The seven written
+    // subtrees are asked how they stand: six as the committed ones, and
+    // X as the transaction's own, which is not listed. X is asked
+    // whether it is below, as a subtree that the transaction entered.
+    grove.clear(L1);
+    let all: [(u8, &[u8]); 6] = [
+        (TOP, &[]),
+        (A, &[TOP]),
+        (B, &[TOP, A]),
+        (C, &[TOP, A]),
+        (D, &[TOP, A, B]),
+        (E, &[TOP]),
+    ];
+    assert_eq!(
+        grove.kept(),
+        (index(&all, &[], 7), vec![TOP, A, B, C, D, E])
+    );
+    assert_eq!(cut_held::compared(), cut(1, 1, 7, 0));
+
+    // A drop of B: L1, which the set has an entry under since its clear,
+    // stands as the committed one, and is listed under nothing. D is
+    // listed under the Merk of B, and is found below; X is asked again.
+    assert!(grove.reads(D));
+    grove.drop(B);
+    let mut listed = all.to_vec();
+    listed.push((L1, &[]));
+    let standing = vec![TOP, A, B, C, D, E, L1];
+    assert_eq!(grove.kept(), (index(&listed, &[], 8), standing));
+    assert_eq!(cut_held::compared(), cut(1, 2, 7, 1));
+    assert!(!grove.reads(D), "the record went with the subtree");
+
+    // A drop of C: X hangs by the host that its enter states, and is
+    // found below. Nothing is listed under the Merk of C.
+    assert!(grove.reads(X));
+    grove.drop(C);
+    assert_eq!(cut_held::compared(), cut(1, 1, 7, 1));
+    assert!(!grove.reads(X), "the record went with the subtree");
+
+    // A clear of A, whose Merk has a node in the committed version: B,
+    // C and D are listed under it, and none of them stands as the
+    // committed one any more. They are asked, and forgotten.
+    grove.clear(A);
+    let listed: [(u8, &[u8]); 4] = [(TOP, &[]), (A, &[TOP]), (E, &[TOP]), (L1, &[])];
+    assert_eq!(grove.kept(), (index(&listed, &[], 8), vec![TOP, A, E, L1]));
+    assert_eq!(cut_held::compared(), cut(1, 4, 7, 0));
+
+    // A commit beside the transaction: the list is of the version, and
+    // is begun again with the directory of the next. Every written
+    // subtree is asked how it stands, and the four that stand as the
+    // committed ones are listed.
+    let other = world.begin();
+    Grove::record(&other, L5, b"beside");
+    let outcome = db.commit(&versions, &other.txn);
+    assert!(matches!(outcome, Ok(Outcome::Committed(_))), "{outcome:?}");
+    grove.clear(L2);
+    assert_eq!(grove.kept(), (index(&listed, &[], 8), vec![TOP, A, E, L1]));
+    assert_eq!(cut_held::compared(), cut(1, 1, 8, 0));
+
+    // A drop of the outermost takes what stands as the committed one
+    // below it, and X, which the transaction entered there, is asked.
+    grove.drop(TOP);
+    assert_eq!(cut_held::compared(), cut(1, 3, 8, 2));
+}
+
+/// The list is begun again where a write is taken out of the set: a
+/// subtree that did not stand as the committed one when it was asked,
+/// and was not listed, can stand so again. The transaction writes into
+/// `C`. A scope drops `C`, which puts it off, and clears another
+/// subtree, where `C` is asked and is gone; the scope is rolled back.
+/// The next batch asks every written subtree again, and a clear of `A`
+/// then finds `C` below it.
+#[test]
+fn the_list_by_key_is_begun_again_where_a_write_is_taken_out_of_the_set() {
+    let (db, versions) = Db::new(256);
+    let world = World::new(&db, &versions);
+    let mut grove = planted(&world);
+    grove.write(C, 2);
+    Grove::record(&grove.tx, C, b"mine");
+    grove.meet();
+
+    let before = grove.held.clone();
+    let dropping = {
+        let mut changes = Changes::default();
+        let (host, key) = grove.held.live[&C].0.clone().expect("a host");
+        changes.edit(host, move |items| drop(items.remove(&key)));
+        grove.batch(vec![OwnedSubtree::Drop(sub(C))], changes)
+    };
+    let clearing = grove.clearing(L1);
+    let scope = grove.tx.txn.scope().expect("a scope");
+    let applied = dropping.through(&scope).with(|batch| scope.apply(batch));
+    applied.expect("the subtree is dropped");
+    // C is put off: the batch that asks takes it.
+    let listed: [(u8, &[u8]); 3] = [(TOP, &[]), (A, &[TOP]), (C, &[])];
+    let kept = kept_by(&grove.tx, &mut grove.names);
+    assert_eq!(kept, (index(&listed, &[C], 3), vec![TOP, A]));
+    let applied = clearing.through(&scope).with(|batch| scope.apply(batch));
+    applied.expect("the subtree is cleared");
+    // And asked at the next: it is gone, and is not listed.
+    let listed: [(u8, &[u8]); 2] = [(TOP, &[]), (A, &[TOP])];
+    let kept = kept_by(&grove.tx, &mut grove.names);
+    assert_eq!(kept, (index(&listed, &[], 3), vec![TOP, A]));
+    assert_eq!(cut_held::compared(), cut(2, 0, 5, 0));
+    scope.rollback();
+    grove.held = before;
+    assert!(grove.reads(C));
+
+    // The list is as it was until a batch asks.
+    assert_eq!(grove.kept(), (index(&listed, &[], 3), vec![TOP, A]));
+    grove.clear(L2);
+    let listed: [(u8, &[u8]); 3] = [(TOP, &[]), (A, &[TOP]), (C, &[TOP, A])];
+    // The count of the set's first writes does not go back with the
+    // rollback: the subtree that the scope cleared was the fourth.
+    assert_eq!(grove.kept(), (index(&listed, &[], 4), vec![TOP, A, C]));
+    assert_eq!(cut_held::compared(), cut(1, 0, 3, 0));
+    grove.clear(A);
+    assert_eq!(cut_held::compared(), cut(1, 1, 3, 1));
+    assert!(!grove.reads(C), "the record went with the subtree");
+}
+
+/// Where nothing that the transaction has written stands as the
+/// committed one, and it has entered no subtree, a batch by key that
+/// drops a subtree asks the directory for nothing. The walk over every
+/// written subtree asks for nothing there either, and each call is held
+/// to the entries that the walk asks for. The transaction writes into
+/// `E`, and drops `L1`, then the outermost subtree, with which `E` goes.
+/// Nothing it has written stands as the committed one after that, and a
+/// drop of `L2` finds the two that did, forgets them, and opens nothing.
+#[test]
+fn a_batch_by_key_opens_nothing_where_nothing_is_entered_and_nothing_written_stands_as_committed() {
+    let (db, versions) = Db::new(256);
+    let world = World::new(&db, &versions);
+    let mut grove = planted(&world);
+    grove.write(E, 2);
+    grove.meet();
+    grove.drop(L1);
+    let listed: [(u8, &[u8]); 2] = [(TOP, &[]), (E, &[TOP])];
+    assert_eq!(grove.kept(), (index(&listed, &[], 2), vec![TOP, E]));
+    grove.drop(TOP);
+    assert_eq!(cut_held::compared(), cut(2, 1, 4, 1));
+    // TOP and E are asked how they stand, and are forgotten.
+    grove.drop(L2);
+    assert_eq!(grove.kept(), (index(&[], &[], 3), Vec::new()));
+    assert_eq!(cut_held::compared(), cut(1, 0, 3, 0));
+}
+
+/// The transaction writes into `D` and `E`, and is met. The first batch
+/// that asks clears `D`, which was not asked yet: `D` is put off. A
+/// batch that writes a record asks nothing. The next clear, of `L1`,
+/// which nothing is below, asks how `D` stands: as the committed one,
+/// and lists it where the version has it. A batch that then clears `L2`
+/// and `B` finds nothing listed under the Merk of `L2` and `D` under the
+/// Merk of `B`, and `D` goes with `B`.
+#[test]
+fn a_deferred_subtree_is_checked_by_the_next_cut_that_does_not_take_it() {
+    let (db, versions) = Db::new(256);
+    let world = World::new(&db, &versions);
+    let mut grove = planted(&world);
+    grove.write(D, 2);
+    grove.write(E, 2);
+    grove.meet();
+
+    grove.clear(D);
+    let listed: [(u8, &[u8]); 5] = [
+        (TOP, &[]),
+        (A, &[TOP]),
+        (B, &[TOP, A]),
+        (D, &[]),
+        (E, &[TOP]),
+    ];
+    assert_eq!(grove.kept(), (index(&listed, &[D], 5), vec![TOP, A, B, E]));
+    assert_eq!(cut_held::compared(), cut(1, 0, 4, 0));
+    Grove::record(&grove.tx, D, b"mine");
+
+    grove.clear(L1);
+    let listed: [(u8, &[u8]); 5] = [
+        (TOP, &[]),
+        (A, &[TOP]),
+        (B, &[TOP, A]),
+        (D, &[TOP, A, B]),
+        (E, &[TOP]),
+    ];
+    let standing = vec![TOP, A, B, D, E];
+    assert_eq!(grove.kept(), (index(&listed, &[], 5), standing));
+    assert_eq!(cut_held::compared(), cut(1, 0, 5, 0));
+
+    assert!(grove.reads(D));
+    let mut changes = Changes::default();
+    changes.cleared.extend([L2, B]);
+    let both = vec![OwnedSubtree::Clear(sub(L2)), OwnedSubtree::Clear(sub(B))];
+    grove.apply(both, changes);
+    for name in [L2, B] {
+        grove.held.empty(name);
+    }
+    assert_eq!(cut_held::compared(), cut(1, 1, 5, 1));
+    assert!(!grove.reads(D), "the record went with the subtree");
 }

@@ -594,6 +594,11 @@ pub(crate) struct WriteSet {
     /// whole ([`Says`], [`Self::said_before`]). No subtree is kept with
     /// no operation.
     said: HashMap<Subtree, Says>,
+    /// How many times operations were taken out of the set: by a
+    /// rollback to a mark, with a scope that was taken out, and at the
+    /// end of the writes, each where there was an operation to take. It
+    /// never goes back ([`Self::taken_out`]).
+    taken_out: u64,
     /// For each open scope, its operations, oldest first
     /// ([`Self::ops_of`]). No scope is kept with no operation.
     scoped: HashMap<ScopeId, Vec<usize>>,
@@ -991,6 +996,7 @@ impl WriteSet {
         for at in (mark.ops..self.ops.len()).rev() {
             self.untag(at);
         }
+        self.taken_out += 1;
         self.ops.truncate(mark.ops);
         self.merks.truncate(mark.merks);
         self.subtrees.truncate(mark.subtrees);
@@ -1100,8 +1106,25 @@ impl WriteSet {
         })
     }
 
+    /// How many times operations were taken out of the set. Whoever
+    /// keeps what it learned of the subtrees the set has an entry under
+    /// ([`Self::written_after`]) learns it again when this changed: a
+    /// subtree that a drop or an enter of the transaction covered can be
+    /// as the committed state has it again.
+    pub(crate) fn taken_out(&self) -> u64 {
+        self.taken_out
+    }
+
+    /// The subtrees that an operation of the set enters, in no order.
+    pub(crate) fn entered(&self) -> impl Iterator<Item = Subtree> + '_ {
+        self.enters.keys().copied()
+    }
+
     /// Takes out every write (WT9).
     pub(crate) fn clear(&mut self) {
+        if !self.ops.is_empty() {
+            self.taken_out += 1;
+        }
         self.entries.clear();
         self.ops.clear();
         self.merks.clear();
@@ -2204,7 +2227,16 @@ impl WriteSet {
     /// in the order of their prefixes. The set keeps them in that order:
     /// nothing is sorted for the call, which costs what it yields. A
     /// build that holds them to the old way (`held`) makes them that way
-    /// as well, at each call.
+    /// as well, at each call. Outside tests they are asked for only
+    /// where an answer is held to what every written subtree says
+    /// (`Frames::below`, `ByKey::cut`).
+    #[cfg_attr(
+        not(any(test, feature = "held_reads")),
+        expect(
+            dead_code,
+            reason = "what is held to every written subtree asks for them"
+        )
+    )]
     pub(crate) fn written(&self) -> impl Iterator<Item = Subtree> + '_ {
         #[cfg(any(test, feature = "held_reads"))]
         self.hold_written();
@@ -3704,7 +3736,8 @@ mod tests {
         assert_eq!(set.rooted(&subtree(1)), Some(true));
         // A second statement of the root: the newest before `end` is taken
         // with every operation that changes the subtree. It goes again
-        // with a rollback.
+        // with a rollback, which the set counts.
+        let taken_out = set.taken_out();
         let again = set.mark();
         rooted(&mut set, 1, RootPut::Set(None));
         assert_eq!(set.said[&subtree(1)].rooted, [2, 4]);
@@ -3715,7 +3748,10 @@ mod tests {
         assert_eq!((walked(&set, 1, 2), walked(&set, 1, 1)), (vec![1], vec![]));
         assert_eq!(set.rooted(&subtree(1)), Some(false));
         assert!(set.rewind(again));
-        assert_eq!(walked(&set, 1, 5), vec![2, 1]);
+        assert_eq!(
+            (set.taken_out(), walked(&set, 1, 5)),
+            (taken_out + 1, vec![2, 1])
+        );
         // One operation clears a subtree, which cuts another, and enters
         // a third if it is absent: it is one operation of each, once.
         let cleared = SubtreeWrite::Clear {
@@ -3796,10 +3832,22 @@ mod tests {
         assert!(set.remove_scope(3));
         assert_eq!((said(&set, 4), set.ops.len()), (vec![], 6));
         asked(&set);
-        // The end of the writes empties both.
+        // The end of the writes empties both, and is counted where there
+        // was an operation to take.
+        let taken_out = set.taken_out();
         set.clear();
         assert!(set.said.is_empty() && set.scoped.is_empty());
+        assert_eq!(set.taken_out(), taken_out + 1);
+        set.clear();
+        assert_eq!(set.taken_out(), taken_out + 1);
         asked(&set);
+        // An operation that is tagged a second time is of the scope it
+        // was tagged with last, and of no other.
+        put(&mut set, 5);
+        set.tag_last(7, false);
+        set.tag_last(9, true);
+        assert_eq!((set.ops_of(7), set.ops_of(9)), (vec![], vec![0]));
+        assert_eq!((set.first_open(), set.laid(0)), (0, true));
     }
 
     /// A mark is refused once a write from before it went, whatever was
