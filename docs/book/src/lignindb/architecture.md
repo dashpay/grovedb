@@ -161,8 +161,11 @@ the database at one committed version, in a directory of its own
    whole checkpoint.
 
 Commits go on while it is built. The recording step holds the commit
-lock for that step, and a commit waits for the checkpoint's sync only
-where its own sync policy syncs at the commit. A creation that finds
+lock for that step. A commit waits for the checkpoint's sync where its
+own sync policy syncs at the commit, and a commit that finds a
+replacement of the manifest in doubt waits for whoever holds the
+manifest, the creation among them ([lignindb::checkpoint](https://github.com/dashpay/grovedb/blob/develop/lignindb/src/checkpoint/mod.rs)
+says each). A creation that finds
 more than 1 MiB of log held for the checkpoint's first open to replay
 has write-back catch up first ([engine.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/engine.md#checkpoints)).
 A checkpoint is a database like any other: opened by the normal open, which recovers it to

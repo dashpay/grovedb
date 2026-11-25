@@ -106,8 +106,12 @@ Set two variables before the next block:
   each step. The build takes a few GiB.
 
 The block makes `WORK` absolute, since it changes into the source
-directory to build, and clones only where no clone is there yet. Give
-the paths of step 4 as absolute paths too.
+directory to build. It clones the repository where no clone is there
+yet, and then fetches `GROVEDB_REF` and checks it out, so that a clone
+that a run before left behind is moved to the release as well. It names
+where Cargo builds (`CARGO_TARGET_DIR`), so that the `lignin` it puts
+first on the path is the one it built. Give the paths of step 4 as
+absolute paths too.
 
 ```sh
 : "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
@@ -116,8 +120,12 @@ mkdir -p "$WORK/reports"
 WORK=$(cd "$WORK" && pwd)
 if [ ! -d "$WORK/grovedb" ]; then git clone --depth 1 --branch "$GROVEDB_REF" https://github.com/dashpay/grovedb.git "$WORK/grovedb"; fi
 cd "$WORK/grovedb"
+git fetch --depth 1 origin "$GROVEDB_REF"
+git checkout --detach FETCH_HEAD
+git log -1 --format='building GroveDB at %H'
+export CARGO_TARGET_DIR="$WORK/grovedb/target"
 cargo build --release -p lignin-tools --features migrate
-export PATH="$WORK/grovedb/target/release:$PATH"
+export PATH="$CARGO_TARGET_DIR/release:$PATH"
 lignin help
 ```
 
@@ -135,16 +143,20 @@ which writes the plan's reference workload: a tree of documents and an
 index of a reference to each by its owner, here 20,000 documents over
 200 owners, with creates, updates and deletes after them. With
 `lignin-bench run --keep` its database stays in
-`$WORK/rehearsal/rocksdb`. Its report goes to a file; nothing in it is
-needed below.
+`$WORK/rehearsal/rocksdb`. **The benchmark removes what it finds at
+`rocksdb` and `rocksdb-checkpoint` in its scratch directory**, so the
+block refuses a `$WORK/rehearsal` that is there already. Its report goes
+to a file; nothing in it is needed below.
 
 ```sh
+if [ -e "$WORK/rehearsal" ]; then echo "$WORK/rehearsal is there already, and the benchmark would remove what it holds: choose another WORK"; false; fi
 cargo build --release -p lignin-testkit --bin lignin-bench
 lignin-bench run --engine rocksdb --keep --scratch "$WORK/rehearsal" --out "$WORK/rehearsal.json" --documents 20000 --owners 200 --creates 200 --updates 200 --deletes 200 --point-reads 20 --reference-reads 5 --warmup-reads 20 --cold-reads 1 --checkpoints 1 --reopens 1 > "$WORK/reports/rehearsal.txt"
 SOURCE="$WORK/rehearsal/rocksdb"
 TARGET="$WORK/rehearsal-lignindb/database"
 BACKUP="$WORK/rehearsal-backup/database"
 RESTORE="$WORK/rehearsal-restore/database"
+mkdir "$WORK/rehearsal-lignindb" "$WORK/rehearsal-backup" "$WORK/rehearsal-restore"
 ```
 
 For your node's own migration, skip this block and set the four
@@ -160,8 +172,8 @@ open is refused (`a process has it open`), and a node that is started
 meanwhile cannot open it. A writer whose `LOCK` file was replaced while
 it ran is not seen that way, since the new file says nothing of it.
 
-Then name four paths. None of them is to be there yet; the directory
-each is in can be, and is made below.
+Then name four paths. None of them is to be there yet, and the directory
+each is in has to be there: make it first.
 
 - `SOURCE`: the directory of the node's RocksDB GroveDB, the one that
   holds `CURRENT`, `MANIFEST-…` and the `.sst` files. A RocksDB
@@ -178,18 +190,25 @@ each is in can be, and is made below.
 : "${BACKUP:?set BACKUP to where the backup of the new database is to be}"
 : "${RESTORE:?set RESTORE to where the backup is to be restored once}"
 for path in "$TARGET" "$BACKUP" "$RESTORE"; do
-  if [ -e "$path" ]; then echo "$path is there already: choose another path"; false; fi
+  if [ -e "$path" ] || [ -L "$path" ]; then echo "$path is there already: choose another path"; false; fi
+  if [ ! -d "$(dirname "$path")" ]; then echo "$(dirname "$path") is not there: make it first"; false; fi
 done
+SOURCE=$(cd "$SOURCE" && pwd -P)
+TARGET="$(cd "$(dirname "$TARGET")" && pwd -P)/$(basename "$TARGET")"
+BACKUP="$(cd "$(dirname "$BACKUP")" && pwd -P)/$(basename "$BACKUP")"
+RESTORE="$(cd "$(dirname "$RESTORE")" && pwd -P)/$(basename "$RESTORE")"
 for path in "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"; do
   n=$(printf '%s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE" | awk -v p="$path" '$0 == p || index($0, p "/") == 1' | wc -l)
   if [ "$n" -ne 1 ]; then echo "$path is another of the four paths, or a directory that one of them is in: give four paths apart"; false; fi
 done
-mkdir -p "$(dirname "$TARGET")" "$(dirname "$BACKUP")" "$(dirname "$RESTORE")"
+printf 'SOURCE  %s\nTARGET  %s\nBACKUP  %s\nRESTORE %s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
 ```
 
-The second loop compares the four paths as they are written: none may be
-another, or lie inside another. The migrator also refuses a `TARGET`
-inside `SOURCE`, or around it, with links followed, before it opens
+The block writes each path again with every link followed (`pwd -P`),
+and then refuses four paths of which one is another, or lies inside
+another. Use the paths it prints from here on. Two names that no link
+gives one directory (a second mount of it) are not seen. The migrator
+also refuses a `TARGET` inside `SOURCE`, or around it, before it opens
 anything.
 
 ## 5. Survey the source
@@ -274,11 +293,14 @@ seconds (or as `--progress` says) a line says where the load stands:
 gone on with by the same command, with the same `--unreachable`. What
 `TARGET.migrating` holds says where the run stood, and a load goes on
 from its last commit. To start again from nothing instead, remove
-`TARGET.migrating`, after you have looked into it: the command's work
-directory holds a file `MIGRATION` and a directory `database` and
-nothing else, and a directory of that name that holds anything else is
-not the command's (the command refuses it and leaves it as it is).
-Nothing else is to open `TARGET.migrating` while the command runs.
+`TARGET.migrating`, but only where a run of the command made it: the
+command goes on with its own work directory, and refuses one it did not
+make with `… is there and is not the work of a migration: …`, which it
+leaves as it is. It tells its own by what its file `MIGRATION` holds to
+the byte, not by the names in the directory, so do not remove a
+directory of that name that a run refused, or that you cannot tell was
+made by a run for this `TARGET`. Nothing else is to open
+`TARGET.migrating` while the command runs.
 
 **The options**, for when the defaults do not fit:
 
@@ -320,14 +342,19 @@ grep ': loaded, compared and verified$' "$WORK/reports/migrate.txt"
 survey_hash=$(sed -n 's/^  root hash: //p' "$WORK/reports/survey.txt")
 target_hash=$(grep -o 'root_hash=[0-9a-f]*' "$WORK/reports/migrate.txt" | cut -d= -f2)
 if [ -n "$survey_hash" ] && [ "$survey_hash" = "$target_hash" ]; then echo "the same root hash: $target_hash"; else echo "THE ROOT HASHES DIFFER: survey $survey_hash, target $target_hash"; false; fi
+if [ "$(head -n 1 "$WORK/reports/survey.txt")" = "$(head -n 1 "$WORK/reports/migrate.txt")" ]; then echo "the same RocksDB identity and last write in both runs"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
 ```
 
 Each of these prints the line it found, or fails: `grep` with no line
-found, the last command with the words THE ROOT HASHES DIFFER. The last
-command holds the root hash that the survey of step 5 read from the
-source to the one the migration read from it, so it says that the source
-did not change between the two runs; that the target has that root hash
-is what `differing=0` says. Do not start the node on a target for which
+found, the last two commands with the words THE ROOT HASHES DIFFER or
+THE SOURCE CHANGED BETWEEN THE TWO RUNS. The first of the two holds the
+root hash that the survey of step 5 read from the source to the one the
+migration read from it. The second holds the first line of each report,
+which names the source's RocksDB identity and the sequence number of
+its last write: where they are the same, no write reached the source
+between the two runs. That the target has the source's root hash is
+what `differing=0` says; the migration also refuses a source that
+changes while it reads it. Do not start the node on a target for which
 one of them fails.
 
 Then check the target once more on its own, with the checker of
@@ -360,6 +387,7 @@ written, so a copy made there is durable once its device has been
 ejected or the system shut down.
 
 ```sh
+if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
 cp -a "$TARGET" "$BACKUP"
 sync
 lignin manifest "$BACKUP"
@@ -378,6 +406,7 @@ directory, open it with `lignin verify`, which checks every page and
 hash, and read its counts with `lignin stats`, which opens it again.
 
 ```sh
+if [ -e "$RESTORE" ] || [ -L "$RESTORE" ]; then echo "$RESTORE is there already: the copy would go into it"; false; fi
 cp -a "$BACKUP" "$RESTORE"
 sync
 lignin verify "$RESTORE" | tee "$WORK/reports/verify-restore.txt"
@@ -387,7 +416,8 @@ lignin stats "$RESTORE"
 Every open writes to the directory it opens (the recovery starts a log
 file of its own, and the close writes back), so the check is made on the
 restore and not on the backup. The restore is a copy of the database
-that nothing needs: remove it once you have read the two reports.
+that nothing needs: remove it once you have read the two reports, by
+the path that step 4 printed for `RESTORE`.
 
 ## 10. Start the node on LigninDB
 

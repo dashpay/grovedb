@@ -70,7 +70,7 @@ application and the rest of the engine hold.
 | --- | --- | --- |
 | never (the default) | after the next `flush()`, checkpoint, close, or table checkpoint of write-back, each of which syncs the log | the last commit before the last sync, or a later one: never on a part of a commit |
 | `SyncPolicy::Interval(d)` | after the next sync: a commit syncs the log where the last sync is at least `d` ago, and so does a turn of write-back's loop between commits. That is no bound in time where no commit and no turn comes, or a sync fails | the last commit before the last sync that was made, or a later one |
-| `SyncPolicy::EveryCommit` | when its commit returns | the last commit that returned, or one after it whose sync was made before the power was cut and whose commit had not returned yet |
+| `SyncPolicy::EveryCommit` | when its commit returns `Ok`; a commit that returns `NotDurable` is published and not known to be durable | the last commit that returned `Ok`, or one after it whose sync was made before the power was cut and whose commit had not returned yet |
 
 In every case the open lands on one committed version, never on a part
 of a commit, and on none older than the last one made durable
@@ -132,7 +132,7 @@ is `CleanerConfig::new`.
 | `CleanerConfig::seal_dead_percent` | 2 % | a file that is being filled is closed for cleaning when its dead bytes are this share of the store | leave it |
 | `CleanerConfig::max_segment_percent` | 1 % | a file that is being filled is closed when it holds this share of the store | leave it |
 | `CleanerConfig::min_segment_len` | 64 KiB | no file is closed for the cleaner before it holds this much | leave it |
-| `CleanerConfig::max_pass_bytes` | 8 MiB | the bytes of blocks after which a pass over the segments stops copying: it copies that many and one block more. A pass over the value log has its own measure, one file. With `idle` it bounds how fast the cleaner copies blocks | lower where the cleaner's writes compete with the node's; higher where dead space grows faster than the cleaner gives it back |
+| `CleanerConfig::max_pass_bytes` | 8 MiB | the bytes of blocks after which a pass over the segments stops copying: it looks before each block, so the last block it copies can take it past that many. A pass over the value log has its own measure, one file. With `idle` it bounds how fast the cleaner copies blocks | lower where the cleaner's writes compete with the node's; higher where dead space grows faster than the cleaner gives it back |
 | `CleanerConfig::segment_len` | 64 MiB | the length of the segments the cleaner moves blocks into | leave it |
 | `CleanerConfig::idle` | 100 ms | how long the cleaner sleeps between passes when nobody wakes it | with `max_pass_bytes` |
 

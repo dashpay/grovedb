@@ -25,11 +25,26 @@ The commands use these variables, as absolute paths:
 `lignin` is the tool of the [migration runbook](migration.md#1-build-the-tool),
 built the same way (the feature `migrate` is not needed here).
 
+The directory each of `BACKUP` and `RESTORE` is in has to be there. The
+block writes the three paths again with every link followed, so that a
+copy is never made of a link or into the database, and refuses three
+paths of which one is another or lies inside another.
+
 ```sh
 : "${DB:?set DB to the directory of the database}"
 : "${BACKUP:?set BACKUP to where the backup is to be}"
 : "${RESTORE:?set RESTORE to where a backup is to be restored}"
-mkdir -p "$(dirname "$BACKUP")" "$(dirname "$RESTORE")"
+for path in "$BACKUP" "$RESTORE"; do
+  if [ ! -d "$(dirname "$path")" ]; then echo "$(dirname "$path") is not there: make it first"; false; fi
+done
+DB=$(cd "$DB" && pwd -P)
+BACKUP="$(cd "$(dirname "$BACKUP")" && pwd -P)/$(basename "$BACKUP")"
+RESTORE="$(cd "$(dirname "$RESTORE")" && pwd -P)/$(basename "$RESTORE")"
+for path in "$DB" "$BACKUP" "$RESTORE"; do
+  n=$(printf '%s\n' "$DB" "$BACKUP" "$RESTORE" | awk -v p="$path" '$0 == p || index($0, p "/") == 1' | wc -l)
+  if [ "$n" -ne 1 ]; then echo "$path is another of the three paths, or a directory that one of them is in: give three paths apart"; false; fi
+done
+printf 'DB      %s\nBACKUP  %s\nRESTORE %s\n' "$DB" "$BACKUP" "$RESTORE"
 ```
 
 ## What a backup is
@@ -57,17 +72,21 @@ With the node stopped (or any process that had the database open
 closed):
 
 ```sh
+if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
 cp -a "$DB" "$BACKUP"
 sync
 lignin manifest "$BACKUP"
 ```
 
 `cp -a` copies every file of the directory with the `LOCK` file. `cp`
-returns before its bytes are on the device: `sync` makes the copy
-durable. `lignin manifest` reads the backup's manifest without opening
-it and lists the files it names. It does not read the files themselves:
-a backup is relied on once a restore of it has passed `lignin verify`
-(below).
+returns before its bytes are on the device. On Linux `sync` returns once
+the system has written them, and so makes the copy durable; on macOS
+`sync` can return before, so a copy made there is durable once its
+device has been ejected or the system shut down. `lignin manifest`
+reads the backup's manifest without opening it and lists the files it
+names, marking one that is not there `MISSING` and one that is shorter
+`SHORT`; it exits 0 either way, and reads no page. A backup is relied on
+once a restore of it has passed `lignin verify` (below).
 
 ## Back up a running node
 
@@ -77,32 +96,43 @@ a backup is relied on once a restore of it has passed `lignin verify`
    makes one more for the backup. When the call returns `Ok`, the
    checkpoint is durable as far as the directory above `path` is: that
    directory's own name is the application's to have made durable.
+   **A checkpoint holds the engine's files and nothing else**, unless the
+   application names files for it to carry: a file that the application
+   keeps in the database directory is not in it, and is backed up as the
+   application's documentation says.
 2. **Do not open the checkpoint** before it is copied: every open writes
    to the directory it opens. `lignin manifest` and `lignin segments` read
    files only, and can be run on it.
 3. **Copy its directory**, and make the copy durable by syncing the
    copy's files and nothing else. On Linux, `sync` given files (GNU
    coreutils) syncs those files alone: `find` hands it every file and
-   directory of the copy, and the last line syncs the directory the copy
-   is in, which holds the copy's own name:
+   directory of the copy, and the loop after it syncs each directory the
+   copy is in, up to the root, which hold the copy's name and the names
+   above it. macOS's `sync` takes no file and syncs every file of the
+   system, so there the block makes no sync:
 
    ```sh
    : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}"
+   CHECKPOINT=$(cd "$CHECKPOINT" && pwd -P)
    lignin manifest "$CHECKPOINT"
+   if [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; then echo "$BACKUP is there already: the copy would go into it"; false; fi
    cp -a "$CHECKPOINT" "$BACKUP"
-   find "$BACKUP" -exec sync {} +
-   sync "$(dirname "$BACKUP")"
+   if [ "$(uname -s)" = Linux ]; then
+     find "$BACKUP" -exec sync {} +
+     d=$(dirname "$BACKUP"); while [ "$d" != / ]; do sync "$d"; d=$(dirname "$d"); done
+   else
+     echo "no sync here: make the copy durable once the node has stopped"
+   fi
    ```
 
    Do not run `sync` with no file while the node runs: it syncs every
    file of the system, the checkpoint's log files among them, and those
    are the live database's own. A sync of a log file through another
    name, which fails, is not seen by the database that writes it
-   ([BK7](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md#62-the-procedure)). macOS's `sync`
-   takes no file, syncs every file of the system and can return before
-   they are written: there, do not run it while the node runs, and take a
-   copy as durable once its device has been ejected or the system shut
-   down.
+   ([BK7](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md#62-the-procedure)). On macOS, where
+   `sync` cannot be given a file and can return before the files are
+   written, take a copy as durable once the node has stopped and the
+   copy's device has been ejected, or the system shut down.
 4. **Delete the checkpoint.** Until it is deleted it keeps the bytes of
    every file the live database has let go of since it was made. The
    application deletes it with the deletion of the engine it runs:
@@ -124,36 +154,44 @@ a backup is relied on once a restore of it has passed `lignin verify`
 
 A backup that is to be relied on is checked once, on a restore of it:
 the copy of a directory reads no page, and the check reads them all. The
-restore is synced file by file, as the copy of a checkpoint is, so that
-on Linux it can be made beside a running node.
+restore is synced as the copy of a checkpoint is, file by file on Linux
+and not at all elsewhere, so that it can be made beside a running node.
+A restore that a node is to run on is made with that node stopped, and
+is durable once synced as a stopped database's backup is.
 
 ```sh
+if [ -e "$RESTORE" ] || [ -L "$RESTORE" ]; then echo "$RESTORE is there already: the copy would go into it"; false; fi
 cp -a "$BACKUP" "$RESTORE"
-find "$RESTORE" -exec sync {} +
-sync "$(dirname "$RESTORE")"
+if [ "$(uname -s)" = Linux ]; then
+  find "$RESTORE" -exec sync {} +
+  d=$(dirname "$RESTORE"); while [ "$d" != / ]; do sync "$d"; d=$(dirname "$d"); done
+fi
 lignin verify "$RESTORE"
 ```
 
 `lignin verify` opens the restore, closes it and checks every page and
 every value, and makes every stored hash again by Merk's rules but those
 the rules take as stored (the value hash of a reference). Exit status 0
-is a sound store. A
-restore is a database like any other, at the version the backup holds:
-point the node at it, or keep it as the check and remove it.
+is a sound store. A restore is a database like any other, at the version
+the backup holds: point the node at it, or keep it as the check and
+remove it.
 
 **A restored directory that does not open, with
 `holds a database and no LOCK file`,** was copied by a tool that left
 `LOCK` out. Put an empty file of that name there, once you know that no
-process has the directory open:
+process has the directory open, and run the check that could not run:
 
 ```sh
 touch "$RESTORE/LOCK"
-lignin stats "$RESTORE"
+lignin verify "$RESTORE"
 ```
 
-**What a backup holds** is what was copied. `cp -a` copies the whole
-directory: the engine's files, the reserve (`RESERVE`, below) and
-whatever the application keeps there.
+**What a backup holds** is what was copied. A copy of a stopped
+database's directory with `cp -a` holds the whole directory: the
+engine's files, the reserve (`RESERVE`, below) and whatever the
+application keeps there. A copy of a checkpoint holds what the
+checkpoint holds: the engine's files, and the files the application
+named for it to carry.
 
 ### What a cut-short copy or checkpoint leaves
 
@@ -161,7 +199,7 @@ whatever the application keeps there.
 | --- | --- | --- |
 | a copy that `cp` or `sync` did not finish, with or without a `MANIFEST` | a copy that was cut short: `cp` writes the files in no set order, so its manifest says nothing of the rest | remove it, and copy again |
 | a directory whose name ends in `.creating`, beside a checkpoint's path | what a creation of a checkpoint at that path left, when it was cut short or failed. It is never opened, and it holds disk space. | with no checkpoint being made at that path, remove that directory by itself. Keep nothing of your own under a name that ends in `.creating`: a creation at the path takes over whatever such a directory holds, and the deletion of a checkpoint at the path removes it |
-| a directory that holds `MANIFEST.deleting` and no `MANIFEST` | a deletion that was cut short, where that entry is a manifest: a deletion renames the manifest to that name before it removes any file | the deletion of [step 4](#back-up-a-running-node) finishes it. It refuses the directory where the entry is no manifest; then whoever made the entry removes it |
+| a directory that holds `MANIFEST.deleting` and no `MANIFEST` | a deletion that was cut short, where that entry is a manifest and a deletion of this directory was under way: a deletion renames the manifest to that name before it removes any file. The names alone do not say that a deletion was meant | where you know that this directory was being deleted, the deletion of [step 4](#back-up-a-running-node) finishes it (it refuses the directory where the entry is no manifest). Where you do not know that, delete and rename nothing: some of its files may be gone, and the database is restored from a backup |
 | a directory that holds both `MANIFEST.deleting` and `MANIFEST` | no deletion leaves this, since it renames the manifest first: something else made the entry beside a database | if the database is to be kept, remove the entry `MANIFEST.deleting` and nothing else. The deletion of [step 4](#back-up-a-running-node) would remove the whole database: it goes by the manifest it finds, not by the entry's name |
 
 ## The device is full
@@ -201,20 +239,21 @@ reserve, below.
    has ended when an error of a commit or of a flush says so:
    - its words say
      `the session takes no write, and the database has to be opened again`,
-     or `the session takes no commit: …`;
+     or `the session takes no commit: …`, or, from a flush,
+     `a sync of … failed, so the log cannot be made durable in this session: …`;
    - or GroveDB answers the commit with
      `not durable: the commit happened, but it is not known to survive a crash`
      or `unsettled: the engine could not find out whether the commit happened`.
      These two give the engine's words no further: [the messages](messages.md#how-a-message-reaches-you).
 
-   A sync of the log or of a segment was then refused while the device
-   was full: stop the node, and start it again once there is room.
-   Nothing that was made durable is lost. The open can land on an earlier
-   commit than the last one the node published, since a sync that the
-   device refused makes no promise of what it was for, and it settles
-   whether an unsettled commit happened; `Db::version` says where the
-   open landed. With none of these, the session goes on by itself, and
-   the next commit is taken once there is room.
+   Then stop the node, and start it again once there is room. Nothing
+   that was made durable is lost. Where a sync was refused, the open can
+   land on an earlier commit than the last one the node published, since
+   a sync that the device refused makes no promise of what it was for;
+   the open also settles whether an unsettled commit happened.
+   `Db::version` says where the open landed. With none of these, the
+   session goes on by itself, and the next commit is taken once there is
+   room.
 3. **Let the engine give room back.** In a running session, write-back
    takes a table checkpoint and drops the log files it covers, and the
    cleaner drops the segment and value-log files that are dead and moves

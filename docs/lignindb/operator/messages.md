@@ -45,8 +45,10 @@ subcommand give the same line, then the usage, and the status 2.
 
 ## At an open
 
-An open is `Db::open`: what a node does when it starts, what
-`GroveDb::open_checkpoint` does, and what every `lignin` subcommand but
+An open is `Db::open`: what a node does when it starts, what an open of
+a checkpoint on LigninDB does (`GroveDb::<LigninEngine>::open_checkpoint_with_engine`,
+or `GroveDb::open_checkpoint` where LigninDB is the build's default
+engine), and what every `lignin` subcommand but
 `manifest`, `segments` and `migrate` does. Through `lignin` the words
 come after `lignin: the database did not open: `.
 
@@ -115,6 +117,60 @@ These follow `manifest: `, `recovery could not go on: ` or
 | `the manifest vouches for … bytes of …, and the log ends before that file` | a log file that the manifest needs is missing | restore from a backup | `lignin-store/src/wal/error.rs` |
 | `the header of … says it is log file …` | a log file under another file's name | restore from a backup | `lignin-store/src/wal/error.rs` |
 | `every log file id has been used` | the log has used the last id a log file can have (2³² − 2) | a database that is built again (a state sync, or a migration from a backup) begins its ids again | `lignin-store/src/wal/error.rs` |
+
+### Other words of the log and the segments
+
+These follow the same prefixes, or `the commit was not made: ` and
+`the log: `, or `write-back: `. Most say that a rule of the engine did not
+hold, which no operator's action causes: **report them with the whole
+message**. The ones that say otherwise are marked.
+
+| Message | What it means | What to do | Code |
+| --- | --- | --- | --- |
+| `an append to … failed, and the item is not in the log: …` | the file layer refused an append; the commit or record is not in the log, and no crash brings it back. The words after it say why, as "No space left on device" on a full device | [make room](backup-and-full-disk.md#what-to-do-in-this-order) where the device is full; otherwise as the system's words say | `lignin-store/src/wal/error.rs` |
+| `an append to … failed and left the file as long as it was, and a crash can still bring the item back: …` | the same, where a crash before the next sync can still bring the item back | the same | `lignin-store/src/wal/error.rs` |
+| `an append to … failed, and it is not known whether the item is in the log: …` | the log cannot tell whether the item is in it, and takes nothing more in this session; the next open settles it | open again once the cause is gone | `lignin-store/src/wal/error.rs` |
+| `an append to … failed, and no manifest names the file closed yet` | the log waits for a manifest that names the file closed before it goes on in its next file; write-back's next turn or the next commit makes it, which needs a little room | make room where the device is full | `lignin-store/src/wal/error.rs` |
+| `the log has no file that takes items since an append to … failed: …` | the same wait, with the system's answer to the append | the same | `lignin-store/src/wal/error.rs` |
+| `the log has no file that takes items` | the same wait, before the log has turned to a file | the same | `lignin-store/src/wal/error.rs` |
+| `a sync of … failed, so the log cannot be made durable in this session: …` | a sync of the log failed: nothing appended after the last sync that succeeded can be made durable in this session, and the session takes no write | open again once the cause is gone ([When a session ends](#when-a-session-ends)) | `lignin-store/src/wal/error.rs` |
+| `a sync of segment … failed` | a sync of a segment failed in this session | the same | `lignin-store/src/segment/error.rs` |
+| `the reader of the log has failed before` | a read of the log met an error before, which the first message said | as that one says | `lignin-store/src/wal/error.rs` |
+| `manifest of … passed to the log of …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `the end of the log that was passed and the manifest disagree on log file …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `the log already has file … to turn to` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `the log has no file to turn to` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `no manifest names log file … yet` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `a group written for offset … of log file …, ` then `where the log now ends at offset … of file …` or `where the log now has no file that takes items` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `the record at offset … of what was offered may not stand at the end of the log: …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `… bytes were offered as one item, and the first item in them is … bytes long` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `what was offered is not …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `the log is to be made durable through offset … of file …, and ` then `ends at offset … of file …` or `holds nothing` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `the log is to be kept from offset … of file …, and is durable ` then `up to offset … of file …` | the log is not durable up to the place it was to be kept from, so no file before it was dropped; this follows a sync that failed | as for the failed sync | `lignin-store/src/wal/error.rs` |
+| `a place of another log, or of an earlier session` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `no log file …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `no log file in use holds the address …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
+| `… bytes of … from offset … on do not fit in memory here` | an item of the log is longer than this machine can hold in memory | open on a machine with more memory; report it | `lignin-store/src/wal/error.rs` |
+| `a value whose records take … bytes does not fit in memory here` | a value is longer than this machine can hold in memory | the same | `lignin-store/src/wal/error.rs` |
+| `… already has a MANIFEST` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `invalid manifest replacement: …` | a new manifest would undo what the one in force says; one of the six reasons below follows | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `the page size is …, and the store was created with …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `the last … file id is lower than it was` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `… file … is new, but its id is not above the last id of its kind` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `… file … has a lower valid length than it had` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `… file … was closed or sealed and has another state or length` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `page-table checkpoint … has another length or commit version than it had` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `… has pages of … bytes and was opened with pages of …` | the options name another page size than the store was made with | leave `page_size` unset ([tuning](tuning.md)) | `lignin-store/src/segment/error.rs` |
+| `manifest of … passed to the segment store of …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `no segment …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `… bytes at offset … of segment … are not inside its blocks, which end at …` | a link of the page table points behind the blocks of a segment | damage: restore from a backup, and report it | `lignin-store/src/segment/error.rs` |
+| `segment … is not sealed` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `no manifest names segment … yet` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `segment … takes no more blocks` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `segment … is full` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `segment … still has a writer` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
+| `every segment id has been used` | the segment store has used the last id a segment can have | a database that is built again (a state sync) begins its ids again | `lignin-store/src/segment/error.rs` |
+| `the segment store is read-only` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/segment/error.rs` |
 
 ## In a recovery
 
@@ -250,7 +306,7 @@ GroveDB the words follow `lignindb: `; a refusal for the name is
 | `the manifest could not be read: …` | the manifest was in doubt again when the creation read it | make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 | `the log holds commit …, and the latest published version is …` | the log holds a commit the session never published, as after a commit that panicked between its append and its publication | open again | `lignindb/src/checkpoint/error.rs` |
 | `the checkpoint's log ends at …, and the log is durable …` | the log's sync returned without covering where the checkpoint's log ends | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
-| `log file … …` | a log file before the end of the checkpoint's log is not closed and durable as the checkpoint needs it; the reason follows the file's id | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
+| `log file … …` | a log file that the checkpoint's log needs, up to the file that holds its end, is not there or not closed and durable as the checkpoint needs it; the reason follows the file's id | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
 | `the log: …` | the log refused to be held for the checkpoint, or to say what its files are; the log's words follow | as those words say; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 | `… is not the plain name of a file in the database directory` | a file that the application asked a checkpoint to carry beside the store's is named otherwise than by one plain name | the application's | `lignindb/src/checkpoint/error.rs` |
 | `the manifest of the checkpoint could not be written: …` | the checkpoint's manifest could not be encoded | report it | `lignindb/src/checkpoint/error.rs` |
