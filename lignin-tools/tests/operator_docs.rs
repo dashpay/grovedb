@@ -117,7 +117,11 @@ const COVERED: [(&str, &[&str]); 23] = [
 /// Words that the code hands to a message of those types as a value, by
 /// the file and the words before each: the string literal after each is
 /// quoted in the messages chapter too.
-const REASONS: [(&str, &str); 8] = [
+const REASONS: [(&str, &str); 12] = [
+    ("lignindb/src/db/open.rs", "tree("),
+    ("lignindb/src/db/open.rs", "column("),
+    ("lignindb/src/db/mod.rs", "let ended = "),
+    ("lignindb/src/checkpoint/files.rs", "CheckpointError::io("),
     ("lignindb/src/checkpoint/create.rs", "reason: "),
     ("lignindb/src/db/open.rs", "OpenError::create("),
     ("lignindb/src/db/open.rs", "OpenError::catalog("),
@@ -705,8 +709,14 @@ fn formatted(literal: &str) -> String {
     out
 }
 
-/// The literals of every Rust file at or below `path`.
+/// The literals of every Rust file at or below `path`, but for the code of
+/// tests (a directory `tests`, a file `tests.rs`), whose expectations can
+/// keep the words of a message that the code no longer has.
 fn patterns_below(path: &Path) -> Vec<String> {
+    let name = path.file_name().map(|name| name.to_string_lossy());
+    if name.is_some_and(|name| name == "tests" || name == "tests.rs") {
+        return Vec::new();
+    }
     if path.is_file() {
         return literal_patterns(&read(path));
     }
@@ -1222,8 +1232,7 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
             let Some(pattern) = literal_patterns(rest).into_iter().next() else {
                 continue;
             };
-            let words = pattern.chars().filter(|c| c.is_alphabetic()).count();
-            if words < 3 || !pattern.contains(' ') {
+            if pattern.chars().filter(|c| c.is_alphabetic()).count() < 3 {
                 continue;
             }
             covered += 1;
