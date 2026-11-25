@@ -37,6 +37,7 @@ fails that test until this chapter says the new one.
 | `Options::log_file_len` | 64 MiB | the length at which a log file is full and the log goes on in the next one | no reason known for a node |
 | `Options::reserve` | 0 bytes | the room a session keeps in a file of its own, to give back when the device fills ([backup and full disk](backup-and-full-disk.md#the-reserve)) | on a node whose device can fill: the design text's first estimate is one log file and one segment, 128 MiB with the defaults |
 | `Options::idle` | 100 ms | how long the thread that reclaims dropped subtrees sleeps when nobody wakes it | no reason known |
+| `Options::vfs` | `StdVfs` | the file layer the database's files are read and written through. On Linux, an application built with the feature `direct_io` of `lignin-io` can give `lignin_io::linux::DirectVfs`, which reads with `O_DIRECT`; on a file system that takes no direct reads the open is then refused (`… cannot be opened for direct reads: …`, [messages](messages.md#the-files-at-an-open)) | leave it: `benchmarks.md` has no run with direct reads |
 | `Options::create_if_missing` | yes | whether an open makes a database in a directory that holds none | GroveDB's `open_checkpoint` and `lignin` set it off; a node that must never start on an empty directory sets it off |
 
 ### Memory

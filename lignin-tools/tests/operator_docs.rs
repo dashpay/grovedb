@@ -981,6 +981,24 @@ fn patterns_below(path: &Path) -> Vec<String> {
     found
 }
 
+/// Whether the Rust file `file` is code of tests: it is in a directory
+/// `tests` or is a file `tests.rs`, or it, or a directory above it, is a
+/// module that its module file declares for tests alone.
+fn is_test_code(file: &Path) -> bool {
+    file.ancestors()
+        .take_while(|path| !path.join("Cargo.toml").exists())
+        .any(|path| {
+            let (Some(dir), Some(stem)) = (path.parent(), path.file_stem()) else {
+                return false;
+            };
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            name.is_some_and(|name| name == "tests" || name == "tests.rs")
+                || test_modules(dir).contains(&*stem.to_string_lossy())
+        })
+}
+
 /// The modules of the directory `dir` that its module file declares for
 /// tests alone (`#[cfg(test)] mod name;`): their files are code of tests.
 fn test_modules(dir: &Path) -> BTreeSet<String> {
@@ -1273,6 +1291,9 @@ fn every_quoted_message_is_in_the_code() {
                     continue;
                 }
                 for file in &files {
+                    if is_test_code(&root.join(file)) {
+                        faults.push(format!("{name}:{line}: {file} is code of tests"));
+                    }
                     by_file
                         .entry(file.clone())
                         .or_insert_with(|| literal_patterns(&read(&root.join(file))));
@@ -1358,6 +1379,15 @@ fn defaults() -> BTreeMap<String, String> {
         reserve,
         vfs: _,
     } = Options::default();
+    // The file layer is a trait object: its default is held to the source
+    // of `Options::default`.
+    let options = read(&repository().join("lignindb/src/options.rs"));
+    let vfs = match function_body(&options, "impl Default for Options {")
+        .contains("vfs: Arc::new(StdVfs),")
+    {
+        true => "`StdVfs`".to_owned(),
+        false => "another file layer than `StdVfs`".to_owned(),
+    };
     let page_size = page_size.unwrap_or(PageSize::DEFAULT);
     let log_file_len = log_file_len.unwrap_or(LogOptions::default().target_file_len);
     let FlushConfig {
@@ -1406,6 +1436,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("Options::page_size", bytes(page_size.get() as u64)),
         ("Options::log_file_len", bytes(log_file_len)),
         ("Options::reserve", bytes(reserve)),
+        ("Options::vfs", vfs),
         ("Options::idle", duration(idle)),
         (
             "Options::create_if_missing",
