@@ -37,6 +37,11 @@ if [ -e "$work" ] && [ -n "$(ls -A "$work")" ]; then
     echo "runbook.sh: $work is not empty" >&2
     exit 2
 fi
+case "/$work/" in */../*)
+    echo "runbook.sh: a WORK with a .. in it is not taken" >&2
+    exit 2
+    ;;
+esac
 # Nothing is made inside a database directory, the source's among them:
 # above the part of WORK that is not there yet, the walk goes up the
 # directories it is in, with their links followed.

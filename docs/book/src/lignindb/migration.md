@@ -110,11 +110,12 @@ end that shell, so that no later command runs on what a failed one left.
 To go on after a failure, start `bash` again, run this block and the
 block of step 2 again (it clones nothing that is there and builds only
 what changed, and puts `lignin` on the path), `export` the four paths as
-step 4 printed them, and go on with the step that failed. Where that is
-step 8 or step 9, its directory is there already and the step refuses
-it: give a new `BACKUP` or `RESTORE` (step 4 again checks it), or remove
-the copy that the step left, which it claimed for itself and which holds
-nothing else.
+step 4 printed them, and go on with the step that failed. Steps 3, 8 and 9 claim a directory
+first, and run again they refuse the one that the failed run claimed:
+remove that directory, which the step made and which holds nothing but
+what it built or copied (`$WORK/rehearsal` for step 3, `BACKUP` or
+`RESTORE` for steps 8 and 9), and run the step again. Do not run step 4
+again once `TARGET` is there: its first check refuses it.
 
 ```sh
 set -euo pipefail
@@ -246,6 +247,7 @@ absolute paths too.
 ```sh
 : "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
 : "${WORK:?set WORK to a directory for the build and the reports}"
+case "/$WORK/" in */../*) echo "$WORK has a .. in it, which mkdir -p could make lead elsewhere: give WORK without one"; false ;; esac
 outside_databases "$WORK/reports"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
@@ -478,9 +480,10 @@ made by a run for this `TARGET`. Nothing else is to open
 | `--progress SECS` | 5 | how often the progress line is printed; 0 prints it after every commit |
 | `--unreachable refuse\|leave\|carry` | `leave` | see step 5 |
 
-A run that goes on with a work directory must be given the
-`--unreachable` choice the run that began it had; it says so if it is
-not.
+A run that goes on with a work directory is to be given the
+`--unreachable` choice the run that began it had. Where the source has
+prefixes that nothing leads to, it refuses another and says so; where it
+has none, the choice changes nothing, and is not held.
 
 ## 7. Verify
 

@@ -409,7 +409,10 @@ reserve, below.
      or `unsettled: the engine could not find out whether the commit happened`.
      These two give the engine's words no further: [the messages](messages.md#how-a-message-reaches-you).
 
-   Then stop the node, and start it again once there is room. Nothing
+   Then stop the node, and start it again once there is room; but where
+   the reason is `every log file id has been used, and the log can be given no further file`,
+   keep the node's handle for reads, as
+   [the messages](messages.md#when-a-session-ends) say. Nothing
    that was made durable is lost. Where a sync was refused, the open can
    land on an earlier commit than the last one the node published, since
    a sync that the device refused makes no promise of what it was for;
