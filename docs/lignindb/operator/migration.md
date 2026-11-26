@@ -344,7 +344,9 @@ has to be there: make it first.
   (a database whose records are all still in its log has none). A RocksDB
   checkpoint of it can be the source as well: the migration then holds
   the state of that checkpoint, and a node started on it goes on from
-  there.
+  there. A checkpoint that RocksDB made of a directory that held a
+  LigninDB database holds RocksDB's files alone, of an empty grove: step
+  5 shows it.
 - `TARGET`: where the LigninDB database is to be.
 - `BACKUP`: where the backup of step 8 is to be, best on another device.
 - `RESTORE`: where step 9 restores that backup to check it.
@@ -360,7 +362,7 @@ for path in "$TARGET" "$BACKUP" "$RESTORE"; do
 done
 SOURCE=$(real_dir "$SOURCE")
 for entry in MANIFEST MANIFEST.deleting wal seg val table; do
-  if [ -e "$SOURCE/$entry" ] || [ -L "$SOURCE/$entry" ]; then echo "$SOURCE holds $entry, an entry of a LigninDB database, beside the RocksDB one: find out which of the two holds the node's state before you go on"; false; fi
+  if [ -e "$SOURCE/$entry" ] || [ -L "$SOURCE/$entry" ]; then echo "$SOURCE holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before you go on"; false; fi
 done
 TARGET=$(real_new "$TARGET")
 BACKUP=$(real_new "$BACKUP")
@@ -416,6 +418,12 @@ Read its report before you go on:
   that nothing keeps a writer away.
 - `root hash:` is the root hash of the grove, as GroveDB gives it from
   the source. The migration compares the target's with it (step 7).
+  Check that the grove is the node's: where the application knows its
+  root hash at the stop, it is that one, and a grove with no Merk node
+  (`Merk nodes: …` at 0) is an empty one, which the directory of a node that
+  kept its state there is not. A RocksDB database that RocksDB made
+  beside a LigninDB one, or a checkpoint that RocksDB made of such a
+  directory, reads as such an empty grove.
 - The counts after it say what is in the source. A line that begins
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
@@ -866,19 +874,25 @@ survey of step 5, and has three answers:
   `--memory-limit`, give this one the same. Otherwise the application's
   own check decides.
 
-A refusal of the survey does not stop the block, so the answer is given
-all the same; a report that cannot be written ends the shell, as any
+As step 4 does, the block first refuses a `SOURCE` that holds an entry
+that only a LigninDB database makes: RocksDB opened there beside a
+LigninDB database reads its own empty grove. A refusal of the survey
+does not stop the block, so the answer is given all the same; a report that cannot be written ends the shell, as any
 failure does, before an answer, and the block removes the report of an
 earlier way back first, so it never reads one. A match shows that the
 identity, the last write, the grove's root hash and the number and bytes
-of the records of each keyspace are those step 5 saw, as the totals
-that step 7 compares, not that every record is: a change that keeps
-every total, with the same last write and root hash, is not seen. So it is a check the way back needs, and no proof: the
+of the records are those step 5 saw, as far as the totals that step 7
+compares show them, not that every record is: a change that keeps
+every total, with the same last write and root hash, is not seen. So it
+is a check the way back needs, and no proof: the
 application's own check of its state decides too. Where `SOURCE`
 was a checkpoint, the node's own directory has a state of its own,
 which the application identifies; this block is not for it.
 
 ```sh
+for entry in MANIFEST MANIFEST.deleting wal seg val table; do
+  if [ -e "$SOURCE/$entry" ] || [ -L "$SOURCE/$entry" ]; then echo "$SOURCE holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before you go on"; false; fi
+done
 rm -f "$WORK/reports/survey-again.txt"
 { lignin migrate "$SOURCE" --survey 2>&1 || true; } | tee "$WORK/reports/survey-again.txt"
 first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$1"; }

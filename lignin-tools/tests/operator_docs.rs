@@ -11,7 +11,8 @@
 //!   a message quoted elsewhere;
 //! - the defaults of the tuning chapter and of the runbook are the code's;
 //! - the comparisons of steps 7 and 11 of the runbook answer as it says,
-//!   run on reports made for each case;
+//!   run on reports made for each case, and step 4 refuses a source that
+//!   holds an entry of LigninDB;
 //! - the chapters of the book are the documents.
 //!
 //! `docs/lignindb/operator/runbook.sh` runs the commands themselves.
@@ -2106,4 +2107,62 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
         (false, untold),
         "step 11, two refusals alike"
     );
+}
+
+#[test]
+fn step_4_refuses_a_source_that_holds_an_entry_of_lignindb() {
+    let text = read(&operator_dir().join("migration.md"));
+    let fences = parse(&text).fences;
+    let block = |mark: &str| -> String {
+        let found: Vec<&Fence> = (fences.iter())
+            .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line.contains(mark)))
+            .collect();
+        assert_eq!(found.len(), 1, "one block of migration.md holds {mark:?}");
+        found[0].body.join("\n")
+    };
+    // The functions of step 1, without its lines that install Cargo.
+    let step_1 = block("apart() {");
+    let functions = &step_1[step_1.find("plain_path() {").expect("plain_path")..];
+    let step_4 = block("set SOURCE to the RocksDB directory");
+    let run = |entries: &[&str]| {
+        let root = tempfile::tempdir().expect("a directory");
+        let source = root.path().join("rocksdb");
+        fs::create_dir(&source).expect("the source");
+        for entry in entries {
+            fs::write(source.join(entry), "").expect("an entry");
+        }
+        let work = root.path().join("work");
+        fs::create_dir(&work).expect("WORK");
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!("set -euo pipefail\n{functions}\n{step_4}\n"))
+            .env("SOURCE", &source)
+            .env("TARGET", root.path().join("target"))
+            .env("BACKUP", root.path().join("backup"))
+            .env("RESTORE", root.path().join("restore"))
+            .env("WORK", &work)
+            .output()
+            .expect("bash");
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        (output.status.success(), printed)
+    };
+    let (passed, printed) = run(&["CURRENT", "IDENTITY"]);
+    assert!(
+        passed && printed.contains("RESTORE "),
+        "a RocksDB source: {printed}"
+    );
+    for entry in [
+        "MANIFEST",
+        "MANIFEST.deleting",
+        "wal",
+        "seg",
+        "val",
+        "table",
+    ] {
+        let (passed, printed) = run(&["CURRENT", entry]);
+        assert!(
+            !passed && printed.contains("an entry that only a LigninDB database makes"),
+            "a source with {entry}: {printed}"
+        );
+    }
 }
