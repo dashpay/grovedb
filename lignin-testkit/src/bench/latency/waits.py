@@ -13,8 +13,9 @@ harness's lines `lignin-mark measured begin` and `lignin-mark measured end`,
 which the trace has as MARK records. The load and the warm blocks, which the
 same thread applies through the same calls, are left out. A wait with no user
 stack cannot be given a place, the commit or the operations before it, and is
-counted apart; so is a wait in which the thread was taken off a processor
-while it could run.
+counted apart; so is a wait of the harness between two blocks, where it reads
+the engine's counts, and a wait in which the thread was taken off a
+processor while it could run.
 
 Printed:
 
@@ -202,9 +203,13 @@ def main():
               "%d in the measured blocks and %d before or after them, which are not counted." % (
                   seconds, floor / 1e3, sum(1 for wait in long if trace.in_the_measured_blocks(wait)),
                   sum(1 for wait in long if not trace.in_the_measured_blocks(wait))))
-        unplaced = [wait for wait in long if trace.in_the_measured_blocks(wait) and not in_a_block(wait)]
-        print("Of those in the measured blocks, %d (%.1f ms in all) have no user stack that reaches a block of "
-              "the harness, and are in no row below." % (len(unplaced), sum(wait["us"] for wait in unplaced) / 1e3))
+        outside = [wait for wait in long if trace.in_the_measured_blocks(wait) and not in_a_block(wait)]
+        unplaced = [wait for wait in outside if not wait["user"]]
+        between = [wait for wait in outside if wait["user"]]
+        print("Of those in the measured blocks, %d (%.1f ms in all) have no user stack, so no place can be given "
+              "them, and %d (%.1f ms) are of the harness between two blocks, where it reads the engine's counts. "
+              "Neither is in a row below." % (len(unplaced), sum(wait["us"] for wait in unplaced) / 1e3,
+                                              len(between), sum(wait["us"] for wait in between) / 1e3))
         for dev in sorted({dev for dev, _ in trace.starts}):
             took = [trace.ends[key] - at for key, at in trace.starts.items()
                     if key[0] == dev and key in trace.ends and trace.measured[0] <= at <= trace.measured[1]]
