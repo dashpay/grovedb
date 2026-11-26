@@ -2,13 +2,18 @@
 //! records it puts there, and not once a record (`lignin_tree::directory`,
 //! "The records of a batch"). The frames count what each batch settles
 //! (`frames::probe`), and the tests hold the counts to the committed
-//! directory before the batch and after it.
+//! directory before the batch and after it, and to every image of a leaf
+//! that the thread wrote into a flat keyspace while the batch was applied
+//! (`lignin_tree::flat::leaf_images_written`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use lignin_format::{flat_page::FlatPage, CommitVersion, PageId};
 use lignin_store::load::FRAME_FORMAT;
-use lignin_tree::{directory::Settled, flat::FlatPages};
+use lignin_tree::{
+    directory::Settled,
+    flat::{leaf_images_written, FlatPages},
+};
 
 use super::{
     model::{self, handle_of, OwnedBatch, OwnedSubtree},
@@ -97,7 +102,11 @@ impl Seen {
 /// - where the keyspace has the leaves it had, each of those leaves was
 ///   written once and no other was written;
 /// - where it has those and more, each of those leaves was written once,
-///   and one image more for each leaf that a cut made.
+///   and one image more for each leaf that a cut made;
+/// - **those are all the images of leaves that were written while the
+///   batch was applied**, into the directory or into any other flat
+///   keyspace: a batch of these tests writes no flat record, so a write
+///   of the directory that the frames' count did not see would show here.
 ///
 /// Returns with it how many leaves the keyspace gained.
 fn settled_by<'s>(
@@ -110,10 +119,17 @@ fn settled_by<'s>(
     let tx = world.begin();
     let batch = make(world, &tx);
     probe::take_settled();
+    let images = leaf_images_written();
     world.apply(&tx, &batch).expect("the batch is applied");
+    let images = leaf_images_written() - images;
+    let settled = probe::take_settled();
+    assert_eq!(
+        images, settled.leaf_writes,
+        "every image of a leaf that was written is one that the batch settled"
+    );
     world.check(&tx);
     assert!(committed(world.commit(tx, &[])));
-    let settled = probe::take_settled();
+    assert_eq!(probe::take_settled(), Settled::default());
     world.check_committed();
     let after = Seen::at(db, versions, world.latest());
 
