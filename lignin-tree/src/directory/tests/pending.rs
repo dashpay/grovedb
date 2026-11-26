@@ -103,6 +103,8 @@ fn settle(pages: &mut Pages, directory: &Directory, pending: Pending) -> Done {
         .filter(|page| !had.contains(page))
         .count() as u64;
     let freed = pages.frees - frees;
+    // At most one image for each leaf, and one more for each page that a
+    // cut made: what the unit asks of a batch.
     assert!(
         (homes.saturating_sub(freed)..=homes + made).contains(&settled.leaf_writes),
         "{settled:?} for records in {homes} leaves, with {made} pages made and {freed} freed"
@@ -644,6 +646,7 @@ struct Counts {
     moves: u64,
     given_up: u64,
     through: u64,
+    lost_levels: u64,
 }
 
 const POOL: u8 = 120;
@@ -816,9 +819,19 @@ impl Twins {
         let counted = crate::flat::leaf_images_written();
         let single_writes = self.single.0.leaf_writes - start;
         let levels = pages.levels(directory);
+        let had: BTreeSet<PageId> = pages.pages.keys().copied().collect();
         let settled = directory.settle(pages, pending).expect("settled");
         assert_eq!(settled.records, records);
         assert!(settled.leaves <= settled.records);
+        // At most one image for each leaf that took records, and one more
+        // for each page that a cut made, whatever the keyspace's shape.
+        let made = pages.pages.keys().filter(|page| !had.contains(page));
+        let made = made.count() as u64;
+        assert!(
+            settled.leaf_writes <= settled.leaves + made,
+            "{settled:?}, with {made} pages made"
+        );
+        self.counts.lost_levels += u64::from(pages.levels(directory) < levels);
         // No page is handed two images of a leaf, but the root where the
         // keyspace loses a level.
         match pages.levels(directory) == levels {
@@ -885,6 +898,7 @@ fn a_batch_that_is_settled_once_agrees_with_one_that_settles_every_call() {
         total.moves += counts.moves;
         total.given_up += counts.given_up;
         total.through += counts.through;
+        total.lost_levels += counts.lost_levels;
     }
     println!("{total:?}");
     assert!(total.batches > 6_000 && total.through > 10_000, "{total:?}");
@@ -1036,4 +1050,190 @@ fn a_settling_that_fails_after_a_leaf_is_reported() {
         2,
         "two leaves were written before"
     );
+}
+
+/// A re-keying that is refused after it dropped a Merk with a node leaves
+/// the handle with the ids it had: what is below that Merk is still
+/// opened.
+#[test]
+fn a_move_that_is_refused_half_made_leaves_the_handle_its_ids() {
+    let (mut pages, mut directory) = wide(6);
+    let top = prefix_of(&[]);
+    let (from, to) = (below_top(0), below_top(100));
+    let host = |parent, key| Host {
+        parent,
+        key,
+        position: 0,
+    };
+    // A Merk below the one that moves, with no node, and one below that:
+    // the move names neither, so both leave with it.
+    let inner = prefix_of(&[(key_of(0), 0), (b"c".to_vec(), 0)]);
+    let innermost = prefix_of(&[(key_of(0), 0), (b"c".to_vec(), 0), (b"d".to_vec(), 0)]);
+    directory
+        .add(&mut pages, &inner, b"tree", Some(host(&from, b"c")))
+        .expect("entered");
+    directory
+        .add(&mut pages, &innermost, b"tree", Some(host(&inner, b"d")))
+        .expect("entered");
+    let rekey = Rekey {
+        from: &from,
+        to: &to,
+        key: &key_of(100),
+        below: &[],
+    };
+    let plan = directory.plan_rekey(&pages, &[rekey], &|_| false);
+    let plan = plan.expect("a plan");
+    // Calls of the batch give the Merk below a node, and enter a Merk
+    // where the plan found none: the plan is of another state now. It
+    // drops the Merk below, which has a node by then, and is refused.
+    let mut pending = Pending::new();
+    let rooted = named(&inner, Some((cell(50, 1), b"k")));
+    directory
+        .set_roots_in(&mut pending, &pages, &[rooted])
+        .expect("a root");
+    directory
+        .add_in(
+            &mut pending,
+            &pages,
+            &to,
+            b"tree",
+            Some(host(&top, b"other")),
+        )
+        .expect("entered");
+    let before = pending.clone();
+    let refused = directory.rekey_pairs_in(&mut pending, &pages, &plan);
+    assert!(
+        matches!(refused, Err(DirectoryError::Exists { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(pending, before);
+    let opened = directory.open_in(&pending, &pages, &innermost);
+    assert!(
+        opened.expect("a lookup").is_some(),
+        "the Merk below is in use"
+    );
+    directory.settle(&mut pages, pending).expect("settled");
+    assert!(directory
+        .open(&pages, &innermost)
+        .expect("a lookup")
+        .is_some());
+    let loaded = Directory::load(&pages, directory.root_page(), pages.config);
+    let loaded = loaded.expect("a directory");
+    for prefix in [from, inner, innermost, to] {
+        let opened = directory.open(&pages, &prefix).expect("a lookup");
+        assert_eq!(opened, loaded.open(&pages, &prefix).expect("a lookup"));
+    }
+}
+
+/// The first Merk below a Merk is read as the walk reads it once the
+/// records are settled: a record of the pages that stays is read before a
+/// pending one that is behind it, so a value that cannot be read ends the
+/// call with that error, with pending records as without.
+#[test]
+fn a_pending_record_does_not_hide_a_record_of_the_pages_before_it() {
+    let made = || {
+        // Values of more than sixteen bytes are out of line.
+        let mut pages = Pages::new();
+        pages.config = (pages.config)
+            .with_max_inline(FlatConfig::MIN_INLINE)
+            .expect("a limit");
+        let config = pages.config;
+        let directory = Directory::create(&mut pages, config).expect("a directory");
+        let top = prefix_of(&[]);
+        directory
+            .add(&mut pages, &top, b"tree", None)
+            .expect("entered");
+        let parent = prefix_of(&path(&["p"]));
+        let host = Host {
+            parent: &top,
+            key: b"p",
+            position: 0,
+        };
+        let id = directory
+            .add(&mut pages, &parent, b"tree", Some(host))
+            .expect("entered");
+        let first = prefix_of(&path(&["p", "a"]));
+        let host = Host {
+            parent: &parent,
+            key: b"a",
+            position: 0,
+        };
+        directory
+            .add(&mut pages, &first, b"tree", Some(host))
+            .expect("entered");
+        (pages, directory, parent, id)
+    };
+    let last = prefix_of(&path(&["p", "z"]));
+    let add_last = |directory: &Directory, pending: &mut Pending, pages: &Pages, parent| {
+        let host = Host {
+            parent,
+            key: b"z",
+            position: 0,
+        };
+        directory
+            .add_in(pending, pages, &last, b"tree", Some(host))
+            .expect("entered");
+    };
+    // The value of the record of the first Merk below is lost.
+    let lose = |pages: &mut Pages, directory: &Directory, id: MerkId| {
+        let key = super::super::record::child_key(id, 0, b"a");
+        let leaf = leaf_of(pages, directory, &key);
+        let image = image(pages, leaf).leaf().expect("a leaf");
+        let held = image.get(&key).expect("the record");
+        let lignin_format::flat_page::FlatValue::OutOfLine(place) = held else {
+            panic!("the record is kept out of line");
+        };
+        let place = ValuePlace::decode(place.try_into().expect("16 bytes")).expect("a place");
+        let name = place.pending().expect("a pending value").id();
+        assert!(pages.values.remove(&name).is_some());
+    };
+
+    // Each call settled by itself.
+    let (mut pages, mut directory, parent, id) = made();
+    let mut pending = Pending::new();
+    add_last(&directory, &mut pending, &pages, &parent);
+    directory.settle(&mut pages, pending).expect("settled");
+    lose(&mut pages, &directory, id);
+    let single = directory.unlink(&mut pages, &parent);
+    assert!(
+        matches!(single, Err(DirectoryError::Flat(FlatError::NoValue { .. }))),
+        "{single:?}"
+    );
+
+    // The same with the enter pending.
+    let (mut pages, mut directory, parent, id) = made();
+    lose(&mut pages, &directory, id);
+    let mut pending = Pending::new();
+    add_last(&directory, &mut pending, &pages, &parent);
+    let batched = directory.unlink_in(&mut pending, &pages, &parent);
+    assert_eq!(answer(&single), answer(&batched));
+
+    // And a record that is damaged, which the walk for a drop does not
+    // decode and the first Merk below is: with a pending record behind it
+    // and with one that takes it out.
+    let (mut pages, directory, parent, id) = made();
+    let key = super::super::record::child_key(id, 0, b"a");
+    let tree = *directory.tree();
+    tree.put(&mut pages, &key, b"no record").expect("a record");
+    let mut pending = Pending::new();
+    add_last(&directory, &mut pending, &pages, &parent);
+    assert!(directory
+        .has_children_in(&pending, &pages, id)
+        .expect("a walk"));
+    let first = directory.first_child_in(&pending, &pages, id);
+    assert!(
+        matches!(&first, Err(DirectoryError::Damaged { key: at, .. }) if *at == key),
+        "{first:?}"
+    );
+    let mut without = directory.children(id);
+    assert_eq!(answer(&first), answer(&without.next(&pages)));
+    // Once a pending record takes it out, the pending record behind it is
+    // the first, and nothing of the damaged one is read.
+    let (mut pending, mut handle) = (Pending::new(), directory.clone());
+    add_last(&directory, &mut pending, &pages, &parent);
+    handle
+        .unlink_in(&mut pending, &pages, &prefix_of(&path(&["p", "a"])))
+        .expect("dropped");
+    let first = directory.first_child_in(&pending, &pages, id);
+    assert_eq!(first.expect("a walk").map(|child| child.prefix), Some(last));
 }

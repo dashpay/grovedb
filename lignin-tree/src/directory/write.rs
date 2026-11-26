@@ -13,9 +13,9 @@ use super::{
     error::{DirectoryError, Malformed},
     read::damaged,
     record::{
-        child_key, children_key, decode_header, decode_prefix, dropped_key, encode_child,
-        encode_dropped, encode_header, entry_key, root_key, Dropped, Entry, Fields, Host, MerkId,
-        Prefix, Root, HEADER_KEY,
+        child_key, children_key, decode_child, decode_child_key, decode_header, decode_prefix,
+        dropped_key, encode_child, encode_dropped, encode_header, entry_key, root_key, Child,
+        Dropped, Entry, Fields, Host, MerkId, Prefix, Root, HEADER_KEY,
     },
     Directory,
 };
@@ -37,11 +37,15 @@ use crate::{
 /// that go into it.
 ///
 /// **Until they are settled the records are in no page.** A read that is
-/// not given them reads the directory as it was before the first of them:
-/// [`Directory::open`] and every other call that takes pages alone. So
-/// they are settled before anything else reads the directory, and before
-/// the operation that made them ends. Records that are dropped unsettled
-/// were never put: no page has anything of them.
+/// not given them reads pages that have nothing of them:
+/// [`Directory::open`] and every other call that takes pages alone. It
+/// is not for that a read of the directory before the first of them: the
+/// handle has the ids of the Merks that the batch dropped or cleared
+/// (below), so it opens no Merk below one of those, and it opens a
+/// dropped Merk itself, whose entry the pages still have. So the records
+/// are settled before anything else reads the directory, and before the
+/// operation that made them ends. Records that are dropped unsettled were
+/// never put: no page has anything of them.
 ///
 /// What a handle keeps beside the pages follows the calls, not the
 /// settling: the ids of the dropped Merks are in the handle from the call
@@ -90,6 +94,9 @@ impl Pending {
     }
 }
 
+/// A record of the directory: its key and its value.
+type Record = (Vec<u8>, Vec<u8>);
+
 /// What settling the records of a batch did ([`Directory::settle`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Settled {
@@ -101,9 +108,8 @@ pub struct Settled {
     pub leaves: u64,
     /// The images of leaves that were written for them
     /// ([`Written::leaf_writes`](crate::flat::Written::leaf_writes)): one
-    /// for each of those leaves but one that is left with no record, one
-    /// more for each further piece of a leaf that is cut, and one for a
-    /// root that takes what its only child holds. No page is handed two.
+    /// at most one for each of those leaves, and one more for each
+    /// further piece of a leaf that is cut.
     pub leaf_writes: u64,
 }
 
@@ -733,24 +739,62 @@ impl Directory {
     /// the id, pending or in the pages and not taken out by a pending
     /// record.
     ///
-    /// As the walk that a call makes with no pending records, it reads
-    /// the keys of the child records and no value: a record of the pages
-    /// that a pending record takes out is passed by its key, whatever it
-    /// holds.
+    /// It reads what the walk without pending records reads of the
+    /// directory as the records leave it: the first child record in the
+    /// order of the keys, and no other. A record of the pages that a
+    /// pending record takes out is passed by its key, whatever it holds,
+    /// and the value of the first one that stays is read, and not
+    /// decoded. A pending record is the first where no record of the
+    /// pages that stays is before it.
     pub fn has_children_in<P: FlatPages + ?Sized>(
         &self,
         pending: &Pending,
         pages: &P,
         parent: MerkId,
     ) -> Result<bool, DirectoryError> {
+        Ok(self.child_record_in(pending, pages, parent)?.is_some())
+    }
+
+    /// The first of the Merks that the nodes of the Merk `parent` host, as
+    /// the records of a batch leave the directory ([`Pending`]): what
+    /// [`Self::children`] gives first once they are settled. It reads
+    /// what [`Self::has_children_in`] reads, and decodes that record.
+    pub fn first_child_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        parent: MerkId,
+    ) -> Result<Option<Child>, DirectoryError> {
+        let Some((key, value)) = self.child_record_in(pending, pages, parent)? else {
+            return Ok(None);
+        };
+        let rest = key.get(children_key(parent).len()..).unwrap_or_default();
+        let read = decode_child_key(rest).and_then(|(position, host)| {
+            let (prefix, id) = decode_child(&value)?;
+            Ok(Child {
+                position,
+                key: host.to_vec(),
+                prefix,
+                id,
+            })
+        });
+        read.map(Some).map_err(|what| damaged(&key, what.0))
+    }
+
+    /// The key and the value of the first child record under the id
+    /// `parent`, as the records of a batch leave the directory.
+    fn child_record_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        parent: MerkId,
+    ) -> Result<Option<Record>, DirectoryError> {
         let within = children_key(parent);
-        let mut under = pending.records.range(within.to_vec()..);
-        let mut under = under
-            .by_ref()
-            .take_while(|(key, _)| key.starts_with(&within));
-        if under.any(|(_, record)| record.is_some()) {
-            return Ok(true);
-        }
+        let under = pending.records.range(within.to_vec()..);
+        let mut put = under
+            .take_while(|(key, _)| key.starts_with(&within))
+            .filter_map(|(key, record)| Some((key, record.as_ref()?)));
+        let put = put.next();
         let mut cursor = self.tree.cursor_within(&within);
         let (mut key, mut value) = (Vec::new(), Vec::new());
         cursor.seek_to_first(pages)?;
@@ -758,14 +802,18 @@ impl Directory {
             key.clear();
             key.extend_from_slice(&within);
             key.extend_from_slice(rest);
+            // A pending record at this key or before it is the first.
+            if put.is_some_and(|(put, _)| *put <= key) {
+                break;
+            }
             value.clear();
             // A record that a page step took out under the walk is passed.
             if pending.get(&key).is_none() && cursor.value(pages, &mut value)? {
-                return Ok(true);
+                return Ok(Some((key, value)));
             }
             cursor.next(pages)?;
         }
-        Ok(false)
+        Ok(put.map(|(key, value)| (key.clone(), value.clone())))
     }
 
     /// [`Self::live`] as the records of a batch leave the directory.

@@ -237,8 +237,12 @@
 //!   entered, a root is named of a Merk that the batch entered, a prefix
 //!   that the batch emptied is free, and a call is refused for what
 //!   another call of the batch put. [`Directory::open_in`],
-//!   [`Directory::stored_in`] and [`Directory::has_children_in`] are the
-//!   same reads for the caller.
+//!   [`Directory::stored_in`], [`Directory::has_children_in`] and
+//!   [`Directory::first_child_in`] are the same reads for the caller.
+//!   Each reads of the pages what the read it stands for reads of the
+//!   directory once the records are settled, so a record that is damaged
+//!   or whose value cannot be read ends the call with the same error,
+//!   and one that a pending record takes out is not read.
 //! - **Every other read is of the pages**, which have nothing of the
 //!   batch: [`Directory::open`], the walks, [`Directory::check`]. It is
 //!   not for that a read of the directory before the batch: the handle
@@ -251,12 +255,14 @@
 //!   keys, a leaf at a time
 //!   ([`FlatTree::write`](crate::flat::FlatTree::write)), and says how
 //!   many records there were, how many leaves took them and how many
-//!   images of leaves were written ([`Settled`]). **No leaf is handed
-//!   two images by one settling**: each leaf that takes records is
-//!   written once, cut into the pieces it needs, merged with a neighbour
-//!   in the one image, or freed unwritten where it is left with no
-//!   record. One image more is written where the keyspace loses a level
-//!   and its root takes what its only child holds.
+//!   images of leaves were written ([`Settled`]). **No settling writes
+//!   more images than it changes leaves, the further pieces of a leaf
+//!   that is cut aside**: each leaf that takes records is written once,
+//!   cut into the pieces it needs, merged with a neighbour in the one
+//!   image, or freed unwritten where it is left with no record. Where
+//!   that leaves the keyspace's root with one leaf below it, the root
+//!   takes what the leaf holds, which is the image that the freed leaf
+//!   did not take.
 //!
 //! What the directory holds afterwards is what the same calls leave when
 //! each is settled by itself, record for record, and each call answers as
@@ -264,7 +270,9 @@
 //! the records it takes, and a leaf that is left under a quarter of a
 //! page is not merged with a neighbour that the settling has still to
 //! come to. A record that is put as the pages have it, by a call that
-//! restores what an earlier call of the batch changed, is not written.
+//! restores what an earlier call of the batch changed, is not written
+//! where its value is kept in its page; an entry that is too long for
+//! that is written again.
 //!
 //! **What becomes of the pending records.** They are of one operation and
 //! of nothing longer: no handle keeps them, and no page has anything of

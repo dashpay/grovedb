@@ -297,6 +297,74 @@ fn a_drop_that_is_refused_changes_nothing() {
     grove.check(&db);
 }
 
+/// A clear and a drop of a Merk with no node read the first Merk that
+/// the directory has below it, whole: a record of it that is damaged
+/// refuses both, and nothing is changed.
+#[test]
+fn a_clear_of_a_merk_with_no_node_reads_the_merk_below_it_as_a_drop_does() {
+    let db = Db::new();
+    let mut txn = db.begin();
+    let mut grove = Grove::new(&db, &mut txn);
+    grove.flush(&mut txn);
+    let (empty, below) = ([0x11; 32], [0x12; 32]);
+    let root_prefix = grove.merks[0].prefix;
+    let directory = &mut grove.directory;
+    let above = Host {
+        parent: &root_prefix,
+        key: b"empty",
+        position: 0,
+    };
+    let id = directory
+        .add(&mut txn.flat, &empty, b"tree", Some(above))
+        .expect("entered");
+    let inside = Host {
+        parent: &empty,
+        key: b"inside",
+        position: 0,
+    };
+    directory
+        .add(&mut txn.flat, &below, b"tree", Some(inside))
+        .expect("entered");
+    // The record of the host of the Merk below holds no prefix and id.
+    let key = crate::directory::record::child_key(id, 0, b"inside");
+    let tree = *directory.tree();
+    tree.put(&mut txn.flat, &key, b"no record")
+        .expect("a record");
+    db.commit(txn);
+
+    let layout = Layout::new(db.size, LayoutParams::default()).expect("a layout");
+    for leaving in [Leaving::Cleared(&empty), Leaving::Dropped(&empty)] {
+        let mut txn = db.begin();
+        let mut directory = grove.directory(&db);
+        let at = txn.tree.at;
+        let error = unlink(
+            &mut Fragments::new(layout),
+            &mut txn.tree,
+            &mut txn.values,
+            &mut directory,
+            &mut Flats {
+                pages: &mut txn.flat,
+                columns: &grove.columns,
+                drops: &grove.drops,
+                at,
+            },
+            &Write::default(),
+            &[leaving],
+        )
+        .expect_err("refused");
+        assert!(
+            matches!(
+                &error,
+                DropError::Directory(DirectoryError::Damaged { key: at, .. }) if *at == key
+            ),
+            "{error}"
+        );
+        assert!(txn.tree.changed().is_empty());
+        assert_eq!(txn.flat.written().count(), 0);
+        db.roll_back(txn);
+    }
+}
+
 /// Pages with cells as these tests give them, and a dropped Merk whose
 /// root is a cell of the first.
 struct Crafted {

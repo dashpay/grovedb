@@ -110,8 +110,8 @@ pub fn unlink<P: Pages, V: Values, F: FlatPagesMut + ?Sized>(
         match entry.root() {
             Some(root) => dropped.push(root.address),
             None => {
-                let below = directory.has_children_in(pending, flats.pages, entry.id())?;
-                if below && matches!(merk, Leaving::Dropped(_)) {
+                let below = directory.first_child_in(pending, flats.pages, entry.id())?;
+                if below.is_some() && matches!(merk, Leaving::Dropped(_)) {
                     return Err(DirectoryError::NotEmpty { prefix: *prefix }.into());
                 }
             }
