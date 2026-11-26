@@ -471,11 +471,14 @@ Read its report before you go on:
 - `node values that are no element: …` counts the values of nodes of the
   grove that do not decode as an element of this version of GroveDB.
   They do not refuse the source: the migration carries their bytes as
-  they are, compares bytes, and the check hashes a value as it is
-  stored, so the target holds what the source holds, and GroveDB answers
-  a read of such a value on LigninDB as it does on RocksDB. With a count above 0, check the
-  source by the application's own means, and report the survey, before
-  the node starts on the target.
+  they are and compares bytes. Its check then tells from a value's type
+  alone how its hash is made: where the type is one whose hash is made
+  from the bytes as they are, it takes the value as stored, and where
+  the type is none it knows, it finds a rule that does not hold
+  (`the value is no element with a known value hash: …`), and the run
+  ends with status 3 and nothing at `TARGET`. Either way, with a count
+  above 0, check the source by the application's own means, and report
+  the survey, before the node starts on a target.
 - `the migration projects a peak of about … MiB of memory`, and the
   limit it holds ("What it takes"). The survey projects with the default
   `--batch` and `--cache`, and takes neither. Where it refuses the
@@ -586,13 +589,17 @@ survey_source=$(sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write 
 migrate_source=$(sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$WORK/reports/migrate.txt")
 case "$survey_source" in "the source $SOURCE: RocksDB identity "*) ;; *) survey_source= ;; esac
 if [ -n "$survey_source" ] && [ "$survey_source" = "$migrate_source" ]; then echo "the same RocksDB identity and last write in both runs: $survey_source"; else echo "THE SOURCE CHANGED BETWEEN THE TWO RUNS, or a report does not begin with this SOURCE"; false; fi
+survey_counts=$(sed -n 's/^migrate: survey //p' "$WORK/reports/survey.txt")
+migrate_counts=$(sed -n 's/^migrate: survey //p' "$WORK/reports/migrate.txt")
+if [ -n "$survey_counts" ] && [ "$survey_counts" = "$migrate_counts" ]; then echo "the same counts in both runs: $survey_counts"; else echo "THE COUNTS OF THE SOURCE CHANGED BETWEEN THE TWO RUNS"; false; fi
 last_line="migrated $SOURCE into $TARGET: loaded, compared and verified"
 if [ "$(tail -n 1 "$WORK/reports/migrate.txt")" = "$last_line" ]; then echo "the report ends with: $last_line"; else echo "THE REPORT DOES NOT END WITH: $last_line"; false; fi
 ```
 
 Each of these prints the line it found, or fails: `grep` with no line
-found, the three comparisons with the words THE ROOT HASHES DIFFER,
-THE SOURCE CHANGED BETWEEN THE TWO RUNS or THE REPORT DOES NOT END WITH. Step 7 reads the report of the
+found, the four comparisons with the words THE ROOT HASHES DIFFER,
+THE SOURCE CHANGED BETWEEN THE TWO RUNS, THE COUNTS OF THE SOURCE
+CHANGED BETWEEN THE TWO RUNS or THE REPORT DOES NOT END WITH. Step 7 reads the report of the
 run that ended with status 0 (where a run before it failed, that is the
 report the retry of step 6 wrote: name it in place of `migrate.txt`).
 The last comparison requires the report to end with the run's last
@@ -608,7 +615,13 @@ from it. The second holds the first line of each report, up to the `;` after
 its last write, to the other: the source's path, which has to be this
 `SOURCE`, its RocksDB identity and the sequence number of its last
 write. Where they are the same, no record was written to the source
-between the two runs: RocksDB's last sequence number did not move. A
+between the two runs: RocksDB's last sequence number did not move. The
+third holds the line `migrate: survey …` of each report to the other:
+the number and the bytes of the records of each keyspace, which a
+record lost between the runs changes even where the last write and the
+root hash stay (a record of the aux, roots or meta keyspaces, which the
+root hash does not cover), unless another of the same size took its
+place. A
 process that opened it can have rewritten RocksDB's own files all the
 same (its `CURRENT` and manifest), and a file that something else put
 in the directory is not seen; which is why nothing is to open the
@@ -797,35 +810,42 @@ device refused, a rule of its pages, its page table or its value log),
 it says nothing of the source.
 
 **Where the node goes back to `SOURCE` itself**, the database is to be
-the one the migration read, and not an older state of it: a RocksDB
+the one the node stopped on, which step 5 surveyed and to which step 7
+held what the migration read, and not an older state of it: a RocksDB
 database whose log lost its tail since reads as sound and can be
 migrated, at an earlier last write and another root hash. The block
 surveys it again and holds its first line (its RocksDB identity and its
-last write) and its root hash to the survey of step 5, and has three
-answers:
+last write), its root hash and its counts (the line
+`migrate: survey …`, which a survey and a migration write alike) to
+the survey of step 5, and has three answers:
 
-- Both surveys print them and one differs: it is another state of the
-  database, and the block fails with the words that `SOURCE` is not as
-  the migration read it.
+- Both surveys print all three and one differs: it is another state of
+  the database, and the block fails with the words that `SOURCE` is not
+  as step 5 surveyed it. Where step 7 failed because the source changed
+  between steps 5 and 6, this is what the block finds too: the database
+  lost what step 5 saw, and the node that goes back to it is brought
+  forward from what it holds, as the application's documentation says.
 - They are the same, and both surveys end with `the source can be migrated`:
-  it says that `SOURCE` is as the migration read it.
+  it says that `SOURCE` is as step 5 surveyed it.
 - Anything else leaves it untold, and the block fails with the words
   that the surveys do not tell: a survey that refuses the source, even
   where both refuse it alike, since what a refusal names can differ under
-  the same last line; one that stops before its root hash, as at a grove
-  deeper than the survey walks; or a survey of step 5 that was made with
-  options that this one is not given (`--unreachable`, `--memory-limit`),
-  whose report differs for that alone. Where step 5's survey had options,
-  give this one the same; otherwise the application's own check decides.
+  the same last line; or one that stops before its root hash or its
+  counts, as at a grove deeper than the survey walks. Options of the
+  survey do not change its first line, its root hash or its counts, but
+  they can make it refuse: where step 5's survey needed a
+  `--memory-limit`, give this one the same. Otherwise the application's
+  own check decides.
 
 A refusal of the survey does not stop the block, so the answer is given
 all the same; a report that cannot be written ends the shell, as any
 failure does, before an answer, and the block removes the report of an
 earlier way back first, so it never reads one. A match shows that the
-identity, the last write and the grove's root hash are those the
-migration read, not that every record is: a record
-of the aux, roots or meta columns can be lost with the same last write
-and root hash. So it is a check the way back needs, and no proof: the
+identity, the last write, the grove's root hash and the number and bytes
+of the records of each keyspace are those step 5 saw, not that every
+record is: a record of the aux, roots or meta keyspaces can be lost or
+changed with the same last write and root hash, and counts of the same
+size. So it is a check the way back needs, and no proof: the
 application's own check of its state decides too. Where `SOURCE`
 was a checkpoint, the node's own directory has a state of its own,
 which the application identifies; this block is not for it.
@@ -835,17 +855,18 @@ rm -f "$WORK/reports/survey-again.txt"
 { lignin migrate "$SOURCE" --survey 2>&1 || true; } | tee "$WORK/reports/survey-again.txt"
 first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$1"; }
 root_hash() { sed -n 's/^  root hash: //p' "$1"; }
+counts() { sed -n 's/^migrate: survey //p' "$1"; }
 before="$WORK/reports/survey.txt"
 again="$WORK/reports/survey-again.txt"
-both_read() { [ -n "$(first_line "$before")" ] && [ -n "$(root_hash "$before")" ] && [ -n "$(first_line "$again")" ] && [ -n "$(root_hash "$again")" ]; }
-same_state() { [ "$(first_line "$before")" = "$(first_line "$again")" ] && [ "$(root_hash "$before")" = "$(root_hash "$again")" ]; }
+read_whole() { [ -n "$(first_line "$1")" ] && [ -n "$(root_hash "$1")" ] && [ -n "$(counts "$1")" ]; }
+same_state() { [ "$(first_line "$before")" = "$(first_line "$again")" ] && [ "$(root_hash "$before")" = "$(root_hash "$again")" ] && [ "$(counts "$before")" = "$(counts "$again")" ]; }
 both_taken() { [ "$(tail -n 1 "$before")" = "the source can be migrated" ] && [ "$(tail -n 1 "$again")" = "the source can be migrated" ]; }
-if both_read && ! same_state; then
-  echo "SOURCE IS NOT AS THE MIGRATION READ IT"; false
-elif both_read && same_state && both_taken; then
-  echo "SOURCE is as the migration read it"
+if read_whole "$before" && read_whole "$again" && ! same_state; then
+  echo "SOURCE IS NOT AS STEP 5 SURVEYED IT"; false
+elif read_whole "$before" && same_state && both_taken; then
+  echo "SOURCE is as step 5 surveyed it"
 else
-  echo "THE SURVEYS DO NOT TELL WHETHER SOURCE IS AS THE MIGRATION READ IT"; false
+  echo "THE SURVEYS DO NOT TELL WHETHER SOURCE IS AS STEP 5 SURVEYED IT"; false
 fi
 ```
 

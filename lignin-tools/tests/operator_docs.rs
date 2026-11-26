@@ -51,8 +51,9 @@ const PUBLISHED: &str = "https://github.com/dashpay/grovedb/blob/develop/";
 
 /// The crates whose words a message quoted outside the messages chapter
 /// can be.
-const SPEAKERS: [&str; 10] = [
+const SPEAKERS: [&str; 11] = [
     "lignindb/src",
+    "merk/src/store/lignin",
     "lignin-store/src",
     "lignin-tree/src",
     "lignin-format/src",
