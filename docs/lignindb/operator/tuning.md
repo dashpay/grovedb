@@ -31,7 +31,7 @@ fails that test until this chapter says the new one.
 | --- | --- | --- | --- |
 | `Options::cache_size` | 256 MiB | the buffer pool: the memory in which the database keeps its pages. It also holds what it cannot evict: the private copies of pages that open write transactions made, and the page versions that write-back has not written yet. | see [Memory](#memory) |
 | `Options::sync` | never | when a commit makes the log durable; see [Durability](#durability) | see [Durability](#durability) |
-| `Options::page_size` | 32 KiB | the size of the pages of a new database. A database keeps the size it was made with for good, and an open that names another is refused. | leave it unset: a database is opened with its own size |
+| `Options::page_size` | unset: 32 KiB for a new database | the size of the pages of a new database. A database keeps the size it was made with for good: unset, an open takes it; set, an open of a database of another size is refused. | leave it unset: a database is opened with its own size |
 | `Options::log_file_len` | 64 MiB | the length at which a log file is full and the log goes on in the next one | no reason known for a node |
 | `Options::reserve` | 0 bytes | the room a session keeps in a file of its own, to give back when the device fills ([backup and full disk](backup-and-full-disk.md#the-reserve)) | on a node whose device can fill: the design text's first estimate is one log file and one segment, 128 MiB with the defaults |
 | `Options::idle` | 100 ms | how long the thread that reclaims dropped subtrees sleeps when nobody wakes it | no reason known |
@@ -104,7 +104,7 @@ the database's page size, and the defaults below are for pages of
 | `FlushConfig::segment_len` | 64 MiB | the length at which a segment is sealed | leave it; the reserve's estimate depends on it |
 | `FlushConfig::max_deferred` | 1024 | the most pages a turn of write-back's loop leaves for a later turn: those that changed last, flat pages before tree pages. A turn leaves no more than half of `max_unwritten` and a quarter of the pool's frames whatever this says, and none where a table checkpoint is due; a table checkpoint and the end of a session leave none. 0 writes every page it can at every turn | no reason known |
 | `FlushConfig::idle` | 50 ms | how long write-back's loop sleeps when nobody wakes it | no reason known |
-| `FlushConfig::max_failed_wait` | 1 s | the longest wait after a turn that failed, before the next turn; the wait doubles from the idle time up to it ([DF12](../disk-full-and-backup.md#52-the-order)) | no reason known |
+| `FlushConfig::max_failed_wait` | 1 s | the bound of the wait after a turn that failed, before the next turn: the wait doubles from the idle time up to it ([DF12](../disk-full-and-backup.md#52-the-order)), and is never shorter than the idle time, whatever this says | no reason known |
 
 **What to watch** is `Db::stats` of the node's own handle while it runs,
 which counts from the open of that session: the log held against

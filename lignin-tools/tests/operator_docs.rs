@@ -1228,6 +1228,13 @@ fn every_block_of_commands_is_bash() {
     let mut faults = Vec::new();
     let mut blocks = 0;
     for (name, text) in documents() {
+        // runbook.sh takes a fence as it is written: one with a space after
+        // it would not open a block of commands there.
+        for (at, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("```") && line != line.trim_end() {
+                faults.push(format!("{name}:{}: a fence with a space after it", at + 1));
+            }
+        }
         for fence in parse(&text)
             .fences
             .iter()
@@ -1388,6 +1395,15 @@ fn defaults() -> BTreeMap<String, String> {
         true => "`StdVfs`".to_owned(),
         false => "another file layer than `StdVfs`".to_owned(),
     };
+    // Unset, a new database takes the default size and one that is there
+    // its own; set, an open of a database of another size is refused.
+    let stated_page_size = match page_size {
+        None => format!(
+            "unset: {} for a new database",
+            bytes(PageSize::DEFAULT.get() as u64)
+        ),
+        Some(size) => bytes(size.get() as u64),
+    };
     let page_size = page_size.unwrap_or(PageSize::DEFAULT);
     let log_file_len = log_file_len.unwrap_or(LogOptions::default().target_file_len);
     let FlushConfig {
@@ -1433,7 +1449,7 @@ fn defaults() -> BTreeMap<String, String> {
     [
         ("Options::cache_size", bytes(cache_size as u64)),
         ("Options::sync", policy(sync)),
-        ("Options::page_size", bytes(page_size.get() as u64)),
+        ("Options::page_size", stated_page_size),
         ("Options::log_file_len", bytes(log_file_len)),
         ("Options::reserve", bytes(reserve)),
         ("Options::vfs", vfs),
