@@ -177,8 +177,13 @@ another machine reads what the device holds. `lignin verify` shows that
 the restore is sound, not that it holds every commit the database had:
 a copy that lost a write to the tail of the log, of a database that was
 stopped without its close, opens at an earlier commit and is sound. So
-hold the restore to the state the application knows (its root hash, or
-its own check), as for its files. `lignin manifest`
+hold the restore to the state the application knows, by its own check
+of that state, as for its files: the root hash covers the grove alone,
+and not the aux, roots or meta records, where an application can keep
+state that its last commits changed. The first line of `lignin stats`,
+`version …`, is the commit the restore opens at: where the version the
+database was at when it was copied is known, a lower one shows a
+restore that lost commits. `lignin manifest`
 reads the backup's manifest without opening it and lists the files it
 names, marking one that is not there `, MISSING` and one that is
 shorter `, SHORT: … bytes on disk`; it exits 0 either way, and reads no page. A backup is relied on
@@ -408,11 +413,13 @@ words end with what the system said, such as "No space left on device
 the project that writes there is used up. Through GroveDB, the engine's
 error reaches the application as words, not as causes, so
 `out_of_space` cannot read it there: a commit that failed so has the
-system's words after GroveDB's own, and one whose sync failed is
-answered with
-`not durable: the commit happened, but it is not known to survive a crash`,
-without them, and the device is to be looked at with `df` and the
-system's log. Where a quota is used up, `df` then shows room,
+system's words after GroveDB's own; one whose sync failed is answered
+with `not durable: the commit happened, but it is not known to survive a crash`,
+and one whose append failed and whose sync to undo it failed too with
+`unsettled: the engine could not find out whether the commit happened`,
+whose next open settles whether it happened, so the application finds
+that out before it writes it again. Neither has the system's words,
+and the device is to be looked at with `df` and the system's log. Where a quota is used up, `df` then shows room,
 and the room to make is inside that quota, or the quota is raised. A commit beside write-back that met the full
 device first can say only `the log has no file that takes items`, with
 no word of the device: where commits fail so, look at the free space
