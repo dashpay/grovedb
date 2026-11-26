@@ -23,8 +23,10 @@ The commands use these variables, as absolute paths:
 `lignin` is the tool of the [migration runbook](migration.md#1-build-the-tool),
 built the same way (the feature `migrate` is not needed here).
 
-Run the blocks in a shell of their own (`bash`), which the first block
-sets to stop at the first command that fails: a block refuses a path
+Run the blocks in a shell of their own, started with `exec bash` in a
+terminal of its own (as [the runbook](migration.md#1-build-the-tool)
+says why), which the first block sets to stop at the first command that
+fails: a block refuses a path
 with `false`, and only `set -e` makes that stop the rest. The block also
 defines what the later ones use to write a path again with every link
 followed (`cd -P`, so that `..` is taken after the links), and to refuse

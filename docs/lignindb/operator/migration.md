@@ -102,14 +102,23 @@ packages `git`, `curl`, `build-essential`, `clang` and `libclang-dev`; on
 macOS, the Xcode command line tools. You also need Rust. If `cargo` is
 not on your path, the first block installs it with `rustup`, the
 installer the Rust project publishes, for your user alone; the installer
-also adds Cargo to your shell's profile files.
+also adds Cargo to your shell's profile files. A `cargo` that is on the
+path is used as it is, and is to be a recent stable one: the tool's
+crates are of Rust's edition 2024, which an older Cargo, as some
+distributions package, does not read; update it (`rustup update stable`)
+or put a newer one first on the path.
 
-Run the blocks in a shell of their own: start `bash`, and give it the
-first line of the block below, `set -euo pipefail`, before anything
-else. From then on a command that fails, a variable that is not set and
-a pipeline whose first command fails (before its report reaches `tee`)
-end that shell, so that no later command runs on what a failed one left.
-To go on after a failure, start `bash` again, run this block and the
+Run the blocks in a shell of their own, in a terminal of their own:
+start it with `exec bash`, which puts it in place of the terminal's
+shell, and give it the first line of the block below,
+`set -euo pipefail`, before anything else. From then on a command that
+fails, a variable that is not set and a pipeline whose first command
+fails (before its report reaches `tee`) end that shell, and with it the
+terminal, so that no later command runs on what a failed one left: a
+block pasted a line at a time has no other shell left to run its lines
+after the one that failed, which a plain `bash` started from another
+shell would leave them to. To go on after a failure, open a terminal
+and start `exec bash` again, run this block and the
 block of step 2 again (it clones nothing that is there and builds only
 what changed, and puts `lignin` on the path), `export` the four paths as
 step 4 printed them, and go on with the step that failed. Steps 3, 8 and 9 claim a directory
@@ -399,7 +408,8 @@ Read its report before you go on:
   run is then refused with exit status 1 and
   `the source … holds what a migration does not carry`. The survey
   refuses a keyed child under a tree of flat records (grove versions 1
-  to 3 let a caller write one), the mark of a state-sync restore that
+  to 3 let a caller write one; a dense tree's value whose bytes read as
+  a node of its own slot is taken for one too, on any version), the mark of a state-sync restore that
   did not finish (such a database is to be discarded, not migrated),
   and records in places where GroveDB writes none; with
   `--unreachable refuse` or `carry`, also the prefixes that nothing leads
@@ -411,7 +421,10 @@ Read its report before you go on:
   written on LigninDB holds, with the same root hash. What can then
   answer otherwise than on RocksDB is a read by the path of such a tree,
   a tree made again at that path, and a cursor that steps from no key.
-  `--unreachable refuse` refuses such a source; `--unreachable carry`
+  `--unreachable refuse` refuses such a source where those prefixes hold
+  records of the data, aux or meta keyspaces (a prefix with a root-key
+  record alone counts none, and that record is carried all the same);
+  `--unreachable carry`
   carries them as records that no tree links, and the engine then refuses
   a write below a tree that is made again at such a path. The module
   documentation of `lignin_tools::migrate` ("Records that nothing leads
@@ -422,8 +435,10 @@ Read its report before you go on:
   Merk that holds nodes and is no child taking its root key from the
   element that hosts it) and whose nodes form one tree, where the record
   is missing, names a node inside the tree that is not its root, or names
-  a key with no node. Nodes that do not form one tree are a refusal
-  (`NOT CARRIED`), which the count does not take in. Each Merk is named on a line
+  a key with no node. Where the record names no usable root, nodes that
+  do not form one tree are a refusal (`NOT CARRIED`), which the count
+  does not take in; where it names a root, nodes outside its tree are
+  records that no tree links. Each Merk is named on a line
   `AT …: THE MERK IS READ AS ITS RECORD NAMES IT, ON ROCKSDB AS HERE, AND LIGNINDB TAKES NO FURTHER WRITE OF A NODE OF IT`.
   Such a source migrates, compares and verifies, and the target reads
   that Merk as RocksDB does; **but LigninDB refuses every later write of
@@ -714,9 +729,10 @@ the others are not decided on its word:
   with 0): the node goes back to the database as it was before the
   migration. Of the records under such prefixes it describes a few of
   each and of no more than 1,000 prefixes, so where it finds any, their
-  records are checked by the application's own means first. A
-  count above 0 is a value of the source that is no element, linked by
-  a tree or not: check the source by the application's own means first.
+  records are checked by the application's own means first. A count
+  of node values that are no element above 0 is a value of the source
+  that is no element, linked by a tree or not: check the source by the
+  application's own means first.
 - It refuses for the mark of a state-sync restore that did not finish:
   the directory that holds the mark is to be discarded, on RocksDB as
   here, and the node's state got again as the application's
