@@ -2072,6 +2072,17 @@ fn run_block(
     survey: &str,
     dirs: &[(&str, &str)],
 ) -> (bool, String) {
+    let (passed, last, _) = run_block_reports(mark, reports, survey, dirs);
+    (passed, last)
+}
+
+/// As [`run_block`], with the reports the block left in `WORK/reports`.
+fn run_block_reports(
+    mark: &str,
+    reports: &[(&str, String)],
+    survey: &str,
+    dirs: &[(&str, &str)],
+) -> (bool, String, BTreeMap<String, String>) {
     let text = read(&operator_dir().join("migration.md"));
     let blocks: Vec<String> = (parse(&text).fences.into_iter())
         .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line.contains(mark)))
@@ -2124,7 +2135,14 @@ fn run_block(
     let output = bash.output().expect("bash");
     let printed = String::from_utf8_lossy(&output.stdout);
     let last = printed.lines().last().unwrap_or("").to_owned();
-    (output.status.success(), last)
+    let left = (fs::read_dir(work.path().join("reports")).expect("reports"))
+        .map(|entry| entry.expect("an entry of reports"))
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (name, fs::read_to_string(entry.path()).expect("a report"))
+        })
+        .collect();
+    (output.status.success(), last, left)
 }
 
 #[test]
@@ -2237,6 +2255,23 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
         (passed, last.as_str()),
         (true, "the source can be migrated"),
         "the way back to a BACK of RocksDB beside a checkpoint SOURCE surveys BACK"
+    );
+    let (passed, _, left) = run_block_reports(
+        r#"real_dir "${BACK:-$SOURCE}""#,
+        &[("survey.txt", base.clone())],
+        "the source can be migrated",
+        &[("SOURCE", ""), ("BACK", "")],
+    );
+    assert!(passed, "the survey of a BACK apart from SOURCE");
+    assert_eq!(
+        left.get("survey.txt"),
+        Some(&base),
+        "step 5's survey is kept"
+    );
+    assert_eq!(
+        left.get("survey-back.txt").map(|report| report.trim_end()),
+        Some("the source can be migrated"),
+        "the survey of BACK is a report of its own"
     );
     let (passed, last) = run_block(
         r#"real_dir "${BACK:-$SOURCE}""#,

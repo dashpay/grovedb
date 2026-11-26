@@ -436,7 +436,9 @@ Read its report before you go on:
   application's own check of its state, on the target after step 7,
   decides whether the target holds it. Where it does not, either the
   source was another database, or the records were ones the migration
-  does not carry: under prefixes that nothing leads to, which
+  does not carry, of the data, aux or meta keyspaces (it carries the
+  root-key records under every prefix): under prefixes that nothing
+  leads to, which
   `--unreachable leave`, the default, leaves behind
   (`prefixes that nothing leads to: …`), or under the prefixes of
   pending drops, which no `--unreachable` carries but where a tree

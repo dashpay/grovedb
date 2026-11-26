@@ -335,7 +335,7 @@ Damage:
 | --- | --- | --- |
 | `the item at … does not apply to page …: …` | a logged change does not fit its page | `lignin-store/src/recovery/error.rs` |
 | `page … is no page of its format as the log leaves it: …` | a page that replay made does not decode | `lignin-store/src/recovery/error.rs` |
-| `the log ends at commit …, and the table checkpoint covers commit …` | the log that recovery could read ends before the commit that the checkpoint of the page table covers: log files are missing, or one is shorter than it was | `lignin-store/src/recovery/error.rs` |
+| `the log ends at commit …, and the table checkpoint covers commit …` | the log that recovery could read ends before the commit that the checkpoint of the page table covers: a log file is missing, shorter than it was, or holds a commit that does not read (damaged) | `lignin-store/src/recovery/error.rs` |
 | `the log goes on from commit …, and the table checkpoint covers commit …: the commits between them are missing` | commits between the checkpoint and the log are missing | `lignin-store/src/recovery/error.rs` |
 | `the table checkpoint holds … links of versions after …, the last commit of the log` | the checkpoint is ahead of the log | `lignin-store/src/recovery/error.rs` |
 | `no checkpoint mark ends at …, the place of the table checkpoint's sample` | the log does not hold the mark the checkpoint names | `lignin-store/src/recovery/error.rs` |
@@ -402,7 +402,7 @@ A commit that meets the end itself says so in words of its own:
 | `the cleaner: …` | the cleaner could not close the files it was moving into; what it moved stands | open again | `lignindb/src/db/error.rs` |
 | `segment …, which takes the moved blocks, could not be made durable: …` | after `the cleaner: `: the cleaner's segment could not be made durable | open again | `lignin-store/src/cleaner/error.rs` |
 | `the … thread panicked` | a background thread of the engine panicked: what it held is as a crash leaves it | open again, and report it | `lignindb/src/db/error.rs` |
-| `… was not found to hold this database any more: it was removed or replaced while the database was open, and the close finished nothing in it` | the close could not find that the directory still holds this database: it was removed or replaced under the open handle, or the close could not read its `LOCK` or its `MANIFEST` (their permissions, the device) | where the directory is still there, check its permissions and its device, and open the database again, which recovers it from what was committed; where it was removed, as a checkpoint's can be while it is open, nothing | `lignindb/src/db/error.rs` |
+| `… was not found to hold this database any more: it was removed or replaced while the database was open, and the close finished nothing in it` | the close could not find that the directory still holds this database: it was removed or replaced under the open handle, or the close could not read its `LOCK` or its `MANIFEST` (their permissions, the device) | find out first whether the directory at that path is still the database's: its `MANIFEST` and its files as they were, on the device it was on. Where it is, check its permissions and its device, and open it again, which recovers it from what was committed. Where it was replaced, find the database's directory before anything opens that path, since an open of a path that holds no database makes a new, empty one there. Where it was removed, as a checkpoint's can be while it is open, nothing | `lignindb/src/db/error.rs` |
 
 ## At a checkpoint
 

@@ -173,14 +173,20 @@ other databases on the machine as well (below, and
 takes no file, so the block makes none, and a copy made there is
 written once its device has been ejected or the system shut down. Either way, the
 engine's files of a backup are relied on once a restore of it has passed
-`lignin verify`, and that check can be answered from the system's cache: a restore on
-another machine reads what the device holds. `lignin manifest`
+`lignin verify` and holds the state the application expects, and that check can be answered from the system's cache: a restore on
+another machine reads what the device holds. `lignin verify` shows that
+the restore is sound, not that it holds every commit the database had:
+a copy that lost a write to the tail of the log, of a database that was
+stopped without its close, opens at an earlier commit and is sound. So
+hold the restore to the state the application knows (its root hash, or
+its own check), as for its files. `lignin manifest`
 reads the backup's manifest without opening it and lists the files it
 names, marking one that is not there `, MISSING` and one that is
 shorter `, SHORT: … bytes on disk`; it exits 0 either way, and reads no page. A backup is relied on
 once a restore of it has passed `lignin verify` (below), which reads
-the engine's files alone, and the application's own check of the files
-of its own that the backup holds, with the restored database.
+the engine's files alone, and the application's own check of the
+restored database's state and of the files of its own that the backup
+holds.
 
 ## Back up a running node
 
@@ -290,7 +296,8 @@ remove it.
 
 **A restored directory that does not open, with
 `holds a database and no LOCK file`,** was copied by a tool that left
-`LOCK` out. Put an empty file of that name there, once you know that no
+`LOCK` out, or its `LOCK` was removed since: the open cannot tell
+which. Put an empty file of that name there, once you know that no
 process has the directory open, and run the check that could not run:
 
 ```sh
@@ -392,11 +399,19 @@ directory by its identity and removes what is left.
 
 ### What you see
 
-Commits fail. The error of the commit has the system's "no space left"
-among its causes (`lignindb::space::out_of_space` says so of an error),
-and its words end with what the system said, such as "No space left on
-device (os error 28)", or "Disk quota exceeded" where a quota of the
-user or the project that writes there is used up: `df` then shows room,
+Commits fail. Through LigninDB's own API, the error of the commit has
+the system's "no space left" among its causes
+(`lignindb::space::out_of_space` says so of such an error), and its
+words end with what the system said, such as "No space left on device
+(os error 28)", or "Disk quota exceeded" where a quota of the user or
+the project that writes there is used up. Through GroveDB, the engine's
+error reaches the application as words, not as causes, so
+`out_of_space` cannot read it there: a commit that failed so has the
+system's words after GroveDB's own, and one whose sync failed is
+answered with
+`not durable: the commit happened, but it is not known to survive a crash`,
+without them, and the device is to be looked at with `df` and the
+system's log. Where a quota is used up, `df` then shows room,
 and the room to make is inside that quota, or the quota is raised. A commit beside write-back that met the full
 device first can say only `the log has no file that takes items`, with
 no word of the device: where commits fail so, look at the free space
