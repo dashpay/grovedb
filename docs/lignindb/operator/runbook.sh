@@ -50,10 +50,20 @@ case "$work" in
     *) above=$(pwd -P)/$work ;;
 esac
 while [ ! -d "$above" ]; do
+    case "$(basename -- "$above" | tr '[:upper:]' '[:lower:]')" in *.creating)
+        echo "runbook.sh: $work lies inside $above, which LigninDB takes for the build of a checkpoint" >&2
+        exit 2
+        ;;
+    esac
     above=$(dirname -- "$above")
 done
 above=$(cd -P -- "$above" && pwd -P)
 while :; do
+    case "$(basename -- "$above" | tr '[:upper:]' '[:lower:]')" in *.creating)
+        echo "runbook.sh: $work lies inside $above, which LigninDB takes for the build of a checkpoint" >&2
+        exit 2
+        ;;
+    esac
     if [ -e "$above/CURRENT" ] || [ -e "$above/MANIFEST" ] || [ -e "$above/MANIFEST.deleting" ]; then
         echo "runbook.sh: $work lies inside $above, a database directory" >&2
         exit 2

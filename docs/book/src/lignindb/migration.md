@@ -266,6 +266,7 @@ git log -1 --format='building GroveDB at %H'
 export CARGO_TARGET_DIR="$WORK/grovedb/target"
 cargo build --release -p lignin-tools --features migrate
 export PATH="$CARGO_TARGET_DIR/release:$PATH"
+if [ "$(command -v lignin)" != "$CARGO_TARGET_DIR/release/lignin" ]; then echo "the lignin on the path is not the one this block built, which a build target set in the configuration of cargo puts under $CARGO_TARGET_DIR/TARGET-TRIPLE/release: put that directory first on the path"; false; fi
 lignin help
 ```
 
@@ -297,7 +298,7 @@ SOURCE="$WORK/rehearsal/rocksdb"
 TARGET="$WORK/rehearsal-lignindb/database"
 BACKUP="$WORK/rehearsal-backup/database"
 RESTORE="$WORK/rehearsal-restore/database"
-mkdir "$WORK/rehearsal-lignindb" "$WORK/rehearsal-backup" "$WORK/rehearsal-restore"
+mkdir -p "$WORK/rehearsal-lignindb" "$WORK/rehearsal-backup" "$WORK/rehearsal-restore"
 ```
 
 For your node's own migration, skip this block and set the four
@@ -444,7 +445,7 @@ it whatever the interval:
 | Exit status | What it means | What to do |
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
-| 1 | the run failed or refused the source or the target; the error says why. Nothing is at `TARGET`, but in two cases: the error says that the database got that name and the name could not be made durable; or it refuses the target as one that is there (`the target … is there and …`), which is also what a run that was given a `TARGET` an earlier run had already named answers | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there. That database is whole, but no report of a run that finished is held to it (step 7): migrate again into a new `TARGET`, and leave that one where it is until you know what it holds |
+| 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there (`the target … is there and …`), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there. That database is whole, but no report of a run that finished is held to it (step 7): migrate again into a new `TARGET`, and leave that one where it is until you know what it holds |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
 
@@ -482,8 +483,10 @@ made by a run for this `TARGET`. Nothing else is to open
 
 A run that goes on with a work directory is to be given the
 `--unreachable` choice the run that began it had. Where the source has
-prefixes that nothing leads to, it refuses another and says so; where it
-has none, the choice changes nothing, and is not held.
+prefixes that nothing leads to and the first commit of the load was
+made, it refuses another and says so; a run stopped before that commit
+holds no choice yet, and where the source has no such prefix, the choice
+changes nothing and is not held.
 
 ## 7. Verify
 
@@ -671,7 +674,7 @@ checkpoint, that the node goes back to.
 - **In either case**, stop the node on LigninDB first, and remove
   `TARGET` only once the node has been started on its RocksDB database
   and you have decided not to go back to LigninDB.
-- **A migration that failed** left nothing at `TARGET` (exit status 1
+- **A migration that failed** made nothing at `TARGET` (exit status 1
   and 4, but for the cases the table of step 6 names) or left its
   database in `TARGET.migrating` (exit status 3): start the node on its
   RocksDB database as before, and remove `TARGET.migrating` when it is
