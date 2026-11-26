@@ -991,14 +991,14 @@ fn a_handle_has_no_location_for_a_change_set_of_another_subtree() {
     let (own, foreign) = (node_of(&here), node_of(&there));
     assert_eq!(own.value_as_slice(), [137; 30]);
     assert_eq!(foreign.value_as_slice(), [!137; 30]);
-    let held = here.hints.borrow().get(key.as_slice()).copied();
+    let held = here.held.hints.borrow().get(key.as_slice()).copied();
     assert!(held.is_some(), "the handle has read its node");
 
     let mut change_set = there.change_set();
     let prepared = change_set.prepare_node(&foreign, NodeChange::ValueWritten);
     change_set.put_node(&key, prepared, None).unwrap();
     here.commit(change_set).unwrap().expect("the write is made");
-    assert_eq!(here.hints.borrow().get(key.as_slice()).copied(), held);
+    assert_eq!(here.held.hints.borrow().get(key.as_slice()).copied(), held);
     assert_eq!(node_of(&here).value_as_slice(), [137; 30]);
     assert_eq!(node_of(&there).value_as_slice(), [!137; 30]);
 

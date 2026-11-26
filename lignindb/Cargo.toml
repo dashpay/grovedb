@@ -41,13 +41,15 @@ testing = ["dep:tempfile"]
 # in this crate's own tests. A run of another crate's tests switches it
 # on to hold the answers over that crate's calls (`--features
 # lignindb/held_reads`), and nothing else does: no feature of any crate
-# turns it on.
-held_reads = []
+# turns it on. It turns on the check of the same name in `lignin-tree`,
+# which this crate's own tests have on as well.
+held_reads = ["lignin-tree/held_reads"]
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7.2"
 
 [dev-dependencies]
+lignin-tree = { version = "7.0.0", path = "../lignin-tree", features = ["held_reads"] }
 tempfile = { workspace = true }
 
 [lints.rust]

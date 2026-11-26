@@ -233,6 +233,8 @@ mod tests;
 
 pub use error::{PublishError, SnapshotError};
 pub use kept::Directories;
+#[cfg(test)]
+pub(crate) use nodes::held;
 pub use nodes::NodeWalk;
 pub use read::{LatestLease, Operation, ReadPath, Snapshot};
 pub use records::{EntryWalk, Kept, Listed, Opened, ReadError, RecordCursor, RecordWalk};

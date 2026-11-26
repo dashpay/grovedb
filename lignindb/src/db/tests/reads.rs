@@ -2,7 +2,7 @@
 //! node by its key, and the nodes and the flat records in key order with
 //! a cursor that is kept from one operation to the next.
 
-use lignin_tree::cursor::CursorError;
+use lignin_tree::{cursor::CursorError, node::NodeHandle};
 
 use super::*;
 use crate::{
@@ -622,4 +622,225 @@ fn a_write_transaction_reads_a_value_that_write_back_places_while_it_is_shown_th
     assert_eq!(read, value);
     scope.rollback();
     txn.rollback().expect("a rollback");
+}
+
+/// What a read of the node under a key came to, through a hint or with
+/// none: the length of its value, its handle, and the key and the handle
+/// of each child.
+type Came = (u32, NodeHandle, [(Vec<u8>, Option<NodeHandle>); 2]);
+
+fn came(
+    opened: &crate::snapshot::Opened<'_, '_>,
+    at: &[u8],
+    hint: Option<NodeHandle>,
+) -> Option<Came> {
+    let none: FlatKinds = |_| false;
+    let mut children = ChildKeys::new();
+    let shown = opened
+        .follow_by_kind(at, hint, Some(&mut children), none, |view| {
+            view.map(|view| {
+                assert_eq!(view.key(), at);
+                (view.value_len(), view.handle().expect("a cell"))
+            })
+        })
+        .expect("a read");
+    shown.map(|(value_len, handle)| {
+        let children = [Side::Left, Side::Right]
+            .map(|side| (children.key(side).to_vec(), children.handle(side)));
+        (value_len, handle, children)
+    })
+}
+
+/// A reader goes to a node through the handle that an earlier read of it
+/// gave, and searches by key where the handle is not good. A read that
+/// follows a handle is held to the search here, and counted
+/// (`snapshot::nodes::held`): the count says which reads followed one.
+#[test]
+fn a_reader_follows_a_handle_to_a_node_and_searches_by_key_where_it_is_not_good() {
+    use crate::snapshot::held::compared;
+
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    let count = 300;
+    plant(&db, subtree(1), Merk::sized(b'k', count, 40));
+    plant(&db, subtree(2), Merk::sized(b'k', count, 41));
+    Writes {
+        enter: vec![(subtree(3), None)],
+        ..Writes::default()
+    }
+    .commit(&db);
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    let open = |name| {
+        let opened = operation.open(subtree(name)).expect("a lookup");
+        opened.expect("entered")
+    };
+    let (own, beside, empty) = (open(1), open(2), open(3));
+    // A read with a hint, and whether it followed the hint.
+    let hinted = |opened: &crate::snapshot::Opened<'_, '_>, at: &[u8], hint| {
+        let before = compared();
+        let node = came(opened, at, Some(hint));
+        (node, compared() - before == 1)
+    };
+
+    let mut links = 0;
+    for number in 0..count {
+        let at = key(b'k', number);
+        let before = compared();
+        let (len, handle, children) = came(&own, &at, None).expect("a node");
+        assert_eq!(compared(), before, "a read with no hint follows none");
+        assert_eq!(len, 40);
+        // Through its own handle the read comes to the same node, with the
+        // same children.
+        let (followed, by_handle) = hinted(&own, &at, handle);
+        assert!(by_handle);
+        assert_eq!(followed, Some((len, handle, children.clone())));
+        // The handle of each child is the one the child's own read gives,
+        // and is followed.
+        for (child, told) in children {
+            match told {
+                Some(told) => {
+                    links += 1;
+                    let (_, of_child, _) = came(&own, &child, None).expect("a child");
+                    assert_eq!(told, of_child);
+                    let (followed, by_handle) = hinted(&own, &child, told);
+                    assert!(by_handle);
+                    assert_eq!(followed.map(|(len, at, _)| (len, at)), Some((40, told)));
+                }
+                None => assert!(child.is_empty(), "a child with a key has a handle"),
+            }
+        }
+    }
+    assert_eq!(links, count - 1, "every node but the root is a child");
+
+    let (first, second, absent) = (key(b'k', 7), key(b'k', 8), key(b'k', count));
+    let (_, of_first, _) = came(&own, &first, None).expect("a node");
+    let (_, beside_first, _) = came(&beside, &first, None).expect("a node");
+    assert_ne!(of_first, beside_first);
+    // A handle whose cell has another key is not followed.
+    let (node, by_handle) = hinted(&own, &second, of_first);
+    assert!(!by_handle);
+    assert_eq!(node.map(|(len, ..)| len), Some(40));
+    // Under a key with no node, a handle shows none.
+    assert_eq!(hinted(&own, &absent, of_first), (None, false));
+    // A Merk with no node follows no handle, whatever key its cell has.
+    assert_eq!(hinted(&empty, &first, of_first), (None, false));
+    // A handle of another reader is of another lease, and is not followed:
+    // also one of the same version.
+    let other = db.snapshot();
+    assert_eq!(other.version(), snapshot.version());
+    let other_operation = other.operation();
+    let other_own = other_operation
+        .open(subtree(1))
+        .expect("a lookup")
+        .expect("entered");
+    let (_, of_other, _) = came(&other_own, &first, None).expect("a node");
+    assert_ne!(of_other.lease(), of_first.lease());
+    let (node, by_handle) = hinted(&own, &first, of_other);
+    assert!(!by_handle);
+    assert_eq!(node.map(|(len, at, _)| (len, at)), Some((40, of_first)));
+    // A later operation of the same reader follows what an earlier one
+    // was given.
+    let later = snapshot.operation();
+    let again = later.open(subtree(1)).expect("a lookup").expect("entered");
+    let (node, by_handle) = hinted(&again, &first, of_first);
+    assert!(by_handle);
+    assert_eq!(node.map(|(len, at, _)| (len, at)), Some((40, of_first)));
+}
+
+/// A good handle that was read for another Merk, whose node has the same
+/// key, is followed: no check of a handle says which Merk its cell is in.
+/// The hold of a test build finds it, since the search by key from the
+/// root of the reader's own Merk comes to another cell.
+#[test]
+#[should_panic(expected = "through a kept location came to the cell at")]
+fn a_handle_that_was_read_for_another_merk_fails_the_hold() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 30, 40));
+    plant(&db, subtree(2), Merk::sized(b'k', 30, 41));
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    let open = |name| {
+        let opened = operation.open(subtree(name)).expect("a lookup");
+        opened.expect("entered")
+    };
+    let at = key(b'k', 7);
+    let (_, of_the_other, _) = came(&open(2), &at, None).expect("a node");
+    came(&open(1), &at, Some(of_the_other));
+}
+
+/// What a reader keeps of a subtree is of one version of one database and
+/// of no reader: an operation of another snapshot of that version resumes
+/// from it with the entry the directory has, and an operation at another
+/// version, or of another database, looks the subtree up.
+#[test]
+fn a_kept_subtree_is_resumed_by_any_reader_of_its_version() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 23, 40));
+    let first = db.snapshot();
+    let (kept, entry) = {
+        let operation = first.operation();
+        let opened = operation.open(subtree(1)).expect("a lookup");
+        let opened = opened.expect("entered");
+        let entry = opened.entry().clone();
+        (opened.keep(), entry)
+    };
+    assert_eq!(kept.subtree(), subtree(1));
+    let value_len = |opened: &crate::snapshot::Opened<'_, '_>, number: u32| {
+        shown(opened, &key(b'k', number)).map(|(_, value, _)| value.len())
+    };
+
+    // Another snapshot of the same version.
+    let second = db.snapshot();
+    assert_eq!(second.version(), first.version());
+    {
+        let operation = second.operation();
+        let resumed = operation.resume(&kept).expect("a lookup");
+        let resumed = resumed.expect("entered");
+        assert_eq!(*resumed.entry(), entry);
+        assert_eq!(
+            (value_len(&resumed, 3), value_len(&resumed, 30)),
+            (Some(40), None)
+        );
+    }
+
+    // A later version has another Merk under the subtree. An operation of
+    // it looks the subtree up, and one of the earlier version resumes.
+    Writes {
+        merks: vec![(subtree(1), Merk::sized(b'k', 31, 41))],
+        ..Writes::default()
+    }
+    .commit(&db);
+    let later = db.snapshot();
+    assert!(later.version() > first.version());
+    {
+        let operation = later.operation();
+        let resumed = operation.resume(&kept).expect("a lookup");
+        let resumed = resumed.expect("entered");
+        assert_ne!(*resumed.entry(), entry);
+        assert_eq!(
+            (value_len(&resumed, 3), value_len(&resumed, 30)),
+            (Some(41), Some(41))
+        );
+        let operation = first.operation();
+        let resumed = operation.resume(&kept).expect("a lookup");
+        let resumed = resumed.expect("entered");
+        assert_eq!(*resumed.entry(), entry);
+        assert_eq!(
+            (value_len(&resumed, 3), value_len(&resumed, 30)),
+            (Some(40), None)
+        );
+    }
+
+    // Another database, at the same version, with no subtree under the
+    // prefix: what was kept in this one opens nothing there.
+    let other_dir = temp();
+    let other = Db::open(other_dir.path(), &options()).expect("a new database");
+    plant(&other, subtree(2), Merk::sized(b'k', 5, 9));
+    let elsewhere = other.snapshot();
+    assert_eq!(elsewhere.version(), first.version());
+    let operation = elsewhere.operation();
+    assert!(operation.resume(&kept).expect("a lookup").is_none());
 }

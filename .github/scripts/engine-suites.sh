@@ -58,7 +58,8 @@ run)
         for engine in $(engines "$registry"); do
             echo "== $package on $engine"
             env "$variable=$engine" cargo test -p "$package" \
-                --features "$(feature "$registry" "$engine")" "${targets[@]}" "$@"
+                --features "$(feature "$registry" "$engine")" \
+                ${targets[@]+"${targets[@]}"} "$@"
             targets=(--lib)
         done
     done < <(suites)

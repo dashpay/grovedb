@@ -317,6 +317,38 @@
 //! key the cursor is in the tree of each bucket on the way to it, and goes
 //! from the last key of one to what follows the bucket.
 //!
+//! **A walk holds its leaf.** [`Cursor::walk`] goes from the record the
+//! cursor stands on to the first record that its caller stops at, and
+//! shows the caller each record on the way, that one first: its key, and
+//! its value where the caller asks for it ([`Look`]). Over pages that do
+//! not change meanwhile that is [`Cursor::key`], [`Cursor::value`] and a
+//! step, one after another. It is for a caller that passes many records
+//! and reads little of each, as the subtree directory does past the
+//! entries of Merks with no node.
+//!
+//! - **Records that a leaf shows.** While the leaf of the cursor's record
+//!   shows that record (the pages are of the cursor's revision, and the
+//!   entry is where the cursor left it), the walk holds that leaf, and no
+//!   other page, across the records it shows of it, and calls its caller
+//!   with the leaf held. A value that the leaf holds itself is shown as
+//!   the leaf's bytes, and a value out of line is read for the leaf that
+//!   is held, as every value is, where the caller asks for it. What is
+//!   shown is what the leaf held when the walk read it: an entry that a
+//!   page step takes out of the leaf while it is held is still shown, as
+//!   it is to a cursor that read it just before the step.
+//! - **A record that its leaf does not show.** Where the pages are of
+//!   another revision than the cursor's, or the entry is not where the
+//!   cursor left it, the record the cursor stands on is shown as
+//!   [`Cursor::key`] and [`Cursor::value`] show it, with no page held: its
+//!   key whether or not the record is still there, and its value, read by
+//!   the key into a copy, where the caller asks for it and the record has
+//!   one. The walk goes on from the key, as a step does.
+//! - **From leaf to leaf** the walk moves as a step of the cursor does.
+//! - **The position.** The walk leaves the cursor on the record its
+//!   caller stopped at, or not positioned where the caller stopped at
+//!   none. The cursor is not moved while the caller runs.
+//!   A walk that fails leaves no position.
+//!
 //! # Damage
 //!
 //! Pages that are not a tree end a call with [`FlatError::Damaged`], or
@@ -427,7 +459,7 @@ mod tree;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub use cursor::Cursor;
+pub use cursor::{Cursor, Look};
 pub use error::FlatError;
 pub use owners::{FlatOwners, StepLog};
 pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
