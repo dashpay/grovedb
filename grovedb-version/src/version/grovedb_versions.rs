@@ -820,7 +820,8 @@ pub struct GroveDBOperationsAverageCaseVersions {
     /// - `1` (V6): the open is by the Merk's own path and root
     ///   (`MerkCostModelVersions::propagation` 1): the seek and the bytes of
     ///   the host's read are gone. The root Merk, which has no host, is
-    ///   estimated as before.
+    ///   opened by its root key record: its estimate has the bytes of that
+    ///   record with the seek of its read, which version 0 does not.
     pub add_average_case_get_merk_at_path: FeatureVersion,
     pub average_case_merk_replace_tree: FeatureVersion,
     pub average_case_merk_insert_tree: FeatureVersion,
@@ -895,7 +896,8 @@ pub struct GroveDBOperationsAverageCaseVersions {
 pub struct GroveDBOperationsWorstCaseVersions {
     /// The worst-case twin of
     /// `GroveDBOperationsAverageCaseVersions::add_average_case_get_merk_at_path`:
-    /// `1` (V6) leaves out the seek and the loaded bytes of the host's read.
+    /// `1` (V6) leaves out the seek and the loaded bytes of the host's read,
+    /// and has the bytes of the root key record of the root Merk.
     pub add_worst_case_get_merk_at_path: FeatureVersion,
     pub worst_case_merk_replace_tree: FeatureVersion,
     pub worst_case_merk_insert_tree: FeatureVersion,

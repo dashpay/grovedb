@@ -4,8 +4,11 @@
 //! only: the batch estimator propagates the levels above.
 //!
 //! * **[v0]** — `GROVE_V1`..`GROVE_V5`.
-//! * **[v1]** — `GROVE_V6` (`worst_case_merk_patch_element: 1`). v0, with the
-//!   hash calls of the put counted from the bytes of the element.
+//! * **[v1]** — `GROVE_V6` (`worst_case_merk_patch_element: 1`). The patch
+//!   sized from the bytes of the item, which have its flags, where v0 adds
+//!   the flags to them once more; a growth of more bytes than the item has
+//!   refused; and the hash calls of the put counted from the bytes of the
+//!   element.
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
