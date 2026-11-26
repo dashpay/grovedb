@@ -392,11 +392,11 @@ impl Layout {
         if last < 2 || self.shared.get(last).is_some_and(|&next| next >= run) {
             return None;
         }
+        // The greatest cut at which the first run fits is the one to ask
+        // the second run of: a cut before it leaves a longer second run.
         let count = self.entries();
-        let fits = |start, end| self.run_len(start, end) <= capacity;
-        (first.max(1)..=last + 1)
-            .rev()
-            .find(|&cut| cut < count && fits(0, cut) && fits(cut, count))
+        let cut = (last + 1).min(self.fit(0, capacity)).min(count - 1);
+        (cut >= first.max(1) && self.run_len(cut, count) <= capacity).then_some(cut)
     }
 
     /// The one cut that leaves two runs nearest in length.
@@ -427,6 +427,30 @@ impl Layout {
             .filter(|&(_, first, second)| first <= capacity && second <= capacity)
             .min_by_key(|&(_, first, second)| first.abs_diff(second))
             .map(|(cut, ..)| cut)
+    }
+}
+
+/// A count for the tests of how often a leaf is written: in a test build
+/// of this crate, and in a build with the feature `held_reads`.
+#[cfg(any(test, feature = "held_reads"))]
+pub(super) mod written {
+    use std::cell::Cell;
+
+    thread_local! {
+        static LEAVES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn count() {
+        LEAVES.set(LEAVES.get() + 1);
+    }
+
+    /// How many images of leaves this thread has handed to the pages of
+    /// flat keyspaces since it began, whichever keyspace and whichever
+    /// call: every image that the keyspace's code builds for a leaf and
+    /// that its pages took. A step of background work builds its images
+    /// elsewhere and is not counted.
+    pub fn leaf_images_written() -> u64 {
+        LEAVES.get()
     }
 }
 
@@ -461,7 +485,10 @@ pub(super) fn write_leaf<P: FlatPagesMut + ?Sized>(
             KeyRef::Whole(key) => image.push(key, value)?,
         }
     }
-    pages.write(page, &image.finish())
+    pages.write(page, &image.finish())?;
+    #[cfg(any(test, feature = "held_reads"))]
+    written::count();
+    Ok(())
 }
 
 /// Writes the branch `page` of `level` with the first child `first` and

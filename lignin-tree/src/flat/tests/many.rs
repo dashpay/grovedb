@@ -25,11 +25,33 @@ fn leaves(pages: &Mem) -> usize {
 }
 
 /// Makes `changes` and holds what the write says it wrote to what the
-/// pages were handed: every image of a leaf, and no page taken twice.
+/// pages were handed: every image of a leaf, counted by the keyspace's own
+/// count as well, and **no page handed two images of a leaf**, where no
+/// key of the changes is kept in a bucket. The root is the exception
+/// where it is a leaf afterwards and was none: it took what its only
+/// child held, after a merge.
 fn write(pages: &mut Mem, tree: &FlatTree, changes: &Changes) -> Written {
-    let before = pages.leaf_writes;
+    let (before, counted) = (pages.leaf_writes, leaf_images_written());
+    let from = pages.leaf_pages.len();
+    let was_leaf = pages.image(tree.root()).leaf().is_some();
     let written = tree.write(pages, changes).expect("a write of many keys");
     assert_eq!(written.leaf_writes, pages.leaf_writes - before);
+    assert_eq!(written.leaf_writes, leaf_images_written() - counted);
+    let limit = pages.config.key_limit();
+    if changes.keys().all(|key| key.len() <= limit) {
+        let handed = &pages.leaf_pages[from..];
+        let pages_handed: BTreeSet<PageId> = handed.iter().copied().collect();
+        let collapsed = !was_leaf && pages.image(tree.root()).leaf().is_some();
+        let twice = handed.len() - pages_handed.len();
+        assert!(
+            twice <= usize::from(collapsed),
+            "a page was handed two images of a leaf: {handed:?}"
+        );
+        if twice == 1 {
+            let root = handed.iter().filter(|page| **page == tree.root()).count();
+            assert_eq!(root, 2, "the page that was handed two is the root");
+        }
+    }
     written
 }
 
@@ -194,11 +216,11 @@ fn a_leaf_that_loses_entries_is_looked_at_as_after_a_delete() {
     assert_eq!(leaves(&pages), all - 1, "the two leaves are one");
     assert!(!pages.pages.contains_key(&beside));
     assert_eq!(written.leaves, 1);
-    assert_eq!(written.leaf_writes, 2, "the leaf, and the two as one");
+    assert_eq!(written.leaf_writes, 1, "the two as one, and nothing before");
     assert_eq!(records(&pages, &tree).len(), before + 1 - own.len());
 
-    // Every record of a leaf goes: the leaf is written with none, and
-    // leaves the tree.
+    // Every record of a leaf goes: the leaf leaves the tree, and is not
+    // written.
     let home = leaf_of(&pages, &tree, &numbered(300));
     let own = keys_of(&pages, home);
     let (all, before) = (leaves(&pages), records(&pages, &tree).len());
@@ -206,7 +228,7 @@ fn a_leaf_that_loses_entries_is_looked_at_as_after_a_delete() {
     let written = write(&mut pages, &tree, &changes);
     assert!(!pages.pages.contains_key(&home));
     assert_eq!(leaves(&pages), all - 1);
-    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+    assert_eq!((written.leaves, written.leaf_writes), (1, 0));
     assert_eq!(records(&pages, &tree).len(), before - own.len());
 
     // Every record goes, in one write: one page is left.
@@ -285,13 +307,27 @@ fn run(seed: u64, config: FlatConfig, steps: u64) -> Reached {
                         0 => key(&mut rng, config),
                         _ => near(&mut rng, &model, config),
                     };
-                    let record = (rng.below(100) < puts).then(|| value(&mut rng, config));
+                    // Now and then the value that the key has.
+                    let record = match (rng.below(100) < puts, rng.below(12)) {
+                        (false, _) => None,
+                        (true, 0) if model.contains_key(&key) => model.get(&key).cloned(),
+                        (true, _) => Some(value(&mut rng, config)),
+                    };
                     changes.insert(key, record);
                 }
                 // The leaves that the keys lie in which change one, as
                 // the tree is before the write.
+                // A value that the key has already, in its page, changes
+                // nothing, as a delete of a key that is not there.
+                let same = |key: &Vec<u8>, value: &Vec<u8>| {
+                    value.len() <= config.max_inline() && model.get(key) == Some(value)
+                };
+                let changes_it = |key: &Vec<u8>, record: &Option<Vec<u8>>| match record {
+                    Some(value) => !same(key, value),
+                    None => model.contains_key(key),
+                };
                 let homes: BTreeSet<PageId> = (changes.iter())
-                    .filter(|(key, record)| record.is_some() || model.contains_key(*key))
+                    .filter(|(key, record)| changes_it(key, record))
                     .map(|(key, _)| leaf_of(&pages, &tree, key))
                     .collect();
                 let all_short = changes.keys().all(|key| short(key));
@@ -300,7 +336,6 @@ fn run(seed: u64, config: FlatConfig, steps: u64) -> Reached {
                     assert_eq!(written.leaves, homes.len() as u64);
                     reached.counted += 1;
                 }
-                assert!(written.leaf_writes >= written.leaves);
                 reached.writes += 1;
                 reached.changes += changes.len() as u64;
                 reached.leaves += written.leaves;
@@ -394,7 +429,7 @@ fn random_writes_of_many_keys_agree_with_a_btree_map() {
     println!("{most:?}");
     assert!(most.records > 300 && most.level >= 2, "{most:?}");
     assert!(2 * most.changes > 3 * most.leaves, "{most:?}");
-    assert!(most.leaf_writes > most.leaves, "cuts and merges: {most:?}");
+    assert!(most.leaf_writes != most.leaves, "{most:?}");
     assert!(
         most.counted > 100 && most.long > 500 && most.out_of_line > 500,
         "{most:?}"
@@ -445,4 +480,108 @@ fn keys_that_arrive_in_order_in_writes_of_many_leave_full_pages() {
         100.0 * one
     );
     assert!(many > 0.88, "leaves are {:.0}% full", 100.0 * many);
+}
+
+/// A key that is kept in a bucket is written after the others: it does
+/// not part the keys of a leaf that stand on either side of it.
+#[test]
+fn a_long_key_does_not_part_the_keys_of_a_leaf() {
+    let (mut pages, tree) = Mem::tree(small());
+    let long = vec![b'm'; small().key_limit() + 40];
+    let changes: Changes = [
+        (b"a".to_vec(), Some(b"first".to_vec())),
+        (long.clone(), None),
+        (b"z".to_vec(), Some(b"last".to_vec())),
+    ]
+    .into();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+    assert_eq!(pages.pages.len(), 1, "no bucket is made for a delete");
+
+    // With a value, the long key makes its bucket: the leaf of the two
+    // short keys is written for them, and again for the bucket.
+    let changes: Changes = [
+        (b"b".to_vec(), Some(b"second".to_vec())),
+        (long.clone(), Some(b"under a long key".to_vec())),
+        (b"y".to_vec(), Some(b"fourth".to_vec())),
+    ]
+    .into();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!(written.leaves, 2);
+    assert_eq!(
+        written.leaf_writes, 4,
+        "the leaf, the bucket's tree twice, the leaf"
+    );
+    assert_eq!(
+        get(&pages, &tree, &long),
+        Some(b"under a long key".to_vec())
+    );
+    assert_eq!(records(&pages, &tree).len(), 5);
+}
+
+/// A value that a key has already, in its page, changes nothing: its leaf
+/// is neither taken nor written.
+#[test]
+fn a_value_that_a_key_has_already_writes_nothing() {
+    let (mut pages, tree) = spread(600);
+    let (revision, takes) = (pages.revision, pages.takes);
+    let changes: Changes = (0..600)
+        .map(|n| (numbered(n), Some(vec![n as u8; 60])))
+        .collect();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!(written, Written::default());
+    assert_eq!((pages.revision, pages.takes), (revision, takes));
+
+    // One of them gets another value, and one key that is not there is
+    // deleted beside it: one leaf is written.
+    let mut changes = changes;
+    changes.insert(numbered(300), Some(vec![9; 60]));
+    changes.insert([&numbered(300)[..], b"?"].concat(), None);
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+    assert_eq!(pages.takes - takes, 1);
+    assert_eq!(get(&pages, &tree, &numbered(300)), Some(vec![9; 60]));
+
+    // A value out of line is written again: it is not read to be
+    // compared.
+    let long = vec![7; small().max_inline() + 1];
+    let one: Changes = [(numbered(1), Some(long.clone()))].into();
+    assert_eq!(write(&mut pages, &tree, &one).leaf_writes, 1);
+    assert_eq!(write(&mut pages, &tree, &one).leaf_writes, 1);
+    assert_eq!(get(&pages, &tree, &numbered(1)), Some(long));
+}
+
+/// Leaves that are emptied and merged by one write, from one end of the
+/// keyspace to the other, each handed at most one image.
+#[test]
+fn a_write_that_takes_most_records_hands_no_page_two_images() {
+    for keep in [2, 3, 5, 9, 17, 40] {
+        let (mut pages, tree) = spread(3_000);
+        let before = leaves(&pages);
+        let changes: Changes = (0..3_000)
+            .filter(|n| n % keep != 0)
+            .map(|n| (numbered(n), None))
+            .collect();
+        let homes: BTreeSet<PageId> = (changes.keys())
+            .map(|key| leaf_of(&pages, &tree, key))
+            .collect();
+        let written = write(&mut pages, &tree, &changes);
+        let after = leaves(&pages);
+        let left: Vec<Vec<u8>> = (0..3_000).step_by(keep as usize).map(numbered).collect();
+        let found: Vec<Vec<u8>> = (records(&pages, &tree).into_iter())
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(found, left);
+        assert_eq!(written.leaves, homes.len() as u64);
+        println!("one record in {keep} is kept: {before} leaves, then {after}, {written:?}");
+        // No leaf is written that is then freed for being empty, and a
+        // leaf that is merged into another is written once before, where
+        // it was the right one of the two, or not at all.
+        assert!(written.leaf_writes <= written.leaves);
+        // With few of its records left, a leaf is under a quarter of a
+        // page: leaves are merged, also where both took changes.
+        assert!(after <= before);
+        assert!(keep < 17 || 3 * after < before, "leaves are merged");
+        pages.commit();
+    }
 }

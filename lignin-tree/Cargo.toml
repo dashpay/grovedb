@@ -20,9 +20,11 @@ lignin-store = { version = "7.0.0", path = "../lignin-store" }
 # way, the records of a batch that `Directory::settle` wrote into the
 # directory are held to the pages: each key is looked up again, at the cost
 # of a lookup a record, and a value that is not the one that was settled
-# panics. It is on in this crate's own tests, `lignindb/held_reads` turns it
-# on with its own checks, and `lignindb` has it on for its own tests by a
-# dev-dependency.
+# panics. And a count: how many images of leaves the thread has written into
+# flat keyspaces (`flat::leaf_images_written`), for the tests that hold a
+# batch to the leaves it may write. It is on in this crate's own tests,
+# `lignindb/held_reads` turns it on with its own checks, and `lignindb` has
+# it on for its own tests by a dev-dependency.
 held_reads = []
 
 [dev-dependencies]

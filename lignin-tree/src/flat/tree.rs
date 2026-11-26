@@ -659,19 +659,22 @@ pub type Changes = BTreeMap<Vec<u8>, Option<Vec<u8>>>;
 /// What one write of many keys did ([`FlatTree::write`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Written {
-    /// How often the write went down to a leaf and changed it: once for
-    /// each leaf of the tree, as the tree was when the write came to it,
-    /// for all the keys of the write that the leaf stores as they are and
-    /// that change it, and once for each key that is kept in a bucket and
-    /// changes its tree. A leaf in which no key changes anything is not
-    /// counted.
+    /// How many leaves the write changed: one for each leaf of the tree,
+    /// as the tree was when the write came to it, in which a key of the
+    /// write that the leaf stores as it is changes something, and one for
+    /// each key that is kept in a bucket and changes its tree (a put of
+    /// such a key is counted whatever it finds). A leaf in which no key
+    /// changes anything is not counted.
     pub leaves: u64,
     /// How many images of leaves the write handed to its pages
     /// ([`FlatPagesMut::write`]), in this tree and in the trees of its
-    /// buckets: one for each leaf that is counted in `leaves` and stays one
-    /// page, one for each piece of a leaf that is cut, one for each leaf
-    /// that a merge joins another into, and one for a root that becomes a
-    /// leaf. An image of a branch is not counted.
+    /// buckets. For the keys that a leaf stores as they are: one for each
+    /// leaf that is counted in `leaves`, but none for a leaf that is left
+    /// with no entry, and one more for each further piece of a leaf that
+    /// is cut. Two things add to that: a root that takes what its only
+    /// child holds is written once more, and each key that is kept in a
+    /// bucket writes what a put or a delete of it writes. An image of a
+    /// branch is not counted.
     pub leaf_writes: u64,
 }
 
@@ -755,10 +758,10 @@ struct Descent {
     /// The branches from the root down to the leaf.
     steps: Vec<Step>,
     leaf: PageId,
-    /// The end of the leaf's key range: the first key that the branches
-    /// on the way give to another leaf, or `None` for the last leaf of
-    /// the tree.
-    end: Option<Vec<u8>>,
+    /// The beginning of the leaf's key range: the greatest separator that
+    /// the branches on the way have before the child they lead to, or
+    /// `None` for the first leaf of the tree.
+    begin: Option<Vec<u8>>,
 }
 
 /// Writing many keys.
@@ -769,23 +772,45 @@ impl FlatTree {
     /// [`Self::put`] and a [`Self::delete`] for each change leave it
     /// holding, key for key and value for value.
     ///
-    /// **A leaf is written once for all the keys it takes.** The write
-    /// goes through the changes in the order of their keys. It goes down
-    /// to the leaf of the first key that is left, takes that leaf once,
-    /// makes in it every change whose key lies in the leaf's key range,
-    /// and writes it once: as one page, or cut into pieces where it has
-    /// outgrown its image, and then looked at as a leaf that lost entries
-    /// is, where it lost one and was not cut. Then it goes down again for
-    /// the next key. A leaf in which no change changes anything (each is
-    /// a delete of a key that is not there) is neither taken nor written.
+    /// **A leaf is handed one image for all the keys it takes.** The
+    /// write goes through the changes whose keys a leaf stores as they
+    /// are, from the last key to the first. It goes down to the leaf of
+    /// the last key that is left, takes that leaf once, makes in it every
+    /// change whose key lies in the leaf's key range, and writes what the
+    /// leaf then holds, once:
+    ///
+    /// - as one page; or
+    /// - cut into pieces, where it has outgrown its image; or
+    /// - not at all, where it holds no entry: the leaf is freed and taken
+    ///   out of its branch; or
+    /// - together with a neighbour below the same branch, where it lost
+    ///   an entry and is under a quarter of a page, by the rule of a
+    ///   delete: the left page of the two takes the entries of both, in
+    ///   the one image that is written, and the right one is freed.
+    ///
+    /// Then it goes down again for the next key. So no page is handed two
+    /// images of a leaf by one write. Two things follow from that.
+    /// **A leaf is not merged with a neighbour to its left that the write
+    /// has still to come to**: it is written by itself and stays under a
+    /// quarter of a page until a later write looks at it, as a leaf does
+    /// that finds no neighbour to merge with. And where a merge leaves
+    /// the root with one child, the root takes what that child holds, as
+    /// after a delete, which is one image more, of the root.
+    ///
+    /// A leaf in which no change changes anything is neither taken nor
+    /// written: each change is a delete of a key that is not there, or a
+    /// value that the key has already, in the page.
     ///
     /// The pages are cut and merged by the rules of one key, applied to
     /// what a leaf holds after all its changes. So the pages that this
     /// leaves can be other pages than a put and a delete for each change
     /// leave, with the same records in them.
     ///
-    /// A key that is longer than a page stores is written by itself, as
-    /// [`Self::put`] and [`Self::delete`] write it.
+    /// **A key that is longer than a page stores is written by itself**,
+    /// after the others, as [`Self::put`] and [`Self::delete`] write it.
+    /// What is said above of one image is not said of such a key: it
+    /// writes the leaf that holds its bucket, also where the write has
+    /// written that leaf already.
     ///
     /// A value that is longer than the value log holds is refused before
     /// any page is changed. After any other error the writer's pages are
@@ -805,25 +830,27 @@ impl FlatTree {
         let short = |key: &[u8]| key.len() <= self.config.key_limit();
         let mut leaves = 0;
         let mut group: Vec<Change<'_>> = Vec::new();
-        let mut rest = changes.iter().peekable();
+        let mut rest = (changes.iter().rev())
+            .filter(|(key, _)| short(key))
+            .peekable();
         while let Some((key, value)) = rest.next() {
-            let value = value.as_deref();
-            if !short(key) {
-                let changed = match value {
-                    Some(value) => self.put(&mut pages, key, value).map(|()| true)?,
-                    None => self.delete(&mut pages, key)?,
-                };
-                leaves += u64::from(changed);
-                continue;
-            }
-            let Descent { steps, leaf, end } = self.descend_within(&pages, key)?;
+            let Descent { steps, leaf, begin } = self.descend_within(&pages, key)?;
             group.clear();
-            group.push((key, value));
-            let within = |key: &[u8]| short(key) && end.as_deref().is_none_or(|end| key < end);
+            group.push((key, value.as_deref()));
+            let within = |key: &[u8]| begin.as_deref().is_none_or(|begin| key >= begin);
             while let Some((key, value)) = rest.next_if(|(key, _)| within(key)) {
                 group.push((key, value.as_deref()));
             }
-            leaves += u64::from(self.write_group(&mut pages, steps, leaf, &group)?);
+            group.reverse();
+            let next = rest.peek().map(|(key, _)| key.as_slice());
+            leaves += u64::from(self.write_group(&mut pages, steps, leaf, &group, next)?);
+        }
+        for (key, value) in changes.iter().filter(|(key, _)| !short(key)) {
+            let changed = match value {
+                Some(value) => self.put(&mut pages, key, value).map(|()| true)?,
+                None => self.delete(&mut pages, key)?,
+            };
+            leaves += u64::from(changed);
         }
         Ok(Written {
             leaves,
@@ -832,26 +859,33 @@ impl FlatTree {
     }
 
     /// Goes down to the leaf whose key range holds `key`, as
-    /// [`Self::descend`] does, and returns with it the end of that range.
+    /// [`Self::descend`] does, and returns with it the beginning of that
+    /// range.
     fn descend_within<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
         key: &[u8],
     ) -> Result<Descent, FlatError> {
         let (mut page, mut above) = (self.root, None);
-        let (mut steps, mut end) = (Vec::new(), None);
+        let (mut steps, mut begin): (_, Option<Vec<u8>>) = (Vec::new(), None);
         loop {
             let frame = pages.page(page)?;
             let FlatPage::Branch(branch) = Self::checked(&frame, page, above)? else {
                 let leaf = page;
-                return Ok(Descent { steps, leaf, end });
+                return Ok(Descent { steps, leaf, begin });
             };
             // The child in position `index` has the keys from the separator
-            // before it up to the one in position `index`, which a deeper
-            // branch can only bring nearer.
+            // before it on. The greatest of those separators on the way is
+            // kept: in a tree that is one, each is at or after those above
+            // it, and where a branch is not as its tree says, a key is
+            // taken for this leaf only where every branch sends it here.
             let index = branch.child_index(key);
-            if let Some(separator) = branch.separator(index) {
-                end = Some(separator.to_vec());
+            let before = index.checked_sub(1).and_then(|slot| branch.separator(slot));
+            if let Some(separator) = before {
+                let separator = separator.to_vec();
+                if begin.as_ref().is_none_or(|begin| separator > *begin) {
+                    begin = Some(separator);
+                }
             }
             steps.push(Step { page, index });
             above = Some(branch.level());
@@ -861,22 +895,34 @@ impl FlatTree {
 
     /// Makes `changes`, which are in the order of their keys and all in
     /// the key range of the leaf `page` below `steps`, in that leaf, and
-    /// says whether one of them changed it.
+    /// says whether one of them changed it. `next` is the key the write
+    /// goes on with, which is before the leaf's key range, if one is
+    /// left.
     fn write_group<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
-        steps: Vec<Step>,
+        mut steps: Vec<Step>,
         page: PageId,
         changes: &[Change<'_>],
+        next: Option<&[u8]>,
     ) -> Result<bool, FlatError> {
-        // Deletes of keys that are not there cost no copy of the page.
-        let idle = {
+        // A change that changes nothing: a delete of a key that is not
+        // there, and a value that the key has already, in the page.
+        let idle = |leaf: &FlatLeaf<'_>, key: &[u8], value: Option<&[u8]>| {
+            let found = leaf.search(key).ok().and_then(|slot| leaf.value(slot));
+            match (found, value) {
+                (None, None) => true,
+                (Some(FlatValue::Inline(has)), Some(value)) => has == value,
+                _ => false,
+            }
+        };
+        // A leaf that no change changes costs no copy of the page.
+        let all_idle = {
             let frame = pages.page(page)?;
             let leaf = leaf(&frame, page)?;
-            let absent = |key| leaf.search(key).is_err();
-            (changes.iter()).all(|&(key, value)| value.is_none() && absent(key))
+            (changes.iter()).all(|&(key, value)| idle(&leaf, key, value))
         };
-        if idle {
+        if all_idle {
             return Ok(false);
         }
         let old = pages.take(page)?;
@@ -889,6 +935,12 @@ impl FlatTree {
         let (mut from, mut added, mut apart, mut removed) = (0, None, false, false);
         let mut changed = false;
         for &(key, value) in changes {
+            // What the leaf holds is read from the image that was taken:
+            // a step of background work can have taken entries out since
+            // the leaf was read.
+            if idle(&leaf, key, value) {
+                continue;
+            }
             let (slot, found) = match leaf.search(key) {
                 Ok(slot) => (slot, true),
                 Err(slot) => (slot, false),
@@ -898,9 +950,9 @@ impl FlatTree {
             if let Some(entry) = entries.get(slot).filter(|_| found) {
                 drop_held(pages, page, entry.value)?;
             }
-            changed |= found || value.is_some();
+            changed = true;
             let Some(value) = value else {
-                removed |= found;
+                removed = true;
                 continue;
             };
             if !found {
@@ -924,23 +976,136 @@ impl FlatTree {
             now.push(LeafEntry { key, value });
         }
         now.extend_from_slice(entries.get(from..).unwrap_or_default());
-        // A step of background work can have taken out, since the leaf was
-        // read, every entry that the changes delete: the leaf is as the
-        // changes leave it, and is not written.
         if !changed {
             return Ok(false);
         }
 
         let capacity = self.config.capacity();
-        if Layout::of(&now).len() > capacity {
+        let len = Layout::of(&now).len();
+        if len > capacity {
             self.store_leaf(pages, &steps, page, &now, added)?;
             return Ok(true);
         }
-        write_leaf(pages, capacity, page, &now)?;
-        if removed {
-            self.rebalance(pages, steps, page)?;
+        // A leaf that lost an entry is looked at as after a delete, before
+        // it is written: what it then holds is written once, by itself or
+        // with a neighbour, or not at all.
+        let Some(&Step {
+            page: parent,
+            index,
+        }) = steps.last().filter(|_| removed)
+        else {
+            write_leaf(pages, capacity, page, &now)?;
+            return Ok(true);
+        };
+        if now.is_empty() {
+            pages.free(page)?;
+            steps.truncate(self.remove_child(pages, &steps)?);
+        } else if len >= self.config.underfull() {
+            write_leaf(pages, capacity, page, &now)?;
+            return Ok(true);
+        } else {
+            match self.merge_written(pages, (parent, index), page, &now, next)? {
+                Merge::TooLong => {
+                    write_leaf(pages, capacity, page, &now)?;
+                    return Ok(true);
+                }
+                Merge::NoNeighbour => write_leaf(pages, capacity, page, &now)?,
+                Merge::Done => {}
+            }
+        }
+        // The branch above has changed, or has one child: it is looked at
+        // next, as after a delete.
+        if let Some(step) = steps.pop() {
+            self.rebalance(pages, steps, step.page)?;
         }
         Ok(true)
+    }
+
+    /// Merges the leaf `page`, which is the child in position `index` of
+    /// the branch `parent` and holds `now` once it is written, with a
+    /// neighbour, as [`Self::merge`] merges a leaf that was written: the
+    /// left page of the two is written with the entries of both, and the
+    /// right page is freed. The leaf itself is not written before.
+    ///
+    /// A neighbour to the left that the write has still to come to, which
+    /// `next` lies in or may lie in, is left alone, and the answer is
+    /// that of two pages that are too long together.
+    fn merge_written<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        (parent, index): (PageId, usize),
+        page: PageId,
+        now: &[LeafEntry<'_>],
+        next: Option<&[u8]>,
+    ) -> Result<Merge, FlatError> {
+        let capacity = self.config.capacity();
+        let (slot, level, left, right, begin) = {
+            let frame = pages.page(parent)?;
+            let branch = branch(&frame, parent)?;
+            let Some(slot) = branch.len().checked_sub(1).map(|last| index.min(last)) else {
+                return Ok(Merge::NoNeighbour);
+            };
+            // Where the key range of the left page begins, as this branch
+            // says it: with no separator before it, a branch above does.
+            let begin = slot
+                .checked_sub(1)
+                .and_then(|before| branch.separator(before));
+            let begin = begin.map(|key| key.to_vec());
+            let (left, right) = (child(&branch, slot)?, child(&branch, slot + 1)?);
+            (slot, branch.level(), left, right, begin)
+        };
+        let other = match page {
+            page if page == left => right,
+            page if page == right => left,
+            _ => {
+                return Err(FlatError::Damaged {
+                    page: parent,
+                    what: "a branch that is not as it was read",
+                })
+            }
+        };
+        let comes = |next: &[u8]| begin.as_deref().is_none_or(|begin| next >= begin);
+        if other == left && next.is_some_and(comes) {
+            return Ok(Merge::TooLong);
+        }
+        // What the two make together, with the other page read from its
+        // image.
+        fn join(image: &[u8], other: PageId, level: u8) -> Result<Vec<LeafEntry<'_>>, FlatError> {
+            let read = FlatTree::checked(image, other, Some(level))?;
+            let Some(beside) = read.leaf() else {
+                return Err(FlatError::Damaged {
+                    page: other,
+                    what: "a leaf and a branch below one branch",
+                });
+            };
+            Ok(leaf_entries(&beside))
+        }
+        // The other page is looked at before it is taken: a page that
+        // stays as it is costs no copy of its own.
+        let image = Self::image(pages, other)?;
+        let joined = |beside: Vec<LeafEntry<'_>>| match other == left {
+            true => Layout::of(&[&beside[..], now].concat()).len(),
+            false => Layout::of(&[now, &beside[..]].concat()).len(),
+        };
+        if joined(join(&image, other, level)?) > self.config.merge_limit() {
+            return Ok(Merge::TooLong);
+        }
+        let taken = pages.take(other)?;
+        let beside = join(&taken, other, level)?;
+        let entries = match other == left {
+            true => [&beside[..], now].concat(),
+            false => [now, &beside[..]].concat(),
+        };
+        write_leaf(pages, capacity, left, &entries)?;
+        pages.free(right)?;
+
+        let old = pages.take(parent)?;
+        let branch = branch(&old, parent)?;
+        let mut separators = branch_entries(&branch)?;
+        separators.remove(slot.min(separators.len() - 1));
+        let (level, first) = (branch.level(), child(&branch, 0)?);
+        write_branch(pages, capacity, parent, level, first, &separators)?;
+        Ok(Merge::Done)
     }
 }
 

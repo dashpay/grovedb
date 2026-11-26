@@ -20,6 +20,7 @@ use lignin_format::{
 use lignin_io::sim::SimRng;
 
 use super::{
+    leaf_images_written,
     log::{is_changed, push_changes},
     Changes, Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree, Look, Revision,
     Written,
@@ -86,6 +87,8 @@ struct Mem {
     /// taken.
     leaf_writes: u64,
     takes: u64,
+    /// The page of each image of a leaf that was written, in order.
+    leaf_pages: Vec<PageId>,
     /// A step of background work that is made just before the page is
     /// taken: it gives the image the page has from then on.
     step_before_take: Option<(PageId, Vec<u8>)>,
@@ -112,6 +115,7 @@ impl Mem {
             revision: 0,
             leaf_writes: 0,
             takes: 0,
+            leaf_pages: Vec::new(),
             step_before_take: None,
         }
     }
@@ -328,6 +332,9 @@ impl FlatPagesMut for Mem {
         assert_eq!((read.id(), read.as_bytes().len()), (page, image.len()));
         assert!(image.len() <= self.config.capacity());
         self.leaf_writes += u64::from(read.leaf().is_some());
+        if read.leaf().is_some() {
+            self.leaf_pages.push(page);
+        }
         self.pages.insert(page, image.to_vec());
         for (_, place) in self.places(page) {
             if let ValuePlace::Pending(pending) = place {

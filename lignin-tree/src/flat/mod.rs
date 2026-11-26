@@ -174,24 +174,35 @@
 //! page and writes none, in the tree of a bucket as in any other. Unlinking a range without reading it is the
 //! subtree drop's (TREE-09).
 //!
-//! **A write of many keys writes a leaf once** ([`FlatTree::write`]). It
-//! is given changes in the order of their keys ([`Changes`]): for each key
-//! the value it gets, or none where its record goes. It goes down to the
-//! leaf of the first key that is left, takes that leaf once, makes in it
-//! every change whose key lies in the leaf's key range, and writes it
-//! once; then it goes down again for the next key. What the leaf holds
-//! after all its changes is cut and looked at by the rules above: a leaf
-//! that has outgrown its image is cut into the pieces it needs, and one
-//! that lost an entry and was not cut is looked at as after a delete. A
-//! leaf in which no change changes anything is neither taken nor written.
-//! The keyspace holds afterwards what a put and a delete for each change
-//! leave it holding. Its pages can be other pages, because a leaf is cut
-//! once for all it takes and not once for each key: where the new entries
-//! of a leaf stand beside each other and end a run of keys, the cut keeps
-//! the run together as it does for one key. A key that is kept in a
-//! bucket is written by itself. [`Written`] says how many leaves took
-//! changes and how many images of leaves were written for them. The
-//! subtree directory writes the records of one batch this way (TXN-03).
+//! **A write of many keys hands a leaf one image** ([`FlatTree::write`]).
+//! It is given changes in the order of their keys ([`Changes`]): for each
+//! key the value it gets, or none where its record goes. It goes through
+//! the keys that a page stores as they are from the last to the first: it
+//! goes down to the leaf of the last key that is left, takes that leaf
+//! once, makes in it every change whose key lies in the leaf's key range,
+//! and writes what the leaf then holds, once; then it goes down again for
+//! the next key. What the leaf holds after all its changes is cut and
+//! looked at by the rules above, before it is written: a leaf that has
+//! outgrown its image is written as the pieces it needs; one that is left
+//! with no entry is freed and not written; one that lost an entry and is
+//! under a quarter of a page is merged with its neighbour in the one
+//! image that is written. So no page is handed two images of a leaf by
+//! one write, with one exception: where a merge leaves the root with one
+//! child, the root takes what that child holds. A leaf is for that not
+//! merged with a neighbour to its left that the write has still to come
+//! to, and stays under a quarter of a page until a later write looks at
+//! it. A leaf in which no change changes anything (a delete of a key that
+//! is not there, a value that the key has already in its page) is neither
+//! taken nor written. The keyspace holds afterwards what a put and a
+//! delete for each change leave it holding. Its pages can be other pages,
+//! because a leaf is cut and merged once for all it takes: where the new
+//! entries of a leaf stand beside each other and end a run of keys, the
+//! cut keeps the run together as it does for one key. A key that is kept
+//! in a bucket is written by itself, after the others, and what is said
+//! here of one image is not said of it. [`Written`] says how many leaves
+//! took changes and how many images of leaves were written for them. The
+//! subtree directory writes the records of one batch this way (TXN-03),
+//! and none of its keys is kept in a bucket.
 //!
 //! # Values
 //!
@@ -481,6 +492,8 @@ pub(crate) mod tests;
 
 pub use cursor::{Cursor, Look};
 pub use error::FlatError;
+#[cfg(any(test, feature = "held_reads"))]
+pub use node::written::leaf_images_written;
 pub use owners::{FlatOwners, StepLog};
 pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
 pub use store::{Committed, PageIds, Parts, Private, PrivatePage};
