@@ -1269,6 +1269,13 @@ fn every_command_names_what_the_workspace_has() {
                 let tokens: Vec<&str> = span.split_whitespace().collect();
                 let fault = match tokens.as_slice() {
                     ["lignin-bench", _, ..] => command_fault(&span, &packages),
+                    // The tool takes `lignin SUBCOMMAND DIR [OPTIONS]`: no
+                    // option before its subcommand.
+                    ["lignin", first, more @ ..] if first.starts_with("--") && !more.is_empty() => {
+                        Some(format!(
+                            "{first} comes before the subcommand, where lignin takes none"
+                        ))
+                    }
                     ["lignin", rest @ ..] if !rest.is_empty() => {
                         let subcommand = rest.first().filter(|word| !word.starts_with("--"));
                         let options = rest.iter().filter(|word| word.starts_with("--"));
