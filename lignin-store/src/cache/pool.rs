@@ -83,6 +83,11 @@ pub struct PoolStats {
     /// for them any more ([`BufferPool::reclaim`]): superseded, with their
     /// content in a segment. They are not among the evictions.
     pub releases: u64,
+    /// Loads that [`BufferPool::install_loaded`] took nothing of, because
+    /// a commit or a page step had changed that part of the table since
+    /// the miss ([`Loaded::Again`]): the caller reads the page's blocks
+    /// once more for each.
+    pub overtaken: u64,
 }
 
 /// What the pool holds at one moment, from a walk over all of it
@@ -213,6 +218,7 @@ pub(super) struct Turnover {
     evictions: Counter,
     overflows: Counter,
     pub(super) releases: Counter,
+    overtaken: Counter,
 }
 
 /// The buffer pool. See the [module documentation](super).
@@ -373,6 +379,7 @@ impl BufferPool {
                 evictions: Counter::default(),
                 overflows: Counter::default(),
                 releases: Counter::default(),
+                overtaken: Counter::default(),
             }),
         })
     }
@@ -459,6 +466,7 @@ impl BufferPool {
             evictions: self.turnover.evictions.get() as u64,
             overflows: self.turnover.overflows.get() as u64,
             releases: self.turnover.releases.get() as u64,
+            overtaken: self.turnover.overtaken.get() as u64,
         }
     }
 
@@ -643,6 +651,7 @@ impl BufferPool {
         let step = lock(&bucket.step);
         let mut chain = bucket.chain.write();
         if chain.stamp() != miss.stamp {
+            self.turnover.overtaken.add(1);
             return Ok(Loaded::Again(blank));
         }
         let mut same = None;

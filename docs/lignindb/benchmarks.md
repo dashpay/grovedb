@@ -313,6 +313,7 @@ counters. They say where the logged and the background bytes went:
 | `pages_freed`, `value_reads` | pages the reclaimer freed; values read from the value log |
 | `block_reads`, `block_read_bytes` | the blocks read from segments by their locations, and their bytes as stored: the base image and each delta run of a page that is loaded, and what write-back reads of a page it builds again. Each is one read of the file layer, so with `page_reads_per_transition` they say how many reads a page that the pool did not hold costs |
 | `pool_evictions`, `pool_overflows` | page versions the buffer pool took out to make room, and frames it allocated beside its fixed ones because none of those could be evicted |
+| `pool_releases`, `pool_loads_overtaken` | superseded page versions that a segment holds and that the pool gave up before the clock came to them, once no reader could ask for them; and loads whose blocks were read once more because a commit or a page step changed that part of the pool's table meanwhile |
 
 It also reports **gauges**, read once after every commit of a write phase and
 given as they are, not per transition: `log_held_mean` and `log_held_max`, the
