@@ -123,7 +123,12 @@ const COVERED: [(&str, &[&str]); 26] = [
 /// one, is quoted as the message of a row of the messages chapter that
 /// names that file and quotes that message too, so a reason quoted for one
 /// message does not stand for the same word of another.
-const REASONS: [(&str, &str, &str); 35] = [
+const REASONS: [(&str, &str, &str); 36] = [
+    (
+        "lignin-io/src/linux.rs",
+        "no_direct_io(",
+        "… cannot be opened for direct reads: …",
+    ),
     (
         "lignin-tree/src/directory/check.rs",
         "damaged(",
