@@ -1385,11 +1385,25 @@ fn every_quoted_message_is_in_the_code() {
             for span in code_spans(prose) {
                 // A word of a report line, `name=…` or `name=value`, is held
                 // to the words the code writes before its value, whole.
-                if let Some((field, _)) = span.split_once('=').filter(|(field, value)| {
+                if let Some((field, value)) = span.split_once('=').filter(|(field, value)| {
                     !field.is_empty()
                         && !value.contains(char::is_whitespace)
-                        && field.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                        && field
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
                 }) {
+                    // The code writes a number, a flag or a name there:
+                    // a value is given as `…`, a number, `true` or
+                    // `false`.
+                    let plausible = value == "…"
+                        || value == "true"
+                        || value == "false"
+                        || (!value.is_empty() && value.chars().all(|c| c.is_ascii_digit()));
+                    if !plausible {
+                        faults.push(format!(
+                            "{name}:{line}: `{span}` has a value the code does not write"
+                        ));
+                    }
                     quoted += 1;
                     let named = |pattern: &String| {
                         pattern.match_indices(&format!("{field}=")).any(|(at, _)| {
