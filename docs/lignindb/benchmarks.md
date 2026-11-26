@@ -382,7 +382,7 @@ ten rounds each. A ratio is of the two engines in one round:
 | Batch | LigninDB applies, before | after | Of RocksDB's time, before | after |
 | --- | --- | --- | --- | --- |
 | moves | 986 to 1,309 ms | 391 to 431 ms | 7.0 to 8.3 | 2.5 to 3.0 |
-| mixed | 98 to 126 ms | 99 to 124 ms | 1.6 to 2.0 | 1.3 to 1.9 |
+| mixed | 98 to 126 ms | 99 to 124 ms | 1.6 to 1.9 | 1.3 to 1.9 |
 
 RocksDB applied the moves in 126 to 171 ms and the mixed batch in 57 to 74
 ms. The mixed batch enters, moves and drops no subtree, so it puts few
