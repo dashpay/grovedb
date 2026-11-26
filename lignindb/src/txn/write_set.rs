@@ -6,10 +6,7 @@ use std::{
     ops::Bound,
 };
 
-use lignin_format::{
-    tree_page::{Hash, HashField, Side},
-    CommitVersion,
-};
+use lignin_format::{tree_page::Hash, CommitVersion};
 use lignin_tree::hash::Stale;
 
 use super::{
@@ -109,8 +106,8 @@ pub(crate) struct NodeEntry {
     pub(crate) hosted: HostedEntry,
     pub(crate) value: ValueEntry,
     /// The hashes the write left stale, as the pages mark them
-    /// ([`marked`]): a node that is shown from its entry has the stale
-    /// hashes that its cell has.
+    /// ([`NodePut::marked`]): a node that is shown from its entry has the
+    /// stale hashes that its cell has.
     pub(crate) stale: Stale,
 }
 
@@ -118,22 +115,6 @@ impl NodeEntry {
     /// Whether the write left a hash of its node stale.
     fn leaves_stale(&self) -> bool {
         !self.stale.is_empty()
-    }
-}
-
-/// The hashes that a put of a node leaves stale, as the pages mark them
-/// (`Frames::apply`): of what its writer states, the hash of a child that
-/// the node does not have is none, and a stale value hash has the
-/// key-value hash stale with it, which is made of it.
-fn marked(put: &NodePut<'_>) -> Stale {
-    let links = [(Side::Left, &put.left), (Side::Right, &put.right)];
-    let missing = links.iter().filter(|(_, link)| link.is_none());
-    let stale = missing.fold(put.stale, |stale, (side, _)| {
-        stale.without(HashField::Child(*side))
-    });
-    match stale.has(HashField::Value) {
-        true => stale.with(HashField::KeyValue),
-        false => stale,
     }
 }
 
@@ -1385,7 +1366,7 @@ impl WriteSet {
         // the newer ones: each is newer than every entry of the stretch
         // at hand.
         let mut later: Vec<EntryId> = Vec::new();
-        for stretch in &stretches {
+        for (at, stretch) in stretches.iter().enumerate() {
             let Some(index) = self.units.get(&Unit::data(stretch.subtree)) else {
                 continue;
             };
@@ -1426,7 +1407,9 @@ impl WriteSet {
                 // What is older went with the drop or the clear.
                 break;
             }
-            later.extend_from_slice(deletes);
+            if at + 1 < stretches.len() {
+                later.extend_from_slice(deletes);
+            }
         }
     }
 
@@ -1651,7 +1634,7 @@ impl WriteSet {
                     right: self.link(node.right),
                     hosted,
                     value,
-                    stale: marked(node),
+                    stale: node.marked(),
                 };
                 self.push(unit, node.key, Kind::Node(entry), first_write);
             }
@@ -3600,6 +3583,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+    use lignin_format::tree_page::{HashField, Side};
 
     fn version(raw: u64) -> CommitVersion {
         CommitVersion::new(raw).expect("a version")

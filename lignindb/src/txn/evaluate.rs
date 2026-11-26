@@ -8,15 +8,19 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lignin_format::tree_page::{Hash, HashField};
+use lignin_format::{
+    tree_page::{Hash, HashField},
+    PageId,
+};
 use lignin_tree::{
     directory::record,
+    fragment::{PageMut, Pages},
     hash::{HashError, HashRules, Refusal, Stale},
-    node::NodeRef,
+    node::{NodePage, NodeRef},
 };
 
 use super::*;
-use crate::txn::{LinkPut, NodePut, RootPut};
+use crate::txn::{pages::TreePages, LinkPut, NodePut, RootPut};
 
 /// A Merk that an evaluation comes to.
 struct Reached {
@@ -109,10 +113,17 @@ struct Walk {
     /// Where each Merk of the plan stands in it.
     places: HashMap<Subtree, usize>,
     passed: HashSet<CellAddress>,
+    /// The keys of the nodes of the Merk that is asked for whose cells
+    /// were passed.
+    reached: HashSet<Vec<u8>>,
     /// The cells to go to, each with its Merk.
     ahead: Vec<(usize, CellAddress)>,
     /// The Merks that hosts were found to host and that are not claimed.
     found: Vec<Found>,
+    /// The pages of the cells the walk went to, with a stale hash or with
+    /// none: an evaluation reads no other ([`Evaluating`]).
+    #[cfg(any(test, feature = "held_reads"))]
+    looked: HashSet<PageId>,
 }
 
 /// The Merk that the node `key` of the Merk with the id `parent` hosts at
@@ -144,49 +155,52 @@ fn hosted_at(
 
 impl Walk {
     /// A walk of the Merk `subtree`, which has the id `id` and its root at
-    /// `root`: from the root, and from each of `apart`, the cells of nodes
-    /// of the Merk with a stale hash that no stale hash need lead to.
-    fn new(subtree: Subtree, id: MerkId, root: CellAddress, apart: &[CellAddress]) -> Self {
+    /// `root`, from the root.
+    fn new(subtree: Subtree, id: MerkId, root: CellAddress) -> Self {
         let asked = Reached {
             subtree,
             id,
             nodes: Vec::new(),
         };
-        let mut ahead: Vec<(usize, CellAddress)> = apart.iter().rev().map(|at| (0, *at)).collect();
-        ahead.push((0, root));
         Self {
             plan: Plan { merks: vec![asked] },
             marks: None,
             places: HashMap::from([(subtree, 0)]),
             passed: HashSet::new(),
-            ahead,
+            reached: HashSet::new(),
+            ahead: vec![(0, root)],
             found: Vec::new(),
+            #[cfg(any(test, feature = "held_reads"))]
+            looked: HashSet::new(),
         }
     }
 
-    /// Goes on from the Merks that were found, which the caller holds a
-    /// claim on by now: to the root of each, where its host points. A
-    /// host that points elsewhere than the directory has the root is
-    /// behind.
-    fn follow(&mut self, frames: &Awake<'_, '_>, claimed: Vec<Claimed>) -> Result<(), TxnError> {
-        for found in claimed {
-            let subtree = found.subtree;
-            let entry = frames.entry(&subtree)?;
-            let root = (entry.as_ref()).and_then(|entry| entry.root().map(|root| root.address));
-            let Some(entry) = entry.filter(|_| root == Some(found.pointer)) else {
-                return Err(behind(found.host));
-            };
-            let merks = &mut self.plan.merks;
-            let place = *self.places.entry(subtree).or_insert_with(|| {
-                merks.push(Reached {
-                    subtree,
-                    id: entry.id(),
-                    nodes: Vec::new(),
-                });
-                merks.len() - 1
+    /// Has the walk go on from each of `apart`: cells of nodes of the
+    /// Merk that is asked for.
+    fn start(&mut self, apart: &[CellAddress]) {
+        self.ahead.extend(apart.iter().rev().map(|at| (0, *at)));
+    }
+
+    /// Goes on from a Merk that was found, which the caller holds a claim
+    /// on by now: to its root, where its host points. A host that points
+    /// elsewhere than the directory has the root is behind.
+    fn follow(&mut self, frames: &Awake<'_, '_>, found: Claimed) -> Result<(), TxnError> {
+        let subtree = found.subtree;
+        let entry = frames.entry(&subtree)?;
+        let root = (entry.as_ref()).and_then(|entry| entry.root().map(|root| root.address));
+        let Some(entry) = entry.filter(|_| root == Some(found.pointer)) else {
+            return Err(behind(found.host));
+        };
+        let merks = &mut self.plan.merks;
+        let place = *self.places.entry(subtree).or_insert_with(|| {
+            merks.push(Reached {
+                subtree,
+                id: entry.id(),
+                nodes: Vec::new(),
             });
-            self.ahead.push((place, found.pointer));
-        }
+            merks.len() - 1
+        });
+        self.ahead.push((place, found.pointer));
         Ok(())
     }
 
@@ -206,10 +220,18 @@ impl Walk {
             }
             own
         });
-        match own.get(&subtree).and_then(|own| own.get(key)) {
+        let pending = match own.get(&subtree).and_then(|own| own.get(key)) {
             Some(set) => *set,
             None => scopes.is_pending(Who::OUTSIDE, &(subtree, key.into())),
-        }
+        };
+        // The scope's own answer goes through its changes for each key.
+        #[cfg(any(test, feature = "held_reads"))]
+        assert_eq!(
+            pending,
+            scopes.is_pending(who, &(subtree, key.into())),
+            "the mark of {key:02x?} in {subtree:?} as the caller's scope is shown it",
+        );
+        pending
     }
 
     /// Reads every cell that is ahead, and what it leads to in the Merks
@@ -225,6 +247,8 @@ impl Walk {
         who: Who,
     ) -> Result<(), TxnError> {
         while let Some((merk, at)) = self.ahead.pop() {
+            #[cfg(any(test, feature = "held_reads"))]
+            self.looked.insert(at.page());
             let stale = frames.hashes.stale(at);
             if stale.is_empty() || !self.passed.insert(at) {
                 continue;
@@ -238,16 +262,17 @@ impl Walk {
                     link.filter(|_| stale.has(HashField::Child(side)))
                         .map(|link| link.child)
                 });
-                let hosted = hosts.then(|| {
-                    let pointers: Vec<Option<CellAddress>> = node.hosted_roots().collect();
-                    (node.key().to_vec(), pointers)
-                });
-                Some((children, hosted))
+                let key = (hosts || merk == 0).then(|| node.key().to_vec());
+                let pointers = hosts.then(|| node.hosted_roots().collect::<Vec<_>>());
+                Some((children, key, pointers))
             })?;
-            let (children, hosted) = read.ok_or(NodeError::NoNode { address: at })?;
+            let (children, key, pointers) = read.ok_or(NodeError::NoNode { address: at })?;
             self.ahead
                 .extend(children.into_iter().flatten().map(|child| (merk, child)));
-            let Some((key, pointers)) = hosted else {
+            if let (0, Some(key)) = (merk, &key) {
+                self.reached.insert(key.clone());
+            }
+            let (Some(key), Some(pointers)) = (key, pointers) else {
                 continue;
             };
             let (subtree, id) = (self.plan.merks[merk].subtree, self.plan.merks[merk].id);
@@ -276,9 +301,72 @@ impl Walk {
 
 /// The caller's rules, with a count of the calls: the hashes the tree
 /// layer computes are counted for the store as those of a commit are.
+/// The count is told to the store when this is dropped, so on every way
+/// out of the call: with rules that panic, the calls before the panic are
+/// counted.
 struct Counted<'r, R> {
     rules: &'r mut R,
     calls: u64,
+    stats: &'r Stats,
+}
+
+impl<R> Drop for Counted<'_, R> {
+    fn drop(&mut self) {
+        self.stats.count_hashes(self.calls);
+    }
+}
+
+/// The transaction's pages as an evaluation reads and changes them.
+///
+/// A page is read where it is, and no private copy is made for a read, as
+/// none is for the reads of the transaction. A cell with a stale hash is
+/// in a private copy already: a write of the transaction left the mark.
+/// A cell that is only read, for the hash of a child or of the root of a
+/// hosted Merk, is of a Merk the caller holds, and is read once. A hash
+/// is stored in the private copy of its page.
+///
+/// No host is behind for it: the walk refused the call for each that is
+/// behind as the caller is shown the marks (`transactions.md` SC9), and
+/// the pages' own answer, which is for a write, counts the marks of every
+/// scope whose writes they show.
+///
+/// In a test build and under `held_reads`, each page that is read is held
+/// to the walk: it is the page of a cell the walk went to.
+struct Evaluating<'a, 's> {
+    pages: &'a mut TreePages<'s>,
+    #[cfg(any(test, feature = "held_reads"))]
+    looked: &'a HashSet<PageId>,
+}
+
+impl Pages for Evaluating<'_, '_> {
+    fn read<R>(
+        &mut self,
+        page: PageId,
+        read: impl FnOnce(NodePage<'_>) -> R,
+    ) -> Result<R, FragmentError> {
+        #[cfg(any(test, feature = "held_reads"))]
+        assert!(
+            self.looked.contains(&page),
+            "an evaluation reads the page {page:?}, which holds no cell its walk went to",
+        );
+        (self.pages.page(page, read)).map_err(TxnError::into_pages)
+    }
+
+    fn write<R>(
+        &mut self,
+        page: PageId,
+        change: impl FnOnce(&mut PageMut<'_, '_>) -> Result<R, NodeError>,
+    ) -> Result<R, FragmentError> {
+        self.pages.write(page, change)
+    }
+
+    fn create(&mut self) -> Result<PageId, FragmentError> {
+        self.pages.create()
+    }
+
+    fn free(&mut self, page: PageId) -> Result<(), FragmentError> {
+        self.pages.free(page)
+    }
 }
 
 impl<R: HashRules> HashRules for Counted<'_, R> {
@@ -455,6 +543,11 @@ fn hold_passed(
     Ok(())
 }
 
+/// The frames of an operation are there while it runs.
+fn gone() -> TxnError {
+    TxnError::Damaged("the frames of an operation are gone")
+}
+
 impl<'s> WriteTxn<'s> {
     /// [`Scope::evaluate`] and [`WriteTxn::evaluate`], for `who`.
     pub(super) fn evaluate_in<R: HashRules>(
@@ -463,10 +556,55 @@ impl<'s> WriteTxn<'s> {
         subtree: Subtree,
         rules: &mut R,
     ) -> Result<Option<Hash>, TxnError> {
-        let mut rules = Counted { rules, calls: 0 };
-        let hash = self.evaluate_counted(who, subtree, &mut rules);
-        self.path.stats.count_hashes(rules.calls);
-        hash
+        let mut rules = Counted {
+            rules,
+            calls: 0,
+            stats: self.path.stats,
+        };
+        self.evaluate_counted(who, subtree, &mut rules)
+    }
+
+    /// Goes on with `walk` until nothing is ahead of it. The walk stops at
+    /// each Merk that a host points into: a read of the Merk is claimed,
+    /// and only then is its entry read and its root gone to, where the
+    /// host points at it. Each is claimed and looked at before the next
+    /// is claimed, so a call that a host refuses holds no Merk it did not
+    /// open.
+    fn walk_on(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        who: Who,
+        walk: &mut Walk,
+    ) -> Result<(), TxnError> {
+        loop {
+            let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
+            walk.go(&mut frames, &state.scopes, who)?;
+            drop(frames);
+            if walk.found.is_empty() {
+                return Ok(());
+            }
+            for found in std::mem::take(&mut walk.found) {
+                // A pointer with no Merk under its host, and one into a
+                // Merk that another open scope holds, refuse the call
+                // alike: which of the two the caller meets depends on
+                // whether that scope's writes are laid out, and so does
+                // the Merk it would be told of.
+                let subtree = found.subtree.ok_or_else(|| behind(found.host))?;
+                let read = self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree));
+                match read {
+                    Err(TxnError::ScopeOverlap { .. }) => return Err(behind(found.host)),
+                    read => read?,
+                }
+                let frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
+                let claimed = Claimed {
+                    host: found.host,
+                    pointer: found.pointer,
+                    subtree,
+                };
+                walk.follow(&frames, claimed)?;
+            }
+        }
     }
 
     /// Nothing is changed before the hashes are made, but for the layout
@@ -495,9 +633,8 @@ impl<'s> WriteTxn<'s> {
             )));
         }
         self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
-        let gone = || TxnError::Damaged("the frames of an operation are gone");
-        let (root, hosted, mut walk, apart) = {
-            let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
+        let (root, hosted, mut walk) = {
+            let Some(frames) = Woken::wake(&mut state.frames, &op.guard) else {
                 // The transaction has written nothing, so no hash is
                 // stale: the Merk is the committed one.
                 let Some(root) = self.seen(state, &op.guard, op.at, &subtree)? else {
@@ -517,52 +654,41 @@ impl<'s> WriteTxn<'s> {
             let Some(root) = entry.root().map(|root| root.address) else {
                 return Ok(None);
             };
-            // A stale hash of the Merk that no stale hash above it leads
-            // to is found by the write that left it: the write set lists
-            // those, and the key of each leads to its cell.
-            let mut apart = Vec::new();
-            for (_, key) in state.set.unmade(subtree) {
-                let (at, _) = frames.sought(&subtree, Some(root), key)?;
-                apart.extend(at.filter(|at| !frames.hashes.stale(*at).is_empty()));
-            }
-            let walk = Walk::new(subtree, entry.id(), root, &apart);
-            (root, entry.host().is_some(), walk, apart)
+            let walk = Walk::new(subtree, entry.id(), root);
+            (root, entry.host().is_some(), walk)
         };
-        // The walk stops at each Merk that a host hosts, and the claim on
-        // it is taken before anything of it is read.
-        let mut claimed = Vec::new();
-        loop {
+        // What the root leads to through stale hashes, first: the walk
+        // comes to those cells by their addresses, with no search.
+        self.walk_on(state, &op, who, &mut walk)?;
+        // A stale hash of the Merk that no stale hash above it leads to
+        // is found by the write that left it: the write set lists those,
+        // and the key of each that the walk did not come to leads to its
+        // cell.
+        let mut apart = Vec::new();
+        {
             let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
-            walk.follow(&frames, std::mem::take(&mut claimed))?;
-            walk.go(&mut frames, &state.scopes, who)?;
-            drop(frames);
-            if walk.found.is_empty() {
-                break;
-            }
-            for found in std::mem::take(&mut walk.found) {
-                // A pointer with no Merk under its host, and one into a
-                // Merk that another open scope holds, refuse the call
-                // alike: which of the two the caller meets depends on
-                // whether that scope's writes are laid out, and so does
-                // the Merk it would be told of.
-                let subtree = found.subtree.ok_or_else(|| behind(found.host))?;
-                let read = self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree));
-                match read {
-                    Err(TxnError::ScopeOverlap { .. }) => return Err(behind(found.host)),
-                    read => read?,
+            for (_, key) in state.set.unmade(subtree) {
+                if walk.reached.contains(key) {
+                    continue;
                 }
-                claimed.push(Claimed {
-                    host: found.host,
-                    pointer: found.pointer,
-                    subtree,
-                });
+                let (at, _) = frames.sought(&subtree, Some(root), key)?;
+                let left = |at: &CellAddress| {
+                    !frames.hashes.stale(*at).is_empty() && !walk.passed.contains(at)
+                };
+                apart.extend(at.filter(left));
             }
+        }
+        if !apart.is_empty() {
+            walk.start(&apart);
+            self.walk_on(state, &op, who, &mut walk)?;
         }
         #[cfg(any(test, feature = "held_reads"))]
         {
             let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
             hold_passed(&mut frames, &state.set, subtree, root, &walk.passed)?;
         }
+        #[cfg(any(test, feature = "held_reads"))]
+        let looked = walk.looked;
         let plan = walk.plan;
         if plan.cells() == 0 {
             // No hash of the Merk is stale: its root is read.
@@ -604,11 +730,6 @@ impl<'s> WriteTxn<'s> {
 
         let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
         let before = *frames.hashes.counters();
-        // A host that is behind for the caller refused the call above. A
-        // mark of another scope that is still open is not shown to it
-        // (SC9), and the caller holds every Merk that a host it comes to
-        // points into: the tree layer is told of no host that is behind.
-        let behind = std::mem::take(&mut frames.tree.behind);
         let hash = {
             let Frames {
                 tree,
@@ -618,17 +739,21 @@ impl<'s> WriteTxn<'s> {
                 ..
             } = &mut *frames;
             let mut values = values.reader(source);
-            let hash = hashes.hash_of(tree, &mut values, rules, root);
+            let mut pages = Evaluating {
+                pages: tree,
+                #[cfg(any(test, feature = "held_reads"))]
+                looked: &looked,
+            };
+            let hash = hashes.hash_of(&mut pages, &mut values, rules, root);
             hash.and_then(|hash| {
                 for at in &apart {
                     if !hashes.stale(*at).is_empty() {
-                        hashes.evaluate(tree, &mut values, rules, *at)?;
+                        hashes.evaluate(&mut pages, &mut values, rules, *at)?;
                     }
                 }
                 Ok(hash)
             })
         };
-        frames.tree.behind = behind;
         let after = *frames.hashes.counters();
         let nodes = plan.merks.iter().flat_map(|merk| &merk.nodes);
         let all = (after.nodes - before.nodes) as usize == plan.cells()

@@ -4263,8 +4263,9 @@ macro_rules! reads {
         /// none of them is stale ([`NodeView::stale`]). A commit that
         /// follows makes none of them again. Where the Merk has no stale
         /// hash, the call reads the root's cell, changes nothing and
-        /// adds nothing. The calls of `rules` are counted as hashes of
-        /// the store.
+        /// adds nothing. No page is copied for a read. The calls of
+        /// `rules` are counted as hashes of the store, also where they
+        /// panic.
         ///
         /// **It is a write** of every node it makes a hash of: of the
         /// node as its cell has it afterwards, with every hash stated

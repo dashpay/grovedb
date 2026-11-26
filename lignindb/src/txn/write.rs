@@ -1,7 +1,10 @@
 //! The writes of one operation, as the caller states them, and what it is
 //! told when they are applied.
 
-use lignin_format::{tree_page::Hash, CellAddress};
+use lignin_format::{
+    tree_page::{Hash, HashField, Side},
+    CellAddress,
+};
 use lignin_tree::{bulk::LoadCounters, hash::Stale, node::NodeHandle};
 
 use super::key::{Column, Subtree, Unit};
@@ -185,6 +188,25 @@ pub struct NodePut<'a> {
     /// cannot date, such as one of another transaction, has the write
     /// taken to be met by a commit, and its commit fail.
     pub at: Option<NodeHandle>,
+}
+
+impl NodePut<'_> {
+    /// The hashes that the put leaves stale as the pages mark them, and as
+    /// the write set keeps them: of what the writer states
+    /// ([`Self::stale`]), the hash of a child that the node does not have
+    /// is none, and a stale value hash has the key-value hash stale with
+    /// it, which is made of it.
+    pub(crate) fn marked(&self) -> Stale {
+        let links = [(Side::Left, &self.left), (Side::Right, &self.right)];
+        let missing = links.iter().filter(|(_, link)| link.is_none());
+        let stale = missing.fold(self.stale, |stale, (side, _)| {
+            stale.without(HashField::Child(*side))
+        });
+        match stale.has(HashField::Value) {
+            true => stale.with(HashField::KeyValue),
+            false => stale,
+        }
+    }
 }
 
 /// What a write does to the key of a Merk's root node.

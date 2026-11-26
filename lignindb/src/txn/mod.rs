@@ -409,13 +409,16 @@
 //!   of the page's run, which is what the commit would have logged for
 //!   it; one that does not differ stores nothing. No cell changes its
 //!   length, and no node handle ends. The marks of those nodes are off
-//!   afterwards, so the commit makes none of them again.
+//!   afterwards, so the commit makes none of them again. A page is read
+//!   where it is: no private copy is made for a read, and a hash is
+//!   stored in a page that the transaction copied when it wrote the node.
 //! - **Every stale hash of the Merk that is asked for is made**, also
 //!   one that no stale hash above it leads to, which the evaluation of
 //!   the root does not come to: a writer may state the hashes of a node
 //!   and leave those of a node below it. The write set lists the puts
-//!   that left a hash stale ("The puts that left a hash stale" below),
-//!   and the call goes to the cell of each by its key. So a node of that
+//!   that left a hash stale ("The puts that left a hash stale" below).
+//!   The call first goes down from the root, and then, by its key, to
+//!   the cell of each of those puts that it has not come to. So a node of that
 //!   Merk that is read after the call has its hashes, and the commit has
 //!   none of them to make. In a test build and under `held_reads` the
 //!   call is held to it: every key the transaction put a node under in
@@ -459,7 +462,9 @@
 //!   from that root (`pages::held`), at every call.
 //! - **The calls of the rules are counted** as hashes that the tree
 //!   computed, where those of a commit are
-//!   ([`StoreStats::hashes`](lignin_store::stats::StoreStats::hashes)).
+//!   ([`StoreStats::hashes`](lignin_store::stats::StoreStats::hashes)),
+//!   on every way out of the call: with rules that panic, the calls up
+//!   to the panic are counted.
 //!
 //! What becomes of the made hashes follows from their being writes of
 //! the transaction, of the keys of their nodes:
@@ -518,7 +523,9 @@
 //! a read of each Merk that it comes to through the pointer of a host,
 //! and at the end a write of every Merk it makes a hash in. A scope
 //! claims each read when the call comes to the Merk, before the entry or
-//! a cell of it is read, and keeps it as it keeps any read. The writes
+//! a cell of it is read, and keeps it as it keeps any read. Each is
+//! claimed and its entry read before the next is claimed, so a call that
+//! a host refuses holds no Merk that it did not open. The writes
 //! are claimed together or not at all, as those of a batch with a
 //! change set of each such Merk: after every host and every read that
 //! can refuse the call, and before a hash is made. So a call that a host
@@ -564,7 +571,12 @@
 //! afterwards, does not depend on whether the writes of the scopes
 //! beside it are laid out or kept in the write set, where the call
 //! comes to make a hash: the transaction has frames, and they show the
-//! caller's own writes.
+//! caller's own writes. In a test build and under `held_reads` two
+//! things are held for it at every call: each page that the tree layer's
+//! evaluation reads is the page of a cell the walk went to, so nothing
+//! of a Merk is read that was not claimed first; and what the walk takes
+//! a host's mark to be is what its scope is answered
+//! ([`Scope::is_pending`]).
 //!
 //! Two things stand before that, and neither is of the call. Both are
 //! of the frames, which the scopes of a transaction share
@@ -662,14 +674,19 @@
 //! of a Merk's root hash writes the element that hosts it before its
 //! transaction commits (GM3, SC9). Nothing here checks it.
 //!
-//! **What a call costs.** It asks the write set for the puts of the Merk
-//! that left a hash stale, and finds the cell of each by its key, where
-//! the transaction last saw it or by a search. It goes once through the
+//! **What a call costs.** It goes down from the root through stale
+//! hashes, by the addresses the cells hold, with no search. It then asks
+//! the write set for the puts of the Merk that left a hash stale, and
+//! finds the cell of each that it did not come to by its key, where the
+//! transaction last saw it or by a search. It goes once through the
 //! changes of pending marks that its scope made, where it comes to a
 //! node with a stale value hash. It reads each cell with a
 //! stale hash that it comes to, once to plan and once more to keep it,
 //! and then the cells of its children for their keys; the tree layer's
-//! evaluation reads and writes each once. For each pointer of a host
+//! evaluation reads and writes each once, and reads once the cell of
+//! each child and of each hosted root whose hash it takes and does not
+//! make. It copies no page: the transaction holds as many private copies
+//! afterwards as before. For each pointer of a host
 //! whose value hash it makes it looks up one record of the subtree
 //! directory, and the entry of the Merk. It adds one entry to the write
 //! set for each node it made a hash of, with the node's key, feature,
