@@ -27,11 +27,13 @@ Printed:
 3. For the waits inside the kernel during a write to a file of LigninDB's
    log, two things that are not the same. First, the syncs of the process
    that had a moment in common with the wait, by what they are of: that is a
-   coincidence in time, and a wait can have several. Second, for a wait at a
-   journal of ext4, the syncs that waited for a commit of that journal which
-   was under way during the wait (the SYNC record names the transaction it
-   waited for, and JSTART and JEND say when its commit ran): those are the
-   syncs the commit was made for.
+   coincidence in time, and a wait can have several. Second, for a wait
+   that is for a commit of an ext4 journal by its kernel stack (the journal
+   is writing the block, or its transaction is being closed), the commit of
+   that journal that was under way when the wait began, and the syncs of the
+   process that waited for that commit (the SYNC record names the
+   transaction it waited for, and JSTART and JEND say when its commit ran).
+   A wait for room in the journal is for no commit, and is counted apart.
 4. With a trace that follows every thread (`THREADS=all traced.sh`): for the
    waits for a lock of the process, the thread that woke the measuring
    thread and what that thread was off a processor for meanwhile. The thread
@@ -51,7 +53,10 @@ SLEEP = re.compile(r"^(__schedule|schedule|io_schedule|schedule_timeout|io_sched
                    r"schedule_preempt_disabled|bit_wait|bit_wait_io|__wait_on_bit|"
                    r"out_of_line_wait_on_bit|__wait_for_common|wait_for_completion.*)$")
 SYSCALL = re.compile(r"^__(?:arm64|x64|ia32)_sys_(\w+)$")
-JOURNAL = ("do_get_write_access", "__jbd2_log_wait_for_space", "wait_transaction_locked")
+# Where a thread waits for a commit of the journal: for the commit's write
+# of a block, and for a transaction that the commit is closing.
+FOR_A_COMMIT = ("do_get_write_access", "wait_transaction_locked")
+FOR_ROOM = "__jbd2_log_wait_for_space"
 # The states of a thread that left a processor while it could run: running,
 # and what the tracepoint reports for a preempted thread (TASK_REPORT_MAX).
 RUNNABLE = ("0", "256")
@@ -255,22 +260,24 @@ def main():
         if longest_beside:
             print("\nThe longest sync beside a wait took a median of %.1f ms, and %.1f ms at most." %
                   (median(longest_beside) / 1e3, max(longest_beside) / 1e3))
-    at_a_journal = [wait for wait in appends if any(frame in wait["kernel"] for frame in JOURNAL)]
-    if at_a_journal and trace.starts:
-        for_kind, with_a_commit, with_a_sync = collections.Counter(), 0, 0
-        for wait in at_a_journal:
+    for_a_commit = [wait for wait in appends if any(frame in wait["kernel"] for frame in FOR_A_COMMIT)]
+    for_room = sum(1 for wait in appends if FOR_ROOM in wait["kernel"])
+    if appends and trace.starts:
+        for_kind, in_a_commit, with_a_sync = collections.Counter(), 0, 0
+        for wait in for_a_commit:
             under_way = {key for key, at in trace.starts.items()
-                         if key[0] == wait["dev"] and at < wait["end"] and trace.ends.get(key, wait["end"] + 1) > wait["begin"]}
-            with_a_commit += bool(under_way)
-            made_for = [sync for sync in trace.syncs if (sync["dev"], sync["transaction"]) in under_way]
-            with_a_sync += bool(made_for)
-            for kind in {of(sync["file"]) for sync in made_for}:
+                         if key[0] == wait["dev"] and at <= wait["begin"] < trace.ends.get(key, wait["begin"] + 1)}
+            in_a_commit += bool(under_way)
+            waited_for = [sync for sync in trace.syncs if (sync["dev"], sync["transaction"]) in under_way]
+            with_a_sync += bool(waited_for)
+            for kind in {of(sync["file"]) for sync in waited_for}:
                 for_kind[kind] += 1
-        print("\nBy the journal's transactions: of the %d waits at a journal of ext4, %d had a commit of the "
-              "journal of the written file's file system under way at a moment of the wait, and for %d of them "
-              "a sync of the process waited for such a commit. By what those syncs were of:\n" % (
-                  len(at_a_journal), with_a_commit, with_a_sync))
-        print("| A sync that waited for a commit under way during the wait, of | Waits |\n| --- | --- |")
+        print("\nBy the journal's transactions: %d of the %d waits were for a commit of an ext4 journal by their "
+              "kernel stack, and %d were for room in the journal, which is for no commit. Of the %d, %d began "
+              "while a commit of the journal of the written file's file system was under way, and for %d of "
+              "them a sync of the process waited for that commit. By what those syncs were of:\n" % (
+                  len(for_a_commit), len(appends), for_room, len(for_a_commit), in_a_commit, with_a_sync))
+        print("| A sync that waited for the commit that the wait began in, of | Waits |\n| --- | --- |")
         for kind, waits_for in for_kind.most_common():
             print("| %s | %d |" % (kind, waits_for))
 
