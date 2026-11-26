@@ -254,9 +254,13 @@ def main():
         thread = open(stem + ".pid").read().split()[-1] if os.path.exists(stem + ".pid") else None
         begun = next((re.search(r"tid=(\d+)", line).group(1) for line in open(trace, errors="replace")
                       if line.startswith("MARK") and "measured begin" in line), None)
-        if thread is None or thread != begun:
-            refused.append((trace, "the trace is not of this traced run: its measured blocks are begun by the "
-                                   "thread %s, and the run's measuring thread was %s" % (begun, thread)))
+        told = report["engines"][0]
+        if thread is None or thread != begun or str(told.get("thread_id")) != thread \
+                or not name.startswith({"lignindb": ("lignindb", "allocated", "covered"),
+                                        "rocksdb": ("rocksdb",)}.get(told["engine"], ())):
+            refused.append((trace, "the trace and the report are not of this traced run: the measured blocks are "
+                                   "begun by the thread %s, the run's measuring thread was %s, and the report is "
+                                   "of %s on the thread %s" % (begun, thread, told["engine"], told.get("thread_id"))))
             continue
         build = of_build[name.split("-")[0]]
         if asked and (report.get("label") != name or "-%s" % report["background"] not in name

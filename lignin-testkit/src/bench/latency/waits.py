@@ -50,10 +50,10 @@ Printed:
    the syncs that named the transaction and whose time has the commit's end
    in it are given, and it is said that this shows less. The wait is linked
    to the commit by its stack and by the time, and not by a transaction's
-   number read at the wait. A wait in the journal's checkpoint, where a
-   thread goes for room in the journal, is by its stack for a buffer or for
-   the device and for no commit, and is counted apart; who had the buffer
-   written the trace does not say.
+   number read at the wait. A wait for room in the journal is in the
+   journal's checkpoint, by its stack for a buffer or for the device, or
+   for the checkpoint's lock; it is for no commit, and is counted apart.
+   Who had a buffer written, or held the lock, the trace does not say.
 4. With a trace that follows every thread (`THREADS=all traced.sh`): for the
    waits for a lock of the process, the thread that woke the measuring
    thread and what that thread was off a processor for meanwhile. The thread
@@ -79,6 +79,9 @@ SYSCALL = re.compile(r"^__(?:arm64|x64|ia32)_sys_(\w+)$")
 FOR_A_COMMIT = ("do_get_write_access", "wait_transaction_locked", "jbd2_log_wait_commit")
 FOR_ROOM = "__jbd2_log_wait_for_space"
 HARNESS = ("lignin_testkit5bench7latency", "lignin_testkit::bench::latency")
+# The harness's file layer is under the engine's calls, inside a block: a
+# frame of it does not say that the stack reaches the harness's own loop.
+WATCHING = ("latency8watching", "latency::watching")
 # The states of a thread that left a processor while it could run: running,
 # and what the tracepoint reports for a preempted thread (TASK_REPORT_MAX).
 RUNNABLE = ("0", "256")
@@ -163,17 +166,18 @@ class Trace:
                                        us=int(field(line, "us")), file=field(line, "file"),
                                        dev=field(line, "dev"), transaction=field(line, "transaction"),
                                        asked=int(field(line, "asked") or 0)))
-                record = None
             elif line.startswith("MARK"):
                 self.marks.append((int(field(line, "at")), int(field(line, "tid") or 0),
                                    line.split("lignin-mark ", 1)[-1]))
-                record = None
             elif line.startswith("JSTART"):
                 self.starts[(field(line, "dev"), field(line, "transaction"))] = int(field(line, "at"))
             elif line.startswith("JEND"):
                 self.ends[(field(line, "dev"), field(line, "transaction"))] = int(field(line, "at"))
             elif re.match(r"(WRITE|JBD2|BLK)", line):
-                record = None
+                # A record of another kind. The earlier tracer printed a wait
+                # in four calls, and such a line can stand between a wait's
+                # header and its stacks: the wait goes on after it.
+                pass
             elif record is not None and part:
                 record[part].append(line)
         for wait in self.waits:
@@ -204,7 +208,8 @@ def in_the_commit(wait):
 
 def of_the_harness(wait):
     """Whether the user stack reaches the harness: one that does not was cut short."""
-    return any(mark in frame for frame in wait["user"] for mark in HARNESS)
+    return any(mark in frame and not any(layer in frame for layer in WATCHING)
+               for frame in wait["user"] for mark in HARNESS)
 
 
 def the_pause(wait):
@@ -248,8 +253,11 @@ def what(wait):
         return "%s: ext4 writes %s to the journal, which is writing that block of inodes" % (call, asked)
     if "__jbd2_log_wait_for_space" in kernel and "jbd2_log_wait_commit" in kernel:
         return "%s: ext4 writes %s to the journal, which has no room, and the thread waits for a commit" % (call, asked)
-    if "__jbd2_log_wait_for_space" in kernel:
+    if "__jbd2_log_wait_for_space" in kernel and "jbd2_log_do_checkpoint" in kernel:
         return "%s: ext4 writes %s to the journal, which has no room: the thread waits in its checkpoint" % (call, asked)
+    if "__jbd2_log_wait_for_space" in kernel:
+        return "%s: ext4 writes %s to the journal, which has no room: the thread waits for the lock of its checkpoint" % (
+            call, asked)
     if "wait_transaction_locked" in kernel:
         return "%s: ext4 writes %s to the journal, whose transaction is being closed" % (call, asked)
     rest = [frame for frame in kernel if not SLEEP.match(frame)]
@@ -406,8 +414,8 @@ def main():
                 for kind in {of(sync["file"]) for sync in only_named}:
                     named_kind[kind] += 1
         print("\nBy the journal's transactions: %d of the %d waits were for a commit of an ext4 journal by their "
-              "kernel stack, and %d were in the journal's checkpoint for room, which by its stack is a wait for a "
-              "buffer or for the device and for no commit. Of the %d, %d began while a commit of the journal of the written file's file system "
+              "kernel stack, and %d were for room in the journal, in its checkpoint or for the checkpoint's lock, "
+              "which is for no commit. Of the %d, %d began while a commit of the journal of the written file's file system "
               "was under way.%s" % (
                   len(for_a_commit), len(appends), for_room, len(for_a_commit), in_a_commit,
                   " Of %d the trace does not have the file system, so they are linked to no commit." % nowhere

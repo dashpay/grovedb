@@ -57,7 +57,7 @@ tracepoint:sched:sched_switch
 {
   @off[tid] = nsecs;
   @offk[tid] = kstack(perf, 40);
-  @offu[tid] = ustack(perf, 60);
+  @offu[tid] = ustack(perf, 127);
   @offstate[tid] = args->prev_state;
   @offcomm[tid] = comm;
 }

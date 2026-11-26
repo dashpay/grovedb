@@ -68,6 +68,9 @@ for word in "$@"; do
   [ "$before" = --pause-us ] && pause_us=$word
   before=$word
 done
+# RocksDB slows its writes down with sleeps of 1,001 µs on the committing
+# thread, which a pause of that length would have the tracer leave out.
+[ "$pause_us" != 1001 ] || refuse "a pause of 1001 µs is the length of RocksDB's own sleep: take another"
 measuring=$tid
 [ "${THREADS:-}" = all ] && tid=0
 sudo env BPFTRACE_MAX_MAP_KEYS=262144 bpftrace "$here/trace.bt" "$run" "${LONG_US:-1000}" \

@@ -1087,10 +1087,15 @@ fn measure_in<E: Subject>(
                 )),
             }
         };
-        let clock = probe.join().unwrap_or_default();
+        // A probe that ended early has counted nothing, which would read
+        // as a machine on which no sleep was late.
+        let clock = probe.join().map_err(|_| {
+            BenchError::Check("the thread that probes the machine's clock ended early".to_string())
+        });
         (measured, join(flusher), join(beside), clock)
     });
     measured?;
+    let clock = clock?;
     let seconds = began.elapsed().as_secs_f64();
     let turns = turns_before
         .zip(engine.look())
@@ -1214,8 +1219,9 @@ fn micros(nanos: u64) -> String {
 const HEAD: &str = "| Build | Engine | Background | Blocks | Median, µs | 99%, µs | 99.9%, µs | \
                     Longest, µs |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n";
 
-/// The group a row belongs to in a table of several runs: the build, the
-/// engine and what it did beside the commits.
+/// The group a row belongs to in a table of several runs: the build, by its
+/// name and its commit, the engine and what it did beside the commits. Two
+/// builds under one name are two groups.
 type Group = (String, String, String);
 
 fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
@@ -1223,11 +1229,11 @@ fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
     if let Some(every) = report.neighbour_ms {
         let _ = write!(background, ", a neighbour's sync every {every} ms");
     }
-    (
-        report.label.clone().unwrap_or_else(|| "-".to_string()),
-        engine.engine.clone(),
-        background,
-    )
+    let mut build = report.label.clone().unwrap_or_else(|| "-".to_string());
+    if let Some(commit) = &report.commit {
+        let _ = write!(build, " ({commit:.8})");
+    }
+    (build, engine.engine.clone(), background)
 }
 
 /// One report as text: its row for each engine, and what is told of the
@@ -1246,7 +1252,9 @@ pub fn table(report: &LatencyReport) -> String {
         report.load_average_after,
     );
     for engine in &report.engines {
-        let (build, name, background) = group_of(report, engine);
+        // One report is of one build, whose commit the line above names.
+        let (_, name, background) = group_of(report, engine);
+        let build = report.label.as_deref().unwrap_or("-");
         let [median, p99, p999, longest] = quantiles(&engine.commit_ns).map(micros);
         let _ = writeln!(
             out,
@@ -1969,7 +1977,7 @@ mod tests {
         );
         // A sleep that is late by more is late by less as well.
         assert!(rocksdb.clock.late.is_sorted_by(|more, fewer| more >= fewer));
-        assert!(rocksdb.clock.late[0] <= rocksdb.clock.sleeps);
+        assert!(rocksdb.clock.sleeps > 0 && rocksdb.clock.late[0] <= rocksdb.clock.sleeps);
         let slowest: Vec<u64> = rocksdb.slowest.iter().map(|slow| slow.commit_ns).collect();
         let mut sorted = rocksdb.commit_ns.clone();
         sorted.sort_unstable_by(|a, b| b.cmp(a));
@@ -2047,10 +2055,27 @@ mod tests {
             lignindb.syncs
         );
 
-        let several = runs_table(&[report.clone(), report.clone()]);
+        // Two runs of one build are one row of two runs, and two builds
+        // under one name are two rows.
+        let one = LatencyReport {
+            commit: Some("fedcba9876543210".to_string()),
+            ..report.clone()
+        };
+        let other = LatencyReport {
+            commit: Some("0123456789abcdef".to_string()),
+            ..report.clone()
+        };
+        let several = runs_table(&[one.clone(), one.clone()]);
         assert!(
-            several.contains("| head | lignindb | quiet | 2 |"),
+            several.contains("| head (fedcba98) | lignindb | quiet | 2 |"),
             "{several}"
+        );
+        let apart = runs_table(&[one, other]);
+        assert!(
+            apart.contains("| head (fedcba98) | lignindb | quiet | 12 |")
+                && apart.contains("| head (01234567) | lignindb | quiet | 12 |")
+                && !apart.contains("| lignindb | quiet | 2 |"),
+            "{apart}"
         );
         assert_eq!(ranged(vec![9_000, 1_000]), "5 (1 to 9)");
         assert_eq!(ranged(vec![9_000, 1_000, 2_000]), "2 (1 to 9)");
