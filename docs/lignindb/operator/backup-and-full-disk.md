@@ -261,7 +261,8 @@ every value, and makes every stored hash of the Merks in use again by
 Merk's rules but those the rules take as stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); the cells of a dropped Merk that waits to be reclaimed are
 walked, and their hashes not made again. Exit status 0
 is a sound store. A restore is a database like any other, at the version
-the backup holds: point the node at it, with the application's files of
+the backup holds (but for a backup of a database whose creation was cut
+short, which the first open of it makes at its first version): point the node at it, with the application's files of
 the same state (a copy of a checkpoint holds none, below), or keep it as
 the check and
 remove it.

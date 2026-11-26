@@ -420,8 +420,10 @@ Read its report before you go on:
 - `root-key records that do not name the root of their Merk (GroveDB #1065):`
   counts the Merks that are opened by their record of the root key (a
   Merk that holds nodes and is no child taking its root key from the
-  element that hosts it) whose record is missing, names a node inside
-  the tree that is not its root, or names a key with no node. Each Merk is named on a line
+  element that hosts it) and whose nodes form one tree, where the record
+  is missing, names a node inside the tree that is not its root, or names
+  a key with no node. Nodes that do not form one tree are a refusal
+  (`NOT CARRIED`), which the count does not take in. Each Merk is named on a line
   `AT …: THE MERK IS READ AS ITS RECORD NAMES IT, ON ROCKSDB AS HERE, AND LIGNINDB TAKES NO FURTHER WRITE OF A NODE OF IT`.
   Such a source migrates, compares and verifies, and the target reads
   that Merk as RocksDB does; **but LigninDB refuses every later write of
@@ -707,10 +709,12 @@ the others are not decided on its word:
 
 - `the source can be migrated` is its last line and it counts no node
   value that is no element (its line `node values that are no element: …`
-  says 0), and no line of it names a node whose value is no element
-  elsewhere (`a node whose value of … bytes is no element`, under a
-  prefix that nothing leads to): the
-  node goes back to the database as it was before the migration. A
+  says 0), and it finds no prefix that nothing leads to (its line
+  `prefixes that nothing leads to: …, with … records (… bytes)` begins
+  with 0): the node goes back to the database as it was before the
+  migration. Of the records under such prefixes it describes a few of
+  each and of no more than 1,000 prefixes, so where it finds any, their
+  records are checked by the application's own means first. A
   count above 0 is a value of the source that is no element, linked by
   a tree or not: check the source by the application's own means first.
 - It refuses for the mark of a state-sync restore that did not finish:
