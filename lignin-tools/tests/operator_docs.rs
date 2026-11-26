@@ -208,6 +208,26 @@ const REASONS: [(&str, &str, &str); 35] = [
     ("lignindb/src/db/open.rs", "read(key::LAYOUT, ", KEYSPACES),
     ("lignindb/src/db/mod.rs", "OpenError::catalog(", KEYSPACES),
 ];
+/// The functions of GroveDB that an open of a directory and the deletion
+/// of a checkpoint run through before an engine is called, by file and the
+/// words their definition begins with: every message they build
+/// (`Error::…(…)`) is quoted in a row that names the file. Errors that
+/// answer an application's misuse of the API are elsewhere, and left out.
+const GROVEDB_FUNCTIONS: [(&str, &str); 7] = [
+    ("grovedb/src/engine/either.rs", "fn held_among("),
+    ("grovedb/src/engine/either.rs", "fn unlisted("),
+    ("grovedb/src/engine/either.rs", "fn refuse_a_reserved_name("),
+    ("grovedb/src/engine/either.rs", "fn no_checkpoint("),
+    ("grovedb/src/engine/either.rs", "fn refuse_the_other("),
+    (
+        "grovedb/src/engine/either.rs",
+        "pub fn delete_checkpoint_of<",
+    ),
+    (
+        "grovedb/src/checkpoints.rs",
+        "pub fn delete_checkpoint_with_engine<",
+    ),
+];
 const FIRST_COMMIT: &str = "the first commit of the database (";
 const KEYSPACES: &str = "the record of the keyspaces: ";
 const FLAT_PAGE: &str = "flat page …: …";
@@ -1634,6 +1654,29 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
                     missing.push(format!(
                         "{file} (after {before:?}): `{pattern}`, in a row of that file with `{message}`"
                     ));
+                }
+            }
+        }
+    }
+    for (file, start) in GROVEDB_FUNCTIONS {
+        let source = outside_tests(&read(&root.join(file)));
+        let body = function_body(&source, start);
+        for (at, _) in body.match_indices("Error::") {
+            let rest = &body[at + "Error::".len()..];
+            let variant: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            let Some(arguments) = rest[variant.len()..].strip_prefix('(') else {
+                continue;
+            };
+            for pattern in literal_patterns(&call_arguments(arguments)) {
+                if pattern.chars().filter(|c| c.is_alphabetic()).count() < 3 {
+                    continue;
+                }
+                covered += 1;
+                if !quoted(file, &pattern, None) {
+                    missing.push(format!("{file} ({start}…): `{pattern}`"));
                 }
             }
         }
