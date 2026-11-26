@@ -1286,7 +1286,19 @@ fn every_command_names_what_the_workspace_has() {
                             _ => options
                                 .filter(|option| !takes(subcommand.copied(), option))
                                 .map(|option| format!("{option} is taken by no such subcommand"))
-                                .next(),
+                                .next()
+                                // A command written out with its operands is
+                                // one the parser takes as it stands; a name
+                                // of an option alone (`lignin migrate
+                                // --batch`) is not.
+                                .or_else(|| {
+                                    let whole = rest.iter().skip(1).any(|word| !word.starts_with("--"))
+                                        && !rest.iter().any(|word| word.contains(['…', '|']));
+                                    whole
+                                        .then(|| args::parse(&os(rest)).err())
+                                        .flatten()
+                                        .map(|error| format!("does not parse as written: {error}"))
+                                }),
                         }
                     }
                     [option, ..] if option.starts_with("--") && option.len() > 2 => {
