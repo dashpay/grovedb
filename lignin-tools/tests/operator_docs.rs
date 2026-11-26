@@ -1222,8 +1222,11 @@ fn every_command_names_what_the_workspace_has() {
                         // option takes.
                         if let Some(values) = words.next().filter(|values| values.contains('|')) {
                             for value in values.split('|') {
-                                let line_of = ["migrate", "S", "T", flag, value];
-                                if args::parse(&os(&line_of)).is_err() {
+                                let target = ["migrate", "S", "T", flag, value];
+                                let survey = ["migrate", "S", "--survey", flag, value];
+                                if args::parse(&os(&target)).is_err()
+                                    || args::parse(&os(&survey)).is_err()
+                                {
                                     faults.push(format!(
                                         "{name}:{line}: `lignin migrate` takes no {flag} {value}"
                                     ));
