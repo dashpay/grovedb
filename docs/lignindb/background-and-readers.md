@@ -227,7 +227,7 @@ Each is held to one rule: it lowers the 99.9th percentile of LigninDB's commit b
 
    > **Place of a table of the reference class, and of one sentence, kept or not and why:** "The control and the two experiments", row `covered`, of `tables.md`, with the syncs a block of the traced runs `lignindb-*` and `covered-*`.
 
-3. **A second file system.** XFS beside ext4, both made by the campaign in files of the measured file system, so that the two differ in the file system and in nothing under it. No code.
+3. **A second file system.** XFS beside ext4, both made by the campaign in files of the measured file system, so that the two differ in the file system and in nothing under it. No code. What a trace on XFS showed of the mechanism: where the write stamps the file's time, and where a read stamps the time of access, the thread waited for the lock of the inode (`xfs_ilock` under `xfs_vn_update_time`), and it left the processor nowhere else in the file system for a millisecond. What the holder of that lock waited for was not traced. The need is the same and the wait is at another place; whether it is shorter is the table's to say.
 
    > **Place of a table of the reference class, and of one sentence:** "A second file system: XFS against ext4" of `tables.md`, with the waits of the traced runs `lignindb-*-on-ext4` and `lignindb-*-on-xfs`.
 
