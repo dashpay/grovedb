@@ -3660,8 +3660,9 @@ TREE-09, VER-05)**
   was.
 - T-EV3: the claims of the call and its refusals (18.10), owed by TXN-11. A
   call is refused a Merk that another open scope holds, keeps the reads it
-  made and none of its writes where one of those is refused, and makes a
-  hash through the transaction only while no scope is open. What it answers
+  made and none of its writes where one of those is refused, holds the same
+  claims after a refusal whether the scope beside it is laid out or not, and
+  makes a stale hash through the transaction only while no scope is open. What it answers
   beside a scope that wrote below a host and marked it is the same whether
   that scope's writes are laid out or kept in the write set, and a mark of
   that scope refuses it nothing. A host that the caller is shown as marked
@@ -4162,7 +4163,7 @@ the call stands under them.
 | The puts have the first-write version of the call's operation. They are of keys that the transaction had written, so the key set of its commit and the first-write version of each key are what they were. | WT5, CF1, CF2 |
 | A rollback to a savepoint from before the call takes the puts out, and the hashes are stale again. | WT8 |
 | A call that fails adds nothing. Where it had stored a hash, the frames are made again from the write set. | WT10 |
-| It goes through a scope, or through the transaction while no scope is open. A scope claims a read of the Merk, then a read of each Merk it comes to through the pointer of a host, before it reads anything of that Merk, and at the end a write of every Merk a hash is made in, together or not at all. The puts go with the scope that made the call. | SC1, SC3, SC6 |
+| It makes a stale hash through a scope, or through the transaction while no scope is open. A Merk with no stale hash is read through the transaction beside open scopes too, as any read is. A scope claims a read of the Merk, then a read of each Merk it comes to through the pointer of a host, before it reads anything of that Merk, and at the end, after everything else that can refuse the call, a write of every Merk a hash is made in, together or not at all. The puts go with the scope that made the call. | SC1, SC3, SC6 |
 | The Merk that a host points into is the one that the subtree directory has entered under the host, whose record the scope that holds the Merk writes. So the call reads no write of another open scope, and answers the same whether the writes of the scopes beside it are laid out or kept in the write set. A pointer with no Merk entered under its host is of a host that is behind: which Merk has its root in a cell is not asked. | SC2, SC4, SC7 |
 | A host with a stale value hash that is marked pending, as the caller is shown the marks, refuses the call before a hash is made, and so does one that points elsewhere than at the root of the Merk under it, as after a clear. A mark of another scope that is still open is not shown, and refuses nothing. | SC9 |
 | In a transaction that a commit has met it is refused as a conflict: the hashes are made in frames, and the transaction has none. | WT7b, CF6 |
