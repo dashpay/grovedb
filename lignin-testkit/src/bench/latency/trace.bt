@@ -8,17 +8,20 @@
 //
 //   OFFCPU  a followed thread was off a processor for OFF_US or more, outside
 //           a sleep it asked for: when, its state when it left, the file
-//           system of the file it was writing (0,0 outside a write), which
-//           thread woke it, the kernel stack and the user stack it left
-//           with, and the kernel stack of the waking.
+//           system of the file it was writing or allocating for (0,0 outside
+//           such a call), which thread woke it, the kernel stack and the
+//           user stack it left with, and the kernel stack of the waking.
+//           The user stack is read by frame pointers: `build.sh` keeps them.
 //   WRITE   a write call of a followed thread that took LONG_US or more, and
 //           of which file.
 //   MARK    a line the harness writes: where the measured blocks begin and
 //           end, and after a long commit. It names the thread that wrote it.
 //   SYNC    an fsync or fdatasync of any thread of the process that took
 //           LONG_US or more, or that waited for a commit of an ext4 journal
-//           however long it took: of which file, and the number of the
-//           journal's transaction it waited for (0 if it waited for none).
+//           however long it took: of which file, the number of the
+//           journal's transaction whose commit it asked to wait for (0 if it
+//           asked for none), and when it asked. A sync that asks after the
+//           commit has ended waits for nothing: JEND says when that was.
 //   JSTART  an ext4 journal begins the commit of a transaction.
 //   JEND    it has ended it.
 //   BLK     a request to a block device that took LONG_US or more.
@@ -62,12 +65,11 @@ tracepoint:sched:sched_switch
   $t = args->next_pid;
   $d = (nsecs - @off[$t]) / 1000;
   if ($d >= $3) {
-    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d woken_by=%s/%d\n",
-           @off[$t], nsecs, $d, @offstate[$t], @wdev[$t] >> 20, @wdev[$t] & 0xfffff,
-           @offcomm[$t], $t, @wcomm[$t], @wtid[$t]);
-    printf(" left at:\n%s", @offk[$t]);
-    printf(" called from:\n%s", @offu[$t]);
-    printf(" woken at:\n%s\n", @wk[$t]);
+    // One record, so that the lines of two threads' waits cannot mix.
+    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d woken_by=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
+           @off[$t], nsecs, $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
+           (@wdev[$t] | @adev[$t]) & 0xfffff,
+           @offcomm[$t], $t, @wcomm[$t], @wtid[$t], @offk[$t], @offu[$t], @wk[$t]);
   }
   delete(@off[$t]); delete(@offk[$t]); delete(@offu[$t]); delete(@offstate[$t]);
   delete(@offcomm[$t]); delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]);
@@ -99,6 +101,18 @@ kretprobe:vfs_write
   delete(@w[tid]); delete(@wlen[tid]); delete(@wname[tid]); delete(@wdir[tid]); delete(@wdev[tid]);
 }
 
+// The file system of an allocation, for the waits inside it.
+kprobe:vfs_fallocate
+/pid == $1 && ($4 == 0 || tid == $4)/
+{
+  $f = (struct file *)arg0;
+  @adev[tid] = $f->f_inode->i_sb->s_dev;
+}
+
+kretprobe:vfs_fallocate
+/@adev[tid]/
+{ delete(@adev[tid]); }
+
 kprobe:vfs_fsync_range
 /pid == $1/
 {
@@ -108,12 +122,13 @@ kprobe:vfs_fsync_range
   @sdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
   @sdev[tid] = $f->f_inode->i_sb->s_dev;
   @stx[tid] = 0;
+  @sasked[tid] = 0;
 }
 
 // The transaction of the journal that a sync waits for the commit of.
 kprobe:jbd2_log_wait_commit
 /@s[tid]/
-{ @stx[tid] = arg1; }
+{ @stx[tid] = arg1; @sasked[tid] = nsecs; }
 
 kretprobe:vfs_fsync_range
 /@s[tid]/
@@ -122,11 +137,12 @@ kretprobe:vfs_fsync_range
   @syncs[@sdir[tid]] = count();
   @sync_us[@sdir[tid]] = hist($d);
   if ($d >= $2 || @stx[tid] != 0) {
-    printf("SYNC begin=%llu end=%llu us=%llu by=%s/%d dev=%d,%d transaction=%d file=%s/%s\n",
+    printf("SYNC begin=%llu end=%llu us=%llu by=%s/%d dev=%d,%d transaction=%d asked=%llu file=%s/%s\n",
            @s[tid], nsecs, $d, comm, tid, @sdev[tid] >> 20, @sdev[tid] & 0xfffff, @stx[tid],
-           @sdir[tid], @sname[tid]);
+           @sasked[tid], @sdir[tid], @sname[tid]);
   }
   delete(@s[tid]); delete(@sname[tid]); delete(@sdir[tid]); delete(@sdev[tid]); delete(@stx[tid]);
+  delete(@sasked[tid]);
 }
 
 tracepoint:jbd2:jbd2_start_commit
@@ -160,5 +176,5 @@ END
   clear(@pausing); clear(@off); clear(@offk); clear(@offu); clear(@offstate); clear(@offcomm);
   clear(@wcomm); clear(@wtid); clear(@wk);
   clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
-  clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@rq);
+  clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@sasked); clear(@adev); clear(@rq);
 }

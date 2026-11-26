@@ -11,9 +11,12 @@ the runs of one stream ended at; and, for each traced run, what its measuring
 thread waited for (`waits.py`).
 
 It fails, and prints no table, where a report has another number of blocks
-than the campaign was asked for, where two runs of one stream ended at
-different root hashes, and where a trace cannot be read: a file of tables is
-of one campaign that did what it says.
+than the campaign was asked for, where a part of the campaign has some of
+its runs and not all (every name of the part, under every background, in
+every round, with both engines), where two runs of one stream ended at
+different root hashes, and where a traced run did not end well (`traced.sh`
+leaves a file that says it did), has no line for its measured blocks, or
+cannot be read: a file of tables is of one campaign that did what it says.
 
 A percentile is the smallest sample with that share of the samples at or
 below it. A commit's time off a processor is its time less what its thread
@@ -167,14 +170,30 @@ def main():
     asked_path = os.path.join(out, "campaign.txt")
     if os.path.exists(asked_path):
         for line in open(asked_path):
-            key, _, value = line.rstrip("\n").rpartition(" ")
-            asked[key] = value
+            for key in ("commit", "blocks", "rounds", "backgrounds", "trace blocks"):
+                if line.startswith(key + " "):
+                    asked[key] = line[len(key) + 1:].strip()
+        if len(asked) < 5:
+            sys.exit("tables.py: %s does not say what the campaign was asked" % asked_path)
     if "blocks" in asked:
         short = sorted({"%s-%s-r%d" % (row["label"], row["background"], row["round"])
                         for row in main_rows + other_rows if row["blocks"] != int(asked["blocks"])})
         if short:
             sys.exit("tables.py: the campaign was asked for %s blocks a run, and these reports have another "
                      "number: %s" % (asked["blocks"], ", ".join(short)))
+    parts = (("main", main_rows, ("base", "base-again", "allocated", "covered")),
+             ("filesystems", other_rows, ("ext4", "ext4-again", "xfs")))
+    if asked:
+        for part, rows, labels in parts:
+            have = {(row["label"], row["background"], row["round"], row["engine"]) for row in rows}
+            want = {(label, background, number, engine) for label in labels
+                    for background in asked["backgrounds"].split()
+                    for number in range(1, int(asked["rounds"]) + 1) for engine in ("lignindb", "rocksdb")}
+            if have and have != want:
+                sys.exit("tables.py: the runs of %s are not those the campaign was asked for; missing: %s; "
+                         "not asked for: %s" % (part, ", ".join("%s-%s-r%d %s" % key for key in sorted(want - have))
+                                                or "none", ", ".join("%s-%s-r%d %s" % key for key in sorted(have - want))
+                                                or "none"))
     streams = collections.defaultdict(set)
     for row in main_rows + other_rows:
         streams[row["stream"]].add(row["root"])
@@ -183,7 +202,10 @@ def main():
             sys.exit("tables.py: runs of one stream ended at different root hashes: " + ", ".join(sorted(roots)))
     waited = []
     for trace in sorted(glob.glob(os.path.join(out, "traces", "*.trace"))):
-        made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), trace],
+        if not os.path.exists(trace[:-len(".trace")] + ".ok"):
+            sys.exit("tables.py: the traced run of %s did not end well, or was made by an earlier form of "
+                     "traced.sh: it has no file .ok beside it" % trace)
+        made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), "--marked", trace],
                               capture_output=True, text=True)
         if made.returncode != 0:
             sys.exit("tables.py: waits.py failed on %s: %s" % (trace, made.stderr.strip()))

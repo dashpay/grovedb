@@ -9,6 +9,10 @@
 # with its commit, its sha256 and the sha256 of the patch beside it, and
 # prints them.
 #
+# Every build keeps its frame pointers, in Rust and in what is compiled from
+# C and C++: the trace of `trace.bt` reads a user stack by them, and on a
+# target that leaves them out by default a stack ends at its first frame.
+#
 # The first build of a $BUILDS leaves its lock file there and every later
 # one is made with it, so that two builds differ in the crates their commits
 # changed and in nothing that was resolved anew between them.
@@ -34,6 +38,8 @@ fi
 [ -z "$(git -C "$to/src" status --porcelain)" ]
 if [ -f "$builds/Cargo.lock" ]; then cp "$builds/Cargo.lock" "$to/src/Cargo.lock"; fi
 (cd "$to/src" && CARGO_TARGET_DIR="$to/target" \
+  RUSTFLAGS="${RUSTFLAGS:-} -C force-frame-pointers=yes" \
+  CFLAGS="${CFLAGS:-} -fno-omit-frame-pointer" CXXFLAGS="${CXXFLAGS:-} -fno-omit-frame-pointer" \
   cargo build --release -p lignin-testkit --bin lignin-bench 2>&1 | tail -2)
 [ -f "$builds/Cargo.lock" ] || cp "$to/src/Cargo.lock" "$builds/Cargo.lock"
 cmp "$builds/Cargo.lock" "$to/src/Cargo.lock"

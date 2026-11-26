@@ -327,7 +327,7 @@ fi
 # Part 4. One traced run: traced FILE BUILD ENGINE DIRECTORY BACKGROUND THREADS SETTINGS
 traced() {
   local file=$1 build=$2 engine=$3 dir=${4:?} background=$5 threads=$6 settings=$7 watch=""
-  [ -s "$file.json" ] && [ -s "$file.trace" ] && return 0
+  [ -e "$file.ok" ] && return 0
   [ "$engine" = lignindb ] && watch="--watch-files"
   rm -rf "$dir/scratch"
   findmnt -no SOURCE,FSTYPE,OPTIONS -T "$dir" > "$file.mount"

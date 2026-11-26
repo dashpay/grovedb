@@ -2,8 +2,9 @@
 # traced.sh OUT SCRATCH [options of `lignin-bench latency`]
 #
 # One latency run of one engine with the kernel trace of trace.bt beside it.
-# Leaves OUT.json and OUT.txt (the run), OUT.trace (the trace) and OUT.pid
-# (the process and its measuring thread). Wants bpftrace and sudo.
+# Leaves OUT.json and OUT.txt (the run), OUT.trace (the trace), OUT.pid
+# (the process and its measuring thread) and, last and only if nothing below
+# failed, OUT.ok: a traced run without it is not one. Wants bpftrace and sudo.
 #
 # It fails, and says why, where the run fails, where the tracer has not
 # attached within a minute or ends before the run does, and where the trace
@@ -27,16 +28,18 @@ run="" tracer=""
 # `sudo` runs as another user, so whether it lives is read from /proc.
 tracing() { [ -n "$tracer" ] && [ -d "/proc/$tracer" ]; }
 stop_tracer() {
-  local tries
+  local tries signal
   [ -n "$tracer" ] || return 0
   for tries in $(seq 40); do
     tracing || break
     # An interrupt has bpftrace end its script; after ten seconds it is ended.
-    if [ "$tries" -le 20 ]; then sudo pkill -INT -P "$tracer" 2> /dev/null || true
-    else sudo pkill -KILL -P "$tracer" 2> /dev/null || true; fi
+    # Where `sudo` runs the command in its own place there is no child, and
+    # the process itself is the tracer.
+    if [ "$tries" -le 20 ]; then signal=INT; else signal=KILL; fi
+    sudo pkill "-$signal" -P "$tracer" 2> /dev/null || sudo kill "-$signal" "$tracer" 2> /dev/null || true
     sleep 0.5
   done
-  wait "$tracer" 2> /dev/null || true
+  if tracing; then echo "traced.sh: the tracer $tracer did not end" >&2; else wait "$tracer" 2> /dev/null || true; fi
   tracer=""
 }
 ended() {
@@ -50,6 +53,7 @@ refuse() {
 }
 
 sudo -n true 2> /dev/null || refuse "sudo asks for a password"
+rm -f "$out.ok"
 "$bin" latency --scratch "$scratch" "$@" --out "$out.json" > "$out.txt" &
 run=$!
 sleep 1
@@ -84,3 +88,4 @@ grep -q "lignin-mark measured begin" "$out.trace" ||
   refuse "the trace has no line for the beginning of the measured blocks: the tracer attached after it"
 grep -q "lignin-mark measured end" "$out.trace" ||
   refuse "the trace has no line for the end of the measured blocks"
+touch "$out.ok"
