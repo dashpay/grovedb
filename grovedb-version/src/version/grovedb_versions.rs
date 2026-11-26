@@ -812,6 +812,15 @@ pub struct GroveDBOperationsQueryVersions {
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsAverageCaseVersions {
+    /// The estimate of the open of a Merk that a write changes.
+    ///
+    /// - `0` (V1..V5): the open reads the host: a seek and the loaded bytes
+    ///   of that read, a seek for the root of a Merk that is not expected to
+    ///   be empty, and the prefix of the path.
+    /// - `1` (V6): the open is by the Merk's own path and root
+    ///   (`MerkCostModelVersions::propagation` 1): the seek and the bytes of
+    ///   the host's read are gone. The root Merk, which has no host, is
+    ///   estimated as before.
     pub add_average_case_get_merk_at_path: FeatureVersion,
     pub average_case_merk_replace_tree: FeatureVersion,
     pub average_case_merk_insert_tree: FeatureVersion,
@@ -875,10 +884,18 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   historical admission decisions.
     /// - `1` (V4+): both size it by the specialized cost the apply uses.
     pub average_case_sum_item_cost_size: FeatureVersion,
+    /// `GroveDb::average_case_finalize`: the estimate of a finalize, from
+    /// the stop points of the writes before it. The function refuses a grove
+    /// version on which no finalize exists
+    /// (`MerkCostModelVersions::propagation` 0).
+    pub average_case_finalize: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsWorstCaseVersions {
+    /// The worst-case twin of
+    /// `GroveDBOperationsAverageCaseVersions::add_average_case_get_merk_at_path`:
+    /// `1` (V6) leaves out the seek and the loaded bytes of the host's read.
     pub add_worst_case_get_merk_at_path: FeatureVersion,
     pub worst_case_merk_replace_tree: FeatureVersion,
     pub worst_case_merk_insert_tree: FeatureVersion,
@@ -919,6 +936,9 @@ pub struct GroveDBOperationsWorstCaseVersions {
     ///   upper bound. Preserved for replay of historical admission decisions.
     /// - `1` (V4+): both size it by the specialized cost the apply uses.
     pub worst_case_sum_item_cost_size: FeatureVersion,
+    /// `GroveDb::worst_case_finalize`, the worst-case twin of
+    /// `GroveDBOperationsAverageCaseVersions::average_case_finalize`.
+    pub worst_case_finalize: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

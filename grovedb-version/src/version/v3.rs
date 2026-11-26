@@ -15,8 +15,8 @@ use crate::version::{
         GroveDBReplicationVersions, GroveDBStorageCostVersions, GroveDBVersions,
     },
     merk_versions::{
-        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkProofVersions, MerkTreeVersions,
-        MerkVersions,
+        MerkAverageCaseCostsVersions, MerkBatchVersions, MerkCostModelVersions, MerkProofVersions,
+        MerkTreeVersions, MerkVersions, MerkWorstCaseCostsVersions,
     },
     mmr_versions::{MmrCostVersions, MmrVersions},
     GroveVersion,
@@ -230,6 +230,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 average_case_backward_references_fan_out: 0,
                 average_case_propagated_aggregate_kind: 0,
                 average_case_sum_item_cost_size: 0,
+                average_case_finalize: 0,
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
                 add_worst_case_get_merk_at_path: 0,
@@ -247,6 +248,7 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
                 worst_case_commitment_tree_insert: 0,
                 worst_case_backward_references_fan_out: 0,
                 worst_case_sum_item_cost_size: 0,
+                worst_case_finalize: 0,
             },
             // PrivateDocumentStore is unavailable before GROVE_V4: every
             // slot is 0 and the operations fail closed.
@@ -321,6 +323,8 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             // `Σ size_i / Σ weight_i` (low-biased and ignored weights);
             // v1 returns `Σ (size_i · weight_i) / Σ weight_i`.
             value_with_feature_and_flags_size: 1,
+            subtree_with_feature_and_flags_size: 0,
+            add_average_case_merk_finalize: 0,
         },
         proof: MerkProofVersions {
             // Initial implementation; introduced alongside the V1
@@ -333,6 +337,12 @@ pub const GROVE_V3: GroveVersion = GroveVersion {
             put_value: 0,
             just_in_time_value_update: 0,
         },
+        worst_case_costs: MerkWorstCaseCostsVersions {
+            add_worst_case_merk_finalize: 0,
+            add_worst_case_merk_propagate: 0,
+        },
+        // A write carries every Merk it changed to the root of the grove.
+        cost_model: MerkCostModelVersions { propagation: 0 },
     },
     // MMR hash charges: the shipped accounting, which billed the
     // storage reads each operation performed but not the blake3 merges
