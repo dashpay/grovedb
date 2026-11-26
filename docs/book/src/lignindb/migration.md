@@ -132,7 +132,10 @@ real_dir() {
 }
 outside_databases() {
   local d
-  d=$(dirname -- "$1")
+  case "$1" in
+    /*) d=$(dirname -- "$1") ;;
+    *) d=$(dirname -- "$(pwd -P)/$1") ;;
+  esac
   while :; do
     case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
       *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
@@ -421,7 +424,8 @@ not whole, compared and verified. Lines that begin `migrate:` hold
 `name=value` words for a script; the others are for you. After a
 commit of the load, once five seconds (or what `--progress` says) have
 gone by since the last such line, a line says where the load stands, so
-a long commit can keep it longer:
+a long commit can keep it longer, and the last commit of the load says
+it whatever the interval:
 `migrate: phase=… subtrees=… merks=… nodes=… records=… bytes=… commits=… seconds=…`.
 
 | Exit status | What it means | What to do |
@@ -551,6 +555,10 @@ store unsound.
 Before the node opens the new database for the first time, copy it. The
 database is closed and no process has it open, so a copy of its
 directory is a consistent backup ([backup and full disk](backup-and-full-disk.md)).
+It holds GroveDB's records alone: the application's files go into
+`TARGET` at step 10, after this copy, and a node started on a restore of
+it needs the application's files of the same state, which `SOURCE`
+keeps, as the application's documentation says.
 The block claims `BACKUP` with `mkdir`, which fails where anything is
 there already, and copies the database's files into it; `cp -a` copies
 every file with the `LOCK` file, which an open needs. `cp`
@@ -605,7 +613,8 @@ the node's own directory can be of commits after it, and step 7 does
 not see a mismatch between them and the grove. Copy nothing over
 a file that `TARGET` has, and put no file there under a name of the
 engine's: `LOCK`, `MANIFEST`, `MANIFEST.tmp`, `MANIFEST.deleting`,
-`RESERVE`, `RESERVE.new`, `wal`, `seg`, `val` and `table`. The engine
+`RESERVE`, `RESERVE.new`, `wal`, `seg`, `val` and `table`. On a file system that ignores case, a name that differs from one
+of these in case alone is the same name. The engine
 takes a file of such a name for its own (an open removes
 `MANIFEST.tmp`, and refuses a directory where `wal`, `seg`, `val` or
 `table` is not a directory), and an open refuses a directory that holds

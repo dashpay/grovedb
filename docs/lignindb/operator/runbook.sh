@@ -37,6 +37,21 @@ if [ -e "$work" ] && [ -n "$(ls -A "$work")" ]; then
     echo "runbook.sh: $work is not empty" >&2
     exit 2
 fi
+# Nothing is made inside a database directory, the source's among them.
+case "$work" in
+    /*) above=$work ;;
+    *) above=$(pwd -P)/$work ;;
+esac
+while :; do
+    if [ -e "$above/CURRENT" ] || [ -e "$above/MANIFEST" ] || [ -e "$above/MANIFEST.deleting" ]; then
+        echo "runbook.sh: $work lies inside $above, a database directory" >&2
+        exit 2
+    fi
+    if [ "$above" = / ] || [ "$above" = . ]; then
+        break
+    fi
+    above=$(dirname -- "$above")
+done
 mkdir -p "$work"
 work=$(cd "$work" && pwd -P && echo .)
 work=${work%$'\n.'}

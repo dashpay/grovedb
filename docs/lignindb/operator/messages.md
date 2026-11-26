@@ -262,7 +262,8 @@ size (below, with what to do), or the words of [the files](#the-files-at-an-open
 whose own rows say what to do. A message of that group that comes again
 at the next open, with nothing for the system to fix and no option of
 the open to change (the buffer pool's size among them), is damage as
-well.
+well, but for ids that are used up, whose rows say to build the database
+again.
 **Damage** (the second group) is a store whose files do not hold what
 they must: restore the database from a backup, keep the damaged
 directory, and report it with what `lignin verify` says of it (where
@@ -307,9 +308,12 @@ A session ends when the store meets something it cannot make good
 without being opened again: a refused sync of the log or of a segment,
 a commit whose fate is unknown, or a log with no file id left. From then
 on every commit is refused with the same reason and every read is
-answered. **What to do is the same for each: close the database and open
-it again** (stop the node and start it), once the cause is gone (for a
-full device, [make room](backup-and-full-disk.md#what-to-do-in-this-order)).
+answered. **What to do is the same for each but one: close the database
+and open it again** (stop the node and start it), once the cause is gone
+(for a full device, [make room](backup-and-full-disk.md#what-to-do-in-this-order)).
+The one is a log with no file id left (`every log file id has been used, and the log can be given no further file`):
+an open needs a new log file, so it fails too. Keep the handle that reads
+until the database is built again, as its row says.
 Nothing that was made durable is lost; the open lands on a committed
 version, which can be earlier than the last one published after a
 refused sync.
@@ -331,7 +335,7 @@ A commit that meets the end itself says so in words of its own:
 | `commit … is published and not known to be durable: …` | published; its sync failed | open again | `lignindb/src/commit/error.rs` |
 | `whether commit … is in the log is not known, and the session takes no further commit: …` | as above | open again | `lignindb/src/commit/error.rs` |
 | `commit … is in the log and could not be installed, and the session takes no further commit: …` | as above | open again | `lignindb/src/commit/error.rs` |
-| `the commit was not made: …` | the commit did not happen and never will; the session goes on, but where the words after it are `the log would give the commit version …, and the latest published version is …` (below), after which it takes no commit | nothing, unless the words say the device is full: then [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
+| `the commit was not made: …` | the commit did not happen and never will; the session goes on, but where the words after it are `the log would give the commit version …, and the latest published version is …` (below), after which it takes no commit | for the version gap, open again (its row below); otherwise nothing, unless the words say the device is full: then [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
 | `the session takes no commit yet: …` | the session waits for the log to be cut after a failed append, or for a manifest in doubt to be settled; the transaction is whole | make room where the words say the device is full; where they name a directory that was removed or cannot be written, stop the node | `lignindb/src/commit/error.rs` |
 | `the log would give the commit version …, and the latest published version is …` | the log holds a group the session never published: the session has stopped | open again | `lignindb/src/commit/error.rs` |
 | `the log: …` | after `the commit was not made: `: the log refused the commit's group; where its words say the device is full, the session waits for room | [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |

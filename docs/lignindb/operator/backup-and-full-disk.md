@@ -57,7 +57,10 @@ real_dir() {
 }
 outside_databases() {
   local d
-  d=$(dirname -- "$1")
+  case "$1" in
+    /*) d=$(dirname -- "$1") ;;
+    *) d=$(dirname -- "$(pwd -P)/$1") ;;
+  esac
   while :; do
     case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
       *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
@@ -245,7 +248,9 @@ lignin verify "$RESTORE"
 every value, and makes every stored hash again by Merk's rules but those
 the rules take as stored (the value hash of a reference). Exit status 0
 is a sound store. A restore is a database like any other, at the version
-the backup holds: point the node at it, or keep it as the check and
+the backup holds: point the node at it, with the application's files of
+the same state (a copy of a checkpoint holds none, below), or keep it as
+the check and
 remove it.
 
 **A restored directory that does not open, with
