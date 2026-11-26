@@ -338,15 +338,22 @@ fn a_batch_of_moves_writes_each_leaf_once() {
 
 #[test]
 fn a_write_of_a_batch_reads_what_the_writes_before_it_put() {
-    let (mut pages, mut directory) = wide(3);
+    let (mut pages, mut directory) = wide(4);
     let top = prefix_of(&[]);
-    let before = pages.pages.clone();
-    let mut pending = Pending::new();
     let host = |parent, key| Host {
         parent,
         key,
         position: 0,
     };
+    // A Merk with no node that hosts one, both in the pages: the calls
+    // keep no rule of the callers, and a batch that drops both finds it.
+    let hosting = below_top(3);
+    let hosted = prefix_of(&[(key_of(3), 0), (b"d".to_vec(), 0)]);
+    directory
+        .add(&mut pages, &hosted, b"tree", Some(host(&hosting, b"d")))
+        .expect("entered");
+    let before = pages.pages.clone();
+    let mut pending = Pending::new();
 
     // A Merk and a Merk it hosts, entered in one batch: the second reads
     // the first, for the Merks it is below.
@@ -486,6 +493,23 @@ fn a_write_of_a_batch_reads_what_the_writes_before_it_put() {
         .unlink_in(&mut pending, &pages, &parent)
         .expect("dropped");
 
+    // The same of a Merk that the pages have below one: its record of
+    // the host is in the pages, and a pending record takes it out.
+    let hosting_id = directory.open(&pages, &hosting).expect("a lookup");
+    let hosting_id = hosting_id.expect("entered").id();
+    let refused = directory.unlink_in(&mut pending, &pages, &hosting);
+    assert!(matches!(refused, Err(DirectoryError::NotEmpty { .. })));
+    directory
+        .unlink_in(&mut pending, &pages, &hosted)
+        .expect("dropped");
+    assert!(directory.has_children(&pages, hosting_id).expect("a walk"));
+    assert!(!directory
+        .has_children_in(&pending, &pages, hosting_id)
+        .expect("a walk"));
+    directory
+        .unlink_in(&mut pending, &pages, &hosting)
+        .expect("dropped");
+
     // A Merk is stated anew as the records leave it.
     let restated = Restated {
         prefix: &outer,
@@ -529,6 +553,8 @@ fn a_write_of_a_batch_reads_what_the_writes_before_it_put() {
         directory.next_id(&pages).expect("an id").get(),
         id.get() + 2
     );
+    assert_eq!(directory.open(&pages, &hosting).expect("a lookup"), None);
+    assert_eq!(directory.open(&pages, &hosted).expect("a lookup"), None);
     directory.check(&pages).expect("a directory");
 }
 
