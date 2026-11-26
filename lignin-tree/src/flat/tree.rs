@@ -680,6 +680,11 @@ pub struct Written {
     ///   child holds, which is one image, of the root. A root that is a
     ///   leaf and is left with no entry is written, with none.
     ///
+    /// That is so in a tree as the writes of this code leave it. One that
+    /// has, above a leaf that loses an entry, a branch with one child
+    /// which is not the root takes one image more: the leaf is written,
+    /// and the root then takes what it holds.
+    ///
     /// Each key that is kept in a bucket adds what a put or a delete of
     /// it writes. An image of a branch is not counted.
     pub leaf_writes: u64,
@@ -1066,7 +1071,8 @@ impl FlatTree {
     /// **Where the two are the only children of the root, the root takes
     /// the entries of both** and both pages are freed: the root would
     /// take what its only child holds next, which would be a second image
-    /// of the same leaf.
+    /// of the same leaf. So it is where the leaf is the root's only
+    /// child: the root takes its entries, and the leaf is freed.
     ///
     /// A neighbour to the left that the write has still to come to is
     /// left alone, and the answer is that of two pages that are too long
@@ -1084,6 +1090,21 @@ impl FlatTree {
         (next, above): (Option<&[u8]>, Option<&[u8]>),
     ) -> Result<Merge, FlatError> {
         let capacity = self.config.capacity();
+        // The leaf is the only child of its branch. Where that is the
+        // root, the root takes what the leaf holds, as it would once the
+        // leaf were written: no write of this code leaves a root with
+        // one child, and a tree that has one is put right here, in one
+        // image.
+        let alone = {
+            let frame = pages.page(parent)?;
+            branch(&frame, parent)?.is_empty()
+        };
+        if alone && parent == self.root {
+            pages.take(self.root)?;
+            write_leaf(pages, capacity, self.root, now)?;
+            pages.free(page)?;
+            return Ok(Merge::Done);
+        }
         let (slot, level, left, right, begin, only) = {
             let frame = pages.page(parent)?;
             let branch = branch(&frame, parent)?;
