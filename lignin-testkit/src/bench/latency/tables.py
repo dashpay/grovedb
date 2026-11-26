@@ -3,12 +3,17 @@
 
     tables.py OUT
 
-OUT is the campaign's directory. Printed, in this order: the machine and the
-builds; for the runs of each part, a row for every engine of every run and
-the median of the runs' values with their range; the control and each
-experiment held against it; whether the runs of one stream ended at one root
-hash; and, for each traced run, what its measuring thread waited for
-(`waits.py`).
+OUT is the campaign's directory. Printed, in this order: the machine, what
+the campaign was asked and the builds; for the runs of each part, a row for
+every engine of every run and the median of the runs' values with their
+range; the control and each experiment held against it; the root hash that
+the runs of one stream ended at; and, for each traced run, what its measuring
+thread waited for (`waits.py`).
+
+It fails, and prints no table, where a report has another number of blocks
+than the campaign was asked for, where two runs of one stream ended at
+different root hashes, and where a trace cannot be read: a file of tables is
+of one campaign that did what it says.
 
 A percentile is the smallest sample with that share of the samples at or
 below it. A commit's time off a processor is its time less what its thread
@@ -19,6 +24,9 @@ LigninDB's commit by more than two runs of one binary differ. Here that is
 read as: the median of the experiment's runs is below the median of the
 control's runs (the one binary under its names) by more than the control's
 runs are apart, their highest value less their lowest, under one background.
+The median of an even number of runs is the mean of the two middle ones. A
+control of fewer than two runs, or an experiment of fewer than two, gets no
+answer.
 """
 import collections
 import glob
@@ -141,7 +149,10 @@ def held(rows, control, experiments):
             if not values:
                 continue
             below = middle - median(values)
-            verdict = "too few runs of the control" if len(base) < 2 else ("yes" if below > apart else "no")
+            if len(base) < 2 or len(values) < 2:
+                verdict = "too few runs to say"
+            else:
+                verdict = "yes" if below > apart else "no"
             print("| %s | %s | %d | %s | %s | %s | %s |" % (
                 background, label, len(values), ranged(values), us(below), us(apart), verdict))
 
@@ -150,13 +161,40 @@ def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     out = sys.argv[1]
+    main_rows = read(os.path.join(out, "runs", "main"))
+    other_rows = read(os.path.join(out, "runs", "filesystems"))
+    asked = {}
+    asked_path = os.path.join(out, "campaign.txt")
+    if os.path.exists(asked_path):
+        for line in open(asked_path):
+            key, _, value = line.rstrip("\n").rpartition(" ")
+            asked[key] = value
+    if "blocks" in asked:
+        short = sorted({"%s-%s-r%d" % (row["label"], row["background"], row["round"])
+                        for row in main_rows + other_rows if row["blocks"] != int(asked["blocks"])})
+        if short:
+            sys.exit("tables.py: the campaign was asked for %s blocks a run, and these reports have another "
+                     "number: %s" % (asked["blocks"], ", ".join(short)))
+    streams = collections.defaultdict(set)
+    for row in main_rows + other_rows:
+        streams[row["stream"]].add(row["root"])
+    for stream, roots in streams.items():
+        if len(roots) > 1:
+            sys.exit("tables.py: runs of one stream ended at different root hashes: " + ", ".join(sorted(roots)))
+    waited = []
+    for trace in sorted(glob.glob(os.path.join(out, "traces", "*.trace"))):
+        made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), trace],
+                              capture_output=True, text=True)
+        if made.returncode != 0:
+            sys.exit("tables.py: waits.py failed on %s: %s" % (trace, made.stderr.strip()))
+        waited.append((trace, made.stdout.rstrip()))
+
     print("# The tables of PERF-07-F1\n")
-    for title, name in (("The machine", "host.txt"), ("The builds", "builds.txt")):
+    for title, name in (("The machine", "host.txt"), ("What the campaign was asked", "campaign.txt"),
+                        ("The builds", "builds.txt")):
         path = os.path.join(out, name)
         if os.path.exists(path):
             print("## %s\n\n```text\n%s\n```\n" % (title, open(path).read().rstrip()))
-    main_rows = read(os.path.join(out, "runs", "main"))
-    other_rows = read(os.path.join(out, "runs", "filesystems"))
     if main_rows:
         print("## The commit of a block, on the file system of the runs\n")
         runs(main_rows)
@@ -167,25 +205,18 @@ def main():
         print("## The commit of a block, on file systems in files of that one\n")
         runs(other_rows)
         print("\n### A second file system: XFS against ext4\n")
-        held(other_rows, ["ext4"], ["xfs"])
-        print("\n### The log allocated ahead, on ext4 with `lazytime`\n")
-        held(other_rows, ["ext4-lazytime"], ["ext4-lazytime-allocated"])
+        held(other_rows, ["ext4", "ext4-again"], ["xfs"])
         print()
-    streams = collections.defaultdict(set)
-    for row in main_rows + other_rows:
-        streams[row["stream"]].add(row["root"])
     if streams:
         print("## One stream, one root hash\n")
         for stream, roots in sorted(streams.items()):
             count = sum(1 for row in main_rows + other_rows if row["stream"] == stream)
-            print("- %d runs of seed %d, %d documents of %d owners, %d warm and %d measured blocks: %s" % (
-                count, *stream, "one root hash, `%s`" % next(iter(roots)) if len(roots) == 1
-                else "ROOT HASHES DIFFER: " + ", ".join(sorted(roots))))
+            print("- %d measurements of seed %d, %d documents of %d owners, %d warm and %d measured blocks "
+                  "ended at one root hash, `%s`" % (count, *stream, next(iter(roots))))
         print()
-    traces = sorted(glob.glob(os.path.join(out, "traces", "*.trace")))
-    if traces:
+    if waited:
         print("## What the measuring thread waited for, in the traced runs\n")
-    for trace in traces:
+    for trace, tables in waited:
         name = os.path.basename(trace)[:-len(".trace")]
         report_path = trace[:-len(".trace")] + ".json"
         print("### %s\n" % name)
@@ -198,12 +229,10 @@ def main():
                                                          *map(us, four(off)[1:])))
             if engine.get("syncs"):
                 counted = sorted(engine["syncs"].items(), key=lambda item: -item[1][0])
-                print("Syncs a block, %.2f in all: %s.\n" % (
+                print("Syncs a block, counted by the harness's file layer, %.2f in all: %s.\n" % (
                     sum(count for _, (count, _) in counted) / blocks,
                     ", ".join("%.2f of %s" % (count / blocks, of) for of, (count, _) in counted)))
-        made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), trace],
-                              capture_output=True, text=True)
-        print(made.stdout.rstrip() if made.returncode == 0 else "`waits.py` failed: " + made.stderr.strip())
+        print(tables)
         print()
 
 

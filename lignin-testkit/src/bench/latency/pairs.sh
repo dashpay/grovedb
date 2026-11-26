@@ -21,7 +21,7 @@
 # `lignin-bench latency`.
 #
 # A pair whose reports are there already is not run again, so a campaign
-# that was stopped goes on where it was. Leaves OUT/builds.txt (each build
+# that was stopped goes on where it was. A run that fails ends the campaign. Leaves OUT/builds.txt (each build
 # with its commit and sha256), a report and its text for every run with the
 # mount of its file system beside it, OUT/progress.log, and OUT/done at the
 # end.
@@ -43,13 +43,16 @@ one() { # one ENTRY FS FILE BACKGROUND
   IFS='|' read -r label build engines settings <<< "$1"
   [ "$settings" = none ] && settings=""
   for engine in ${engines//,/ }; do flags="$flags --engine $engine"; done
-  rm -rf "$2/scratch"
+  rm -rf "${2:?}/scratch"
   findmnt -no SOURCE,FSTYPE,OPTIONS -T "$2" > "$3.mount"
   # shellcheck disable=SC2086
   env $settings "$root/$build/lignin-bench" latency --scratch "$2/scratch" $flags \
     --background "$4" --label "$label" --commit "$(cat "$root/$build/commit")" \
-    ${LATENCY:-} --out "$3.json.part" > "$3.txt" 2> "$3.err" && mv "$3.json.part" "$3.json"
-  rm -rf "$2/scratch"
+    ${LATENCY:-} --out "$3.json.part" > "$3.txt" 2> "$3.err"
+  local status=$?
+  [ "$status" = 0 ] && mv "$3.json.part" "$3.json"
+  rm -rf "${2:?}/scratch"
+  return "$status"
 }
 
 for round in $(seq 1 "$rounds"); do
@@ -65,8 +68,16 @@ for round in $(seq 1 "$rounds"); do
       [ -s "$one_file.json" ] && [ -s "$two_file.json" ] && continue
       sudo fstrim "$one_fs" 2>/dev/null; sudo fstrim "$two_fs" 2>/dev/null
       one "$first" "$one_fs" "$one_file" "$background" &
+      one_run=$!
       one "$second" "$two_fs" "$two_file" "$background" &
-      wait
+      two_run=$!
+      failed=""
+      wait "$one_run" || failed="$one_file"
+      wait "$two_run" || failed="$failed $two_file"
+      if [ -n "$failed" ]; then
+        echo "pairs.sh: a run of the pair failed:$failed" >&2
+        exit 1
+      fi
       echo "$(date -u +%FT%TZ) round $round $background slot $slot: $(grep -h -E '^\| [^B-]' "$one_file.txt" "$two_file.txt" | tr '\n' ' ')" >> "$out/progress.log"
     done
   done

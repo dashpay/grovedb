@@ -24,39 +24,49 @@
 #    of this directory (`log-allocated-ahead.patch`, `fewer-syncs.patch`).
 # 2. `main`: on OUT's own file system, $ROUNDS rounds under each background
 #    of $BACKGROUNDS, each of four runs of $BLOCKS blocks, one after the
-#    other: `base` and `base-again` (one binary under two names: the
-#    control), each with both engines in the one run, and `allocated` and
-#    `covered` (the experiments, on LigninDB). The order of the four is
-#    turned by one from round to round, and so is the order of the two
-#    engines of a run.
-# 3. `filesystems`: the same rounds on three file systems that the script
-#    makes in files under OUT and mounts through loop devices with direct
-#    I/O: ext4, ext4 with `lazytime`, and XFS. `ext4` and `xfs` are `base`
-#    with both engines, `ext4-lazytime` and `ext4-lazytime-allocated` are
-#    `base` and the first experiment on LigninDB. A sync of such a file
-#    system ends in a sync of its file on OUT's file system, so these rows
-#    are held against one another and not against those of part 2.
+#    other, every run with both engines: `base` and `base-again` (one binary
+#    under two names: the control), `allocated` and `covered` (the
+#    experiments).
+# 3. `filesystems`: the same rounds of three runs, every run with both
+#    engines, on two file systems that the script makes in files under OUT
+#    and mounts through loop devices with direct I/O: `ext4` and
+#    `ext4-again` (`base` under two names on ext4: the control) and `xfs`
+#    (`base` on XFS). A sync of such a file system ends in a sync of its
+#    file on OUT's file system, so these rows are held against one another
+#    and not against those of part 2.
 # 4. `traces`: runs of $TRACE_BLOCKS blocks with the kernel trace of
 #    `trace.bt` beside them (`traced.sh`): each engine under each background
 #    on OUT's file system, LigninDB once more with every thread followed,
-#    the two experiments, and LigninDB on each file system of part 3.
+#    the two experiments, and LigninDB on ext4, on ext4 with `lazytime` and
+#    on XFS in files as in part 3, and the first experiment on ext4 with
+#    `lazytime`.
 # 5. `tables`: OUT/tables.md, from all of it (`tables.py`, `waits.py`).
 #
+# **The order.** In a round the runs are made in the order above, turned by
+# one for every two rounds; an even round makes them in the reverse of the
+# round before it, so that in two rounds every two runs have been made in
+# both orders. The two engines of a run exchange their order from round to
+# round.
+#
 #   BLOCKS         the measured blocks of a run (default 100000)
-#   ROUNDS         the rounds (default 2)
+#   ROUNDS         the rounds (default 2; an even number has every order twice)
 #   BACKGROUNDS    the backgrounds (default `quiet heavy`)
 #   TRACE_BLOCKS   the measured blocks of a traced run (default 30000)
-#   LOOP_GB        the size of each file system of part 3 in GiB; their
-#                  files are sparse (default 64)
+#   LOOP_GB        the size of each file system of parts 3 and 4 in GiB;
+#                  their files are sparse (default 64)
 #   PARTS          the parts to make (default: all five, in their order)
 #   LATENCY        further options of `lignin-bench latency` for every run
 #   BUILDS         where the builds are made (default: OUT/builds; about
 #                  12 GB)
 #
-# Under `quiet` LigninDB keeps what a run writes, about 10 GB for 100,000
-# blocks, and the campaign asks for room for two such runs before it begins:
-# where a file system has less, name fewer blocks or other backgrounds. An
-# OUT that holds the runs of another commit is refused.
+# Under `quiet` LigninDB keeps what a run writes, which is taken here as
+# 100 KB a block, and the campaign asks for room for two such runs and for
+# its builds before it begins: where a file system has less, name fewer
+# blocks or other backgrounds. OUT keeps what the campaign was asked
+# (`campaign.txt`), and a campaign that is asked something else there, or
+# for another commit, is refused: a directory holds the runs of one
+# campaign. A build that is there is used only if it is of this commit, of
+# this patch, and the binary its checksum names.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
@@ -89,15 +99,28 @@ for patch in log-allocated-ahead fewer-syncs; do
     refuse "$patch.patch does not apply to this commit"
 done
 
-if [ -s "$out/host.txt" ]; then
-  [ "$(head -1 "$out/host.txt")" = "commit $commit" ] ||
-    refuse "$out holds the runs of another commit ($(head -1 "$out/host.txt"))"
+asked="commit $commit
+blocks $blocks
+rounds $rounds
+backgrounds $backgrounds
+trace blocks $trace_blocks
+file systems of $loop_gb GiB
+further options ${LATENCY:-none}"
+if [ -s "$out/campaign.txt" ]; then
+  [ "$(cat "$out/campaign.txt")" = "$asked" ] ||
+    refuse "$out holds another campaign; what it was asked is in $out/campaign.txt"
+else
+  most=$((blocks > trace_blocks ? blocks : trace_blocks))
+  case " $backgrounds " in
+    *" quiet "*) wanted=$((most * 200 + 2097152)) ;;
+    *) wanted=$((most * 40 + 4194304)) ;;
+  esac
+  case "$BUILDS/" in "$out/"*) [ -s "$BUILDS/exp2/sha256" ] || wanted=$((wanted + 12582912)) ;; esac
+  free=$(df -k --output=avail "$out" | tail -1)
+  [ "$free" -ge "$wanted" ] ||
+    refuse "$out has $((free / 1048576)) GiB free, and this campaign wants $((wanted / 1048576 + 1))"
+  echo "$asked" > "$out/campaign.txt"
 fi
-most=$((blocks > trace_blocks ? blocks : trace_blocks))
-case " $backgrounds " in *" quiet "*) wanted=$((most * 200 + 2097152)) ;; *) wanted=$((most * 40 + 4194304)) ;; esac
-free=$(df -k --output=avail "$out" | tail -1)
-[ "$free" -ge "$wanted" ] || [ -n "$(ls "$out/runs" 2> /dev/null)" ] ||
-  refuse "$out has $((free / 1048576)) GiB free, and runs of $most blocks under \"$backgrounds\" want $((wanted / 1048576 + 1))"
 
 has() {
   case " $parts " in *" $1 "*) return 0 ;; *) return 1 ;; esac
@@ -149,12 +172,26 @@ if [ ! -s "$out/host.txt" ]; then
 fi
 
 # Part 1.
+# Whether a build that is there is the one that would be made: of this
+# commit, with this patch or none, and the binary its checksum names.
+built() { # built NAME [PATCH]
+  local to=$BUILDS/$1 patch=${2:-} parent
+  [ -s "$to/sha256" ] && [ -x "$to/lignin-bench" ] || return 1
+  [ "$(sha256sum "$to/lignin-bench" | cut -d' ' -f1)" = "$(cat "$to/sha256")" ] || return 1
+  if [ -z "$patch" ]; then
+    [ "$(cat "$to/commit")" = "$commit" ] && [ ! -e "$to/patch-sha256" ]
+  else
+    parent=$(git -C "$to/src" rev-parse "$(cat "$to/commit")^" 2> /dev/null) || return 1
+    [ "$parent" = "$commit" ] &&
+      [ "$(cat "$to/patch-sha256" 2> /dev/null)" = "$(sha256sum "$patch" | cut -d' ' -f1)" ]
+  fi
+}
 if has builds; then
   mkdir -p "$BUILDS"
-  [ -s "$BUILDS/base/sha256" ] || REPO=$repo "$here/build.sh" base "$commit"
-  [ -s "$BUILDS/exp1/sha256" ] ||
+  built base || REPO=$repo "$here/build.sh" base "$commit"
+  built exp1 "$here/log-allocated-ahead.patch" ||
     REPO=$repo "$here/build.sh" exp1 "$commit" "$here/log-allocated-ahead.patch"
-  [ -s "$BUILDS/exp2/sha256" ] ||
+  built exp2 "$here/fewer-syncs.patch" ||
     REPO=$repo "$here/build.sh" exp2 "$commit" "$here/fewer-syncs.patch"
   for build in base exp1 exp2; do
     line="$build: commit $(cat "$BUILDS/$build/commit"), sha256 $(cat "$BUILDS/$build/sha256")"
@@ -163,6 +200,11 @@ if has builds; then
     fi
     echo "$line"
   done > "$out/builds.txt"
+fi
+
+if has main || has filesystems || has traces; then
+  { built base && built exp1 "$here/log-allocated-ahead.patch" && built exp2 "$here/fewer-syncs.patch"; } ||
+    refuse "the builds under $BUILDS are not those of this commit and these patches: make the part builds"
 fi
 
 # Removes a run's database, and gives what it took of a file system of part 3
@@ -204,22 +246,24 @@ run() {
   say "$(basename "$file"): $(grep -E '^\| [^B-]' "$file.txt" | tr '\n' ' ')"
 }
 
-# Rounds of entries, each `label|build|engines|directory|settings`, one run
-# after the other, the order turned by one from round to round and the two
-# engines of an entry that has both exchanged.
+# Rounds of entries, each `label|build|directory|settings`, one run after the
+# other, every run with both engines. The order of a round is the order
+# given, turned by one for every two rounds, and an even round is the
+# reverse of the round before it. The two engines exchange their order from
+# round to round.
 rounds_of() { # rounds_of DIRECTORY ENTRY...
   local to=$1
   shift
-  local entries=("$@") round background index entry label build engines dir settings
+  local entries=("$@") count=$# round background place index entry label build dir settings engines
   mkdir -p "$to"
   for round in $(seq 1 "$rounds"); do
+    if [ $((round % 2)) = 1 ]; then engines="rocksdb lignindb"; else engines="lignindb rocksdb"; fi
     for background in $backgrounds; do
-      for index in $(seq 0 $((${#entries[@]} - 1))); do
-        entry=${entries[$(((index + round - 1) % ${#entries[@]}))]}
-        IFS='|' read -r label build engines dir settings <<< "$entry"
-        if [ "$engines" = both ]; then
-          if [ $((round % 2)) = 1 ]; then engines="rocksdb lignindb"; else engines="lignindb rocksdb"; fi
-        fi
+      for place in $(seq 0 $((count - 1))); do
+        index=$(((place + (round - 1) / 2) % count))
+        [ $((round % 2)) = 1 ] || index=$(((count - 1 - place + (round - 1) / 2) % count))
+        entry=${entries[$index]}
+        IFS='|' read -r label build dir settings <<< "$entry"
         run "$to/$label-$background-r$round" "$build" "$engines" "$dir" "$background" "$label" "$settings"
       done
     done
@@ -231,21 +275,19 @@ allocated="LIGNIN_LOG_ALLOCATE=fallocate" covered="LIGNIN_COVER_BYTES=1048576"
 if has main; then
   mkdir -p "$out/native"
   rounds_of "$out/runs/main" \
-    "base|base|both|$out/native|" \
-    "base-again|base|both|$out/native|" \
-    "allocated|exp1|lignindb|$out/native|$allocated" \
-    "covered|exp2|lignindb|$out/native|$covered"
+    "base|base|$out/native|" \
+    "base-again|base|$out/native|" \
+    "allocated|exp1|$out/native|$allocated" \
+    "covered|exp2|$out/native|$covered"
 fi
 
-# The file systems of parts 3 and 4, in files under OUT.
-mounted=""
+# The file systems of parts 3 and 4, in files under OUT. What this run of the
+# script mounted, it unmounts, and it frees the loop devices it took.
+mounted="" devices=""
 unmount() {
   local dir device
-  for dir in $mounted; do
-    device=$(findmnt -no SOURCE "$dir" || true)
-    sudo umount "$dir" 2> /dev/null || true
-    [ -z "$device" ] || sudo losetup -d "$device" 2> /dev/null || true
-  done
+  for dir in $mounted; do sudo umount "$dir" 2> /dev/null || true; done
+  for device in $devices; do sudo losetup -d "$device" 2> /dev/null || true; done
 }
 trap unmount EXIT
 filesystem() { # filesystem NAME MKFS MOUNT-OPTIONS
@@ -253,30 +295,33 @@ filesystem() { # filesystem NAME MKFS MOUNT-OPTIONS
   mkdir -p "$dir" "$out/fs"
   if ! findmnt -n "$dir" > /dev/null; then
     if [ ! -f "$image" ]; then
-      truncate -s "${loop_gb}G" "$image"
+      truncate -s "${loop_gb}G" "$image.part"
       # shellcheck disable=SC2086
-      $2 "$image" > /dev/null 2>&1
+      $2 "$image.part" > /dev/null 2>&1 || refuse "$2 failed for $1"
+      mv "$image.part" "$image"
     fi
     device=$(sudo losetup --find --show --direct-io=on "$image")
-    sudo mount ${3:+-o "$3"} "$device" "$dir"
+    devices="$devices $device"
+    sudo mount ${3:+-o "$3"} "$device" "$dir" || refuse "$1 could not be mounted"
+    mounted="$mounted $dir"
     sudo chown "$(id -u):$(id -g)" "$dir"
   fi
-  mounted="$mounted $dir"
   grep -q "^$1: " "$out/host.txt" || describe "$1" "$dir"
 }
 if has filesystems || has traces; then
   filesystem ext4 "mkfs.ext4 -q -F" ""
-  filesystem ext4-lazytime "mkfs.ext4 -q -F" "lazytime"
   filesystem xfs "mkfs.xfs -q -f" ""
+fi
+if has traces; then
+  filesystem ext4-lazytime "mkfs.ext4 -q -F" "lazytime"
 fi
 
 # Part 3.
 if has filesystems; then
   rounds_of "$out/runs/filesystems" \
-    "ext4|base|both|$out/mnt/ext4|" \
-    "xfs|base|both|$out/mnt/xfs|" \
-    "ext4-lazytime|base|lignindb|$out/mnt/ext4-lazytime|" \
-    "ext4-lazytime-allocated|exp1|lignindb|$out/mnt/ext4-lazytime|$allocated"
+    "ext4|base|$out/mnt/ext4|" \
+    "ext4-again|base|$out/mnt/ext4|" \
+    "xfs|base|$out/mnt/xfs|"
 fi
 
 # Part 4. One traced run: traced FILE BUILD ENGINE DIRECTORY BACKGROUND THREADS SETTINGS

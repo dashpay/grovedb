@@ -1,28 +1,17 @@
 diff --git a/lignin-store/src/flush/write_back.rs b/lignin-store/src/flush/write_back.rs
-index 3230a373..13444840 100644
+index 3230a373..0cd9b81d 100644
 --- a/lignin-store/src/flush/write_back.rs
 +++ b/lignin-store/src/flush/write_back.rs
-@@ -670,7 +670,10 @@ impl<'s> WriteBack<'s> {
-         let mut round = Round {
-             pass: Pass::default(),
-             oldest_pin: self.stores.versions.oldest_pin(),
--            regroups: self.stores.page_values.is_some(),
-+            // EXPERIMENT (PERF-07-F1): a turn of the loop regroups no
-+            // values where LIGNIN_NO_REGROUP is set.
-+            regroups: self.stores.page_values.is_some()
-+                && !(leave > 0 && std::env::var_os("LIGNIN_NO_REGROUP").is_some()),
-             leave,
-             deferred: BTreeSet::new(),
-             failed: None,
-@@ -713,9 +716,23 @@ impl<'s> WriteBack<'s> {
+@@ -713,9 +713,24 @@ impl<'s> WriteBack<'s> {
          });
          owed.retain(|page, _| !files.rested.contains_key(page));
          round.pass.deferred += files.rested.len();
 +        // EXPERIMENT (PERF-07-F1): a turn of the loop leaves the pending
 +        // values where they are while fewer bytes of them are held than
-+        // LIGNIN_COVER_BYTES and more came since the turn before, so
-+        // that their file and the manifest are synced once for several
-+        // turns.
++        // LIGNIN_COVER_BYTES and more are held than at the turn before,
++        // so that their file and the manifest are synced once for several
++        // turns. A turn that finds no more than the one before covers
++        // what is there.
 +        static HELD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 +        static COVER_FROM: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 +        let cover_from = *COVER_FROM.get_or_init(|| {
@@ -30,7 +19,7 @@ index 3230a373..13444840 100644
 +            asked.and_then(|bytes| bytes.parse().ok()).unwrap_or(0)
 +        });
 +        let held = pool.attached_bytes();
-+        let more_came = held != HELD.swap(held, Ordering::Relaxed);
++        let more_came = held > HELD.swap(held, Ordering::Relaxed);
 +        let put_off = round.leave > 0 && more_came && held < cover_from;
          // The pages that have no pending value are written whatever
          // becomes of the values of the others.

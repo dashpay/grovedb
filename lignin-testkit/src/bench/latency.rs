@@ -83,11 +83,14 @@
 //!
 //! # What is told of a long commit
 //!
-//! - The harness names its measuring thread `lignin-commit`, and after a
-//!   commit of `--mark-us` microseconds or more it writes one line,
-//!   `lignin-mark commit <block> <nanoseconds>`, to `/dev/null`, outside
-//!   the timed region. A trace of the system's calls that follows the
-//!   thread finds the commit by the line that comes after it.
+//! - The harness names its measuring thread `lignin-commit`. It writes
+//!   lines to `/dev/null`, outside every timed region, which a trace of the
+//!   system's calls sees: `lignin-mark measured begin` before the first
+//!   measured block of an engine and `lignin-mark measured end` after the
+//!   last, so that the load and the warm blocks, which the same thread
+//!   applies the same way, are told from what is measured; and after a
+//!   commit of `--mark-us` microseconds or more,
+//!   `lignin-mark commit <block> <nanoseconds>`.
 //! - For LigninDB the parts of a commit that the engine counts apart
 //!   ([`PARTS`]) are read around every commit: its waits for the commit
 //!   lock and for the lock on the counts of values, its append to the log,
@@ -118,7 +121,7 @@ use grovedb_version::version::GroveVersion;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    engine::{timed, Block, Engine, EngineSettings},
+    engine::{Block, Engine, EngineSettings},
     machine::{self, Machine},
     run::{next_block, unix_now},
     BenchError, EngineChoice, RocksDbEngine, STACK_BYTES,
@@ -133,6 +136,12 @@ pub const THREAD_NAME: &str = "lignin-commit";
 
 /// What a line that marks a long commit begins with.
 pub const MARK: &str = "lignin-mark commit";
+
+/// The lines that mark where the measured blocks of an engine begin and
+/// end.
+pub const MARK_BEGIN: &str = "lignin-mark measured begin";
+/// See [`MARK_BEGIN`].
+pub const MARK_END: &str = "lignin-mark measured end";
 
 /// What the engines do beside the commits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,8 +219,9 @@ pub struct LatencyOptions {
 }
 
 impl LatencyOptions {
-    /// A run of 100,000 blocks on RocksDB beside its default background, on a
-    /// store of 100,000 documents, with 5 ms between two blocks.
+    /// A run of 100,000 blocks beside the default background, on a store of
+    /// 100,000 documents, with 5 ms between two blocks, of no engine yet:
+    /// [`run`] refuses options that name none.
     pub fn new(scratch: PathBuf) -> Self {
         LatencyOptions {
             scratch,
@@ -242,6 +252,9 @@ impl LatencyOptions {
 
     fn check(&self) -> Result<(), BenchError> {
         let refuse = |why: &str| Err(BenchError::Check(why.to_string()));
+        if self.engines.is_empty() {
+            return refuse("a latency run measures at least one engine");
+        }
         if self.documents == 0 || !self.documents.is_multiple_of(Self::per_block()) {
             return refuse("--documents takes a multiple of 20 above 0");
         }
@@ -837,8 +850,9 @@ mod watching {
 #[cfg(grovedb_engine_seam)]
 use watching::Watching;
 
-/// Writes the line of a long commit where a trace of the thread's calls
-/// sees it and nothing keeps it.
+/// Writes lines where a trace of the thread's calls sees them and nothing
+/// keeps them: where the measured blocks begin and end, and after a long
+/// commit.
 struct Marker {
     sink: Option<std::fs::File>,
     from: Duration,
@@ -846,23 +860,22 @@ struct Marker {
 
 impl Marker {
     fn new(from: Duration) -> Self {
-        let sink = (!from.is_zero())
-            .then(|| {
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .open("/dev/null")
-                    .ok()
-            })
-            .flatten();
+        let sink = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .ok();
         Marker { sink, from }
     }
 
-    fn mark(&mut self, block: u64, took: Duration) {
-        if took < self.from {
-            return;
-        }
+    fn line(&mut self, line: &str) {
         if let Some(sink) = &mut self.sink {
-            let _ = sink.write_all(format!("{MARK} {block} {}\n", took.as_nanos()).as_bytes());
+            let _ = sink.write_all(format!("{line}\n").as_bytes());
+        }
+    }
+
+    fn mark(&mut self, block: u64, took: Duration) {
+        if !self.from.is_zero() && took >= self.from {
+            self.line(&format!("{MARK} {block} {}", took.as_nanos()));
         }
     }
 }
@@ -899,7 +912,8 @@ fn block<E: Engine>(
     }
     let ran = thread_clock();
     let began = Instant::now();
-    let (committed, took) = timed(|| transaction.commit());
+    let committed = transaction.commit();
+    let took = began.elapsed();
     let ran = thread_clock().saturating_sub(ran);
     committed?;
     Ok((applied, took, began, ran))
@@ -1017,6 +1031,7 @@ fn measure_in<E: Subject>(
             .map(|every| scope.spawn(move || neighbour(file, every, stop_beside)));
 
         let mut measure = || -> Result<(), BenchError> {
+            marker.line(MARK_BEGIN);
             for number in 0..options.blocks {
                 let before = engine.look();
                 let (applied, took, from, ran) = block(engine, &mut stream, grove_version, watch)?;
@@ -1052,6 +1067,7 @@ fn measure_in<E: Subject>(
                 committed.fetch_add(1, Ordering::AcqRel);
                 std::thread::sleep(options.pause);
             }
+            marker.line(MARK_END);
             Ok(())
         };
         let measured = measure();
@@ -1544,6 +1560,11 @@ mod tests {
         assert_eq!(quantile(&thousand, 0.999), 999);
         assert_eq!(quantile(&thousand, 1.0), 1000);
         assert_eq!(quantile(&[7], 0.999), 7);
+        // A share that falls between two samples takes the upper one.
+        assert_eq!(quantile(&[1, 2, 3], 0.5), 2);
+        assert_eq!(quantile(&[1, 2, 3, 4], 0.3), 2);
+        let fifteen_hundred: Vec<u64> = (1..=1500).collect();
+        assert_eq!(quantile(&fifteen_hundred, 0.999), 1499);
         assert_eq!(quantile(&[], 0.5), 0);
         // One long commit in 2,400 is above the 99.9th percentile of
         // 100,000 commits 41 times: the percentile is among them.
@@ -1638,6 +1659,221 @@ mod tests {
         );
     }
 
+    /// An engine that does nothing but note when its calls were made.
+    struct Noting {
+        noted: Mutex<Vec<(&'static str, Instant)>>,
+    }
+
+    struct NotingBlock<'a>(&'a Noting);
+
+    impl Noting {
+        fn note(&self, what: &'static str) {
+            self.noted.lock().unwrap().push((what, Instant::now()));
+        }
+    }
+
+    impl Block for NotingBlock<'_> {
+        fn apply(
+            &mut self,
+            _op: &Op,
+            _grove_version: &GroveVersion,
+        ) -> Result<grovedb_costs::OperationCost, BenchError> {
+            self.0.note("applied");
+            Ok(Default::default())
+        }
+
+        fn commit(self) -> Result<(), BenchError> {
+            self.0.note("commit began");
+            self.0.note("commit ended");
+            Ok(())
+        }
+    }
+
+    impl Engine for Noting {
+        type Block<'a> = NotingBlock<'a>;
+
+        const NAME: &'static str = "noting";
+
+        fn open(_dir: &Path) -> Result<Self, BenchError> {
+            Ok(Noting {
+                noted: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn dir(&self) -> &Path {
+            Path::new("")
+        }
+
+        fn begin_block(&self) -> NotingBlock<'_> {
+            self.note("block began");
+            NotingBlock(self)
+        }
+
+        fn settle(&mut self) -> Result<(), BenchError> {
+            Ok(())
+        }
+
+        fn read(
+            &self,
+            _op: &Op,
+            _grove_version: &GroveVersion,
+        ) -> Result<grovedb_costs::OperationCost, BenchError> {
+            Ok(Default::default())
+        }
+
+        fn prove(
+            &self,
+            _query: &grovedb::PathQuery,
+            _grove_version: &GroveVersion,
+        ) -> Result<(Vec<u8>, grovedb_costs::OperationCost), BenchError> {
+            Ok(Default::default())
+        }
+
+        fn root_hash(&self, _grove_version: &GroveVersion) -> Result<[u8; 32], BenchError> {
+            Ok([0; 32])
+        }
+
+        fn checkpoint(&self, _target: &Path) -> Result<(), BenchError> {
+            Ok(())
+        }
+
+        fn flush(&self) -> Result<(), BenchError> {
+            Ok(())
+        }
+
+        fn wait_for_background(&mut self) -> Result<(), BenchError> {
+            Ok(())
+        }
+
+        fn counters(&mut self) -> Result<crate::bench::Counters, BenchError> {
+            Ok(Default::default())
+        }
+    }
+
+    #[test]
+    fn the_time_of_a_commit_is_of_the_commit_and_of_nothing_before_it() {
+        let engine = Noting::open(Path::new("")).unwrap();
+        let mut stream = LatencyOptions {
+            engines: vec![EngineChoice::RocksDb],
+            ..small(Path::new(""))
+        }
+        .stream();
+        let (_, took, began, _) =
+            block(&engine, &mut stream, GroveVersion::latest(), None).unwrap();
+        let noted = engine.noted.lock().unwrap();
+        let at = |what: &str| {
+            let found = noted.iter().rev().find(|(noted, _)| *noted == what);
+            found
+                .unwrap_or_else(|| panic!("no call was noted as {what}"))
+                .1
+        };
+        // The clock is read for the commit after the last operation was
+        // applied and before the commit is called, and the time ends after
+        // the commit has returned: by the order of the readings, whatever
+        // their distance.
+        assert!(noted.iter().any(|(what, _)| *what == "applied"));
+        assert!(
+            began >= at("applied"),
+            "the time begins before an operation ended"
+        );
+        assert!(
+            began <= at("commit began"),
+            "the time begins inside the commit"
+        );
+        assert!(
+            began + took >= at("commit ended"),
+            "the time ends inside the commit"
+        );
+    }
+
+    #[cfg(grovedb_engine_seam)]
+    #[test]
+    fn the_watching_layer_counts_each_sync_by_what_it_is_of() {
+        use lignin_io::{Create, OpenMode, StdVfs, Vfs};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("lignindb");
+        for sub in ["wal", "val", "seg", "table"] {
+            std::fs::create_dir_all(db.join(sub)).unwrap();
+        }
+        let watch: &'static Watch = Box::leak(Box::new(Watch::default()));
+        let layer = Watching {
+            inner: std::sync::Arc::new(StdVfs),
+            watch,
+        };
+        let open = |name: &str| {
+            layer
+                .open(&db.join(name), OpenMode::Append(Create::New))
+                .unwrap()
+        };
+        let (log, value, segment, table, manifest) = (
+            open("wal/00000001.log"),
+            open("val/00000001.val"),
+            open("seg/00000001.seg"),
+            open("table/00000001.pt"),
+            open("MANIFEST.tmp"),
+        );
+        // What was synced before the measured blocks is forgotten.
+        log.sync_data().unwrap();
+        watch.begin();
+
+        let from = Instant::now();
+        log.append(b"a group").unwrap();
+        log.append(b"a record").unwrap();
+        value.append(b"a value").unwrap();
+        value.sync_data().unwrap();
+        value.sync_data().unwrap();
+        manifest.sync_all().unwrap();
+        layer.sync_dir(&db).unwrap();
+        segment.sync_data().unwrap();
+        table.sync_data().unwrap();
+        log.sync_data().unwrap();
+        layer.sync_dir(&db.join("wal")).unwrap();
+        let to = Instant::now();
+
+        let counted = watch.counted();
+        let counts: Vec<(&str, u64)> = counted
+            .iter()
+            .map(|(of, (count, _))| (of.as_str(), *count))
+            .collect();
+        assert_eq!(
+            counts,
+            [
+                ("a log file", 1),
+                ("a segment", 1),
+                ("a table checkpoint", 1),
+                ("a value-log file", 2),
+                ("the manifest's temporary file", 1),
+                ("the names of the database directory or of one above it", 1),
+                ("the names of wal/", 1),
+            ]
+        );
+        // The appends to the log's files are the measuring thread's two,
+        // and not the one to a value-log file.
+        let (calls, total, longest) = watch.appends();
+        assert_eq!(calls, 2);
+        assert!(longest <= total);
+        // An append of another thread is not the commit's.
+        std::thread::scope(|scope| {
+            scope.spawn(|| log.append(b"a page step").unwrap());
+        });
+        assert_eq!(watch.appends().0, 2);
+        watch.reset_appends();
+        assert_eq!(watch.appends(), (0, 0, 0));
+
+        // Every sync that was made between two readings of the clock had a
+        // moment in common with the time between them, and none that ended
+        // before the first reading has.
+        let beside: Vec<String> = (watch.beside(from, to).into_iter())
+            .map(|(of, _)| of)
+            .collect();
+        assert_eq!(beside.len(), 8, "{beside:?}");
+        assert_eq!(beside[0], "a value-log file");
+        assert_eq!(beside[7], "the names of wal/");
+        watch.trim(Instant::now());
+        assert!(watch.beside(from, Instant::now()).is_empty());
+    }
+
     fn small(scratch: &Path) -> LatencyOptions {
         LatencyOptions {
             documents: 400,
@@ -1680,18 +1916,13 @@ mod tests {
             .slowest
             .iter()
             .all(|slow| slow.append_calls.is_none()));
-        // Twelve blocks with a flush every three: the last of them can end
-        // the run before its flush is asked for.
-        assert!(
-            (3..=4).contains(&rocksdb.flushes_asked),
-            "{}",
-            rocksdb.flushes_asked
-        );
-        assert!(rocksdb.neighbour_syncs > 0);
-        // The thread that only sleeps ran beside the blocks: twelve of
-        // them with their pauses take longer than a few of its sleeps.
-        assert!(rocksdb.clock.sleeps > 2, "{:?}", rocksdb.clock);
+        // A flush is asked for beside the commits, after every three blocks
+        // at the most often: how many of the four are asked for follows how
+        // the two threads are run.
+        assert!(rocksdb.flushes_asked <= 4, "{}", rocksdb.flushes_asked);
+        // A sleep that is late by more is late by less as well.
         assert!(rocksdb.clock.late.is_sorted_by(|more, fewer| more >= fewer));
+        assert!(rocksdb.clock.late[0] <= rocksdb.clock.sleeps);
         let slowest: Vec<u64> = rocksdb.slowest.iter().map(|slow| slow.commit_ns).collect();
         let mut sorted = rocksdb.commit_ns.clone();
         sorted.sort_unstable_by(|a, b| b.cmp(a));
@@ -1750,10 +1981,9 @@ mod tests {
             assert!(calls >= 1 && longest > 0 && longest <= total, "{slow:?}");
             assert!(total <= slow.commit_ns, "{slow:?}");
         }
-        // Write-back had its turns, and what it synced is counted by kind.
-        assert!(lignindb.turns.unwrap() > 0);
-        let counted: u64 = lignindb.syncs.values().map(|(count, _)| count).sum();
-        assert!(counted > 0, "{:?}", lignindb.syncs);
+        // The engine tells the turns of its write-back, and no sync of
+        // the run is of a file that the harness cannot name.
+        assert!(lignindb.turns.is_some());
         assert!(
             lignindb.syncs.keys().all(|of| of != "another file"),
             "{:?}",

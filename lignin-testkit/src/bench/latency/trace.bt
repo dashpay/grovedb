@@ -7,19 +7,24 @@
 // (`traced.sh` finds it), or 0 for every thread of the process. Lines:
 //
 //   OFFCPU  a followed thread was off a processor for OFF_US or more, outside
-//           a sleep it asked for: when, its state when it left, which thread
-//           woke it, the kernel stack and the user stack it left with, and
-//           the kernel stack of the waking.
+//           a sleep it asked for: when, its state when it left, the file
+//           system of the file it was writing (0,0 outside a write), which
+//           thread woke it, the kernel stack and the user stack it left
+//           with, and the kernel stack of the waking.
 //   WRITE   a write call of a followed thread that took LONG_US or more, and
 //           of which file.
-//   MARK    the line the harness writes after a long commit.
+//   MARK    a line the harness writes: where the measured blocks begin and
+//           end, and after a long commit. It names the thread that wrote it.
 //   SYNC    an fsync or fdatasync of any thread of the process that took
-//           LONG_US or more, and of which file.
-//   JBD2    a commit of an ext4 journal with 2 jiffies or more in its locked,
-//           flushing and logging phases together (times in jiffies).
+//           LONG_US or more, or that waited for a commit of an ext4 journal
+//           however long it took: of which file, and the number of the
+//           journal's transaction it waited for (0 if it waited for none).
+//   JSTART  an ext4 journal begins the commit of a transaction.
+//   JEND    it has ended it.
 //   BLK     a request to a block device that took LONG_US or more.
 //
-// A file is named by its directory and its own name.
+// A file is named by its directory and its own name, and a file system by
+// its device, major and minor.
 
 BEGIN { printf("tracing pid %d thread %d from %d us, off a processor from %d us\n", $1, $4, $2, $3); }
 
@@ -57,8 +62,9 @@ tracepoint:sched:sched_switch
   $t = args->next_pid;
   $d = (nsecs - @off[$t]) / 1000;
   if ($d >= $3) {
-    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld thread=%s/%d woken_by=%s/%d\n",
-           @off[$t], nsecs, $d, @offstate[$t], @offcomm[$t], $t, @wcomm[$t], @wtid[$t]);
+    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d woken_by=%s/%d\n",
+           @off[$t], nsecs, $d, @offstate[$t], @wdev[$t] >> 20, @wdev[$t] & 0xfffff,
+           @offcomm[$t], $t, @wcomm[$t], @wtid[$t]);
     printf(" left at:\n%s", @offk[$t]);
     printf(" called from:\n%s", @offu[$t]);
     printf(" woken at:\n%s\n", @wk[$t]);
@@ -75,8 +81,9 @@ kprobe:vfs_write
   @wlen[tid] = arg2;
   @wname[tid] = str($f->f_path.dentry->d_name.name);
   @wdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
+  @wdev[tid] = $f->f_inode->i_sb->s_dev;
   if (@wname[tid] == "null") {
-    printf("MARK at=%llu %s", nsecs, str(uptr(arg1), arg2));
+    printf("MARK at=%llu tid=%d %s", nsecs, tid, str(uptr(arg1), arg2));
   }
 }
 
@@ -85,10 +92,11 @@ kretprobe:vfs_write
 {
   $d = (nsecs - @w[tid]) / 1000;
   if ($d >= $2) {
-    printf("WRITE begin=%llu end=%llu us=%llu len=%llu by=%s/%d file=%s/%s\n",
-           @w[tid], nsecs, $d, @wlen[tid], comm, tid, @wdir[tid], @wname[tid]);
+    printf("WRITE begin=%llu end=%llu us=%llu len=%llu by=%s/%d dev=%d,%d file=%s/%s\n",
+           @w[tid], nsecs, $d, @wlen[tid], comm, tid, @wdev[tid] >> 20, @wdev[tid] & 0xfffff,
+           @wdir[tid], @wname[tid]);
   }
-  delete(@w[tid]); delete(@wlen[tid]); delete(@wname[tid]); delete(@wdir[tid]);
+  delete(@w[tid]); delete(@wlen[tid]); delete(@wname[tid]); delete(@wdir[tid]); delete(@wdev[tid]);
 }
 
 kprobe:vfs_fsync_range
@@ -98,7 +106,14 @@ kprobe:vfs_fsync_range
   @s[tid] = nsecs;
   @sname[tid] = str($f->f_path.dentry->d_name.name);
   @sdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
+  @sdev[tid] = $f->f_inode->i_sb->s_dev;
+  @stx[tid] = 0;
 }
+
+// The transaction of the journal that a sync waits for the commit of.
+kprobe:jbd2_log_wait_commit
+/@s[tid]/
+{ @stx[tid] = arg1; }
 
 kretprobe:vfs_fsync_range
 /@s[tid]/
@@ -106,21 +121,24 @@ kretprobe:vfs_fsync_range
   $d = (nsecs - @s[tid]) / 1000;
   @syncs[@sdir[tid]] = count();
   @sync_us[@sdir[tid]] = hist($d);
-  if ($d >= $2) {
-    printf("SYNC begin=%llu end=%llu us=%llu by=%s/%d file=%s/%s\n",
-           @s[tid], nsecs, $d, comm, tid, @sdir[tid], @sname[tid]);
+  if ($d >= $2 || @stx[tid] != 0) {
+    printf("SYNC begin=%llu end=%llu us=%llu by=%s/%d dev=%d,%d transaction=%d file=%s/%s\n",
+           @s[tid], nsecs, $d, comm, tid, @sdev[tid] >> 20, @sdev[tid] & 0xfffff, @stx[tid],
+           @sdir[tid], @sname[tid]);
   }
-  delete(@s[tid]); delete(@sname[tid]); delete(@sdir[tid]);
+  delete(@s[tid]); delete(@sname[tid]); delete(@sdir[tid]); delete(@sdev[tid]); delete(@stx[tid]);
 }
 
-tracepoint:jbd2:jbd2_run_stats
+tracepoint:jbd2:jbd2_start_commit
 {
-  if (args->locked + args->flushing + args->logging >= 2) {
-    printf("JBD2 at=%llu dev=%d,%d transaction=%d wait=%lu request_delay=%lu running=%lu locked=%lu flushing=%lu logging=%lu handles=%u blocks=%u logged=%u\n",
-           nsecs, args->dev >> 20, args->dev & 0xfffff, args->tid, args->wait, args->request_delay,
-           args->running, args->locked, args->flushing, args->logging, args->handle_count,
-           args->blocks, args->blocks_logged);
-  }
+  printf("JSTART at=%llu dev=%d,%d transaction=%d\n",
+         nsecs, args->dev >> 20, args->dev & 0xfffff, args->transaction);
+}
+
+tracepoint:jbd2:jbd2_end_commit
+{
+  printf("JEND at=%llu dev=%d,%d transaction=%d\n",
+         nsecs, args->dev >> 20, args->dev & 0xfffff, args->transaction);
 }
 
 tracepoint:block:block_rq_issue { @rq[args->dev, args->sector] = nsecs; }
@@ -141,6 +159,6 @@ END
 {
   clear(@pausing); clear(@off); clear(@offk); clear(@offu); clear(@offstate); clear(@offcomm);
   clear(@wcomm); clear(@wtid); clear(@wk);
-  clear(@w); clear(@wlen); clear(@wname); clear(@wdir);
-  clear(@s); clear(@sname); clear(@sdir); clear(@rq);
+  clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
+  clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@rq);
 }
