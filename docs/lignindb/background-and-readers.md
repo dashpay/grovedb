@@ -1,8 +1,8 @@
 # Background work and readers beside the writer
 
-LigninDB task PERF-07 ([plan](https://github.com/dashpay/grovedb/issues/1052)).
+LigninDB tasks PERF-07 and PERF-07-F1 ([plan](https://github.com/dashpay/grovedb/issues/1052)).
 
-This document says which parts of a commit's time the engine counts apart, what keeps write-back's placing of values off the thread of a commit, how commits beside background work and readers beside a writer are measured, and what the measurements gave. The rules it names are those of [transactions.md](transactions.md); the code is `lignindb::commit`, `lignin_store::flush` and `lignin_store::cache`.
+This document says which parts of a commit's time the engine counts apart, what keeps write-back's placing of values off the thread of a commit, how commits beside background work and readers beside a writer are measured, what the measurements gave, and what a long commit of a block waits for in the system (section 3.5). The rules it names are those of [transactions.md](transactions.md); the code is `lignindb::commit`, `lignin_store::flush` and `lignin_store::cache`.
 
 ## 1. The thread of a commit
 
@@ -41,6 +41,24 @@ The tests of `lignindb/src/db/tests/held.rs` hold each kind of sync that the bac
 The processors of the machines below are hyperthreads: two of them can be on one core. The control row is what such a machine gives threads that share nothing.
 
 Neither measurement asserts anything of a time.
+
+**The commit of a block at a pace, on both engines (PERF-07-F1).** `lignin-bench latency` (`lignin_testkit::bench::latency`) drives each engine it is given, one after the other in one run and each in a fresh database, with one stream of the reference workload's shape: the documents are loaded back to back, the database is opened again under the run's background, 200 blocks are applied untimed, and then the measured blocks, with a pause after every commit (5 ms unless the run says otherwise). A run whose engines end at different root hashes fails.
+
+- The time of a commit is an `Instant` around the commit of the block's transaction. A percentile of a run is a sample of it: the smallest with that share of the samples at or below it.
+- The measuring thread's own processor clock is read around each commit as well, so a commit's time is also given as what its thread was off a processor for. For LigninDB the six counts of section 1 are read around each commit.
+- The backgrounds are `quiet` and `heavy` as above, and `default`. GroveDB opens RocksDB with fixed options, so under `heavy` the harness asks RocksDB for a flush of its memtables from a second thread every ten blocks. Under `quiet` LigninDB keeps every block and every log file it writes, about 10 GB for 100,000 blocks.
+- Beside the measured blocks a thread of the harness sleeps for half a millisecond at a time and counts the sleeps that were late by 0.2, 1, 5 and 20 ms or more: what the machine does to a thread that waits for nothing. A percentile of a commit of a millisecond is read against it.
+
+**What a commit waits for** is read from the system, on Linux, with `bpftrace` (`lignin-testkit/src/bench/latency/trace.bt`, run by `traced.sh` beside a latency run). The measuring thread has a name of its own. Each time it leaves a processor outside its pauses, the script keeps the kernel stack and the user stack it leaves with, and when the thread is back after 0.2 ms or more it prints both, with the thread that woke it and the kernel stack of the waking. It prints every sync of the process that took a millisecond or more, with the file's directory and name, every write of the measuring thread that took as long, and every commit of an ext4 journal of 2 ms or more. After a commit of 2 ms or more the harness writes a line to `/dev/null`, which the script prints, so a commit and what came before it are found by their order in one stream. `waits.py` makes its tables from such a trace: the waits of the measuring thread by what they were for, and for the waits in a write to a file of the log, the syncs that were under way at a moment of the wait.
+
+**One command makes every table of section 3.5**: `lignin-testkit/src/bench/latency/campaign.sh OUT`, from a clean checkout, writes them to `OUT/tables.md` with the machine and the builds. It measures the file system that `OUT` is on. Its header says what it wants installed and what each part does. In short:
+
+1. It makes three builds from clean checkouts of the checkout's commit, each in a target directory of its own and named by commit and sha256: the base, and the base with each of the two patches of section 3.5.3.
+2. On `OUT`'s file system it makes rounds of four runs, one after the other, under each background: the base and the base under a second name, each with both engines in the one run, and the two experiments on LigninDB. The second name is the control: two runs of one binary. From round to round the order of the four is turned by one, and so is the order of the two engines.
+3. It makes the same rounds on ext4, on ext4 with `lazytime` and on XFS, three file systems that it makes in files under `OUT` and mounts through loop devices.
+4. It makes the traced runs: each engine under each background, the experiments, and LigninDB on each of the three file systems.
+
+`pairs.sh` in the same directory is for a machine that other work shares: it makes two runs at a time, each on a file system of its own, so that both are made under what the machine does at that time, and has the two exchange their file systems from round to round.
 
 ## 3. What the measurements gave
 
@@ -148,14 +166,87 @@ Pages read through a snapshot (`scaling.rs`), on the 48 processors beside a writ
 - **A snapshot and an operation alone fall off past 32 threads**: 35% at 48, and fewer of them in all than at 32 (479 against 745 million in a second). One pair takes 34 ns alone and 98 ns at 48 threads; a `get` takes 13 µs. When that row was measured, a thread began its look for a vacant cell for a pin at its number times eight in a first chunk of 256 cells (`lignindb/src/snapshot/slots.rs`), which gave 32 cells to begin at, so more than 32 threads could not all begin at a cell of their own. Whether that is what the row shows was not isolated. A thread now begins at the cell that the bits of its number in reverse order name, so the first 256 threads each begin at a cell of their own, the first 32 eight cells apart as before and the first 64 four. Measured before and after that change on another machine of 48 processors (the same measurement, five rounds of each build in turn, the median of each row), beside the writer at 48 threads: a snapshot and an operation alone, 745 million in a second against 359 million, which is 64% of one reader's rate for a second of its processor time against 31%; four pages of its own, 143 million against 119; one page that all read and three of its own, 126 million against 107. At 16 and at 32 threads the two builds make the same (618 million pairs a second at 32). On that machine the fall past 32 threads follows the cells to begin at; the row above was measured on another machine and was not measured again.
 - **Readers that load nearly every page they read do not scale.** With `POOL=128` and `SPREAD=256` (37.7 million pages loaded against 3,612 found in the pool, over the runs together), two to 48 readers together make 170,000 to 310,000 reads of four pages in a second, where one alone makes 157,000 to 192,000, and the writer beside two readers or more makes 940 to 1,700 of its 2,000 commits. A fixed frame is evicted under one lock for the whole pool, which is held while the frame's part of the table is locked and the lanes are looked through (`BufferPool::evict`). With `POOL=8192` for the same pages, where one page in nine thousand is loaded, the readers keep 96% at 16 threads, 80% at 32 and 69% at 48 beside the writer, and 96%, 81% and 63% with none.
 
+### 3.5 The commit of a block at a pace, and what a long commit waits for
+
+PERF-07-F1. 3.2 left open why an append to the log waits while files other than the log are synced, and whether RocksDB's commits on the same machine wait as well.
+
+**The tables of this section are those of `campaign.sh` on a machine of the plan's reference class** (16 dedicated processors, a local NVMe disk, ext4), **and each has its place below, marked, until that run is made.** No figure of another machine is in this section. The mechanism of 3.5.2 was traced in a Linux guest (Linux 6.8, ext4 with `data=ordered` and `relatime`) of a machine that ran other work beside it; the counts and the times of that trace are in the pull request of the task, as figures of that guest.
+
+#### 3.5.1 Both engines in one run
+
+> **Place of a table of the reference class:** "The commit of a block, on the file system of the runs" of `tables.md`: for each engine and background, the median, the 99th and the 99.9th percentile and the longest commit of each run of 100,000 blocks, the same of the commit's time off a processor, and the median of the runs with their range.
+
+#### 3.5.2 What a long commit waits for
+
+**An append to the log waits where the file system stamps the log's file with the time of the change.** The thread is in `LogStore::append_group`, in the one `write` of the commit's group. It leaves the processor with this stack, innermost first:
+
+```text
+do_get_write_access
+jbd2_journal_get_write_access
+__ext4_journal_get_write_access
+ext4_reserve_inode_write
+__ext4_mark_inode_dirty
+ext4_dirty_inode
+__mark_inode_dirty
+generic_update_time
+file_modified
+ext4_buffered_write_iter
+ext4_file_write_iter
+vfs_write
+```
+
+and is woken at `journal_end_buffer_io_sync`, from the end of a request to the device. So the write has not copied a byte yet. It is at `file_modified`, where a write gives the file the time of its change. ext4 keeps that change of the inode in its journal. The block of the inode table that holds the inode is in the transaction that the journal is committing, the journal is writing that block to the device, and until that write has ended nothing may change the block: the thread waits for its end, with its own change of the journal begun. A commit of the journal is what a sync asks for, of whatever file.
+
+**Behind which sync.** In the trace, nearly every such wait of a millisecond or more had a sync of the process under way at a moment of it, made by the thread of write-back or by the cleaner's, and the syncs were of every kind those threads make: of a value-log file, of the manifest's temporary file, of the names of the database directory, of a segment, of a log file, of a table checkpoint. The syncs beside a wait were long ones for their file system.
+
+**It is the file's time and not its growth.** All but a few of those waits were at `file_modified`, before the write's data. A few were at the write's end (`ext4_da_write_end`), where ext4 records the file's new length, and waited there for a transaction of the journal that was being closed (`wait_transaction_locked`).
+
+**Two more ways into the journal from the same call.** Where the journal has no room for the change, the writing thread makes room itself, and waits for the device there: `__jbd2_log_wait_for_space`, `jbd2_log_do_checkpoint`, and under them the writing of a buffer, the journal's superblock (`jbd2_write_superblock`) and a flush of the device (`blkdev_issue_flush`). And where the journal's running transaction is being closed for its commit, a write that needs it waits for the next one (`wait_transaction_locked`).
+
+**RocksDB's commits meet the same wait, and seldom.** The `write` of a commit to RocksDB's log has the same stack in the trace, and so has the `fallocate` with which RocksDB sets room aside for its log. What differs is how often the journal is committing when the write comes. GroveDB asks RocksDB for no sync at a commit (`WriteOptions::default()`), and the syncs that RocksDB made in the trace were those of its background work: of table files, of log files, of its own manifest and of the names of its directory. LigninDB's background threads sync several files for every block that is committed at this pace: of each run, `tables.md` gives the syncs a block by what they are of.
+
+**A read waits the same way.** A `pread64` of the measuring thread, during the operations of a block and seldom in a commit, has the stack from `ext4_dirty_inode` down, under `touch_atime` and `filemap_read`: with `relatime`, a file that was changed since it was last read gets a new time of access at the next read, and a segment that is appended to is such a file.
+
+**The locks of the engine.** The commit's thread was also seen to wait for locks that the threads of write-back and of the cleaner gave up: the lock on the counts of live values (`ValueStore::step`), what write-back keeps of commits (`WriteBack::committed`), the log's own lock where a commit asks for the place of its group (`LogStore::next_group`), and less often the pool's and write-back's lists of values to place. A page step appends its record to the log under the lock on the counts, and an append holds the log's lock for its call of the file layer, so an append of another thread that waits as above is one way to such a wait. Which thread held each lock, and for what, the trace does not say: it has the thread that woke the commit's, which is the one that gave the lock up last.
+
+**The allocator.** During the operations of a block, and less often in a commit, the measuring thread waited for the lock of the C library's allocator (`__lll_lock_wait_private` under `malloc`, `realloc` and `free`), woken by the threads of the cleaner and of write-back. The harness is built with the system's allocator.
+
+> **Place of the tables of the reference class:** "What the measuring thread waited for, in the traced runs" of `tables.md`, for LigninDB and RocksDB under each background: the waits by what they were for, with their number, their time in all and the longest; and for the waits in a write to a file of the log, the syncs under way at a moment of the wait.
+
+#### 3.5.3 Three experiments
+
+Each is held to one rule: it lowers the 99.9th percentile of LigninDB's commit by more than two runs of one binary differ. `tables.py` reads that as: under one background, the median of the experiment's runs is below the median of the control's runs by more than the control's runs are apart, the highest of them less the lowest. The control is the base under its two names.
+
+**The two experiments on the engine are patches beside the harness, and neither is in the engine.** A campaign builds each on the base. Each is a switch of the environment around a change that is made to be measured: no failure of the file layer is handled in it as the engine handles one, and no test holds it. What a change that is kept would have to bring is in section 4.
+
+1. **The log's file allocated ahead** (`log-allocated-ahead.patch`, `LIGNIN_LOG_ALLOCATE=fallocate`). When a log file is created, its whole target length is allocated (`fallocate`), the file has that length from then on, and an append is written at the place the log ends at and extends nothing. What 3.5.2 says of it before any table: the append waits where the file's time is stamped, and a file that is allocated ahead has its time stamped like any other, so this change by itself leaves the wait where it is. It can take the second way away, the one at the write's end. With `lazytime`, where the file system keeps a change of a time in memory and out of the journal, the two together are the case to measure, and a campaign measures it (the rows `ext4-lazytime` and `ext4-lazytime-allocated`).
+
+   > **Place of a table of the reference class, and of one sentence, kept or not and why:** "The control and the two experiments", row `allocated`, and "The log allocated ahead, on ext4 with `lazytime`" of `tables.md`.
+
+2. **Fewer syncs in a turn of write-back** (`fewer-syncs.patch`, `LIGNIN_COVER_BYTES=1048576`). A turn of write-back's loop appends the pending values to the value log, syncs that file and replaces the manifest, which is a sync of the manifest's temporary file and one of the directory's names, before it gives a page a pointer to a value. With the patch a turn of the loop leaves the pending values where they are while fewer than a megabyte of them are held and more came since the turn before, so one such set of three syncs covers the values of many blocks. The values that a regrouping copies, and what the cleaner moves, are covered as before: the patch does not reach them, and the cleaner is outside this task.
+
+   > **Place of a table of the reference class, and of one sentence, kept or not and why:** "The control and the two experiments", row `covered`, of `tables.md`, with the syncs a block of the traced runs `lignindb-*` and `covered-*`.
+
+3. **A second file system.** XFS beside ext4, both made by the campaign in files of the measured file system, so that the two differ in the file system and in nothing under it. No code.
+
+   > **Place of a table of the reference class, and of one sentence:** "A second file system: XFS against ext4" of `tables.md`, with the waits of the traced runs `lignindb-*-on-ext4` and `lignindb-*-on-xfs`.
+
 ## 4. What is open
 
-1. **A slow append to the log** (3.2). On one of the two machines it waits inside the file layer's call beside syncs of other files; why the system holds the call was not found, and nothing here is built against it. Whether an append waits for a flush on a device whose flush takes milliseconds is to be measured on such a device: the file layer of the harness makes a sync longer, and not the file system's own part of it.
-2. **Evictions are one at a time** (3.4), for readers and for the writer, which takes the frames of its copies from the same pool. It was measured on a store far smaller than the machine's memory, where the system's cache is taken to answer the reads of a file; that was not measured.
-3. **The cells that threads begin at when they look for a pin's cell are 32** (3.4).
+1. **A slow append to the log** (3.2, 3.5). It waits inside the file layer's call where ext4 stamps the file's time, while the journal commits for a sync of another file (3.5.2), and nothing in the engine is built against it. **The tables of 3.5 are to be made on a machine of the reference class** with `campaign.sh`, and with them the three sentences of 3.5.3. Whether an append waits for a flush on a device whose flush takes milliseconds is to be measured on such a device: the file layer of the harness makes a sync longer, and not the file system's own part of it.
+2. **What a kept form of the log allocated ahead has to bring**, if a table of the reference class earns it. The patch keeps the handle's own count of where the file ends and writes there; a kept form has to say what a failed append leaves in a file that is longer than what was appended, where today the engine reads the file's length to find out (`LogStore::append_checked`), and what the next session finds of a file that was allocated and not filled. A reader of the log ends at the first record that is not whole, and zeros are no record (`log-format.md`, LG31), so a tail that was allocated and never written ends the log where it should with no change of the format; a test and the crash campaigns have to show it, and the fault-injecting file layer has to model the call.
+3. **The locks a commit waits for** (3.5.2): which thread holds the lock on the counts of live values, write-back's record of commits and the log's lock for milliseconds, and during what.
+4. **The allocator's lock** (3.5.2), which the committing thread waits for beside the cleaner and write-back. Which allocations and frees meet was not looked for, nor what another allocator makes of it.
+5. **A read that changes its file's time of access** (3.5.2). A file layer that opens its files with `O_NOATIME`, or a file system mounted with `noatime`, has no such change; neither was measured.
+6. **Evictions are one at a time** (3.4), for readers and for the writer, which takes the frames of its copies from the same pool. It was measured on a store far smaller than the machine's memory, where the system's cache is taken to answer the reads of a file; that was not measured.
+7. **The cells that threads begin at when they look for a pin's cell are 32** (3.4).
 
 ## 5. Choices made here that the plan left open
 
 1. **"Unaffected" is read as within the range of the quiet setting from run to run**, for the 99th percentile of the commit of a block, and the time a commit's thread spends off a processor is reported beside it.
 2. **A committer still tries the page steps of the values that a private copy held back.** Left to write-back alone, such a value is placed only by a pass that finds its page with no copy, and nothing has a pass come at such a moment while blocks are applied back to back.
 3. **The measurements are tests that a normal run leaves out**, in `lignin-testkit`, and print tables.
+4. **Both engines are paced by the clock** (PERF-07-F1): the same pause after every commit, whatever the engine. LigninDB's write-back is woken by each commit, and a report gives the turns of its loop a block, so that "a block a turn" can be read off it and is not taken for granted.
+5. **A heavy background for RocksDB is a flush asked from a second thread** (PERF-07-F1), every ten blocks. GroveDB opens RocksDB with fixed options, and the harness changes nothing below GroveDB.
+6. **The rule of an experiment is read on medians** (3.5.3): the median of its runs against the median of the control's, and the control's runs apart by their highest less their lowest. With two rounds and two names the control has four runs of LigninDB under a background and an experiment two.
+7. **An experiment on the engine is a patch beside the harness** (3.5.3), built by the campaign on the commit it measures, and not a switch in the engine: a change that no table has earned is in no build that is not made to measure it.
