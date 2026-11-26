@@ -20,7 +20,7 @@ use lignin_io::sim::SimRng;
 
 use super::{
     log::{is_changed, push_changes},
-    Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree, Revision,
+    Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree, Look, Revision,
 };
 
 const V1: FormatVersion = FormatVersion::V1;

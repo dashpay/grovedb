@@ -167,13 +167,25 @@ pub(super) enum Handle<'o> {
 /// as the version `at` of one database has it, and whether that version
 /// holds unlinked records under it, once a read has asked
 /// ([`Opened::node`](Opened::node)).
+///
+/// It is of that version of that database and of no reader: an operation
+/// of any reader of the version resumes from it
+/// ([`Operation::resume`]). It holds no version and no page. A copy
+/// shares the entry and the answer on unlinked records.
 #[derive(Debug, Clone)]
 pub struct Kept {
     subtree: Subtree,
-    entry: Entry,
+    entry: Arc<Entry>,
     database: u64,
     at: CommitVersion,
     unlinked: Arc<Mutex<Option<bool>>>,
+}
+
+impl Kept {
+    /// The subtree that is kept.
+    pub fn subtree(&self) -> Subtree {
+        self.subtree
+    }
 }
 
 impl<'o> Operation<'o> {
@@ -212,7 +224,7 @@ impl<'o> Operation<'o> {
             operation: self,
             records,
             subtree,
-            entry,
+            entry: Arc::new(entry),
             unlinked: Arc::default(),
         }))
     }
@@ -324,21 +336,41 @@ impl<'o> Operation<'o> {
         Ok(found)
     }
 
-    /// Opens a subtree that an earlier operation kept ([`Opened::keep`]).
+    /// Opens a subtree that an earlier operation kept ([`Opened::keep`]):
+    /// one of this reader, or of another reader of the same database.
     /// At the version of the database it was kept at, the entry is the one
     /// that version has, and nothing is read: a subtree leaves with a
     /// commit, which makes another version. At another version, or in
     /// another database, it is looked up again.
+    ///
+    /// In a build with the feature `held_reads`, an entry that is resumed
+    /// is held to the lookup: the subtree is looked up all the same, a
+    /// lookup that fails ends the call with its error, and an entry that
+    /// is not the directory's panics. This crate's own tests hold that a
+    /// resume asks for no page, in a build without the feature.
     pub fn resume(&self, kept: &Kept) -> Result<Option<Opened<'_, 'o>>, ReadError> {
         if (kept.database, kept.at) != (self.database, self.at()) {
             return self.open(kept.subtree);
         }
         let records = self.records.ok_or(ReadError::NoRecords)?;
+        #[cfg(feature = "held_reads")]
+        {
+            let directory = self.directory(&records)?;
+            let stored = directory.open(&self.flat_pages(&records), kept.subtree.as_bytes())?;
+            assert_eq!(
+                stored.as_ref(),
+                Some(&*kept.entry),
+                "the entry of the subtree {:?} that was kept at version {} against the \
+                 directory's at that version",
+                kept.subtree,
+                kept.at.get()
+            );
+        }
         Ok(Some(Opened {
             operation: self,
             records,
             subtree: kept.subtree,
-            entry: kept.entry.clone(),
+            entry: Arc::clone(&kept.entry),
             unlinked: Arc::clone(&kept.unlinked),
         }))
     }
@@ -434,7 +466,7 @@ pub struct Opened<'a, 'o> {
     pub(super) operation: &'a Operation<'o>,
     pub(super) records: Records<'o>,
     subtree: Subtree,
-    entry: Entry,
+    entry: Arc<Entry>,
     /// Whether the version holds a record in the data column under the
     /// subtree, once it was looked up: shared with what the reader keeps
     /// of the subtree ([`Kept`]).

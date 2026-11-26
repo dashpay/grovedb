@@ -2568,14 +2568,16 @@ impl<E: Engine> GroveDb<E> {
             path_query
                 .query_items_at_path(path.as_slice(), grove_version)
                 .and_then(|query_items| {
-                    query_items.ok_or(Error::CorruptedPath(format!(
-                        "prove subqueries v1: path {} should be part of path_query {}",
-                        path.iter()
-                            .map(|a| hex_to_ascii(a))
-                            .collect::<Vec<_>>()
-                            .join("/"),
-                        path_query
-                    )))
+                    query_items.ok_or_else(|| {
+                        Error::CorruptedPath(format!(
+                            "prove subqueries v1: path {} should be part of path_query {}",
+                            path.iter()
+                                .map(|a| hex_to_ascii(a))
+                                .collect::<Vec<_>>()
+                                .join("/"),
+                            path_query
+                        ))
+                    })
                 })
         );
 

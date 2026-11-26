@@ -47,6 +47,11 @@
 //! a second of the readers' own processor time, from
 //! `/proc/thread-self/schedstat`, and the share of a core each reader got.
 //!
+//! The last column of a table is the number of cells that the readers of
+//! the run start at when they look for a vacant cell for a pin or a guard
+//! (`snapshot::slots`): it is the number of readers where each starts at a
+//! cell of its own.
+//!
 //! Every thread of a run waits for one signal, which is given after the
 //! clock was read, so the reads and the commits that are counted are
 //! those that began between that reading and the signal that stops them.
@@ -64,10 +69,11 @@
 //! divided by.
 
 use std::{
+    collections::BTreeSet,
     hint::black_box,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Barrier,
+        Barrier, Mutex, PoisonError,
     },
     thread,
     time::{Duration, Instant},
@@ -76,7 +82,7 @@ use std::{
 use lignin_store::load::LoadBuffers;
 
 use super::store::{page, Changes, Rng, Store};
-use crate::snapshot::Versions;
+use crate::snapshot::{slots::home_of_this_thread, Versions};
 
 const READER_PAGES: u32 = 3;
 const ROOT: u32 = 1;
@@ -151,6 +157,8 @@ struct Run {
     /// The share of a core that a reader got.
     share: Option<f64>,
     commits: f64,
+    /// How many cells the readers start at.
+    cells: usize,
 }
 
 /// Reads for `length` on `readers` threads, beside a writer that makes
@@ -172,12 +180,18 @@ fn run(
     let total = AtomicU64::new(0);
     let cpu_nanos = AtomicU64::new(0);
     let committed = AtomicU64::new(0);
+    let homes = Mutex::new(BTreeSet::new());
     let mut seconds = 0.0;
     thread::scope(|scope| {
         for reader in 0..readers {
             let (start, go, stop) = (&start, &go, &stop);
-            let (total, cpu_nanos) = (&total, &cpu_nanos);
+            let (total, cpu_nanos, homes) = (&total, &cpu_nanos, &homes);
             scope.spawn(move || {
+                let home = home_of_this_thread();
+                homes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(home);
                 let path = path(kind, reader, each);
                 let take = match kind {
                     Kind::ManyPages => READER_PAGES as usize + 1,
@@ -256,6 +270,10 @@ fn run(
         per_cpu_second: measured.then(|| reads / cpu_seconds),
         share: measured.then(|| cpu_seconds / seconds / f64::from(readers)),
         commits: committed.load(Ordering::Relaxed) as f64 / seconds,
+        cells: homes
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
     }
 }
 
@@ -366,9 +384,9 @@ fn reader_throughput_by_the_number_of_readers() {
             println!("### {name}, {with}\n");
             println!(
                 "| readers | reads/s | speedup | reads per CPU second of a reader | \
-                 of one reader's | core share % | commits/s |"
+                 of one reader's | core share % | commits/s | cells the readers start at |"
             );
-            println!("| --- | --- | --- | --- | --- | --- | --- |");
+            println!("| --- | --- | --- | --- | --- | --- | --- | --- |");
             // What one reader does alone is what the others are held to.
             let mut alone = None;
             for &readers in &threads {
@@ -384,13 +402,14 @@ fn reader_throughput_by_the_number_of_readers() {
                 let (rate, per_cpu) = alone.expect("measured above");
                 let against = run.per_cpu_second.zip(per_cpu).map(|(now, one)| now / one);
                 println!(
-                    "| {readers} | {:.0} | {:.1} | {} | {} % | {} | {:.0} |",
+                    "| {readers} | {:.0} | {:.1} | {} | {} % | {} | {:.0} | {} |",
                     run.rate,
                     run.rate / rate,
                     optional(run.per_cpu_second, 1.0),
                     optional(against, 100.0),
                     optional(run.share, 100.0),
                     run.commits,
+                    run.cells,
                 );
             }
             println!();

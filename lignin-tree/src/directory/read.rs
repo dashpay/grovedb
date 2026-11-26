@@ -6,18 +6,55 @@ use super::{
     error::{DirectoryError, Malformed},
     record::{
         children_key, decode_child, decode_child_key, decode_dropped, decode_header, decode_id,
-        decode_prefix, entry_key, root_key, Child, Dropped, Entry, MerkId, Prefix, RecordKind,
-        HEADER_KEY,
+        decode_prefix, entry_key, names_root, root_key, Child, Dropped, Entry, MerkId, Prefix,
+        RecordKind, HEADER_KEY,
     },
     Directory,
 };
-use crate::flat::{Cursor, FlatPages, FlatTree};
+use crate::flat::{Cursor, FlatPages, FlatTree, Look};
 
 /// A record that is not what its key says, or that does not agree with
 /// another.
 pub(super) fn damaged(key: &[u8], what: &'static str) -> DirectoryError {
     let key = key.to_vec();
     DirectoryError::Damaged { key, what }
+}
+
+/// What the walk of [`Directory::rooted_beside`] makes of an entry.
+enum Seen {
+    /// The entry is passed.
+    Pass,
+    /// The entry's value is read.
+    Read,
+    /// The walk ends with this answer.
+    Answer(Option<Prefix>),
+}
+
+/// The entry under the key `key` of the entries is damaged.
+fn entry_damaged(key: &[u8], what: Malformed) -> DirectoryError {
+    damaged(&[&[RecordKind::Entry.code()][..], key].concat(), what.0)
+}
+
+/// What the walk of [`Directory::rooted_beside`] has at the key `key` of
+/// an entry, before it reads the entry: its answer at an entry at or
+/// beyond `until`, that the entry under `prefix` is passed, and that any
+/// other is read.
+fn beside_key(
+    prefix: &Prefix,
+    until: Option<&Prefix>,
+    back: bool,
+    key: &[u8],
+) -> Result<Seen, DirectoryError> {
+    let beside = decode_prefix(key).map_err(|what| entry_damaged(key, what))?;
+    let beyond = until.is_some_and(|until| match back {
+        false => beside >= *until,
+        true => beside <= *until,
+    });
+    Ok(match (beyond, beside == *prefix) {
+        (true, _) => Seen::Answer(None),
+        (false, true) => Seen::Pass,
+        (false, false) => Seen::Read,
+    })
 }
 
 impl Directory {
@@ -97,11 +134,99 @@ impl Directory {
     /// entry names a root. `None` if there is none that way, or none
     /// before the walk comes to `until` or passes it.
     ///
-    /// It is one seek among the entries and a step for each entry it
+    /// It is one seek among the entries and a walk over the entries it
     /// passes: that of a Merk with no node, of a tree that keeps its data
     /// elsewhere, and one that a drop left. With `until`, which is a
     /// prefix on the side the walk goes to, it passes no entry beyond it.
+    ///
+    /// **What it reads of an entry.** The walk is the flat cursor's
+    /// ([`Cursor::walk`]), which holds a leaf across the entries it shows
+    /// of it. Of the entry under `prefix` itself, and of the first entry
+    /// at or beyond `until`, it reads the key and no value. Of every
+    /// other entry it reads the value, as the pages give it
+    /// ([`FlatPages::read_value`] for one that is kept out of line), and
+    /// of the value the first fourteen bytes: the id, which is not zero,
+    /// and the address of the root ([`names_root`]). An entry that names
+    /// a root is then copied and read whole, for the Merks it is below.
+    ///
+    /// **So an entry that names no root and is damaged behind the address
+    /// of its root is passed as any other**, and no error of this walk
+    /// tells of it. The lookup by its prefix ([`Self::stored`]) and the
+    /// invariant checker ([`Self::check`]) read every entry whole.
+    ///
+    /// In a test build of this crate, and in a build with the feature
+    /// `held_reads`, an answer of this walk is held to a reference walk
+    /// (`Self::rooted_beside_by_steps`), which steps a cursor to each
+    /// entry and reads whole every entry that this walk reads the value
+    /// of. It is made where this walk ended with an answer, and where it
+    /// ends with an answer too and the two differ, the call panics. An
+    /// error of the reference walk is dropped.
     pub fn rooted_beside<P: FlatPages + ?Sized>(
+        &self,
+        pages: &P,
+        prefix: &Prefix,
+        until: Option<&Prefix>,
+        back: bool,
+    ) -> Result<Option<Prefix>, DirectoryError> {
+        let mut cursor = self.tree.cursor_within(&[RecordKind::Entry.code()]);
+        match back {
+            false => cursor.seek(pages, prefix)?,
+            true => cursor.seek_for_prev(pages, prefix)?,
+        }
+        // What the walk ends with where it does not end with the entries.
+        let mut found = Ok(None);
+        cursor.walk(pages, back, |key, raw| {
+            let seen = match raw {
+                None => beside_key(prefix, until, back, key),
+                Some(raw) => self.beside_entry(key, raw),
+            };
+            match seen {
+                Ok(Seen::Pass) => Look::Pass,
+                Ok(Seen::Read) => Look::Value,
+                Ok(Seen::Answer(answer)) => {
+                    found = Ok(answer);
+                    Look::Stop
+                }
+                Err(damage) => {
+                    found = Err(damage);
+                    Look::Stop
+                }
+            }
+        })?;
+        #[cfg(any(test, feature = "held_reads"))]
+        if let Ok(found) = &found
+            && let Ok(by_steps) = self.rooted_beside_by_steps(pages, prefix, until, back)
+        {
+            assert_eq!(
+                *found, by_steps,
+                "the Merk with a node beside {prefix:?} (back: {back}, until {until:?}): the \
+                 walk that holds its leaves against the walk by steps"
+            );
+        }
+        found
+    }
+
+    /// What the walk of [`Self::rooted_beside`] has at the entry `raw`,
+    /// which is stored under `key` and is not the entry the walk began
+    /// under: its answer, or that the entry is passed.
+    fn beside_entry(&self, key: &[u8], raw: &[u8]) -> Result<Seen, DirectoryError> {
+        let damaged = |what: Malformed| entry_damaged(key, what);
+        if !names_root(raw).map_err(damaged)? {
+            return Ok(Seen::Pass);
+        }
+        let entry = Entry::decode(raw.to_vec()).map_err(damaged)?;
+        if self.is_live(&entry) && entry.root().is_some() {
+            let beside = decode_prefix(key).map_err(damaged)?;
+            return Ok(Seen::Answer(Some(beside)));
+        }
+        Ok(Seen::Pass)
+    }
+
+    /// The reference walk of [`Self::rooted_beside`]: a cursor is stepped
+    /// to each entry, and every entry but the one under `prefix` and the
+    /// first at or beyond `until` is copied and read whole.
+    #[cfg(any(test, feature = "held_reads"))]
+    pub(super) fn rooted_beside_by_steps<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
         prefix: &Prefix,

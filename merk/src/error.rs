@@ -218,8 +218,22 @@ pub trait MerkErrorExt {
 
 impl<T> MerkErrorExt for CostResult<T, Error> {
     fn add_context(self, append: impl AsRef<str>) -> Self {
+        self.add_context_with(|| append)
+    }
+}
+
+/// Extension trait for adding context that is made only for an error.
+pub trait MerkErrorLazyExt {
+    /// Calls `append` for an error, and gives the error the context it
+    /// makes as [`MerkErrorExt::add_context`] gives one. `append` is not
+    /// called for a result that is no error.
+    fn add_context_with<S: AsRef<str>>(self, append: impl FnOnce() -> S) -> Self;
+}
+
+impl<T> MerkErrorLazyExt for CostResult<T, Error> {
+    fn add_context_with<S: AsRef<str>>(self, append: impl FnOnce() -> S) -> Self {
         self.map_err(|mut e| {
-            e.add_context(append.as_ref());
+            e.add_context(append().as_ref());
             e
         })
     }
@@ -229,7 +243,7 @@ impl<T> MerkErrorExt for CostResult<T, Error> {
 mod tests {
     use grovedb_costs::{CostResult, CostsExt};
 
-    use super::{Error, MerkErrorExt};
+    use super::{Error, MerkErrorExt, MerkErrorLazyExt};
 
     #[test]
     fn test_add_context_mutates_string_errors() {
@@ -260,6 +274,34 @@ mod tests {
         match err {
             Error::CorruptedData(s) => assert_eq!(s, "data, decode"),
             _ => panic!("expected corrupted data"),
+        }
+    }
+
+    #[test]
+    fn test_cost_result_add_context_with_makes_the_context_for_an_error_only() {
+        let made = std::cell::Cell::new(0);
+        let context = || {
+            made.set(made.get() + 1);
+            format!("path is {}", "a/b")
+        };
+        let fine: CostResult<u8, Error> = Ok(7).wrap_with_cost(Default::default());
+        assert_eq!(fine.add_context_with(context).unwrap().unwrap(), 7);
+        assert_eq!(made.get(), 0);
+
+        let failed: CostResult<u8, Error> =
+            Err(Error::PathKeyNotFound("key".to_string())).wrap_with_cost(Default::default());
+        // The same text as the context that is made beforehand gives.
+        let eager: CostResult<u8, Error> =
+            Err(Error::PathKeyNotFound("key".to_string())).wrap_with_cost(Default::default());
+        let eager = eager.add_context(format!("path is {}", "a/b"));
+        let lazy = failed.add_context_with(context).unwrap().unwrap_err();
+        assert_eq!(made.get(), 1);
+        match (lazy, eager.unwrap().unwrap_err()) {
+            (Error::PathKeyNotFound(lazy), Error::PathKeyNotFound(eager)) => {
+                assert_eq!(lazy, "key, path is a/b");
+                assert_eq!(lazy, eager);
+            }
+            other => panic!("expected path key not found, not {other:?}"),
         }
     }
 

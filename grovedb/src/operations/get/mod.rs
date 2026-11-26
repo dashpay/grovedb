@@ -20,7 +20,7 @@ use grovedb_costs::{
 };
 use grovedb_merk::{
     element::{get::ElementFetchFromStorageExtensions, ElementExt},
-    error::MerkErrorExt,
+    error::MerkErrorLazyExt,
     store::NodeStore,
     tree::combine_hash,
     CryptoHash,
@@ -544,7 +544,7 @@ impl<E: Engine> GroveDb<E> {
         );
 
         Element::get(&merk_to_get_from, key, allow_cache, grove_version)
-            .add_context(format!("path is {}", path))
+            .add_context_with(|| format!("path is {}", path))
             .map_err(|e| e.into())
             .add_cost(cost)
     }
@@ -636,7 +636,7 @@ impl<E: Engine> GroveDb<E> {
                 );
 
                 Element::get(&merk_to_get_from, parent_key, true, grove_version)
-                    .add_context(format!("path is {}", path))
+                    .add_context_with(|| format!("path is {}", path))
                     .map_err(|e| e.into())
             }
             .unwrap_add_cost(&mut cost);

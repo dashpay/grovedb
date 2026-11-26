@@ -268,7 +268,16 @@ enum Mode<'db> {
 
 /// The handle through which a Merk reads and writes the nodes of one
 /// subtree in a LigninDB write transaction.
+///
+/// The handle is one pointer to what it holds (`Held`), a block of its
+/// own: a `Merk` holds its handle in place, and is no larger for what the
+/// handle holds.
 pub struct LigninNodeStore<'db> {
+    held: Box<Held<'db>>,
+}
+
+/// What a [`LigninNodeStore`] holds.
+struct Held<'db> {
     access: &'db (dyn Access + 'db),
     subtree: LigninSubtree,
     mode: Mode<'db>,
@@ -289,22 +298,27 @@ pub struct LigninNodeStore<'db> {
     trees: RefCell<HashSet<NodeKey>>,
     /// Whether the writer of the handle's Merk began with no node, once
     /// the first change set of nodes was staged through the handle
-    /// ([`Self::began_empty`]).
+    /// ([`LigninNodeStore::began_empty`]).
     began: Cell<Option<bool>>,
     /// Whether the handle took in where an application put nodes of its
-    /// subtree ([`Self::take_locations`]).
+    /// subtree ([`LigninNodeStore::take_locations`]).
     placed: Cell<bool>,
     /// The path the handle was opened by, if it was told one
-    /// ([`Self::at_path`]).
+    /// ([`LigninNodeStore::at_path`]).
     path: Option<Vec<Vec<u8>>>,
     /// The keys the handle knows to hold an unlinked record.
     loose: Loose,
     /// The subtree that the handle keeps its root-key record under, where
-    /// it was told one ([`Self::root_key_kept_in`]).
+    /// it was told one ([`LigninNodeStore::root_key_kept_in`]).
     root_keys: Option<[u8; 32]>,
     /// The subtree that keeps the marks of what flat drops left behind,
-    /// where the handle was told one ([`Self::left_behind_in`]).
+    /// where the handle was told one ([`LigninNodeStore::left_behind_in`]).
     left_behind: Option<[u8; 32]>,
+    /// What a load for a walk left of where the cells of its node's
+    /// children are ([`LigninNodeStore::load`], which fills this and moves what it
+    /// finds here to the hints). [`LigninNodeStore::hint`] reads it, and
+    /// [`LigninNodeStore::take_hint`] takes from it.
+    told: RefCell<[Option<(NodeKey, Location)>; 2]>,
     /// What the last read of the root-key record through this handle
     /// found, where the handle writes at once and the record does not
     /// name the root of the handle's Merk ([`RootLeftBehind`]).
@@ -401,7 +415,7 @@ impl Loose {
 impl fmt::Debug for LigninNodeStore<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LigninNodeStore")
-            .field("subtree", &self.subtree)
+            .field("subtree", &self.held.subtree)
             .finish_non_exhaustive()
     }
 }
@@ -489,19 +503,22 @@ fn node_inner(key: Vec<u8>, node: StoredNode) -> Result<TreeNodeInner, Error> {
 impl<'db> LigninNodeStore<'db> {
     fn new(access: &'db (dyn Access + 'db), subtree: LigninSubtree, mode: Mode<'db>) -> Self {
         Self {
-            access,
-            subtree,
-            mode,
-            hints: RefCell::new(HashMap::new()),
-            reads: RefCell::new(HashMap::new()),
-            trees: RefCell::new(HashSet::new()),
-            began: Cell::new(None),
-            placed: Cell::new(false),
-            path: None,
-            loose: Loose::default(),
-            root_keys: None,
-            left_behind: None,
-            root_left_behind: RefCell::new(None),
+            held: Box::new(Held {
+                access,
+                subtree,
+                mode,
+                hints: RefCell::new(HashMap::new()),
+                reads: RefCell::new(HashMap::new()),
+                trees: RefCell::new(HashSet::new()),
+                began: Cell::new(None),
+                placed: Cell::new(false),
+                path: None,
+                loose: Loose::default(),
+                root_keys: None,
+                left_behind: None,
+                told: RefCell::new([None, None]),
+                root_left_behind: RefCell::new(None),
+            }),
         }
     }
 
@@ -540,7 +557,7 @@ impl<'db> LigninNodeStore<'db> {
     /// of the subtree itself, and two that were told two subtrees read
     /// and write two records.
     pub fn root_key_kept_in(mut self, home: [u8; 32]) -> Self {
-        self.root_keys = (home != self.subtree.prefix).then_some(home);
+        self.held.root_keys = (home != self.held.subtree.prefix).then_some(home);
         self
     }
 
@@ -548,9 +565,12 @@ impl<'db> LigninNodeStore<'db> {
     /// key that the record has in the roots keyspace of that subtree
     /// ([`Self::root_key_kept_in`]).
     pub fn root_key_place(&self) -> ([u8; 32], Vec<u8>) {
-        match self.root_keys {
-            Some(home) => (home, access::kept_key(&self.subtree.prefix, ROOT_KEY_KEY)),
-            None => (self.subtree.prefix, ROOT_KEY_KEY.to_vec()),
+        match self.held.root_keys {
+            Some(home) => (
+                home,
+                access::kept_key(&self.held.subtree.prefix, ROOT_KEY_KEY),
+            ),
+            None => (self.held.subtree.prefix, ROOT_KEY_KEY.to_vec()),
         }
     }
 
@@ -573,7 +593,7 @@ impl<'db> LigninNodeStore<'db> {
     /// aux keyspace of `home` holds under a key which begins with the
     /// tag of a mark is taken for one.
     pub fn left_behind_in(mut self, home: [u8; 32]) -> Self {
-        self.left_behind = Some(home);
+        self.held.left_behind = Some(home);
         self
     }
 
@@ -583,7 +603,7 @@ impl<'db> LigninNodeStore<'db> {
     /// whoever applies the batch ([`LigninSettled::path`]), who derives
     /// from it the prefix of the subtree under a key of this one.
     pub fn at_path(mut self, path: Vec<Vec<u8>>) -> Self {
-        self.path = Some(path);
+        self.held.path = Some(path);
         self
     }
 
@@ -613,40 +633,63 @@ impl<'db> LigninNodeStore<'db> {
 
     /// The subtree the handle is of.
     pub fn subtree(&self) -> &LigninSubtree {
-        &self.subtree
+        &self.held.subtree
     }
 
     /// Takes in where the application of a batch put the nodes of this
     /// subtree, so that the handle finds them without a lookup by key.
     pub fn take_locations(&self, applied: &LigninApplied) {
-        applied.locations(&self.subtree.prefix, |key, location| {
+        applied.locations(&self.held.subtree.prefix, |key, location| {
             self.left_at(key, location);
-            self.placed.set(true);
+            self.held.placed.set(true);
         });
     }
 
     /// Takes in where a write left the node under `key`: in the cell at
     /// `location`, or with none, as an unlinked record.
     fn left_at(&self, key: &[u8], location: Option<Location>) {
-        let mut hints = self.hints.borrow_mut();
+        let mut hints = self.held.hints.borrow_mut();
         match location {
             Some(location) => seen_at(&mut hints, key, location),
             None => {
                 hints.remove(key);
             }
         };
-        self.loose.set(key, location.is_none());
+        self.held.loose.set(key, location.is_none());
     }
 
     fn read_cost(&self, found: Option<usize>) -> OperationCost {
-        match self.mode {
+        match self.held.mode {
             Mode::Immediate => MODEL.read_immediate(),
             Mode::Deferred(_) | Mode::ReadOnly => MODEL.read(found),
         }
     }
 
+    /// The location the handle has for the node under `key`: the one
+    /// among its hints, and with none there the one that `told` has, in
+    /// which a load for a walk leaves what it said of its node's
+    /// children ([`Self::load`]). The handle goes on keeping it.
     fn hint(&self, key: &[u8]) -> Option<Location> {
-        self.hints.borrow().get(key).copied()
+        if let Some(location) = self.held.hints.borrow().get(key).copied() {
+            return Some(location);
+        }
+        let told = self.held.told.borrow();
+        let child = (told.iter().flatten()).find(|told| *told.0 == *key);
+        child.map(|told| told.1)
+    }
+
+    /// As [`Self::hint`], for [`Self::load`]: a location that comes from
+    /// `told`, and from no hint, is taken out of its place there. A load
+    /// that comes to a cell keeps the cell's location among the hints
+    /// itself, and one that comes to none has no use for it.
+    fn take_hint(&self, key: &[u8]) -> Option<Location> {
+        if let Some(location) = self.held.hints.borrow().get(key).copied() {
+            return Some(location);
+        }
+        let mut told = self.held.told.borrow_mut();
+        let child =
+            (told.iter_mut()).find(|told| told.as_ref().is_some_and(|told| *told.0 == *key));
+        child.and_then(Option::take).map(|(_, location)| location)
     }
 
     /// The node under `key` with the key of each child in its link, and
@@ -670,12 +713,29 @@ impl<'db> LigninNodeStore<'db> {
     /// longer at the question: a further try takes a further such event.
     /// A read of the cell's page that fails at the read of a child is the
     /// error of the load, and no further try.
-    fn load(&self, key: &[u8], with_value: bool) -> Result<Option<StoredNode>, Error> {
-        let prefix = &self.subtree.prefix;
-        let mut hint = self.hint(key);
+    ///
+    /// With `walked`, the read is the fetch of a walk of the tree, which
+    /// goes on from the node to its children
+    /// ([`NodeStore::fetch_node_without_value`]), and where the read said
+    /// where the cells of the children are, as a read of a snapshot does,
+    /// the handle keeps that for its reads of them ([`Self::hint`]). A
+    /// read that is no fetch of a walk keeps nothing of what the read
+    /// itself said of the children's cells: the read of a Merk's root
+    /// when it is opened, and a read for a value. Where the children's
+    /// keys were read in operations of their own, as a write transaction
+    /// reads them, the location that each of those gave is kept by every
+    /// load.
+    fn load(
+        &self,
+        key: &[u8],
+        with_value: bool,
+        walked: bool,
+    ) -> Result<Option<StoredNode>, Error> {
+        let prefix = &self.held.subtree.prefix;
+        let mut hint = self.take_hint(key);
         'node: loop {
-            let Some(mut node) = self.access.node(prefix, key, hint, with_value)? else {
-                self.loose.set(key, false);
+            let Some(mut node) = self.held.access.node(prefix, key, hint, with_value)? else {
+                self.held.loose.set(key, false);
                 return Ok(None);
             };
             if node.record.is_some() {
@@ -699,7 +759,7 @@ impl<'db> LigninNodeStore<'db> {
                 let parent = node
                     .location
                     .ok_or(Error::CorruptedState("a cell was read with no location"))?;
-                match self.access.child(prefix, parent, left)? {
+                match self.held.access.child(prefix, parent, left)? {
                     Child::Stale => continue 'node,
                     Child::ByKey => return Err(access::read_by_key()),
                     Child::Missing => return Err(refused("a link leads to no node")),
@@ -709,11 +769,24 @@ impl<'db> LigninNodeStore<'db> {
                     }
                 }
             }
-            let mut hints = self.hints.borrow_mut();
+            let mut hints = self.held.hints.borrow_mut();
             for (link, found) in [&node.left, &node.right].into_iter().zip(found) {
                 let child = link.as_ref().and_then(|link| link.key.as_deref());
                 if let (Some(child), Some(location)) = (child, found) {
                     seen_at(&mut hints, child, location);
+                }
+            }
+            if walked {
+                // Where the read said the cells of the children are, for
+                // the reads of them, in the place of what the walk's last
+                // node left: that is kept among the hints, under a hint of
+                // a read of the child itself if there is one.
+                let told = [&node.left, &node.right].map(|link| {
+                    let link = link.as_ref()?;
+                    Some((NodeKey::new(link.key.as_deref()?), link.location?))
+                });
+                for (child, location) in self.held.told.replace(told).into_iter().flatten() {
+                    hints.entry(child).or_insert(location);
                 }
             }
             match node.location {
@@ -722,8 +795,8 @@ impl<'db> LigninNodeStore<'db> {
                     hints.remove(key);
                 }
             };
-            self.loose.set(key, node.unlinked);
-            let mut reads = self.reads.borrow_mut();
+            self.held.loose.set(key, node.unlinked);
+            let mut reads = self.held.reads.borrow_mut();
             if !reads.contains_key(key) {
                 reads.insert(NodeKey::new(key), node.location);
             }
@@ -740,11 +813,11 @@ impl<'db> LigninNodeStore<'db> {
     /// application of the Merk writes on what that application left,
     /// whatever it began with.
     fn began_empty(&self, change_set: &LigninChangeSet) -> bool {
-        if self.placed.get() {
+        if self.held.placed.get() {
             return false;
         }
         let begins = || change_set.begins_a_merk();
-        self.began.get().unwrap_or_else(begins)
+        self.held.began.get().unwrap_or_else(begins)
     }
 
     /// Keeps the key of a node that was loaded with the element of a tree
@@ -752,7 +825,7 @@ impl<'db> LigninNodeStore<'db> {
     fn note_tree(&self, key: &[u8], value: Option<&[u8]>) {
         let element = value.and_then(|value| ElementType::from_serialized_value(value).ok());
         if element.is_some_and(|element| element.is_tree()) {
-            self.trees.borrow_mut().insert(NodeKey::new(key));
+            self.held.trees.borrow_mut().insert(NodeKey::new(key));
         }
     }
 
@@ -767,8 +840,13 @@ impl<'db> LigninNodeStore<'db> {
 
     /// Loads the node under `key` and charges the read: the length of the
     /// node's whole record, whether or not its value is read with it.
-    fn read(&self, key: &[u8], with_value: bool) -> CostResult<Option<StoredNode>, Error> {
-        self.charged(self.load(key, with_value).and_then(|node| {
+    fn read(
+        &self,
+        key: &[u8],
+        with_value: bool,
+        walked: bool,
+    ) -> CostResult<Option<StoredNode>, Error> {
+        self.charged(self.load(key, with_value, walked).and_then(|node| {
             let len = node.as_ref().map(record_len).transpose()?;
             Ok((node, len))
         }))
@@ -781,8 +859,9 @@ impl<'db> LigninNodeStore<'db> {
         if !node.value_absent() {
             return Ok(());
         }
-        let prefix = &self.subtree.prefix;
+        let prefix = &self.held.subtree.prefix;
         let stored = self
+            .held
             .access
             .node(prefix, node.key(), self.hint(node.key()), true)?
             .filter(|stored| stored.record.is_none())
@@ -800,12 +879,15 @@ impl<'db> LigninNodeStore<'db> {
     }
 
     fn read_record(&self, keyspace: Keyspace, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
-        let record = match (keyspace, self.root_keys) {
+        let record = match (keyspace, self.held.root_keys) {
             (Keyspace::Roots, Some(home)) => {
-                let kept = access::kept_key(&self.subtree.prefix, key);
-                self.access.record(keyspace, &home, &kept)
+                let kept = access::kept_key(&self.held.subtree.prefix, key);
+                self.held.access.record(keyspace, &home, &kept)
             }
-            _ => self.access.record(keyspace, &self.subtree.prefix, key),
+            _ => self
+                .held
+                .access
+                .record(keyspace, &self.held.subtree.prefix, key),
         };
         self.charged(record.map(|record| {
             let len = record.as_ref().map(Vec::len);
@@ -820,9 +902,9 @@ impl<'db> LigninNodeStore<'db> {
         key: &[u8],
         value: Option<&[u8]>,
     ) -> CostResult<(), Error> {
-        let subtree = self.subtree.clone();
+        let subtree = self.held.subtree.clone();
         let change_set =
-            LigninChangeSet::of_record_of(subtree, self.root_keys, keyspace, key, value);
+            LigninChangeSet::of_record_of(subtree, self.held.root_keys, keyspace, key, value);
         self.submit(change_set, "a write", false)
     }
 
@@ -844,12 +926,12 @@ impl<'db> LigninNodeStore<'db> {
         // a key says nothing of another Merk's node: a change set of
         // another subtree gets none of it from this handle, and decides
         // nothing of it.
-        let own = change_set.is_of(&self.subtree.prefix);
+        let own = change_set.is_of(&self.held.subtree.prefix);
         if own {
-            change_set.hint(&self.hints.borrow(), &self.reads.borrow());
-            change_set.note_trees(&self.trees.borrow(), &self.reads.borrow());
+            change_set.hint(&self.held.hints.borrow(), &self.held.reads.borrow());
+            change_set.note_trees(&self.held.trees.borrow(), &self.held.reads.borrow());
         }
-        if own && !matches!(self.mode, Mode::ReadOnly | Mode::Deferred(None)) {
+        if own && !matches!(self.held.mode, Mode::ReadOnly | Mode::Deferred(None)) {
             // A removed node is named by its key alone where the write is
             // applied. The handle tells where it last saw the node
             // (`Access::place`). A transaction takes that as a hint for
@@ -857,14 +939,16 @@ impl<'db> LigninNodeStore<'db> {
             // looks for no key; the writer of a write scope takes
             // nothing that is told. A write that has no good place of
             // the node, told or kept, looks for the key.
-            let hints = self.hints.borrow();
+            let hints = self.held.hints.borrow();
             for key in change_set.removed_keys() {
                 if let Some(location) = hints.get(key) {
-                    self.access.place(&self.subtree.prefix, key, *location);
+                    self.held
+                        .access
+                        .place(&self.held.subtree.prefix, key, *location);
                 }
             }
         }
-        match self.mode {
+        match self.held.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused(&format!("{what} through a handle that only reads")))
                     .wrap_with_cost(MODEL.refused_write())
@@ -873,21 +957,21 @@ impl<'db> LigninNodeStore<'db> {
                 let staged = change_set.check_stale();
                 let writes_nodes = change_set.writes_nodes();
                 let began_empty = own && writes_nodes && self.began_empty(&change_set);
-                let path = self.path.as_deref().filter(|_| own);
+                let path = self.held.path.as_deref().filter(|_| own);
                 let staged = staged.and_then(|()| batch.stage(change_set, began_empty, path));
                 // The first change set of nodes of the handle's subtree
                 // that is staged decides what the handle's writer began
                 // with.
-                if own && staged.is_ok() && writes_nodes && self.began.get().is_none() {
-                    self.began.set(Some(began_empty));
+                if own && staged.is_ok() && writes_nodes && self.held.began.get().is_none() {
+                    self.held.began.set(Some(began_empty));
                 }
                 staged.wrap_with_cost(MODEL.staged_write())
             }
             Mode::Immediate => {
-                if let Some(found) = &*self.root_left_behind.borrow()
+                if let Some(found) = &*self.held.root_left_behind.borrow()
                     && change_set.writes_nodes()
                 {
-                    let refusal = found.refusal(&self.subtree.prefix);
+                    let refusal = found.refusal(&self.held.subtree.prefix);
                     return Err(refusal).wrap_with_cost(MODEL.refused_write());
                 }
                 let checked = change_set.check_stale();
@@ -906,14 +990,14 @@ impl<'db> LigninNodeStore<'db> {
     /// nothing: the handle names its locations by key, for its own
     /// subtree.
     fn apply(&self, write: &access::Write) -> Result<(), Error> {
-        let written = self.access.apply(write)?;
+        let written = self.held.access.apply(write)?;
         for (merk, locations) in write.merks.iter().zip(&written.locations) {
-            if merk.subtree != self.subtree.prefix {
+            if merk.subtree != self.held.subtree.prefix {
                 continue;
             }
             for key in &merk.removed {
-                self.hints.borrow_mut().remove(key.as_slice());
-                self.loose.set(key, false);
+                self.held.hints.borrow_mut().remove(key.as_slice());
+                self.held.loose.set(key, false);
             }
             for (node, location) in merk.nodes.iter().zip(locations) {
                 self.left_at(&node.key, *location);
@@ -948,7 +1032,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<TreeNode>, Error> {
-        self.read(key, true)
+        self.read(key, true, false)
             .map_ok(|node| {
                 let Some(mut node) = node else {
                     return Ok(None);
@@ -971,7 +1055,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn get_node_for_read(&self, key: &[u8]) -> CostResult<Option<TreeNodeInner>, Error> {
-        self.read(key, true)
+        self.read(key, true, false)
             .map_ok(|node| match node {
                 None => Ok(None),
                 Some(StoredNode {
@@ -993,7 +1077,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
         let key = link.key();
-        self.read(key, false)
+        self.read(key, false, true)
             .map_ok(|node| {
                 let mut node = node.ok_or(Error::KeyNotFoundError("Key not found for fetch"))?;
                 // A flat record holds its value: the node is read whole.
@@ -1015,8 +1099,8 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {
-        let prefix = &self.subtree.prefix;
-        let node = self.access.node(prefix, key, self.hint(key), false);
+        let prefix = &self.held.subtree.prefix;
+        let node = self.held.access.node(prefix, key, self.hint(key), false);
         let len = node.and_then(|node| node.as_ref().map(record_len).transpose());
         self.charged(len.map(|len| (len.is_some(), len)))
     }
@@ -1033,13 +1117,13 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         // handle has not loaded there is none to name, and an unlinked
         // record has no cell that keeps one, nor has a node that was
         // decoded from a flat record. The value of such a node is stated.
-        let loaded = self.reads.borrow().contains_key(node.key());
-        let kept_by_a_cell = loaded && !self.loose.holds(node.key());
+        let loaded = self.held.reads.borrow().contains_key(node.key());
+        let kept_by_a_cell = loaded && !self.held.loose.holds(node.key());
         let change = match kept_by_a_cell && !node.from_flat_record() {
             true => change,
             false => NodeChange::ValueWritten,
         };
-        match LigninChangeSet::of_node(self.subtree.clone(), node, change) {
+        match LigninChangeSet::of_node(self.held.subtree.clone(), node, change) {
             Ok(change_set) => self.submit(change_set, "a write", false),
             Err(error) => Err(error).wrap_with_cost(MODEL.refused_write()),
         }
@@ -1053,12 +1137,12 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn root_key(&self) -> CostResult<Option<Vec<u8>>, Error> {
-        if matches!(self.mode, Mode::ReadOnly | Mode::Deferred(None)) {
+        if matches!(self.held.mode, Mode::ReadOnly | Mode::Deferred(None)) {
             return self.read_record(Keyspace::Roots, ROOT_KEY_KEY);
         }
         let (home, key) = self.root_key_place();
-        let prefix = &self.subtree.prefix;
-        let both = (self.access).record_with_root(Keyspace::Roots, &home, &key, prefix);
+        let prefix = &self.held.subtree.prefix;
+        let both = (self.held.access).record_with_root(Keyspace::Roots, &home, &key, prefix);
         let read = self.charged(both.map(|both| {
             let len = both.0.as_ref().map(Vec::len);
             (both, len)
@@ -1069,11 +1153,11 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
                 record: record.clone(),
                 root,
             });
-            match (&self.mode, found) {
+            match (&self.held.mode, found) {
                 (Mode::Deferred(Some(batch)), Some(found)) => {
                     batch.note_root_left_behind(*prefix, found);
                 }
-                (Mode::Immediate, found) => *self.root_left_behind.borrow_mut() = found,
+                (Mode::Immediate, found) => *self.held.root_left_behind.borrow_mut() = found,
                 _ => {}
             }
             record
@@ -1085,14 +1169,18 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn cursor(&self) -> LigninCursor<'db> {
-        LigninCursor::open(self.access, &self.subtree.prefix, self.left_behind)
+        LigninCursor::open(
+            self.held.access,
+            &self.held.subtree.prefix,
+            self.held.left_behind,
+        )
     }
 
     fn change_set(&self) -> LigninChangeSet {
-        let immediate = matches!(self.mode, Mode::Immediate);
-        LigninChangeSet::new(self.subtree.clone(), immediate)
-            .of_handle(self.loose.clone())
-            .keeping_root_keys_in(self.root_keys)
+        let immediate = matches!(self.held.mode, Mode::Immediate);
+        LigninChangeSet::new(self.held.subtree.clone(), immediate)
+            .of_handle(self.held.loose.clone())
+            .keeping_root_keys_in(self.held.root_keys)
     }
 
     fn commit(&self, change_set: LigninChangeSet) -> CostResult<(), Error> {

@@ -27,11 +27,18 @@ pub(super) const FIRST_CHUNK: usize = 256;
 #[cfg(loom)]
 pub(super) const FIRST_CHUNK: usize = 2;
 
-/// The cells between the places where two threads start to look for a
-/// vacant one, so that a thread that holds a few claims at once stays among
-/// cells no other thread starts at.
+/// Where the thread that is the `number`th of the process to claim a cell
+/// starts to look for a vacant one: the bits of its number in reverse
+/// order, as a place in the first chunk.
+///
+/// So the first 32 threads start 8 cells apart, the first 64 at least 4
+/// and the first 128 at least 2, and each of the first [`FIRST_CHUNK`]
+/// threads starts at a cell of its own. The thread after those starts
+/// where the first did.
 #[cfg(not(loom))]
-const SPREAD: usize = 8;
+pub(super) const fn home_of(number: usize) -> usize {
+    number.reverse_bits() >> (usize::BITS - FIRST_CHUNK.trailing_zeros())
+}
 
 struct Chunk {
     cells: Box<[Padded<AtomicU64>]>,
@@ -54,9 +61,8 @@ fn home() -> usize {
 
     static THREADS: AtomicUsize = AtomicUsize::new(0);
     thread_local! {
-        static HOME: usize = THREADS
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .wrapping_mul(SPREAD);
+        static HOME: usize =
+            home_of(THREADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     }
     HOME.try_with(|home| *home).unwrap_or(0)
 }
@@ -64,6 +70,13 @@ fn home() -> usize {
 #[cfg(loom)]
 fn home() -> usize {
     0
+}
+
+/// The cell of the first chunk that the calling thread starts at, for the
+/// measurement of the readers (`tests::scaling`).
+#[cfg(all(test, not(loom)))]
+pub(super) fn home_of_this_thread() -> usize {
+    home() % FIRST_CHUNK
 }
 
 /// The table. It grows by a chunk when every cell is claimed, and never

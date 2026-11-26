@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! lignin-bench run [options]          measure, write the report as JSON
+//! lignin-bench reads [options]        the warm read rows of a kept database
 //! lignin-bench table REPORT           the rows of a report, beside the plan's values
 //! lignin-bench compare FIRST SECOND   how far two runs' rows are apart
 //! ```
@@ -15,6 +16,11 @@
 //! sizes of [`Settings`]: `--seed`, `--documents`, `--owners`, `--creates`,
 //! `--updates`, `--deletes`, `--point-reads`, `--reference-reads`,
 //! `--warmup-reads`, `--cold-reads`, `--checkpoints`, `--reopens`.
+//! `reads` takes the options of `run` and measures the point gets, the
+//! point proofs and the proofs of 100 references, as rows of the phase
+//! `settled`, over the databases that a
+//! `run --keep` with the same `--scratch`, `--seed`, `--documents` and
+//! `--owners` and with `--creates 0 --updates 0 --deletes 0` left there.
 //! `compare` takes `--tolerance FRACTION` (default 0.10).
 
 use std::{fmt::Write as _, path::PathBuf};
@@ -22,13 +28,14 @@ use std::{fmt::Write as _, path::PathBuf};
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    compare,
+    compare, reads,
     report::{self, ratio},
     run, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
 const USAGE: &str =
-    "usage: lignin-bench run [options] | table REPORT | compare FIRST SECOND [--tolerance F]";
+    "usage: lignin-bench run [options] | reads [options] | table REPORT | compare FIRST SECOND \
+     [--tolerance F]";
 
 /// Runs the command with `args` (the program name excluded) and returns
 /// what it prints.
@@ -36,9 +43,12 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
     let usage = || BenchError::Check(USAGE.to_string());
     let (command, rest) = args.split_first().ok_or_else(usage)?;
     match command.as_str() {
-        "run" => {
+        "run" | "reads" => {
             let (options, out) = parse_run(rest)?;
-            let report = run(&options)?;
+            let report = match command.as_str() {
+                "run" => run(&options)?,
+                _ => reads(&options)?,
+            };
             let json = report.to_json();
             match out {
                 Some(path) => {

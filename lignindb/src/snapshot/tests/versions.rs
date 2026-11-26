@@ -190,6 +190,37 @@ fn the_table_grows_when_every_cell_is_claimed_and_cells_are_used_again() {
     drop((held, again));
 }
 
+/// Each of the first threads of a process starts its look for a vacant
+/// cell at a cell of its own: at least 8 cells from the next for 32
+/// threads, 4 for 33 to 64, and one for as many threads as the first
+/// chunk has cells.
+#[test]
+fn the_first_threads_start_at_cells_of_their_own() {
+    use crate::snapshot::slots::{home_of, FIRST_CHUNK};
+
+    assert_eq!(FIRST_CHUNK, 256);
+    for (threads, apart) in [
+        (1, 256),
+        (2, 128),
+        (32, 8),
+        (48, 4),
+        (64, 4),
+        (200, 1),
+        (256, 1),
+    ] {
+        let mut homes: Vec<usize> = (0..threads).map(home_of).collect();
+        homes.sort_unstable();
+        assert!(homes.iter().all(|home| *home < FIRST_CHUNK));
+        let nearest = (homes.windows(2).map(|pair| pair[1] - pair[0]))
+            .chain([FIRST_CHUNK - homes[threads - 1] + homes[0]])
+            .min();
+        assert_eq!(nearest, Some(apart), "{threads} threads");
+    }
+    // The thread after those starts where the first did.
+    assert_eq!((home_of(0), home_of(FIRST_CHUNK)), (0, 0));
+    assert_eq!(home_of(FIRST_CHUNK + 1), home_of(1));
+}
+
 #[test]
 fn any_number_of_pins_and_guards_are_held_at_once() {
     let versions = published(1);

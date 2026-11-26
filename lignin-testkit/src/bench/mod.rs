@@ -221,18 +221,45 @@ pub const STACK_BYTES: usize = 64 << 20;
 /// 2. At size: `size_on_disk`, warm reads after warm-up reads, the proof
 ///    sizes (the first proof of each kind is verified against the root
 ///    hash), checkpoints, a flush, the size and checkpoints again, reopens,
+///    the warm reads once more in the settled state ([`run::SETTLED`]),
 ///    and cold reads. Then every file is read once and the warm-up reads
 ///    are repeated, so the writes start warm.
 /// 3. `create`, `update`, `delete`: the writes at size, sampled per block.
 pub fn run(options: &RunOptions) -> Result<Report, BenchError> {
     options.check_engine_settings()?;
+    on_the_benchmark_thread(options, Rows::All)
+}
+
+/// Measures the warm read rows alone, for every engine of `options`, over
+/// the databases that a run with `keep` left in the scratch directory.
+/// The settings are that run's seed, documents and owners; it applied no
+/// creates, updates or deletes after its load. The report holds the
+/// warm rows of the settled state ([`run::SETTLED`]) and nothing else,
+/// states that nothing was written, read cold, checkpointed or reopened
+/// for a time, and no size on disk, and reads back and compares as any
+/// other.
+pub fn reads(options: &RunOptions) -> Result<Report, BenchError> {
+    options.check_engine_settings()?;
+    on_the_benchmark_thread(options, Rows::WarmReads)
+}
+
+/// Which rows a call measures.
+#[derive(Clone, Copy)]
+enum Rows {
+    /// Every row, over a fresh database.
+    All,
+    /// The warm reads, over a kept database.
+    WarmReads,
+}
+
+fn on_the_benchmark_thread(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
     std::fs::create_dir_all(&options.settings.scratch)
         .map_err(|error| BenchError::io("creating the scratch directory", error))?;
     let options = options.clone();
     std::thread::Builder::new()
         .name("lignin-bench".to_string())
         .stack_size(STACK_BYTES)
-        .spawn(move || run_here(&options))
+        .spawn(move || run_here(&options, rows))
         .map_err(|error| BenchError::io("starting the benchmark thread", error))?
         .join()
         .map_err(|_| BenchError::Check("the benchmark thread panicked".to_string()))?
@@ -254,11 +281,30 @@ fn counts_instructions(asked: bool, works: impl FnOnce() -> bool) -> Result<(), 
     }
 }
 
-fn run_here(options: &RunOptions) -> Result<Report, BenchError> {
+fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
     options.settings.check()?;
-    let settings = &options.settings;
+    // A measurement of the warm reads alone writes nothing, reads nothing
+    // cold, and times no checkpoint and no reopen: its report says so,
+    // whatever the settings name, and the machine is not probed for how
+    // it reads cold.
+    let warm_only = Settings {
+        measured_creates: 0,
+        updates: 0,
+        deletes: 0,
+        cold_reads: 0,
+        checkpoints: 0,
+        reopens: 0,
+        ..options.settings.clone()
+    };
+    let settings = match rows {
+        Rows::All => &options.settings,
+        Rows::WarmReads => &warm_only,
+    };
     counts_instructions(settings.perf, || machine::Perf::works(&settings.scratch))?;
-    let cold_method = ColdMethod::detect(&settings.scratch);
+    let cold_method = match rows {
+        Rows::All => ColdMethod::detect(&settings.scratch),
+        Rows::WarmReads => ColdMethod::Reopen,
+    };
     let commit = options
         .commit
         .clone()
@@ -276,13 +322,21 @@ fn run_here(options: &RunOptions) -> Result<Report, BenchError> {
         engines: Vec::new(),
     };
     for engine in &options.engines {
-        report.engines.push(match engine {
-            EngineChoice::RocksDb => {
-                run::run_engine::<RocksDbEngine>(settings, cold_method, options.grove_version)?
+        let grove_version = options.grove_version;
+        report.engines.push(match (engine, rows) {
+            (EngineChoice::RocksDb, Rows::All) => {
+                run::run_engine::<RocksDbEngine>(settings, cold_method, grove_version)?
+            }
+            (EngineChoice::RocksDb, Rows::WarmReads) => {
+                run::read_engine::<RocksDbEngine>(settings, grove_version)?
             }
             #[cfg(grovedb_engine_seam)]
-            EngineChoice::LigninDb => {
-                run::run_engine::<LigninDbEngine>(settings, cold_method, options.grove_version)?
+            (EngineChoice::LigninDb, Rows::All) => {
+                run::run_engine::<LigninDbEngine>(settings, cold_method, grove_version)?
+            }
+            #[cfg(grovedb_engine_seam)]
+            (EngineChoice::LigninDb, Rows::WarmReads) => {
+                run::read_engine::<LigninDbEngine>(settings, grove_version)?
             }
         });
     }

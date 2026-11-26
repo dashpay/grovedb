@@ -11,6 +11,7 @@ PERF-05 and PERF-09 read its reports.
 ```sh
 cargo build --release -p lignin-testkit --bin lignin-bench
 lignin-bench run --scratch /path/to/scratch --out run.json --label <machine> [--perf]
+lignin-bench reads --scratch /path/to/scratch --out reads.json   # the warm reads of a kept database
 lignin-bench table run.json                # rows beside the plan's values
 lignin-bench compare run1.json run2.json   # how far two runs are apart
 ```
@@ -42,6 +43,30 @@ option.
 `--set KEY=VALUE` changes one setting of LigninDB, or the harness's pacing
 of it, for the run ("LigninDB's settings" below).
 
+`lignin-bench reads` measures the warm rows alone (the point gets, the point
+proofs and the proofs of 100 references, with the proof sizes) over the
+databases that an earlier run kept. That run is given `--keep` and
+`--creates 0 --updates 0 --deletes 0`, so that every loaded document is still
+there, and `reads` is given the same `--scratch`, `--seed`, `--documents`,
+`--owners` and engines. It opens each database as the run left it, which is
+the settled state, so its rows have the phase `settled`. Its report holds
+those rows only, says of its workload and method what it did (no write after
+the load, no cold read, no checkpoint, no timed reopen) and has no size on
+disk (both are `null`), and `table` and `compare` read it as any other. The
+reads of the settled rows are a stream of their own, apart from that of the
+`warm` rows: with the same seed, documents, owners, `--warmup-reads`,
+`--point-reads` and `--reference-reads`, `reads` asks for the documents and
+owners that the run's `settled` rows asked for, in the same order.
+
+### The two states of the warm reads
+
+The plan's recorded values and the RocksDB baseline below were taken right
+after the load, and that is the phase `warm`: RocksDB then still has
+compactions to make, and LigninDB reads beside what write-back has not placed
+yet. A node reads a database that has settled, and an engine can read faster
+or slower then, so the ratio of the two engines differs between the states. A
+run measures both, and a table prints both.
+
 Smaller runs take `--documents`, `--owners`, `--creates`, `--updates`,
 `--deletes` and the sample counts (`--point-reads`, `--reference-reads`,
 `--warmup-reads`, `--cold-reads`, `--checkpoints`, `--reopens`). The 100-reference
@@ -66,10 +91,15 @@ per owner.
    size on disk is taken again after a flush, once the engine's background
    work is idle (`flushed`). That is the row compared with the plan's 1.01 GB.
 5. **Reopens** (`flushed`).
-6. **`cold`.** Each sample is the first read after closing the database,
+6. **`settled`.** The warm reads of step 3 once more, from a stream of
+   documents and owners of its own, in the settled state: after the flush, after the database was
+   closed and opened again, and after a wait for the background work of
+   the opened engine. The rows have the ids of the warm rows and the
+   phase `settled`.
+7. **`cold`.** Each sample is the first read after closing the database,
    dropping its files from the page cache where the machine allows it, and
    opening it again.
-7. **`create`, `update`, `delete`.** The page cache is warmed again, then
+8. **`create`, `update`, `delete`.** The page cache is warmed again, then
    20,000 transitions of each kind are applied, sampled per block.
 
 Every time row is a median over its samples, and every sample is kept in the
@@ -112,6 +142,7 @@ only.
 | `point_proof_bytes`, `references_proof_bytes` | B | proof lengths |
 | `wall_per_transition`, `block_commit`, `bulk_load` | µs, ms, s | `Instant` around apply and commit |
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
+| `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: how often its buffer pool was asked for a page over the timed reads of one kind, and how often it did not hold the page, for one read (LigninDB only; measured, since the pool counts its background threads too; no row for a kind of which no read was timed) |
 | `checkpoint`, `reopen` | ms | `Instant` around one checkpoint or open |
 
 GroveDB's storage layer charges one seek for every record it writes. So, for

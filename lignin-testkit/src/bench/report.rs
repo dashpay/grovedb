@@ -107,11 +107,12 @@ pub struct EngineReport {
     /// Raw totals per write phase, from which the per-transition rows are
     /// computed.
     pub phases: Vec<PhaseTotals>,
-    /// Files in the database directory after the load, before and after a
-    /// flush.
-    pub disk_after_load: DiskUsage,
+    /// Files in the database directory after the load, before a flush.
+    /// `None` in a report of a measurement that did not take it: one of
+    /// the warm reads alone.
+    pub disk_after_load: Option<DiskUsage>,
     /// The same after `flush`.
-    pub disk_after_flush: DiskUsage,
+    pub disk_after_flush: Option<DiskUsage>,
 }
 
 impl EngineReport {
@@ -653,8 +654,8 @@ mod tests {
             root_hash_at_end: String::new(),
             rows,
             phases: vec![],
-            disk_after_load: DiskUsage::default(),
-            disk_after_flush: DiskUsage::default(),
+            disk_after_load: Some(DiskUsage::default()),
+            disk_after_flush: Some(DiskUsage::default()),
         }
     }
 

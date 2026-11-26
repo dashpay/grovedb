@@ -1414,6 +1414,7 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
         key_len: 3,
         key: None,
         aggregate: AggregateData::NoAggregateData,
+        location: None,
     });
     let error = with_child_keys(unread.clone(), keys).unwrap_err();
     assert!(matches!(error, Error::CorruptedState(_)), "{error:?}");
