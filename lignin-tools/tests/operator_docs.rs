@@ -121,9 +121,13 @@ const COVERED: [(&str, &[&str]); 26] = [
 /// the file, the words before each, and the message they fill: the string
 /// literal after each, or every literal of the call where the words open
 /// one, is quoted as the message of a row of the messages chapter that
-/// names that file and quotes that message too, so a reason quoted for one
+/// names that file and quotes that message too (where one is named: an
+/// empty one asks for the row alone), so a reason quoted for one
 /// message does not stand for the same word of another.
-const REASONS: [(&str, &str, &str); 36] = [
+const REASONS: [(&str, &str, &str); 39] = [
+    ("lignin-io/src/linux.rs", "io::Error::other(", ""),
+    ("lignin-io/src/linux.rs", "io::Error::new(", ""),
+    ("lignin-io/src/linux/aligned.rs", "io::Error::other(", ""),
     (
         "lignin-io/src/linux.rs",
         "no_direct_io(",
@@ -1655,10 +1659,17 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
                     continue;
                 }
                 covered += 1;
-                if !quoted(file, &pattern, Some(message)) {
-                    missing.push(format!(
-                        "{file} (after {before:?}): `{pattern}`, in a row of that file with `{message}`"
-                    ));
+                if !quoted(
+                    file,
+                    &pattern,
+                    Some(message).filter(|message| !message.is_empty()),
+                ) {
+                    missing.push(match message.is_empty() {
+                        true => format!("{file} (after {before:?}): `{pattern}`, in a row of that file"),
+                        false => format!(
+                            "{file} (after {before:?}): `{pattern}`, in a row of that file with `{message}`"
+                        ),
+                    });
                 }
             }
         }
