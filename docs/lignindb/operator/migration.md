@@ -418,8 +418,8 @@ Read its report before you go on:
   to") says each in full. Choose before step 6 whether your node can meet
   any of these.
 - `root-key records that do not name the root of their Merk (GroveDB #1065):`
-  counts the records that keep a Merk's root key and name another node
-  than that Merk's root. Each Merk is named on a line
+  counts the Merks whose record of their root key names another node
+  than their root, or that have no such record at all. Each Merk is named on a line
   `AT …: THE MERK IS READ AS ITS RECORD NAMES IT, ON ROCKSDB AS HERE, AND LIGNINDB TAKES NO FURTHER WRITE OF A NODE OF IT`.
   Such a source migrates, compares and verifies, and the target reads
   that Merk as RocksDB does; **but LigninDB refuses every later write of
@@ -460,7 +460,7 @@ it whatever the interval:
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
 | 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there and holds anything (`the target … is there and …`; an empty directory is taken for none), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there: that database is whole, but no report of a run that finished is held to it (step 7), so migrate again into a new `TARGET`, and leave that one where it is until you know what it holds. Where a power cut took the name back, the database is in `TARGET.migrating` again, and the same command goes on with it: where it ends with status 0 and a whole report, go on with step 7 |
-| 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | where the report names a read that the system refused (a page that could not be read, with the system's words), deal with what the system said and run the same command again, which compares and verifies again. Otherwise keep the report and report it as a defect of GroveDB; go back to RocksDB as step 11 says, which tells a finding of the grove's data, which the source holds too, from one of the target's own store |
+| 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | where the report names a read that the system refused (a page that could not be read, with the system's words), deal with what the system said and run the same command again, which compares and verifies again. Otherwise keep the report and report it as a defect of GroveDB; go back to RocksDB as step 11 says, which says what such a finding tells of the source |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`), or a quota there is used up | make room on that device, or inside that quota, and run the same command again: it goes on from where it stood |
 
 The status is the pipeline's: a `tee` that cannot write the report (a
@@ -517,8 +517,10 @@ so, and the next commands check each of them:
    `every record of the source that this migration carries reads the same from the target`.
 2. The line `migrate: verify sound=… left_hashes=…` with `sound=true`:
    the physical invariant checker found every rule of the store to
-   hold, with every stored hash made again by Merk's rules but those the
-   rules take as they are stored (the value hash of a reference).
+   hold, with every stored hash of the Merks in use made again by Merk's
+   rules but those the rules take as they are stored (the value hash of
+   a reference); records that no tree links are carried and compared,
+   and no hash of them is made.
 3. The last line, `migrated … into …: loaded, compared and verified`.
 
 ```sh
@@ -706,8 +708,8 @@ the others are not decided on its word:
   value that is no element (its line `node values that are no element: …`
   says 0): the
   node goes back to the database as it was before the migration. A
-  count above 0 is a value the migration's check would refuse: check
-  those Merks by the application's own means first.
+  count above 0 is a value of the source that is no element, linked by
+  a tree or not: check the source by the application's own means first.
 - It refuses for the mark of a state-sync restore that did not finish:
   the directory that holds the mark is to be discarded, on RocksDB as
   here, and the node's state got again as the application's
@@ -726,9 +728,11 @@ A migration of the directory that ended with status 3 though it reported
 grove's data (a hash or a rule of the elements), the RocksDB database
 can hold it too, since the target is its copy, or the target alone,
 since the check follows the target's own addresses of its cells: report
-it, and check the source's data at the place it names, by the
-application's own means, before taking the RocksDB database for
-damaged or for whole. Where it is of the target's own store (a read its
+it, and check the source by the application's own means before taking
+the RocksDB database for damaged or for whole. The finding names a cell
+of the target (a page and a slot), which is no place in RocksDB: where
+the application cannot tell which of its data that is, it checks the
+source as a whole. Where it is of the target's own store (a read its
 device refused, a rule of its pages, its page table or its value log),
 it says nothing of the source.
 

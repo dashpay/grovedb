@@ -216,7 +216,9 @@ section 12).
    can lie before the place it was taken at, up to the first item that
    is not whole, behind which nothing is read: the last whole commit
    group before it gives the version the open lands on, or, where the
-   log holds none, the version its start record names, and the whole
+   log holds none, the version its start record names (and, where the
+   manifest names no log file at all, as for a database being made, the
+   empty version), and the whole
    items of the background up to it are read too. What the checkpoint covers already is
    skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
