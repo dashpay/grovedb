@@ -215,8 +215,9 @@ section 12).
    is not whole, behind which nothing is read: the last whole commit
    group before it gives the version the open lands on, or, where the
    log holds none, the version its start record names (and, where the
-   manifest names no log file at all, as for a database being made, the
-   empty version), and the whole
+   manifest names no log file at all, as for a database whose creation
+   was cut short, the empty version, from which the open goes on to make
+   the database's keyspaces), and the whole
    items of the background up to it are read too. What the checkpoint covers already is
    skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
@@ -262,8 +263,7 @@ left is the exception, since an open can fail on it too
 - **The physical invariant checker** (`lignin verify`) reads every
   page and value of the store as a close left it, holds every rule of
   the store, and makes every stored hash of the Merks in use again by
-  Merk's rules but those the rules take as stored (the value hash of a
-  reference); the cells of a dropped Merk that waits to be reclaimed
+  Merk's rules but those the rules take as stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); the cells of a dropped Merk that waits to be reclaimed
   are walked, and their hashes not made again. `Db::verify`, the check
   beside a running session, leaves out a few comparisons that need the
   store at rest (the page ids, the counts of live values, the page table

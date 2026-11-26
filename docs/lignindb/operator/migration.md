@@ -418,8 +418,10 @@ Read its report before you go on:
   to") says each in full. Choose before step 6 whether your node can meet
   any of these.
 - `root-key records that do not name the root of their Merk (GroveDB #1065):`
-  counts the Merks whose record of their root key names another node
-  than their root, or that have no such record at all. Each Merk is named on a line
+  counts the Merks that are opened by their record of the root key (a
+  Merk that holds nodes and is no child taking its root key from the
+  element that hosts it) whose record is missing, names a node inside
+  the tree that is not its root, or names a key with no node. Each Merk is named on a line
   `AT …: THE MERK IS READ AS ITS RECORD NAMES IT, ON ROCKSDB AS HERE, AND LIGNINDB TAKES NO FURTHER WRITE OF A NODE OF IT`.
   Such a source migrates, compares and verifies, and the target reads
   that Merk as RocksDB does; **but LigninDB refuses every later write of
@@ -518,8 +520,7 @@ so, and the next commands check each of them:
 2. The line `migrate: verify sound=… left_hashes=…` with `sound=true`:
    the physical invariant checker found every rule of the store to
    hold, with every stored hash of the Merks in use made again by Merk's
-   rules but those the rules take as they are stored (the value hash of
-   a reference); records that no tree links are carried and compared,
+   rules but those the rules take as they are stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); records that no tree links are carried and compared,
    and no hash of them is made.
 3. The last line, `migrated … into …: loaded, compared and verified`.
 
@@ -625,7 +626,7 @@ the check of the backup.
 
 A backup that is to be relied on is checked once. Restore it into a new
 directory, open it with `lignin verify`, which checks every page and
-hash, and read its counts with `lignin stats`, which opens it again.
+the hashes of the Merks in use (step 7 says which it takes as stored), and read its counts with `lignin stats`, which opens it again.
 
 ```sh
 claim_dir "$RESTORE"
@@ -706,7 +707,9 @@ the others are not decided on its word:
 
 - `the source can be migrated` is its last line and it counts no node
   value that is no element (its line `node values that are no element: …`
-  says 0): the
+  says 0), and no line of it names a node whose value is no element
+  elsewhere (`a node whose value of … bytes is no element`, under a
+  prefix that nothing leads to): the
   node goes back to the database as it was before the migration. A
   count above 0 is a value of the source that is no element, linked by
   a tree or not: check the source by the application's own means first.

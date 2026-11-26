@@ -258,8 +258,7 @@ lignin verify "$RESTORE"
 
 `lignin verify` opens the restore, closes it and checks every page and
 every value, and makes every stored hash of the Merks in use again by
-Merk's rules but those the rules take as stored (the value hash of a
-reference); the cells of a dropped Merk that waits to be reclaimed are
+Merk's rules but those the rules take as stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); the cells of a dropped Merk that waits to be reclaimed are
 walked, and their hashes not made again. Exit status 0
 is a sound store. A restore is a database like any other, at the version
 the backup holds: point the node at it, with the application's files of
