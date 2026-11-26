@@ -434,8 +434,9 @@ Read its report before you go on:
   such a tree; a cursor that steps from no key; a range query of the
   tree above that goes down into a tree made again at that path, and
   whether that tree is empty; the grove's own check
-  (`verify_grovedb`), which fails on RocksDB over the kept records and
-  finds nothing here; writes below such a tree, which both engines
+  (`verify_grovedb`), which, while a tree made again at that path holds
+  nothing, fails on RocksDB over the kept records and finds nothing
+  here (before a tree is made again there, it finds nothing on either); writes below such a tree, which both engines
   refuse at different costs and on some grove versions with different
   errors; once a tree is made again there, a write into a subtree of
   the old one, which RocksDB takes and LigninDB refuses; and the costs
@@ -465,6 +466,14 @@ Read its report before you go on:
   not start the node on the target unless you know that it writes
   nothing more into those Merks: keep it on RocksDB, and report the
   survey.
+- `node values that are no element: …` counts the values of nodes of the
+  grove that do not decode as an element of this version of GroveDB.
+  They do not refuse the source: the migration carries their bytes as
+  they are, compares bytes, and the check hashes a value as it is
+  stored, so the target holds what the source holds, and GroveDB answers
+  a read of such a value on LigninDB as it does on RocksDB. With a count above 0, check the
+  source by the application's own means, and report the survey, before
+  the node starts on the target.
 - `the migration projects a peak of about … MiB of memory`, and the
   limit it holds ("What it takes"). The survey projects with the default
   `--batch` and `--cache`, and takes neither. Where it refuses the
@@ -790,15 +799,29 @@ the one the migration read, and not an older state of it: a RocksDB
 database whose log lost its tail since reads as sound and can be
 migrated, at an earlier last write and another root hash. The block
 surveys it again and holds its first line (its RocksDB identity and its
-last write), its root hash and its last line to the survey of step 5. A
-survey that refuses the source does not stop it, so the comparison is
-made all the same, and fails where the survey of step 5 did not refuse
-it so, or where the survey stops before it prints the root hash; a
-report that cannot be written ends the shell, as any failure does,
-before a verdict, and the block removes the report of an earlier way
-back first, so it never reads one. It shows that the identity, the last
-write and the grove's root hash are those the migration read, not that
-every record is: a record
+last write) and its root hash to the survey of step 5, and has three
+answers:
+
+- Both surveys print them and one differs: it is another state of the
+  database, and the block fails with the words that `SOURCE` is not as
+  the migration read it.
+- They are the same, and both surveys end with `the source can be migrated`:
+  it says that `SOURCE` is as the migration read it.
+- Anything else leaves it untold, and the block fails with the words
+  that the surveys do not tell: a survey that refuses the source, even
+  where both refuse it alike, since what a refusal names can differ under
+  the same last line; one that stops before its root hash, as at a grove
+  deeper than the survey walks; or a survey of step 5 that was made with
+  options that this one is not given (`--unreachable`, `--memory-limit`),
+  whose report differs for that alone. Where step 5's survey had options,
+  give this one the same; otherwise the application's own check decides.
+
+A refusal of the survey does not stop the block, so the answer is given
+all the same; a report that cannot be written ends the shell, as any
+failure does, before an answer, and the block removes the report of an
+earlier way back first, so it never reads one. A match shows that the
+identity, the last write and the grove's root hash are those the
+migration read, not that every record is: a record
 of the aux, roots or meta columns can be lost with the same last write
 and root hash. So it is a check the way back needs, and no proof: the
 application's own check of its state decides too. Where `SOURCE`
@@ -812,13 +835,15 @@ first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [
 root_hash() { sed -n 's/^  root hash: //p' "$1"; }
 before="$WORK/reports/survey.txt"
 again="$WORK/reports/survey-again.txt"
-if [ -n "$(first_line "$before")" ] && [ -n "$(root_hash "$before")" ] \
-  && [ "$(first_line "$before")" = "$(first_line "$again")" ] \
-  && [ "$(root_hash "$before")" = "$(root_hash "$again")" ] \
-  && [ "$(tail -n 1 "$before")" = "$(tail -n 1 "$again")" ]; then
+both_read() { [ -n "$(first_line "$before")" ] && [ -n "$(root_hash "$before")" ] && [ -n "$(first_line "$again")" ] && [ -n "$(root_hash "$again")" ]; }
+same_state() { [ "$(first_line "$before")" = "$(first_line "$again")" ] && [ "$(root_hash "$before")" = "$(root_hash "$again")" ]; }
+both_taken() { [ "$(tail -n 1 "$before")" = "the source can be migrated" ] && [ "$(tail -n 1 "$again")" = "the source can be migrated" ]; }
+if both_read && ! same_state; then
+  echo "SOURCE IS NOT AS THE MIGRATION READ IT"; false
+elif both_read && same_state && both_taken; then
   echo "SOURCE is as the migration read it"
 else
-  echo "SOURCE IS NOT AS THE MIGRATION READ IT"; false
+  echo "THE SURVEYS DO NOT TELL WHETHER SOURCE IS AS THE MIGRATION READ IT"; false
 fi
 ```
 

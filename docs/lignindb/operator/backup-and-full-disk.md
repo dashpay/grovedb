@@ -160,14 +160,16 @@ copied all the same, and its restore's check finds it. `cp -a` copies every file
 with the `LOCK` file. `cp` returns before its bytes are on the device. On Linux `sync` returns once
 the system has written them, and tells of no write that failed; on
 macOS `sync` can return before, so a copy made there is written once
-its device has been ejected or the system shut down. Either way, a
-backup is relied on once a restore of it has passed `lignin verify`,
-and that check can be answered from the system's cache: a restore on
+its device has been ejected or the system shut down. Either way, the
+engine's files of a backup are relied on once a restore of it has passed
+`lignin verify`, and that check can be answered from the system's cache: a restore on
 another machine reads what the device holds. `lignin manifest`
 reads the backup's manifest without opening it and lists the files it
 names, marking one that is not there `, MISSING` and one that is
 shorter `, SHORT: … bytes on disk`; it exits 0 either way, and reads no page. A backup is relied on
-once a restore of it has passed `lignin verify` (below).
+once a restore of it has passed `lignin verify` (below), which reads
+the engine's files alone, and the application's own check of the files
+of its own that the backup holds, with the restored database.
 
 ## Back up a running node
 
