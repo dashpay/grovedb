@@ -264,8 +264,10 @@ do where it says so; otherwise the row here does.
 ## In a recovery
 
 Every open is a recovery: it loads the table checkpoint the manifest
-names, replays the log on it up to the last commit whose group the log
-holds whole, and begins a log file of its own. It lands on one committed
+names, replays the log on it up to the first item that is not whole,
+landing on the last commit whose group is before it (or, with none, on
+the version the log's start record names), and begins a log file of its
+own. It lands on one committed
 version. These words follow `recovery: `.
 
 Two kinds are told apart (`RecoveryError::is_damage`). **The first

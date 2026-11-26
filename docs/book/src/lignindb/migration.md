@@ -704,8 +704,12 @@ stops at limits of its own (a grove deeper than it walks, lists it caps)
 before it has said all it found. So it decides in one case alone, and
 the others are not decided on its word:
 
-- `the source can be migrated` is its last line: the node goes back to
-  the database as it was before the migration.
+- `the source can be migrated` is its last line and it counts no node
+  value that is no element (its line `node values that are no element: …`
+  says 0): the
+  node goes back to the database as it was before the migration. A
+  count above 0 is a value the migration's check would refuse: check
+  those Merks by the application's own means first.
 - It refuses for the mark of a state-sync restore that did not finish:
   the directory that holds the mark is to be discarded, on RocksDB as
   here, and the node's state got again as the application's
@@ -721,11 +725,14 @@ the others are not decided on its word:
 
 A migration of the directory that ended with status 3 though it reported
 `differing=0` found something in the target. Where the finding is of the
-grove's data (a hash or a rule of the elements, which the target copied
-from the source), the RocksDB database holds it too: report it, and take
-that database for damaged. Where it is of the target's own store (a
-read its device refused, a rule of its pages, its page table or its
-value log), it says nothing of the source.
+grove's data (a hash or a rule of the elements), the RocksDB database
+can hold it too, since the target is its copy, or the target alone,
+since the check follows the target's own addresses of its cells: report
+it, and check the source's data at the place it names, by the
+application's own means, before taking the RocksDB database for
+damaged or for whole. Where it is of the target's own store (a read its
+device refused, a rule of its pages, its page table or its value log),
+it says nothing of the source.
 
 - **Before the node has committed anything on LigninDB**, going back is
   pointing the node at its RocksDB database again and selecting RocksDB.

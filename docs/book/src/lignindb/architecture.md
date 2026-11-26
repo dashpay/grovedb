@@ -215,7 +215,8 @@ section 12).
    the manifest keeps, since commits that the checkpoint does not cover
    can lie before the place it was taken at, up to the first item that
    is not whole, behind which nothing is read: the last whole commit
-   group before it gives the version the open lands on, and the whole
+   group before it gives the version the open lands on, or, where the
+   log holds none, the version its start record names, and the whole
    items of the background up to it are read too. What the checkpoint covers already is
    skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
