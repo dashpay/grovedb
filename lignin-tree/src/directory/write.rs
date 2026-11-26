@@ -96,12 +96,14 @@ pub struct Settled {
     /// The records that were pending.
     pub records: u64,
     /// The leaves of the directory that the records changed
-    /// ([`Written::leaves`](crate::flat::Written::leaves)).
+    /// ([`Written::leaves`](crate::flat::Written::leaves)). A record that
+    /// is put as the pages have it changes none.
     pub leaves: u64,
     /// The images of leaves that were written for them
     /// ([`Written::leaf_writes`](crate::flat::Written::leaf_writes)): one
-    /// for each of those leaves, and what the cuts and the merges of the
-    /// keyspace add.
+    /// for each of those leaves but one that is left with no record, one
+    /// more for each further piece of a leaf that is cut, and one for a
+    /// root that takes what its only child holds. No page is handed two.
     pub leaf_writes: u64,
 }
 
@@ -730,6 +732,11 @@ impl Directory {
     /// batch leave the directory ([`Pending`]): a child record is under
     /// the id, pending or in the pages and not taken out by a pending
     /// record.
+    ///
+    /// As the walk that a call makes with no pending records, it reads
+    /// the keys of the child records and no value: a record of the pages
+    /// that a pending record takes out is passed by its key, whatever it
+    /// holds.
     pub fn has_children_in<P: FlatPages + ?Sized>(
         &self,
         pending: &Pending,
@@ -744,12 +751,19 @@ impl Directory {
         if under.any(|(_, record)| record.is_some()) {
             return Ok(true);
         }
-        let mut children = self.children(parent);
-        while let Some(child) = children.next(pages)? {
-            let key = child_key(parent, child.position, &child.key);
-            if pending.get(&key).is_none() {
+        let mut cursor = self.tree.cursor_within(&within);
+        let (mut key, mut value) = (Vec::new(), Vec::new());
+        cursor.seek_to_first(pages)?;
+        while let Some(rest) = cursor.key() {
+            key.clear();
+            key.extend_from_slice(&within);
+            key.extend_from_slice(rest);
+            value.clear();
+            // A record that a page step took out under the walk is passed.
+            if pending.get(&key).is_none() && cursor.value(pages, &mut value)? {
                 return Ok(true);
             }
+            cursor.next(pages)?;
         }
         Ok(false)
     }

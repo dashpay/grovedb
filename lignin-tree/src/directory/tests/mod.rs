@@ -49,6 +49,8 @@ struct Pages {
     /// freed.
     leaf_writes: u64,
     frees: u64,
+    /// The page of each image of a leaf that was written, in order.
+    leaf_pages: Vec<PageId>,
 }
 
 impl Pages {
@@ -64,6 +66,7 @@ impl Pages {
             writes_left: None,
             leaf_writes: 0,
             frees: 0,
+            leaf_pages: Vec::new(),
         }
     }
 
@@ -137,6 +140,9 @@ impl FlatPagesMut for Pages {
         }
         let read = FlatPage::decode(image, V1).expect("a page");
         self.leaf_writes += u64::from(read.leaf().is_some());
+        if read.leaf().is_some() {
+            self.leaf_pages.push(page);
+        }
         self.pages.insert(page, image.to_vec());
         self.revision += 1;
         Ok(())

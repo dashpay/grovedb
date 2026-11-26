@@ -25,9 +25,9 @@ impl Error for Malformed {}
 /// writer's pages are then no state of the directory, and whoever owns them
 /// gives them up, as after a failed write of any flat keyspace
 /// (`transactions.md` WT10). Every other error is a refusal, and a write
-/// that is refused has changed no page, with the exceptions that
-/// [`Directory::rekey`](super::Directory::rekey) and
-/// [`Directory::rekey_pairs`](super::Directory::rekey_pairs) state.
+/// that is refused has changed no page and put no pending record, with
+/// the exception that [`Directory::rekey`](super::Directory::rekey)
+/// states.
 #[derive(Debug)]
 pub enum DirectoryError {
     /// The flat keyspace the directory is kept in failed.

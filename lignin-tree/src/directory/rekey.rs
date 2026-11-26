@@ -462,8 +462,10 @@ impl Directory {
     /// One entry is written for each Merk that moves, with the records
     /// that lead to it. A plan that was made of another state can be
     /// refused when it is half made ([`DirectoryError::Exists`],
-    /// [`DirectoryError::NotFound`], [`DirectoryError::NotEmpty`]): after
-    /// any error the writer's pages are given up.
+    /// [`DirectoryError::NotFound`], [`DirectoryError::NotEmpty`]): it has
+    /// then changed no page, as any call that is refused
+    /// ([`Self::rekey_pairs_in`]). After an error of the keyspace the
+    /// writer's pages are given up.
     pub fn rekey_pairs<P: FlatPagesMut + ?Sized>(
         &mut self,
         pages: &mut P,
@@ -478,10 +480,36 @@ impl Directory {
     /// [`Self::rekey_pairs`] among the records of a batch ([`Pending`]):
     /// the plan was made of this directory as those records leave it, the
     /// records of the re-keying are put beside them, and no page is
-    /// changed. After an error the records are dropped with the writer's
-    /// pages: a plan that is refused when it is half made has put a part
-    /// of its records.
+    /// changed.
+    ///
+    /// A plan that was made of another state can be refused when it is
+    /// half made ([`DirectoryError::Exists`], [`DirectoryError::NotFound`],
+    /// [`DirectoryError::NotEmpty`]). **A re-keying that is refused has
+    /// put no record**, and the handle has the ids it had: the records are
+    /// made beside a copy of the pending ones, which takes their place
+    /// only once all of them are made.
     pub fn rekey_pairs_in<P: FlatPages + ?Sized>(
+        &mut self,
+        pending: &mut Pending,
+        pages: &P,
+        plan: &RekeyPlan,
+    ) -> Result<Rekeyed, DirectoryError> {
+        let (mut made, dropped) = (pending.clone(), self.dropped.clone());
+        match self.rekey_pairs_among(&mut made, pages, plan) {
+            Ok(rekeyed) => {
+                *pending = made;
+                Ok(rekeyed)
+            }
+            Err(error) => {
+                self.dropped = dropped;
+                Err(error)
+            }
+        }
+    }
+
+    /// Puts the records of the re-keying that `plan` holds into
+    /// `pending`. After an error a part of them is there.
+    fn rekey_pairs_among<P: FlatPages + ?Sized>(
         &mut self,
         pending: &mut Pending,
         pages: &P,

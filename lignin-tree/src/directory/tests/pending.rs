@@ -59,23 +59,44 @@ struct Done {
     freed: u64,
 }
 
+/// Holds what a settling of `pending` wrote to what the pages were handed
+/// since `from` images of leaves: **no page was handed two images of a
+/// leaf**, and the count of the keyspace's own code agrees.
+fn once_a_page(pages: &Pages, from: usize, settled: Settled, counted: u64) {
+    let handed = &pages.leaf_pages[from..];
+    assert_eq!(settled.leaf_writes, handed.len() as u64);
+    assert_eq!(
+        settled.leaf_writes,
+        crate::flat::leaf_images_written() - counted
+    );
+    let distinct: BTreeSet<PageId> = handed.iter().copied().collect();
+    assert_eq!(
+        distinct.len(),
+        handed.len(),
+        "a page was handed two images of a leaf: {handed:?}"
+    );
+}
+
 /// Settles `pending`, and holds what the settling says to what the pages
 /// were handed and to the leaves that the keys of the records lay in:
-/// **each of those leaves is written once, and beyond that at most one
-/// image of a leaf is written for each page that a cut made and for each
-/// page that was freed.** A test that calls this has every record change
-/// its leaf.
+/// **each of those leaves is written once or freed unwritten, one image
+/// more is written for each page that a cut made, and no page is handed
+/// two.** A test that calls this has every record change its leaf, and a
+/// keyspace that keeps its levels.
 fn settle(pages: &mut Pages, directory: &Directory, pending: Pending) -> Done {
     let homes: BTreeSet<PageId> = (pending.keys())
         .map(|key| leaf_of(pages, directory, key))
         .collect();
     let homes = homes.len() as u64;
-    let (records, before) = (pending.len() as u64, pages.leaf_writes);
+    let (records, from) = (pending.len() as u64, pages.leaf_pages.len());
+    let counted = crate::flat::leaf_images_written();
     let (had, frees): (BTreeSet<PageId>, _) = (pages.pages.keys().copied().collect(), pages.frees);
+    let levels = pages.levels(directory);
     let settled = directory.settle(pages, pending).expect("settled");
     assert_eq!(settled.records, records);
     assert_eq!(settled.leaves, homes);
-    assert_eq!(settled.leaf_writes, pages.leaf_writes - before);
+    once_a_page(pages, from, settled, counted);
+    assert_eq!(pages.levels(directory), levels);
     let made = pages
         .pages
         .keys()
@@ -83,7 +104,7 @@ fn settle(pages: &mut Pages, directory: &Directory, pending: Pending) -> Done {
         .count() as u64;
     let freed = pages.frees - frees;
     assert!(
-        (homes..=homes + made + freed).contains(&settled.leaf_writes),
+        (homes.saturating_sub(freed)..=homes + made).contains(&settled.leaf_writes),
         "{settled:?} for records in {homes} leaves, with {made} pages made and {freed} freed"
     );
     Done {
@@ -704,7 +725,7 @@ impl Twins {
     /// One batch, in the order a write transaction makes its calls: drops
     /// and clears, moves, Merks stated anew, enters, and the roots.
     fn batch(&mut self) {
-        let start = (self.single.clone(), self.batched.clone());
+        let start = self.single.0.leaf_writes;
         let mut pending = Pending::new();
         // The moves are planned on the directory as it is before the
         // batch, which is the same in both.
@@ -723,20 +744,17 @@ impl Twins {
                 self.same(one, two, (&before, &pending));
             }
         }
+        let pending_before_moves = pending.clone();
         if let Some(plan) = plan {
             let (single, batched) = (&mut self.single, &mut self.batched);
             let one = single.1.rekey_pairs(&mut single.0, &plan);
             let two = batched.1.rekey_pairs_in(&mut pending, &batched.0, &plan);
-            assert_eq!(answer(&one), answer(&two));
-            self.counts.moves += u64::from(two.is_ok());
-            if two.is_err() {
-                // A plan that the drops of its batch made stale is refused
-                // when it is half made: the records and the handle are
-                // given up, as the writer's pages are.
-                (self.single, self.batched) = start;
-                self.counts.given_up += 1;
-                return;
-            }
+            // A plan that the drops of its batch made stale is refused
+            // when it is half made, and has put no record then, as any
+            // call that is refused: the batch goes on.
+            let before = pending_before_moves.clone();
+            self.counts.given_up += u64::from(two.is_err());
+            self.counts.moves += u64::from(self.same(one, two, (&before, &pending)));
         }
         for _ in 0..self.below(3) {
             let (prefix, before) = (self.pick_where(true), pending.clone());
@@ -794,12 +812,19 @@ impl Twins {
         // The batch is settled: the two directories hold the same records,
         // and their handles answer alike.
         let (pages, directory) = &mut self.batched;
-        let (records, written) = (pending.len() as u64, pages.leaf_writes);
-        let single_writes = self.single.0.leaf_writes - start.0 .0.leaf_writes;
+        let (records, from) = (pending.len() as u64, pages.leaf_pages.len());
+        let counted = crate::flat::leaf_images_written();
+        let single_writes = self.single.0.leaf_writes - start;
+        let levels = pages.levels(directory);
         let settled = directory.settle(pages, pending).expect("settled");
         assert_eq!(settled.records, records);
-        assert_eq!(settled.leaf_writes, pages.leaf_writes - written);
-        assert!(settled.leaves <= settled.records && settled.leaves <= settled.leaf_writes);
+        assert!(settled.leaves <= settled.records);
+        // No page is handed two images of a leaf, but the root where the
+        // keyspace loses a level.
+        match pages.levels(directory) == levels {
+            true => once_a_page(pages, from, settled, counted),
+            false => assert_eq!(settled.leaf_writes, (pages.leaf_pages.len() - from) as u64),
+        }
         self.counts.batches += 1;
         self.counts.records += settled.records;
         self.counts.leaves += settled.leaves;
@@ -864,6 +889,151 @@ fn a_batch_that_is_settled_once_agrees_with_one_that_settles_every_call() {
     println!("{total:?}");
     assert!(total.batches > 6_000 && total.through > 10_000, "{total:?}");
     assert!(total.refused > 5_000 && total.moves > 100, "{total:?}");
+    assert!(
+        total.given_up > 0,
+        "a move was refused half made: {total:?}"
+    );
     assert!(total.records > 2 * total.leaves, "{total:?}");
     assert!(2 * total.single_writes > 3 * total.leaf_writes, "{total:?}");
+}
+
+/// A re-keying that is refused when it is half made has put no record,
+/// and the handle has the ids it had: the batch can go on.
+#[test]
+fn a_move_that_is_refused_half_made_puts_no_record() {
+    let (mut pages, mut directory) = wide(6);
+    let top = prefix_of(&[]);
+    let (from, to) = (below_top(0), below_top(100));
+    let rekey = Rekey {
+        from: &from,
+        to: &to,
+        key: &key_of(100),
+        below: &[],
+    };
+    let plan = directory.plan_rekey(&pages, &[rekey], &|_| false);
+    let plan = plan.expect("a plan");
+    // A call of the batch enters a Merk where the plan found none: the
+    // plan is of another state now.
+    let mut pending = Pending::new();
+    let host = Host {
+        parent: &top,
+        key: b"other",
+        position: 0,
+    };
+    directory
+        .add_in(&mut pending, &pages, &to, b"tree", Some(host))
+        .expect("entered");
+    let (before, kept) = (pending.clone(), directory.clone());
+    let refused = directory.rekey_pairs_in(&mut pending, &pages, &plan);
+    assert!(
+        matches!(refused, Err(DirectoryError::Exists { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(pending, before);
+    directory.settle(&mut pages, pending).expect("settled");
+    // The Merk that was to move is where it was, and the one that was
+    // entered is there.
+    assert!(directory.open(&pages, &from).expect("a lookup").is_some());
+    assert!(directory.open(&pages, &to).expect("a lookup").is_some());
+    for n in 0..6 {
+        let opened = directory.open(&pages, &below_top(n)).expect("a lookup");
+        assert_eq!(opened, kept.open(&pages, &below_top(n)).expect("a lookup"));
+    }
+    directory.check(&pages).expect("a directory");
+}
+
+/// The walk of the Merks below a Merk reads keys and no value, with
+/// pending records as without: a record of the host that is damaged and
+/// that a pending record takes out stands in nobody's way, as it does not
+/// once the drop that takes it out is settled by itself.
+#[test]
+fn a_damaged_record_that_a_pending_record_takes_out_is_passed() {
+    let made = || {
+        let (mut pages, directory) = wide(2);
+        let hosting = below_top(1);
+        let hosted = prefix_of(&[(key_of(1), 0), (b"d".to_vec(), 0)]);
+        let host = Host {
+            parent: &hosting,
+            key: b"d",
+            position: 0,
+        };
+        directory
+            .add(&mut pages, &hosted, b"tree", Some(host))
+            .expect("entered");
+        // The record of the host holds bytes that are no prefix and id.
+        let entry = directory.open(&pages, &hosting).expect("a lookup");
+        let key = super::super::record::child_key(entry.expect("entered").id(), 0, b"d");
+        let tree = *directory.tree();
+        tree.put(&mut pages, &key, b"no record").expect("a record");
+        (pages, directory, hosting, hosted)
+    };
+    let (mut pages, mut directory, hosting, hosted) = made();
+    directory.unlink(&mut pages, &hosted).expect("dropped");
+    directory.unlink(&mut pages, &hosting).expect("dropped");
+
+    let (mut batched, mut same, hosting, hosted) = made();
+    let mut pending = Pending::new();
+    same.unlink_in(&mut pending, &batched, &hosted)
+        .expect("dropped");
+    same.unlink_in(&mut pending, &batched, &hosting)
+        .expect("dropped");
+    same.settle(&mut batched, pending).expect("settled");
+    assert!(records(&pages, &directory) == records(&batched, &same));
+}
+
+/// A batch whose calls leave a record as the pages have it writes no leaf
+/// for it.
+#[test]
+fn a_batch_that_restores_what_it_changed_writes_no_leaf() {
+    let (mut pages, directory) = wide(50);
+    let (before, revision) = (pages.pages.clone(), pages.revision);
+    let prefix = below_top(7);
+    let mut pending = Pending::new();
+    for tree_type in [&b"sum"[..], b"tree"] {
+        let stated = Restated {
+            prefix: &prefix,
+            tree_type,
+            position: None,
+        };
+        directory
+            .restate_in(&mut pending, &pages, &[stated])
+            .expect("stated");
+    }
+    assert_eq!(pending.len(), 1);
+    let settled = directory.settle(&mut pages, pending).expect("settled");
+    let none = Settled {
+        records: 1,
+        leaves: 0,
+        leaf_writes: 0,
+    };
+    assert_eq!(settled, none);
+    assert_eq!((&pages.pages, pages.revision), (&before, revision));
+}
+
+/// A settling that fails in a page after it wrote a leaf is reported as
+/// the keyspace reports it: the writer's pages are then given up.
+#[test]
+fn a_settling_that_fails_after_a_leaf_is_reported() {
+    let (mut pages, mut directory) = wide(400);
+    let mut pending = Pending::new();
+    for n in (0..400).step_by(3) {
+        let left = directory.unlink_in(&mut pending, &pages, &below_top(n));
+        left.expect("dropped");
+    }
+    let homes: BTreeSet<PageId> = (pending.keys())
+        .map(|key| leaf_of(&pages, &directory, key))
+        .collect();
+    assert!(homes.len() > 3);
+    let written = pages.leaf_writes;
+    pages.writes_left = Some(2);
+    let failed = directory.settle(&mut pages, pending);
+    assert!(
+        matches!(failed, Err(DirectoryError::Flat(FlatError::Freed { .. }))),
+        "{failed:?}"
+    );
+    assert_eq!(
+        pages.leaf_writes - written,
+        2,
+        "two leaves were written before"
+    );
 }
