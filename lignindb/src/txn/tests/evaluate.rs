@@ -1568,6 +1568,90 @@ fn the_marks_of_the_callers_scope_are_gone_through_once() {
     world.check_committed();
 }
 
+/// A transaction whose writes cannot be laid out has no frames, and the
+/// call is refused with what refused the layout, whichever Merk is asked
+/// for, through the transaction and through a scope. Here a scope that
+/// kept its writes in the write set merged a change set whose node links
+/// a child that is not there (SC6). No hash is made, and once a rollback
+/// has taken that write out the call makes the hashes as before.
+#[test]
+fn a_transaction_whose_writes_cannot_be_laid_out_refuses_the_call() {
+    const OTHER: u8 = 5;
+
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(126);
+    planted(&mut world, &mut rng);
+    let grown = world.edit_outside(
+        OTHER,
+        |items| {
+            for index in 0..5 {
+                items.insert(key(index), vec![5; 30]);
+            }
+        },
+        &[],
+    );
+    assert!(committed(grown));
+    let calls = || db.counts.rule_calls.load(Ordering::Relaxed);
+    let no_child = |refused: Result<Option<Hash>, TxnError>| match refused {
+        Err(TxnError::Batch(BatchError::NoChild { subtree })) => assert_eq!(subtree, sub(OTHER)),
+        other => panic!("the layout is refused for the child that is not there: {other:?}"),
+    };
+
+    let tx = world.begin();
+    let merk = changed(&world, &tx, &mut rng, 1, 0);
+    world.apply(&tx, &batch(vec![merk])).expect("the change");
+    let (root_hash, stale) = (expected(&world, &tx, 1), stale_in(&world, &tx, 1));
+    tx.txn.set_savepoint().expect("no scope is open");
+
+    // Beside another scope, a scope keeps a change set in the write set
+    // whose node links a child that its Merk does not have, and merges.
+    let first = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope beside it");
+    let mut broken = world.merk(&tx, OTHER, |items| {
+        drop(items.insert(key(1), b"x".to_vec()))
+    });
+    let link = (broken.nodes.iter_mut())
+        .find_map(|(_, node, _)| node.left.as_mut().or(node.right.as_mut()))
+        .expect("a node with a child");
+    link.key = b"no such node".to_vec();
+    let broken = OwnedBatch {
+        merks: vec![broken],
+        ..OwnedBatch::default()
+    };
+    (broken.through(&beside))
+        .with(|batch| beside.apply(batch))
+        .expect("kept in the write set");
+    assert!(!beside.is_laid_out());
+    beside.merge();
+    first.merge();
+
+    // The call is refused as the layout is, for the Merk with the stale
+    // hashes, for the Merk of the write that is refused, and for one
+    // that nothing was written in.
+    let before = calls();
+    for name in [1, OTHER, 2] {
+        no_child(
+            tx.txn
+                .evaluate(sub(name), &mut Rules(&db.counts.rule_calls)),
+        );
+    }
+    assert_eq!(tx.txn.stats().base, None, "the transaction has no frames");
+    let later = tx.txn.scope().expect("a scope");
+    no_child(later.evaluate(sub(1), &mut Rules(&db.counts.rule_calls)));
+    later.rollback();
+    assert_eq!(calls(), before);
+
+    // The rollback takes the write out: the frames are made again, every
+    // hash that was stale is stale, and the call makes them.
+    tx.txn.rollback_to_savepoint().expect("a savepoint is set");
+    assert_eq!(stale_in(&world, &tx, 1), stale);
+    assert_eq!(evaluate_merged(&world, &tx, 1), root_hash);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+}
+
 /// Rules that refuse the call after `left` calls.
 struct Refusing<'a> {
     rules: Rules<'a>,
