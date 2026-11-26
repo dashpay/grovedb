@@ -454,7 +454,7 @@ fn cleaner_copied(stats: &DbStats) -> u64 {
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 51] = [
+pub const DETAIL_IDS: [&str; 53] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
@@ -464,6 +464,8 @@ pub const DETAIL_IDS: [&str; 51] = [
     "log_removes",
     "log_values",
     "log_value_bytes",
+    "log_values_carried",
+    "log_value_bytes_carried",
     "segment_bytes",
     "base_blocks",
     "base_payload_bytes",
@@ -530,6 +532,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("records", flush.remove_records, GROUPS),
         ("values", flush.values_logged, GROUPS),
         ("B", flush.value_logged_bytes, GROUPS),
+        ("values", stats.commits.values_carried, GROUPS),
+        ("B", stats.commits.value_bytes_carried, GROUPS),
         ("B", flush.appended_bytes, FLUSH),
         ("blocks", flush.base_blocks, FLUSH),
         ("B", flush.base_bytes, FLUSH),
