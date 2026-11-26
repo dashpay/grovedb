@@ -347,8 +347,9 @@ rm -rf -- "$CHECKPOINT"
 ```
 
 A removal that the system stops part way, as a directory that cannot be
-written, leaves part of the checkpoint with neither manifest name: fix
-what the system said, and run the block again, which finds the same
+written, leaves part of the checkpoint, with its `MANIFEST` or without
+it: what is left is no whole checkpoint either way. Fix what the system
+said, and run the block again, which finds the same
 directory by its identity and removes what is left.
 
 

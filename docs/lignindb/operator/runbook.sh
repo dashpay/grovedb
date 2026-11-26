@@ -108,13 +108,13 @@ extract() {
             printf "@@ set %s %d\n%s\n@@ end\n", document, NR, text
             next
         }
-        /^ *```[[:space:]]*sh[[:space:]]*$/ && !open {
+        /^[[:space:]]*```[[:space:]]*sh[[:space:]]*$/ && !open {
             open = 1
             indent = index($0, "`") - 1
             printf "@@ run %s %d\n", document, NR + 1
             next
         }
-        /^ *```[[:space:]]*$/ && open {
+        /^[[:space:]]*```[[:space:]]*$/ && open {
             open = 0
             print "@@ end"
             next

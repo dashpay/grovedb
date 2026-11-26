@@ -116,8 +116,10 @@ where that run's claim succeeded (it failed after `claim_dir`, which
 printed nothing), remove that directory, which the step made and which
 holds nothing but what it built or copied (`$WORK/rehearsal` for step
 3, `BACKUP` or `RESTORE` for steps 8 and 9), and run the step again.
-Where the claim itself failed, something else is at that path: remove
-nothing, and give the step a new path. Do not run step 4
+Where the claim itself failed, it said why: something is at that path,
+or the directory above refused the new one. Remove nothing; give the
+step a new path, or, where the directory above refused, fix that and
+run the step again with the same one. Do not run step 4
 again once `TARGET` is there: its first check refuses it.
 
 ```sh

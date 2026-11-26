@@ -141,7 +141,9 @@ If the background falls behind, committers are made to wait
    at for as long as it lives, and a cursor the one it opened at, with
    the later writes of its own transaction; another read takes the
    latest for that call, so a later call can see a commit made in
-   between. A read of a snapshot holds no lock while it reads. A read
+   between. A read of a snapshot takes no lock of a transaction; a few
+   of its lookups hold, for their call, a lock that other readers of the
+   same subtree take too. A read
    through a write transaction holds that transaction's own lock for
    its call, so another call on the same transaction waits for it, and
    opening a cursor of a transaction takes that lock for a moment.
