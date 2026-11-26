@@ -58,20 +58,28 @@
 //!
 //! # Beside the harness
 //!
-//! `lignin-testkit/src/bench/latency/` holds what was run around the
-//! harness for PERF-07-F1, on Linux (`docs/lignindb/background-and-readers.md`
-//! has what it gave):
+//! `lignin-testkit/src/bench/latency/` holds what is run around the harness
+//! for PERF-07-F1, on Linux (`docs/lignindb/background-and-readers.md`):
 //!
+//! - `campaign.sh` is the one command: from a clean checkout it makes the
+//!   builds, every run and every trace, and writes all the tables of the
+//!   task to one file;
 //! - `build.sh` makes a build for a comparison, from a clean checkout in a
 //!   target directory of its own, and names it by commit and sha256;
-//! - `pairs.sh` runs two latency runs at a time, each on a file system of
-//!   its own, in rounds in which the two exchange their file systems;
+//! - `log-allocated-ahead.patch` and `fewer-syncs.patch` are the two
+//!   experiments on the engine, which a campaign builds beside the base.
+//!   Neither is in the engine: each is a switch of the environment around
+//!   a change that is made for a measurement and for nothing else;
 //! - `traced.sh` makes one run with the kernel trace of `trace.bt`
-//!   (`bpftrace`) beside it: the stacks a thread leaves a processor with, who
-//!   wakes it, and the syncs, the long writes and the journal's commits
+//!   (`bpftrace`) beside it: the stacks a thread leaves a processor with,
+//!   who wakes it, and the syncs, the long writes and the journal's commits
 //!   around it;
 //! - `waits.py` makes the tables of what the measuring thread waited for
-//!   from such a trace.
+//!   from such a trace, and `tables.py` the tables of a campaign;
+//! - `pairs.sh` runs two latency runs at a time, each on a file system of
+//!   its own, in rounds in which the two exchange their file systems: for a
+//!   machine that other work shares, where two runs made one after the
+//!   other are not made under the same conditions.
 //!
 //! # What is told of a long commit
 //!

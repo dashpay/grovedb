@@ -1,27 +1,47 @@
 #!/usr/bin/env bash
-# build.sh NAME COMMIT
+# build.sh NAME COMMIT [PATCH]
 #
 # A build of `lignin-bench` for a comparison: a clean checkout of COMMIT of
 # $REPO (default: the repository this script is in) under $BUILDS/NAME/src,
-# built in $BUILDS/NAME/target. Leaves $BUILDS/NAME/lignin-bench with its
-# commit and its sha256 beside it, and prints both.
+# built in $BUILDS/NAME/target. With PATCH, the patch is applied to the
+# checkout and committed there first, under a fixed name and date, so that
+# one patch on one commit gives one commit. Leaves $BUILDS/NAME/lignin-bench
+# with its commit, its sha256 and the sha256 of the patch beside it, and
+# prints them.
 #
 # The first build of a $BUILDS leaves its lock file there and every later
 # one is made with it, so that two builds differ in the crates their commits
 # changed and in nothing that was resolved anew between them.
 set -euo pipefail
-name=$1 commit=$2
-repo=${REPO:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)} builds=${BUILDS:-$HOME/builds}
-mkdir -p "$builds"; rm -rf "$builds/$name"; mkdir -p "$builds/$name"
-git clone -q --no-hardlinks "$repo" "$builds/$name/src"
-git -C "$builds/$name/src" checkout -q --detach "$commit"
-[ -z "$(git -C "$builds/$name/src" status --porcelain)" ]
-if [ -f "$builds/Cargo.lock" ]; then cp "$builds/Cargo.lock" "$builds/$name/src/Cargo.lock"; fi
-(cd "$builds/$name/src" && CARGO_TARGET_DIR="$builds/$name/target" \
-   cargo build --release -p lignin-testkit --bin lignin-bench 2>&1 | tail -2)
-[ -f "$builds/Cargo.lock" ] || cp "$builds/$name/src/Cargo.lock" "$builds/Cargo.lock"
-cmp "$builds/Cargo.lock" "$builds/$name/src/Cargo.lock"
-cp "$builds/$name/target/release/lignin-bench" "$builds/$name/lignin-bench"
-git -C "$builds/$name/src" rev-parse HEAD > "$builds/$name/commit"
-sha256sum "$builds/$name/lignin-bench" | cut -d' ' -f1 > "$builds/$name/sha256"
-echo "$name $(cat "$builds/$name/commit") sha256 $(cat "$builds/$name/sha256")"
+name=${1:?a name for the build} commit=${2:?the commit to build} patch=${3:-}
+repo=${REPO:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}
+builds=${BUILDS:-$HOME/builds}
+[ -z "$patch" ] || patch=$(cd "$(dirname "$patch")" && pwd)/$(basename "$patch")
+to=${builds:?}/${name:?}
+mkdir -p "$builds"
+rm -rf "$to"
+mkdir -p "$to"
+git clone -q --no-hardlinks "$repo" "$to/src"
+git -C "$to/src" checkout -q --detach "$commit"
+if [ -n "$patch" ]; then
+  git -C "$to/src" apply --index "$patch"
+  GIT_AUTHOR_NAME=experiment GIT_AUTHOR_EMAIL=experiment@localhost \
+    GIT_AUTHOR_DATE=2000-01-01T00:00:00Z GIT_COMMITTER_NAME=experiment \
+    GIT_COMMITTER_EMAIL=experiment@localhost GIT_COMMITTER_DATE=2000-01-01T00:00:00Z \
+    git -C "$to/src" commit -q -m "experiment: $(basename "$patch")"
+  sha256sum "$patch" | cut -d' ' -f1 > "$to/patch-sha256"
+fi
+[ -z "$(git -C "$to/src" status --porcelain)" ]
+if [ -f "$builds/Cargo.lock" ]; then cp "$builds/Cargo.lock" "$to/src/Cargo.lock"; fi
+(cd "$to/src" && CARGO_TARGET_DIR="$to/target" \
+  cargo build --release -p lignin-testkit --bin lignin-bench 2>&1 | tail -2)
+[ -f "$builds/Cargo.lock" ] || cp "$to/src/Cargo.lock" "$builds/Cargo.lock"
+cmp "$builds/Cargo.lock" "$to/src/Cargo.lock"
+cp "$to/target/release/lignin-bench" "$to/lignin-bench"
+git -C "$to/src" rev-parse HEAD > "$to/commit"
+sha256sum "$to/lignin-bench" | cut -d' ' -f1 > "$to/sha256"
+line="$name: commit $(cat "$to/commit"), sha256 $(cat "$to/sha256")"
+if [ -n "$patch" ]; then
+  line="$line, which is $commit with $(basename "$patch") (sha256 $(cat "$to/patch-sha256"))"
+fi
+echo "$line"
