@@ -5,6 +5,7 @@ mod fragments;
 mod lookup;
 mod model;
 mod moves;
+mod pending;
 mod records;
 mod restated;
 mod roots;
@@ -44,6 +45,10 @@ struct Pages {
     read: Cell<(u64, u64)>,
     /// How many more pages may be written before a write fails.
     writes_left: Option<u64>,
+    /// How many images of leaves were written, and how many pages were
+    /// freed.
+    leaf_writes: u64,
+    frees: u64,
 }
 
 impl Pages {
@@ -57,6 +62,8 @@ impl Pages {
             revision: 0,
             read: Cell::new((0, 0)),
             writes_left: None,
+            leaf_writes: 0,
+            frees: 0,
         }
     }
 
@@ -128,12 +135,15 @@ impl FlatPagesMut for Pages {
         if let Some(left) = &mut self.writes_left {
             *left = left.checked_sub(1).ok_or(FlatError::Freed { page })?;
         }
+        let read = FlatPage::decode(image, V1).expect("a page");
+        self.leaf_writes += u64::from(read.leaf().is_some());
         self.pages.insert(page, image.to_vec());
         self.revision += 1;
         Ok(())
     }
 
     fn free(&mut self, page: PageId) -> Result<(), FlatError> {
+        self.frees += 1;
         self.pages.remove(&page);
         self.revision += 1;
         Ok(())

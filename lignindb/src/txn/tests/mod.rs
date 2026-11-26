@@ -29,6 +29,7 @@ mod recovered;
 mod savepoints;
 #[path = "../../scope/tests/engine.rs"]
 mod scopes;
+mod settled;
 mod subtrees;
 mod threads;
 mod trees;

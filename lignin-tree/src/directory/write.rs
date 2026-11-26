@@ -1,5 +1,6 @@
 //! Writing the directory: entering a Merk, naming its root, and dropping
-//! or clearing it.
+//! or clearing it, and the records of a batch that are in no page yet
+//! ([`Pending`]).
 
 use std::{
     collections::{HashMap, HashSet},
@@ -9,18 +10,100 @@ use std::{
 use lignin_format::CellAddress;
 
 use super::{
-    error::DirectoryError,
+    error::{DirectoryError, Malformed},
     read::damaged,
     record::{
-        child_key, dropped_key, encode_child, encode_dropped, encode_header, entry_key, root_key,
-        Dropped, Entry, Fields, Host, MerkId, Prefix, Root, HEADER_KEY,
+        child_key, children_key, decode_header, decode_prefix, dropped_key, encode_child,
+        encode_dropped, encode_header, entry_key, root_key, Dropped, Entry, Fields, Host, MerkId,
+        Prefix, Root, HEADER_KEY,
     },
     Directory,
 };
 use crate::{
-    flat::{FlatPages, FlatPagesMut},
+    flat::{Changes, FlatPages, FlatPagesMut},
     fragment::Carried,
 };
+
+/// The records that the writes of one batch put into the directory and
+/// take out of it, before they are in a page: each key once, with the
+/// value it has after all of them or with none, in the order of the keys.
+///
+/// A write that is given one ([`Directory::add_in`] and the others whose
+/// names end so) changes no page. It reads what it needs through the
+/// records first and then in the pages
+/// ([`Directory::open_in`]), so it sees what the writes before it put
+/// there, and it puts its own records beside them. [`Directory::settle`]
+/// then writes them all, each leaf of the directory once for the records
+/// that go into it.
+///
+/// **Until they are settled the records are in no page.** A read that is
+/// not given them reads the directory as it was before the first of them:
+/// [`Directory::open`] and every other call that takes pages alone. So
+/// they are settled before anything else reads the directory, and before
+/// the operation that made them ends. Records that are dropped unsettled
+/// were never put: no page has anything of them.
+///
+/// What a handle keeps beside the pages follows the calls, not the
+/// settling: the ids of the dropped Merks are in the handle from the call
+/// that dropped them ([`Directory::unlink_in`]), as they are for a write
+/// that is settled at once. A handle whose records were dropped unsettled
+/// is loaded again ([`Directory::load`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Pending {
+    records: Changes,
+}
+
+impl Pending {
+    /// No record.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether no record is pending.
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// How many records are pending: one for each key that a write put or
+    /// took out, however often.
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    /// The keys of the pending records, in their order.
+    pub fn keys(&self) -> impl Iterator<Item = &[u8]> {
+        self.records.keys().map(Vec::as_slice)
+    }
+
+    pub(super) fn put(&mut self, key: &[u8], value: &[u8]) {
+        self.records.insert(key.to_vec(), Some(value.to_vec()));
+    }
+
+    pub(super) fn delete(&mut self, key: &[u8]) {
+        self.records.insert(key.to_vec(), None);
+    }
+
+    /// What is pending under `key`: its value, `Some(None)` for a record
+    /// that goes, and `None` where nothing is pending.
+    fn get(&self, key: &[u8]) -> Option<Option<&[u8]>> {
+        self.records.get(key).map(Option::as_deref)
+    }
+}
+
+/// What settling the records of a batch did ([`Directory::settle`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Settled {
+    /// The records that were pending.
+    pub records: u64,
+    /// The leaves of the directory that the records changed
+    /// ([`Written::leaves`](crate::flat::Written::leaves)).
+    pub leaves: u64,
+    /// The images of leaves that were written for them
+    /// ([`Written::leaf_writes`](crate::flat::Written::leaf_writes)): one
+    /// for each of those leaves, and what the cuts and the merges of the
+    /// keyspace add.
+    pub leaf_writes: u64,
+}
 
 /// What one write did to the root of a Merk.
 ///
@@ -139,16 +222,32 @@ impl Directory {
         tree_type: &[u8],
         host: Option<Host<'_>>,
     ) -> Result<MerkId, DirectoryError> {
-        let left = self.free(pages, prefix)?;
+        let mut pending = Pending::new();
+        let id = self.add_in(&mut pending, pages, prefix, tree_type, host)?;
+        self.settle(pages, pending)?;
+        Ok(id)
+    }
+
+    /// [`Self::add`] among the records of a batch ([`Pending`]): the
+    /// Merk's records are put beside them, and no page is changed.
+    pub fn add_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &mut Pending,
+        pages: &P,
+        prefix: &Prefix,
+        tree_type: &[u8],
+        host: Option<Host<'_>>,
+    ) -> Result<MerkId, DirectoryError> {
+        let left = self.free(pending, pages, prefix)?;
         let place = match host {
             Some(host) => {
-                let place = self.below(pages, &host, None)?;
-                self.host_is_free(pages, &host, &place)?;
+                let place = self.below(pending, pages, &host, None)?;
+                self.host_is_free(pending, pages, &host, &place)?;
                 Some(place)
             }
             None => None,
         };
-        let id = self.next_id(pages)?;
+        let id = self.next_id_in(pending, pages)?;
         let fields = Fields {
             id,
             root: None,
@@ -158,10 +257,10 @@ impl Directory {
         };
         let entry = fields.encode()?;
 
-        self.give_out(pages, id)?;
-        self.displace(pages, prefix, left.as_ref())?;
+        Self::give_out(pending, id)?;
+        self.displace(pending, pages, prefix, left.as_ref())?;
         let child = place.as_ref().map(|place| &place.child[..]);
-        self.enter(pages, prefix, &entry, child)?;
+        Self::enter(pending, prefix, &entry, child);
         Ok(id)
     }
 
@@ -209,6 +308,21 @@ impl Directory {
         pages: &mut P,
         changes: &[Restated<'_>],
     ) -> Result<(), DirectoryError> {
+        let mut pending = Pending::new();
+        self.restate_in(&mut pending, pages, changes)?;
+        self.settle(pages, pending)?;
+        Ok(())
+    }
+
+    /// [`Self::restate`] among the records of a batch ([`Pending`]): the
+    /// Merks are read as those records leave them, their records are put
+    /// beside them, and no page is changed.
+    pub fn restate_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &mut Pending,
+        pages: &P,
+        changes: &[Restated<'_>],
+    ) -> Result<(), DirectoryError> {
         struct Stated {
             prefix: Prefix,
             was: Entry,
@@ -224,7 +338,7 @@ impl Directory {
             if !named.insert(prefix) {
                 return Err(DirectoryError::Twice { prefix });
             }
-            let was = self.live(pages, &prefix)?;
+            let was = self.live_in(pending, pages, &prefix)?;
             let host = match (was.host(), change.position) {
                 (None, Some(_)) => return Err(DirectoryError::NoParent { parent: prefix }),
                 (Some(host), Some(position)) => Some(Host { position, ..host }),
@@ -255,7 +369,7 @@ impl Directory {
         let left: HashSet<&[u8]> = moves().map(|(_, (from, _))| &from[..]).collect();
         let mut taken = HashSet::new();
         for (merk, (_, to)) in moves() {
-            let free = left.contains(&to[..]) || self.get(pages, to)?.is_none();
+            let free = left.contains(&to[..]) || self.get_in(pending, pages, to)?.is_none();
             if !taken.insert(&to[..]) || !free {
                 let host = merk.now.host();
                 let what = "a hosted Merk whose entry names no host";
@@ -270,16 +384,16 @@ impl Directory {
         // Every place that is left is given up before one is taken: a Merk
         // may be where another was.
         for (_, (from, _)) in moves() {
-            self.tree.delete(pages, from)?;
+            pending.delete(from);
         }
         for merk in &stated {
             if let Some((_, to)) = &merk.moved {
                 let record = encode_child(&merk.prefix, merk.now.id());
-                self.tree.put(pages, to, &record)?;
+                pending.put(to, &record);
             }
             if merk.now != merk.was {
                 let key = entry_key(&merk.prefix);
-                self.tree.put(pages, &key, merk.now.as_bytes())?;
+                pending.put(&key, merk.now.as_bytes());
             }
         }
         Ok(())
@@ -307,6 +421,22 @@ impl Directory {
         pages: &mut P,
         changes: &[RootChange<'_>],
     ) -> Result<(), DirectoryError> {
+        let mut pending = Pending::new();
+        self.set_roots_in(&mut pending, pages, changes)?;
+        self.settle(pages, pending)?;
+        Ok(())
+    }
+
+    /// [`Self::set_roots`] among the records of a batch ([`Pending`]): the
+    /// roots are resolved against the entries as those records leave
+    /// them, the records of the change are put beside them, and no page
+    /// is changed.
+    pub fn set_roots_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &mut Pending,
+        pages: &P,
+        changes: &[RootChange<'_>],
+    ) -> Result<(), DirectoryError> {
         let mut merks: Vec<Changed<'_>> = Vec::new();
         let mut places: HashMap<Prefix, usize> = HashMap::new();
         let mut became_roots = Vec::new();
@@ -314,8 +444,11 @@ impl Directory {
             let &RootChange::Carried { from, to } = change else {
                 continue;
             };
-            let found = match self.root_owner(pages, from)? {
-                Some(prefix) => self.open(pages, &prefix)?.map(|entry| (prefix, entry)),
+            let found = match self.root_owner_in(pending, pages, from)? {
+                Some(prefix) => {
+                    let entry = self.open_in(pending, pages, &prefix)?;
+                    entry.map(|entry| (prefix, entry))
+                }
                 None => None,
             };
             let Some((prefix, entry)) = found else {
@@ -346,7 +479,7 @@ impl Directory {
             match places.get(prefix) {
                 Some(&place) => merks[place].now = now,
                 None => {
-                    let entry = self.live(pages, prefix)?;
+                    let entry = self.live_in(pending, pages, prefix)?;
                     places.insert(*prefix, merks.len());
                     merks.push(Changed {
                         prefix: *prefix,
@@ -370,7 +503,7 @@ impl Directory {
             }
             // Another Merk may have its root there only if this change
             // takes it away.
-            if let Some(holder) = self.root_owner(pages, address)?
+            if let Some(holder) = self.root_owner_in(pending, pages, address)?
                 && !places.contains_key(&holder)
             {
                 return Err(DirectoryError::RootTaken { address });
@@ -391,16 +524,15 @@ impl Directory {
         // a root may be where another was.
         for merk in &merks {
             if let Some(was) = merk.was().filter(|was| Some(*was) != merk.address()) {
-                self.tree.delete(pages, &root_key(was))?;
+                pending.delete(&root_key(was));
             }
         }
         for (merk, entry) in merks.iter().zip(&entries) {
             if let Some(address) = merk.address().filter(|now| Some(*now) != merk.was()) {
-                self.tree.put(pages, &root_key(address), &merk.prefix)?;
+                pending.put(&root_key(address), &merk.prefix);
             }
             if *entry != merk.entry {
-                self.tree
-                    .put(pages, &entry_key(&merk.prefix), entry.as_bytes())?;
+                pending.put(&entry_key(&merk.prefix), entry.as_bytes());
             }
         }
         Ok(())
@@ -419,22 +551,38 @@ impl Directory {
         pages: &mut P,
         prefix: &Prefix,
     ) -> Result<Dropped, DirectoryError> {
-        let entry = self.live(pages, prefix)?;
+        let mut pending = Pending::new();
+        let dropped = self.unlink_in(&mut pending, pages, prefix)?;
+        self.settle(pages, pending)?;
+        Ok(dropped)
+    }
+
+    /// [`Self::unlink`] among the records of a batch ([`Pending`]): the
+    /// Merk is read as those records leave it, its records are put beside
+    /// them, and no page is changed. The handle has the id of a dropped
+    /// Merk that had a root from this call on, as after [`Self::unlink`].
+    pub fn unlink_in<P: FlatPages + ?Sized>(
+        &mut self,
+        pending: &mut Pending,
+        pages: &P,
+        prefix: &Prefix,
+    ) -> Result<Dropped, DirectoryError> {
+        let entry = self.live_in(pending, pages, prefix)?;
         let root = entry.root().map(|root| root.address);
         // A Merk with no root has no node, and so hosts no Merk.
-        if root.is_none() && self.has_children(pages, entry.id())? {
+        if root.is_none() && self.has_children_in(pending, pages, entry.id())? {
             return Err(DirectoryError::NotEmpty { prefix: *prefix });
         }
         let id = entry.id();
         let dropped = Dropped { id, root };
         if let Some(root) = root {
-            self.tree.delete(pages, &root_key(root))?;
+            pending.delete(&root_key(root));
         }
         if let Some(child) = entry.child_key() {
-            self.tree.delete(pages, &child)?;
+            pending.delete(&child);
         }
-        self.tree.delete(pages, &entry_key(prefix))?;
-        self.leave(pages, dropped)?;
+        pending.delete(&entry_key(prefix));
+        self.leave(pending, dropped);
         Ok(dropped)
     }
 
@@ -450,7 +598,23 @@ impl Directory {
         pages: &mut P,
         prefix: &Prefix,
     ) -> Result<Option<Dropped>, DirectoryError> {
-        let entry = self.live(pages, prefix)?;
+        let mut pending = Pending::new();
+        let dropped = self.clear_in(&mut pending, pages, prefix)?;
+        self.settle(pages, pending)?;
+        Ok(dropped)
+    }
+
+    /// [`Self::clear`] among the records of a batch ([`Pending`]): the
+    /// Merk is read as those records leave it, its records are put beside
+    /// them, and no page is changed. The handle has the id that a Merk
+    /// with a root had from this call on, as after [`Self::clear`].
+    pub fn clear_in<P: FlatPages + ?Sized>(
+        &mut self,
+        pending: &mut Pending,
+        pages: &P,
+        prefix: &Prefix,
+    ) -> Result<Option<Dropped>, DirectoryError> {
+        let entry = self.live_in(pending, pages, prefix)?;
         let Some(root) = entry.root() else {
             return Ok(None);
         };
@@ -458,7 +622,7 @@ impl Directory {
             id: entry.id(),
             root: Some(root.address),
         };
-        let id = self.next_id(pages)?;
+        let id = self.next_id_in(pending, pages)?;
         let fields = Fields {
             id,
             root: None,
@@ -466,21 +630,180 @@ impl Directory {
         };
         let cleared = fields.encode()?;
 
-        self.give_out(pages, id)?;
-        self.tree.delete(pages, &root_key(root.address))?;
-        self.enter(pages, prefix, &cleared, entry.child_key().as_deref())?;
-        self.leave(pages, dropped)?;
+        Self::give_out(pending, id)?;
+        pending.delete(&root_key(root.address));
+        Self::enter(pending, prefix, &cleared, entry.child_key().as_deref());
+        self.leave(pending, dropped);
         Ok(Some(dropped))
+    }
+
+    /// Writes the records of a batch into the pages, each leaf of the
+    /// directory once for the records that go into it
+    /// ([`FlatTree::write`](crate::flat::FlatTree::write)), and says how
+    /// many leaves that was.
+    ///
+    /// The records are those that the writes of one operation put into
+    /// `pending`, read from this directory as `pages` have it. After an
+    /// error the writer's pages are given up, as after any write of the
+    /// directory that failed in a page.
+    pub fn settle<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        pending: Pending,
+    ) -> Result<Settled, DirectoryError> {
+        if pending.is_empty() {
+            return Ok(Settled::default());
+        }
+        let written = self.tree.write(pages, &pending.records)?;
+        #[cfg(any(test, feature = "held_reads"))]
+        self.held_to_the_pages(pages, &pending);
+        Ok(Settled {
+            records: pending.records.len() as u64,
+            leaves: written.leaves,
+            leaf_writes: written.leaf_writes,
+        })
+    }
+
+    /// Holds the pages to the records that were settled into them: a
+    /// lookup of each key finds the value that was pending under it, or
+    /// none under a key whose record went, or the call panics. That is so
+    /// in a test build of this crate, and in a build with the feature
+    /// `held_reads`. A lookup that fails is not held.
+    #[cfg(any(test, feature = "held_reads"))]
+    fn held_to_the_pages<P: FlatPages + ?Sized>(&self, pages: &P, pending: &Pending) {
+        for (key, record) in &pending.records {
+            if let Ok(found) = self.get(pages, key) {
+                assert_eq!(
+                    found.as_deref(),
+                    record.as_deref(),
+                    "the record of the directory under the key {key:?}: in the pages, and as \
+                     it was settled"
+                );
+            }
+        }
+    }
+
+    /// The record under `key` as the records of a batch leave it: what is
+    /// pending under the key, and where nothing is, what the pages have.
+    fn get_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, DirectoryError> {
+        match pending.get(key) {
+            Some(record) => Ok(record.map(<[u8]>::to_vec)),
+            None => self.get(pages, key),
+        }
+    }
+
+    /// [`Self::stored`] as the records of a batch leave the directory
+    /// ([`Pending`]).
+    pub fn stored_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        prefix: &Prefix,
+    ) -> Result<Option<Entry>, DirectoryError> {
+        let key = entry_key(prefix);
+        let Some(raw) = self.get_in(pending, pages, &key)? else {
+            return Ok(None);
+        };
+        let entry = Entry::decode(raw).map_err(|what| damaged(&key, what.0))?;
+        Ok(Some(entry))
+    }
+
+    /// [`Self::open`] as the records of a batch leave the directory
+    /// ([`Pending`]): the live Merk under `prefix` after the writes that
+    /// put them.
+    pub fn open_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        prefix: &Prefix,
+    ) -> Result<Option<Entry>, DirectoryError> {
+        let entry = self.stored_in(pending, pages, prefix)?;
+        Ok(entry.filter(|entry| self.is_live(entry)))
+    }
+
+    /// Whether a Merk is hosted in the Merk `parent` as the records of a
+    /// batch leave the directory ([`Pending`]): a child record is under
+    /// the id, pending or in the pages and not taken out by a pending
+    /// record.
+    pub fn has_children_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        parent: MerkId,
+    ) -> Result<bool, DirectoryError> {
+        let within = children_key(parent);
+        let mut under = pending.records.range(within.to_vec()..);
+        let mut under = under
+            .by_ref()
+            .take_while(|(key, _)| key.starts_with(&within));
+        if under.any(|(_, record)| record.is_some()) {
+            return Ok(true);
+        }
+        let mut children = self.children(parent);
+        while let Some(child) = children.next(pages)? {
+            let key = child_key(parent, child.position, &child.key);
+            if pending.get(&key).is_none() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// [`Self::live`] as the records of a batch leave the directory.
+    fn live_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        prefix: &Prefix,
+    ) -> Result<Entry, DirectoryError> {
+        let entry = self.open_in(pending, pages, prefix)?;
+        entry.ok_or(DirectoryError::NotFound { prefix: *prefix })
+    }
+
+    /// [`Self::root_owner`] as the records of a batch leave the
+    /// directory.
+    fn root_owner_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+        address: CellAddress,
+    ) -> Result<Option<Prefix>, DirectoryError> {
+        let key = root_key(address);
+        let Some(value) = self.get_in(pending, pages, &key)? else {
+            return Ok(None);
+        };
+        let prefix = decode_prefix(&value).map_err(|what| damaged(&key, what.0))?;
+        Ok(Some(prefix))
+    }
+
+    /// [`Self::next_id`] as the records of a batch leave the directory:
+    /// after the ids that the writes which put them gave out.
+    fn next_id_in<P: FlatPages + ?Sized>(
+        &self,
+        pending: &Pending,
+        pages: &P,
+    ) -> Result<MerkId, DirectoryError> {
+        let header = self.get_in(pending, pages, &HEADER_KEY)?;
+        let header = header.ok_or(Malformed("the directory has no header"));
+        header
+            .and_then(|header| decode_header(&header))
+            .map_err(|what| damaged(&HEADER_KEY, what.0))
     }
 
     /// The entry that is in the way of a Merk to be entered under
     /// `prefix`: one that a dropped Merk left. A live one refuses.
     pub(super) fn free<P: FlatPages + ?Sized>(
         &self,
+        pending: &Pending,
         pages: &P,
         prefix: &Prefix,
     ) -> Result<Option<Entry>, DirectoryError> {
-        match self.stored(pages, prefix)? {
+        match self.stored_in(pending, pages, prefix)? {
             Some(entry) if self.is_live(&entry) => Err(DirectoryError::Exists { prefix: *prefix }),
             left => Ok(left),
         }
@@ -493,11 +816,12 @@ impl Directory {
     /// it does not go below itself.
     pub(super) fn below<P: FlatPages + ?Sized>(
         &self,
+        pending: &Pending,
         pages: &P,
         host: &Host<'_>,
         moving: Option<(&Prefix, MerkId)>,
     ) -> Result<Place, DirectoryError> {
-        let parent = self.open(pages, host.parent)?;
+        let parent = self.open_in(pending, pages, host.parent)?;
         let parent = parent.ok_or(DirectoryError::NoParent {
             parent: *host.parent,
         })?;
@@ -515,11 +839,12 @@ impl Directory {
     /// Refuses if `host` has a Merk at its position already.
     pub(super) fn host_is_free<P: FlatPages + ?Sized>(
         &self,
+        pending: &Pending,
         pages: &P,
         host: &Host<'_>,
         place: &Place,
     ) -> Result<(), DirectoryError> {
-        match self.get(pages, &place.child)? {
+        match self.get_in(pending, pages, &place.child)? {
             Some(_) => Err(DirectoryError::HostTaken {
                 parent: *host.parent,
                 position: host.position,
@@ -532,68 +857,56 @@ impl Directory {
     /// beside itself, before another entry takes its place: the record of
     /// its root. The record of its host stays for the reclaimer, which
     /// finds what was below the Merk by it.
-    pub(super) fn displace<P: FlatPagesMut + ?Sized>(
+    pub(super) fn displace<P: FlatPages + ?Sized>(
         &self,
-        pages: &mut P,
+        pending: &mut Pending,
+        pages: &P,
         prefix: &Prefix,
         left: Option<&Entry>,
     ) -> Result<(), DirectoryError> {
         let Some(root) = left.and_then(Entry::root) else {
             return Ok(());
         };
-        if self.root_owner(pages, root.address)? == Some(*prefix) {
-            self.tree.delete(pages, &root_key(root.address))?;
+        if self.root_owner_in(pending, pages, root.address)? == Some(*prefix) {
+            pending.delete(&root_key(root.address));
         }
         Ok(())
     }
 
-    /// Writes every record of the Merk under `prefix` as `entry` has it:
+    /// Puts every record of the Merk under `prefix` as `entry` has it:
     /// the entry, the record of its root, and under `child` the record of
     /// its host.
-    pub(super) fn enter<P: FlatPagesMut + ?Sized>(
-        &self,
-        pages: &mut P,
+    pub(super) fn enter(
+        pending: &mut Pending,
         prefix: &Prefix,
         entry: &Entry,
         child: Option<&[u8]>,
-    ) -> Result<(), DirectoryError> {
-        self.tree.put(pages, &entry_key(prefix), entry.as_bytes())?;
+    ) {
+        pending.put(&entry_key(prefix), entry.as_bytes());
         if let Some(child) = child {
-            let record = encode_child(prefix, entry.id());
-            self.tree.put(pages, child, &record)?;
+            pending.put(child, &encode_child(prefix, entry.id()));
         }
         if let Some(root) = entry.root() {
-            self.tree.put(pages, &root_key(root.address), prefix)?;
+            pending.put(&root_key(root.address), prefix);
         }
-        Ok(())
     }
 
-    /// Writes into the header that `id`, the next id to give out, is
-    /// given out.
-    fn give_out<P: FlatPagesMut + ?Sized>(
-        &self,
-        pages: &mut P,
-        id: MerkId,
-    ) -> Result<(), DirectoryError> {
+    /// Puts into the header that `id`, the next id to give out, is given
+    /// out.
+    fn give_out(pending: &mut Pending, id: MerkId) -> Result<(), DirectoryError> {
         let next = id.get().checked_add(1).and_then(MerkId::new);
         let next = next.ok_or(DirectoryError::IdsExhausted)?;
-        self.tree.put(pages, &HEADER_KEY, &encode_header(next))?;
+        pending.put(&HEADER_KEY, &encode_header(next));
         Ok(())
     }
 
     /// Records what a Merk left. From here on the Merks below it are not
     /// in use.
-    fn leave<P: FlatPagesMut + ?Sized>(
-        &mut self,
-        pages: &mut P,
-        dropped: Dropped,
-    ) -> Result<(), DirectoryError> {
-        let record = encode_dropped(dropped.root);
-        self.tree.put(pages, &dropped_key(dropped.id), &record)?;
+    fn leave(&mut self, pending: &mut Pending, dropped: Dropped) {
+        pending.put(&dropped_key(dropped.id), &encode_dropped(dropped.root));
         if dropped.root.is_some() {
             Arc::make_mut(&mut self.dropped).insert(dropped.id);
         }
-        Ok(())
     }
 }
 

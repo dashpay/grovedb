@@ -571,7 +571,8 @@ fn a_lookup_reports_a_record_that_is_not_one() {
 #[test]
 fn a_failed_page_write_is_reported_as_the_keyspace_reports_it() {
     let mut grove = sample();
-    grove.pages.writes_left = Some(1);
+    // The records of the Merk are in one leaf, which is written once.
+    grove.pages.writes_left = Some(0);
     let top = prefix_of(&[]);
     let host = Host {
         parent: &top,
@@ -581,7 +582,7 @@ fn a_failed_page_write_is_reported_as_the_keyspace_reports_it() {
     let added = grove
         .directory
         .add(&mut grove.pages, &[8; 32], b"", Some(host));
-    let error = added.expect_err("the second page write fails");
+    let error = added.expect_err("the page write fails");
     assert!(
         matches!(error, DirectoryError::Flat(FlatError::Freed { .. })),
         "{error}"

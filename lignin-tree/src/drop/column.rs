@@ -13,7 +13,7 @@ use super::{
     step::{bucket_root, damaged, flat_page, value_bytes, Busy, Reclaimer, Step, LOOKS},
 };
 use crate::{
-    directory::{Directory, Host, MerkId, Prefix},
+    directory::{Directory, Host, MerkId, Pending, Prefix},
     flat::{Committed, FlatConfig, FlatPagesMut, FlatTree, StepLog},
     OperationGuard,
 };
@@ -101,18 +101,28 @@ impl<F: FlatPagesMut + ?Sized> Flats<'_, F> {
 /// records under a prefix are those of the entry that the directory has
 /// under it (see the [module documentation](super)).
 ///
-/// A subtree that is refused ([`Directory::add`]) has changed no page.
-/// After any other error the caller rolls the operation's scope back.
+/// **The directory's records are put into `pending`**
+/// ([`Directory::add_in`]), and no page of the directory is changed: the
+/// caller settles them with the other records of its batch
+/// ([`Directory::settle`]). The prefix is read as the records that are
+/// pending already leave it: an entry that one of them took out is not in
+/// the way, and has left no flat record to unlink. The columns are written
+/// here.
+///
+/// A subtree that is refused ([`Directory::add`]) has changed no page and
+/// put no record. After any other error the caller rolls the operation's
+/// scope back.
 pub fn enter<F: FlatPagesMut + ?Sized>(
     directory: &Directory,
+    pending: &mut Pending,
     flats: &mut Flats<'_, F>,
     prefix: &Prefix,
     tree_type: &[u8],
     host: Option<Host<'_>>,
 ) -> Result<MerkId, DropError> {
-    let left = directory.stored(flats.pages, prefix)?;
+    let left = directory.stored_in(pending, flats.pages, prefix)?;
     let left = left.is_some_and(|entry| !directory.is_live(&entry));
-    let id = directory.add(flats.pages, prefix, tree_type, host)?;
+    let id = directory.add_in(pending, flats.pages, prefix, tree_type, host)?;
     if left {
         flats.unlink_subtree(prefix)?;
     }

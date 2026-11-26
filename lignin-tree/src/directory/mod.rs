@@ -8,6 +8,8 @@
 //!   ([`Host`]).
 //! - [`RootChange`] is how a write states the roots it changed, and
 //!   [`Dropped`] what a dropped Merk leaves for the reclaimer.
+//! - [`Pending`] is the records of one batch before they are in a page,
+//!   and [`Directory::settle`] writes them, each leaf once.
 //! - [`record`] has the keys and the bytes of the records.
 //!
 //! The directory knows no path, no hash and no element. A Merk is named by
@@ -214,6 +216,67 @@
 //!   take their new places together. Nothing else of a Merk changes, and
 //!   no cell is read.
 //!
+//! # The records of a batch
+//!
+//! A record is a key of some tens of bytes, and a leaf of the keyspace is
+//! written whole. A batch of a write transaction can enter, move, drop
+//! and clear thousands of Merks and name as many roots, and it puts
+//! several records for each. So **a batch writes each leaf of the
+//! directory once for the records it puts there, and not once a record**:
+//!
+//! - Every call that writes has a form that is given the records of the
+//!   batch ([`Pending`]): [`Directory::add_in`], [`Directory::set_roots_in`],
+//!   [`Directory::unlink_in`], [`Directory::clear_in`],
+//!   [`Directory::restate_in`] and [`Directory::rekey_pairs_in`]. It puts
+//!   its records there and changes no page. The form without is the same
+//!   call with records of its own, which it settles before it returns.
+//! - **A call reads what the calls before it put.** Each of them looks a
+//!   record up among the pending ones first, and in the pages where
+//!   nothing is pending under the key; a walk of the Merks below a Merk
+//!   takes both. So a Merk is entered below one that the same batch
+//!   entered, a root is named of a Merk that the batch entered, a prefix
+//!   that the batch emptied is free, and a call is refused for what
+//!   another call of the batch put. [`Directory::open_in`],
+//!   [`Directory::stored_in`] and [`Directory::has_children_in`] are the
+//!   same reads for the caller.
+//! - **Every other read is of the pages**, and so of the directory before
+//!   the batch: [`Directory::open`], the walks, [`Directory::check`]. The
+//!   caller settles the records before anything else reads the directory,
+//!   and before its operation ends.
+//! - **[`Directory::settle`] writes the records**, in the order of their
+//!   keys, a leaf at a time
+//!   ([`FlatTree::write`](crate::flat::FlatTree::write)), and says how
+//!   many records there were, how many leaves took them and how many
+//!   images of leaves were written ([`Settled`]): one for each of those
+//!   leaves, and one more for each piece that a cut makes of a leaf and
+//!   for each leaf that a merge joins another into.
+//!
+//! What the directory holds afterwards is what the same calls leave when
+//! each is settled by itself, record for record. Its pages can be other
+//! pages: a leaf is cut once for all the records it takes.
+//!
+//! **What becomes of the pending records.** They are of one operation and
+//! of nothing longer: no handle keeps them, and no page has anything of
+//! them until they are settled.
+//!
+//! | The operation | The records |
+//! | --- | --- |
+//! | enters, moves, clears and drops Merks, names roots | put by the calls, read by the calls after them, settled once |
+//! | is refused by a call | that call has put none; what the calls before it put is dropped with the operation, or settled if the caller goes on |
+//! | fails in a page while they are settled | some leaves are written and some are not: the writer's pages are given up, as after any write that failed in a page |
+//! | is rolled back, with a savepoint or a write scope, or with its transaction | the transaction gives its pages up and makes them again from the writes that are left, each batch settling its own: the leaves are as if the records had never been put |
+//!
+//! The ids of the dropped Merks, which a handle keeps beside the pages,
+//! follow the calls: a handle has the id from the call that dropped or
+//! cleared the Merk on, settled or not. A handle whose records were
+//! dropped unsettled is loaded again ([`Directory::load`]), as one whose
+//! writer rolled back is.
+//!
+//! In a test build of this crate, and in a build with the feature
+//! `held_reads`, the pages are held to the records that were settled into
+//! them: a lookup of each key finds the value that was pending, or none
+//! where the record went.
+//!
 //! # The reclaimer
 //!
 //! What a dropped Merk left in the directory is found from its record
@@ -269,10 +332,11 @@
 //!
 //! **A write transaction therefore enters a Merk with
 //! [`drop::enter`](crate::drop::enter) and drops or clears one with
-//! [`drop::unlink`](crate::drop::unlink)**, which call [`Directory::add`],
-//! [`Directory::unlink`] and [`Directory::clear`] for it. A caller that
-//! uses these three by themselves keeps the directory right and breaks the
-//! rule of the flat records.
+//! [`drop::unlink`](crate::drop::unlink)**, which call
+//! [`Directory::add_in`], [`Directory::unlink_in`] and
+//! [`Directory::clear_in`] for it, among the records of its batch. A
+//! caller that uses these three by themselves keeps the directory right
+//! and breaks the rule of the flat records.
 //!
 //! The rule asks two things of other code:
 //!
@@ -344,7 +408,7 @@ pub use error::{DirectoryError, Malformed};
 pub use read::{Children, Drops, Entries};
 pub use record::{Child, Dropped, Entry, Host, MerkId, Prefix, RecordKind, Root};
 pub use rekey::{Rekey, RekeyPlan, Rekeyed, Step};
-pub use write::{Restated, RootChange};
+pub use write::{Pending, Restated, RootChange, Settled};
 
 use crate::flat::{FlatConfig, FlatPages, FlatPagesMut, FlatTree};
 

@@ -6,7 +6,7 @@ use lignin_format::CellAddress;
 
 use super::{column::Flats, error::DropError};
 use crate::{
-    directory::{Directory, DirectoryError, Dropped, Entry, MerkId, Prefix},
+    directory::{Directory, DirectoryError, Dropped, Entry, MerkId, Pending, Prefix},
     flat::FlatPagesMut,
     fragment::{Fragments, Pages, Report, Values, Write},
 };
@@ -75,16 +75,24 @@ pub struct Unlink {
 /// [`FragmentError::NoRoom`](crate::fragment::FragmentError::NoRoom)). After
 /// any other error the caller rolls the operation's scope back.
 ///
+/// **The directory's records are put into `pending`**, and no page of the
+/// directory is changed: the caller settles them with the other records
+/// of its batch ([`Directory::settle`]), before anything else reads the
+/// directory. The Merks are read as the records that are pending already
+/// leave them. The tree pages and the columns are written here.
+///
 /// **Every host inside a dropped Merk that is behind is written first**, by
 /// a write of its own with its roots
 /// ([`Pages::host_is_behind`], `tree-layout.md` T3): the reclaimer follows
 /// every pointer it finds. Nothing here can see that this was left out. On
 /// existing GroveVersions no host is behind.
+#[allow(clippy::too_many_arguments)]
 pub fn unlink<P: Pages, V: Values, F: FlatPagesMut + ?Sized>(
     fragments: &mut Fragments,
     pages: &mut P,
     values: &mut V,
     directory: &mut Directory,
+    pending: &mut Pending,
     flats: &mut Flats<'_, F>,
     write: &Write<'_>,
     leaving: &[Leaving<'_>],
@@ -97,13 +105,13 @@ pub fn unlink<P: Pages, V: Values, F: FlatPagesMut + ?Sized>(
         if !named.insert(*prefix) {
             return Err(DirectoryError::Twice { prefix: *prefix }.into());
         }
-        let entry = directory.open(flats.pages, prefix)?;
+        let entry = directory.open_in(pending, flats.pages, prefix)?;
         let entry = entry.ok_or(DirectoryError::NotFound { prefix: *prefix })?;
         match entry.root() {
             Some(root) => dropped.push(root.address),
             None => {
-                let below = directory.children(entry.id()).next(flats.pages)?;
-                if below.is_some() && matches!(merk, Leaving::Dropped(_)) {
+                let below = directory.has_children_in(pending, flats.pages, entry.id())?;
+                if below && matches!(merk, Leaving::Dropped(_)) {
                     return Err(DirectoryError::NotEmpty { prefix: *prefix }.into());
                 }
             }
@@ -131,10 +139,12 @@ pub fn unlink<P: Pages, V: Values, F: FlatPagesMut + ?Sized>(
     for merk in leaving {
         match merk {
             Leaving::Dropped(prefix) => {
-                left.push(directory.unlink(flats.pages, prefix)?);
+                left.push(directory.unlink_in(pending, flats.pages, prefix)?);
                 flats.unlink_subtree(prefix)?;
             }
-            Leaving::Cleared(prefix) => left.extend(directory.clear(flats.pages, prefix)?),
+            Leaving::Cleared(prefix) => {
+                left.extend(directory.clear_in(pending, flats.pages, prefix)?);
+            }
         }
     }
     Ok(Unlink { report, left })
