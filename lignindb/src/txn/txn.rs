@@ -4284,8 +4284,12 @@ macro_rules! reads {
         /// caller are laid out or not. A scope that keeps its writes in
         /// the write set has them laid out first ([`Scope::lay_out`]),
         /// also where the call is then refused. Through the transaction,
-        /// a hash is made only while no scope is open
+        /// a stale hash is made only while no scope is open
         /// ([`TxnError::ScopeOpen`]): a write goes through a scope (SC1).
+        /// A Merk with no stale hash is read through the transaction
+        /// beside open scopes too, as any read through it is: the call
+        /// gives its root hash, and is refused only a Merk that a scope
+        /// writes.
         ///
         /// It is refused before a hash is made, with no page and no
         /// write of the transaction changed. What a scope was granted
@@ -4309,15 +4313,17 @@ macro_rules! reads {
         ///   [`HostBehind`](lignin_tree::hash::HashError::HostBehind)).
         ///
         /// Where a rule refuses a hash, or the evaluation does not read
-        /// a page or a value, the error is [`TxnError::Hash`], the write
-        /// set is what it was, and every hash that was stale is stale.
-        /// If a hash was stored before the error, the frames are made
+        /// a page or a value, the error is [`TxnError::Hash`]. A page or
+        /// a record of the subtree directory that is not read outside
+        /// the evaluation is told as any read tells it
+        /// ([`TxnError::Node`], [`TxnError::Directory`]): while the call
+        /// finds what it comes to, before a hash is made, or while it
+        /// reads the nodes it made a hash of, afterwards. In each case
+        /// the write set is what it was, and every hash that was stale
+        /// is stale. If a hash was stored before the error, which is so
+        /// of every error after the evaluation, the frames are made
         /// again from the write set, and every node handle read through
-        /// the transaction has ended (PN8). A page or a record of the
-        /// subtree directory that is not read outside the evaluation,
-        /// while the call finds what it comes to or reads what it made,
-        /// is told as any read tells it ([`TxnError::Node`],
-        /// [`TxnError::Directory`]), with nothing changed.
+        /// the transaction has ended (PN8).
         ///
         /// `rules` are called inside the operation: they must not call
         /// the transaction.
@@ -4345,6 +4351,8 @@ mod scopes;
 #[path = "evaluate.rs"]
 mod evaluate;
 
+#[cfg(test)]
+pub(crate) use evaluate::counted::take_marks as counted_marks;
 pub use scopes::Scope;
 
 #[cfg(test)]

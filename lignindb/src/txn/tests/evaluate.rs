@@ -726,6 +726,15 @@ fn scopes_make_the_hashes_of_their_merks_side_by_side() {
     world.check(&tx);
     assert_eq!(tx.txn.stats().stale_nodes, 0);
 
+    // A Merk with no stale hash is read through the transaction beside
+    // an open scope, as any read through it is.
+    let beside = tx.txn.scope().expect("a scope");
+    let before = calls();
+    let read = tx.txn.evaluate(sub(1), &mut Rules(&db.counts.rule_calls));
+    assert_eq!(read.expect("a read"), hashes[0]);
+    assert_eq!(calls() - before, 1);
+    beside.rollback();
+
     // A scope makes the hashes that a merged scope left, and is rolled
     // back: they are stale again, as if it had never been opened.
     let merk = changed(&world, &tx, &mut rng, 1, 2);
@@ -1374,6 +1383,141 @@ fn a_call_is_answered_alike_whether_the_scope_beside_it_is_laid_out() {
         caller.rollback();
         assert_eq!(db.private_ids(), 0, "{beside:?}, {laid}");
     }
+}
+
+/// A call that is refused leaves its scope with the same claims whether
+/// the writes of the scope beside it are laid out or kept in the write
+/// set, also where the error is not the same: the other scope drops the
+/// Merk under a host and writes nothing of the host's Merk. With its
+/// writes kept the call finds the Merk under the host and is refused it;
+/// with them laid out it finds none there, and the host is behind. Either
+/// way it holds the read of the Merk it was asked for and no write, so a
+/// third scope reads that Merk and is refused a write of it.
+#[test]
+fn a_call_that_is_refused_holds_the_same_claims_in_either_layout() {
+    let mut left_by = Vec::new();
+    for laid in [false, true] {
+        let (db, versions) = Db::new(128);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world);
+        let tx = world.begin();
+        // The hosts are written with their value hashes left, by a scope
+        // that merges.
+        let top = left(&world, &tx, TOP, |items| {
+            for at in 0..UNDER.len() {
+                items.insert(host_of(at), b"tree, written again".to_vec());
+            }
+        });
+        world.apply(&tx, &batch(vec![top])).expect("the hosts");
+        let caller = tx.txn.scope().expect("a scope");
+        let other = tx.txn.scope().expect("a scope beside it");
+        let dropped = OwnedBatch {
+            subtrees: vec![OwnedSubtree::Drop(sub(UNDER[1]))],
+            ..OwnedBatch::default()
+        };
+        let model_writes = tx.model.borrow().writes.len();
+        (world.apply_in(&tx, &other, &dropped.through(&other))).expect("the drop");
+        other.mark_pending(sub(TOP), &host_of(1)).expect("a mark");
+        if laid {
+            other.lay_out().expect("the drop is laid out");
+        }
+        assert_eq!(other.is_laid_out(), laid);
+
+        let calls = db.counts.rule_calls.load(Ordering::Relaxed);
+        let refused = caller.evaluate(sub(TOP), &mut Rules(&db.counts.rule_calls));
+        match (laid, &refused) {
+            (false, Err(TxnError::ScopeOverlap { unit })) => {
+                assert_eq!(*unit, Unit::data(sub(UNDER[1])))
+            }
+            (true, Err(TxnError::Hash(HashError::HostBehind { .. }))) => {}
+            other => panic!("the Merk under the host is another scope's: {other:?}"),
+        }
+        assert_eq!(db.counts.rule_calls.load(Ordering::Relaxed), calls);
+
+        // What a third scope may do tells what the caller holds.
+        let third = tx.txn.scope().expect("a third scope");
+        let mut held = Vec::new();
+        for name in [TOP, UNDER[0], UNDER[2]] {
+            let read = third.node(sub(name), &key(2), |view| view.is_some());
+            let merk = left(&world, &tx, name, |items| {
+                drop(items.insert(key(72), vec![7; 30]))
+            });
+            let merk = OwnedMerk {
+                anchored: name != TOP,
+                ..merk
+            };
+            let wrote = OwnedBatch {
+                merks: vec![merk],
+                ..OwnedBatch::default()
+            };
+            let wrote = world.apply_in(&tx, &third, &wrote.through(&third));
+            held.push((name, read.is_ok(), wrote.is_ok()));
+        }
+        // The caller read the Merk it was asked for, and wrote nothing.
+        assert_eq!(held[0], (TOP, true, false), "{laid}");
+        left_by.push(held);
+        tx.model.borrow_mut().writes.truncate(model_writes);
+        third.rollback();
+        other.rollback();
+        caller.rollback();
+    }
+    assert_eq!(
+        left_by[0], left_by[1],
+        "kept in the write set, and laid out"
+    );
+}
+
+/// The pending marks are asked as the caller's scope is shown them, and
+/// the changes that the scope made are gone through once for the hosts
+/// of a Merk, and not once for each node whose value hash is stale.
+#[test]
+fn the_marks_of_the_callers_scope_are_gone_through_once() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world);
+    let tx = world.begin();
+    let scope = tx.txn.scope().expect("a scope");
+    let top = left(&world, &tx, TOP, |items| {
+        for at in 0..UNDER.len() {
+            items.insert(host_of(at), b"tree, written again".to_vec());
+        }
+    });
+    let stale = top.nodes.len();
+    assert!(stale > UNDER.len(), "{stale} nodes have a stale value hash");
+    let through = batch(vec![top]).through(&scope);
+    world.apply_in(&tx, &scope, &through).expect("the hosts");
+    // The scope's changes of marks: one that it set and took off again,
+    // on a host, and others elsewhere.
+    scope.mark_pending(sub(TOP), &host_of(0)).expect("a mark");
+    scope.clear_pending(sub(TOP), &host_of(0)).expect("no mark");
+    for other in 0..7 {
+        let elsewhere = format!("elsewhere-{other}");
+        (scope.clear_pending(sub(TOP), elsewhere.as_bytes())).expect("no mark");
+    }
+    crate::txn::txn::counted_marks();
+    let hash = evaluate(&world, &tx, &scope, TOP, &[TOP]);
+    assert_eq!(hash.expect("no host is marked"), expected(&world, &tx, TOP));
+    assert_eq!(crate::txn::txn::counted_marks(), 9);
+
+    // The newest change of an element counts: a mark that is set again
+    // refuses the call.
+    let top = left(&world, &tx, TOP, |items| {
+        drop(items.insert(host_of(0), b"tree, once more".to_vec()))
+    });
+    let through = batch(vec![top]).through(&scope);
+    world.apply_in(&tx, &scope, &through).expect("the host");
+    scope.mark_pending(sub(TOP), &host_of(0)).expect("a mark");
+    let refused = scope.evaluate(sub(TOP), &mut Rules(&db.counts.rule_calls));
+    let behind = matches!(refused, Err(TxnError::Hash(HashError::HostBehind { .. })));
+    assert!(behind, "{refused:?}");
+    assert_eq!(crate::txn::txn::counted_marks(), 10);
+    scope.clear_pending(sub(TOP), &host_of(0)).expect("no mark");
+    let hash = evaluate(&world, &tx, &scope, TOP, &[TOP]);
+    assert_eq!(hash.expect("no host is marked"), expected(&world, &tx, TOP));
+    scope.merge();
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
 }
 
 /// Rules that refuse the call after `left` calls.
@@ -2425,12 +2569,22 @@ fn the_call_makes_a_stale_hash_that_no_stale_hash_leads_to() {
     tx.model.borrow_mut().writes.truncate(model_writes);
     assert_eq!(stale_in(&world, &tx, 1), stale);
 
-    // The call makes them all, with one hash more for the root's own.
+    // The call makes each of them once, with one hash more for the
+    // root's own, which no cell stores.
+    let fields = |key: &Vec<u8>| {
+        let (stale, ..) = shown(&tx, 1, key);
+        Stale::ALL
+            .fields()
+            .filter(|field| stale.has(*field))
+            .count() as u64
+    };
+    let to_make: u64 = stale.iter().map(fields).sum();
+    assert!(to_make > 2 * stale.len() as u64, "{to_make}");
     let root_hash = expected(&world, &tx, 1);
     let (before, made) = (calls(), evaluated());
     held::compared();
     assert_eq!(evaluate_merged(&world, &tx, 1), root_hash);
-    assert!(calls() - before > 2 * stale.len() as u64);
+    assert_eq!(calls() - before, to_make + 1);
     assert_eq!(held::compared().evaluated, stale.len() as u64);
     assert_eq!(stale_in(&world, &tx, 1), BTreeSet::new());
     assert_eq!(tx.txn.stats().stale_nodes, 0);

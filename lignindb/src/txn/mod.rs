@@ -478,13 +478,13 @@
 //! are the newest write of their record. The list is derived from the
 //! entries, as the index by key is, and the transaction keeps nothing
 //! else for the call. A transaction whose writers make every hash, as on
-//! existing GroveVersions, lists nothing, and pays one comparison for
-//! each entry it adds or takes out.
+//! existing GroveVersions, lists nothing: an entry that it adds or takes
+//! out is tested for what it could list or pass, and no list is asked.
 //!
 //! | When | The list |
 //! | --- | --- |
 //! | a put of a node that leaves a hash stale is added | has it |
-//! | a later write of the same record is added: a put, as that of a call, or a delete | has the earlier put no more. Which write is the earlier one of a record is asked as a read of that moment asks it, through the moves (`WriteSet::prior`) |
+//! | a later write of the same record is added: a put, as that of a call, or a delete | has the earlier put no more. Which write is the earlier one of a record is asked as a read of that moment asks it, through the moves (`WriteSet::prior`), and only for a write of a data column while a put is listed: a write of another column passes no node |
 //! | the later write is taken out: a rollback to a mark, a failed operation | has the earlier put again |
 //! | the put itself is taken out | has it no more |
 //! | a scope is taken out | is what the operations that stay make it: they are added again |
@@ -494,18 +494,24 @@
 //! | the transaction is rolled back, or is ended by its commit | is empty, with the write set |
 //!
 //! A put that is listed is one whose node may have a mark on the pages.
-//! One whose node is in no tree has none, and a call passes it. In a
-//! test build and under `held_reads` the list is held to a count from
-//! every entry after each rollback to a mark and each scope that is taken
-//! out, and what a call is given to the same from every key of the Merk.
+//! One whose node is in no tree has none, and a call passes it. A call
+//! is given the puts that no newer range delete covers: a range delete
+//! is searched for among those since the newest drop or clear, and a put
+//! is compared with the ones that are newer than it. In a test build and
+//! under `held_reads` the list is held to a count from every entry after
+//! each rollback to a mark and each scope that is taken out, and what a
+//! call is given, also where it is given nothing, to the same from every
+//! key of the Merk.
 //!
 //! **Claims** (SC3). The call is a read of the Merk it is asked for, then
 //! a read of each Merk that it comes to through the pointer of a host,
 //! and at the end a write of every Merk it makes a hash in. A scope
 //! claims each read when the call comes to the Merk, before the entry or
 //! a cell of it is read, and keeps it as it keeps any read. The writes
-//! are claimed together or not at all, before a hash is made, as those
-//! of a batch with a change set of each such Merk.
+//! are claimed together or not at all, before a hash is made and after
+//! everything else that can refuse the call, as those of a batch with a
+//! change set of each such Merk. So a call that a host refuses holds
+//! reads and no write.
 //!
 //! **Which Merk a host points into** is not read from another scope's
 //! writes (SC4). The host's cell is of the Merk the caller holds, and
@@ -535,13 +541,16 @@
 //! before where they are kept. The call is refused either way and makes
 //! no hash: with [`TxnError::ScopeOverlap`] where it finds a Merk there,
 //! which that scope holds, and as for a host that is behind where it
-//! finds none.
+//! finds none. Either refusal comes when the turn of that pointer comes
+//! among the Merks the call claims, so the scope holds the same claims
+//! after the one as after the other.
 //!
 //! A scope that keeps its writes in the write set has them laid out
 //! first ([`Scope::lay_out`]), since the hashes are made in cells.
 //! Through the transaction itself the call is a read of a scope that
-//! ends with the call, and makes a hash only while no scope is open
-//! ([`TxnError::ScopeOpen`]).
+//! ends with the call, and makes a stale hash only while no scope is
+//! open ([`TxnError::ScopeOpen`]). A Merk with no stale hash is read
+//! through it beside open scopes as well, and its root hash given.
 //!
 //! **Where it is refused.** None of these makes a hash, changes a page
 //! or adds a write. The writes of a scope that were laid out for the call
@@ -562,8 +571,9 @@
 //!   have as the root of a Merk entered under the host there. A clear
 //!   leaves such a pointer until the host is written without it, and the
 //!   commit refuses that state as well ([`BatchError::ClearedAlone`]).
-//!   It is found before a
-//!   hash is made, and told once the call has its claims. A mark of
+//!   It is found before a hash is made and before a write is claimed,
+//!   and is told there: a mark when the call comes to the host, and a
+//!   pointer when its turn comes among the Merks the call claims. A mark of
 //!   another scope that is still open is not shown to the caller, and
 //!   refuses it nothing: the pages are not asked which hosts are behind
 //!   ([`Pages::host_is_behind`](lignin_tree::fragment::Pages::host_is_behind)),
@@ -580,14 +590,15 @@
 //!
 //! **An evaluation that fails** ([`TxnError::Hash`]): a rule refused a
 //! hash, or the tree layer's evaluation could not read a page or a value.
-//! A page or a record of the directory that is not read before that,
-//! while the call finds what it will come to, or after it, while it
-//! reads the nodes it made a hash of, is told as any read of the
-//! transaction tells it ([`TxnError::Node`], [`TxnError::Directory`]),
-//! and so is a root with no stale hash whose cell is not read. The write
-//! set is what it was (WT10). Where the tree layer had stored a hash or
-//! taken a mark off before the error, the frames hold what the write set
-//! does not: they are given up and made again from it, so every hash
+//! A page or a record of the directory that is not read outside it is
+//! told as any read of the transaction tells it ([`TxnError::Node`],
+//! [`TxnError::Directory`]): while the call finds what it will come to,
+//! before a hash is made, and so is a root with no stale hash whose cell
+//! is not read; or while it reads the nodes it made a hash of,
+//! afterwards. The write set is what it was (WT10). Where the tree layer
+//! had stored a hash or taken a mark off before the error, which is so
+//! of every error after the evaluation, the frames hold what the write
+//! set does not: they are given up and made again from it, so every hash
 //! that was stale is stale, and every node handle read through the
 //! transaction has ended (PN8). Where it had stored none, the frames
 //! stay. Rules that panic are an operation that panics: the frames are
@@ -606,7 +617,10 @@
 //!
 //! **What a call costs.** It asks the write set for the puts of the Merk
 //! that left a hash stale, and finds the cell of each by its key, where
-//! the transaction last saw it or by a search. It reads each cell with a
+//! the transaction last saw it or by a search. It goes once through the
+//! changes of pending marks that its scope made, where it comes to a
+//! host, and once more for each time it stops at the Merks below and
+//! then comes to another host. It reads each cell with a
 //! stale hash that it comes to, once to plan and once more to keep it,
 //! and then the cells of its children for their keys; the tree layer's
 //! evaluation reads and writes each once. For each pointer of a host
@@ -624,7 +638,10 @@
 //! ([`crate::scope`]): each unit is compared with every subtree that
 //! another open scope has dropped or cleared. A call that comes to many
 //! Merks beside a scope that holds many such subtrees pays the product,
-//! as a batch that names those Merks does.
+//! as a batch that names those Merks does. And a scope's own changes of
+//! marks are kept as a list ([`Scope::is_pending`] goes through it), so
+//! a scope that calls after each of many changes of marks goes through
+//! the list at each call.
 //!
 //! The operations of a call are laid out again as any change set of
 //! nodes, by the tree type of no subtree: they put a node only where one
