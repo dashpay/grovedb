@@ -14,9 +14,11 @@
 //! applied untimed, and then `--blocks` blocks of the reference workload's
 //! shape, each in a write transaction of its own, with a pause of
 //! `--pause-us` after each commit. The pause is counted from the commit's
-//! end: the harness's own work after a commit, reading the engine's counts,
-//! is inside it, and a block that began late because that work took longer
-//! than the pause is counted. The time of a commit is an `Instant`
+//! end: the harness's own work after a commit is inside it, and a block
+//! that began late because that work took longer than the pause is
+//! counted. Nothing of the engine is read between two blocks unless the
+//! run is asked for the parts of each commit (`--parts`). The time of a
+//! commit is two readings of the system's monotonic clock
 //! around the commit of the block's transaction and nothing else. The
 //! measuring thread's own processor clock is read before and after it as
 //! well: a commit's time less what the thread ran is what the thread was
