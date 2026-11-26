@@ -706,14 +706,17 @@ state-sync restore that did not finish (the survey refuses a source with
 that mark, so a migration leaves none). The block then records, before
 the backup, the commit the target opens at (the first line of
 `lignin stats`, `version …`), which step 9 holds the restore to, and
-the target's directory by its device and inode, which step 10 holds the
-path the node opens to.
+the target's directory by its device number and inode (`target-id.txt`),
+which step 10 holds the path the node opens to. Both are kept in the
+reports, so a shell that is started again, or one of another account,
+reads them there.
 
 ```sh
 lignin verify "$TARGET" | tee "$WORK/reports/verify.txt"
 lignin stats "$TARGET" | tee "$WORK/reports/stats-target.txt"
-TARGET_ID="$(df -P -- "$TARGET" | awk 'NR == 2 {print $1}') $(ls -di -- "$TARGET" | awk '{print $1}')"
-echo "TARGET_ID $TARGET_ID"
+id_of() { stat -c '%d %i' -- "$1" 2>/dev/null || stat -f '%d %i' -- "$1"; }
+id_of "$TARGET" > "$WORK/reports/target-id.txt"
+echo "the target's device and inode: $(cat "$WORK/reports/target-id.txt")"
 ```
 
 A grove written on grove versions 1 to 3 can hold value hashes that a
@@ -845,14 +848,20 @@ those of [tuning](tuning.md).
 application's configuration names is the directory that step 7
 verified: set `NODE_DB` to that path (the block takes `TARGET` where it
 is not set). The block holds it, with every link followed, to the device
-and inode step 7 recorded, so that a directory under a mount point whose
-volume is not mounted, which can hold an older database, is refused. It
-then reads the manifest there with `lignin manifest`, which opens
-nothing and fails with `… has no MANIFEST` where the path holds no
-LigninDB database, and refuses a file the manifest names that is not
-there (`, MISSING`) or shorter (`, SHORT: … bytes on disk`). It checks
-the manifest and the length of each file, and no more: neither that the
-database opens nor which state it holds. An open of a path that holds
+number and inode that step 7 kept in `target-id.txt`, so that a
+directory under a mount point whose volume is not mounted, which can
+hold an older database, is refused, and so is a snapshot of the target
+that is a file system or subvolume of its own (a Btrfs snapshot has the
+same inodes and a device number of its own). It then reads the manifest
+there with `lignin manifest`, which opens nothing and fails with
+`… has no MANIFEST` where the path holds no LigninDB database, and
+refuses a file the manifest names that is not there (`, MISSING`) or
+shorter (`, SHORT: … bytes on disk`). It checks the manifest and the
+length of each file, and no more: neither that the database opens nor
+which state it holds. The block stands on its own, so the node's
+account runs it in a shell of its own: it needs `WORK` and `TARGET` set
+as step 4 printed them, `lignin` on its path, and leave to read
+`WORK/reports`, and it writes nothing there. An open of a path that holds
 none makes a new, empty database there (`Options::create_if_missing`,
 on by default, [tuning](tuning.md)): an application that can opens on
 LigninDB with it off. And the state the node goes on from is the
@@ -861,10 +870,15 @@ application's to approve: the state that step 5 surveyed, which, where
 last, so the application confirms that it means to go on from it.
 
 ```sh
-NODE_DB=$(real_dir "${NODE_DB:-$TARGET}")
-if [ "$(df -P -- "$NODE_DB" | awk 'NR == 2 {print $1}') $(ls -di -- "$NODE_DB" | awk '{print $1}')" = "$TARGET_ID" ]; then echo "$NODE_DB is the directory step 7 verified"; else echo "$NODE_DB IS NOT THE DIRECTORY STEP 7 VERIFIED"; false; fi
-lignin manifest "$NODE_DB" | tee "$WORK/reports/manifest-node.txt"
-if grep -q -e ', MISSING' -e ', SHORT: ' "$WORK/reports/manifest-node.txt"; then echo "A FILE THAT THE MANIFEST NAMES IS MISSING OR SHORT IN $NODE_DB"; false; fi
+set -euo pipefail
+: "${WORK:?set WORK as step 2 did}" "${TARGET:?set TARGET as step 4 printed it}"
+id_of() { stat -c '%d %i' -- "$1" 2>/dev/null || stat -f '%d %i' -- "$1"; }
+TARGET_ID=$(cat "$WORK/reports/target-id.txt") || { echo "$WORK/reports/target-id.txt cannot be read: run step 7's block again, or give this account leave to read it"; false; }
+NODE_DB=$(cd -P -- "${NODE_DB:-$TARGET}" && pwd -P)
+if [ "$(id_of "$NODE_DB")" = "$TARGET_ID" ]; then echo "$NODE_DB is the directory step 7 verified"; else echo "$NODE_DB IS NOT THE DIRECTORY STEP 7 VERIFIED"; false; fi
+manifest=$(lignin manifest "$NODE_DB")
+printf '%s\n' "$manifest"
+case "$manifest" in *', MISSING'* | *', SHORT: '*) echo "A FILE THAT THE MANIFEST NAMES IS MISSING OR SHORT IN $NODE_DB"; false ;; esac
 ```
 
 Then start the node.
