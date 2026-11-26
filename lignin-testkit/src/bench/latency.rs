@@ -56,6 +56,23 @@
 //! often, so that a percentile of a millisecond or more can be read
 //! against it.
 //!
+//! # Beside the harness
+//!
+//! `lignin-testkit/src/bench/latency/` holds what was run around the
+//! harness for PERF-07-F1, on Linux (`docs/lignindb/background-and-readers.md`
+//! has what it gave):
+//!
+//! - `build.sh` makes a build for a comparison, from a clean checkout in a
+//!   target directory of its own, and names it by commit and sha256;
+//! - `pairs.sh` runs two latency runs at a time, each on a file system of
+//!   its own, in rounds in which the two exchange their file systems;
+//! - `traced.sh` makes one run with the kernel trace of `trace.bt`
+//!   (`bpftrace`) beside it: the stacks a thread leaves a processor with, who
+//!   wakes it, and the syncs, the long writes and the journal's commits
+//!   around it;
+//! - `waits.py` makes the tables of what the measuring thread waited for
+//!   from such a trace.
+//!
 //! # What is told of a long commit
 //!
 //! - The harness names its measuring thread `lignin-commit`, and after a

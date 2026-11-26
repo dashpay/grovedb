@@ -1,0 +1,146 @@
+#!/usr/bin/env bpftrace
+// What the threads of `lignin-bench latency` are off a processor for.
+//
+//   bpftrace trace.bt PID LONG_US OFF_US TID
+//
+// PID is the process. TID is the thread to follow, the measuring one
+// (`traced.sh` finds it), or 0 for every thread of the process. Lines:
+//
+//   OFFCPU  a followed thread was off a processor for OFF_US or more, outside
+//           a sleep it asked for: when, its state when it left, which thread
+//           woke it, the kernel stack and the user stack it left with, and
+//           the kernel stack of the waking.
+//   WRITE   a write call of a followed thread that took LONG_US or more, and
+//           of which file.
+//   MARK    the line the harness writes after a long commit.
+//   SYNC    an fsync or fdatasync of any thread of the process that took
+//           LONG_US or more, and of which file.
+//   JBD2    a commit of an ext4 journal with 2 jiffies or more in its locked,
+//           flushing and logging phases together (times in jiffies).
+//   BLK     a request to a block device that took LONG_US or more.
+//
+// A file is named by its directory and its own name.
+
+BEGIN { printf("tracing pid %d thread %d from %d us, off a processor from %d us\n", $1, $4, $2, $3); }
+
+tracepoint:syscalls:sys_enter_clock_nanosleep,
+tracepoint:syscalls:sys_enter_nanosleep
+/pid == $1/
+{ @pausing[tid] = 1; }
+
+tracepoint:syscalls:sys_exit_clock_nanosleep,
+tracepoint:syscalls:sys_exit_nanosleep
+/@pausing[tid]/
+{ delete(@pausing[tid]); }
+
+tracepoint:sched:sched_switch
+/pid == $1 && ($4 == 0 || tid == $4) && !@pausing[tid]/
+{
+  @off[tid] = nsecs;
+  @offk[tid] = kstack(perf, 40);
+  @offu[tid] = ustack(perf, 60);
+  @offstate[tid] = args->prev_state;
+  @offcomm[tid] = comm;
+}
+
+tracepoint:sched:sched_waking
+/@off[args->pid]/
+{
+  @wcomm[args->pid] = comm;
+  @wtid[args->pid] = tid;
+  @wk[args->pid] = kstack(perf, 30);
+}
+
+tracepoint:sched:sched_switch
+/@off[args->next_pid]/
+{
+  $t = args->next_pid;
+  $d = (nsecs - @off[$t]) / 1000;
+  if ($d >= $3) {
+    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld thread=%s/%d woken_by=%s/%d\n",
+           @off[$t], nsecs, $d, @offstate[$t], @offcomm[$t], $t, @wcomm[$t], @wtid[$t]);
+    printf(" left at:\n%s", @offk[$t]);
+    printf(" called from:\n%s", @offu[$t]);
+    printf(" woken at:\n%s\n", @wk[$t]);
+  }
+  delete(@off[$t]); delete(@offk[$t]); delete(@offu[$t]); delete(@offstate[$t]);
+  delete(@offcomm[$t]); delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]);
+}
+
+kprobe:vfs_write
+/pid == $1 && ($4 == 0 || tid == $4)/
+{
+  $f = (struct file *)arg0;
+  @w[tid] = nsecs;
+  @wlen[tid] = arg2;
+  @wname[tid] = str($f->f_path.dentry->d_name.name);
+  @wdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
+  if (@wname[tid] == "null") {
+    printf("MARK at=%llu %s", nsecs, str(uptr(arg1), arg2));
+  }
+}
+
+kretprobe:vfs_write
+/@w[tid]/
+{
+  $d = (nsecs - @w[tid]) / 1000;
+  if ($d >= $2) {
+    printf("WRITE begin=%llu end=%llu us=%llu len=%llu by=%s/%d file=%s/%s\n",
+           @w[tid], nsecs, $d, @wlen[tid], comm, tid, @wdir[tid], @wname[tid]);
+  }
+  delete(@w[tid]); delete(@wlen[tid]); delete(@wname[tid]); delete(@wdir[tid]);
+}
+
+kprobe:vfs_fsync_range
+/pid == $1/
+{
+  $f = (struct file *)arg0;
+  @s[tid] = nsecs;
+  @sname[tid] = str($f->f_path.dentry->d_name.name);
+  @sdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
+}
+
+kretprobe:vfs_fsync_range
+/@s[tid]/
+{
+  $d = (nsecs - @s[tid]) / 1000;
+  @syncs[@sdir[tid]] = count();
+  @sync_us[@sdir[tid]] = hist($d);
+  if ($d >= $2) {
+    printf("SYNC begin=%llu end=%llu us=%llu by=%s/%d file=%s/%s\n",
+           @s[tid], nsecs, $d, comm, tid, @sdir[tid], @sname[tid]);
+  }
+  delete(@s[tid]); delete(@sname[tid]); delete(@sdir[tid]);
+}
+
+tracepoint:jbd2:jbd2_run_stats
+{
+  if (args->locked + args->flushing + args->logging >= 2) {
+    printf("JBD2 at=%llu dev=%d,%d transaction=%d wait=%lu request_delay=%lu running=%lu locked=%lu flushing=%lu logging=%lu handles=%u blocks=%u logged=%u\n",
+           nsecs, args->dev >> 20, args->dev & 0xfffff, args->tid, args->wait, args->request_delay,
+           args->running, args->locked, args->flushing, args->logging, args->handle_count,
+           args->blocks, args->blocks_logged);
+  }
+}
+
+tracepoint:block:block_rq_issue { @rq[args->dev, args->sector] = nsecs; }
+
+tracepoint:block:block_rq_complete
+/@rq[args->dev, args->sector]/
+{
+  $d = (nsecs - @rq[args->dev, args->sector]) / 1000;
+  if ($d >= $2) {
+    printf("BLK begin=%llu end=%llu us=%llu dev=%d,%d %s sector=%llu sectors=%u\n",
+           @rq[args->dev, args->sector], nsecs, $d, args->dev >> 20, args->dev & 0xfffff,
+           args->rwbs, args->sector, args->nr_sector);
+  }
+  delete(@rq[args->dev, args->sector]);
+}
+
+END
+{
+  clear(@pausing); clear(@off); clear(@offk); clear(@offu); clear(@offstate); clear(@offcomm);
+  clear(@wcomm); clear(@wtid); clear(@wk);
+  clear(@w); clear(@wlen); clear(@wname); clear(@wdir);
+  clear(@s); clear(@sname); clear(@sdir); clear(@rq);
+}
