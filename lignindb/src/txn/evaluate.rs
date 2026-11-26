@@ -574,10 +574,11 @@ impl<'s> WriteTxn<'s> {
         // Merks after the first were come to through such a pointer.
         let anchored = |merk: usize| merk > 0 || hosted;
 
-        // Nothing refuses the call from here on but a claim. The write
-        // claims are taken before a hash is made, all of them or none
-        // (SC3), as those of a batch that holds a change set of every
-        // Merk a hash is made in. The batch is applied to nothing.
+        // No host and no read has refused the call. The write claims are
+        // taken now, before a hash is made, all of them or none (SC3), as
+        // those of a batch that holds a change set of every Merk a hash
+        // is made in. The batch is applied to nothing. A rule that
+        // refuses a hash, and a page that is not read, come after them.
         let stated: Vec<MerkWrite<'_>> = (plan.written())
             .map(|merk| MerkWrite {
                 subtree: plan.merks[merk].subtree,

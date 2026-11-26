@@ -4285,10 +4285,12 @@ macro_rules! reads {
         /// directory has entered there, and one that another open scope
         /// holds refuses the call as a host that is behind does, so the
         /// answer is the same whether the writes of the scopes beside
-        /// the caller are laid out or not, while the writes of the
-        /// transaction can be laid out. A scope that keeps its writes in
-        /// the write set has them laid out first ([`Scope::lay_out`]),
-        /// also where the call is then refused. Through the transaction,
+        /// the caller are laid out or not, once the caller's own writes
+        /// are laid out. A scope that keeps its writes in the write set
+        /// has them laid out first ([`Scope::lay_out`]), also where the
+        /// call is then refused, and is refused as there where they
+        /// cannot be laid out beside what another scope laid out before.
+        /// Through the transaction,
         /// a stale hash is made only while no scope is open
         /// ([`TxnError::ScopeOpen`]): a write goes through a scope (SC1).
         /// A Merk with no stale hash is read through the transaction

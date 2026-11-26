@@ -472,7 +472,7 @@
 //! | a rollback to a savepoint from before the call | go with the operations of the call: the hashes are stale again, with the bytes their writer stated |
 //! | a rollback to a savepoint from after the call | stay |
 //! | the scope that made the call is rolled back | go, as its other writes do |
-//! | another scope is rolled back | stay: no other open scope holds a Merk that the call wrote or read, so none of its writes is among what they were made from |
+//! | another scope is rolled back | stay: no other open scope has written a Merk that the call wrote or read, though it may have read one that the call read, so none of its writes is among what they were made from |
 //! | the subtree is moved | go with the Merk to its new prefix, as the entries of its nodes do |
 //! | the subtree is cleared or dropped | go with the nodes: the entry of the clear or the drop covers them. A subtree that is entered again under the prefix is another Merk |
 //! | the transaction is rolled back, or is ended by its commit | go with the write set |
@@ -562,17 +562,29 @@
 //! the call claims, so the scope holds the same claims after it in
 //! either layout. So what a call answers, and what its scope holds
 //! afterwards, does not depend on whether the writes of the scopes
-//! beside it are laid out or kept in the write set, while the
-//! transaction has frames.
+//! beside it are laid out or kept in the write set, where the call
+//! comes to make a hash: the transaction has frames, and they show the
+//! caller's own writes.
 //!
-//! It has none where its writes that are laid out cannot be laid out
-//! again after a commit beside it (WT7), and the call is then refused
-//! with what refused that layout ("Where it is refused" below). That
-//! can be a write of another scope, and only one that was laid out: a
-//! write that is kept in the write set is laid out at its scope's merge
-//! or before, and refuses nothing until then. It is so of the frames,
-//! which the scopes of a transaction share ([`crate::scope`], the
-//! choices, 2), and of every call that needs them.
+//! Two things stand before that, and neither is of the call. Both are
+//! of the frames, which the scopes of a transaction share
+//! ([`crate::scope`], the choices, 2), and of every call that needs
+//! them:
+//!
+//! - **The caller's own writes are laid out first**, as
+//!   [`Scope::lay_out`] lays them out, and are refused as there: also by
+//!   what another scope laid out before, where the two scopes wrote what
+//!   cannot stand together and no claim tells them apart, as two Merks
+//!   that are entered at one place of a host. The scope whose writes are
+//!   laid out second is the one that is refused, at its call as at its
+//!   merge. The call has then claimed and read nothing.
+//! - **The transaction has no frames** where its writes cannot be laid
+//!   out: after a commit beside it (WT7), or once a scope has merged
+//!   whose writes were refused when they were laid out (SC6). The call is
+//!   refused with what refused that layout ("Where it is refused" below),
+//!   which can be a write of another scope, and only of one whose writes
+//!   are laid out or merged: a write that is kept in the write set
+//!   refuses nothing until then.
 //!
 //! A write claim at the end, of a Merk the call makes a hash in, is
 //! refused where another open scope has read that Merk
