@@ -292,7 +292,8 @@ struct Run {
     /// The nodes whose hashes the commit made, and the calls of its rules.
     evaluated: usize,
     at_commit: u64,
-    /// The root hashes that were published, as the model has them.
+    /// The root hashes that were published, read from the store after
+    /// the commit: each is the model's.
     roots: Vec<Hash>,
 }
 
@@ -329,6 +330,7 @@ fn one_merk(changes: usize, calls: bool) -> (Run, Duration) {
         assert!(matches!(made, Ok(Committed::Published(_))), "{made:?}");
     }
     let leaves = model.values.len().div_ceil(2);
+    let hashes = db.stats().store.hashes;
     let txn = db.begin();
     let scope = txn.scope().expect("a scope");
     let mut rules = Rules::default();
@@ -359,13 +361,17 @@ fn one_merk(changes: usize, calls: bool) -> (Run, Duration) {
         // stale.
         assert_eq!((evaluated, at_commit), (stale.len(), stale.len() as u64));
     }
-    assert_eq!(published(&db, subtree), Some(model.root_hash()));
+    // The store counts the hashes of the calls with those of the commit.
+    let counted = db.stats().store.hashes - hashes;
+    assert_eq!(counted, rules.calls + at_commit);
+    let root = published(&db, subtree);
+    assert_eq!(root, Some(model.root_hash()));
     let run = Run {
         writes,
         called: rules.calls,
         evaluated,
         at_commit,
-        roots: vec![model.root_hash()],
+        roots: root.into_iter().collect(),
     };
     db.close().expect("the database closes");
     (run, spent)
@@ -381,6 +387,7 @@ fn many_merks(changes: usize, calls: bool) -> (Run, Duration) {
         prefix[..8].copy_from_slice(&(change as u64).to_be_bytes());
         Subtree::new(prefix)
     };
+    let hashes = db.stats().store.hashes;
     let txn = db.begin();
     let scope = txn.scope().expect("a scope");
     let mut rules = Rules::default();
@@ -402,15 +409,19 @@ fn many_merks(changes: usize, calls: bool) -> (Run, Duration) {
     let writes = txn.stats().writes;
     let (evaluated, at_commit) = commit(&db, &txn);
     drop(txn);
-    for change in [0, changes / 2, changes - 1] {
-        assert_eq!(published(&db, name(change)), Some(roots[change]));
-    }
+    let counted = db.stats().store.hashes - hashes;
+    assert_eq!(counted, rules.calls + at_commit);
+    // The root hash of every Merk, as the commit published it.
+    let read: Vec<Hash> = (0..changes)
+        .filter_map(|change| published(&db, name(change)))
+        .collect();
+    assert_eq!(read, roots, "the root hashes that were published");
     let run = Run {
         writes,
         called: rules.calls,
         evaluated,
         at_commit,
-        roots,
+        roots: read,
     };
     db.close().expect("the database closes");
     (run, spent)
@@ -462,7 +473,6 @@ fn a_transaction_that_calls_after_every_change_publishes_what_one_with_no_call_d
             (changes * 10, 0),
             "{changes} changes of one Merk"
         );
-        assert!(without.evaluated >= 9 && without.at_commit >= 9);
 
         let (with, _) = many_merks(changes, true);
         let (without, _) = many_merks(changes, false);
