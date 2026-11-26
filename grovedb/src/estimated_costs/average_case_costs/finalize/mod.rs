@@ -13,7 +13,7 @@
 
 mod v0;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
@@ -40,12 +40,21 @@ impl GroveDb {
     /// element names. A stop point whose layer is estimated to be empty is
     /// taken to name no root.
     ///
+    /// `wrapped` are the Merks, among the stop points and the Merks above
+    /// them, whose element is wrapped (`NonCounted`, `NotSummed`,
+    /// `NotCountedOrSummed`). A wrapper is a byte of the element, in its
+    /// cost and in what is hashed, and a layer does not say that a tree it
+    /// holds has one. A wrapped Merk that is left out is estimated a byte
+    /// short. A caller that does not know gives every one, and is a byte
+    /// over for those that are not.
+    ///
     /// Visible in the crate and no further until the grove version is
     /// listed: the change that builds finalize calls it, and makes it
     /// public for a caller that estimates one.
     #[allow(dead_code)]
     pub(crate) fn average_case_finalize(
         stop_points: &[KeyInfoPath],
+        wrapped: &HashSet<KeyInfoPath>,
         paths: &HashMap<KeyInfoPath, EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
@@ -67,7 +76,7 @@ impl GroveDb {
             .average_case
             .average_case_finalize
         {
-            0 => Self::average_case_finalize_v0(stop_points, paths, grove_version),
+            0 => Self::average_case_finalize_v0(stop_points, wrapped, paths, grove_version),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
                     method: "average_case_finalize".to_string(),

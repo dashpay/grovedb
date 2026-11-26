@@ -8,7 +8,9 @@
 //!   estimate has a seek and the loaded bytes of that read.
 //! * **[v1]**: `GROVE_V6`. A write opens a Merk by its own path and root and
 //!   is charged nothing for the host (`docs/lignindb/cost-model.md`, SP2 and
-//!   ES1), so the estimate has neither.
+//!   ES1), so the estimate has neither. For the root Merk, which has no
+//!   host, it has the bytes of the root key record with the seek of its
+//!   read.
 //!
 //! The estimate is the admission bound historical blocks are replayed
 //! against, so the released versions keep theirs.
@@ -34,6 +36,29 @@ impl GroveDb {
         in_tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
+        Self::add_average_case_get_merk_at_path_with_root_key(
+            cost,
+            path,
+            merk_should_be_empty,
+            in_tree_type,
+            None,
+            grove_version,
+        )
+    }
+
+    /// [`Self::add_average_case_get_merk_at_path_engine_free`], for a caller
+    /// that knows how long the root key of the root Merk is: the bytes of
+    /// its root key record, where `path` is the root Merk's and the version
+    /// has them (v1). Given no length, v1 takes the 256 bytes the worst
+    /// case takes a key to be.
+    pub(crate) fn add_average_case_get_merk_at_path_with_root_key(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        merk_should_be_empty: bool,
+        in_tree_type: TreeType,
+        root_key_len: Option<u32>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
         match grove_version
             .grovedb_versions
             .operations
@@ -51,6 +76,7 @@ impl GroveDb {
                 cost,
                 path,
                 merk_should_be_empty,
+                root_key_len,
                 grove_version,
             ),
             version => Err(Error::VersionError(

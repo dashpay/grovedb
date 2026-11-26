@@ -8,7 +8,9 @@
 //!   estimate has a seek and the loaded bytes of that read.
 //! * **[v1]**: `GROVE_V6`. A write opens a Merk by its own path and root and
 //!   is charged nothing for the host (`docs/lignindb/cost-model.md`, SP2 and
-//!   ES1), so the estimate has neither.
+//!   ES1), so the estimate has neither. For the root Merk, which has no
+//!   host, it has the bytes of the root key record with the seek of its
+//!   read.
 //!
 //! The estimate is the admission bound historical blocks are replayed
 //! against, so the released versions keep theirs.

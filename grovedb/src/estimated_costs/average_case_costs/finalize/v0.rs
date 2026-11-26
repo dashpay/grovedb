@@ -3,12 +3,13 @@
 //!
 //! For every Merk that hosts a marked element: its open, the replacement of
 //! each marked element as a batch estimates `ReplaceTreeRootKey`, with the
-//! hash calls of the roots it names, and what the finalize does in the Merk
-//! besides (`add_average_case_merk_finalize`).
+//! byte of its wrapper where it has one and the hash calls of the roots it
+//! names, and what the finalize does in the Merk besides
+//! (`add_average_case_merk_finalize`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{storage_cost::StorageCost, CostResult, CostsExt, OperationCost};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     estimated_costs::average_case_costs::{
@@ -83,7 +84,8 @@ fn axes_of(tree_type: TreeType) -> &'static [IndexAxis] {
 /// key of its Merk; for an indexed tree the root key of each secondary,
 /// which is the key of an entry behind the sort key of the axis; each with
 /// its length as an element is serialized; and the length of the whole,
-/// which the value is hashed with.
+/// which the value is hashed with. A wrapped element has the byte of its
+/// wrapper before them.
 ///
 /// Each root key is taken at the size the layer gives the keys of the Merk:
 /// the entry that is the root of a secondary need not be the root of the
@@ -92,11 +94,13 @@ fn axes_of(tree_type: TreeType) -> &'static [IndexAxis] {
 fn hash_calls_of_the_roots(
     host_layer: &EstimatedLayerInformation,
     hosted: &EstimatedLayerInformation,
+    wrapper: u32,
 ) -> Result<u32, grovedb_merk::Error> {
     let flags = *host_layer.estimated_layer_sizes.layered_flags_size()?;
     let cost_size = hosted.tree_type.cost_size();
     let counted = cost_size + flags.map_or(0, |flags| flags + flags.required_space() as u32);
-    let mut element = cost_size + flags.map_or(0, |flags| flags + serialized_length_len(flags));
+    let mut element =
+        wrapper + cost_size + flags.map_or(0, |flags| flags + serialized_length_len(flags));
     // A sum of 128 bits is 17 bytes at its longest where its cost is 16.
     if matches!(
         hosted.tree_type,
@@ -128,11 +132,12 @@ impl GroveDb {
     /// `average_case_finalize` v0: see the module documentation.
     pub(super) fn average_case_finalize_v0(
         stop_points: &[KeyInfoPath],
+        wrapped: &HashSet<KeyInfoPath>,
         paths: &HashMap<KeyInfoPath, EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         // The estimate in full, or a refusal with nothing added.
-        match Self::average_case_finalize_cost(stop_points, paths, grove_version) {
+        match Self::average_case_finalize_cost(stop_points, wrapped, paths, grove_version) {
             Ok(cost) => Ok(()).wrap_with_cost(cost),
             Err(error) => Err(error).wrap_with_cost(OperationCost::default()),
         }
@@ -140,6 +145,7 @@ impl GroveDb {
 
     fn average_case_finalize_cost(
         stop_points: &[KeyInfoPath],
+        wrapped: &HashSet<KeyInfoPath>,
         paths: &HashMap<KeyInfoPath, EstimatedLayerInformation>,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
@@ -154,12 +160,16 @@ impl GroveDb {
                 .check_sizes()
                 .map_err(Error::MerkError)?;
             let marked = marked_count(keys.len())?;
+            // The root Merk has no host and is opened by its root key
+            // record, whose bytes are those of the root key: it is taken at
+            // the size the layer gives the keys of the root Merk.
             let mut host = OperationCost::default();
-            Self::add_average_case_get_merk_at_path_engine_free(
+            Self::add_average_case_get_merk_at_path_with_root_key(
                 &mut host,
                 &host_path,
                 false,
                 layer.tree_type,
+                Some(layer_key_size(&layer.estimated_layer_sizes)),
                 grove_version,
             )?;
             for key in &keys {
@@ -176,6 +186,19 @@ impl GroveDb {
                     grove_version,
                 )
                 .cost_as_result()?;
+                // A wrapper is a byte of the element: of its cost, which is
+                // the element's own and a byte, and of what is hashed.
+                let wrapper = u32::from(wrapped.contains(&below));
+                add_in_full(
+                    &mut element,
+                    OperationCost {
+                        storage_cost: StorageCost {
+                            replaced_bytes: wrapper,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                )?;
                 // A tree that names its axes is taken to name the most it
                 // can: the digest of three roots is as long as that of two.
                 add_in_full(
@@ -187,7 +210,10 @@ impl GroveDb {
                 )?;
                 add_in_full(
                     &mut element,
-                    hash_calls(hash_calls_of_the_roots(layer, hosted).map_err(Error::MerkError)?),
+                    hash_calls(
+                        hash_calls_of_the_roots(layer, hosted, wrapper)
+                            .map_err(Error::MerkError)?,
+                    ),
                 )?;
                 add_in_full(&mut host, element)?;
             }
@@ -201,18 +227,6 @@ impl GroveDb {
                 // Merk, a marked element or a node above one, each with its
                 // two hash calls. `host` is a sum in full, so they are in it.
                 host.hash_node_calls = host.hash_node_calls.saturating_sub(2);
-                // And it is opened by its root key record, whose seek the
-                // open has: its bytes are those of the root key, taken at
-                // the size the layer gives its keys.
-                add_in_full(
-                    &mut host,
-                    OperationCost {
-                        storage_loaded_bytes: u64::from(layer_key_size(
-                            &layer.estimated_layer_sizes,
-                        )),
-                        ..Default::default()
-                    },
-                )?;
             }
             add_in_full(&mut cost, host)?;
         }

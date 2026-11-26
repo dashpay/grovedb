@@ -35,6 +35,14 @@ impl GroveDb {
     /// `paths` describes every Merk that the finalize rewrites an element
     /// of, which is every Merk above a stop point up to the root Merk.
     ///
+    /// `biggest_host_element` is the most bytes an element that hosts a
+    /// marked Merk serializes to. Its hash is counted from them, and no rule
+    /// of GroveDB bounds them: the flags of a tree are as long as they are
+    /// given. A caller with no bound of its own gives
+    /// `MERK_BIGGEST_VALUE_SIZE`, which is what the worst case takes every
+    /// value to be, in this estimate too, for the bytes a node loads and
+    /// replaces.
+    ///
     /// Visible in the crate and no further until the grove version is
     /// listed: the change that builds finalize calls it, and makes it
     /// public for a caller that estimates one.
@@ -42,6 +50,7 @@ impl GroveDb {
     pub(crate) fn worst_case_finalize(
         stop_points: &[KeyInfoPath],
         paths: &HashMap<KeyInfoPath, WorstCaseLayerInformation>,
+        biggest_host_element: u32,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         match propagation_cost_model(grove_version).map(|model| model.carrier()) {
@@ -62,7 +71,12 @@ impl GroveDb {
             .worst_case
             .worst_case_finalize
         {
-            0 => Self::worst_case_finalize_v0(stop_points, paths, grove_version),
+            0 => Self::worst_case_finalize_v0(
+                stop_points,
+                paths,
+                biggest_host_element,
+                grove_version,
+            ),
             version => Err(Error::VersionError(
                 GroveVersionError::UnknownVersionMismatch {
                     method: "worst_case_finalize".to_string(),

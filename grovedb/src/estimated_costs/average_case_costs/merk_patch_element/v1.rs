@@ -1,24 +1,29 @@
 //! `average_case_merk_patch_element` — **v1** (`GROVE_V6`).
 //!
-//! [`super::v0`], with the hash calls of the put counted from the bytes of
-//! the element (`element_put_hash_calls`). v0 counts the blocks of a length
-//! that is the element's cost. A change of more bytes than the item has is
-//! refused: v0 subtracts it from the size unchecked.
+//! The patch of an item, sized from the bytes of the item as it is
+//! serialized, which have its flags. [`super::v0`] adds the flags to those
+//! bytes once more: where that takes the length of the record over a byte
+//! of its own length, or keeps it from one, the added bytes are off. A
+//! change of more bytes than the item has is refused: v0 subtracts it from
+//! the size unchecked. The hash calls of the put are counted from the bytes
+//! of the element (`element_put_hash_calls`).
 //!
 //! On grove versions 1 to 5 a batch's estimate has every level up to the
 //! root of the grove. A write that stops at a stop point has its own level
 //! alone (`docs/lignindb/cost-model.md`, section 16.5).
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
-    CostResult, CostsExt, OperationCost,
+    cost_return_on_error_into_no_add, cost_return_on_error_no_add, CostResult, CostsExt,
+    OperationCost,
 };
 use grovedb_merk::{
-    estimated_costs::average_case_costs::{
-        add_average_case_merk_propagate, EstimatedLayerInformation,
+    estimated_costs::{
+        add_cost_case_merk_patch,
+        average_case_costs::{add_average_case_merk_propagate, EstimatedLayerInformation},
     },
     tree_type::TreeType,
 };
+use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
@@ -36,25 +41,29 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        // v0 takes the change from the size of the item in unsigned
-        // arithmetic.
+        if !matches!(value, Element::Item(..)) {
+            return Err(Error::InvalidParameter("patching can only be on Items"))
+                .wrap_with_cost(cost);
+        }
+        // The bytes of the item, which have its flags: the size of the
+        // record after the patch, and `change_in_bytes` fewer before it.
         let size = cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version));
-        if i64::from(change_in_bytes) > size as i64 {
+        let Ok(size) = u32::try_from(size) else {
+            return Err(Error::Overflow("an item longer than a patch can be sized"))
+                .wrap_with_cost(cost);
+        };
+        if i64::from(change_in_bytes) > i64::from(size) {
             return Err(Error::InvalidParameter(
                 "a patch cannot grow an item by more bytes than it has",
             ))
             .wrap_with_cost(cost);
         }
-        cost_return_on_error!(
+        add_cost_case_merk_patch(
             &mut cost,
-            Self::average_case_merk_patch_element_v0(
-                key,
-                value,
-                change_in_bytes,
-                in_tree_type,
-                None,
-                grove_version,
-            )
+            u32::from(key.max_length()),
+            size,
+            change_in_bytes,
+            in_tree_type,
         );
         cost_return_on_error_no_add!(
             cost,

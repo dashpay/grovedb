@@ -2,7 +2,7 @@
 //! (`docs/lignindb/cost-model.md`, section 16.5), against the costs that
 //! the model applies.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes::NoStorageRemoval, OperationCost};
 use grovedb_merk::{
@@ -13,7 +13,9 @@ use grovedb_merk::{
             EstimatedLayerSizes::{AllItems, AllSubtrees, Mix},
             EstimatedSumTrees,
         },
-        worst_case_costs::WorstCaseLayerInformation,
+        worst_case_costs::{
+            WorstCaseLayerInformation, MERK_BIGGEST_KEY_SIZE, MERK_BIGGEST_VALUE_SIZE,
+        },
     },
     tree::TreeNode,
     tree_type::{TreeType, SUM_ITEM_COST_SIZE},
@@ -125,20 +127,121 @@ fn es1_the_estimate_of_an_open_has_no_read_of_the_host() {
         }
     );
 
-    // The root Merk has no host: its estimate is the same on both.
-    for (empty, seeks) in [(false, 2), (true, 1)] {
-        let expected = OperationCost {
-            seek_count: seeks,
-            ..Default::default()
-        };
-        assert_eq!(open_estimate(&[], empty, &GROVE_V5), expected);
-        assert_eq!(open_estimate(&[], empty, &GROVE_V6), expected);
+    // The root Merk has no host: its seeks are the same on both, the read
+    // of its root key record and the fetch of its root. Grove version 6 has
+    // the bytes of the record too, which are the root key: 256 where it is
+    // not told how long that is, and none for a root Merk with no node.
+    for (empty, seeks, record) in [(false, 2, u64::from(MERK_BIGGEST_KEY_SIZE)), (true, 1, 0)] {
+        assert_eq!(
+            open_estimate(&[], empty, &GROVE_V5),
+            OperationCost {
+                seek_count: seeks,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            open_estimate(&[], empty, &GROVE_V6),
+            OperationCost {
+                seek_count: seeks,
+                storage_loaded_bytes: record,
+                ..Default::default()
+            }
+        );
     }
     assert_eq!(
         worst_open_estimate(&[], &GROVE_V5),
-        worst_open_estimate(&[], &GROVE_V6)
+        OperationCost {
+            seek_count: 2,
+            ..Default::default()
+        }
     );
-    assert_eq!(worst_open_estimate(&[], &GROVE_V6).seek_count, 2);
+    assert_eq!(
+        worst_open_estimate(&[], &GROVE_V6),
+        OperationCost {
+            seek_count: 2,
+            storage_loaded_bytes: u64::from(MERK_BIGGEST_KEY_SIZE),
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn es1_the_open_of_the_root_merk_has_the_bytes_of_its_root_key_record() {
+    // A write of the root Merk reads its root key record, which holds the
+    // key of its root, and is charged its bytes. One item under a key of
+    // 200 bytes: the open loads the record and the node. The estimate of
+    // the open has the record: at the length it is told, and at the 256
+    // bytes the worst case takes a key to be where it is told none. The
+    // node's bytes are the level's. On grove version 5 the open has neither.
+    let root_key = vec![7; 200];
+    let mut shape = Shape::default();
+    shape
+        .elements
+        .push((Path::new(), root_key.clone(), Element::new_item(vec![1])));
+    let db = shape.build();
+    let tx = db.start_transaction();
+    let mut grove = Grove::new(&db, &tx, &GROVE_V6);
+    let open = grove
+        .write(
+            &[],
+            &put(&[], vec![8; 200], Element::new_item(vec![1])).changes,
+        )
+        .open;
+    let estimate_told = |root_key_len, version| {
+        let mut cost = OperationCost::default();
+        GroveDb::add_average_case_get_merk_at_path_with_root_key(
+            &mut cost,
+            &known(&[]),
+            false,
+            TreeType::NormalTree,
+            root_key_len,
+            version,
+        )
+        .expect("the open is estimated");
+        cost
+    };
+    // The 200 bytes of the record, and the 71 of the node.
+    assert_eq!((open.seek_count, open.storage_loaded_bytes), (2, 200 + 71));
+    assert_eq!(
+        estimate_told(Some(200), &GROVE_V6).storage_loaded_bytes,
+        200
+    );
+    assert_eq!(
+        estimate_told(None, &GROVE_V6).storage_loaded_bytes,
+        u64::from(MERK_BIGGEST_KEY_SIZE)
+    );
+    assert_eq!(estimate_told(Some(200), &GROVE_V5).storage_loaded_bytes, 0);
+    assert_eq!(
+        worst_open_estimate(&[], &GROVE_V6).storage_loaded_bytes,
+        u64::from(MERK_BIGGEST_KEY_SIZE)
+    );
+    // A sum that does not fit is refused with nothing added.
+    let mut full = OperationCost {
+        storage_loaded_bytes: u64::MAX,
+        ..Default::default()
+    };
+    let before = full.clone();
+    assert!(matches!(
+        GroveDb::add_average_case_get_merk_at_path_engine_free(
+            &mut full,
+            &known(&[]),
+            false,
+            TreeType::NormalTree,
+            &GROVE_V6,
+        ),
+        Err(Error::Overflow(_))
+    ));
+    assert_eq!(full, before);
+    assert!(matches!(
+        GroveDb::add_worst_case_get_merk_at_path_engine_free(
+            &mut full,
+            &known(&[]),
+            TreeType::NormalTree,
+            &GROVE_V6,
+        ),
+        Err(Error::Overflow(_))
+    ));
+    assert_eq!(full, before);
 }
 
 #[test]
@@ -411,6 +514,22 @@ fn layers(shape: &Shape) -> HashMap<KeyInfoPath, EstimatedLayerInformation> {
         .collect()
 }
 
+/// The Merks of `shape` whose element is wrapped, which a layer does not
+/// say and the estimate of a finalize is told.
+fn wrapped(shape: &Shape) -> HashSet<KeyInfoPath> {
+    shape
+        .trees
+        .iter()
+        .filter(|(_, tree)| {
+            matches!(
+                tree,
+                Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_)
+            )
+        })
+        .map(|(at, _)| known(at))
+        .collect()
+}
+
 fn worst_layers(shape: &Shape) -> HashMap<KeyInfoPath, WorstCaseLayerInformation> {
     layers(shape)
         .into_keys()
@@ -459,12 +578,18 @@ fn finalize_after_hosts_removed(
     let applied = grove.finalize();
     // The layers of the grove as the finalize finds it.
     let found = shape.after(writes);
-    let average = GroveDb::average_case_finalize(&stop_points, &layers(&found), version)
-        .cost_as_result()
-        .expect("the finalize is estimated");
-    let worst = GroveDb::worst_case_finalize(&stop_points, &worst_layers(&found), version)
-        .cost_as_result()
-        .expect("the finalize is estimated");
+    let average =
+        GroveDb::average_case_finalize(&stop_points, &wrapped(&found), &layers(&found), version)
+            .cost_as_result()
+            .expect("the finalize is estimated");
+    let worst = GroveDb::worst_case_finalize(
+        &stop_points,
+        &worst_layers(&found),
+        MERK_BIGGEST_VALUE_SIZE,
+        version,
+    )
+    .cost_as_result()
+    .expect("the finalize is estimated");
     (applied, average, worst)
 }
 
@@ -798,11 +923,23 @@ fn es3_a_grove_version_with_no_finalize_has_no_estimate_of_one() {
     let stop_points = [known(&leaf)];
     for version in GROVE_VERSIONS {
         assert!(matches!(
-            GroveDb::average_case_finalize(&stop_points, &layers(&shape), version).value,
+            GroveDb::average_case_finalize(
+                &stop_points,
+                &wrapped(&shape),
+                &layers(&shape),
+                version
+            )
+            .value,
             Err(Error::NotSupported(_))
         ));
         assert!(matches!(
-            GroveDb::worst_case_finalize(&stop_points, &worst_layers(&shape), version).value,
+            GroveDb::worst_case_finalize(
+                &stop_points,
+                &worst_layers(&shape),
+                MERK_BIGGEST_VALUE_SIZE,
+                version
+            )
+            .value,
             Err(Error::NotSupported(_))
         ));
     }
@@ -810,7 +947,7 @@ fn es3_a_grove_version_with_no_finalize_has_no_estimate_of_one() {
     let mut missing = layers(&shape);
     missing.remove(&known(&[]));
     assert!(matches!(
-        GroveDb::average_case_finalize(&stop_points, &missing, &GROVE_V6).value,
+        GroveDb::average_case_finalize(&stop_points, &HashSet::new(), &missing, &GROVE_V6).value,
         Err(Error::PathNotFoundInCacheForEstimatedCosts(_))
     ));
 }
@@ -893,7 +1030,7 @@ fn finalize_of_a_stopped_tree(
         },
     );
     let stop_points = [known(&trees[0])];
-    let average = GroveDb::average_case_finalize(&stop_points, &paths, version)
+    let average = GroveDb::average_case_finalize(&stop_points, &HashSet::new(), &paths, version)
         .cost_as_result()
         .expect("the finalize is estimated");
     let worst_paths = [
@@ -905,9 +1042,10 @@ fn finalize_of_a_stopped_tree(
     ]
     .into_iter()
     .collect();
-    let worst = GroveDb::worst_case_finalize(&stop_points, &worst_paths, version)
-        .cost_as_result()
-        .expect("the finalize is estimated");
+    let worst =
+        GroveDb::worst_case_finalize(&stop_points, &worst_paths, MERK_BIGGEST_VALUE_SIZE, version)
+            .cost_as_result()
+            .expect("the finalize is estimated");
     (applied, average, worst)
 }
 
@@ -975,27 +1113,63 @@ fn es3_a_node_above_a_marked_element_is_sized_by_what_a_layer_can_say_of_it() {
 }
 
 #[test]
-fn es3_a_wrapped_host_costs_a_byte_that_the_estimate_of_a_finalize_does_not_have() {
-    // A layer does not say that a tree it holds is wrapped, and a wrapper
-    // is a byte of the element's cost.
-    let wrapped = Element::new_non_counted(Element::empty_count_tree()).expect("a count tree");
-    let bare = Element::empty_count_tree();
-    let finalize_of = |inner: &Element| {
-        let mut shape = Shape::default();
-        let outer = shape.tree(path(&[b"outer"]), &Element::empty_count_tree());
-        let inner = shape.tree(child(&outer, b"inner"), inner);
-        let write = put(&inner, key(0), Element::new_item(vec![0]));
-        finalize_and_its_estimates(&shape, &[write], &GROVE_V6)
+fn es3_a_wrapped_host_is_estimated_with_the_byte_of_its_wrapper() {
+    // A wrapper is a byte of the element's cost, and a layer does not say
+    // that a tree it holds is wrapped: the estimate of a finalize is told
+    // which Merks are hosted by a wrapped element. Each of the three
+    // wrappers, around the tree a write stops at and around the tree above
+    // it, which the finalize carries too.
+    let wrappers: [fn(Element) -> Element; 3] = [
+        |tree| Element::new_non_counted(tree).expect("a tree can be wrapped"),
+        |tree| Element::new_not_summed(tree).expect("a tree can be wrapped"),
+        |tree| Element::new_not_counted_or_summed(tree).expect("a tree can be wrapped"),
+    ];
+    let host_of = |wrapper: usize| match wrapper {
+        0 => Element::empty_count_tree(),
+        1 => Element::empty_sum_tree(),
+        _ => Element::empty_count_sum_tree(),
     };
-    let (applied, average, _) = finalize_of(&bare);
-    assert_eq!(average.storage_cost, applied.storage_cost);
-    let (applied_wrapped, average_wrapped, worst) = finalize_of(&wrapped);
-    assert_eq!(average_wrapped.storage_cost, average.storage_cost);
-    assert_eq!(
-        applied_wrapped.storage_cost.replaced_bytes,
-        average_wrapped.storage_cost.replaced_bytes + 1
-    );
-    assert!(worst.worse_or_eq_than(&applied_wrapped));
+    for (number, wrap) in wrappers.iter().enumerate() {
+        for wrapped_at in [0, 1] {
+            let mut shape = Shape::default();
+            let top = shape.tree(path(&[b"top"]), &host_of(number));
+            let bare = host_of(number);
+            let outer_tree = if wrapped_at == 0 {
+                wrap(bare.clone())
+            } else {
+                bare.clone()
+            };
+            let outer = shape.tree(child(&top, b"outer"), &outer_tree);
+            let inner_tree = if wrapped_at == 1 {
+                wrap(bare.clone())
+            } else {
+                bare
+            };
+            let inner = shape.tree(child(&outer, b"inner"), &inner_tree);
+            let write = put(&inner, key(0), Element::new_item(vec![0]));
+            let case = format!("wrapper {number} at {wrapped_at}");
+            let (applied, average, worst) =
+                finalize_and_its_estimates(&shape, std::slice::from_ref(&write), &GROVE_V6);
+            assert_eq!(average.storage_cost, applied.storage_cost, "{case}");
+            assert_eq!(average.hash_node_calls, applied.hash_node_calls, "{case}");
+            assert_eq!(average.seek_count, applied.seek_count, "{case}");
+            assert!(worst.worse_or_eq_than(&applied), "{case}");
+            // Not told of the wrapper, the estimate is a byte short; told
+            // of one that is not there, a byte over.
+            let stop_points = [known(&inner)];
+            let estimate = |wrapped: &HashSet<KeyInfoPath>| {
+                GroveDb::average_case_finalize(&stop_points, wrapped, &layers(&shape), &GROVE_V6)
+                    .cost_as_result()
+                    .expect("the finalize is estimated")
+                    .storage_cost
+                    .replaced_bytes
+            };
+            let replaced = applied.storage_cost.replaced_bytes;
+            assert_eq!(estimate(&HashSet::new()) + 1, replaced, "{case}");
+            let both: HashSet<KeyInfoPath> = [known(&outer), known(&inner)].into_iter().collect();
+            assert_eq!(estimate(&both), replaced + 1, "{case}");
+        }
+    }
 }
 
 #[test]
@@ -1032,7 +1206,7 @@ fn es3_the_estimate_of_a_finalize_does_not_follow_the_order_of_its_stop_points()
         layer(TreeType::SumTree, AllItems(2, 1, None)),
     );
     let estimate = |stop_points: &[KeyInfoPath]| {
-        GroveDb::average_case_finalize(stop_points, &paths, &GROVE_V6)
+        GroveDb::average_case_finalize(stop_points, &HashSet::new(), &paths, &GROVE_V6)
             .cost_as_result()
             .expect("the finalize is estimated")
     };
@@ -1064,7 +1238,13 @@ fn es3_a_stop_point_far_down_takes_no_more_than_its_path() {
     assert_eq!(marks[0].0.len(), 199);
     assert!(marks.iter().all(|(_, keys)| keys.len() == 1));
     assert!(matches!(
-        GroveDb::average_case_finalize(&[known(&deep)], &HashMap::new(), &GROVE_V6).value,
+        GroveDb::average_case_finalize(
+            &[known(&deep)],
+            &HashSet::new(),
+            &HashMap::new(),
+            &GROVE_V6
+        )
+        .value,
         Err(Error::PathNotFoundInCacheForEstimatedCosts(_))
     ));
 }
@@ -1874,9 +2054,14 @@ fn es3_the_estimate_of_a_finalize_is_of_the_marks_that_stand_when_it_runs() {
     assert_eq!(worst, OperationCost::default());
     // Given the stop point that was given up, the estimate is of a carry
     // that no finalize makes.
-    let given_up = GroveDb::average_case_finalize(&[known(&gone)], &layers(&shape), &GROVE_V6)
-        .cost_as_result()
-        .expect("the finalize is estimated");
+    let given_up = GroveDb::average_case_finalize(
+        &[known(&gone)],
+        &wrapped(&shape),
+        &layers(&shape),
+        &GROVE_V6,
+    )
+    .cost_as_result()
+    .expect("the finalize is estimated");
     assert!(given_up.seek_count > 0 && given_up.storage_cost.replaced_bytes > 0);
 
     let mut with_another = stopped.to_vec();
@@ -1943,7 +2128,7 @@ fn finalize_naming(
     ]
     .into_iter()
     .collect();
-    let average = GroveDb::average_case_finalize(&[known(&t)], &paths, version)
+    let average = GroveDb::average_case_finalize(&[known(&t)], &HashSet::new(), &paths, version)
         .cost_as_result()
         .expect("the finalize is estimated");
     let worst_paths = [
@@ -1955,9 +2140,10 @@ fn finalize_naming(
     ]
     .into_iter()
     .collect();
-    let worst = GroveDb::worst_case_finalize(&[known(&t)], &worst_paths, version)
-        .cost_as_result()
-        .expect("the finalize is estimated");
+    let worst =
+        GroveDb::worst_case_finalize(&[known(&t)], &worst_paths, MERK_BIGGEST_VALUE_SIZE, version)
+            .cost_as_result()
+            .expect("the finalize is estimated");
     (applied, average, worst)
 }
 
@@ -2131,14 +2317,22 @@ fn es3_the_root_merk_is_opened_by_its_root_key_record() {
     // loads it, and the estimate has its bytes at the size the layer gives
     // the keys of the root Merk. A tree under a key of 80 bytes, the one
     // element of the root Merk, with one item under a key of 196.
-    let mut shape = Shape::default();
-    let outer = shape.tree(vec![vec![1; 80]], &Element::empty_tree());
-    shape
-        .elements
-        .push((outer.clone(), vec![2; 196], Element::new_item(vec![1])));
-    let write = put(&outer, vec![2; 196], Element::new_item(vec![2]));
-    let (applied, average, worst) =
-        finalize_and_its_estimates(&shape, std::slice::from_ref(&write), &GROVE_V6);
+    let finalize_under = |root_key_of_the_tree: usize| {
+        let mut shape = Shape::default();
+        let outer = shape.tree(vec![vec![1; 80]], &Element::empty_tree());
+        shape.elements.push((
+            outer.clone(),
+            vec![2; root_key_of_the_tree],
+            Element::new_item(vec![1]),
+        ));
+        let write = put(
+            &outer,
+            vec![2; root_key_of_the_tree],
+            Element::new_item(vec![2]),
+        );
+        finalize_and_its_estimates(&shape, std::slice::from_ref(&write), &GROVE_V6)
+    };
+    let (applied, average, worst) = finalize_under(196);
     assert_eq!(average.seek_count, applied.seek_count);
     assert_eq!(average.storage_cost, applied.storage_cost);
     assert_eq!(average.hash_node_calls, applied.hash_node_calls);
@@ -2146,6 +2340,96 @@ fn es3_the_root_merk_is_opened_by_its_root_key_record() {
     assert_eq!(
         (applied.storage_loaded_bytes, average.storage_loaded_bytes),
         (267 + 80, 267 + 80)
+    );
+    assert!(worst.worse_or_eq_than(&applied));
+}
+
+#[test]
+fn es3_the_worst_case_hashes_a_host_at_the_size_its_caller_gives() {
+    // The flags of a tree are as long as they are given, and a finalize
+    // hashes them with the element it carries: 32,768 bytes of flags are
+    // 513 calls for the value alone. No rule of GroveDB bounds them, so the
+    // worst case is told the most bytes a host serializes to. Told the
+    // 65,535 it takes every value to be, or the bytes of this host, it
+    // holds; told the 17,486 that its flags at `WORST_CASE_FLAGS_LEN` and
+    // its root keys would make, it does not.
+    let mut tree = Element::empty_tree();
+    tree.set_flags(Some(vec![9; 32_768]));
+    let mut shape = Shape::default();
+    let host = shape.tree(path(&[b"host"]), &tree);
+    let write = put(&host, key(0), Element::new_item(vec![1]));
+    let (applied, _, worst) =
+        finalize_and_its_estimates(&shape, std::slice::from_ref(&write), &GROVE_V6);
+    assert!(applied.hash_node_calls > 513, "{applied:?}");
+    assert!(
+        worst.worse_or_eq_than(&applied),
+        "worst {worst:?}, applied {applied:?}"
+    );
+    let found = shape.after(std::slice::from_ref(&write));
+    let hashes = |biggest_host_element| {
+        GroveDb::worst_case_finalize(
+            &[known(&host)],
+            &worst_layers(&found),
+            biggest_host_element,
+            &GROVE_V6,
+        )
+        .cost_as_result()
+        .expect("the finalize is estimated")
+        .hash_node_calls
+    };
+    // The host with the root key it names after the write: its flags, the
+    // three bytes of their length, and seven more.
+    let carried = 32_768 + 3 + 7;
+    assert!(hashes(carried) >= applied.hash_node_calls);
+    assert!(hashes(carried) < hashes(MERK_BIGGEST_VALUE_SIZE));
+    assert!(hashes(17_486) < applied.hash_node_calls);
+    // A size whose length does not fit with it is refused, with no cost.
+    let refused =
+        GroveDb::worst_case_finalize(&[known(&host)], &worst_layers(&found), u32::MAX, &GROVE_V6);
+    assert!(matches!(refused.value, Err(Error::Overflow(_))));
+    assert_eq!(refused.cost, OperationCost::default());
+}
+
+#[test]
+fn es3_the_bytes_a_node_loads_are_sized_by_its_cost_and_not_by_its_record() {
+    // Where ES3 stops: the average case sizes the bytes a node loads as the
+    // estimate of a level does on every grove version, by the node's cost:
+    // its own key under its prefix, its value at its cost, and a link. The
+    // record that is loaded has no key, and has the element as it is
+    // serialized, which for a tree names the root key of the Merk below.
+    // The two are equal for the tree above by its numbers alone: the key of
+    // 80 bytes with its prefix and its link is 230 bytes, and so is the
+    // root key of 196 bytes with what a record has around it. A root key
+    // four bytes longer is four bytes more loaded, and the estimate, which
+    // has no root key in a node's bytes, is the same.
+    let finalize_under = |root_key_of_the_tree: usize| {
+        let mut shape = Shape::default();
+        let outer = shape.tree(vec![vec![1; 80]], &Element::empty_tree());
+        shape.elements.push((
+            outer.clone(),
+            vec![2; root_key_of_the_tree],
+            Element::new_item(vec![1]),
+        ));
+        let write = put(
+            &outer,
+            vec![2; root_key_of_the_tree],
+            Element::new_item(vec![2]),
+        );
+        finalize_and_its_estimates(&shape, std::slice::from_ref(&write), &GROVE_V6)
+    };
+    let (applied, average, worst) = finalize_under(200);
+    assert_eq!(average.seek_count, applied.seek_count);
+    assert_eq!(average.storage_cost, applied.storage_cost);
+    assert_eq!(average.hash_node_calls, applied.hash_node_calls);
+    assert_eq!(
+        (applied.storage_loaded_bytes, average.storage_loaded_bytes),
+        (271 + 80, 267 + 80)
+    );
+    // And a short root key is fewer bytes loaded than the estimate has.
+    let (applied, average, _) = finalize_under(1);
+    assert_eq!(
+        (applied.storage_loaded_bytes, average.storage_loaded_bytes),
+        (72 + 80, 267 + 80)
     );
     assert!(worst.worse_or_eq_than(&applied));
 }
@@ -2193,13 +2477,13 @@ fn es3_a_sum_that_does_not_fit_leaves_the_total_as_it_was() {
 #[test]
 fn es3_a_wrapped_indexed_tree_is_hashed_with_the_byte_of_its_wrapper() {
     use grovedb_merk::tree::AggregateData;
-    // Where ES3 stops: a layer does not say that a tree is wrapped, and the
-    // wrapper is a byte of the element. Where that byte carries the element
-    // with its length over a block, the hash of the carried element is a
-    // call more than the estimate has: an indexed tree by its sum, with a
+    // A wrapper is a byte of the element, and the estimate of a finalize
+    // is told which Merks are hosted by a wrapped one. Where that byte
+    // carries the element with its length over a block, the hash of the
+    // carried element is a call more: an indexed tree by its sum, with a
     // root key of 20 bytes, a secondary root key of 28 and the longest sum,
     // is 64 bytes with its length, and 65 wrapped.
-    let hash_calls = |tree: &Element| {
+    let hash_calls = |tree: &Element, told: bool| {
         let mut shape = Shape::default();
         let host = shape.tree(path(&[b"host"]), &Element::empty_count_tree());
         let t = shape.tree(child(&host, b"t"), tree);
@@ -2236,15 +2520,18 @@ fn es3_a_wrapped_indexed_tree_is_hashed_with_the_byte_of_its_wrapper() {
         ]
         .into_iter()
         .collect();
-        let average = GroveDb::average_case_finalize(&[known(&t)], &layers, &GROVE_V6)
+        let wrapped: HashSet<KeyInfoPath> = told.then(|| known(&t)).into_iter().collect();
+        let average = GroveDb::average_case_finalize(&[known(&t)], &wrapped, &layers, &GROVE_V6)
             .cost_as_result()
             .expect("the finalize is estimated");
         (applied.hash_node_calls, average.hash_node_calls)
     };
     let plain = Element::empty_provable_sum_indexed_tree();
     let wrapped = Element::new_non_counted(plain.clone()).expect("a tree can be wrapped");
-    assert_eq!(hash_calls(&plain), (10, 10));
-    assert_eq!(hash_calls(&wrapped), (11, 10));
+    assert_eq!(hash_calls(&plain, false), (10, 10));
+    assert_eq!(hash_calls(&wrapped, true), (11, 11));
+    // Not told of the wrapper, the estimate is the call short.
+    assert_eq!(hash_calls(&wrapped, false), (11, 10));
 }
 
 #[test]
@@ -2293,7 +2580,7 @@ fn es3_a_tree_that_keeps_its_data_flat_names_no_root_key() {
         ]
         .into_iter()
         .collect();
-        GroveDb::average_case_finalize(&[known(&flat)], &layers, &GROVE_V6)
+        GroveDb::average_case_finalize(&[known(&flat)], &HashSet::new(), &layers, &GROVE_V6)
             .cost_as_result()
             .expect("the finalize is estimated")
     };
@@ -2431,6 +2718,7 @@ fn es2_no_size_of_a_layer_overflows_an_estimate_of_an_operation_on_grove_version
                         ),
                         GroveDb::average_case_finalize(
                             &[known(&path(&[b"a", b"b"]))],
+                            &HashSet::new(),
                             &[
                                 (known(&[]), layer),
                                 (known(&path(&[b"a"])), layer),
@@ -2604,17 +2892,26 @@ fn es3_a_finalize_too_long_to_count_is_refused() {
             })
             .collect()
     };
-    let refused =
-        GroveDb::average_case_finalize(&[known(&segments)], &layers(4_000_000_000), &GROVE_V6);
+    let refused = GroveDb::average_case_finalize(
+        &[known(&segments)],
+        &HashSet::new(),
+        &layers(4_000_000_000),
+        &GROVE_V6,
+    );
     assert!(matches!(
         refused.value,
         Err(Error::MerkError(grovedb_merk::Error::Overflow(_)))
     ));
     assert_eq!(refused.cost, OperationCost::default());
     // With flags a tree can have it is counted.
-    let counted = GroveDb::average_case_finalize(&[known(&segments)], &layers(40), &GROVE_V6)
-        .cost_as_result()
-        .expect("the finalize is estimated");
+    let counted = GroveDb::average_case_finalize(
+        &[known(&segments)],
+        &HashSet::new(),
+        &layers(40),
+        &GROVE_V6,
+    )
+    .cost_as_result()
+    .expect("the finalize is estimated");
     assert!(counted.seek_count > 0 && counted.hash_node_calls < u32::MAX);
     // More marked elements in one Merk than 32 bits count are refused.
     #[cfg(target_pointer_width = "64")]
@@ -3018,9 +3315,14 @@ fn es2_the_average_case_takes_a_merk_to_be_as_shallow_as_its_count_allows() {
         .get_mut(&known(&host))
         .expect("the layer of the host")
         .estimated_layer_count = EstimatedLevel(4, false);
-    let by_levels = GroveDb::average_case_finalize(&[known(&hosted[6])], &by_levels, &GROVE_V6)
-        .cost_as_result()
-        .expect("the finalize is estimated");
+    let by_levels = GroveDb::average_case_finalize(
+        &[known(&hosted[6])],
+        &HashSet::new(),
+        &by_levels,
+        &GROVE_V6,
+    )
+    .cost_as_result()
+    .expect("the finalize is estimated");
     assert_eq!(by_levels.seek_count, applied.seek_count);
     assert_eq!(by_levels.hash_node_calls, applied.hash_node_calls);
     assert_eq!(by_levels.storage_cost, applied.storage_cost);
@@ -3132,13 +3434,15 @@ fn es2_the_loaded_bytes_of_a_write_hold_in_a_full_merk() {
 }
 
 #[test]
-fn es2_a_patch_is_estimated_with_its_flags_counted_twice() {
+fn es2_a_patch_is_sized_from_the_bytes_of_the_item() {
     use crate::batch::QualifiedGroveDbOp as Op;
-    // Where ES2 stops: the estimate of a patch adds the flags of the item
-    // to its bytes, which have them. An item with a flag byte that grows
-    // from 62 bytes to 63 is 64 with its length, which takes a second byte
-    // there: two bytes are added, and the estimate, which takes the item
-    // to be 65 and its length to stay at two bytes, has one.
+    // An item with a flag byte that grows from 62 bytes to 63 is 64 with
+    // its length, which takes a second byte there: two bytes are added.
+    // Grove version 6 sizes the patch from the bytes of the item, which
+    // have its flags, and has the two, in the average case and in the
+    // worst. Grove versions 1 to 5 add the flags to those bytes once more,
+    // take the item to be 65 and its length to stay at two bytes, and have
+    // one: they keep the estimate they were admitted with.
     let mut shape = Shape::default();
     let leaf = shape.tree(path(&[b"a"]), &Element::empty_tree());
     let grown = Element::new_item_with_flags(vec![1; 58], Some(vec![9]));
@@ -3158,8 +3462,8 @@ fn es2_a_patch_is_estimated_with_its_flags_counted_twice() {
         .cost_as_result()
         .expect("grove version 5 patches the item");
     assert_eq!(applied.storage_cost.added_bytes, 2);
-    for version in [&GROVE_V5, &GROVE_V6] {
-        let estimate = GroveDb::average_case_merk_patch_element(
+    let estimates = |version| {
+        let average = GroveDb::average_case_merk_patch_element(
             &KnownKey(key(0)),
             &grown,
             1,
@@ -3169,8 +3473,42 @@ fn es2_a_patch_is_estimated_with_its_flags_counted_twice() {
         )
         .cost_as_result()
         .expect("the patch is estimated");
-        assert_eq!(estimate.storage_cost.added_bytes, 1);
+        let worst = GroveDb::worst_case_merk_patch_element(
+            &KnownKey(key(0)),
+            &grown,
+            1,
+            TreeType::NormalTree,
+            None,
+            version,
+        )
+        .cost_as_result()
+        .expect("the patch is estimated");
+        (average.storage_cost, worst.storage_cost)
+    };
+    for version in GROVE_VERSIONS {
+        let (average, worst) = estimates(version);
+        assert_eq!((average.added_bytes, worst.added_bytes), (1, 1));
     }
+    let (average, worst) = estimates(&GROVE_V6);
+    assert_eq!((average.added_bytes, worst.added_bytes), (2, 2));
+    // And where the length of the record stays as long as it was: an item
+    // that grows from 70 bytes to 75, on both sides of no boundary.
+    let longer = Element::new_item_with_flags(vec![1; 70], Some(vec![9]));
+    let added = |version| {
+        GroveDb::average_case_merk_patch_element(
+            &KnownKey(key(0)),
+            &longer,
+            5,
+            TreeType::NormalTree,
+            None,
+            version,
+        )
+        .cost_as_result()
+        .expect("the patch is estimated")
+        .storage_cost
+        .added_bytes
+    };
+    assert_eq!((added(&GROVE_V5), added(&GROVE_V6)), (5, 5));
 }
 
 #[test]
@@ -3284,7 +3622,8 @@ fn es3_a_layer_longer_than_an_estimate_can_count_is_refused() {
         ]
         .into_iter()
         .collect();
-        let refused = GroveDb::average_case_finalize(&[known(&t)], &paths, &GROVE_V6);
+        let refused =
+            GroveDb::average_case_finalize(&[known(&t)], &HashSet::new(), &paths, &GROVE_V6);
         assert!(matches!(
             refused.value,
             Err(Error::MerkError(grovedb_merk::Error::Overflow(_)))
@@ -3328,7 +3667,7 @@ fn es3_a_layer_of_several_kinds_sizes_the_flags_of_a_tree_without_their_length()
         ]
         .into_iter()
         .collect();
-        GroveDb::average_case_finalize(&[known(&trees[0])], &paths, &GROVE_V6)
+        GroveDb::average_case_finalize(&[known(&trees[0])], &HashSet::new(), &paths, &GROVE_V6)
             .cost_as_result()
             .expect("the finalize is estimated")
     };
