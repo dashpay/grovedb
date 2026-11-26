@@ -49,6 +49,12 @@ pub struct StoreStats {
     pub value_reads: u64,
     /// Their bytes.
     pub value_read_bytes: u64,
+    /// Blocks read from segments by their locations: base images and
+    /// delta runs, by page loads and by write-back. A page that is loaded
+    /// takes one read for its base image and one for each run after it.
+    pub block_reads: u64,
+    /// Their bytes as stored, frames included.
+    pub block_read_bytes: u64,
     /// What an operator watches.
     pub watch: Watch,
     /// The log's counts, by kind of item.
@@ -224,6 +230,7 @@ impl Stats {
         let pool = stores.pool.stats();
         let (open_writes, oldest_write) = self.open_writes();
         let (value_reads, value_read_bytes) = stores.values.reads();
+        let (block_reads, block_read_bytes) = stores.segments.reads();
         let watch = Watch {
             log_held: write_back.log_held(),
             unwritten: state.unwritten(),
@@ -261,6 +268,8 @@ impl Stats {
             keyed_lookups: self.keyed_lookups(),
             value_reads,
             value_read_bytes,
+            block_reads,
+            block_read_bytes,
             watch,
             log,
             flush,
@@ -295,8 +304,9 @@ impl fmt::Display for StoreStats {
         )?;
         writeln!(
             f,
-            "values read from the value log: {} ({} bytes)",
-            self.value_reads, self.value_read_bytes,
+            "values read from the value log: {} ({} bytes); blocks read from segments: {} \
+             ({} bytes)",
+            self.value_reads, self.value_read_bytes, self.block_reads, self.block_read_bytes,
         )?;
         write!(f, "log held: {} bytes", watch.log_held)?;
         for (at, holder) in watch.log_held_by().iter().enumerate() {

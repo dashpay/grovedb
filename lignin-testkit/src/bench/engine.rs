@@ -261,6 +261,8 @@ impl From<&StoreStats> for Counters {
             keyed_lookups,
             value_reads: _,
             value_read_bytes: _,
+            block_reads: _,
+            block_read_bytes: _,
             watch: _,
             log: _,
             flush: _,

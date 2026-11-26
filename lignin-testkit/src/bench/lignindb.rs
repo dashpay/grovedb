@@ -454,7 +454,7 @@ fn cleaner_copied(stats: &DbStats) -> u64 {
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 42] = [
+pub const DETAIL_IDS: [&str; 46] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
@@ -497,6 +497,10 @@ pub const DETAIL_IDS: [&str; 42] = [
     "cleaner_checkpoints",
     "pages_freed",
     "value_reads",
+    "block_reads",
+    "block_read_bytes",
+    "pool_evictions",
+    "pool_overflows",
 ];
 
 /// Where the bytes of [`Counters`] went, and what the background work did
@@ -509,6 +513,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
     const CLEANER: &str = "lignindb engine counters: the cleaner";
     const RECLAIMER: &str = "lignindb engine counters: the reclaimer";
     const VALUES: &str = "lignindb engine counters: values read from the value log";
+    const BLOCKS: &str = "lignindb engine counters: blocks read from segments by their locations";
+    const POOL: &str = "lignindb engine counters: the buffer pool's frames";
     let totals = [
         ("B", log.group_bytes, LOG),
         ("B", log.change_bytes, LOG),
@@ -552,6 +558,10 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("checkpoints", cleaner.checkpoints, CLEANER),
         ("pages", stats.reclaimed.pages_freed, RECLAIMER),
         ("values", stats.store.value_reads, VALUES),
+        ("blocks", stats.store.block_reads, BLOCKS),
+        ("B", stats.store.block_read_bytes, BLOCKS),
+        ("frames", stats.store.pool.evictions, POOL),
+        ("frames", stats.store.pool.overflows, POOL),
     ];
     DETAIL_IDS
         .into_iter()

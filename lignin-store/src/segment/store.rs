@@ -432,6 +432,18 @@ pub struct SegmentStore {
     /// and it is taken before `segments`.
     creating: Mutex<Option<FileId>>,
     segments: RwLock<Segments>,
+    /// The blocks [`Self::read`] read, and their bytes.
+    reads: BlockReads,
+}
+
+/// The blocks read by their locations from the segments of a store
+/// ([`SegmentStore::reads`]): what page loads and write-back read of
+/// base images and delta runs. The blocks a walk passes
+/// ([`SegmentStore::walk`]) are not among them.
+#[derive(Debug, Default)]
+struct BlockReads {
+    blocks: AtomicU64,
+    bytes: AtomicU64,
 }
 
 impl SegmentStore {
@@ -497,6 +509,7 @@ impl SegmentStore {
             read_only,
             creating: Mutex::new(last_id),
             segments: RwLock::new(segments),
+            reads: BlockReads::default(),
         })
     }
 
@@ -818,8 +831,26 @@ impl SegmentStore {
         max_payload_len: usize,
         buf: &'a mut Vec<u8>,
     ) -> Result<Block<'a>, SegmentStoreError> {
-        self.segment(location.file)?
-            .block(location, max_payload_len, buf)
+        let block = self
+            .segment(location.file)?
+            .block(location, max_payload_len, buf)?;
+        self.reads.blocks.fetch_add(1, Ordering::Relaxed);
+        let bytes = u64::from(location.len);
+        self.reads.bytes.fetch_add(bytes, Ordering::Relaxed);
+        Ok(block)
+    }
+
+    /// How many blocks [`Self::read`] has read since the store was opened,
+    /// and their bytes as stored, frames included: every read that
+    /// returned a block, whoever made it. Each is one read of the file
+    /// layer. A read that failed is not counted, and nor are the blocks
+    /// of a walk.
+    pub fn reads(&self) -> (u64, u64) {
+        let reads = &self.reads;
+        (
+            reads.blocks.load(Ordering::Relaxed),
+            reads.bytes.load(Ordering::Relaxed),
+        )
     }
 
     /// The format version the segment `file` was written in, from its file
