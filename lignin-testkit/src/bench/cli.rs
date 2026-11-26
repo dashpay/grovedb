@@ -24,7 +24,7 @@
 //! `run --keep` with the same `--scratch`, `--seed`, `--documents` and
 //! `--owners` and with `--creates 0 --updates 0 --deletes 0` left there.
 //! `compare` takes `--tolerance FRACTION` (default 0.10). The options of
-//! `latency` are those of [`latency`](super::latency).
+//! `latency` are those of [`latency`].
 
 use std::{fmt::Write as _, path::PathBuf};
 
