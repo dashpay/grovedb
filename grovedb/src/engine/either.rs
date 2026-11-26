@@ -813,7 +813,8 @@ impl EitherEngine {
     /// taken as off.
     ///
     /// What [`Self::open_with`] refuses is refused here, a path whose last
-    /// name ends in `.creating` by the same rule and with the same error.
+    /// name ends in `.creating` by the same rule, and where it is refused
+    /// for its name, with [`Error::NotSupported`].
     /// Where RocksDB is chosen, a listing of a path of any other name in
     /// which no entry says an engine is refused by this type too, with
     /// [`Error::StorageError`] and no engine called; where LigninDB is
