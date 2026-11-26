@@ -29,7 +29,7 @@ use ed::Encode;
 pub use grovedb_costs::cost_model::{
     BatchCharge, ImmediateBatchCharge, Keyspace, StorageCostModel, PREFIX_LEN,
 };
-use grovedb_costs::OperationCost;
+use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, OperationCost};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
@@ -192,12 +192,19 @@ impl FinalizeCharge {
     /// A finalize rewrites elements whose value cost it does not change, so
     /// an event that adds or removes bytes is refused, and nothing of it is
     /// added: such bytes would be charged to no write and carry no flags.
-    pub fn event(&mut self, cost: OperationCost) -> Result<(), Error> {
+    ///
+    /// An event can say that it removed no bytes in more ways than one: no
+    /// removal, a plain removal of none, or a removal of none from named
+    /// owners. Which of them a cost holds decides how the removed bytes of
+    /// a cost it is added to are kept, so the charge holds the first
+    /// whatever its events said.
+    pub fn event(&mut self, mut cost: OperationCost) -> Result<(), Error> {
         if cost.storage_cost.added_bytes != 0 || cost.storage_cost.removed_bytes.has_removal() {
             return Err(Error::CorruptedCodeExecution(
                 "an event of a finalize added or removed bytes",
             ));
         }
+        cost.storage_cost.removed_bytes = StorageRemovedBytes::NoStorageRemoval;
         self.cost += cost;
         Ok(())
     }
@@ -295,7 +302,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use ed::Decode;
-    use grovedb_costs::storage_cost::{removal::StorageRemovedBytes, StorageCost};
+    use grovedb_costs::storage_cost::StorageCost;
     use grovedb_version::version::{v5::GROVE_V5, v6::GROVE_V6, GROVE_VERSIONS};
 
     /// The rules a grove version charges by.
@@ -683,6 +690,56 @@ mod tests {
         }
         // Nothing of a refused event is in the charge.
         assert_eq!(charge.finish(), replaces);
+    }
+
+    #[test]
+    fn fz4_an_event_that_removes_no_bytes_leaves_no_kind_of_removal_in_the_charge() {
+        // An event that removed nothing can say so as a plain removal of
+        // none or as a removal of none from an owner. Either is taken, and
+        // neither is kept: a charge that held one would turn the plain
+        // removal of a write it is added to into one by owner and epoch.
+        let of_none_by_owner = StorageRemovedBytes::SectionedStorageRemoval(
+            [([7; 32], [(0, 0)].into_iter().collect())]
+                .into_iter()
+                .collect(),
+        );
+        for of_none in [
+            StorageRemovedBytes::BasicStorageRemoval(0),
+            of_none_by_owner,
+        ] {
+            let mut charge = rules_of(&GROVE_V6)
+                .finalize()
+                .expect("a version with a finalize");
+            charge
+                .event(OperationCost {
+                    seek_count: 1,
+                    storage_cost: StorageCost {
+                        added_bytes: 0,
+                        replaced_bytes: 77,
+                        removed_bytes: of_none,
+                    },
+                    ..Default::default()
+                })
+                .expect("an event that removes no bytes");
+            let finalize = charge.finish();
+            assert_eq!(
+                finalize.storage_cost.removed_bytes,
+                StorageRemovedBytes::NoStorageRemoval
+            );
+            // Added to a write's plain removal, it leaves that as it was.
+            let mut total = OperationCost {
+                storage_cost: StorageCost {
+                    removed_bytes: StorageRemovedBytes::BasicStorageRemoval(5),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            total += finalize;
+            assert_eq!(
+                total.storage_cost.removed_bytes,
+                StorageRemovedBytes::BasicStorageRemoval(5)
+            );
+        }
     }
 
     #[test]
