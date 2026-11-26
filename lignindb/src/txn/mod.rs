@@ -508,11 +508,11 @@
 //! is compared with the ones that are newer than it. Where the subtree
 //! was moved, the prefixes it was read under are asked for as a read of
 //! one of its records asks for them: one step for each move in its
-//! history, and for each step a search among the moves of a prefix. In a test build and
-//! under `held_reads` the list is held to a count from every entry after
-//! each rollback to a mark and each scope that is taken out, and what a
-//! call is given, also where it is given nothing, to the same from every
-//! key of the Merk.
+//! history, and for each step a search among the moves of a prefix. In a
+//! test build and under `held_reads` the list is held to a count from
+//! every entry after each rollback to a mark and each scope that is
+//! taken out, and what a call is given, also where it is given nothing,
+//! to the same from every key of the Merk.
 //!
 //! **Claims** (SC3). The call is a read of the Merk it is asked for, then
 //! a read of each Merk that it comes to through the pointer of a host,
@@ -562,7 +562,17 @@
 //! the call claims, so the scope holds the same claims after it in
 //! either layout. So what a call answers, and what its scope holds
 //! afterwards, does not depend on whether the writes of the scopes
-//! beside it are laid out or kept in the write set.
+//! beside it are laid out or kept in the write set, while the
+//! transaction has frames.
+//!
+//! It has none where its writes that are laid out cannot be laid out
+//! again after a commit beside it (WT7), and the call is then refused
+//! with what refused that layout ("Where it is refused" below). That
+//! can be a write of another scope, and only one that was laid out: a
+//! write that is kept in the write set is laid out at its scope's merge
+//! or before, and refuses nothing until then. It is so of the frames,
+//! which the scopes of a transaction share ([`crate::scope`], the
+//! choices, 2), and of every call that needs them.
 //!
 //! A write claim at the end, of a Merk the call makes a hash in, is
 //! refused where another open scope has read that Merk
@@ -651,7 +661,11 @@
 //! whose value hash it makes it looks up one record of the subtree
 //! directory, and the entry of the Merk. It adds one entry to the write
 //! set for each node it made a hash of, with the node's key, feature,
-//! hashes and links ([`TxnStats::writes`] counts them). It walks nothing
+//! hashes and links ([`TxnStats::writes`] counts them). An entry that is
+//! the first write of its record under a prefix since a move named the
+//! prefix asks for the write before it through the moves of the subtree
+//! ("The puts that left a hash stale" above): the first call for a Merk
+//! after it was moved pays that for each node it makes a hash of. It walks nothing
 //! else that the transaction wrote: `tests/evaluate_scale.rs` holds the
 //! entries and the calls of the rules to that for a transaction of many
 //! changes with a call after each, through the engine as its users open
