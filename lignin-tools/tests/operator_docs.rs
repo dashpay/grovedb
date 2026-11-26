@@ -1356,7 +1356,12 @@ fn every_quoted_message_is_in_the_code() {
         // A comment is no command: what it says is looked for by nothing.
         .map(|line| match line.trim_start().starts_with('#') {
             true => String::new(),
-            false => line.split(" #").next().unwrap_or_default().to_owned(),
+            // A `#` after a space or a tab begins a comment.
+            false => line
+                .split([' ', '\t'])
+                .take_while(|word| !word.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join(" "),
         })
         .collect::<Vec<_>>()
         .join("\n");
