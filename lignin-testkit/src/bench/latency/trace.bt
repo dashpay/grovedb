@@ -1,17 +1,23 @@
 #!/usr/bin/env bpftrace
 // What the threads of `lignin-bench latency` are off a processor for.
 //
-//   bpftrace trace.bt PID LONG_US OFF_US TID
+//   bpftrace trace.bt PID LONG_US OFF_US TID MEASURING PAUSE_NS
 //
 // PID is the process. TID is the thread to follow, the measuring one
-// (`traced.sh` finds it), or 0 for every thread of the process. Lines:
+// (`traced.sh` finds it), or 0 for every thread of the process. MEASURING
+// is the measuring thread, and PAUSE_NS the pause that the harness makes on
+// it after a commit. Lines:
 //
-//   OFFCPU  a followed thread was off a processor for OFF_US or more, outside
-//           a sleep it asked for: when, its state when it left, the file
+//   OFFCPU  a followed thread was off a processor for OFF_US or more: when,
+//           its state when it left, the file
 //           system of the file it was writing or allocating for (0,0 outside
 //           such a call), which thread woke it, the kernel stack and the
 //           user stack it left with, and the kernel stack of the waking.
 //           The user stack is read by frame pointers: `build.sh` keeps them.
+//           Left out: on the measuring thread the pause of the harness, a
+//           sleep of PAUSE_NS; on any other thread every sleep it asked
+//           for. A sleep that an engine asks for on the measuring thread,
+//           as RocksDB does to slow its writes down, is a wait like another.
 //   WRITE   a write call of a followed thread that took LONG_US or more, and
 //           of which file.
 //   MARK    a line the harness writes: where the measured blocks begin and
@@ -34,7 +40,12 @@ BEGIN { printf("tracing pid %d thread %d from %d us, off a processor from %d us\
 tracepoint:syscalls:sys_enter_clock_nanosleep,
 tracepoint:syscalls:sys_enter_nanosleep
 /pid == $1/
-{ @pausing[tid] = 1; }
+{
+  $asked = (struct __kernel_timespec *)uptr(args->rqtp);
+  if (tid != $5 || $asked->tv_sec * 1000000000 + $asked->tv_nsec == $6) {
+    @pausing[tid] = 1;
+  }
+}
 
 tracepoint:syscalls:sys_exit_clock_nanosleep,
 tracepoint:syscalls:sys_exit_nanosleep

@@ -249,6 +249,15 @@ def main():
             continue
         report = json.load(open(stem + ".json"))
         binary = open(stem + ".build").read().strip() if os.path.exists(stem + ".build") else None
+        # The measuring thread that `traced.sh` found for the run is the
+        # one whose line begins the measured blocks in the trace.
+        thread = open(stem + ".pid").read().split()[-1] if os.path.exists(stem + ".pid") else None
+        begun = next((re.search(r"tid=(\d+)", line).group(1) for line in open(trace, errors="replace")
+                      if line.startswith("MARK") and "measured begin" in line), None)
+        if thread is None or thread != begun:
+            refused.append((trace, "the trace is not of this traced run: its measured blocks are begun by the "
+                                   "thread %s, and the run's measuring thread was %s" % (begun, thread)))
+            continue
         build = of_build[name.split("-")[0]]
         if asked and (report.get("label") != name or "-%s" % report["background"] not in name
                       or len(report["engines"][0]["commit_ns"]) != int(asked["trace blocks"])

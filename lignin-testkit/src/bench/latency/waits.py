@@ -21,7 +21,8 @@ the harness reads the engine's counts. A wait whose user stack has no frame
 of the harness cannot be placed and is counted apart: the stack is empty or
 was cut short, as it is where a frame of the process keeps no frame pointer.
 A wait in which the thread was taken off a processor while it could run is a
-row of its own.
+row of its own. The harness's pause after a commit is no wait and is not in
+the trace; a sleep that an engine asks for on the measuring thread is one.
 
 Printed:
 
@@ -49,9 +50,10 @@ Printed:
    the syncs that named the transaction and whose time has the commit's end
    in it are given, and it is said that this shows less. The wait is linked
    to the commit by its stack and by the time, and not by a transaction's
-   number read at the wait. A wait in
-   which the thread itself writes out old blocks of the journal for room
-   is for no commit, and is counted apart.
+   number read at the wait. A wait in the journal's checkpoint, where a
+   thread goes for room in the journal, is by its stack for a buffer or for
+   the device and for no commit, and is counted apart; who had the buffer
+   written the trace does not say.
 4. With a trace that follows every thread (`THREADS=all traced.sh`): for the
    waits for a lock of the process, the thread that woke the measuring
    thread and what that thread was off a processor for meanwhile. The thread
@@ -205,6 +207,14 @@ def of_the_harness(wait):
     return any(mark in frame for frame in wait["user"] for mark in HARNESS)
 
 
+def the_pause(wait):
+    """A sleep of the harness between two blocks: its pause after a commit.
+    The tracer leaves it out where it knows it; this knows it by its stack."""
+    return (any(SYSCALL.match(frame) and SYSCALL.match(frame).group(1) in ("nanosleep", "clock_nanosleep")
+                for frame in wait["kernel"])
+            and of_the_harness(wait) and not in_a_block(wait))
+
+
 def in_the_log(wait):
     """A call on a file of the engine's log, by a frame that says so:
     LigninDB's log store, and RocksDB's writer of its log."""
@@ -218,6 +228,8 @@ def what(wait):
     if wait["state"] in RUNNABLE:
         return "taken off the processor while it could run"
     call = next((found.group(1) for found in map(SYSCALL.match, kernel) if found), "?")
+    if call in ("nanosleep", "clock_nanosleep"):
+        return "a sleep that the engine asked for"
     if any("futex" in frame for frame in kernel):
         if any(frame.startswith("__lll_lock_wait_private") for frame in user[:2]):
             return ALLOCATOR
@@ -237,7 +249,7 @@ def what(wait):
     if "__jbd2_log_wait_for_space" in kernel and "jbd2_log_wait_commit" in kernel:
         return "%s: ext4 writes %s to the journal, which has no room, and the thread waits for a commit" % (call, asked)
     if "__jbd2_log_wait_for_space" in kernel:
-        return "%s: ext4 writes %s to the journal, which has no room, and the thread makes room" % (call, asked)
+        return "%s: ext4 writes %s to the journal, which has no room: the thread waits in its checkpoint" % (call, asked)
     if "wait_transaction_locked" in kernel:
         return "%s: ext4 writes %s to the journal, whose transaction is being closed" % (call, asked)
     rest = [frame for frame in kernel if not SLEEP.match(frame)]
@@ -275,7 +287,8 @@ def main():
     trace = Trace(arguments[0])
     if marked and not trace.measured:
         sys.exit("waits.py: %s has no line for the beginning and the end of the measured blocks" % arguments[0])
-    long = [wait for wait in trace.waits if wait["us"] >= floor and trace.of_the_measuring_thread(wait)]
+    long = [wait for wait in trace.waits
+            if wait["us"] >= floor and trace.of_the_measuring_thread(wait) and not the_pause(wait)]
     if trace.measured:
         seconds = (trace.measured[1] - trace.measured[0]) / 1e9
         print("The measured blocks took %.0f s in the trace. Waits of the measuring thread of %.1f ms or more: "
@@ -393,8 +406,8 @@ def main():
                 for kind in {of(sync["file"]) for sync in only_named}:
                     named_kind[kind] += 1
         print("\nBy the journal's transactions: %d of the %d waits were for a commit of an ext4 journal by their "
-              "kernel stack, and in %d the thread itself wrote out old blocks of the journal for room, which is "
-              "for no commit. Of the %d, %d began while a commit of the journal of the written file's file system "
+              "kernel stack, and %d were in the journal's checkpoint for room, which by its stack is a wait for a "
+              "buffer or for the device and for no commit. Of the %d, %d began while a commit of the journal of the written file's file system "
               "was under way.%s" % (
                   len(for_a_commit), len(appends), for_room, len(for_a_commit), in_a_commit,
                   " Of %d the trace does not have the file system, so they are linked to no commit." % nowhere
@@ -428,7 +441,7 @@ def main():
         meanwhile = [other for other in by_thread.get(wait["waker_tid"], [])
                      if other["end"] > wait["begin"] and other["begin"] < wait["end"] and other["us"] >= 200]
         overlap = lambda other: min(other["end"], wait["end"]) - max(other["begin"], wait["begin"])
-        doing = what(max(meanwhile, key=overlap)) if meanwhile else "nothing: it ran, or was kept from running"
+        doing = what(max(meanwhile, key=overlap)) if meanwhile else "no wait of 0.2 ms or more in the trace"
         key = (asked, wait["waker"] or "not recorded", doing if wait["waker"] else "not recorded")
         woke[key] += 1
         woke_us[key] += wait["us"]

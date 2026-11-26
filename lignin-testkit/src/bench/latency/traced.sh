@@ -62,9 +62,16 @@ sleep 1
 tid=$(ps -L -o tid=,comm= -p "$run" | awk '$2 == "lignin-commit" { print $1; exit }')
 [ -n "$tid" ] || refuse "the run has no measuring thread: $(tail -2 "$out.txt")"
 echo "$run $tid" > "$out.pid"
+# The pause the harness makes after a commit, which the tracer leaves out.
+pause_us=5000 before=""
+for word in "$@"; do
+  [ "$before" = --pause-us ] && pause_us=$word
+  before=$word
+done
+measuring=$tid
 [ "${THREADS:-}" = all ] && tid=0
 sudo env BPFTRACE_MAX_MAP_KEYS=262144 bpftrace "$here/trace.bt" "$run" "${LONG_US:-1000}" \
-  "${OFF_US:-200}" "$tid" > "$out.trace" 2> "$out.trace.err" &
+  "${OFF_US:-200}" "$tid" "$measuring" "$((pause_us * 1000))" > "$out.trace" 2> "$out.trace.err" &
 tracer=$!
 attached=""
 for _ in $(seq 120); do

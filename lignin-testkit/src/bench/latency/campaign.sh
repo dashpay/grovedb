@@ -349,14 +349,17 @@ filesystem() { # filesystem NAME MKFS MOUNT-OPTIONS
   local dir=$out/mnt/$1 image=$out/fs/$1.img device
   mkdir -p "$dir" "$out/fs"
   if ! findmnt -n "$dir" > /dev/null; then
-    if [ ! -f "$image" ]; then
-      truncate -s "${loop_gb}G" "$image.part"
-      # shellcheck disable=SC2086
-      $2 "$image.part" > /dev/null 2>&1 || refuse "$2 failed for $1"
-      mv "$image.part" "$image"
-    fi
+    # The file system is made on the loop device and not in the file: with
+    # direct I/O the device has the sectors of the disk under OUT, and a
+    # file system made for other sectors is refused at its mount.
+    [ -f "$image.made" ] || { rm -f "$image" && truncate -s "${loop_gb}G" "$image"; }
     device=$(sudo losetup --find --show --direct-io=on "$image")
     devices="$devices $device"
+    if [ ! -f "$image.made" ]; then
+      # shellcheck disable=SC2086
+      sudo $2 "$device" > /dev/null 2>&1 || refuse "$2 failed for $1"
+      touch "$image.made"
+    fi
     sudo mount ${3:+-o "$3"} "$device" "$dir" || refuse "$1 could not be mounted"
     mounted="$mounted $dir"
     sudo chown "$(id -u):$(id -g)" "$dir"
@@ -432,7 +435,7 @@ if has tables; then
   [ "$made" = 0 ] || [ "$made" = 3 ] || exit "$made"
   mv "$out/tables.md.part" "$out/tables.md"
   [ "$made" = 0 ] ||
-    refuse "the tables of the runs are in $out/tables.md, and a traced run has no table of its waits: it says why there"
+    refuse "the tables of the runs are in $out/tables.md, and a traced run has no table of its waits: it says why there${traces_failed:+; these traced runs failed:$traces_failed}"
 fi
 [ -z "$traces_failed" ] || refuse "these traced runs failed:$traces_failed"
 echo "finished: the tables are in $out/tables.md"
