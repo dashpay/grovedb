@@ -132,7 +132,7 @@ is `CleanerConfig::new`.
 | Option | Default | What it is | When to change it |
 | --- | --- | --- | --- |
 | `CleanerConfig::target_dead_percent` | 14 % | the share of dead bytes of the segments that the cleaner works towards | lower to take less disk, at the price of more bytes written for each byte given back; higher for fewer writes and more disk |
-| `CleanerConfig::value_dead_percent` | 14 % | the same for the value log: above it, a pass cleans the file with the largest share of dead bytes | as above |
+| `CleanerConfig::value_dead_percent` | 14 % | the same for the value log: above it, a pass may clean a closed file among those it may take, one whose last cleaning moved nothing being left for a few passes | as above |
 | `CleanerConfig::checkpoint_dead_percent` | 4 % | the most bytes of segment blocks, as a share of the bytes of all segment blocks, that may wait for a table checkpoint to be deleted, before the cleaner asks for one | leave it |
 | `CleanerConfig::seal_dead_percent` | 2 % | a file that is being filled is closed for cleaning when its dead bytes are this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::max_segment_percent` | 1 % | a file that is being filled is closed when it holds this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
@@ -162,7 +162,7 @@ node's, and takes:
 
 | Option | Default | What it is |
 | --- | --- | --- |
-| `lignin --cache` | 64 MiB | the buffer pool of every subcommand that opens a database, and of the target of `migrate` |
+| `--cache` | 64 MiB | the buffer pool of every `lignin` subcommand that opens a database, given after its directory (`lignin stats DIR --cache 32`), and of the target of `migrate` |
 | `lignin migrate --batch` | 160 MiB | about how much one commit of a migration holds |
 | `lignin migrate --progress` | 5 s | how often a migration says where its load stands |
 | `lignin migrate --memory-limit` | half the machine's memory as `/proc/meminfo` states it; none where that file does not state it | the most a migration may project to hold |

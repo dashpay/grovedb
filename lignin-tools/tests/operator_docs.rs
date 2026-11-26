@@ -1662,7 +1662,7 @@ fn defaults() -> BTreeMap<String, String> {
         ("CleanerConfig::max_pass_bytes", bytes(max_pass_bytes)),
         ("CleanerConfig::segment_len", bytes(cleaner_segment_len)),
         ("CleanerConfig::idle", duration(cleaner_idle)),
-        ("lignin --cache", bytes(DEFAULT_CACHE as u64)),
+        ("--cache", bytes(DEFAULT_CACHE as u64)),
         (
             "lignin migrate --batch",
             bytes(DEFAULT_MIGRATE_BATCH as u64),
