@@ -2,7 +2,7 @@
 
 LigninDB task OPS-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 3](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583786)).
 
-GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` branches, from the workflow files of the pull request's head. This document says which jobs check the LigninDB crates and the two engines, on which platforms, and how to run each by hand. The commands of the LigninDB jobs are those of `.github/scripts/lignin-ci.sh`, which runs from any directory of a checkout; the table gives each job's. The engine matrix is [`test-engines.md`](test-engines.md)'s; the crates a release publishes are [`publishing.md`](publishing.md)'s.
+GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` branches, and into `feat/LigninDB` while that branch takes pull requests, from the workflow files of the pull request's head. This document says which jobs check the LigninDB crates and the two engines, on which platforms, and how to run each by hand. The commands of the LigninDB jobs are those of `.github/scripts/lignin-ci.sh`, which runs from any directory of a checkout; the table gives each job's. The engine matrix is [`test-engines.md`](test-engines.md)'s; the crates a release publishes are [`publishing.md`](publishing.md)'s.
 
 ## What a pull request runs
 
@@ -18,6 +18,7 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 | LigninDB Miri and fuzz targets | `ubuntu-latest` | Miri over `lignin-io` under Stacked Borrows, the ring of its direct I/O path and the buffer pool under both borrow models, and the checksum's software path; a build of the fuzz targets of `lignin-format` | `lignin-ci.sh miri`, `lignin-ci.sh fuzz-targets` |
 | Cost model replay | Linux x86_64 | the golden corpus replayed on the cost model ([`cost-model.md`](cost-model.md)) | `lignin-ci.sh cost-model` |
 | Golden corpus on LigninDB | Linux x86_64 | the golden corpus of the standard scale replayed on LigninDB and compared with its files ("The corpus gate") | `lignin-ci.sh corpus --engine lignindb` |
+| Operator documents | Linux x86_64 | the documents of [`operator/`](operator/) held to the code, and the book's chapters to the documents ("The operator's documents") | `cargo test -p lignin-tools --test operator_docs` |
 | Linting | Linux x86_64 | clippy, every target type-checked, and three steps below | |
 | | | the feature sets that must build apart | `lignin-ci.sh features` |
 | | | the LigninDB crates' documentation with warnings denied, but `lignin-testkit`'s | `lignin-ci.sh docs` |
@@ -83,6 +84,10 @@ For a pull request from the repository, then, LigninDB on Linux aarch64 is the o
 - **Merk on LigninDB alone**: `grovedb-merk --no-default-features --features lignin_storage` builds with no RocksDB crate.
 - **Merk on RocksDB alone**: `--features rocksdb_storage` has no LigninDB crate (D-082: neither engine is in a build that did not ask for it).
 - **The LigninDB crates with features** (today `lignindb` with `testing`): each type-checks with none and with all of them.
+
+### The operator's documents
+
+`lignin-tools`' test `operator_docs` reads [`operator/`](operator/) and the chapters of `docs/book/src/lignindb`, which it writes from them. It fails on a command the workspace does not have, on a quoted message or a default that is not the code's, on a link that leads to no heading, and on a chapter that is not its document. The test shards run it with the other tests, when code changes. A pull request that changes a document alone changes no code, so the job Operator documents runs the test whenever a file under `docs/lignindb`, a chapter, the book's `SUMMARY.md`, the test or the workflow changes. `LIGNIN_OPERATOR_DOCS=write cargo test -p lignin-tools --test operator_docs` writes the chapters again from the documents.
 
 ### Documentation
 
