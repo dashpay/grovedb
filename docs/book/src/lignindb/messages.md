@@ -523,8 +523,10 @@ was written to the target unless the words say so.
 The source's other refusals, which say that it is not a GroveDB the
 migrator reads as one (a pending-drop record that does not decode, an
 element that does not, a tree whose links do not hold), name the record
-and the reason: such a source stays on RocksDB, and the report is a
-defect to file with the survey.
+and the reason: such a source is not migrated, and the report is a
+defect to file with the survey. It is damage of the RocksDB database
+too, which the node is not to go back to before it is restored (the
+runbook's step 11).
 
 ## What this chapter leaves out
 

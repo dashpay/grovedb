@@ -211,8 +211,10 @@ section 12).
    of the version it covers.
 4. **The log is replayed** from the first item of the oldest log file
    the manifest keeps, since commits that the checkpoint does not cover
-   can lie before the place it was taken at, up to the last commit whose
-   group the log holds whole. What the checkpoint covers already is
+   can lie before the place it was taken at, through every whole item
+   the log holds: the last whole commit group gives the version the
+   open lands on, and the whole items of the background after it are
+   read too. What the checkpoint covers already is
    skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
 5. **The session's files**: the files of earlier sessions are named

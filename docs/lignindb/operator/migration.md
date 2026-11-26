@@ -686,6 +686,28 @@ checkpoint. In the second case the node's own RocksDB directory can hold
 commits after the checkpoint, and it is that directory, and not the
 checkpoint, that the node goes back to.
 
+**Before the node goes back to a RocksDB directory, survey it** as step
+5 does (`lignin migrate DIR --survey`): RocksDB's open makes a new,
+empty database where it finds none, and the survey only reads. Where
+`SOURCE` was a checkpoint, survey the node's own directory, which can
+differ from the checkpoint either way. Where the survey refuses for the
+projected memory of a load alone, survey again with a larger
+`--memory-limit`: that refusal says nothing of the database. Then:
+
+- `the source can be migrated`: the database serves as before.
+- A refusal whose `NOT CARRIED` lines name only what a migration does
+  not take while RocksDB serves it (a keyed child under a tree of flat
+  records, prefixes that nothing leads to): the database serves as
+  before.
+- A refusal for the mark of a state-sync restore that did not finish:
+  the directory that holds it is to be discarded, on RocksDB as here,
+  and the node's state got again as the application's documentation
+  says.
+- A refusal that names damage (a tree whose links do not hold, an
+  element or a record that does not decode, records where GroveDB
+  writes none), or a directory that is missing: the node is not started
+  on it; restore it as the application's documentation says.
+
 - **Before the node has committed anything on LigninDB**, going back is
   pointing the node at its RocksDB database again and selecting RocksDB.
 - **After it has committed on LigninDB**, its RocksDB database is still
@@ -701,17 +723,8 @@ checkpoint, that the node goes back to.
 - **A migration that failed** made nothing at `TARGET` (exit status 1
   and 4, but for the cases the table of step 6 names) or left its
   database in `TARGET.migrating` (exit status 3): start the node on its
-  RocksDB database as before, once that database is there and the
-  survey reads it (`the source can be migrated`, or a refusal for what
-  a migration does not carry): RocksDB's open makes a new, empty
-  database where it finds none, so a directory that is missing, or that
-  the survey found damaged, is not started on. Not where the survey
-  refused the source for the mark of a state-sync restore that did not
-  finish (step 5): the directory that holds the mark is to be discarded,
-  on RocksDB as here. Where it was a checkpoint, the node's own database
-  can have finished since: survey that before going back to it.
-  Otherwise the node's state is got again as the application's
-  documentation says. Remove `TARGET.migrating` when it is
+  RocksDB database as before, as its survey above allows. Remove
+  `TARGET.migrating` when it is
   no longer needed for a report, after looking into it as step 6 says.
 
 Remove `SOURCE` only when the node has run on LigninDB for as long as you
