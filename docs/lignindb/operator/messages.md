@@ -93,7 +93,8 @@ The rest:
 
 Through `EitherEngine`, the engine chosen at the open, these come before
 either engine is called, and change nothing. GroveDB's own deletion of a
-checkpoint has one more:
+checkpoint has one more, and its open with an integrity check, which
+opens the engine first and then checks the grove, two:
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
@@ -104,6 +105,7 @@ checkpoint has one more:
 | `the directory … has no entry of a database of either engine, so it is no checkpoint: no engine was called for it` | a checkpoint was to be opened or removed at a directory that holds neither engine's database | check the path | `grovedb/src/engine/either.rs` |
 | ``the directory … holds a database of … (its entry `…`) and was to be removed as a checkpoint of …: no engine was called for it`` | the deletion of a checkpoint was given the other engine's database | check the path and the engine; nothing was removed | `grovedb/src/engine/either.rs` |
 | `integrity check on open found … issue(s): …` | after `data corruption error: `: GroveDB's open with its integrity check (`GroveDb::open_with_cidx_integrity_check`) opened the engine and then found issues in the grove; their keys follow | keep the database as it is and report it with the whole message; where the issues are damage of the grove, restore from a backup | `grovedb/src/lib.rs` |
+| `unable to deserialize element …` | after `data corruption error: `: the integrity check met an element that does not decode, and stopped before it could sum up the issues. It stops so at the first thing it cannot read at all; where that is a subtree it cannot open or a value missing at a key its own iteration gave, other words follow `data corruption error: `, and the same holds | as for the row above | `grovedb-element/src/element/serialize.rs` |
 | `refusing to delete checkpoint: path too short (safety check)` | after `data corruption error: `, though nothing of a database was read: GroveDB's deletion of a checkpoint refuses a path of fewer than two components before it asks the engine | give the checkpoint's full path | `grovedb/src/checkpoints.rs` |
 
 ### The files at an open
@@ -448,7 +450,7 @@ The tool's own words, besides the engine's above.
 | `checked …, …` | the first line, but for an `INCOMPLETE RESTORE: the root holds the mark` before it: where the check ran (`the still store, after the close`, or `beside the background work`) and whether the hashes were made again by Merk's rules (all but those the rules take as stored) | | `lignin-tools/src/verify.rs` |
 | `sound: every rule holds` | every rule that the check holds holds. The exit status is 0, or 4 where the report also says `INCOMPLETE RESTORE: the root holds the mark`, which then decides | nothing where the status is 0; otherwise as the row of the incomplete restore says | `lignindb/src/verify/report.rs` |
 | `INCOMPLETE RESTORE: the root holds the mark of a state-sync restore that did not finish. Its elements commit to Merks that were not restored, so the database is unsound by its own statement: discard it. No hash was made again.` | exit status 4: a state sync into this database did not finish, so it is unsound by its own statement | discard the database; sync again or restore from a backup | `lignin-tools/src/verify.rs` |
-| `… value hashes of trees are the ones grove versions 1 to 3 left after a delete below them (GroveDB #686), not the ones the rules make` | counted after the report: value hashes of the kind those versions left, which the check takes as no damage. A cell does not say which version wrote it, so the check cannot tell such a hash from another that is the same | nothing where grove versions 1 to 3 wrote the database; where later versions alone wrote it, report it | `lignin-tools/src/verify.rs` |
+| `… value hashes of trees are the ones grove versions 1 to 3 left after a delete below them (GroveDB #686), not the ones the rules make`, `1 value hash of a tree is the one grove versions 1 to 3 left after a delete below it (GroveDB #686), not the one the rules make` | counted after the report: value hashes of the kind those versions left, which the check takes as no damage. A cell does not say which version wrote it, so the check cannot tell such a hash from another that is the same | nothing where grove versions 1 to 3 wrote the database; where later versions alone wrote it, report it | `lignin-tools/src/verify.rs` |
 
 A report with a rule that does not hold (exit status 3) says what does
 not hold, and where. Where what it names is a read that the system

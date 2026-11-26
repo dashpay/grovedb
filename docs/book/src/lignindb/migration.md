@@ -432,8 +432,12 @@ Read its report before you go on:
   answer otherwise than on RocksDB is a read by the path of such a tree,
   a tree made again at that path, a cursor that steps from no key, a
   write below such a tree, which both engines refuse at different costs,
-  and, once a tree is made again there, a write into a subtree of the old
-  one, which RocksDB takes and LigninDB refuses.
+  a batch below an item kept there, which they refuse with different
+  errors (`CorruptedPath` on RocksDB, `InvalidPath` here), and, once a
+  tree is made again there, a write into a subtree of the old one, which
+  RocksDB takes and LigninDB refuses, and a deletion of that tree with
+  its children, which both make to the same root hash at different
+  costs.
   `--unreachable refuse` refuses such a source where those prefixes hold
   records of the data, aux or meta keyspaces (a prefix with a root-key
   record alone counts none, and that record is carried all the same);
@@ -726,7 +730,9 @@ commits after the checkpoint, and it is that directory, and not the
 checkpoint, that the node goes back to.
 
 **Before the node goes back to a RocksDB directory, survey it** as step
-5 does (`lignin migrate DIR --survey`): RocksDB's open makes a new,
+5 does (`lignin migrate DIR --survey`), into a report of its own (step
+5's block would write over the survey of step 5, which the block below
+compares with): RocksDB's open makes a new,
 empty database where it finds none, and the survey only reads. Where
 `SOURCE` was a checkpoint, survey the node's own directory, which can
 differ from the checkpoint either way. Where the survey refuses for the
@@ -782,12 +788,18 @@ the one the migration read, and not an older state of it: a RocksDB
 database whose log lost its tail since reads as sound and can be
 migrated, at an earlier last write and another root hash. The block
 surveys it again and holds its first line (its RocksDB identity and its
-last write) and its root hash to the survey of step 5. Where `SOURCE`
+last write) and its root hash to the survey of step 5; a survey that
+refuses the source does not stop it, so the comparison is made all the
+same. It shows that the identity, the last write and the grove's root
+hash are those the migration read, not that every record is: a record
+of the aux, roots or meta columns can be lost with the same last write
+and root hash. So it is a check the way back needs, and no proof: the
+application's own check of its state decides too. Where `SOURCE`
 was a checkpoint, the node's own directory has a state of its own,
 which the application identifies; this block is not for it.
 
 ```sh
-lignin migrate "$SOURCE" --survey 2>&1 | tee "$WORK/reports/survey-again.txt"
+lignin migrate "$SOURCE" --survey 2>&1 | tee "$WORK/reports/survey-again.txt" || true
 first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$1"; }
 root_hash() { sed -n 's/^  root hash: //p' "$1"; }
 if [ -n "$(first_line "$WORK/reports/survey.txt")" ] && [ "$(first_line "$WORK/reports/survey.txt")" = "$(first_line "$WORK/reports/survey-again.txt")" ] && [ "$(root_hash "$WORK/reports/survey.txt")" = "$(root_hash "$WORK/reports/survey-again.txt")" ]; then echo "SOURCE is as the migration read it"; else echo "SOURCE IS NOT AS THE MIGRATION READ IT"; false; fi
