@@ -241,7 +241,9 @@ Set two variables before the next block:
   the line that begins with the words building GroveDB at; on a run of
   it after a failure it is to print the same one.
 - `WORK`: a directory for the source code, the build and the reports of
-  each step. The build takes a few GiB.
+  each step. The build takes a few GiB. One `WORK` holds the reports of
+  one migration: keep it until the way back is closed, since step 11
+  reads step 5's survey, and give another migration a `WORK` of its own.
 
 The block makes `WORK` absolute, since it changes into the source
 directory to build. It clones the repository where no clone is there
@@ -475,10 +477,14 @@ Read its report before you go on:
   links and nodes that none links (`records that no tree links: …`).
   For a node that a tree links, the check tells from the value's type
   alone how its hash is made: where the type is one whose hash is made
-  from the bytes as they are, it takes the value as stored, and where
-  the type is none it knows, it finds a rule that does not hold
-  (`the value is no element with a known value hash: …`), and the run
-  ends with status 3 and nothing at `TARGET`. A node that no tree links
+  from the bytes as they are, it takes the value as stored; where the
+  type is none it knows, it finds a rule that does not hold
+  (`the value is no element with a known value hash: …`); and where the
+  hash is made from the element decoded (an item with backward
+  references, whose hash leaves them out), a value that does not decode
+  fails the rule as well, with the same words and the decoder's after
+  them. Either of
+  the last two ends the run with status 3 and nothing at `TARGET`. A node that no tree links
   is carried as a record, whose hash the check does not make, and the
   run can end with status 0. Whichever way the run ends, with a count
   above 0, check the source by the application's own means, and report
@@ -629,7 +635,9 @@ the records of each keyspace, which a record lost or changed between
 the runs changes even where the last write and the root hash stay (a
 record of the aux, roots or meta keyspaces, which the root hash does
 not cover), unless the records are as many and of as many bytes as
-before. A
+before. The records that pending drops leave behind are counted there
+and not weighed, so one of them that changed its bytes alone is not
+seen. A
 process that opened it can have rewritten RocksDB's own files all the
 same (its `CURRENT` and manifest), and a file that something else put
 in the directory is not seen; which is why nothing is to open the
@@ -851,7 +859,8 @@ all the same; a report that cannot be written ends the shell, as any
 failure does, before an answer, and the block removes the report of an
 earlier way back first, so it never reads one. A match shows that the
 identity, the last write, the grove's root hash and the number and bytes
-of the records of each keyspace are those step 5 saw, not that every
+of the records of each keyspace are those step 5 saw (of the records
+that pending drops leave behind, the number alone), not that every
 record is: a record of the aux, roots or meta keyspaces can be changed
 with the same last write and root hash and as many records of as many
 bytes. So it is a check the way back needs, and no proof: the

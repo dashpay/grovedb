@@ -103,7 +103,10 @@ RocksDB there, which writes RocksDB's files into the directory and
 answers with an empty grove, and LigninDB then refuses the directory
 (`… was written by another storage engine (…: …)`). An application that
 opens LigninDB itself (step 10 of the migration) checks the grove with
-`verify_grovedb` on the handle it opened. Where the check cannot read the element above a subtree for the engine,
+`verify_grovedb` on the handle it opened, and takes the grove as checked
+only where the issues it returns are none: an answer of `Ok` with issues
+is a grove in which something does not hold, as the open with an
+integrity check takes it. Where the check cannot read the element above a subtree for the engine,
 the engine's own words follow `storage_cost error: ` (the engine's rows
 above), where it cannot open the subtree's Merk, the rows below say so
 without them, and the checks it calls below its walk (a non-Merk tree's hash, an indexed tree's
@@ -115,7 +118,7 @@ does not match), which the row of the integrity check counts:
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
 | ``the directory … holds a database of … (its entry `…`) and … was chosen for it: it is not opened, and nothing was written to it`` | the configuration chose one engine and the directory holds the other's database | choose the engine the directory holds, or migrate it | `grovedb/src/engine/either.rs` |
-| ``the directory … holds entries of both engines (`…` is …'s and `…` is …'s): it is opened as neither`` | files of both engines in one directory | find out which is the database; nothing opens it as it is | `grovedb/src/engine/either.rs` |
+| ``the directory … holds entries of both engines (`…` is …'s and `…` is …'s): it is opened as neither`` | files of both engines in one directory: the open that chooses the engine (`EitherEngine`) refuses it before it calls either engine, and LigninDB's own open refuses it too; RocksDB's own open, as the build's default engine (above), takes it and reads RocksDB's files alone | find out which is the database. Where it was a LigninDB database that RocksDB was opened on, restore it from a backup and keep the directory, as the row of `… was written by another storage engine (…: …)` says | `grovedb/src/engine/either.rs` |
 | `the directory … could not be listed to see which engine's database it holds: …` | the listing failed; the system's words follow | fix what they say (permissions, a path that is no directory) | `grovedb/src/engine/either.rs` |
 | ``the path … ends in `…`; it cannot be used for a RocksDB open for the caller or for checkpoint creation`` | a RocksDB open or a checkpoint creation was given a path whose last name ends in `.creating` | give another path: that name is where LigninDB builds a checkpoint | `grovedb/src/engine/either.rs` |
 | `the directory … has no entry of a database of either engine, so it is no checkpoint: no engine was called for it` | a checkpoint was to be opened or removed at a directory that holds neither engine's database | check the path | `grovedb/src/engine/either.rs` |

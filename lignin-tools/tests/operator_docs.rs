@@ -10,6 +10,8 @@
 //!   messages chapter names for it, and anywhere in the engine's crates for
 //!   a message quoted elsewhere;
 //! - the defaults of the tuning chapter and of the runbook are the code's;
+//! - the comparisons of steps 7 and 11 of the runbook answer as it says,
+//!   run on reports made for each case;
 //! - the chapters of the book are the documents.
 //!
 //! `docs/lignindb/operator/runbook.sh` runs the commands themselves.
@@ -1977,4 +1979,125 @@ fn the_readers_of_the_documents_read_what_they_say() {
     assert!(takes(None, "--cache"));
     assert!(!takes(Some("verify"), "--batch"));
     assert!(!takes(None, "--no-such-option"));
+}
+
+/// A report of `lignin migrate` as the comparisons of steps 7 and 11 read
+/// it: the first line, what the source holds, and the counts.
+fn report(last_write: u32, root: &str, aux_bytes: u32) -> String {
+    format!(
+        "the source /src: RocksDB identity abc, last write {last_write}; no process has it open for writing, and none can open it while this runs\n\
+         the source holds:\n  root hash: {root}\n  largest Merk that is handed over: 1 nodes\n  \
+         aux records: 1 ({aux_bytes} bytes)\n    LEFT BEHIND: prefix 00\nmigrate: survey nodes=1 aux=1 faults=0\n"
+    )
+}
+
+/// Runs the block of `migration.md` that holds `mark` under `set -euo
+/// pipefail`, in a `WORK` whose reports are `reports`, with a `lignin` that
+/// prints `survey` and fails unless it takes the source. Returns whether the
+/// block succeeded, and the last line it printed.
+fn run_block(mark: &str, reports: &[(&str, String)], survey: &str) -> (bool, String) {
+    let text = read(&operator_dir().join("migration.md"));
+    let blocks: Vec<String> = (parse(&text).fences.into_iter())
+        .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line.contains(mark)))
+        .map(|fence| fence.body.join("\n"))
+        .collect();
+    assert_eq!(blocks.len(), 1, "one block of migration.md holds {mark:?}");
+    let work = tempfile::tempdir().expect("a directory");
+    fs::create_dir(work.path().join("reports")).expect("reports");
+    for (name, body) in reports {
+        fs::write(work.path().join("reports").join(name), body).expect("a report");
+    }
+    let script = format!(
+        "set -euo pipefail\n\
+         lignin() {{ printf '%s\\n' \"$SURVEY\"; case \"$SURVEY\" in *'the source can be migrated') return 0 ;; esac; return 1; }}\n{}\n",
+        blocks[0]
+    );
+    let output = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(script)
+        .env("WORK", work.path())
+        .env("SOURCE", "/src")
+        .env("TARGET", "/tgt")
+        .env("SURVEY", survey.trim_end())
+        .output()
+        .expect("bash");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let last = printed.lines().last().unwrap_or("").to_owned();
+    (output.status.success(), last)
+}
+
+#[test]
+fn the_comparisons_of_steps_7_and_11_answer_as_written() {
+    let taken = "the source can be migrated\n";
+    let refused = "the source /src holds what a migration does not carry (the lines NOT CARRIED above): nothing was written by this run\n";
+    let surveyed = |last_write, root: &str, aux, ending: &str| {
+        format!("{}{ending}", report(last_write, root, aux))
+    };
+    let migrated = |last_write, root: &str, aux| {
+        format!(
+            "{}migrate: compared subtrees=1 data=1 differing=0 root_hash={root} seconds=0.1\n\
+             migrate: verify sound=true left_hashes=0\n\
+             migrated /src into /tgt: loaded, compared and verified\n",
+            report(last_write, root, aux)
+        )
+    };
+    let step_7 = |survey: String, migrate: String| {
+        run_block(
+            "THE COUNTS OF THE SOURCE CHANGED",
+            &[("survey.txt", survey), ("migrate.txt", migrate)],
+            "",
+        )
+    };
+    let (passed, last) = step_7(surveyed(2, "aa", 17, taken), migrated(2, "aa", 17));
+    assert!(passed, "step 7 on the same source: {last}");
+    let (passed, last) = step_7(surveyed(2, "aa", 17, taken), migrated(2, "aa", 4));
+    assert!(
+        !passed && last.contains("THE COUNTS OF THE SOURCE CHANGED"),
+        "{last}"
+    );
+    let (passed, last) = step_7(surveyed(2, "aa", 17, taken), migrated(3, "aa", 17));
+    assert!(!passed && last.contains("THE SOURCE CHANGED"), "{last}");
+
+    let step_11 = |before: String, again: String| {
+        run_block("survey-again.txt", &[("survey.txt", before)], &again)
+    };
+    let same = "SOURCE is as step 5 surveyed it";
+    let other = "SOURCE IS NOT AS STEP 5 SURVEYED IT";
+    let untold = "THE SURVEYS DO NOT TELL WHETHER SOURCE IS AS STEP 5 SURVEYED IT";
+    let base = surveyed(2, "aa", 17, taken);
+    for (case, again, answer) in [
+        ("the same", base.clone(), same),
+        (
+            "an aux record of other bytes",
+            surveyed(2, "aa", 4, taken),
+            other,
+        ),
+        ("a write since", surveyed(3, "aa", 17, taken), other),
+        ("another root hash", surveyed(2, "bb", 17, taken), other),
+        (
+            "another largest Merk alone",
+            base.replace("1 nodes", "2 nodes"),
+            same,
+        ),
+        ("a refusal now", surveyed(2, "aa", 17, refused), untold),
+        (
+            "no root hash",
+            "the source /src: RocksDB identity abc, last write 2; x\n".to_owned(),
+            untold,
+        ),
+    ] {
+        let (passed, last) = step_11(base.clone(), again);
+        assert_eq!(
+            (passed, last.as_str()),
+            (answer == same, answer),
+            "step 11, {case}"
+        );
+    }
+    let alike = surveyed(2, "aa", 17, refused);
+    let (passed, last) = step_11(alike.clone(), alike);
+    assert_eq!(
+        (passed, last.as_str()),
+        (false, untold),
+        "step 11, two refusals alike"
+    );
 }
