@@ -35,7 +35,9 @@
 #    file on OUT's file system, so these rows are held against one another
 #    and not against those of part 2.
 # 4. `traces`: runs of $TRACE_BLOCKS blocks with the kernel trace of
-#    `trace.bt` beside them (`traced.sh`): each engine under each background
+#    `trace.bt` beside them (`traced.sh`), in which the harness marks every
+#    block and reads LigninDB's counts at each commit, as the runs of parts
+#    2 and 3 do not: each engine under each background
 #    on OUT's file system, LigninDB once more with every thread followed,
 #    the two experiments, and LigninDB on ext4, on ext4 with `lazytime` and
 #    on XFS in files as in part 3, and the first experiment on ext4 with
@@ -103,7 +105,7 @@ refuse() {
 # The script keeps lists of paths in words.
 case "$out$BUILDS" in *[[:space:]]*) refuse "OUT and BUILDS take a path without a space: $out, $BUILDS" ;; esac
 # What a run is of is the campaign's to say, and its tables go by it.
-for flag in --engine --background --blocks --label --commit --out --scratch --watch-files; do
+for flag in --engine --background --blocks --label --commit --out --scratch --watch-files --mark-blocks --parts; do
   case " ${LATENCY:-} " in *" $flag "*) refuse "LATENCY cannot give $flag: the campaign does" ;; esac
 done
 [ "$(uname -s)" = Linux ] || refuse "the traces and the file systems want Linux"
@@ -140,12 +142,14 @@ else
   [ "$free" -ge "$wanted" ] ||
     refuse "$out has $((free / 1048576)) GiB free, and this campaign wants $((wanted / 1048576 + 1))"
   echo "$asked" > "$out/campaign.txt"
-  # The parts the campaign is of are those of its first call: a later call
-  # that is asked for some of them makes those, and the tables say which of
-  # the campaign's parts are not made.
-  echo "$parts" > "$out/parts.txt"
 fi
-[ -s "$out/parts.txt" ] || echo "$parts" > "$out/parts.txt"
+# The parts the campaign is of are all that it was ever asked for, and they
+# are written down before any of them is begun: a call that is stopped has
+# said what it set out to make, and the tables say which of the campaign's
+# parts are not made.
+for part in $parts; do
+  grep -qsw "$part" "$out/parts.txt" || echo "$part" >> "$out/parts.txt"
+done
 
 has() {
   case " $parts " in *" $1 "*) return 0 ;; *) return 1 ;; esac
@@ -258,7 +262,12 @@ failed() {
 # system's kind, its options and its own id. The id is the file system's and
 # not the device's, so a loop device of another number is the same.
 mount_of() { # mount_of DIRECTORY
-  findmnt -no FSTYPE,OPTIONS,UUID -T "$1"
+  local of
+  of=$(findmnt -no FSTYPE,OPTIONS,UUID -T "$1")
+  # A file system the campaign keeps in a file is also of the mount its
+  # file is on: its syncs end in syncs of that file.
+  case "$1" in "$out/mnt/"*) of="$of, in a file on $(findmnt -no FSTYPE,OPTIONS,UUID -T "$out/fs")" ;; esac
+  echo "$of"
 }
 
 # Whether a run that is there was made by the build that would make it now
@@ -416,7 +425,7 @@ traced() {
   # shellcheck disable=SC2086
   env $settings BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
     "$dir/scratch" --engine "$engine" --background "$background" --blocks "$trace_blocks" \
-    $watch --label "$(basename "$file")" --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} \
+    $watch --parts --label "$(basename "$file")" --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} \
     2> "$file.err" || status=$?
   cp "$BUILDS/$build/sha256" "$file.build"
   cleared "$dir"

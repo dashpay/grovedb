@@ -9,9 +9,10 @@
 # It fails, and says why, where the run fails, where the tracer has not
 # attached within a minute or ends before the run does, where the trace has
 # no line for the beginning and for the end of the measured blocks, where
-# the tracer did not write its last line, and where it says that it lost
-# events: a trace that cannot say which waits were of the measured blocks,
-# or that has not all of them, is none.
+# the tracer did not write its last line or did not end by itself with
+# success after one interrupt, and where it says that it lost events: a
+# trace that cannot say which waits were of the measured blocks, or that
+# has not all of them, is none.
 #
 #   BIN       the lignin-bench to run (default: target/release/lignin-bench)
 #   LONG_US   the bound for WRITE, SYNC and BLK lines (default 1000)
@@ -29,24 +30,37 @@ run="" tracer=""
 # The tracer is this script's own: `sudo` is its child, and bpftrace `sudo`'s.
 # `sudo` runs as another user, so whether it lives is read from /proc.
 tracing() { [ -n "$tracer" ] && [ -d "/proc/$tracer" ]; }
+# Where `sudo` runs the command in its own place there is no child, and the
+# process itself is the tracer.
+signal_tracer() { # signal_tracer SIGNAL
+  sudo pkill "-$1" -P "$tracer" 2> /dev/null || sudo kill "-$1" "$tracer" 2> /dev/null || true
+}
+# One interrupt has bpftrace run its END, write out what its buffers hold and
+# end. It is given ten minutes for that and is not signalled again meanwhile:
+# a second signal can cut the writing short. `tracer_ended` is `clean` if it
+# ended by itself with success, and says what happened otherwise.
+tracer_ended=""
 stop_tracer() {
-  local tries signal
+  local tries status=0
   [ -n "$tracer" ] || return 0
-  for tries in $(seq 40); do
+  tracing && signal_tracer INT
+  for tries in $(seq "${1:-1200}"); do
     tracing || break
-    # An interrupt has bpftrace end its script; after ten seconds it is ended.
-    # Where `sudo` runs the command in its own place there is no child, and
-    # the process itself is the tracer.
-    if [ "$tries" -le 20 ]; then signal=INT; else signal=KILL; fi
-    sudo pkill "-$signal" -P "$tracer" 2> /dev/null || sudo kill "-$signal" "$tracer" 2> /dev/null || true
     sleep 0.5
   done
-  if tracing; then echo "traced.sh: the tracer $tracer did not end" >&2; else wait "$tracer" 2> /dev/null || true; fi
+  if tracing; then
+    tracer_ended="it did not end after an interrupt and was ended"
+    signal_tracer KILL
+    sleep 1
+  fi
+  wait "$tracer" 2> /dev/null || status=$?
+  [ -n "$tracer_ended" ] || { [ "$status" = 0 ] && tracer_ended=clean || tracer_ended="it ended with $status"; }
   tracer=""
 }
 ended() {
   [ -z "$run" ] || kill "$run" 2> /dev/null || true
-  stop_tracer
+  # Where the script is left early the trace is none: twenty seconds.
+  stop_tracer 40
 }
 trap ended EXIT
 refuse() {
@@ -92,6 +106,8 @@ grep -q "lignin-mark measured begin" "$out.trace" ||
   refuse "the trace has no line for the beginning of the measured blocks: the tracer attached after it"
 grep -q "lignin-mark measured end" "$out.trace" ||
   refuse "the trace has no line for the end of the measured blocks"
+[ "$tracer_ended" = clean ] ||
+  refuse "the tracer did not end as it should, so the trace may be cut off: $tracer_ended"
 grep -q "^trace ended$" "$out.trace" ||
   refuse "the tracer did not write its last line: the trace was cut off"
 lost=$(grep -hE "^Lost [0-9]+ events" "$out.trace" "$out.trace.err" | head -3 | tr '\n' ' ' || true)

@@ -105,7 +105,7 @@ def read(directory):
                 commit=four(engine["commit_ns"]), off=four(off),
                 append=four([part[2] for part in parts]) if parts else None,
                 room=sum(1 for part in parts if part[5] > 0) if parts else None,
-                turns=engine.get("turns"),
+                turns=engine.get("turns"), total=engine.get("parts_total"),
                 late=[clock["late"][at] / max(clock["sleeps"], 1) for at in range(4)],
                 root=engine["root_hash"], build=report["commit"], binary=binary, mount=mount,
                 outlasted=engine.get("pauses_outlasted", 0),
@@ -138,16 +138,19 @@ def runs(rows):
         cells = [ranged([row["commit"][at] for row in group]) for at in range(4)]
         cells += [ranged([row["off"][at] for row in group]) for at in range(1, 4)]
         print("| %s | %s | %s | %d | %s |" % (label, engine, background, len(group), " | ".join(cells)))
-    lignin = [row for row in sorted(rows, key=order) if row["append"]]
+    # These runs read the engine's counts before their blocks and after
+    # them, and not at each commit: a reading can wait for the engine's
+    # background, and would move the blocks after it.
+    lignin = [row for row in sorted(rows, key=order) if row["total"]]
     if lignin:
-        print("\nLigninDB's own counts of a run: the commit's append to the log, the commits that "
-              "waited for room in write-back, and the turns of write-back a block:\n")
-        print("| Rows | Background | Round | Append: 99%, µs | 99.9%, µs | longest, µs | Waited for room | Turns a block |")
-        print("| --- | --- | --- | --- | --- | --- | --- | --- |")
+        print("\nLigninDB's own counts over the measured blocks of a run: the turns of write-back a block, "
+              "and what the commits spent in all appending to the log and waiting for room in write-back:\n")
+        print("| Rows | Background | Round | Turns a block | Appending to the log, ms in all | Waiting for room, ms in all |")
+        print("| --- | --- | --- | --- | --- | --- |")
         for row in lignin:
-            print("| %s | %s | %d | %s | %s | %s | %d | %.2f |" % (
-                row["label"], row["background"], row["round"], *map(us, row["append"][1:]),
-                row["room"], (row["turns"] or 0) / max(row["blocks"], 1)))
+            print("| %s | %s | %d | %.2f | %.1f | %.1f |" % (
+                row["label"], row["background"], row["round"], (row["turns"] or 0) / max(row["blocks"], 1),
+                row["total"][2] / 1e6, row["total"][5] / 1e6))
 
 
 def held(rows, control, experiments):
@@ -369,6 +372,13 @@ def main():
             print("%d blocks; the commit, µs: median %s, 99%% %s, 99.9%% %s, longest %s; off a processor: "
                   "99%% %s, 99.9%% %s, longest %s.\n" % (blocks, *map(us, four(engine["commit_ns"])),
                                                          *map(us, four(off)[1:])))
+            if engine.get("parts_ns"):
+                parts = engine["parts_ns"]
+                print("Its append to the log, as the engine counts it at each commit, µs: 99%% %s, 99.9%% %s, "
+                      "longest %s; %d commits waited for room in write-back; %d blocks began late, where the "
+                      "reading of those counts took longer than the pause.\n" % (
+                          *map(us, four([part[2] for part in parts])[1:]),
+                          sum(1 for part in parts if part[5] > 0), engine.get("pauses_outlasted", 0)))
             if engine.get("syncs"):
                 counted = sorted(engine["syncs"].items(), key=lambda item: -item[1][0])
                 print("Syncs a block, counted by the harness's file layer, %.2f in all: %s.\n" % (

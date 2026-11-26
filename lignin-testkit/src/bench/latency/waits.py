@@ -20,11 +20,16 @@ same thread applies through the same calls, are left out.
 
 **Where a wait was** is read from the harness's lines, not from a stack. A
 traced run has a line where each block begins (`lignin-mark block N`) and
-one after each commit with the commit's length (`lignin-mark commit N NS`).
-A wait that ended before the commit began is of the block's operations, one
-that ended after it is of the commit, and one after the commit's line is
-between two blocks, where the harness reads the engine's counts and pauses.
-The thread writes those lines itself, so a wait cannot lie across one. The
+one after each commit (`lignin-mark commit N NS BEGAN`) with the commit's
+length and when it began, both read by the harness from the system's
+monotonic clock around the commit itself, which is the clock the tracer
+stamps a wait with. A wait that began after the block's line and ended
+before the commit began is of the block's operations, one inside the
+commit's own time is of the commit, and one after the commit ended is
+between two blocks, where the harness writes its line, reads the engine's
+counts if it was asked to, and pauses. When the commit's line was written
+plays no part: a thread that is taken off its processor between the end of
+a commit and that line is between two blocks. The
 stacks say what a wait was for; where a user stack does not reach the
 harness it was cut short, as it is where a frame of the process keeps no
 frame pointer, and what such a wait was in is known only as far as the
@@ -214,17 +219,25 @@ class Trace:
         # One engine a trace: its measured blocks are one stretch.
         self.measured = (begins[0][0], ends[0]) if begins and ends else None
         self.measuring = begins[0][1] if begins else 0
-        # The blocks that the harness marked: where each began, where its
-        # commit began and where the commit's line was written.
+        # The blocks that the harness marked: where each began, and where
+        # its commit began and ended. The line of a commit has the commit's
+        # length and, by the clock of the trace, when it began. A line
+        # without that is of an earlier form of the harness: the commit is
+        # then taken to have ended where its line was written, which is
+        # wrong by what lay between the two.
         began, committed = {}, {}
+        self.commits_as_written = 0
         for at, tid, what in self.marks:
             words = what.split()
             if tid != self.measuring or len(words) < 2 or not words[1].isdigit():
                 continue
             if words[0] == "block":
                 began[int(words[1])] = at
+            elif words[0] == "commit" and len(words) > 3 and words[2].isdigit() and words[3].isdigit():
+                committed[int(words[1])] = (int(words[3]), int(words[3]) + int(words[2]))
             elif words[0] == "commit" and len(words) > 2 and words[2].isdigit():
                 committed[int(words[1])] = (at - int(words[2]), at)
+                self.commits_as_written += 1
         self.blocks = sorted((began[block], *committed[block]) for block in began if block in committed)
         self.block_begins = [block[0] for block in self.blocks]
 
@@ -241,11 +254,11 @@ class Trace:
         its blocks, and for a trace that has none by the wait's user stack."""
         if self.blocks:
             at = bisect.bisect_right(self.block_begins, wait["begin"]) - 1
-            if at < 0 or wait["begin"] > self.blocks[at][2]:
+            if at < 0 or wait["begin"] >= self.blocks[at][2]:
                 return BETWEEN
-            # The line of a commit is written after it, so the commit began
-            # no later than the line's time less the commit's length: a
-            # wait of the operations has ended by then.
+            # The thread is on a processor at each reading of the clock, so
+            # a wait lies whole before the commit's beginning or whole
+            # inside the commit.
             return OPERATIONS if wait["end"] <= self.blocks[at][1] else COMMIT
         if in_a_block(wait):
             return COMMIT if in_the_commit(wait) else OPERATIONS
@@ -383,6 +396,8 @@ def main():
             refused = "has no line for the beginning and the end of the measured blocks"
         elif not trace.blocks:
             refused = "has no line for its blocks: the harness is run with --mark-blocks for a trace"
+        elif trace.commits_as_written:
+            refused = "has lines of commits that do not say when the commit began: it is of an earlier form of the harness"
         elif not trace.ended:
             refused = "did not run to its end: the tracer was ended before it had written what it held"
         elif trace.lost:
