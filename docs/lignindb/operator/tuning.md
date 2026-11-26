@@ -81,8 +81,10 @@ on RocksDB, whose commits are not synced either. An application that
 applies its last commits again after a crash runs with it.
 A commit writes its group to the log file before it returns, so a
 process that is killed while the machine keeps running leaves its
-commits in the system's cache, where the next open reads them; what a
-sync adds is the power cut. `EveryCommit` makes each commit wait for its
+commits in the system's cache, where the next open reads them, unless
+the system's own writing of them back to the device failed meanwhile,
+after which it can forget them; what a sync adds is the power cut and
+that failure. `EveryCommit` makes each commit wait for its
 sync, which costs what a sync costs on the device; give it where each
 commit must survive a power cut on its own.
 
@@ -129,7 +131,7 @@ is `CleanerConfig::new`.
 | --- | --- | --- | --- |
 | `CleanerConfig::target_dead_percent` | 14 % | the share of dead bytes of the segments that the cleaner works towards | lower to take less disk, at the price of more bytes written for each byte given back; higher for fewer writes and more disk |
 | `CleanerConfig::value_dead_percent` | 14 % | the same for the value log: above it, a pass cleans the file with the largest share of dead bytes | as above |
-| `CleanerConfig::checkpoint_dead_percent` | 4 % | the most of the store that may wait for a table checkpoint to be deleted, before the cleaner asks for one | leave it |
+| `CleanerConfig::checkpoint_dead_percent` | 4 % | the most of the segments' blocks, as a share of all of them, that may wait for a table checkpoint to be deleted, before the cleaner asks for one | leave it |
 | `CleanerConfig::seal_dead_percent` | 2 % | a file that is being filled is closed for cleaning when its dead bytes are this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::max_segment_percent` | 1 % | a file that is being filled is closed when it holds this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::min_segment_len` | 64 KiB | no file is closed for the cleaner before it holds this much | leave it |

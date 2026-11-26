@@ -435,7 +435,11 @@ reserve, below.
    the open also settles whether an unsettled commit happened.
    `Db::version` says where the open landed. With none of these, the
    session goes on by itself, and the next commit is taken once there is
-   room.
+   room and the engine has also cut the log and replaced its manifest.
+   Where commits still answer `the session takes no commit yet: …` with
+   room on the device (the directory itself refuses a write, as a
+   directory that cannot be written), close the database and open it
+   again once that is dealt with.
 3. **Let the engine give room back.** In a running session, write-back
    takes a table checkpoint and drops the log files it covers, and the
    cleaner drops the segment and value-log files that are dead and moves

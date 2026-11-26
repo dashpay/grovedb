@@ -430,7 +430,7 @@ The tool's own words, besides the engine's above.
 | `this build of lignin has no …: build lignin-tools with the Cargo feature …` | `migrate` was asked of a build without the feature `migrate` | build as [the runbook](migration.md#2-set-the-variables) does | `lignin-tools/src/error.rs` |
 | `the background work failed: …` | `lignin compact`: a turn of write-back or the cleaner failed; its report is written | as the words say | `lignin-tools/src/error.rs` |
 | `the migration: …` | the refusals and failures of `lignin migrate`, [below](#lignin-migrate) | as they say | `lignin-tools/src/error.rs` |
-| `… at byte …: …` | `lignin segments` or `pages`: a file the manifest names is not what the manifest says at that byte | damage: restore from a backup, and report it | `lignin-tools/src/error.rs` |
+| `… at byte …: …` | `lignin segments` or `pages`: a file the manifest names is not what the manifest says at that byte. A file the tool may not look at (a directory without the right to search it) is read as one of 0 bytes, as `lignin manifest` then says `MISSING` of a file that is there | check that the user running the tool can read the directories and files first; where it can, it is damage: restore from a backup, and report it | `lignin-tools/src/error.rs` |
 | `a page: …` | a page could not be read; the store's words follow | as they say; damage where they say a page does not decode | `lignin-tools/src/error.rs` |
 | `a read: …` | a record, a node or an entry could not be read | as the words after it say | `lignin-tools/src/error.rs` |
 | `a write: …` | `lignin load`: the write transaction refused a write of the dump | as the words after it say | `lignin-tools/src/error.rs` |

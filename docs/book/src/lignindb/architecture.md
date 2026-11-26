@@ -258,8 +258,10 @@ left is the exception, since an open can fail on it too
   replayed on LigninDB in CI ([ci.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/ci.md#the-corpus-gate)).
 - **The physical invariant checker** (`lignin verify`, `Db::verify`)
   reads every page and value, holds every rule of the store, and makes
-  every stored hash again by Merk's rules but those the rules take as
-  stored (the value hash of a reference).
+  every stored hash of the Merks in use again by Merk's rules but those
+  the rules take as stored (the value hash of a reference); the cells of
+  a dropped Merk that waits to be reclaimed are walked, and their hashes
+  not made again.
 - **Crash campaigns** cut the engine at millions of points and recover
   each ([crash-tests.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/crash-tests.md)); the full device is swept
   at every file operation ([disk-full-and-backup.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md),
