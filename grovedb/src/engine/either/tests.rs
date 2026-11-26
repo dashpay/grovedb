@@ -1358,33 +1358,46 @@ fn shapes(dir: &Path) -> Vec<String> {
     shapes
 }
 
+type Opened = Result<EitherEngine, StorageError>;
+type OpenedByRocksDb = Result<RocksDbEngine, StorageError>;
+
+/// Each open of the type that can go to RocksDB, by its name, with
+/// RocksDB's own, and whether that one makes a database where there is
+/// none.
+const OPENS: [(
+    &str,
+    fn(&Path) -> Opened,
+    fn(&Path) -> OpenedByRocksDb,
+    bool,
+); 4] = [
+    (
+        "open_with",
+        |path| EitherEngine::open_with(path, &EngineChoice::RocksDb),
+        |path| RocksDbEngine::open(path),
+        true,
+    ),
+    (
+        "open",
+        |path| EitherEngine::open(path),
+        |path| RocksDbEngine::open(path),
+        true,
+    ),
+    (
+        "open_checkpoint",
+        |path| EitherEngine::open_checkpoint(path),
+        |path| RocksDbEngine::open_checkpoint(path),
+        false,
+    ),
+    (
+        "open_checkpoint_with",
+        |path| EitherEngine::open_checkpoint_with(path, &EngineChoice::RocksDb),
+        |path| RocksDbEngine::open_checkpoint(path),
+        false,
+    ),
+];
+
 #[test]
 fn a_database_of_rocksdb_under_a_reserved_name_is_opened_as_under_any_other() {
-    type Opened = Result<EitherEngine, StorageError>;
-    type OpenedByRocksDb = Result<RocksDbEngine, StorageError>;
-    // Each open of the type that can go to RocksDB, with RocksDB's own.
-    let opens: [(&str, fn(&Path) -> Opened, fn(&Path) -> OpenedByRocksDb); 4] = [
-        (
-            "open_with",
-            |path| EitherEngine::open_with(path, &EngineChoice::RocksDb),
-            |path| RocksDbEngine::open(path),
-        ),
-        (
-            "open",
-            |path| EitherEngine::open(path),
-            |path| RocksDbEngine::open(path),
-        ),
-        (
-            "open_checkpoint",
-            |path| EitherEngine::open_checkpoint(path),
-            |path| RocksDbEngine::open_checkpoint(path),
-        ),
-        (
-            "open_checkpoint_with",
-            |path| EitherEngine::open_checkpoint_with(path, &EngineChoice::RocksDb),
-            |path| RocksDbEngine::open_checkpoint(path),
-        ),
-    ];
     let v = GroveVersion::latest();
     for name in RESERVED {
         // The same database twice, made by RocksDB's own engine: under the
@@ -1398,7 +1411,7 @@ fn a_database_of_rocksdb_under_a_reserved_name_is_opened_as_under_any_other() {
         }
         assert_eq!(shapes(&path), shapes(&twin));
 
-        for (n, (call, of_the_type, of_rocksdb)) in (1..).zip(opens) {
+        for (n, (call, of_the_type, of_rocksdb, _)) in (1..).zip(OPENS) {
             let engine = of_the_type(&path).unwrap_or_else(|refused| panic!("{call}: {refused}"));
             assert_eq!(engine.kind(), EngineKind::RocksDb, "{call}");
             let db = GroveDb::from_engine(engine);
@@ -1421,6 +1434,40 @@ fn a_database_of_rocksdb_under_a_reserved_name_is_opened_as_under_any_other() {
             assert_eq!(shapes(&path), shapes(&twin), "{call}");
             let found = EitherEngine::found_at(&path).expect("a look");
             assert_eq!(found, Some(EngineKind::RocksDb), "{call}");
+        }
+    }
+}
+
+#[test]
+fn an_entry_of_rocksdbs_name_alone_under_a_reserved_name_is_rocksdbs_to_answer() {
+    // The listing goes by names: one entry of a name of RocksDB's, in a
+    // directory that holds no database, says RocksDB. Each open is then
+    // RocksDB's own of the same directory under another name: one of a
+    // database makes the database, and one of a checkpoint fails, makes
+    // none, and leaves what RocksDB's leaves.
+    for name in RESERVED {
+        for (call, of_the_type, of_rocksdb, makes) in OPENS {
+            let dir = tempfile::tempdir().expect("a directory");
+            let (path, twin) = (dir.path().join(name), dir.path().join("checkpoint"));
+            for made in [&path, &twin] {
+                fs::create_dir(made).expect("a directory");
+                fs::write(made.join("OPTIONS-of a caller"), b"").expect("a file");
+            }
+            let found = EitherEngine::found_at(&path).expect("a look");
+            assert_eq!(found, Some(EngineKind::RocksDb), "{call}");
+
+            let opened = of_the_type(&path);
+            let by_rocksdb = of_rocksdb(&twin);
+            assert_eq!(by_rocksdb.is_ok(), makes, "{call}");
+            match (&opened, makes) {
+                (Ok(engine), true) => assert_eq!(engine.kind(), EngineKind::RocksDb, "{call}"),
+                // RocksDB's own refusal, and none of the type's.
+                (Err(StorageError::RocksDBError(_)), false) => {}
+                _ => panic!("{call}: {opened:?}"),
+            }
+            drop((opened, by_rocksdb));
+            assert_eq!(path.join("CURRENT").exists(), makes, "{call}");
+            assert_eq!(shapes(&path), shapes(&twin), "{call}");
         }
     }
 }
@@ -1455,8 +1502,10 @@ fn kept_from_rocksdb(path: &Path) -> bool {
 /// it was kept from RocksDB.
 type Seen = (Option<EngineKind>, Vec<String>, bool);
 
-/// The file system of the process, on which what is done in or to one
-/// directory is followed by a look at it.
+/// The file system of the process, on which a call that makes, opens,
+/// links, renames, removes or locks an entry in one directory is followed
+/// by a look at that directory. What is written through an open file is
+/// followed by none.
 struct Watched {
     dir: PathBuf,
     seen: Mutex<Vec<Seen>>,
@@ -1469,7 +1518,7 @@ impl Watched {
         self.seen.lock().expect("what was seen").push(seen);
     }
 
-    /// Looks after a call that did something in the directory.
+    /// Looks after a call that succeeded on a path in the directory.
     fn after<T>(&self, path: &Path, done: io::Result<T>) -> io::Result<T> {
         if done.is_ok() && path.starts_with(&self.dir) {
             self.look();
@@ -1554,8 +1603,9 @@ fn what_lignindb_builds_or_holds_under_a_reserved_name_is_kept_from_rocksdb() {
     }
 
     // A directory in which LigninDB is building a checkpoint, looked at
-    // after each thing the creation does in it, and before it is given
-    // the name of its target.
+    // after each call of the file layer that makes, opens, links, renames
+    // or locks an entry of it, and before it is given the name of its
+    // target.
     let dir = tempfile::tempdir().expect("a directory");
     let (live, target) = (dir.path().join("live"), dir.path().join("checkpoint"));
     let watched = Arc::new(Watched {
@@ -1590,6 +1640,33 @@ fn what_lignindb_builds_or_holds_under_a_reserved_name_is_kept_from_rocksdb() {
     assert!(!watched.dir.exists());
     let opened = Either::open_checkpoint_with_engine(&target).expect("a checkpoint");
     assert_eq!(opened.engine().kind(), EngineKind::Lignin);
+    assert!(holds_the_item(&opened, v));
+    drop(opened);
+
+    // The limit of the rule. A creation takes a directory that is there
+    // under the name for what an earlier one left, and locks it before it
+    // empties it. One that holds an entry of a name of RocksDB's still
+    // says RocksDB then: the type would hand it to RocksDB, and it is not
+    // opened here. Once the entry is gone, it is kept from RocksDB as
+    // above.
+    Either::delete_checkpoint_with_engine(&target).expect("a removal");
+    fs::create_dir(&watched.dir).expect("a directory");
+    fs::write(watched.dir.join("OPTIONS-of a caller"), b"").expect("a file");
+    db.create_checkpoint(&target).expect("a checkpoint");
+    let seen = std::mem::take(&mut *watched.seen.lock().expect("what was seen"));
+    let emptied = (seen.iter())
+        .position(|(said, ..)| *said != Some(EngineKind::RocksDb))
+        .expect("a look after the entry went");
+    assert!(emptied > 0, "{seen:?}");
+    for (said, names, kept) in &seen[..emptied] {
+        assert_eq!(names[..], ["LOCK", "OPTIONS-of a caller"], "{said:?}");
+        assert!(!kept);
+    }
+    for (said, names, kept) in &seen[emptied..] {
+        assert!(kept, "{said:?} {names:?}");
+    }
+    assert!(!watched.dir.exists());
+    let opened = Either::open_checkpoint_with_engine(&target).expect("a checkpoint");
     assert!(holds_the_item(&opened, v));
 }
 
