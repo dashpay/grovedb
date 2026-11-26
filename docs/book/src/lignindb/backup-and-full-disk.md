@@ -152,9 +152,10 @@ sync
 lignin manifest "$BACKUP"
 ```
 
-The block reads the database's manifest first, so a `DB` that holds no
-LigninDB database (a RocksDB directory given by mistake) is refused
-before anything is copied. `cp -a` copies every file of the directory
+The block reads the database's manifest first, so a `DB` whose manifest
+cannot be read (a RocksDB directory given by mistake) is refused before
+anything is copied; a directory with a manifest and files missing is
+copied all the same, and its restore's check finds it. `cp -a` copies every file of the directory
 with the `LOCK` file. `cp` returns before its bytes are on the device. On Linux `sync` returns once
 the system has written them, and tells of no write that failed; on
 macOS `sync` can return before, so a copy made there is written once
@@ -256,8 +257,10 @@ lignin verify "$RESTORE"
 ```
 
 `lignin verify` opens the restore, closes it and checks every page and
-every value, and makes every stored hash again by Merk's rules but those
-the rules take as stored (the value hash of a reference). Exit status 0
+every value, and makes every stored hash of the Merks in use again by
+Merk's rules but those the rules take as stored (the value hash of a
+reference); the cells of a dropped Merk that waits to be reclaimed are
+walked, and their hashes not made again. Exit status 0
 is a sound store. A restore is a database like any other, at the version
 the backup holds: point the node at it, with the application's files of
 the same state (a copy of a checkpoint holds none, below), or keep it as

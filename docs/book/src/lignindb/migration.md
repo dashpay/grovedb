@@ -372,8 +372,11 @@ anything.
 
 ## 5. Survey the source
 
-The survey reads every record of the source, says what it holds and
-whether it can be migrated, and writes nothing.
+The survey reads the records of the source, says what it holds and
+whether it can be migrated, and writes nothing. Where it finds what a
+migration does not carry, it refuses the source and skips the look for
+records outside the grove: its counts of those are then not to be taken
+for none.
 
 ```sh
 lignin migrate "$SOURCE" --survey 2>&1 | tee "$WORK/reports/survey.txt"
