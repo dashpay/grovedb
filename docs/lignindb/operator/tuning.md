@@ -35,6 +35,8 @@ fails that test until this chapter says the new one.
 | `Options::log_file_len` | 64 MiB | the length at which a log file is full and the log goes on in the next one | no reason known for a node |
 | `Options::reserve` | 0 bytes | the room a session keeps in a file of its own, to give back when the device fills ([backup and full disk](backup-and-full-disk.md#the-reserve)) | on a node whose device can fill: the design text's first estimate is one log file and one segment, 128 MiB with the defaults |
 | `Options::idle` | 100 ms | how long the thread that reclaims dropped subtrees sleeps when nobody wakes it | no reason known |
+| `Options::flush` | unset: write-back's defaults for the database's page size | write-back's settings, `FlushConfig` ([write-back](#write-back)) | leave it unset; where it is set, start from `FlushConfig::new` with the database's page size, since its sizes follow the page size |
+| `Options::cleaner` | unset: the cleaner's defaults | the cleaner's settings, `CleanerConfig` ([the cleaner](#the-cleaner)) | leave it unset; where it is set, start from `CleanerConfig::new()` |
 | `Options::vfs` | `StdVfs` | the file layer the database's files are read and written through. On Linux, an application built with the feature `direct_io` of `lignin-io` can give `lignin_io::linux::DirectVfs`, which reads with `O_DIRECT`; on a file system that takes no direct reads the open is then refused (`… cannot be opened for direct reads: …`, [messages](messages.md#the-files-at-an-open)) | leave it: `benchmarks.md` has no run with direct reads |
 | `Options::create_if_missing` | yes | whether an open makes a database in a directory that holds none | GroveDB's `open_checkpoint` and `lignin` set it off; a node that must never start on an empty directory sets it off |
 
@@ -57,7 +59,7 @@ application and the rest of the engine hold.
   opens one with 16 MiB.
 - **The pool also holds what it cannot evict**: the private copies of
   open write transactions, the page versions that wait for write-back
-  (committers wait once `max_unwritten` of them wait), and at an open the
+  (committers wait once more than `max_unwritten` of them wait), and at an open the
   pages that replay rebuilds (up to `max_unwritten`, beyond which replay
   writes out those it can; a page with a value that waits for its place
   stays, whatever their number). A `cache_size` too small to hold one frame
@@ -104,7 +106,7 @@ the database's page size, and the defaults below are for pages of
 | `FlushConfig::segment_len` | 64 MiB | the length at which a segment is sealed | leave it; the reserve's estimate depends on it |
 | `FlushConfig::max_deferred` | 1024 | the most pages a turn of write-back's loop leaves for a later turn: those that changed last, flat pages before tree pages. A turn leaves no more than half of `max_unwritten` and a quarter of the pool's frames whatever this says, and none where a table checkpoint is due; a table checkpoint and the end of a session leave none. 0 writes every page it can at every turn | no reason known |
 | `FlushConfig::idle` | 50 ms | how long write-back's loop sleeps when nobody wakes it | no reason known |
-| `FlushConfig::max_failed_wait` | 1 s | the bound of the wait after a turn that failed, before the next turn: the wait doubles from the idle time up to it ([DF12](../disk-full-and-backup.md#52-the-order)), and is never shorter than the idle time, whatever this says | no reason known |
+| `FlushConfig::max_failed_wait` | 1 s | the bound of the wait after a turn that failed, before the next turn: the wait doubles from the idle time, or 1 ms where that is shorter, up to it ([DF12](../disk-full-and-backup.md#52-the-order)), and is never shorter than that first wait, whatever this says; a turn begins sooner where something wakes the loop | no reason known |
 
 **What to watch** is `Db::stats` of the node's own handle while it runs,
 which counts from the open of that session: the log held against

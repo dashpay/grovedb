@@ -1162,6 +1162,25 @@ fn every_command_names_what_the_workspace_has() {
     let mut checked = 0;
     for (name, text) in documents() {
         let parsed = parse(&text);
+        // The runbook's table of options is of `lignin migrate`: each is to
+        // be taken by that subcommand, not by any.
+        if name == "migration.md" {
+            for table in tables(&parsed.prose) {
+                if table.header.first().map(String::as_str) != Some("Option") {
+                    continue;
+                }
+                for (line, row) in &table.rows {
+                    let option = code_spans(&row[0]).into_iter().next().unwrap_or_default();
+                    let flag = option.split_whitespace().next().unwrap_or_default();
+                    if flag.starts_with("--") {
+                        checked += 1;
+                        if !takes(Some("migrate"), flag) {
+                            faults.push(format!("{name}:{line}: `lignin migrate` takes no {flag}"));
+                        }
+                    }
+                }
+            }
+        }
         for fence in &parsed.fences {
             assert!(
                 matches!(fence.info.as_str(), "sh" | "text"),
@@ -1405,6 +1424,16 @@ fn defaults() -> BTreeMap<String, String> {
         Some(size) => bytes(size.get() as u64),
     };
     let page_size = page_size.unwrap_or(PageSize::DEFAULT);
+    // Unset, write-back's and the cleaner's settings follow the page size
+    // of the database that is opened; set, they are what was given.
+    let stated_flush = match flush {
+        None => "unset: write-back's defaults for the database's page size",
+        Some(_) => "set",
+    };
+    let stated_cleaner = match cleaner {
+        None => "unset: the cleaner's defaults",
+        Some(_) => "set",
+    };
     let log_file_len = log_file_len.unwrap_or(LogOptions::default().target_file_len);
     let FlushConfig {
         max_chain_deltas,
@@ -1453,6 +1482,8 @@ fn defaults() -> BTreeMap<String, String> {
         ("Options::log_file_len", bytes(log_file_len)),
         ("Options::reserve", bytes(reserve)),
         ("Options::vfs", vfs),
+        ("Options::flush", stated_flush.to_owned()),
+        ("Options::cleaner", stated_cleaner.to_owned()),
         ("Options::idle", duration(idle)),
         (
             "Options::create_if_missing",
@@ -1572,7 +1603,7 @@ fn every_message_of_an_open_a_recovery_and_a_checkpoint_is_quoted() {
             for pattern in literal_patterns(display) {
                 let pattern = pattern.trim_end_matches('\n').to_owned();
                 let words = pattern.chars().filter(|c| c.is_alphabetic()).count();
-                if words < 3 || !pattern.contains(' ') || PARTS.contains(&pattern.as_str()) {
+                if words < 3 || PARTS.contains(&pattern.as_str()) {
                     continue;
                 }
                 covered += 1;
