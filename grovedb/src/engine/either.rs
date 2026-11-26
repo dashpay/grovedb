@@ -778,6 +778,7 @@ impl EitherEngine {
     /// [`Error::NotSupported`], and the chosen engine is not called. The
     /// listing and the open are two steps: a refusal, and the admission of
     /// a name below, are of what the directory held when it was listed.
+    /// The listing goes by the names of the entries and looks at no lock.
     ///
     /// For RocksDB a path whose last name ends in `.creating`, in any case
     /// of its ASCII letters, is opened only where the listing says RocksDB
@@ -787,7 +788,10 @@ impl EitherEngine {
     /// [`Error::NotSupported`], and nothing is made. LigninDB builds the
     /// checkpoint at `p` at the literal sibling `p.creating`
     /// (`lignindb::checkpoint`), and a directory it has just made has no
-    /// entry yet.
+    /// entry yet. A directory that was there under that name, which a
+    /// creation of LigninDB has locked and not yet emptied, is not told
+    /// from what it held before: while an entry of a name of RocksDB's is
+    /// in it and none of LigninDB's, it is handed to RocksDB.
     pub fn open_with<P: AsRef<Path>>(path: P, choice: &EngineChoice) -> Result<Self, Error> {
         let path = path.as_ref();
         match choice {
@@ -809,12 +813,13 @@ impl EitherEngine {
     /// taken as off.
     ///
     /// What [`Self::open_with`] refuses is refused here, a path whose last
-    /// name ends in `.creating` by the same rule. Where RocksDB is chosen,
-    /// a listing in which no entry says an engine is refused by this type
-    /// too, with [`Error::StorageError`] and no engine called; where
-    /// LigninDB is chosen it is LigninDB's to answer. An admitted
-    /// RocksDB-only listing selects the native checkpoint open, which can
-    /// write files before failing.
+    /// name ends in `.creating` by the same rule and with the same error.
+    /// Where RocksDB is chosen, a listing of a path of any other name in
+    /// which no entry says an engine is refused by this type too, with
+    /// [`Error::StorageError`] and no engine called; where LigninDB is
+    /// chosen it is LigninDB's to answer. An admitted RocksDB-only listing
+    /// selects the native checkpoint open, which can write files before
+    /// failing.
     pub fn open_checkpoint_with<P: AsRef<Path>>(
         path: P,
         choice: &EngineChoice,
