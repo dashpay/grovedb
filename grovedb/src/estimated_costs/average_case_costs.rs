@@ -2,13 +2,12 @@
 //! Implements average case cost functions in GroveDb
 
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
-    CostResult, CostsExt, OperationCost,
+    cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_merk::{
     cost_model::storage_cost_model,
     estimated_costs::{
-        add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
+        add_cost_case_merk_insert_layered,
         average_case_costs::{
             add_average_case_get_merk_node, add_average_case_merk_delete,
             add_average_case_merk_delete_layered, add_average_case_merk_propagate,
@@ -17,7 +16,6 @@ use grovedb_merk::{
     },
     tree::TreeNode,
     tree_type::{CostSize, TreeType},
-    HASH_LENGTH,
 };
 use grovedb_storage::{
     worst_case_costs::{get_storage_context_cost, WorstKeyLength},
@@ -30,10 +28,13 @@ use integer_encoding::VarInt;
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    Element, ElementFlags, Error, GroveDb,
+    ElementFlags, Error, GroveDb,
 };
 
+mod finalize;
+mod get_merk_at_path;
 mod merk_insert_element;
+mod merk_patch_element;
 mod merk_replace_element;
 
 impl GroveDb {
@@ -54,43 +55,6 @@ impl GroveDb {
             in_tree_type,
             grove_version,
         )
-    }
-
-    /// Add average case for getting a merk tree
-    pub fn add_average_case_get_merk_at_path_engine_free(
-        cost: &mut OperationCost,
-        path: &KeyInfoPath,
-        merk_should_be_empty: bool,
-        in_tree_type: TreeType,
-        grove_version: &GroveVersion,
-    ) -> Result<(), Error> {
-        check_grovedb_v0!(
-            "add_average_case_get_merk_at_path",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .add_average_case_get_merk_at_path
-        );
-
-        cost.seek_count += 1;
-        // If the merk is not empty we load the tree
-        if !merk_should_be_empty {
-            cost.seek_count += 1;
-        }
-        match path.last() {
-            None => {}
-            Some(key) => {
-                cost.storage_loaded_bytes += TreeNode::average_case_encoded_tree_size(
-                    key.max_length() as u32,
-                    HASH_LENGTH as u32,
-                    in_tree_type.inner_node_type(),
-                ) as u64;
-            }
-        }
-        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
-
-        Ok(())
     }
 
     /// Add average case for insertion into merk
@@ -280,61 +244,6 @@ impl GroveDb {
         add_average_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
             add_average_case_merk_propagate(&mut cost, estimated_layer_information, grove_version)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add average case for patching an element in merk
-    /// This only propagates on 1 level
-    /// As higher level propagation is done in batching
-    pub fn average_case_merk_patch_element(
-        key: &KeyInfo,
-        value: &Element,
-        change_in_bytes: i32,
-        in_tree_type: TreeType,
-        propagate_for_level: Option<&EstimatedLayerInformation>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "average_case_merk_patch_element",
-            grove_version
-                .grovedb_versions
-                .operations
-                .average_case
-                .average_case_merk_patch_element
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        match value {
-            Element::Item(_, flags) => {
-                let flags_len = flags.as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                // Items need to be always the same serialized size for this to work
-                let item_cost_size =
-                    cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                        as u32;
-                let value_len = item_cost_size + flags_len;
-                add_cost_case_merk_patch(
-                    &mut cost,
-                    key_len,
-                    value_len,
-                    change_in_bytes,
-                    in_tree_type,
-                )
-            }
-            _ => {
-                return Err(Error::InvalidParameter("patching can only be on Items"))
-                    .wrap_with_cost(cost);
-            }
-        };
-        if let Some(level) = propagate_for_level {
-            add_average_case_merk_propagate(&mut cost, level, grove_version)
                 .map_err(Error::MerkError)
         } else {
             Ok(())
