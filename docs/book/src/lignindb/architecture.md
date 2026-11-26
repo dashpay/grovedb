@@ -87,7 +87,7 @@ checksum; `LOCK` and `RESERVE` hold no data. The manifest is replaced whole (a n
 `MANIFEST`), and it names each file with its valid length. A file that
 the manifest calls closed or sealed is the database's up to that length;
 the log file that the database was writing when its session ended is
-read past it, up to the last group the log holds whole.
+read past it, through every item the log holds whole.
 `lignin manifest` prints it, and `lignin segments` the segments it names.
 
 ## A write, from the batch to the disk

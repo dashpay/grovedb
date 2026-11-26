@@ -46,8 +46,8 @@ takes longer than its `Merk nodes:` alone says. The plan's acceptance for the mi
 is at least 40,000 elements a second on the reference shape, measured on
 a rented machine with dedicated processors (the least of 20 runs was
 40,357); the plan records that a database of many small Merks loads
-about 5% slower at the default setting. Before its last line, every run prints a line that says
-what it took, `migrate: done target=… seconds=…`, with
+about 5% slower at the default setting. Before its last line, a run that ends with status 0
+prints a line that says what it took, `migrate: done target=… seconds=…`, with
 `elements_per_second=…` for a run that made the whole target, so the rehearsal of step 3 on your own
 machine gives you a rate to plan with.
 The node is stopped from step 4 to step 10: add the survey of step 5,
@@ -694,13 +694,25 @@ empty database where it finds none, and the survey only reads. Where
 `SOURCE` was a checkpoint, survey the node's own directory, which can
 differ from the checkpoint either way. Where the survey refuses for the
 projected memory of a load alone, survey again with a larger
-`--memory-limit`: that refusal says nothing of the database. Then:
+`--memory-limit`: that refusal says nothing of the database. The survey
+says that the directory is there and holds a GroveDB it reads through;
+it makes no hash again, so it is no check that the database is sound:
+a node that goes back takes it as it was before the migration, damage
+that the survey cannot see among it. Where a migration of it ended with
+status 3 though it reported `differing=0`, the target was the source's
+copy, and the damage the check found is the RocksDB database's too:
+report it, and take it for damaged, whatever the survey says. Then:
 
-- `the source can be migrated`: the database serves as before.
+- `the source can be migrated`: the database is taken as it was before.
 - A refusal whose `NOT CARRIED` lines name only what a migration does
   not take while RocksDB serves it (a keyed child under a tree of flat
-  records, prefixes that nothing leads to): the database serves as
-  before.
+  records, prefixes that nothing leads to), and that cuts no list short
+  (`and … more`, where a list stops, means reasons that were not
+  printed): the database is taken as it was before.
+- A survey that stops at the migrator's own limit of depth
+  (`the grove is more than … trees deep at …`): it says nothing either
+  way; the database is taken as it was before, where nothing else is
+  known against it.
 - A refusal for the mark of a state-sync restore that did not finish:
   the directory that holds it is to be discarded, on RocksDB as here,
   and the node's state got again as the application's documentation

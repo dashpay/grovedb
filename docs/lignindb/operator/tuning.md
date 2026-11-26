@@ -101,7 +101,7 @@ the database's page size, and the defaults below are for pages of
 
 | Option | Default | What it is | When to change it |
 | --- | --- | --- | --- |
-| `FlushConfig::max_log_held` | 256 MiB | the most log that no table checkpoint covers before a committer is made to wait. It is what a recovery reads at an open, and room on the device. | lower for a quicker open after a crash and less log on the device, at the price of more table checkpoints; higher where commits wait for it in bursts |
+| `FlushConfig::max_log_held` | 256 MiB | the most log that no table checkpoint covers before a committer is made to wait: the commits a recovery replays at an open lie in it, and it takes room on the device. A recovery reads the whole items after them too | lower for a quicker open after a crash and less log on the device, at the price of more table checkpoints; higher where commits wait for it in bursts |
 | `FlushConfig::checkpoint_log_bytes` | 64 MiB | a table checkpoint is taken when this much was logged since the last one | with `max_log_held`; keep it below that |
 | `FlushConfig::max_unwritten` | 4096 | the most page versions that wait to be written before a committer is made to wait | higher where the pool is large and commits come in bursts; it is pool memory that cannot be evicted |
 | `FlushConfig::max_pending_bytes` | 32 MiB | the most bytes of values in pages that wait for write-back before a committer is made to wait | with `max_unwritten` |
