@@ -49,8 +49,9 @@ subcommand give the same line, then the usage, and the status 2.
 An open is `Db::open`: what a node does when it starts, what an open of
 a checkpoint on LigninDB does (`GroveDb::<LigninEngine>::open_checkpoint_with_engine`,
 or `GroveDb::open_checkpoint` where LigninDB is the build's default
-engine), and what every `lignin` subcommand but
-`manifest`, `segments` and `migrate` does. Through `lignin` the words
+engine), and what every `lignin` subcommand but `help`, `manifest`,
+`segments` and `migrate` does; `lignin migrate` opens the database it
+builds in `TARGET.migrating` so too. Through `lignin` the words
 come after `the database did not open: `, behind the tool's `lignin: `.
 
 The first group says that the directory is not one this build opens.
@@ -111,13 +112,13 @@ These follow `manifest: `, `recovery could not go on: ` or
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
-| `… has no MANIFEST` | the manifest is gone | restore from a backup | `lignin-store/src/segment/error.rs` |
+| `… has no MANIFEST` | the directory has no manifest: a path that is not there, or a directory with no database, says the same | check the path first; where it is the database's directory, the manifest is gone: restore from a backup | `lignin-store/src/segment/error.rs` |
 | `a replacement of the manifest of … did not finish; open it again` | a replacement of the manifest was cut off, and which of the two is in force is found out by an open | open again | `lignin-store/src/segment/error.rs` |
 | `… is … bytes long, shorter than its valid length of …` | a file is shorter than the manifest says it was made durable at: it was cut, or copied in part | restore from a backup | `lignin-store/src/segment/error.rs`, `lignin-store/src/wal/error.rs` |
 | `… has format version …, newer than the manifest's …` | a file of a newer build sits in an older database | restore from a backup | `lignin-store/src/segment/error.rs`, `lignin-store/src/wal/error.rs` |
 | `… is … bytes long, but the manifest does not name it and records no id that high` | a file of data is in one of the database's directories, under an id above every id that the manifest records, and the manifest does not name it: the open does not know whose it is. A copy that put an older `MANIFEST` beside newer files leaves this as well | do not move or remove the file to make the open pass, and do not open the directory again until you know where the file came from. A directory that mixes the files of two states is no database: restore it from a backup | `lignin-store/src/segment/error.rs`, `lignin-store/src/wal/error.rs` |
 | `the manifest no longer names …, but it could not be deleted: …` | a file the database let go of could not be removed | fix what the system says (permissions), and open again | `lignin-store/src/segment/error.rs`, `lignin-store/src/wal/error.rs` |
-| `… at offset …: …` | a file does not decode where it should: damage | restore from a backup, and report it | `lignin-store/src/segment/error.rs`, `lignin-store/src/wal/error.rs` |
+| `… at offset …: …` | a file does not decode where it should: the words after it say why | where they are `unsupported format version …`, a later release wrote the file: open with it ([the layers below](#the-words-of-the-layers-below)); otherwise it is damage: restore from a backup, and report it | `lignin-store/src/segment/error.rs`, `lignin-store/src/wal/error.rs` |
 | `cannot … …: …` | the file layer refused an operation on the manifest, a segment or a log file: the action, the path and the system's words | fix what the system says (permissions, a device that is full or read-only), and open again | `lignin-store/src/segment/error.rs`, `lignin-store/src/wal/error.rs` |
 | `… is damaged at offset …, below its valid length of …: …` | a log file is damaged inside what was made durable | restore from a backup, and report it | `lignin-store/src/wal/error.rs` |
 | `the valid length … of … lies inside what begins at offset …` | the manifest's length of a log file ends inside a record: damage | restore from a backup, and report it | `lignin-store/src/wal/error.rs` |

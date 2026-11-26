@@ -139,8 +139,9 @@ If the background falls behind, committers are made to wait
    at for as long as it lives, and a cursor the one it opened at, with
    the later writes of its own transaction; another read takes the
    latest for that call, so a later call can see a commit made in
-   between. No lock is
-   taken, and no writer waits for a reader.
+   between. A read holds no lock while it reads, so no writer waits for
+   a reader to finish; opening a cursor of a transaction takes the
+   transaction's own locks for a moment.
 2. **The subtree directory** gives the page and slot of the subtree's
    root, from the path's 32-byte prefix, as RocksDB's prefixes are.
 3. **Descent follows page ids and slots** from cell to cell: a node's

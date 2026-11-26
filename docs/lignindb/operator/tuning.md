@@ -71,7 +71,7 @@ application and the rest of the engine hold.
 | --- | --- | --- |
 | never (the default) | after the next `flush()`, checkpoint, close, or table checkpoint of write-back, each of which syncs the log | the last commit before the last sync, or a later one: never on a part of a commit |
 | `SyncPolicy::Interval(d)` | after the next sync: a commit syncs the log where the last sync is at least `d` ago, and so does a turn of write-back's loop between commits. That is no bound in time where no commit and no turn comes, or a sync fails | the last commit before the last sync that was made, or a later one |
-| `SyncPolicy::EveryCommit` | when its commit returns `Ok`; a commit that returns `NotDurable` is published and not known to be durable | the last commit that returned `Ok`, or a later one whose bytes reached the device all the same: one whose call had not returned when the power was cut, or one that returned `NotDurable` or `Unsettled` |
+| `SyncPolicy::EveryCommit` | when its commit returns `Ok`; a commit that returns `NotDurable` is published and not known to be durable | the last commit that returned `Ok`, or a later one whose bytes reached the device all the same: one whose call had not returned when the power was cut, or one that returned `NotDurable`, `Unsettled` or `Halted` (its group was in the log when the session stopped) |
 
 In every case the open lands on one committed version, never on a part
 of a commit, and on none older than the last one made durable

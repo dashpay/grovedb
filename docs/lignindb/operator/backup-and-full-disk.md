@@ -363,7 +363,9 @@ rm -rf -- "$CHECKPOINT"
 Commits fail. The error of the commit has the system's "no space left"
 among its causes (`lignindb::space::out_of_space` says so of an error),
 and its words end with what the system said, such as "No space left on
-device (os error 28)". A commit beside write-back that met the full
+device (os error 28)", or "Disk quota exceeded" where a quota of the
+user or the project that writes there is used up: `df` then shows room,
+and the room to make is inside that quota, or the quota is raised. A commit beside write-back that met the full
 device first can say only `the log has no file that takes items`, with
 no word of the device: where commits fail so, look at the free space
 too. Reads go on.
