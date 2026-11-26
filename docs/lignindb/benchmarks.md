@@ -143,6 +143,9 @@ only.
 | `wall_per_transition`, `block_commit`, `bulk_load` | µs, ms, s | `Instant` around apply and commit |
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
 | `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: how often its buffer pool was asked for a page over the timed reads of one kind, and how often it did not hold the page, for one read (LigninDB only; measured, since the pool counts its background threads too; no row for a kind of which no read was timed) |
+| `page_reads_per_transition`, `pages_asked_per_transition` | pages | engine: the page versions its buffer pool did not hold and that were read from storage over a write phase, and the pages the pool was asked for, held or not, for one transition (LigninDB only; measured, since the pool counts its background threads too) |
+| `process_read_bytes_per_transition`, `process_read_calls_per_transition`, `device_reads_per_transition`, `device_read_bytes_per_transition` | B, calls, requests, B | the operating system's counts of the process's reads over a write phase, for one transition ("The system's counts of reads" below; Linux only, measured) |
+| `<read>_process_read_bytes`, `<read>_process_read_calls`, `<read>_device_reads`, `<read>_device_read_bytes` | B, calls, requests, B | the same counts over the timed reads of one kind, for one read |
 | `checkpoint`, `reopen` | ms | `Instant` around one checkpoint or open |
 
 GroveDB's storage layer charges one seek for every record it writes. So, for
@@ -162,6 +165,35 @@ older row counts every search that the newer one counts and, beyond those,
 each search that the root of a Merk answered. So `lignin-bench compare` of an
 older report with a newer one can show a change of the row that is one of the
 count and not of the work.
+
+### The system's counts of reads
+
+RocksDB counts no read for the harness, and LigninDB's pool counts the pages
+it loads, not the reads a load makes. So beside the engines' counts a write
+phase, and the timed reads of each kind in the phases `warm` and `settled`,
+carry four counts of the operating system, each the difference of two
+readings (`bench::machine::StorageReads`), on Linux:
+
+| Row | From | What it counts |
+| --- | --- | --- |
+| `process_read_bytes` | `/proc/self/io`, `read_bytes` | bytes the process caused to be read from storage, read-ahead included |
+| `process_read_calls` | `/proc/self/io`, `syscr` | the process's read system calls, whatever they read and wherever it came from |
+| `device_reads` | `io.stat` of the process's cgroup, `rios`, every device | read requests that reached a device |
+| `device_read_bytes` | the same file, `rbytes` | the bytes of those requests |
+
+The two counts of the cgroup need cgroup v2 with the `io` controller on for
+the cgroup the process runs in, as a systemd unit with `IOAccounting=yes`
+has; a run outside one has no such row. They are of every process of that
+cgroup, and all four are of the whole process, its background threads
+included, so the rows are measured rows.
+
+**What they say depends on the memory the kernel's page cache has.** With
+the page cache free, a file that was written or read before is read from
+memory, and only `process_read_calls` counts the read. Under a memory
+limit on the process's cgroup that leaves the page cache little room
+(`MemoryMax` of a systemd unit), the counts of the device say how often a
+read of either engine reached storage, which is the count the two engines
+can be compared by where the state is far larger than the memory.
 
 ### RocksDB's counters
 

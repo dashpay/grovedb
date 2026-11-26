@@ -35,7 +35,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     engine::{timed, Block, Counters, Detail, Engine, EngineSettings},
-    machine::{self, ColdMethod, Perf},
+    machine::{self, ColdMethod, Perf, StorageReads},
     report::{
         ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
         WorkloadSpec,
@@ -480,6 +480,7 @@ fn write_phase<E: Engine>(
     engine.gauges()?;
     let anatomy_before = engine.node_anatomy();
     let written_before = machine::process_io("write_bytes");
+    let reads_before = StorageReads::now();
     while totals.transitions < transitions {
         let block = next_block(stream);
         let Some((Op::Commit, ops)) = block.split_last() else {
@@ -535,6 +536,7 @@ fn write_phase<E: Engine>(
         (Some(before), Some(after)) => Some(after.saturating_sub(before)),
         _ => None,
     };
+    totals.storage_reads = StorageReads::now().since(&reads_before);
     Ok(PhaseRun {
         totals,
         transition_us,
@@ -714,6 +716,37 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             "/proc/self/io write_bytes of the whole process: a cross-check of physical bytes",
         ));
     }
+    if let (Some(read_in), Some(held)) = (counters.page_reads, counters.cache_hits) {
+        rows.push(measured_row(
+            "page_reads_per_transition",
+            phase,
+            "pages",
+            read_in as f64,
+            n,
+            &format!(
+                "{engine} engine counters: page versions the buffer pool did not hold and \
+                 that were read from storage, its background threads' among them"
+            ),
+        ));
+        rows.push(measured_row(
+            "pages_asked_per_transition",
+            phase,
+            "pages",
+            (read_in + held) as f64,
+            n,
+            &format!(
+                "{engine} engine counters: pages the buffer pool was asked for, held or not, \
+                 its background threads' among them"
+            ),
+        ));
+    }
+    rows.extend(storage_read_rows(
+        "",
+        "_per_transition",
+        phase,
+        &totals.storage_reads,
+        n,
+    ));
     for detail in &run.details {
         rows.push(measured_row(
             &format!("{}_per_transition", detail.id),
@@ -735,6 +768,61 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
         ));
     }
     rows
+}
+
+/// The rows of what the operating system counted of the process's reads
+/// (`reads`) over `per` units of work: `<prefix>process_read_bytes<suffix>`,
+/// `<prefix>process_read_calls<suffix>`, `<prefix>device_reads<suffix>` and
+/// `<prefix>device_read_bytes<suffix>`, each for one unit. No row for a
+/// count the system did not give, and none where `per` is 0. They are of
+/// the whole process, and the last two of its whole cgroup, so they are
+/// measured rows.
+fn storage_read_rows(
+    prefix: &str,
+    suffix: &str,
+    phase: &str,
+    reads: &StorageReads,
+    per: u64,
+) -> Vec<Row> {
+    if per == 0 {
+        return Vec::new();
+    }
+    [
+        (
+            "process_read_bytes",
+            "B",
+            reads.process_bytes,
+            "/proc/self/io read_bytes of the whole process: bytes it caused to be read from \
+             storage, read-ahead included",
+        ),
+        (
+            "process_read_calls",
+            "calls",
+            reads.process_calls,
+            "/proc/self/io syscr of the whole process: its read system calls, whatever they \
+             read and wherever it came from",
+        ),
+        (
+            "device_reads",
+            "requests",
+            reads.device_reads,
+            "io.stat rios of the process's cgroup, every device: read requests that reached \
+             a device",
+        ),
+        (
+            "device_read_bytes",
+            "B",
+            reads.device_bytes,
+            "io.stat rbytes of the process's cgroup, every device: the bytes of the read \
+             requests that reached a device",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(what, unit, total, source)| {
+        let id = format!("{prefix}{what}{suffix}");
+        Some(measured_row(&id, phase, unit, total? as f64, per, source))
+    })
+    .collect()
 }
 
 /// The time rows of a write phase sampled per block.
@@ -1092,16 +1180,25 @@ fn warm_rows<E: Engine>(
     let mut get_meter = Meter::new(settings, &format!("{phase}-get"));
     let mut get_us = Vec::new();
     let before = engine.counters()?;
+    let reads_before = StorageReads::now();
     for _ in 0..settings.point_reads {
         let (elapsed, _) =
             ReadKind::Get.read(engine, reads, loaded, grove_version, &mut get_meter)?;
         get_us.push(Unit::Micros.of(elapsed));
     }
+    let storage_reads = StorageReads::now().since(&reads_before);
     let counted = engine.counters()?.since(&before);
     rows.extend(page_rows(
         "point_get",
         phase,
         &counted,
+        u64::from(settings.point_reads),
+    ));
+    rows.extend(storage_read_rows(
+        "point_get_",
+        "",
+        phase,
+        &storage_reads,
         u64::from(settings.point_reads),
     ));
     rows.push(time_row(
@@ -1139,13 +1236,22 @@ fn warm_rows<E: Engine>(
         let mut times = Vec::new();
         let mut sizes = Vec::new();
         let before = engine.counters()?;
+        let reads_before = StorageReads::now();
         for _ in 0..count {
             let (elapsed, size) = kind.read(engine, reads, loaded, grove_version, &mut meter)?;
             times.push(Unit::Micros.of(elapsed));
             sizes.push(size.unwrap_or(0) as f64);
         }
+        let storage_reads = StorageReads::now().since(&reads_before);
         let counted = engine.counters()?.since(&before);
         rows.extend(page_rows(kind.id(), phase, &counted, u64::from(count)));
+        rows.extend(storage_read_rows(
+            &format!("{}_", kind.id()),
+            "",
+            phase,
+            &storage_reads,
+            u64::from(count),
+        ));
         rows.push(time_row(
             kind.id(),
             phase,
@@ -1633,6 +1739,8 @@ mod tests {
             ("compaction_bytes_per_transition", 400.0),
             ("keyed_lookups_per_transition", 6.0),
             ("engine_hashes_per_transition", 55.0),
+            ("page_reads_per_transition", 4.5),
+            ("pages_asked_per_transition", 49.5),
         ] {
             let (found, source) = value(id);
             assert_eq!(found, per_transition, "{id}");
@@ -1648,7 +1756,15 @@ mod tests {
         let mut run = run;
         run.totals.counters.keyed_lookups = None;
         run.totals.counters.hashes = None;
+        run.totals.counters.page_reads = None;
+        run.totals.storage_reads.device_reads = Some(7);
         let rows = count_rows(&run, "rocksdb");
+        assert!(!rows.iter().any(|row| row.id.starts_with("page")));
+        let reads = rows
+            .iter()
+            .find(|row| row.id == "device_reads_per_transition")
+            .expect("the row");
+        assert_eq!((reads.value, reads.kind), (3.5, RowKind::Measured));
         let lookups = rows
             .iter()
             .find(|row| row.id == "keyed_lookups_per_transition")
@@ -1657,6 +1773,59 @@ mod tests {
         assert!(!rows
             .iter()
             .any(|row| row.id == "engine_hashes_per_transition"));
+    }
+
+    /// What the system counted of the process's reads is a row for one
+    /// unit of work for each count it gave, and none for the others.
+    #[test]
+    fn the_storage_read_rows_are_the_systems_counts_for_one_unit_of_work() {
+        let reads = StorageReads {
+            process_bytes: Some(8_192),
+            process_calls: Some(6),
+            device_reads: Some(3),
+            device_bytes: None,
+        };
+        let rows = storage_read_rows("point_get_", "", "settled", &reads, 2);
+        let found: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.id.as_str(),
+                    row.phase.as_str(),
+                    row.value,
+                    row.unit.as_str(),
+                    row.kind,
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "point_get_process_read_bytes",
+                    "settled",
+                    4_096.0,
+                    "B",
+                    RowKind::Measured
+                ),
+                (
+                    "point_get_process_read_calls",
+                    "settled",
+                    3.0,
+                    "calls",
+                    RowKind::Measured
+                ),
+                (
+                    "point_get_device_reads",
+                    "settled",
+                    1.5,
+                    "requests",
+                    RowKind::Measured
+                ),
+            ]
+        );
+        assert!(storage_read_rows("", "_per_transition", "load", &reads, 0).is_empty());
+        assert!(storage_read_rows("", "", "load", &StorageReads::default(), 1).is_empty());
     }
 
     /// The details of a phase are what the engine counted more at its end

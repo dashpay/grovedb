@@ -179,6 +179,82 @@ pub fn process_io(field: &str) -> Option<u64> {
         .and_then(|value| value.trim().parse().ok())
 }
 
+/// What the operating system has counted of the process's reads at one
+/// moment (Linux only). The harness reads it before and after a phase or
+/// a kind of read and subtracts ([`StorageReads::since`]).
+///
+/// A count is `None` where the system does not give it. The two counts of
+/// the cgroup need cgroup v2 with the `io` controller on for the cgroup
+/// the process runs in, which a systemd unit with `IOAccounting=yes` has.
+/// They are of every process of that cgroup. Under a memory limit on the
+/// cgroup that leaves the kernel's page cache little room, they say how
+/// often a read reached the device; with the page cache free, a page that
+/// was read or written before is read from memory and counted nowhere
+/// here but in `process_calls`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageReads {
+    /// `/proc/self/io` `read_bytes`: bytes the process caused to be read
+    /// from storage, read-ahead included.
+    pub process_bytes: Option<u64>,
+    /// `/proc/self/io` `syscr`: the process's read system calls, whatever
+    /// they read and wherever it came from.
+    pub process_calls: Option<u64>,
+    /// `io.stat` `rios` of the process's cgroup, summed over its devices:
+    /// read requests that reached a device.
+    pub device_reads: Option<u64>,
+    /// `io.stat` `rbytes`, summed the same way: the bytes of those
+    /// requests.
+    pub device_bytes: Option<u64>,
+}
+
+impl StorageReads {
+    /// The counts now.
+    pub fn now() -> StorageReads {
+        let device = cgroup_io_stat().map(|text| device_reads(&text));
+        StorageReads {
+            process_bytes: process_io("read_bytes"),
+            process_calls: process_io("syscr"),
+            device_reads: device.map(|(reads, _)| reads),
+            device_bytes: device.map(|(_, bytes)| bytes),
+        }
+    }
+
+    /// What was counted between `earlier` and `self`. A count that either
+    /// reading lacks is `None`.
+    pub fn since(&self, earlier: &StorageReads) -> StorageReads {
+        let since = |now: Option<u64>, then: Option<u64>| {
+            now.zip(then).map(|(now, then)| now.saturating_sub(then))
+        };
+        StorageReads {
+            process_bytes: since(self.process_bytes, earlier.process_bytes),
+            process_calls: since(self.process_calls, earlier.process_calls),
+            device_reads: since(self.device_reads, earlier.device_reads),
+            device_bytes: since(self.device_bytes, earlier.device_bytes),
+        }
+    }
+}
+
+/// The `io.stat` file of the cgroup this process runs in (cgroup v2).
+fn cgroup_io_stat() -> Option<String> {
+    let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let group = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
+    std::fs::read_to_string(format!("/sys/fs/cgroup{group}/io.stat")).ok()
+}
+
+/// The read requests and the bytes read of every device in the text of
+/// an `io.stat` file, summed. A line is a device's numbers and then
+/// `key=value` fields; a field that is not a number counts as nothing.
+fn device_reads(io_stat: &str) -> (u64, u64) {
+    let sum = |key: &str| {
+        io_stat
+            .split_whitespace()
+            .filter_map(|field| field.strip_prefix(key)?.strip_prefix('='))
+            .filter_map(|value| value.parse::<u64>().ok())
+            .sum()
+    };
+    (sum("rios"), sum("rbytes"))
+}
+
 /// How a cold read is made cold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -574,6 +650,45 @@ mod tests {
         assert!(files_under(&dir.path().join("missing")).is_err());
         assert!(!cache_drop_works(&dir.path().join("missing").join("probe")));
         assert_eq!(process_io("no_such_field"), None);
+    }
+
+    #[test]
+    fn the_reads_of_a_cgroup_are_summed_over_its_devices() {
+        let text = "253:0 rbytes=4096 wbytes=8192 rios=1 wios=2 dbytes=0 dios=0\n\
+                    8:16 rbytes=1000 wbytes=0 rios=3 wios=0 dbytes=0 dios=0\n";
+        assert_eq!(device_reads(text), (4, 5_096));
+        assert_eq!(device_reads(""), (0, 0));
+        assert_eq!(device_reads("253:0 rios=many rbytes=7"), (0, 7));
+    }
+
+    #[test]
+    fn storage_reads_are_differences_of_the_counts_both_readings_have() {
+        let earlier = StorageReads {
+            process_bytes: Some(10),
+            process_calls: Some(4),
+            device_reads: None,
+            device_bytes: Some(100),
+        };
+        let later = StorageReads {
+            process_bytes: Some(30),
+            process_calls: Some(3),
+            device_reads: Some(9),
+            device_bytes: None,
+        };
+        assert_eq!(
+            later.since(&earlier),
+            StorageReads {
+                process_bytes: Some(20),
+                process_calls: Some(0),
+                device_reads: None,
+                device_bytes: None,
+            }
+        );
+        // A reading takes the process's counts from the file `process_io`
+        // reads, and both counts of the cgroup from one file.
+        let now = StorageReads::now();
+        assert_eq!(now.process_calls.is_some(), process_io("syscr").is_some());
+        assert_eq!(now.device_reads.is_some(), now.device_bytes.is_some());
     }
 
     #[test]
