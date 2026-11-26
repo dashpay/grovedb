@@ -145,6 +145,9 @@ pub const MARK: &str = "lignin-mark commit";
 pub const MARK_BEGIN: &str = "lignin-mark measured begin";
 /// See [`MARK_BEGIN`].
 pub const MARK_END: &str = "lignin-mark measured end";
+// A line of a commit is `lignin-mark commit <block> <nanoseconds>
+// <began>`: the commit's length, and when it began by the system's
+// monotonic clock in nanoseconds, which a trace of the system reads too.
 /// What a line begins with that says where a block begins, before its
 /// operations: `lignin-mark block <block>`. Written with `--mark-blocks`.
 pub const MARK_BLOCK: &str = "lignin-mark block";
@@ -216,6 +219,11 @@ pub struct LatencyOptions {
     /// ended, for a trace to tell the operations, the commit and the time
     /// between two blocks apart by.
     pub mark_blocks: bool,
+    /// The engine's counts of the parts of a commit are read after each
+    /// commit. A reading can wait for the engine's background, and then the
+    /// next block begins late: a run whose percentiles are to be held
+    /// against another's is made without it.
+    pub parts: bool,
     /// How many of the slowest commits a report lists.
     pub slowest: usize,
     /// A name for the build that runs.
@@ -251,6 +259,7 @@ impl LatencyOptions {
             watch_files: false,
             mark: Duration::from_micros(2_000),
             mark_blocks: false,
+            parts: false,
             slowest: 12,
             label: None,
             commit: None,
@@ -328,6 +337,15 @@ pub struct LatencyReport {
     pub flush_blocks: u64,
     /// How often the neighbour synced its file, in milliseconds.
     pub neighbour_ms: Option<u64>,
+    /// Whether LigninDB was opened on the file layer that times its calls.
+    #[serde(default)]
+    pub watch_files: bool,
+    /// Whether every block was marked for a trace.
+    #[serde(default)]
+    pub mark_blocks: bool,
+    /// Whether the engine's counts were read after each commit.
+    #[serde(default)]
+    pub parts: bool,
     /// The engines, in the order they were measured.
     pub engines: Vec<EngineLatency>,
 }
@@ -353,8 +371,13 @@ pub struct EngineLatency {
     /// in nanoseconds, by the thread's own clock.
     pub ran_ns: Vec<u64>,
     /// The parts of each commit that the engine counts apart, in
-    /// nanoseconds and in the order of [`PARTS`], where it counts them.
+    /// nanoseconds and in the order of [`PARTS`], where it counts them and
+    /// the run was asked to read them after each commit.
     pub parts_ns: Option<Vec<[u64; 6]>>,
+    /// The same parts over all the measured blocks, read once before them
+    /// and once after.
+    #[serde(default)]
+    pub parts_total: Option<[u64; 6]>,
     /// The turns of the engine's write-back that ended over the measured
     /// blocks, where it has such turns.
     pub turns: Option<u64>,
@@ -899,11 +922,41 @@ impl Marker {
         }
     }
 
-    fn mark(&mut self, block: u64, took: Duration) {
+    fn mark(&mut self, block: u64, took: Duration, began: u64) {
         if self.every || (!self.from.is_zero() && took >= self.from) {
-            self.line(&format!("{MARK} {block} {}", took.as_nanos()));
+            self.line(&format!("{MARK} {block} {} {began}", took.as_nanos()));
         }
     }
+}
+
+/// The system's monotonic clock, in nanoseconds: the clock a commit is
+/// timed by, and the one a trace of the system stamps its lines with.
+fn monotonic() -> u64 {
+    let time = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    (time.tv_sec as u64) * 1_000_000_000 + time.tv_nsec as u64
+}
+
+/// What is left of the pause after a commit that ended at `ended`, at
+/// `now`: how long to sleep, or by how much the next block is late.
+fn pause_left(ended: Instant, pause: Duration, now: Instant) -> Result<Duration, Duration> {
+    let until = ended + pause;
+    until
+        .checked_duration_since(now)
+        .ok_or_else(|| now.saturating_duration_since(until))
+}
+
+/// A block that was applied and committed.
+struct Committed {
+    /// How long its operations took.
+    applied: Duration,
+    /// How long its commit took, by the monotonic clock.
+    took: Duration,
+    /// When the commit began, by the monotonic clock in nanoseconds.
+    began: u64,
+    /// A moment just before the commit began.
+    from: Instant,
+    /// How long the thread ran on a processor during the commit.
+    ran: u64,
 }
 
 /// How long the calling thread has run on a processor, in nanoseconds, by
@@ -914,35 +967,42 @@ fn thread_clock() -> u64 {
 }
 
 /// Applies the operations of the next block of `stream` in a write
-/// transaction of its own and commits it. Returns how long the operations
-/// and the commit took, when the commit began, and how long the thread
-/// ran on a processor during it. `watch` is told where the commit begins.
+/// transaction of its own and commits it. The commit is timed by two
+/// readings of the monotonic clock, around the commit and nothing else.
+/// `watch` is told where the commit begins.
 fn block<E: Engine>(
     engine: &E,
     stream: &mut Stream,
     grove_version: &GroveVersion,
     watch: Option<&Watch>,
-) -> Result<(Duration, Duration, Instant, u64), BenchError> {
+) -> Result<Committed, BenchError> {
     let block = next_block(stream);
     let Some((Op::Commit, ops)) = block.split_last() else {
         return Err(BenchError::Check("the stream has ended".to_string()));
     };
     let mut transaction = engine.begin_block();
-    let began = Instant::now();
+    let applying = Instant::now();
     for op in ops {
         transaction.apply(op, grove_version)?;
     }
-    let applied = began.elapsed();
+    let applied = applying.elapsed();
     if let Some(watch) = watch {
         watch.reset_appends();
     }
     let ran = thread_clock();
-    let began = Instant::now();
+    let from = Instant::now();
+    let began = monotonic();
     let committed = transaction.commit();
-    let took = began.elapsed();
+    let ended = monotonic();
     let ran = thread_clock().saturating_sub(ran);
     committed?;
-    Ok((applied, took, began, ran))
+    Ok(Committed {
+        applied,
+        took: Duration::from_nanos(ended.saturating_sub(began)),
+        began,
+        from,
+        ran,
+    })
 }
 
 /// The neighbour: appends 4 KiB to `path` and syncs the file every `every`
@@ -1050,7 +1110,10 @@ fn measure_in<E: Subject>(
     let mut commit_ns = Vec::with_capacity(blocks);
     let mut apply_ns = Vec::with_capacity(blocks);
     let mut ran_ns = Vec::with_capacity(blocks);
-    let mut parts_ns = engine.look().map(|_| Vec::with_capacity(blocks));
+    // The engine's counts are read before the measured blocks and after
+    // them, and after each commit only where the run was asked to.
+    let first = engine.look();
+    let mut parts_ns = (first.filter(|_| options.parts)).map(|_| Vec::with_capacity(blocks));
     // The slowest commits, each with when it began and ended.
     let mut slowest: Vec<(SlowCommit, Instant, Instant)> = Vec::new();
     let mut marker = Marker::new(options.mark, options.mark_blocks);
@@ -1061,8 +1124,7 @@ fn measure_in<E: Subject>(
     if let Some(watch) = watch {
         watch.begin();
     }
-    let mut seen = engine.look();
-    let turns_before = seen.map(|(_, turns)| turns);
+    let mut seen = first;
     let (mut pauses_outlasted, mut outlasted) = (0, Duration::ZERO);
     let began = Instant::now();
 
@@ -1108,19 +1170,29 @@ fn measure_in<E: Subject>(
             marker.line(MARK_BEGIN);
             for number in 0..options.blocks {
                 marker.block(number);
-                let (applied, took, from, ran) = block(engine, &mut stream, grove_version, watch)?;
+                let Committed {
+                    applied,
+                    took,
+                    began,
+                    from,
+                    ran,
+                } = block(engine, &mut stream, grove_version, watch)?;
                 let to = from + took;
-                marker.mark(number, took);
+                marker.mark(number, took, began);
                 // From here to the next block is the pause, which is counted
-                // from the commit's end: what the harness does in it, reading
-                // the engine's counts, moves the next block only where it
-                // takes longer than the pause, and then it is counted.
+                // from the commit's end: what the harness does in it moves
+                // the next block only where it takes longer than the pause,
+                // and then it is counted. The engine's counts are read here
+                // only where the run was asked to.
                 let nanos = took.as_nanos() as u64;
-                let now = engine.look();
+                let now = match options.parts {
+                    true => engine.look(),
+                    false => None,
+                };
                 let parts = seen.zip(now).map(|((before, _), (after, _))| {
                     std::array::from_fn(|part| after[part].saturating_sub(before[part]))
                 });
-                seen = now;
+                seen = now.or(seen);
                 commit_ns.push(nanos);
                 apply_ns.push(applied.as_nanos() as u64);
                 ran_ns.push(ran);
@@ -1145,13 +1217,12 @@ fn measure_in<E: Subject>(
                     slowest.truncate(options.slowest);
                 }
                 committed.fetch_add(1, Ordering::AcqRel);
-                let left = (to + options.pause).saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    let late = Instant::now().saturating_duration_since(to + options.pause);
-                    pauses_outlasted += 1;
-                    outlasted = outlasted.max(late);
-                } else {
-                    std::thread::sleep(left);
+                match pause_left(to, options.pause, Instant::now()) {
+                    Ok(left) => std::thread::sleep(left),
+                    Err(late) => {
+                        pauses_outlasted += 1;
+                        outlasted = outlasted.max(late);
+                    }
                 }
             }
             marker.line(MARK_END);
@@ -1180,9 +1251,13 @@ fn measure_in<E: Subject>(
     measured?;
     let clock = clock?;
     let seconds = began.elapsed().as_secs_f64();
-    let turns = turns_before
-        .zip(engine.look())
-        .map(|(before, (_, after))| after - before);
+    let last = engine.look();
+    let turns = first
+        .zip(last)
+        .map(|((_, before), (_, after))| after - before);
+    let parts_total = first.zip(last).map(|((before, _), (after, _))| {
+        std::array::from_fn(|part| after[part].saturating_sub(before[part]))
+    });
     let syncs = watch.map_or_else(BTreeMap::new, Watch::counted);
     let _ = std::fs::remove_file(&neighbour_file);
     // A run whose background work failed is no measurement.
@@ -1209,6 +1284,7 @@ fn measure_in<E: Subject>(
         apply_ns,
         ran_ns,
         parts_ns,
+        parts_total,
         turns,
         flushes_asked: flushes_asked?,
         neighbour_syncs: neighbour_syncs?,
@@ -1258,6 +1334,9 @@ fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
         background: options.background,
         flush_blocks: options.flush_blocks,
         neighbour_ms: options.neighbour.map(|every| every.as_millis() as u64),
+        watch_files: options.watch_files,
+        mark_blocks: options.mark_blocks,
+        parts: options.parts,
         engines: Vec::new(),
     };
     for engine in &options.engines {
@@ -1332,7 +1411,8 @@ fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
     }
     let asked = format!(
         "commit {}, GroveVersion {}, seed {}, {} documents of {} owners, {} warm and {} measured \
-         blocks, a pause of {} µs, a flush every {} blocks, settings [{}]",
+         blocks, a pause of {} µs, a flush every {} blocks, settings [{}], the file layer {}, \
+         blocks {}, the engine's counts {}",
         report.commit.as_deref().unwrap_or("unknown"),
         report.grove_protocol_version,
         report.seed,
@@ -1343,6 +1423,18 @@ fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
         report.pause_us,
         report.flush_blocks,
         engine.settings.join(" "),
+        match report.watch_files {
+            true => "watched",
+            false => "not watched",
+        },
+        match report.mark_blocks {
+            true => "marked",
+            false => "not marked",
+        },
+        match report.parts {
+            true => "read after each commit",
+            false => "read before and after the blocks",
+        },
     );
     (build, engine.engine.clone(), background, asked)
 }
@@ -1416,9 +1508,13 @@ pub fn table(report: &LatencyReport) -> String {
         let _ = write!(
             out,
             "\n- the pause after a commit is from the commit's end: the harness's own work outlasted \
-             it after {} blocks, by {} µs at the most",
+             it after {} blocks, by {} µs at the most{}",
             engine.pauses_outlasted,
             micros(engine.outlasted_ns),
+            match report.parts {
+                true => "; the engine's counts were read after each commit",
+                false => "",
+            },
         );
         let [median, p99, p999, longest] = quantiles(&engine.apply_ns).map(micros);
         let _ = writeln!(
@@ -1647,6 +1743,7 @@ pub fn parse_options(args: &[String]) -> Result<(LatencyOptions, Option<PathBuf>
         match flag.as_str() {
             "--watch-files" => options.watch_files = true,
             "--mark-blocks" => options.mark_blocks = true,
+            "--parts" => options.parts = true,
             "--keep" => options.keep = true,
             _ => {
                 let value = args
@@ -1819,11 +1916,13 @@ mod tests {
         /// The commit of [`Noting`] on this thread that panics, counted from 1.
         static PANIC_AT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
         static COMMITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        /// The looks at the counts of [`Noting`] made on this thread.
+        static LOOKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
 
     /// An engine that does nothing but note when its calls were made.
     struct Noting {
-        noted: Mutex<Vec<(&'static str, Instant)>>,
+        noted: Mutex<Vec<(&'static str, u64)>>,
     }
 
     impl Subject for Noting {
@@ -1843,8 +1942,10 @@ mod tests {
         }
 
         fn look(&self) -> Option<([u64; 6], u64)> {
+            LOOKS.set(LOOKS.get() + 1);
             std::thread::sleep(LOOK.get());
-            Some(([0; 6], 0))
+            // What it counts goes up by one at each look.
+            Some(([LOOKS.get(); 6], LOOKS.get()))
         }
     }
 
@@ -1852,7 +1953,7 @@ mod tests {
 
     impl Noting {
         fn note(&self, what: &'static str) {
-            self.noted.lock().unwrap().push((what, Instant::now()));
+            self.noted.lock().unwrap().push((what, monotonic()));
         }
     }
 
@@ -1949,8 +2050,9 @@ mod tests {
             ..small(Path::new(""))
         }
         .stream();
-        let (_, took, began, _) =
+        let Committed { took, began, .. } =
             block(&engine, &mut stream, GroveVersion::latest(), None).unwrap();
+        let took = took.as_nanos() as u64;
         let noted = engine.noted.lock().unwrap();
         let at = |what: &str| {
             let found = noted.iter().rev().find(|(noted, _)| *noted == what);
@@ -1979,41 +2081,68 @@ mod tests {
 
     #[test]
     fn the_pause_is_from_the_commits_end_and_what_outlasts_it_is_counted() {
-        let dir = tempfile::tempdir().unwrap();
-        // The harness's own work is shorter than the pause: the blocks are
-        // a pause apart and no more, whatever that work took. The times are
-        // long, so that a machine that keeps the thread waiting for a tenth
-        // of a second changes nothing.
-        let options = LatencyOptions {
-            blocks: 4,
-            pause: Duration::from_millis(300),
-            ..small(dir.path())
-        };
-        LOOK.set(Duration::from_millis(100));
-        let paced = measure_in::<Noting>(&options, dir.path()).unwrap();
-        assert_eq!((paced.pauses_outlasted, paced.outlasted_ns), (0, 0));
-        // Four pauses of 0.3 s, and not four of 0.3 s and of the 0.1 s of a
-        // look besides, which are 1.6 s.
-        assert!(
-            (1.2..1.45).contains(&paced.seconds),
-            "{} s for four blocks",
-            paced.seconds
+        // What is left of a pause is counted from the commit's end, whatever
+        // was done since: by moments that are given, and no clock.
+        let ended = Instant::now();
+        let pause = Duration::from_millis(5);
+        let after = |millis| ended + Duration::from_millis(millis);
+        assert_eq!(pause_left(ended, pause, ended), Ok(pause));
+        assert_eq!(
+            pause_left(ended, pause, after(2)),
+            Ok(Duration::from_millis(3))
         );
-        // It is longer than the pause: every block begins late, and the
-        // report says so.
+        assert_eq!(pause_left(ended, pause, after(5)), Ok(Duration::ZERO));
+        assert_eq!(
+            pause_left(ended, pause, after(9)),
+            Err(Duration::from_millis(4))
+        );
+
+        // A run that reads the engine's counts after each commit, where a
+        // reading takes longer than the pause: every block begins late, and
+        // the report says so. A sleep is as long as asked or longer, so
+        // this holds on any machine.
+        let dir = tempfile::tempdir().unwrap();
         let options = LatencyOptions {
             pause: Duration::from_millis(4),
+            parts: true,
             ..small(dir.path())
         };
         LOOK.set(Duration::from_millis(9));
+        LOOKS.set(0);
         let late = measure_in::<Noting>(&options, dir.path()).unwrap();
         assert_eq!(late.pauses_outlasted, 12);
         assert!(late.outlasted_ns >= 4_000_000, "{}", late.outlasted_ns);
+        // The counts were read before the blocks, after each commit and
+        // after the blocks, and each commit has its own.
+        assert_eq!(LOOKS.get(), 1 + 12 + 1);
+        assert_eq!(late.parts_ns.as_deref(), Some(&[[1; 6]; 12][..]));
+        assert_eq!((late.parts_total, late.turns), (Some([13; 6]), Some(13)));
         let text = table(&LatencyReport {
             engines: vec![late],
+            parts: true,
             ..report_of(&options)
         });
         assert!(text.contains("outlasted it after 12 blocks"), "{text}");
+        assert!(
+            text.contains("the engine's counts were read after each commit"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_run_reads_the_engines_counts_between_blocks_only_where_it_is_asked_to() {
+        // Without `--parts` nothing of the engine is read between two
+        // blocks, however long a reading takes: the counts are read once
+        // before the blocks and once after, and no block waits for them.
+        let dir = tempfile::tempdir().unwrap();
+        let options = small(dir.path());
+        LOOK.set(Duration::from_millis(9));
+        LOOKS.set(0);
+        let run = measure_in::<Noting>(&options, dir.path()).unwrap();
+        assert_eq!(LOOKS.get(), 2);
+        assert_eq!(run.parts_ns, None);
+        assert_eq!((run.parts_total, run.turns), (Some([1; 6]), Some(1)));
+        assert!(run.slowest.iter().all(|slow| slow.parts_ns.is_none()));
     }
 
     fn report_of(options: &LatencyOptions) -> LatencyReport {
@@ -2034,6 +2163,9 @@ mod tests {
             background: options.background,
             flush_blocks: options.flush_blocks,
             neighbour_ms: None,
+            watch_files: options.watch_files,
+            mark_blocks: options.mark_blocks,
+            parts: options.parts,
             engines: Vec::new(),
         }
     }
@@ -2091,6 +2223,7 @@ mod tests {
             apply_ns: vec![0; 12],
             ran_ns: vec![0; 12],
             parts_ns: None,
+            parts_total: None,
             turns: None,
             flushes_asked: 0,
             neighbour_syncs: 0,
@@ -2126,7 +2259,22 @@ mod tests {
             commit: Some("fedcba9876543210-dirty".to_string()),
             ..one.clone()
         };
-        for other in [paused, flushed, set, dirty] {
+        // And with what the harness itself did beside the commits: the file
+        // layer that times the engine's calls, a line at every block, and a
+        // reading of the engine's counts after each commit.
+        let watched = LatencyReport {
+            watch_files: true,
+            ..one.clone()
+        };
+        let marked = LatencyReport {
+            mark_blocks: true,
+            ..one.clone()
+        };
+        let read = LatencyReport {
+            parts: true,
+            ..one.clone()
+        };
+        for other in [paused, flushed, set, dirty, watched, marked, read] {
             let apart = runs_table(&[one.clone(), other.clone()]);
             assert!(!apart.contains("The median of the runs' values"), "{apart}");
             // Two runs of each are two groups that a table shows alike,
@@ -2353,6 +2501,7 @@ mod tests {
         let options = LatencyOptions {
             engines: vec![EngineChoice::RocksDb, EngineChoice::LigninDb],
             watch_files: true,
+            parts: true,
             label: Some("head".to_string()),
             background: Background::Quiet,
             ..small(scratch.path())
