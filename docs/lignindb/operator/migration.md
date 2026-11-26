@@ -427,15 +427,19 @@ Read its report before you go on:
   that drop says `A TREE STANDS AT THE PATH AGAIN`. Unless `--unreachable` says otherwise
   they are left behind (`leave`), and the target is what a database
   written on LigninDB holds, with the same root hash. What can then
-  answer otherwise than on RocksDB is a read by the path of such a tree,
-  a tree made again at that path, a cursor that steps from no key, a
-  write below such a tree, which both engines refuse at different costs,
-  a batch below an item kept there, which they refuse with different
-  errors (`CorruptedPath` on RocksDB, `InvalidPath` here), and, once a
-  tree is made again there, a write into a subtree of the old one, which
-  RocksDB takes and LigninDB refuses, and a deletion of that tree with
-  its children, which both make to the same root hash at different
-  costs.
+  answer otherwise than on RocksDB is set out in the engine's design
+  ([engine.md](../engine.md#a-subtree-leaves-with-its-element), the
+  item that begins "A plain delete of a batch removes a tree with what
+  it holds"): read it before you choose. Among it: reads by the path of
+  such a tree; a cursor that steps from no key; a range query of the
+  tree above that goes down into a tree made again at that path, and
+  whether that tree is empty; the grove's own check
+  (`verify_grovedb`), which fails on RocksDB over the kept records and
+  finds nothing here; writes below such a tree, which both engines
+  refuse at different costs and on some grove versions with different
+  errors; once a tree is made again there, a write into a subtree of
+  the old one, which RocksDB takes and LigninDB refuses; and the costs
+  of some writes that both take.
   `--unreachable refuse` refuses such a source where those prefixes hold
   records of the data, aux or meta keyspaces (a prefix with a root-key
   record alone counts none, and that record is carried all the same);
@@ -786,10 +790,15 @@ the one the migration read, and not an older state of it: a RocksDB
 database whose log lost its tail since reads as sound and can be
 migrated, at an earlier last write and another root hash. The block
 surveys it again and holds its first line (its RocksDB identity and its
-last write) and its root hash to the survey of step 5; a survey that
-refuses the source does not stop it, so the comparison is made all the
-same. It shows that the identity, the last write and the grove's root
-hash are those the migration read, not that every record is: a record
+last write), its root hash and its last line to the survey of step 5. A
+survey that refuses the source does not stop it, so the comparison is
+made all the same, and fails where the survey of step 5 did not refuse
+it so, or where the survey stops before it prints the root hash; a
+report that cannot be written ends the shell, as any failure does,
+before a verdict, and the block removes the report of an earlier way
+back first, so it never reads one. It shows that the identity, the last
+write and the grove's root hash are those the migration read, not that
+every record is: a record
 of the aux, roots or meta columns can be lost with the same last write
 and root hash. So it is a check the way back needs, and no proof: the
 application's own check of its state decides too. Where `SOURCE`
@@ -797,10 +806,20 @@ was a checkpoint, the node's own directory has a state of its own,
 which the application identifies; this block is not for it.
 
 ```sh
-lignin migrate "$SOURCE" --survey 2>&1 | tee "$WORK/reports/survey-again.txt" || true
+rm -f "$WORK/reports/survey-again.txt"
+{ lignin migrate "$SOURCE" --survey 2>&1 || true; } | tee "$WORK/reports/survey-again.txt"
 first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$1"; }
 root_hash() { sed -n 's/^  root hash: //p' "$1"; }
-if [ -n "$(first_line "$WORK/reports/survey.txt")" ] && [ "$(first_line "$WORK/reports/survey.txt")" = "$(first_line "$WORK/reports/survey-again.txt")" ] && [ "$(root_hash "$WORK/reports/survey.txt")" = "$(root_hash "$WORK/reports/survey-again.txt")" ]; then echo "SOURCE is as the migration read it"; else echo "SOURCE IS NOT AS THE MIGRATION READ IT"; false; fi
+before="$WORK/reports/survey.txt"
+again="$WORK/reports/survey-again.txt"
+if [ -n "$(first_line "$before")" ] && [ -n "$(root_hash "$before")" ] \
+  && [ "$(first_line "$before")" = "$(first_line "$again")" ] \
+  && [ "$(root_hash "$before")" = "$(root_hash "$again")" ] \
+  && [ "$(tail -n 1 "$before")" = "$(tail -n 1 "$again")" ]; then
+  echo "SOURCE is as the migration read it"
+else
+  echo "SOURCE IS NOT AS THE MIGRATION READ IT"; false
+fi
 ```
 
 - **Before the node has committed anything on LigninDB**, going back is

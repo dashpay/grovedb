@@ -228,15 +228,21 @@ const REASONS: [(&str, &str, &str); 46] = [
     ("lignindb/src/db/open.rs", "read(key::LAYOUT, ", KEYSPACES),
     ("lignindb/src/db/mod.rs", "OpenError::catalog(", KEYSPACES),
 ];
-/// The functions of GroveDB that an open of a directory and the deletion
-/// of a checkpoint run through around the engine, by file and the
-/// words their definition begins with: every message they build
+/// The functions of GroveDB that an open of a directory (with its
+/// integrity check's walk of the elements, and the decoding of an
+/// element) and the deletion of a checkpoint run through around the
+/// engine, by file and the words their definition begins with: every message they build
 /// (`Error::…(…)`) is quoted in a row that names the file. Errors that
 /// answer an application's misuse of the API are elsewhere, and left out.
-const GROVEDB_FUNCTIONS: [(&str, &str); 8] = [
+const GROVEDB_FUNCTIONS: [(&str, &str); 10] = [
     (
         "grovedb/src/lib.rs",
         "pub fn open_with_cidx_integrity_check<",
+    ),
+    ("grovedb/src/lib.rs", "fn verify_elements_up_to_a_tree<"),
+    (
+        "grovedb-element/src/element/serialize.rs",
+        "pub fn deserialize(",
     ),
     ("grovedb/src/engine/either.rs", "fn held_among("),
     ("grovedb/src/engine/either.rs", "fn unlisted("),

@@ -95,8 +95,13 @@ The rest:
 
 Through `EitherEngine`, the engine chosen at the open, these come before
 either engine is called, and change nothing. GroveDB's own deletion of a
-checkpoint has one more, and its open with an integrity check, which
-opens the engine first and then checks the grove, two:
+checkpoint has one more. Its open with an integrity check opens the
+engine first and then checks the grove, and has the rows after that;
+where the check cannot read a subtree, the engine's own words follow
+`storage_cost error: ` (the engine's rows above), and the checks it
+calls below its walk (a non-Merk tree's hash, an indexed tree's
+secondaries) stop it with words of their own, which are not listed one
+by one here:
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
@@ -107,7 +112,8 @@ opens the engine first and then checks the grove, two:
 | `the directory … has no entry of a database of either engine, so it is no checkpoint: no engine was called for it` | a checkpoint was to be opened or removed at a directory that holds neither engine's database | check the path | `grovedb/src/engine/either.rs` |
 | ``the directory … holds a database of … (its entry `…`) and was to be removed as a checkpoint of …: no engine was called for it`` | the deletion of a checkpoint was given the other engine's database | check the path and the engine; nothing was removed | `grovedb/src/engine/either.rs` |
 | `integrity check on open found … issue(s): …` | after `data corruption error: `: GroveDB's open with its integrity check (`GroveDb::open_with_cidx_integrity_check`) opened the engine and then found issues in the grove; their keys follow | keep the database as it is and report it with the whole message; where the issues are damage of the grove, restore from a backup | `grovedb/src/lib.rs` |
-| `unable to deserialize element …` | after `data corruption error: `: the integrity check met an element that does not decode, and stopped before it could sum up the issues. It stops so at the first thing it cannot read at all; where that is a subtree it cannot open or a value missing at a key its own iteration gave, other words follow `data corruption error: `, and the same holds | as for the row above | `grovedb-element/src/element/serialize.rs` |
+| `unable to deserialize element …`, `element deserialization did not consume all bytes: consumed …, total …`, `deserialized NonCounted wrapping another wrapper`, `deserialized NonCounted wrapping a backward-references element`, `deserialized NotSummed with non-sum-tree inner`, `deserialized NotCountedOrSummed with non-sum-bearing-tree inner`, `deserialized private document store with invalid config: …`, `deserialized element with invalid backward references: …` | after `data corruption error: `: the integrity check met an element whose bytes do not decode, or decode to a shape GroveDB does not write, and stopped before it could sum up the issues | as for the row above | `grovedb-element/src/element/serialize.rs` |
+| `expected merk to contain value at key … for …`, `expected merk to contain value at key … for reference`, `invalid axis tag in PCPSIT element: …` | after `data corruption error: `: the integrity check's walk of the elements read a key and then found no value under it, or met an element of an indexed tree whose axis tag is none GroveDB writes, and stopped | as for the row above | `grovedb/src/lib.rs` |
 | `refusing to delete checkpoint: path too short (safety check)` | after `data corruption error: `, though nothing of a database was read: GroveDB's deletion of a checkpoint refuses a path of fewer than two components before it asks the engine | give the checkpoint's full path | `grovedb/src/checkpoints.rs` |
 
 ### The files at an open

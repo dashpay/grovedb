@@ -265,7 +265,11 @@ session makes new files there; `cp -a` keeps the modes the backup had.
 every value, and makes every stored hash of the Merks in use again by
 Merk's rules but those the rules take as stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); the cells of a dropped Merk that waits to be reclaimed are
 walked, and their hashes not made again. Exit status 0
-is a sound store. A restore is a database like any other, at the version
+is a sound store. Where its report also counts value hashes of trees
+that grove versions 1 to 3 left after a delete below them (GroveDB
+#686), which the check takes as no damage, and later versions alone
+wrote the database, report it before a node starts on the restore
+([the messages](messages.md#lignin)). A restore is a database like any other, at the version
 the backup holds (but for a backup of a database whose creation was cut
 short, which the first open of it makes at its first version): point the node at it, with the application's files of
 the same state (a copy of a checkpoint holds none, below), or keep it as
