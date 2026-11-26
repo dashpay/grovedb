@@ -108,23 +108,32 @@ pub(crate) struct NodeEntry {
     pub(crate) right: Option<LinkEntry>,
     pub(crate) hosted: HostedEntry,
     pub(crate) value: ValueEntry,
-    /// The hashes the write left stale.
+    /// The hashes the write left stale, as the pages mark them
+    /// ([`marked`]): a node that is shown from its entry has the stale
+    /// hashes that its cell has.
     pub(crate) stale: Stale,
 }
 
 impl NodeEntry {
-    /// Whether the write left a hash of its node stale, as the pages
-    /// mark it: the hash of a child the node does not have is none.
+    /// Whether the write left a hash of its node stale.
     fn leaves_stale(&self) -> bool {
-        if self.stale.is_empty() {
-            return false;
-        }
-        let links = [(Side::Left, &self.left), (Side::Right, &self.right)];
-        let missing = links.iter().filter(|(_, link)| link.is_none());
-        let stale = missing.fold(self.stale, |stale, (side, _)| {
-            stale.without(HashField::Child(*side))
-        });
-        !stale.is_empty()
+        !self.stale.is_empty()
+    }
+}
+
+/// The hashes that a put of a node leaves stale, as the pages mark them
+/// (`Frames::apply`): of what its writer states, the hash of a child that
+/// the node does not have is none, and a stale value hash has the
+/// key-value hash stale with it, which is made of it.
+fn marked(put: &NodePut<'_>) -> Stale {
+    let links = [(Side::Left, &put.left), (Side::Right, &put.right)];
+    let missing = links.iter().filter(|(_, link)| link.is_none());
+    let stale = missing.fold(put.stale, |stale, (side, _)| {
+        stale.without(HashField::Child(*side))
+    });
+    match stale.has(HashField::Value) {
+        true => stale.with(HashField::KeyValue),
+        false => stale,
     }
 }
 
@@ -1261,7 +1270,7 @@ impl WriteSet {
         self.entries.push(entry);
         if self.unmade > 0 && Self::passes(unit, &kind) {
             // The write of the same record before this one is passed.
-            if let Some(prior) = self.prior(id) {
+            if let Some(prior) = self.before(id) {
                 self.set_unmade(prior, false);
             }
         }
@@ -1276,6 +1285,22 @@ impl WriteSet {
     /// the nodes are. A write of another column passes no put of a node.
     fn passes(unit: Unit, kind: &Kind) -> bool {
         unit.column == Column::Data && !kind.is_range()
+    }
+
+    /// The write of the same record before the entry `id`, which is the
+    /// newest of the set: what [`Self::prior`] answers. The moves of the
+    /// record's subtree are gone through only where one stands between
+    /// the two: for the first write of a record under a prefix since a
+    /// move named the prefix. That costs what a read of the record costs
+    /// then ([`Self::own`]).
+    fn before(&self, id: EntryId) -> Option<EntryId> {
+        let entry = self.entry(id);
+        let moved = self.covered.get(&entry.unit.subtree);
+        match (moved.and_then(|moves| moves.last()), entry.prev) {
+            (None, prev) => prev,
+            (Some((moved, _)), Some(prev)) if prev > *moved => Some(prev),
+            (Some(_), _) => self.prior(id),
+        }
     }
 
     /// Lists the entry `id` among the puts of its unit that left a hash
@@ -1304,7 +1329,7 @@ impl WriteSet {
             return;
         }
         self.set_unmade(id, false);
-        let passed = self.prior(id).filter(
+        let passed = self.before(id).filter(
             |prior| matches!(self.entry(*prior).kind, Kind::Node(node) if node.leaves_stale()),
         );
         if let Some(passed) = passed {
@@ -1626,7 +1651,7 @@ impl WriteSet {
                     right: self.link(node.right),
                     hosted,
                     value,
-                    stale: node.stale,
+                    stale: marked(node),
                 };
                 self.push(unit, node.key, Kind::Node(entry), first_write);
             }
@@ -2204,10 +2229,20 @@ impl WriteSet {
         at: &Subtree,
         before: Option<EntryId>,
     ) -> Option<(EntryId, Option<Subtree>)> {
-        let older =
-            |(id, _): &&(EntryId, Option<Subtree>)| before.is_none_or(|before| *id < before);
-        let covering = self.covered.get(at);
-        let moved = covering.and_then(|covering| covering.iter().rev().find(older).copied());
+        // The moves that cover a prefix are in the order of their ids.
+        let covering = self
+            .covered
+            .get(at)
+            .map_or(&[][..], |covering| &covering[..]);
+        let older = match before {
+            Some(before) => covering.partition_point(|(id, _)| {
+                #[cfg(test)]
+                counted::moved();
+                *id < before
+            }),
+            None => covering.len(),
+        };
+        let moved = older.checked_sub(1).map(|newest| covering[newest]);
         #[cfg(any(test, feature = "held_reads"))]
         assert_eq!(moved, self.moved_under_by_every_name(at, before), "{at:?}");
         moved
@@ -3270,8 +3305,8 @@ impl ConcatBytes for [Subtree] {
 
 /// What the write set did on this thread for the list of the puts that
 /// left a hash stale, counted for the tests: how often the prefixes of a
-/// subtree were asked for through its moves, and how many range deletes
-/// a put was compared with.
+/// subtree were asked for through its moves, how many range deletes a
+/// put was compared with, and how many moves an entry was compared with.
 #[cfg(test)]
 mod counted {
     use std::cell::Cell;
@@ -3279,6 +3314,17 @@ mod counted {
     thread_local! {
         static STRETCHES: Cell<u64> = const { Cell::new(0) };
         static RANGES: Cell<u64> = const { Cell::new(0) };
+        static MOVES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// A move was compared with an entry, to find the newest before it.
+    pub(super) fn moved() {
+        MOVES.with(|count| count.set(count.get() + 1));
+    }
+
+    /// How many moves were compared since the count was last taken.
+    pub(super) fn take_moved() -> u64 {
+        MOVES.with(|count| count.replace(0))
     }
 
     pub(super) fn stretches() {
@@ -4220,6 +4266,18 @@ mod tests {
         node(&mut set, 1, b"c", child, true);
         assert_eq!(listed(&set, 1), keys(&[b"a", b"c"]));
         assert_eq!(listed(&set, 2), keys(&[]));
+        // An entry has the hashes as the pages mark them, which is what a
+        // node that is shown from its entry shows: the key-value hash
+        // with the value hash, and no hash of a child that is not there.
+        let kept = |set: &WriteSet, key: &[u8]| {
+            let id = set.newest(Unit::data(subtree(1)), key).expect("an entry");
+            match set.entry(id).kind {
+                Kind::Node(node) => node.stale,
+                other => panic!("a put of a node, and not {other:?}"),
+            }
+        };
+        assert_eq!(kept(&set, b"a"), value.with(HashField::KeyValue));
+        assert_eq!((kept(&set, b"b"), kept(&set, b"c")), (Stale::NONE, child));
 
         // A later put of the node passes it, as that of a call does, and
         // so does a delete. Each is taken out again, and the put that it
@@ -4437,10 +4495,23 @@ mod tests {
         };
         record(&mut set, put);
         assert_eq!(counted::take(), (0, 0), "a write of another column");
-        // A put of a node is a write that can pass one: its subtree is
-        // asked for once.
+        // A put of a node is a write that can pass one. The first under
+        // the prefix since a move named it asks where the subtree was
+        // before, once: each of the forty moves is a step, and the newest
+        // move before a step is searched for among the moves of its
+        // prefix, not gone through.
+        counted::take_moved();
         node(&mut set, 1, b"k", Stale::NONE);
         assert_eq!(counted::take(), (1, 0), "a put of a node");
+        let compared = counted::take_moved();
+        assert!(
+            (41..=41 * 7).contains(&compared),
+            "{compared} moves compared, of forty under each of two prefixes"
+        );
+        // The next put of the node has the first before it, under the
+        // same prefix since the newest move: no move is asked.
+        node(&mut set, 1, b"k", Stale::NONE);
+        assert_eq!((counted::take(), counted::take_moved()), ((0, 0), 0));
 
         // Range deletes, then as many puts with keys outside them: no put
         // is compared with a range delete that is older than it.

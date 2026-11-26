@@ -42,9 +42,9 @@ struct Plan {
 
 /// The refusal of a host with a stale value hash that is behind the Merks
 /// it hosts: its element is marked pending as the caller is shown the
-/// marks (`transactions.md` SC9), or its cell points at a cell that the
+/// marks (`transactions.md` SC9), its cell points at a cell that the
 /// subtree directory does not have as the root of a Merk entered under
-/// the host there.
+/// the host there, or another open scope holds the Merk that is.
 fn behind(host: CellAddress) -> TxnError {
     TxnError::Hash(HashError::HostBehind { host })
 }
@@ -80,6 +80,10 @@ struct Claimed {
     subtree: Subtree,
 }
 
+/// For each element whose pending mark a scope changed, by its subtree
+/// and its key, whether the mark is set.
+type Marks = HashMap<Subtree, HashMap<Box<[u8]>, bool>>;
+
 /// The walk that reads what an evaluation comes to. It goes where the
 /// evaluation goes (`lignin_tree::hash`): down from a cell through stale
 /// hashes only, to the child on a side whose hash is stale, and from a
@@ -95,9 +99,13 @@ struct Claimed {
 /// It ends with the refusal of the first host that is behind, where it
 /// finds that: a host that is marked when it comes to it, and a pointer
 /// when its turn comes among the Merks that are claimed, so that the
-/// caller holds the same claims whichever of the two refuses it.
+/// caller holds the same claims whatever under the host refuses it.
 struct Walk {
     plan: Plan,
+    /// For each pending mark that the caller's scope changed, whether it
+    /// is set: a copy of the scope's changes, made when the walk comes to
+    /// its first host, for the length of the call.
+    marks: Option<Marks>,
     /// Where each Merk of the plan stands in it.
     places: HashMap<Subtree, usize>,
     passed: HashSet<CellAddress>,
@@ -148,6 +156,7 @@ impl Walk {
         ahead.push((0, root));
         Self {
             plan: Plan { merks: vec![asked] },
+            marks: None,
             places: HashMap::from([(subtree, 0)]),
             passed: HashSet::new(),
             ahead,
@@ -181,41 +190,40 @@ impl Walk {
         Ok(())
     }
 
+    /// Whether the element under `key` of `subtree` is marked pending as
+    /// `who` is shown it (`Scopes::is_pending`): by the newest change
+    /// that its scope made of the mark, and otherwise by the marks that
+    /// the merged scopes left. The scope's changes are gone through once
+    /// for the call, when the first host is asked for.
+    fn is_pending(&mut self, scopes: &Scopes, who: Who, subtree: Subtree, key: &[u8]) -> bool {
+        let own = self.marks.get_or_insert_with(|| {
+            let changes = who.id().map_or(&[][..], |id| scopes.marks_of(id));
+            #[cfg(test)]
+            counted::marks(changes.len());
+            let mut own = Marks::new();
+            for (set, (subtree, key)) in changes {
+                own.entry(*subtree).or_default().insert(key.clone(), *set);
+            }
+            own
+        });
+        match own.get(&subtree).and_then(|own| own.get(key)) {
+            Some(set) => *set,
+            None => scopes.is_pending(Who::OUTSIDE, &(subtree, key.into())),
+        }
+    }
+
     /// Reads every cell that is ahead, and what it leads to in the Merks
     /// of the plan. The Merks that the hosts among them point into are
     /// left in `found`: which Merk a pointer is of is read from the
     /// subtree directory, under the host and the place of the pointer.
     ///
-    /// `who` is shown the pending marks by `scopes`
-    /// (`Scopes::is_pending`), and the first host that is marked for it
-    /// refuses the call. The changes of marks that its scope made are
-    /// gone through once here, when the first host is asked for, and not
-    /// once for each host.
+    /// The first host that is marked pending for `who` refuses the call.
     fn go(
         &mut self,
         frames: &mut Awake<'_, '_>,
         scopes: &Scopes,
         who: Who,
     ) -> Result<(), TxnError> {
-        // For each mark that the caller's scope changed, whether it is
-        // set: the newest change of an element is the one that counts.
-        let mut own: Option<HashMap<(Subtree, &[u8]), bool>> = None;
-        let mut is_pending = |subtree: Subtree, key: &[u8]| {
-            let own = own.get_or_insert_with(|| {
-                let changes = who.id().map_or(&[][..], |id| scopes.marks_of(id));
-                #[cfg(test)]
-                counted::marks(changes.len());
-                let changes = changes.iter();
-                changes
-                    .map(|(set, (subtree, key))| ((*subtree, &**key), *set))
-                    .collect()
-            });
-            match own.get(&(subtree, key)) {
-                Some(set) => *set,
-                // The marks that the merged scopes left.
-                None => scopes.is_pending(Who::OUTSIDE, &(subtree, key.into())),
-            }
-        };
         while let Some((merk, at)) = self.ahead.pop() {
             let stale = frames.hashes.stale(at);
             if stale.is_empty() || !self.passed.insert(at) {
@@ -243,7 +251,7 @@ impl Walk {
                 continue;
             };
             let (subtree, id) = (self.plan.merks[merk].subtree, self.plan.merks[merk].id);
-            if is_pending(subtree, &key) {
+            if self.is_pending(scopes, who, subtree, &key) {
                 return Err(behind(at));
             }
             for (position, pointer) in pointers.into_iter().enumerate() {
@@ -532,10 +540,17 @@ impl<'s> WriteTxn<'s> {
                 break;
             }
             for found in std::mem::take(&mut walk.found) {
-                // A pointer with no Merk under its host refuses the call
-                // where a Merk that another scope holds would.
+                // A pointer with no Merk under its host, and one into a
+                // Merk that another open scope holds, refuse the call
+                // alike: which of the two the caller meets depends on
+                // whether that scope's writes are laid out, and so does
+                // the Merk it would be told of.
                 let subtree = found.subtree.ok_or_else(|| behind(found.host))?;
-                self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+                let read = self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree));
+                match read {
+                    Err(TxnError::ScopeOverlap { .. }) => return Err(behind(found.host)),
+                    read => read?,
+                }
                 claimed.push(Claimed {
                     host: found.host,
                     pointer: found.pointer,

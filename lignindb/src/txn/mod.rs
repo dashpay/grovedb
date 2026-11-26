@@ -423,7 +423,12 @@
 //!   call came to. In a Merk below, which the call comes to through a
 //!   host, the hashes that the root hash of that Merk is made from are
 //!   made, and one that no stale hash leads to is left: for the call
-//!   that asks for that Merk, or for the commit.
+//!   that asks for that Merk, or for the commit. And a Merk that was
+//!   cleared or dropped keeps its cells in their pages until they are
+//!   reclaimed, with the marks of their stale hashes
+//!   (`lignin_tree::hash`): they are cells of no Merk, the call does not
+//!   come to them, and the commit makes their hashes with the others,
+//!   as it does with no call before it.
 //! - **The call returns the Merk's root hash**: what the rules make of
 //!   the cell of its root node, which no cell stores, or nothing for a
 //!   Merk with no node. A Merk that has no stale hash is read and not
@@ -472,10 +477,13 @@
 //! | the subtree is cleared or dropped | go with the nodes: the entry of the clear or the drop covers them. A subtree that is entered again under the prefix is another Merk |
 //! | the transaction is rolled back, or is ended by its commit | go with the write set |
 //!
-//! **The puts that left a hash stale.** The write set lists, in each
-//! unit, the puts of nodes that left a hash stale as the pages mark it
-//! (the hash of a child that the node does not have is none) and that
-//! are the newest write of their record. The list is derived from the
+//! **The puts that left a hash stale.** An entry of a node keeps the
+//! hashes that its put left stale as the pages mark them: the hash of a
+//! child that the node does not have is none, and the key-value hash is
+//! stale with the value hash. So a node that is shown from its entry
+//! ([`NodeView::is_record`]) shows the stale hashes that its cell has.
+//! The write set lists, in each unit, the puts of nodes that left a hash
+//! stale and that are the newest write of their record. The list is derived from the
 //! entries, as the index by key is, and the transaction keeps nothing
 //! else for the call. A transaction whose writers make every hash, as on
 //! existing GroveVersions, lists nothing: an entry that it adds or takes
@@ -484,7 +492,7 @@
 //! | When | The list |
 //! | --- | --- |
 //! | a put of a node that leaves a hash stale is added | has it |
-//! | a later write of the same record is added: a put, as that of a call, or a delete | has the earlier put no more. Which write is the earlier one of a record is asked as a read of that moment asks it, through the moves (`WriteSet::prior`), and only for a write of a data column while a put is listed: a write of another column passes no node |
+//! | a later write of the same record is added: a put, as that of a call, or a delete | has the earlier put no more. Which write is the earlier one of a record is asked only for a write of a data column while a put is listed: a write of another column passes no node. It is the write before it under the same prefix, where no move has named the prefix since; otherwise it is asked as a read of that moment asks it, through the moves (`WriteSet::prior`) |
 //! | the later write is taken out: a rollback to a mark, a failed operation | has the earlier put again |
 //! | the put itself is taken out | has it no more |
 //! | a scope is taken out | is what the operations that stay make it: they are added again |
@@ -497,7 +505,10 @@
 //! One whose node is in no tree has none, and a call passes it. A call
 //! is given the puts that no newer range delete covers: a range delete
 //! is searched for among those since the newest drop or clear, and a put
-//! is compared with the ones that are newer than it. In a test build and
+//! is compared with the ones that are newer than it. Where the subtree
+//! was moved, the prefixes it was read under are asked for as a read of
+//! one of its records asks for them: one step for each move in its
+//! history, and for each step a search among the moves of a prefix. In a test build and
 //! under `held_reads` the list is held to a count from every entry after
 //! each rollback to a mark and each scope that is taken out, and what a
 //! call is given, also where it is given nothing, to the same from every
@@ -508,22 +519,25 @@
 //! and at the end a write of every Merk it makes a hash in. A scope
 //! claims each read when the call comes to the Merk, before the entry or
 //! a cell of it is read, and keeps it as it keeps any read. The writes
-//! are claimed together or not at all, before a hash is made and after
-//! everything else that can refuse the call, as those of a batch with a
-//! change set of each such Merk. So a call that a host refuses holds
-//! reads and no write.
+//! are claimed together or not at all, as those of a batch with a
+//! change set of each such Merk: after every host and every read that
+//! can refuse the call, and before a hash is made. So a call that a host
+//! refuses holds reads and no write. A rule that refuses a hash, and a
+//! page or a value that the evaluation does not read, come after them:
+//! the scope then holds the writes it claimed, as a batch that fails
+//! holds its claims.
 //!
 //! **Which Merk a host points into** is not read from another scope's
 //! writes (SC4). The host's cell is of the Merk the caller holds, and
 //! names the cell of a root. The Merk is the one that the subtree
 //! directory has entered under the host, at the place of the pointer: a
 //! record under the host's key, which the scope that enters, moves or
-//! drops the Merk writes while it holds the Merk. The call is refused
-//! that Merk where another open scope holds it, and otherwise its entry
-//! is as the caller sees it. Where the entry has the root at the cell
-//! that the host names, the call goes on there. A place where the host's
-//! cell names no root is hashed as a Merk with no node, as the commit
-//! hashes it: nothing is read for it, whatever is entered there.
+//! drops the Merk writes while it holds the Merk. The call claims a read
+//! of that Merk, and then its entry is as the caller sees it. Where the
+//! entry has the root at the cell that the host names, the call goes on
+//! there. A place where the host's cell names no root is hashed as a
+//! Merk with no node, as the commit hashes it: nothing is read for it,
+//! whatever is entered there.
 //!
 //! A Merk that a cell hosts is entered under that cell's node: the
 //! store is not sound otherwise (`crate::verify`). So a pointer with no
@@ -532,18 +546,28 @@
 //! its root in a cell depends on what was laid out before, and the call
 //! does not ask.
 //!
-//! So what a call answers does not depend on whether the writes of the
-//! scopes beside it are laid out or kept in the write set, but for which
-//! of two errors refuses it in one case: another open scope has entered,
-//! dropped or moved a Merk at the place of a pointer, in an operation
-//! that does not write the host's Merk. The record under the host is as
-//! that scope left it where its writes are laid out, and as it was
-//! before where they are kept. The call is refused either way and makes
-//! no hash: with [`TxnError::ScopeOverlap`] where it finds a Merk there,
-//! which that scope holds, and as for a host that is behind where it
-//! finds none. Either refusal comes when the turn of that pointer comes
-//! among the Merks the call claims, so the scope holds the same claims
-//! after the one as after the other.
+//! **What is under a host and is another open scope's** refuses the call
+//! as a host that is behind does
+//! ([`HashError::HostBehind`](lignin_tree::hash::HashError::HostBehind)),
+//! and not as an overlap that names a Merk. A scope that writes a Merk
+//! under a host has not named its root in the host yet, and marks the
+//! element for that (SC9): the caller is not shown the mark, and is
+//! refused the Merk. And where that scope dropped the Merk, moved it
+//! from under the host, or entered another in its place, the record
+//! under the host is as that scope left it where its writes are laid
+//! out, and as it was before where they are kept: the caller would find
+//! the old Merk, the new one, or none, by the layout. Each of those is
+//! the one refusal, which names the host, a node of the caller's own
+//! Merk. It comes when the turn of that pointer comes among the Merks
+//! the call claims, so the scope holds the same claims after it in
+//! either layout. So what a call answers, and what its scope holds
+//! afterwards, does not depend on whether the writes of the scopes
+//! beside it are laid out or kept in the write set.
+//!
+//! A write claim at the end, of a Merk the call makes a hash in, is
+//! refused where another open scope has read that Merk
+//! ([`TxnError::ScopeOverlap`]): the Merk it names is one the caller
+//! holds a read of, and is the same in either layout.
 //!
 //! A scope that keeps its writes in the write set has them laid out
 //! first ([`Scope::lay_out`]), since the hashes are made in cells.
@@ -567,8 +591,9 @@
 //!   ([`HashError::HostBehind`](lignin_tree::hash::HashError::HostBehind)
 //!   in [`TxnError::Hash`]): its element is marked pending as the caller
 //!   is shown the marks, by its own scope or by one that merged (SC9),
-//!   or its cell points at a cell that the subtree directory does not
-//!   have as the root of a Merk entered under the host there. A clear
+//!   its cell points at a cell that the subtree directory does not have
+//!   as the root of a Merk entered under the host there, or another open
+//!   scope holds the Merk that is entered there. A clear
 //!   leaves such a pointer until the host is written without it, and the
 //!   commit refuses that state as well ([`BatchError::ClearedAlone`]).
 //!   It is found before a hash is made and before a write is claimed,
@@ -619,8 +644,7 @@
 //! that left a hash stale, and finds the cell of each by its key, where
 //! the transaction last saw it or by a search. It goes once through the
 //! changes of pending marks that its scope made, where it comes to a
-//! host, and once more for each time it stops at the Merks below and
-//! then comes to another host. It reads each cell with a
+//! node with a stale value hash. It reads each cell with a
 //! stale hash that it comes to, once to plan and once more to keep it,
 //! and then the cells of its children for their keys; the tree layer's
 //! evaluation reads and writes each once. For each pointer of a host

@@ -4278,10 +4278,14 @@ macro_rules! reads {
         /// its entry does, then a read of each Merk it comes to through
         /// the pointer of a host, before it reads anything of that Merk,
         /// and at the end, together or not at all, a write of each Merk
-        /// it makes a hash in (SC3). The Merk under a host is the one
-        /// that the subtree directory has entered there, so the answer
-        /// is the same whether the writes of the scopes beside the
-        /// caller are laid out or not. A scope that keeps its writes in
+        /// it makes a hash in (SC3). The writes are claimed after every
+        /// host and every read that can refuse the call; a rule that
+        /// refuses a hash comes after them, and the scope then holds
+        /// them. The Merk under a host is the one that the subtree
+        /// directory has entered there, and one that another open scope
+        /// holds refuses the call as a host that is behind does, so the
+        /// answer is the same whether the writes of the scopes beside
+        /// the caller are laid out or not. A scope that keeps its writes in
         /// the write set has them laid out first ([`Scope::lay_out`]),
         /// also where the call is then refused. Through the transaction,
         /// a stale hash is made only while no scope is open
@@ -4302,13 +4306,13 @@ macro_rules! reads {
         ///   the transaction ([`BatchError::EvaluatedByKey`]), and with
         ///   the refusal of the layout where its writes cannot be laid
         ///   out;
-        /// - for a Merk that another open scope holds
-        ///   ([`TxnError::ScopeOverlap`]);
+        /// - for `subtree`, or a Merk it would make a hash in, that
+        ///   another open scope holds ([`TxnError::ScopeOverlap`]);
         /// - where a host with a stale value hash is behind the Merks
         ///   it hosts: it is marked pending as the caller is shown the
-        ///   marks ([`Scope::is_pending`]), or points elsewhere than at
+        ///   marks ([`Scope::is_pending`]), it points elsewhere than at
         ///   the root of a Merk that is entered under it there, as after
-        ///   a clear or a drop
+        ///   a clear or a drop, or another open scope holds that Merk
         ///   ([`TxnError::Hash`] of
         ///   [`HostBehind`](lignin_tree::hash::HashError::HostBehind)).
         ///
