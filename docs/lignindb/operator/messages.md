@@ -100,7 +100,8 @@ build's default engine ([engine.md](../engine.md#the-default-engine)),
 which is RocksDB in a build of both engines unless the build sets it
 otherwise: pointed at a LigninDB database from such a build, it opens
 RocksDB there, which writes RocksDB's files into the directory and
-answers with an empty grove, and LigninDB then refuses the directory
+answers with RocksDB's own grove there, empty at first, and LigninDB
+then refuses the directory
 (`… was written by another storage engine (…: …)`). An application that
 opens LigninDB itself (step 10 of the migration) checks the grove with
 `verify_grovedb` on the handle it opened, and takes the grove as checked

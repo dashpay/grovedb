@@ -390,9 +390,10 @@ database or checkpoint whose deletion would remove it, or inside one
 whose name ends in `.creating`. And it refuses a `SOURCE` that holds an
 entry of a LigninDB database (`MANIFEST`, `MANIFEST.deleting`, `wal`,
 `seg`, `val` or `table`): RocksDB opened on a LigninDB directory, as an
-open with RocksDB as the build's default engine does, makes an empty
-RocksDB database beside the LigninDB one, which the survey reads and
-the migration carries as an empty grove. Find out which of the two
+open with RocksDB as the build's default engine does, makes a RocksDB
+database beside the LigninDB one, empty at first and then holding what
+is written through it, which the survey reads and the migration
+carries in place of the LigninDB one's state. Find out which of the two
 holds the node's state; where it is the LigninDB one, the messages
 chapter says what to do (`… was written by another storage engine (…: …)`).
 Use the paths it prints from here on. A second mount of one directory
@@ -435,7 +436,10 @@ Read its report before you go on:
   other aux records have the same root hash (an empty grove's among
   them). Where the node's state is in those records too, the
   application's own check of its state, on the target after step 7,
-  decides whether the source was the node's.
+  decides whether the target holds it. Where it does not, either the
+  source was another database, or the records were under prefixes that
+  nothing leads to, which `--unreachable leave`, the default, leaves
+  behind (the survey's `prefixes that nothing leads to: …`, below).
 - The counts after it say what is in the source. A line that begins
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
@@ -808,10 +812,13 @@ no entry that only a LigninDB database makes**, as step 4 does for
 `SOURCE`: RocksDB opened on a LigninDB directory reads its own database
 there, and not the LigninDB one. Set `BACK` to that directory where it
 is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
-directory); the block takes `SOURCE` where `BACK` is not set.
+directory); the block takes `SOURCE` where `BACK` is not set. It also
+refuses a `BACK` whose name ends in `.creating` (in any case), which the
+open that chooses the engine (`EitherEngine`) refuses for RocksDB.
 
 ```sh
 BACK=${BACK:-$SOURCE}
+case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, which GroveDB's open with the engine chosen refuses for RocksDB: move the database to a name of its own before the node goes back to it"; false ;; esac
 for entry in MANIFEST MANIFEST.deleting wal seg val table; do
   if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
 done

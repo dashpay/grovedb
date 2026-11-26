@@ -1994,10 +1994,11 @@ fn report(last_write: u32, root: &str, aux_bytes: u32) -> String {
 
 /// Runs the block of `migration.md` that holds `mark` under `set -euo
 /// pipefail`, in a `WORK` whose reports are `reports`, with a `lignin` that
-/// prints `survey` and fails unless it takes the source. Each of `dirs`
-/// names a variable that is set to a directory of its own, made with the
-/// entry it names where it names one (`SOURCE` is `/src` where it is not
-/// among them). Returns whether the block succeeded, and the last line it
+/// prints `survey` and fails unless it takes the source, and fails for a
+/// directory that is not `BACK` (or `SOURCE` where `BACK` is not set). Each
+/// of `dirs` names a variable that is set to a directory of its own, made
+/// with the entry it names where it names one (`SOURCE` is `/src` where it
+/// is not among them). Returns whether the block succeeded, and the last line it
 /// printed.
 fn run_block(
     mark: &str,
@@ -2018,7 +2019,7 @@ fn run_block(
     }
     let script = format!(
         "set -euo pipefail\n\
-         lignin() {{ printf '%s\\n' \"$SURVEY\"; case \"$SURVEY\" in *'the source can be migrated') return 0 ;; esac; return 1; }}\n{}\n",
+         lignin() {{ if [ \"$2\" != \"${{BACK:-$SOURCE}}\" ]; then echo \"surveyed $2\"; return 1; fi; printf '%s\\n' \"$SURVEY\"; case \"$SURVEY\" in *'the source can be migrated') return 0 ;; esac; return 1; }}\n{}\n",
         blocks[0]
     );
     let mut bash = std::process::Command::new("bash");
@@ -2030,7 +2031,11 @@ fn run_block(
         .env("SURVEY", survey.trim_end())
         .env_remove("BACK");
     for (variable, entry) in dirs {
-        let dir = work.path().join(variable.to_lowercase());
+        // `NAME=dir` names the directory; otherwise it is the variable's
+        // name in lower case.
+        let lower = variable.to_lowercase();
+        let (variable, name) = variable.split_once('=').unwrap_or((variable, &lower));
+        let dir = work.path().join(name);
         fs::create_dir(&dir).expect("a directory of the block");
         if !entry.is_empty() {
             fs::write(dir.join(entry), "").expect("an entry");
@@ -2163,6 +2168,11 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
     assert!(
         !passed,
         "a survey of BACK that refuses ends the block: {last}"
+    );
+    let (passed, last) = back(&[("SOURCE", ""), ("BACK=old.CREATING", "")]);
+    assert!(
+        !passed && last.contains("ends in .creating"),
+        "the way back to a BACK whose name ends in .creating: {last}"
     );
     let alike = surveyed(2, "aa", 17, refused);
     let (passed, last) = step_11(alike.clone(), alike);
