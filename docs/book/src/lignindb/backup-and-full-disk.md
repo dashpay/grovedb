@@ -145,14 +145,17 @@ closed):
 DB=$(real_dir "$DB")
 BACKUP=$(real_new "$BACKUP")
 apart "$DB" "$BACKUP"
+lignin manifest "$DB"
 claim_dir "$BACKUP"
 cp -a "$DB/." "$BACKUP/"
 sync
 lignin manifest "$BACKUP"
 ```
 
-`cp -a` copies every file of the directory with the `LOCK` file. `cp`
-returns before its bytes are on the device. On Linux `sync` returns once
+The block reads the database's manifest first, so a `DB` that holds no
+LigninDB database (a RocksDB directory given by mistake) is refused
+before anything is copied. `cp -a` copies every file of the directory
+with the `LOCK` file. `cp` returns before its bytes are on the device. On Linux `sync` returns once
 the system has written them, and tells of no write that failed; on
 macOS `sync` can return before, so a copy made there is written once
 its device has been ejected or the system shut down. Either way, a
