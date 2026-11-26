@@ -454,7 +454,7 @@ fn cleaner_copied(stats: &DbStats) -> u64 {
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 48] = [
+pub const DETAIL_IDS: [&str; 49] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
@@ -503,6 +503,7 @@ pub const DETAIL_IDS: [&str; 48] = [
     "block_read_bytes",
     "pool_evictions",
     "pool_overflows",
+    "pool_releases",
 ];
 
 /// Where the bytes of [`Counters`] went, and what the background work did
@@ -566,6 +567,7 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("B", stats.store.block_read_bytes, BLOCKS),
         ("frames", stats.store.pool.evictions, POOL),
         ("frames", stats.store.pool.overflows, POOL),
+        ("frames", stats.store.pool.releases, POOL),
     ];
     DETAIL_IDS
         .into_iter()

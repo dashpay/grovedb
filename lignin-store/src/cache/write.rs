@@ -10,7 +10,7 @@ use super::{
     error::{CacheError, StepRefusal},
     frame::{flag, kind, Exclusive, Links, NO_VERSION},
     guard::{Blank, PageRef, PrivateRef},
-    pool::{current, lookup, privates, published, BufferPool, Held, Miss},
+    pool::{current, lookup, privates, published, BufferPool, Held, Miss, Spent},
     sync::{lock, MutexGuard},
 };
 
@@ -383,17 +383,23 @@ impl BufferPool {
             entry.frame().set_superseded(version.get());
         }
         let mut held = Vec::new();
+        let mut spent = Spent::default();
         for entry in published(&chain, page) {
             let frame = entry.frame();
             let flags = frame.flags();
+            let version = Held {
+                page,
+                born: frame.born(),
+                superseded: frame.superseded(),
+                epoch: None,
+            };
             if flags & flag::UNWRITTEN != 0 {
                 frame.set_flags((flags & !flag::UNWRITTEN) | flag::HELD);
-                held.push(Held {
-                    page,
-                    born: frame.born(),
-                    superseded: frame.superseded(),
-                    epoch: None,
-                });
+                held.push(version);
+            } else if flags == 0 {
+                // What a segment holds of a freed page is spent: nothing
+                // follows it, and nothing is written of the page.
+                spent.push(version);
             }
         }
         chain.advance_stamp();
@@ -403,6 +409,7 @@ impl BufferPool {
             unwritten.remove(entry.born, page);
         }
         unwritten.held.extend(held);
+        unwritten.spend(spent);
         drop(unwritten);
         drop(step);
         Ok(())

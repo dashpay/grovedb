@@ -79,6 +79,10 @@ pub struct PoolStats {
     /// Frames allocated beside the fixed ones, because none of those could
     /// be evicted.
     pub overflows: u64,
+    /// Page versions taken out of the pool because no reader could ask
+    /// for them any more ([`BufferPool::reclaim`]): superseded, with their
+    /// content in a segment. They are not among the evictions.
+    pub releases: u64,
 }
 
 /// What the pool holds at one moment, from a walk over all of it
@@ -129,13 +133,57 @@ pub(super) struct Held {
 
 /// The page versions no segment holds: by the commit that bore them, those
 /// write-back owes, and apart from them those that are held for readers.
+/// And the page versions a segment holds that are spent: superseded, with
+/// the version after them written as well, or their page freed.
 #[derive(Debug, Default)]
 pub(super) struct Unwritten {
     pub(super) versions: BTreeMap<u64, Vec<PageId>>,
     pub(super) held: Vec<Held>,
+    /// Spent page versions, oldest listing first. A frame of one is an
+    /// evictable frame like any other; the list is how
+    /// [`BufferPool::reclaim`] finds it before the clock does.
+    pub(super) spent: Vec<Held>,
+    /// What a reclaim found gone, kept from one reclaim to the next.
+    pub(super) gone: Vec<(PageId, u64)>,
+}
+
+/// The spent page versions one call found of one page: one or two, as a
+/// rule, which take no allocation.
+#[derive(Debug, Default)]
+pub(super) struct Spent {
+    few: [Option<Held>; 2],
+    more: Vec<Held>,
+}
+
+impl Spent {
+    pub(super) fn push(&mut self, version: Held) {
+        match self.few.iter_mut().find(|slot| slot.is_none()) {
+            Some(slot) => *slot = Some(version),
+            None => self.more.push(version),
+        }
+    }
+
+    fn versions(self) -> impl Iterator<Item = Held> {
+        self.few.into_iter().flatten().chain(self.more)
+    }
 }
 
 impl Unwritten {
+    /// The most spent page versions that are listed. With a reader on an
+    /// old version none of them can go, and every reclaim looks through
+    /// the list.
+    pub(super) const SPENT_BOUND: usize = 4096;
+
+    /// Lists `spent`. Past [`Self::SPENT_BOUND`] the older half of the
+    /// list is dropped from it: those frames are left to the clock.
+    pub(super) fn spend(&mut self, spent: Spent) {
+        self.spent.extend(spent.versions());
+        if self.spent.len() > Self::SPENT_BOUND {
+            let over = self.spent.len() - Self::SPENT_BOUND / 2;
+            self.spent.drain(..over);
+        }
+    }
+
     pub(super) fn add(&mut self, born: u64, page: PageId) {
         self.versions.entry(born).or_default().push(page);
     }
@@ -161,6 +209,7 @@ pub(super) struct Turnover {
     attached: Counter,
     evictions: Counter,
     overflows: Counter,
+    pub(super) releases: Counter,
 }
 
 /// The buffer pool. See the [module documentation](super).
@@ -320,6 +369,7 @@ impl BufferPool {
                 attached: Counter::default(),
                 evictions: Counter::default(),
                 overflows: Counter::default(),
+                releases: Counter::default(),
             }),
         })
     }
@@ -405,6 +455,7 @@ impl BufferPool {
             misses,
             evictions: self.turnover.evictions.get() as u64,
             overflows: self.turnover.overflows.get() as u64,
+            releases: self.turnover.releases.get() as u64,
         }
     }
 

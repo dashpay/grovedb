@@ -236,6 +236,160 @@ fn what_was_never_written_back_of_a_freed_page_is_kept_for_its_readers() {
     check(&pool, 0);
 }
 
+/// A page version that a segment holds is spent once the version after
+/// it is in a segment too. It stays for the readers that can ask for it,
+/// then a reclaim takes it out, with no eviction, and a reader that asks
+/// for it all the same reads it from its segment.
+#[test]
+fn a_spent_page_version_leaves_the_pool_once_no_reader_can_ask_for_it() {
+    let pool = pool(4);
+    let mut disk = Disk::default();
+    let pins = TestPins::at(1);
+    let first = create(&pool, 1, 1);
+    disk.write(content(1, 1, 0));
+    pool.mark_written(&first).expect("owed");
+    drop(first);
+    let second = commit(&pool, 1, 1);
+
+    // Until version 2 is in a segment, version 1 is the page that
+    // write-back applies the run of version 2 to. It is not spent,
+    // whoever can ask for it, and a reclaim asks nothing.
+    pins.set_oldest(2);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(pins.asked(), 0);
+    assert!(pool.get_version(page(1), version(1)).is_some());
+
+    // Version 2 is written. A reader at version 1 can still ask.
+    disk.write(content(1, 2, 0));
+    pool.mark_written(&second).expect("owed");
+    drop(second);
+    pins.set_oldest(1);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(
+        Content::read(&pool.get(page(1), version(1)).expect("kept")),
+        content(1, 1, 0)
+    );
+    assert_eq!(pool.stats().releases, 0);
+
+    // That reader goes. An operation that was running then may still ask.
+    pins.set_oldest(2);
+    pins.set_oldest_guard(0);
+    pool.reclaim(&pins);
+    assert!(pool.get(page(1), version(1)).is_ok());
+    assert_eq!(pool.stats().releases, 0);
+    pins.set_oldest_guard(u64::MAX);
+    assert_eq!(pool.reclaim(&pins), 0, "no page version was held");
+    let stats = pool.stats();
+    assert_eq!((stats.releases, stats.evictions), (1, 0));
+    assert!(pool.get(page(1), version(1)).is_err());
+    assert!(pool.get(page(1), version(2)).is_ok());
+    assert_eq!(free_frames(&pool), 3);
+
+    // Nothing is listed any more, and a reclaim asks nothing.
+    let asked = pins.asked();
+    pool.reclaim(&pins);
+    assert_eq!(pins.asked(), asked);
+
+    // A reader that asks for it afterwards reads it from its segment.
+    assert_eq!(
+        Content::read(&fetch(&pool, &disk, 1, 1).expect("in a segment")),
+        content(1, 1, 0)
+    );
+    check(&pool, 0);
+}
+
+/// A reader that holds a spent page version keeps it: a reclaim takes out
+/// no frame that has a pin, as an eviction takes none. The version is
+/// listed no more, and the clock has it from there on.
+#[test]
+fn a_reader_that_holds_a_spent_page_version_keeps_it() {
+    let pool = pool(4);
+    let pins = TestPins::at(1);
+    let first = create(&pool, 1, 1);
+    pool.mark_written(&first).expect("owed");
+    drop(first);
+    let reader = pool.get(page(1), version(1)).expect("in the pool");
+    let second = commit(&pool, 1, 1);
+    pool.mark_written(&second).expect("owed");
+    drop(second);
+
+    pins.set_oldest(2);
+    pool.reclaim(&pins);
+    assert_eq!(pool.stats().releases, 0);
+    assert_eq!(Content::read(&reader), content(1, 1, 0));
+    assert!(pool.get(page(1), version(1)).is_ok());
+    check(&pool, 0);
+    drop(reader);
+    let asked = pins.asked();
+    pool.reclaim(&pins);
+    assert_eq!(pins.asked(), asked, "it is listed no more");
+    assert!(pool.get(page(1), version(1)).is_ok());
+    check(&pool, 0);
+}
+
+/// Every version of a page that a segment holds is spent when a later
+/// one is written, however many commits lie between them: the version
+/// that was held for readers between them goes as a held one does.
+#[test]
+fn every_written_version_before_the_one_that_is_written_is_spent() {
+    let pool = pool(4);
+    let pins = TestPins::at(3);
+    let first = create(&pool, 1, 1);
+    pool.mark_written(&first).expect("owed");
+    drop(first);
+    let second = commit(&pool, 1, 1);
+    let third = commit(&pool, 1, 2);
+    pool.hold_for_readers(&second).expect("superseded and owed");
+    drop(second);
+
+    // Version 1 is still the page under the run that takes it to version
+    // 3: only the held version goes.
+    assert_eq!(pool.reclaim(&pins), 1);
+    assert_eq!(pool.stats().releases, 0);
+    assert!(pool.get_version(page(1), version(1)).is_some());
+
+    pool.mark_written(&third).expect("owed");
+    drop(third);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(pool.stats().releases, 1);
+    assert!(pool.get_version(page(1), version(1)).is_none());
+    assert_eq!(free_frames(&pool), 3);
+    check(&pool, 0);
+}
+
+/// The list of spent page versions is bounded: past the bound its older
+/// half is dropped from it, and those frames are the clock's.
+#[test]
+fn the_list_of_spent_page_versions_is_bounded() {
+    use super::super::pool::{Held, Spent, Unwritten};
+
+    let one = |born: u64| Held {
+        page: page(1),
+        born,
+        superseded: born + 1,
+        epoch: None,
+    };
+    let bound = Unwritten::SPENT_BOUND as u64;
+    let mut unwritten = Unwritten::default();
+    for born in 0..=bound {
+        let mut spent = Spent::default();
+        spent.push(one(born));
+        unwritten.spend(spent);
+    }
+    assert_eq!(unwritten.spent.len() as u64, bound / 2);
+    assert_eq!(unwritten.spent[0].born, bound / 2 + 1);
+    assert_eq!(unwritten.spent.last().map(|last| last.born), Some(bound));
+
+    // More versions of one page than a call finds as a rule keep their
+    // order.
+    let mut unwritten = Unwritten::default();
+    let mut spent = Spent::default();
+    (0..5).for_each(|born| spent.push(one(born)));
+    unwritten.spend(spent);
+    let listed: Vec<u64> = unwritten.spent.iter().map(|spent| spent.born).collect();
+    assert_eq!(listed, [0, 1, 2, 3, 4]);
+}
+
 #[test]
 fn reclaim_asks_nothing_while_nothing_is_held() {
     let pool = pool(2);
@@ -266,6 +420,18 @@ fn a_page_that_is_not_in_the_pool_can_be_freed() {
     assert!(pool.get(page(2), version(4)).is_ok());
     assert!(pool.get(page(2), version(5)).is_err());
     assert_eq!(pool.census().held, 0);
+    check(&pool, 0);
+    // It is spent, and a reclaim takes it out before the clock comes by,
+    // once no reader is on a version before the free.
+    drop(loaded);
+    let pins = TestPins::at(4);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert!(pool.get(page(2), version(4)).is_ok());
+    pins.set_oldest(5);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(pool.stats().releases, 1);
+    assert!(pool.get(page(2), version(4)).is_err());
+    assert_eq!(pool.census(), Census::default());
     check(&pool, 0);
 }
 

@@ -89,6 +89,19 @@
 //! | held | No segment holds it, and none will: it is kept for the readers that can still ask for it (FL6, FL7). | no; [`BufferPool::reclaim`] drops it |
 //! | written | A segment holds its content, and the page table has its link. | yes, once it has no pin |
 //!
+//! **A written page version that is superseded does not wait for the
+//! clock.** Once the version after it is in a segment as well, or its page
+//! is freed, nothing in the pool needs it: write-back checks a run against
+//! the newest version of the page that a segment holds, and a reader of the
+//! latest version reads the current one. It is *spent*, and
+//! [`BufferPool::reclaim`] takes it out as soon as no reader can ask for
+//! it, as it drops a held one. Left to the clock it would keep its frame
+//! until the hand had come by twice, and the clock would take pages that
+//! are read to make room beside it: a commit supersedes a version of every
+//! page it changes. Until the version after it is written it stays, as any
+//! written page version does: it is the page that write-back applies the
+//! next run to before the run is written.
+//!
 //! # Reading
 //!
 //! [`BufferPool::get`] is the read path: one lookup in one part of the
