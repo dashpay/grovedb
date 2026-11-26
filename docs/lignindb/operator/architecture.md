@@ -85,7 +85,7 @@ checksum; `LOCK` and `RESERVE` hold no data. The manifest is replaced whole (a n
 `MANIFEST`), and it names each file with its valid length. A file that
 the manifest calls closed or sealed is the database's up to that length;
 the log file that the database was writing when its session ended is
-read past it, through every item the log holds whole.
+read past it, up to the first item that is not whole.
 `lignin manifest` prints it, and `lignin segments` the segments it names.
 
 ## A write, from the batch to the disk
@@ -211,10 +211,10 @@ section 12).
    of the version it covers.
 4. **The log is replayed** from the first item of the oldest log file
    the manifest keeps, since commits that the checkpoint does not cover
-   can lie before the place it was taken at, through every whole item
-   the log holds: the last whole commit group gives the version the
-   open lands on, and the whole items of the background after it are
-   read too. What the checkpoint covers already is
+   can lie before the place it was taken at, up to the first item that
+   is not whole, behind which nothing is read: the last whole commit
+   group before it gives the version the open lands on, and the whole
+   items of the background up to it are read too. What the checkpoint covers already is
    skipped, and a group that was cut by the crash does not count. The pages that the log changes are rebuilt in
    the buffer pool.
 5. **The session's files**: the files of earlier sessions are named

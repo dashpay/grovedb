@@ -47,7 +47,8 @@ is at least 40,000 elements a second on the reference shape, measured on
 a rented machine with dedicated processors (the least of 20 runs was
 40,357); the plan records that a database of many small Merks loads
 about 5% slower at the default setting. Before its last line, a run that ends with status 0
-prints a line that says what it took, `migrate: done target=… seconds=…`, with
+writes a line that says what it took (where its report can still be
+written), `migrate: done target=… seconds=…`, with
 `elements_per_second=…` for a run that made the whole target, so the rehearsal of step 3 on your own
 machine gives you a rate to plan with.
 The node is stopped from step 4 to step 10: add the survey of step 5,
@@ -461,7 +462,7 @@ it whatever the interval:
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
 | 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there and holds anything (`the target … is there and …`; an empty directory is taken for none), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there: that database is whole, but no report of a run that finished is held to it (step 7), so migrate again into a new `TARGET`, and leave that one where it is until you know what it holds. Where a power cut took the name back, the database is in `TARGET.migrating` again, and the same command goes on with it: where it ends with status 0 and a whole report, go on with step 7 |
-| 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | where the report names a read that the system refused (a page that could not be read, with the system's words), deal with what the system said and run the same command again, which compares and verifies again. Otherwise keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
+| 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | where the report names a read that the system refused (a page that could not be read, with the system's words), deal with what the system said and run the same command again, which compares and verifies again. Otherwise keep the report and report it as a defect of GroveDB; go back to RocksDB as step 11 says, which tells a finding of the grove's data, which the source holds too, from one of the target's own store |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`), or a quota there is used up | make room on that device, or inside that quota, and run the same command again: it goes on from where it stood |
 
 The status is the pipeline's: a `tee` that cannot write the report (a
@@ -694,33 +695,37 @@ empty database where it finds none, and the survey only reads. Where
 `SOURCE` was a checkpoint, survey the node's own directory, which can
 differ from the checkpoint either way. Where the survey refuses for the
 projected memory of a load alone, survey again with a larger
-`--memory-limit`: that refusal says nothing of the database. The survey
-says that the directory is there and holds a GroveDB it reads through;
-it makes no hash again, so it is no check that the database is sound:
-a node that goes back takes it as it was before the migration, damage
-that the survey cannot see among it. Where a migration of it ended with
-status 3 though it reported `differing=0`, the target was the source's
-copy, and the damage the check found is the RocksDB database's too:
-report it, and take it for damaged, whatever the survey says. Then:
+`--memory-limit`: that refusal says nothing of the database.
 
-- `the source can be migrated`: the database is taken as it was before.
-- A refusal whose `NOT CARRIED` lines name only what a migration does
-  not take while RocksDB serves it (a keyed child under a tree of flat
-  records, prefixes that nothing leads to), and that cuts no list short
-  (`and … more`, where a list stops, means reasons that were not
-  printed): the database is taken as it was before.
-- A survey that stops at the migrator's own limit of depth
-  (`the grove is more than … trees deep at …`): it says nothing either
-  way; the database is taken as it was before, where nothing else is
-  known against it.
-- A refusal for the mark of a state-sync restore that did not finish:
-  the directory that holds it is to be discarded, on RocksDB as here,
-  and the node's state got again as the application's documentation
-  says.
-- A refusal that names damage (a tree whose links do not hold, an
-  element or a record that does not decode, records where GroveDB
-  writes none), or a directory that is missing: the node is not started
-  on it; restore it as the application's documentation says.
+The survey shows that the directory is there and holds a GroveDB that
+it reads through. It does not make the hashes of the trees again from
+their records, so it is no check that the database is sound, and it
+stops at limits of its own (a grove deeper than it walks, lists it caps)
+before it has said all it found. So it decides in one case alone, and
+the others are not decided on its word:
+
+- `the source can be migrated` is its last line: the node goes back to
+  the database as it was before the migration.
+- It refuses for the mark of a state-sync restore that did not finish:
+  the directory that holds the mark is to be discarded, on RocksDB as
+  here, and the node's state got again as the application's
+  documentation says.
+- It refuses for damage (a tree whose links do not hold, an element or
+  a record that does not decode, records where GroveDB writes none), or
+  the directory is missing: the node is not started on it; restore it
+  as the application's documentation says.
+- Any other ending, a refusal for what a migration alone does not take
+  or a survey that stops at its depth among them: the database is not
+  shown damaged, nor shown whole; check it by the application's own
+  means before the node goes back to it.
+
+A migration of the directory that ended with status 3 though it reported
+`differing=0` found something in the target. Where the finding is of the
+grove's data (a hash or a rule of the elements, which the target copied
+from the source), the RocksDB database holds it too: report it, and take
+that database for damaged. Where it is of the target's own store (a
+read its device refused, a rule of its pages, its page table or its
+value log), it says nothing of the source.
 
 - **Before the node has committed anything on LigninDB**, going back is
   pointing the node at its RocksDB database again and selecting RocksDB.
