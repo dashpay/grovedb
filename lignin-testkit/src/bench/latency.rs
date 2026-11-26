@@ -934,9 +934,11 @@ fn neighbour(path: &Path, every: Duration, stop: &AtomicBool) -> Result<u64, Ben
     Ok(syncs)
 }
 
-/// Asks `engine` for a flush each time `flush_blocks` more blocks are
-/// committed, until `stop`. Returns how many it asked for.
-fn flushes<E: Subject>(
+/// Asks `engine` for a flush once `flush_blocks` more blocks are committed
+/// than when it last asked, until `stop`: a flush that outlasts that many
+/// blocks is followed by one flush and not by several. Returns how many it
+/// asked for.
+fn flushes<E: Engine + Sync>(
     engine: &E,
     committed: &AtomicU64,
     flush_blocks: u64,
@@ -1738,6 +1740,7 @@ mod tests {
         }
 
         fn flush(&self) -> Result<(), BenchError> {
+            self.note("flushed");
             Ok(())
         }
 
@@ -1784,6 +1787,42 @@ mod tests {
             began + took >= at("commit ended"),
             "the time ends inside the commit"
         );
+    }
+
+    #[test]
+    fn a_flush_is_asked_for_once_that_many_more_blocks_are_committed() {
+        let engine = Noting::open(Path::new("")).unwrap();
+        let (committed, stop) = (AtomicU64::new(0), AtomicBool::new(false));
+        let flushed = || {
+            let noted = engine.noted.lock().unwrap();
+            noted.iter().filter(|(what, _)| *what == "flushed").count() as u64
+        };
+        // What is seen is kept and held to its count after the worker has
+        // been stopped: a worker that asks for no flush ends the test, and
+        // does not keep it waiting.
+        let (asked, seen) = std::thread::scope(|scope| {
+            let worker = scope.spawn(|| flushes(&engine, &committed, 3, &stop));
+            let mut seen = Vec::new();
+            'rounds: for round in 1..=4 {
+                // Two more blocks ask for nothing, and the third for a flush.
+                committed.fetch_add(2, Ordering::AcqRel);
+                std::thread::sleep(Duration::from_millis(5));
+                seen.push(flushed());
+                committed.fetch_add(1, Ordering::AcqRel);
+                let until = Instant::now() + Duration::from_secs(10);
+                while flushed() < round {
+                    if Instant::now() >= until {
+                        break 'rounds;
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                seen.push(flushed());
+            }
+            stop.store(true, Ordering::Release);
+            (worker.join().unwrap().unwrap(), seen)
+        });
+        assert_eq!(seen, [0, 1, 1, 2, 2, 3, 3, 4]);
+        assert_eq!((asked, flushed()), (4, 4));
     }
 
     #[cfg(grovedb_engine_seam)]
@@ -1918,7 +1957,8 @@ mod tests {
             .all(|slow| slow.append_calls.is_none()));
         // A flush is asked for beside the commits, after every three blocks
         // at the most often: how many of the four are asked for follows how
-        // the two threads are run.
+        // the two threads are run. That one is asked for at all is the test
+        // of `flushes` by itself.
         assert!(rocksdb.flushes_asked <= 4, "{}", rocksdb.flushes_asked);
         // A sleep that is late by more is late by less as well.
         assert!(rocksdb.clock.late.is_sorted_by(|more, fewer| more >= fewer));
