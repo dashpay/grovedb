@@ -203,7 +203,10 @@ impl Unwritten {
 /// What changes with every frame that comes and goes.
 pub(super) struct Turnover {
     pub(super) free: Mutex<Vec<OwnedFrame>>,
-    hand: Mutex<usize>,
+    /// Where the clock stands: the steps its hand has taken, each of which
+    /// one eviction took. It says where an eviction looks next and nothing
+    /// else, so it is a number and no lock.
+    hand: Counter,
     pub(super) unwritten: Mutex<Unwritten>,
     overflow: Counter,
     attached: Counter,
@@ -363,7 +366,7 @@ impl BufferPool {
             capacity,
             turnover: Padded(Turnover {
                 free: Mutex::new(free),
-                hand: Mutex::new(0),
+                hand: Counter::default(),
                 unwritten: Mutex::new(Unwritten::default()),
                 overflow: Counter::default(),
                 attached: Counter::default(),
@@ -699,12 +702,25 @@ impl BufferPool {
     /// The clock: goes round the fixed frames, takes the mark off each one
     /// that was used since it last passed, and evicts the first that was
     /// not and that nothing keeps in memory.
+    ///
+    /// The clock has no lock of its own. Each step of its hand is taken by
+    /// one eviction, which looks at that step's frame by itself: at the
+    /// frame's header with no lock, and, for a frame it means to take,
+    /// under the lock of the frame's part of the table, where it looks
+    /// through the lanes as well. So evictions that run at once wait for
+    /// each other only where their frames share a part of the table. The
+    /// table's lock is what makes a frame's leaving one step: a frame that
+    /// another thread took, pinned or filled again since its header was
+    /// read is not found as it was there, and is passed.
+    ///
+    /// An eviction gives up after as many steps of its own as two rounds
+    /// have, and the caller then takes a frame beside the fixed ones. With
+    /// other evictions running, those steps are not every frame twice:
+    /// each of them saw a part of the frames.
     fn evict(&self) -> Option<OwnedFrame> {
-        let mut hand = lock(&self.turnover.hand);
         let count = self.arena.len();
         for _ in 0..2 * count {
-            let index = *hand;
-            *hand = (index + 1) % count;
+            let index = self.turnover.hand.take() % count;
             let frame = self.arena.frame(index);
             let page = frame.page_raw();
             if page == 0 || !evictable(frame) || !frame.is_unpinned() {
@@ -721,9 +737,10 @@ impl BufferPool {
                 self.reset(&mut frame);
                 return Some(frame);
             }
-            // The frame has a pin after all. It keeps its mark, as a
-            // frame with a counted pin does, so the hand passes it once
-            // more before this part of the table is locked for it again.
+            // The frame has a pin after all, or another eviction took it
+            // first. It keeps its mark, as a frame with a counted pin
+            // does, so the hand passes it once more before this part of
+            // the table is locked for it again.
             frame.touch();
         }
         None

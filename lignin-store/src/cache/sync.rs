@@ -56,6 +56,12 @@ impl Counter {
     pub(super) fn get(&self) -> usize {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Adds one, and returns what the number was before. Each caller is
+    /// given another number, and after the largest comes 0.
+    pub(super) fn take(&self) -> usize {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// A value on cache lines of its own, so that a thread that writes it does

@@ -299,10 +299,16 @@
 //! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page
 //! version that has no pin, chosen by a clock that passes over a frame once
-//! if it was used since the hand last came by.
+//! if it was used since the hand last came by. The clock has no lock:
+//! each step of its hand is one eviction's, so the evictions of threads
+//! that load at once wait for each other only at the lock of a part of
+//! the table, where the frames they look at share one.
 //!
 //! When no frame can be evicted, because every one is pinned, private,
-//! unwritten or held, the pool allocates a frame beside the fixed ones. It
+//! unwritten or held, the pool allocates a frame beside the fixed ones.
+//! It does the same for an eviction that found none in as many steps of
+//! its own as two rounds of the clock have, which, beside other evictions,
+//! are not every frame. It
 //! never refuses a page for lack of room. Such a frame is freed the moment
 //! it could be evicted: when its last pin goes, if nothing else keeps it.
 //! So **what the pool has allocated never exceeds the configured size plus
@@ -326,7 +332,7 @@
 //! | --- | --- | --- |
 //! | 4 | the latch of a private copy | one physical step of its owner |
 //! | 5 | the page step lock of a page | one page step: a [`PageStep`], or inside the calls that install, free, copy, load, mark or drop a frame |
-//! | below 5 | the pool's own: one part of its table, the free list, the clock, the unwritten lists, the list of frames that were taken out while they were pinned | a few instructions each, and for the last a look through the lanes. The clock takes the lock of one part of the table while it holds its own, and a frame is put on the last list under the lock of its part of the table. Nothing else is taken under them, and no other module is called |
+//! | below 5 | the pool's own: one part of its table, the free list, the unwritten lists, the list of frames that were taken out while they were pinned | a few instructions each, and for the last a look through the lanes. An eviction takes the lock of one part of the table for the frame it means to take, with no other lock held, and a frame is put on the last list under the lock of its part of the table. Nothing else is taken under them, and no other module is called |
 //!
 //! No call into the pool waits for more than that. A reader that finds its
 //! page in a fixed frame takes no lock at all, to find it or to give it

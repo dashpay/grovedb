@@ -256,6 +256,39 @@ fn a_hit_in_another_lane_is_seen_by_the_clock() {
     });
 }
 
+/// Two evictions at once, with two frames: pages 1 and 2 fill the frames
+/// with no pin, and two readers load a page each. The clock has no lock:
+/// each reader takes steps of the hand by itself, and the two meet at the
+/// table's locks alone. No frame is taken by both, each reader reads its
+/// own page whole, and a reader that finds no frame to take is given one
+/// beside the fixed ones, which goes when it is unpinned.
+#[test]
+fn two_evictions_at_once_take_a_frame_each_at_most() {
+    model(2, || {
+        let pool = Arc::new(pool(2));
+        for raw in 1..=2 {
+            drop(seed(&pool, content(raw, 1, 0), None));
+        }
+        let threads = [3, 4]
+            .into_iter()
+            .map(|page| {
+                let pool = Arc::clone(&pool);
+                thread::spawn(move || {
+                    let found = fetch_one(&pool, page, 5);
+                    assert_eq!(Content::read(&found), content(page, 1, 0));
+                })
+            })
+            .collect();
+        join(threads);
+        let stats = pool.stats();
+        assert_eq!(stats.evictions + stats.overflows, 2, "{stats:?}");
+        assert!(stats.evictions >= 1, "{stats:?}");
+        assert_eq!(pool.overflow_frames(), 0);
+        assert_eq!(pool.census().published, 2);
+        check(&pool, 0);
+    });
+}
+
 /// Two loads of one page version at once: both readers end with the page,
 /// one frame holds it, and the other frame is given back.
 #[test]
