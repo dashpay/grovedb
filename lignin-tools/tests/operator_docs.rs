@@ -11,8 +11,8 @@
 //!   a message quoted elsewhere;
 //! - the defaults of the tuning chapter and of the runbook are the code's;
 //! - the comparisons of steps 7 and 11 of the runbook answer as it says,
-//!   run on reports made for each case, and step 4 refuses a source that
-//!   holds an entry of LigninDB;
+//!   run on reports made for each case, and steps 4 and 11 refuse a
+//!   directory that holds an entry of LigninDB;
 //! - the chapters of the book are the documents.
 //!
 //! `docs/lignindb/operator/runbook.sh` runs the commands themselves.
@@ -1994,9 +1994,17 @@ fn report(last_write: u32, root: &str, aux_bytes: u32) -> String {
 
 /// Runs the block of `migration.md` that holds `mark` under `set -euo
 /// pipefail`, in a `WORK` whose reports are `reports`, with a `lignin` that
-/// prints `survey` and fails unless it takes the source. Returns whether the
-/// block succeeded, and the last line it printed.
-fn run_block(mark: &str, reports: &[(&str, String)], survey: &str) -> (bool, String) {
+/// prints `survey` and fails unless it takes the source. Each of `dirs`
+/// names a variable that is set to a directory of its own, made with the
+/// entry it names where it names one (`SOURCE` is `/src` where it is not
+/// among them). Returns whether the block succeeded, and the last line it
+/// printed.
+fn run_block(
+    mark: &str,
+    reports: &[(&str, String)],
+    survey: &str,
+    dirs: &[(&str, &str)],
+) -> (bool, String) {
     let text = read(&operator_dir().join("migration.md"));
     let blocks: Vec<String> = (parse(&text).fences.into_iter())
         .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line.contains(mark)))
@@ -2013,15 +2021,23 @@ fn run_block(mark: &str, reports: &[(&str, String)], survey: &str) -> (bool, Str
          lignin() {{ printf '%s\\n' \"$SURVEY\"; case \"$SURVEY\" in *'the source can be migrated') return 0 ;; esac; return 1; }}\n{}\n",
         blocks[0]
     );
-    let output = std::process::Command::new("bash")
-        .arg("-c")
+    let mut bash = std::process::Command::new("bash");
+    bash.arg("-c")
         .arg(script)
         .env("WORK", work.path())
         .env("SOURCE", "/src")
         .env("TARGET", "/tgt")
         .env("SURVEY", survey.trim_end())
-        .output()
-        .expect("bash");
+        .env_remove("BACK");
+    for (variable, entry) in dirs {
+        let dir = work.path().join(variable.to_lowercase());
+        fs::create_dir(&dir).expect("a directory of the block");
+        if !entry.is_empty() {
+            fs::write(dir.join(entry), "").expect("an entry");
+        }
+        bash.env(variable, &dir);
+    }
+    let output = bash.output().expect("bash");
     let printed = String::from_utf8_lossy(&output.stdout);
     let last = printed.lines().last().unwrap_or("").to_owned();
     (output.status.success(), last)
@@ -2047,6 +2063,7 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
             "THE COUNTS OF THE SOURCE CHANGED",
             &[("survey.txt", survey), ("migrate.txt", migrate)],
             "",
+            &[],
         )
     };
     let (passed, last) = step_7(surveyed(2, "aa", 17, taken), migrated(2, "aa", 17));
@@ -2066,7 +2083,7 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
     assert!(passed, "step 7 with another largest Merk alone: {last}");
 
     let step_11 = |before: String, again: String| {
-        run_block("survey-again.txt", &[("survey.txt", before)], &again)
+        run_block("survey-again.txt", &[("survey.txt", before)], &again, &[])
     };
     let same = "SOURCE is as step 5 surveyed it";
     let other = "SOURCE IS NOT AS STEP 5 SURVEYED IT";
@@ -2100,6 +2117,35 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
             "step 11, {case}"
         );
     }
+    let lignin_entry = "an entry that only a LigninDB database makes";
+    let (passed, last) = run_block(
+        "survey-again.txt",
+        &[("survey.txt", base.clone())],
+        &base,
+        &[("SOURCE", "MANIFEST")],
+    );
+    assert!(
+        !passed && last.contains(lignin_entry),
+        "step 11, a SOURCE with MANIFEST: {last}"
+    );
+    let back = |dirs: &[(&str, &str)]| run_block("BACK=${BACK:-$SOURCE}", &[], "", dirs);
+    let (passed, last) = back(&[("SOURCE", "")]);
+    assert!(passed, "the way back to a RocksDB SOURCE: {last}");
+    let (passed, last) = back(&[("SOURCE", "MANIFEST")]);
+    assert!(
+        !passed && last.contains(lignin_entry),
+        "the way back to a SOURCE with MANIFEST: {last}"
+    );
+    let (passed, last) = back(&[("SOURCE", ""), ("BACK", "wal")]);
+    assert!(
+        !passed && last.contains(lignin_entry),
+        "the way back to a BACK with wal: {last}"
+    );
+    let (passed, last) = back(&[("SOURCE", "MANIFEST"), ("BACK", "")]);
+    assert!(
+        passed,
+        "the way back to a BACK of RocksDB beside a checkpoint SOURCE: {last}"
+    );
     let alike = surveyed(2, "aa", 17, refused);
     let (passed, last) = step_11(alike.clone(), alike);
     assert_eq!(

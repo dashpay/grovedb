@@ -347,8 +347,10 @@ has to be there: make it first.
   checkpoint of it can be the source as well: the migration then holds
   the state of that checkpoint, and a node started on it goes on from
   there. A checkpoint that RocksDB made of a directory that held a
-  LigninDB database holds RocksDB's files alone, of an empty grove: step
-  5 shows it.
+  LigninDB database holds RocksDB's database alone, empty or with what
+  was written through RocksDB there, and not the LigninDB one's state:
+  step 5's root hash tells them apart where the application knows its
+  own.
 - `TARGET`: where the LigninDB database is to be.
 - `BACKUP`: where the backup of step 8 is to be, best on another device.
 - `RESTORE`: where step 9 restores that backup to check it.
@@ -420,12 +422,14 @@ Read its report before you go on:
   that nothing keeps a writer away.
 - `root hash:` is the root hash of the grove, as GroveDB gives it from
   the source. The migration compares the target's with it (step 7).
-  Check that the grove is the node's: where the application knows its
-  root hash at the stop, it is that one, and a grove with no Merk node
-  (`Merk nodes: …` at 0) is an empty one, which the directory of a node that
-  kept its state there is not. A RocksDB database that RocksDB made
-  beside a LigninDB one, or a checkpoint that RocksDB made of such a
-  directory, reads as such an empty grove.
+  Check that the grove is the node's: where the application knows the
+  root hash of its state at the stop, or at the checkpoint where
+  `SOURCE` is one, it is that one. The counts alone do not tell it: a
+  RocksDB database that RocksDB made beside a LigninDB one, by an open
+  of that directory with RocksDB, holds what was written through it
+  there, which can be nothing (an empty grove) or a grove of its own,
+  and a checkpoint of that directory holds it alone; and a node's state
+  can be in a grove with no Merk node, in records of the aux keyspace.
 - The counts after it say what is in the source. A line that begins
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
@@ -793,10 +797,24 @@ checkpoint. In the second case the node's own RocksDB directory can hold
 commits after the checkpoint, and it is that directory, and not the
 checkpoint, that the node goes back to.
 
-**Before the node goes back to a RocksDB directory, survey it** as step
-5 does (`lignin migrate DIR --survey`), into a report of its own (step
-5's block would write over the survey of step 5, which the block below
-compares with): RocksDB's open makes a new,
+**Before the node goes back to a RocksDB directory, check that it holds
+no entry that only a LigninDB database makes**, as step 4 does for
+`SOURCE`: RocksDB opened on a LigninDB directory reads its own database
+there, and not the LigninDB one. Set `BACK` to that directory where it
+is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
+directory); the block takes `SOURCE` where `BACK` is not set.
+
+```sh
+BACK=${BACK:-$SOURCE}
+for entry in MANIFEST MANIFEST.deleting wal seg val table; do
+  if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
+done
+echo "$BACK holds no entry of a LigninDB database"
+```
+
+**Then survey it** as step 5 does (`lignin migrate DIR --survey`), into
+a report of its own (step 5's block would write over the survey of step
+5, which the block below compares with): RocksDB's open makes a new,
 empty database where it finds none, and the survey only reads. Where
 `SOURCE` was a checkpoint, survey the node's own directory, which can
 differ from the checkpoint either way. Where the survey refuses for the

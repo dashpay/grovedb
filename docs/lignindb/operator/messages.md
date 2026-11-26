@@ -560,10 +560,15 @@ runbook's step 11).
   that is not there, a reference that does not resolve): they are the
   application's, and the same on both engines but where records that
   RocksDB keeps under a tree that is gone answer otherwise there: those
-  that a plain delete of a batch left behind, or a clear that was told
-  to look for no tree (step 5 of [the runbook](migration.md#5-survey-the-source)
-  and the engine's design). A batch below an item kept so, for one, is
-  refused with `CorruptedPath` on RocksDB and `InvalidPath` here.
+  that a plain delete of a batch left behind, a clear that was told to
+  look for no tree, or an element written over a tree that held others
+  (step 5 of [the runbook](migration.md#5-survey-the-source), and the
+  engine's design, [An element written over a tree](../engine.md#an-element-written-over-a-tree)
+  and [A subtree leaves with its element](../engine.md#a-subtree-leaves-with-its-element)).
+  A batch below an item kept so, for one, is refused with
+  `CorruptedPath` on RocksDB and `InvalidPath` here, and a read through
+  a tree under a tree written over finds the old element on RocksDB and
+  answers `PathParentLayerNotFound` here.
 - The refusals of a write transaction, a batch and a write scope
   (`lignindb::txn`, `lignindb::batch`, `lignindb::scope`), which answer
   the application's use of a transaction; GroveDB passes them on as its
