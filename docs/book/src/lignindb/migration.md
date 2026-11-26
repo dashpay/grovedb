@@ -901,15 +901,21 @@ no entry that only a LigninDB database makes**, as step 4 does for
 there, and not the LigninDB one. Set `BACK` to that directory where it
 is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
 directory); the block takes `SOURCE` where `BACK` is not set. It also
-refuses a `BACK` whose name ends in `.creating` (in any case), which the
-open that chooses the engine (`EitherEngine`) refuses for RocksDB; it
-takes the name after it has written the path again with every link
-followed, so a path that ends in `/.` is judged by the directory's
-name.
+refuses a `BACK` whose name ends in `.creating` (in any case). LigninDB
+takes a directory of such a name, beside the path of a checkpoint, for
+what a creation of that checkpoint left: a creation there empties it and
+a deletion removes it
+([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)).
+The open that chooses the engine (`EitherEngine`) does open a RocksDB
+database that is under such a name, and makes none there; the block is
+stricter, so that the node's database is not kept under a name that
+LigninDB removes. It takes the name after it has written the path again
+with every link followed, so a path that ends in `/.` is judged by the
+directory's name.
 
 ```sh
 BACK=$(real_dir "${BACK:-$SOURCE}")
-case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, which GroveDB's open with the engine chosen refuses for RocksDB: move the database to a name of its own before the node goes back to it"; false ;; esac
+case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, a name under which LigninDB builds a checkpoint and removes what it finds: move the database to a name of its own before the node goes back to it"; false ;; esac
 for entry in MANIFEST MANIFEST.deleting wal seg val table; do
   if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
 done
