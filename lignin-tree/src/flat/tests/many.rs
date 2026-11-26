@@ -28,7 +28,8 @@ fn leaves(pages: &Mem) -> usize {
 /// pages were handed: every image of a leaf, counted by the keyspace's own
 /// count as well. Where no key of the changes is kept in a bucket:
 /// **at most one image for each leaf that the write changed, and one more
-/// for each further piece of a leaf that was cut** ([`pieces`]), and **no
+/// for each further piece of a leaf that was cut**, as the keyspace's
+/// own count of its cuts has them ([`leaf_pieces_cut`]), and **no
 /// page handed two images of a leaf**, but the root where it is a leaf
 /// afterwards and was none: it took what its only child held, after a
 /// leaf beside that one was freed.
@@ -36,13 +37,13 @@ fn write(pages: &mut Mem, tree: &FlatTree, changes: &Changes) -> Written {
     let (before, counted) = (pages.leaf_writes, leaf_images_written());
     let from = pages.leaf_pages.len();
     let was_leaf = pages.image(tree.root()).leaf().is_some();
-    let had: BTreeSet<PageId> = pages.pages.keys().copied().collect();
+    let cut = leaf_pieces_cut();
     let written = tree.write(pages, changes).expect("a write of many keys");
     assert_eq!(written.leaf_writes, pages.leaf_writes - before);
     assert_eq!(written.leaf_writes, leaf_images_written() - counted);
     let limit = pages.config.key_limit();
     if changes.keys().all(|key| key.len() <= limit) {
-        let made = pieces(pages, tree, &had, was_leaf);
+        let made = leaf_pieces_cut() - cut;
         assert!(
             written.leaf_writes <= written.leaves + made,
             "{written:?}, with {made} further pieces"
@@ -61,18 +62,6 @@ fn write(pages: &mut Mem, tree: &FlatTree, changes: &Changes) -> Written {
         }
     }
     written
-}
-
-/// The further pieces of the leaves that a write cut: the leaves that the
-/// keyspace has on pages it did not have before (`had`), each of which is
-/// a piece of a leaf that was cut. Where the root was a leaf and is none
-/// any more, every piece of it went to a new page, the first among them,
-/// which is no further one.
-fn pieces(pages: &Mem, tree: &FlatTree, had: &BTreeSet<PageId>, was_leaf: bool) -> u64 {
-    let new = |page: &&PageId| !had.contains(page) && pages.image(**page).leaf().is_some();
-    let new = pages.pages.keys().filter(new).count() as u64;
-    let grew = was_leaf && pages.image(tree.root()).leaf().is_none();
-    new - u64::from(grew)
 }
 
 fn numbered(n: u32) -> Vec<u8> {

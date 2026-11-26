@@ -50,28 +50,13 @@ fn leaves(pages: &Pages) -> u64 {
 #[derive(Debug)]
 struct Done {
     settled: Settled,
-    /// The further pieces of the leaves that were cut
-    /// ([`further_pieces`]).
+    /// The further pieces of the leaves that were cut, as the keyspace's
+    /// own count of its cuts has them (`flat::leaf_pieces_cut`).
     made: u64,
     /// The pages that were freed: a leaf that a merge joined into
     /// another, a leaf that was left with no record, and a branch or a
     /// root's only child that went with one.
     freed: u64,
-}
-
-/// The further pieces of the leaves that a settling cut: the leaves that
-/// the keyspace has on pages it did not have before (`had`). Where the
-/// root was a leaf (`levels` was one) and is none any more, every piece of
-/// it went to a new page, the first among them, which is no further one.
-fn further_pieces(
-    pages: &Pages,
-    directory: &Directory,
-    had: &BTreeSet<PageId>,
-    levels: u64,
-) -> u64 {
-    let new = |page: &&PageId| !had.contains(page) && image(pages, **page).leaf().is_some();
-    let new = pages.pages.keys().filter(new).count() as u64;
-    new - u64::from(levels == 1 && pages.levels(directory) > 1)
 }
 
 /// Holds what a settling of `pending` wrote to what the pages were handed
@@ -105,14 +90,14 @@ fn settle(pages: &mut Pages, directory: &Directory, pending: Pending) -> Done {
     let homes = homes.len() as u64;
     let (records, from) = (pending.len() as u64, pages.leaf_pages.len());
     let counted = crate::flat::leaf_images_written();
-    let (had, frees): (BTreeSet<PageId>, _) = (pages.pages.keys().copied().collect(), pages.frees);
+    let (cut, frees) = (crate::flat::leaf_pieces_cut(), pages.frees);
     let levels = pages.levels(directory);
     let settled = directory.settle(pages, pending).expect("settled");
     assert_eq!(settled.records, records);
     assert_eq!(settled.leaves, homes);
     once_a_page(pages, from, settled, counted);
     assert_eq!(pages.levels(directory), levels);
-    let made = further_pieces(pages, directory, &had, levels);
+    let made = crate::flat::leaf_pieces_cut() - cut;
     let freed = pages.frees - frees;
     // At most one image for each leaf, and one more for each page that a
     // cut made: what the unit asks of a batch.
@@ -830,13 +815,13 @@ impl Twins {
         let counted = crate::flat::leaf_images_written();
         let single_writes = self.single.0.leaf_writes - start;
         let levels = pages.levels(directory);
-        let had: BTreeSet<PageId> = pages.pages.keys().copied().collect();
+        let cut = crate::flat::leaf_pieces_cut();
         let settled = directory.settle(pages, pending).expect("settled");
         assert_eq!(settled.records, records);
         assert!(settled.leaves <= settled.records);
         // At most one image for each leaf that took records, and one more
         // for each page that a cut made, whatever the keyspace's shape.
-        let made = further_pieces(pages, directory, &had, levels);
+        let made = crate::flat::leaf_pieces_cut() - cut;
         assert!(
             settled.leaf_writes <= settled.leaves + made,
             "{settled:?}, with {made} further pieces"
@@ -1246,4 +1231,69 @@ fn a_pending_record_does_not_hide_a_record_of_the_pages_before_it() {
         .expect("dropped");
     let first = directory.first_child_in(&pending, &pages, id);
     assert_eq!(first.expect("a walk").map(|child| child.prefix), Some(last));
+}
+
+/// A batch that empties a leaf of the directory and fills another past
+/// its image: the root takes what the leaf that stays holds, and that is
+/// then cut. The images are those of the leaves that took records and of
+/// the cut, and no more.
+#[test]
+fn a_batch_that_empties_a_leaf_and_cuts_another_writes_no_image_more() {
+    let alone = |n: u32| prefix_of(&[(key_of(n), 9)]);
+    let mut hit = 0;
+    for count in (20..160).step_by(4) {
+        // Merks that stand alone, each with a node: the records of their
+        // roots are beside each other, behind their entries.
+        let (mut pages, directory) = Pages::directory();
+        let prefixes: Vec<Prefix> = (0..count).map(alone).collect();
+        for prefix in &prefixes {
+            directory
+                .add(&mut pages, prefix, b"tree", None)
+                .expect("entered");
+        }
+        let rooted: Vec<RootChange<'_>> = (prefixes.iter().enumerate())
+            .map(|(at, prefix)| named(prefix, Some((cell(60, 1 + at as u16), b"k"))))
+            .collect();
+        directory.set_roots(&mut pages, &rooted).expect("roots");
+        if (pages.levels(&directory), leaves(&pages)) != (2, 2) {
+            continue;
+        }
+
+        // The roots go, and Merks are entered.
+        let mut pending = Pending::new();
+        let none: Vec<RootChange<'_>> = prefixes.iter().map(|prefix| named(prefix, None)).collect();
+        directory
+            .set_roots_in(&mut pending, &pages, &none)
+            .expect("no roots");
+        for n in count..count + 24 {
+            let added = directory.add_in(&mut pending, &pages, &alone(n), b"tree", None);
+            added.expect("entered");
+        }
+        let (from, cut) = (pages.leaf_pages.len(), crate::flat::leaf_pieces_cut());
+        let frees = pages.frees;
+        let had: BTreeSet<PageId> = pages.pages.keys().copied().collect();
+        let settled = directory.settle(&mut pages, pending).expect("settled");
+        let cuts = crate::flat::leaf_pieces_cut() - cut;
+        let handed = &pages.leaf_pages[from..];
+        assert_eq!(settled.leaf_writes, handed.len() as u64);
+        assert!(settled.leaf_writes <= settled.leaves + cuts, "{settled:?}");
+        directory.check(&pages).expect("a directory");
+        // The shape this test is for: both leaves took records, one was
+        // freed with no image, the root took the other's entries, was
+        // written with the new ones as the pieces of one cut.
+        let emptied = pages.frees - frees >= 2 && pages.levels(&directory) == 2;
+        if settled.leaves == 2 && cuts == 1 && emptied {
+            println!("{count} Merks: {settled:?}, images of {handed:?}");
+            assert_eq!(settled.leaf_writes, 3);
+            let root = directory.root_page();
+            assert!(handed
+                .iter()
+                .all(|page| *page == root || !had.contains(page)));
+            hit += 1;
+        }
+    }
+    assert!(
+        hit > 0,
+        "no directory of these was emptied and cut in one batch"
+    );
 }

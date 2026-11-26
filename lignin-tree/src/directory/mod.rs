@@ -262,7 +262,10 @@
 //!   image, or freed unwritten where it is left with no record. Where
 //!   that leaves the keyspace's root with one leaf below it, the root
 //!   takes what the leaf holds, which is the image that the freed leaf
-//!   did not take.
+//!   did not take. This is of a keyspace whose root, where it is a
+//!   branch, has two children or more, as every write leaves it
+//!   ([`Written::leaf_writes`](crate::flat::Written::leaf_writes) says
+//!   what a root with one child adds).
 //!
 //! What the directory holds afterwards is what the same calls leave when
 //! each is settled by itself, record for record, and each call answers as
@@ -290,6 +293,21 @@
 //! cleared the Merk on, settled or not. A handle whose records were
 //! dropped unsettled is loaded again ([`Directory::load`]), as one whose
 //! writer rolled back is.
+//!
+//! **One difference on a store with a page that cannot be read.** A call
+//! that asks for the first Merk below a Merk ([`Directory::first_child_in`],
+//! [`Directory::has_children_in`], and so [`Directory::unlink_in`] of a
+//! Merk with no node and [`drop::unlink`](crate::drop::unlink) of one)
+//! seeks the first child record in the pages before it compares it with
+//! the first pending one. Where the pending record is the first and no
+//! record of the pages is under the id in the leaf it belongs to, the
+//! seek goes on to the next leaf. If that page cannot be read, the call
+//! ends with the error of the keyspace, where the same calls, each
+//! settled by itself, find the settled record and read no further: a drop
+//! of the Merk is then refused for the Merks below it
+//! ([`DirectoryError::NotEmpty`]), and a clear of it is taken. On a store
+//! whose pages can be read the two answer alike. A seek that ends at a
+//! key would close it, and is the flat cursor's to have.
 //!
 //! In a test build of this crate, and in a build with the feature
 //! `held_reads`, the pages are held to the records that were settled into

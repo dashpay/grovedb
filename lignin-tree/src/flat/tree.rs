@@ -522,6 +522,8 @@ impl FlatTree {
             return write_leaf(pages, capacity, page, entries);
         }
         let cuts = layout.cuts(capacity, 0, added);
+        #[cfg(any(test, feature = "held_reads"))]
+        super::node::written::cut(cuts.len());
         let separators: Vec<Vec<u8>> = cuts
             .iter()
             .map(|&cut| {
@@ -680,10 +682,12 @@ pub struct Written {
     ///   child holds, which is one image, of the root. A root that is a
     ///   leaf and is left with no entry is written, with none.
     ///
-    /// That is so in a tree as the writes of this code leave it. One that
-    /// has, above a leaf that loses an entry, a branch with one child
-    /// which is not the root takes one image more: the leaf is written,
-    /// and the root then takes what it holds.
+    /// That is so in a tree whose root, where it is a branch, has two
+    /// children or more, as every write of this code leaves it. The page
+    /// format allows a root with one child. Where that child is a leaf,
+    /// the root takes its entries in the one image. Where it is a branch
+    /// and the write leaves one leaf below it, that leaf is written and
+    /// the root then takes what it holds: one image more.
     ///
     /// Each key that is kept in a bucket adds what a put or a delete of
     /// it writes. An image of a branch is not counted.

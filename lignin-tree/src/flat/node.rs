@@ -438,10 +438,24 @@ pub(super) mod written {
 
     thread_local! {
         static LEAVES: Cell<u64> = const { Cell::new(0) };
+        static PIECES: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(super) fn count() {
         LEAVES.set(LEAVES.get() + 1);
+    }
+
+    /// Notes that a leaf was cut `cuts` times: into that many pieces
+    /// beside its first.
+    pub(in crate::flat) fn cut(cuts: usize) {
+        PIECES.set(PIECES.get() + cuts as u64);
+    }
+
+    /// How many further pieces the leaves that this thread cut were cut
+    /// into, since it began: for each leaf that had outgrown its image
+    /// and was written as several, their number less one.
+    pub fn leaf_pieces_cut() -> u64 {
+        PIECES.get()
     }
 
     /// How many images of leaves this thread has handed to the pages of

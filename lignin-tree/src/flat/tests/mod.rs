@@ -20,7 +20,7 @@ use lignin_format::{
 use lignin_io::sim::SimRng;
 
 use super::{
-    leaf_images_written,
+    leaf_images_written, leaf_pieces_cut,
     log::{is_changed, push_changes},
     Changes, Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree, Look, Revision,
     Written,

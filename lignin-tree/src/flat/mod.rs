@@ -496,7 +496,7 @@ pub(crate) mod tests;
 pub use cursor::{Cursor, Look};
 pub use error::FlatError;
 #[cfg(any(test, feature = "held_reads"))]
-pub use node::written::leaf_images_written;
+pub use node::written::{leaf_images_written, leaf_pieces_cut};
 pub use owners::{FlatOwners, StepLog};
 pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
 pub use store::{Committed, PageIds, Parts, Private, PrivatePage};
