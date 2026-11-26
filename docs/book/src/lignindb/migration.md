@@ -349,8 +349,8 @@ has to be there: make it first.
   there. A checkpoint that RocksDB made of a directory that held a
   LigninDB database holds RocksDB's database alone, empty or with what
   was written through RocksDB there, and not the LigninDB one's state:
-  step 5's root hash tells them apart where the application knows its
-  own.
+  step 5's root hash can tell them apart where the application knows its
+  own, and the application's own check of its state decides.
 - `TARGET`: where the LigninDB database is to be.
 - `BACKUP`: where the backup of step 8 is to be, best on another device.
 - `RESTORE`: where step 9 restores that backup to check it.
@@ -430,6 +430,12 @@ Read its report before you go on:
   there, which can be nothing (an empty grove) or a grove of its own,
   and a checkpoint of that directory holds it alone; and a node's state
   can be in a grove with no Merk node, in records of the aux keyspace.
+  Nor does the root hash tell all of it: it does not cover the aux,
+  roots or meta records, so two databases with the same grove and
+  other aux records have the same root hash (an empty grove's among
+  them). Where the node's state is in those records too, the
+  application's own check of its state, on the target after step 7,
+  decides whether the source was the node's.
 - The counts after it say what is in the source. A line that begins
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
@@ -810,14 +816,18 @@ for entry in MANIFEST MANIFEST.deleting wal seg val table; do
   if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
 done
 echo "$BACK holds no entry of a LigninDB database"
+if [ "$BACK" != "$SOURCE" ]; then lignin migrate "$BACK" --survey 2>&1 | tee "$WORK/reports/survey-back.txt"; fi
 ```
 
-**Then survey it** as step 5 does (`lignin migrate DIR --survey`), into
-a report of its own (step 5's block would write over the survey of step
-5, which the block below compares with): RocksDB's open makes a new,
-empty database where it finds none, and the survey only reads. Where
-`SOURCE` was a checkpoint, survey the node's own directory, which can
-differ from the checkpoint either way. Where the survey refuses for the
+**Then survey it**, into a report of its own (step 5's block would
+write over the survey of step 5, which the block below compares with):
+RocksDB's open makes a new, empty database where it finds none, and the
+survey only reads. The block above surveys `BACK` where it is not
+`SOURCE`, into `survey-back.txt`, and a survey that refuses it ends the
+shell there with its report; where it is `SOURCE`, the block below
+surveys it. Where `SOURCE` was a checkpoint, the node's own directory
+can differ from the checkpoint either way, so it is that survey that
+decides. Where the survey refuses for the
 projected memory of a load alone, survey again with a larger
 `--memory-limit`: that refusal says nothing of the database.
 
@@ -896,7 +906,8 @@ survey of step 5, and has three answers:
 
 As step 4 does, the block first refuses a `SOURCE` that holds an entry
 that only a LigninDB database makes: RocksDB opened there beside a
-LigninDB database reads its own empty grove. A refusal of the survey
+LigninDB database reads its own database, empty or with what was
+written through it, and not the LigninDB one. A refusal of the survey
 does not stop the block, so the answer is given all the same; a report that cannot be written ends the shell, as any
 failure does, before an answer, and the block removes the report of an
 earlier way back first, so it never reads one. A match shows that the

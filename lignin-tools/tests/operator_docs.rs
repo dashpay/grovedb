@@ -2128,7 +2128,14 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
         !passed && last.contains(lignin_entry),
         "step 11, a SOURCE with MANIFEST: {last}"
     );
-    let back = |dirs: &[(&str, &str)]| run_block("BACK=${BACK:-$SOURCE}", &[], "", dirs);
+    let back = |dirs: &[(&str, &str)]| {
+        run_block(
+            "BACK=${BACK:-$SOURCE}",
+            &[],
+            "the source can be migrated",
+            dirs,
+        )
+    };
     let (passed, last) = back(&[("SOURCE", "")]);
     assert!(passed, "the way back to a RocksDB SOURCE: {last}");
     let (passed, last) = back(&[("SOURCE", "MANIFEST")]);
@@ -2142,9 +2149,20 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
         "the way back to a BACK with wal: {last}"
     );
     let (passed, last) = back(&[("SOURCE", "MANIFEST"), ("BACK", "")]);
+    assert_eq!(
+        (passed, last.as_str()),
+        (true, "the source can be migrated"),
+        "the way back to a BACK of RocksDB beside a checkpoint SOURCE surveys BACK"
+    );
+    let (passed, last) = run_block(
+        "BACK=${BACK:-$SOURCE}",
+        &[],
+        "the source … holds no RocksDB database (no file CURRENT)",
+        &[("SOURCE", ""), ("BACK", "")],
+    );
     assert!(
-        passed,
-        "the way back to a BACK of RocksDB beside a checkpoint SOURCE: {last}"
+        !passed,
+        "a survey of BACK that refuses ends the block: {last}"
     );
     let alike = surveyed(2, "aa", 17, refused);
     let (passed, last) = step_11(alike.clone(), alike);
