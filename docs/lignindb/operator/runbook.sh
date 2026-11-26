@@ -46,6 +46,14 @@ case "$work" in *$'\n'*)
     ;;
 esac
 
+# The chapters are read from beside this script: a copy of it elsewhere, or
+# a link to it, would find none and run nothing.
+for document in "${documents[@]}" "${others[@]}"; do
+    if [ ! -f "$here/$document" ]; then
+        echo "runbook.sh: $here/$document is not there: run the script where it is, beside the chapters" >&2
+        exit 2
+    fi
+done
 for document in "${others[@]}"; do
     if grep -q '^ *```sh' "$here/$document"; then
         echo "runbook.sh: $document has a block marked sh, which this script does not run" >&2
@@ -106,12 +114,15 @@ flush() {
 }
 for document in "${documents[@]}"; do
     printf "printf '\\\\n## %s\\\\n'\n" "$document" >>"$script"
-    kind='' place=''
+    kind='' place='' blocks=0
     while IFS= read -r line; do
         case "$line" in
             '@@ run '* | '@@ set '*)
                 read -r _ kind name number <<<"$line"
                 place="$name:$number"
+                if [ "$kind" = run ]; then
+                    blocks=$((blocks + 1))
+                fi
                 ;;
             '@@ end')
                 if [ -n "$pending" ]; then
@@ -135,6 +146,12 @@ for document in "${documents[@]}"; do
                 ;;
         esac
     done < <(extract "$document")
+    # What `extract` could not read is no error of this loop's: a document
+    # that gave it no block is refused here.
+    if [ "$blocks" -eq 0 ]; then
+        echo "runbook.sh: no block marked sh was read from $document" >&2
+        exit 2
+    fi
 done
 echo "printf '\\nrunbook.sh: every command ran\\n'" >>"$script"
 

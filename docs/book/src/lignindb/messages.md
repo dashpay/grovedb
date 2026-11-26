@@ -155,7 +155,7 @@ message**. The ones that say otherwise are marked.
 | `… bytes were offered as one item, and the first item in them is … bytes long` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
 | `what was offered is not …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
 | `the log is to be made durable through offset … of file …, and ` then `ends at offset … of file …` or `holds nothing` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
-| `the log is to be kept from offset … of file …, and is durable ` then `up to offset … of file …` | the log is not durable up to the place it was to be kept from, so no file before it was dropped; this follows a sync that failed | as for the failed sync | `lignin-store/src/wal/error.rs` |
+| `the log is to be kept from offset … of file …, and is durable ` then `up to offset … of file …` or `nowhere` | the log is not durable up to the place it was to be kept from, so no file before it was dropped; this follows a sync that failed | as for the failed sync | `lignin-store/src/wal/error.rs` |
 | `a place of another log, or of an earlier session` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
 | `no log file …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
 | `no log file in use holds the address …` | a rule of the engine does not hold | report it with the whole message | `lignin-store/src/wal/error.rs` |
@@ -262,7 +262,8 @@ words after it say why: what the system answered to a file operation
 (fix what it says, and open again), the buffer pool's refusal of its
 size (below, with what to do), or the words of [the files](#the-files-at-an-open),
 whose own rows say what to do. A message of that group that comes again
-at the next open, with nothing for the system to fix, is damage as
+at the next open, with nothing for the system to fix and no option of
+the open to change (the buffer pool's size among them), is damage as
 well.
 **Damage** (the second group) is a store whose files do not hold what
 they must: restore the database from a backup, keep the damaged
@@ -276,7 +277,7 @@ that opens it at all).
 | `the value log was not recovered: …` | a value-log file could not be read | `lignin-store/src/recovery/error.rs` |
 | `the log was not recovered: …` | a log file could not be read; [the files](#the-files-at-an-open) say which | `lignin-store/src/recovery/error.rs` |
 | `the buffer pool refused a rebuilt page: …` | the buffer pool could not be made, or refused a page that replay rebuilt; the words after it say which, below | `lignin-store/src/recovery/error.rs` |
-| `a buffer pool of … bytes does not hold one frame of … bytes` | after the line above: `cache_size` is below one page. Give a larger one ([tuning](tuning.md#memory)) | `lignin-store/src/cache/error.rs` |
+| `a buffer pool of … bytes does not hold one frame of … bytes` | after the line above: `cache_size` is below one frame, which is a page and what the pool keeps with it; the second number is the least size. Give a larger one ([tuning](tuning.md#memory)) | `lignin-store/src/cache/error.rs` |
 | `the buffer pool is too large to allocate` | after the line above: `cache_size` is more than one allocation can be. Give a smaller one | `lignin-store/src/cache/error.rs` |
 | `the buffer pool refused the rebuilt frame of page …: …` | the pool refused a page that replay rebuilt: a defect, to report with the whole message | `lignin-store/src/recovery/error.rs` |
 | `the page ids were not recovered: …` | the record of page ids could not be read | `lignin-store/src/recovery/error.rs` |
@@ -332,7 +333,7 @@ A commit that meets the end itself says so in words of its own:
 | `commit … is published and not known to be durable: …` | published; its sync failed | open again | `lignindb/src/commit/error.rs` |
 | `whether commit … is in the log is not known, and the session takes no further commit: …` | as above | open again | `lignindb/src/commit/error.rs` |
 | `commit … is in the log and could not be installed, and the session takes no further commit: …` | as above | open again | `lignindb/src/commit/error.rs` |
-| `the commit was not made: …` | the commit did not happen and never will; the session goes on | nothing, unless the words say the device is full: then [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
+| `the commit was not made: …` | the commit did not happen and never will; the session goes on, but where the words after it are `the log would give the commit version …, and the latest published version is …` (below), after which it takes no commit | nothing, unless the words say the device is full: then [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
 | `the session takes no commit yet: …` | the session waits for the log to be cut after a failed append, or for a manifest in doubt to be settled; the transaction is whole | make room where the words say the device is full; where they name a directory that was removed or cannot be written, stop the node | `lignindb/src/commit/error.rs` |
 | `the log would give the commit version …, and the latest published version is …` | the log holds a group the session never published: the session has stopped | open again | `lignindb/src/commit/error.rs` |
 | `the log: …` | after `the commit was not made: `: the log refused the commit's group; where its words say the device is full, the session waits for room | [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
@@ -382,7 +383,7 @@ GroveDB the words follow `lignindb: `; a refusal for the name is
 | `the manifest was in doubt, and settling it answered an error: …` | a replacement of the manifest had not finished, and settling it failed | make the checkpoint again; make room first if the device is full | `lignindb/src/checkpoint/error.rs` |
 | `the manifest could not be read: …` | the manifest was in doubt again when the creation read it | make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 | `the log holds commit …, and the latest published version is …` | the log holds a commit the session never published, as after a commit that panicked between its append and its publication | open again | `lignindb/src/checkpoint/error.rs` |
-| `the checkpoint's log ends at …, and the log is durable …` | the log's sync returned without covering where the checkpoint's log ends | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
+| `the checkpoint's log ends at …, and the log is durable …`, its last words `up to …` or `nowhere` | the log's sync returned without covering where the checkpoint's log ends | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
 | `log file … …` | a log file that the checkpoint's log needs, up to the file that holds its end, is not there or not closed and durable as the checkpoint needs it; the reason follows the file's id | make the checkpoint again; report it if it comes again | `lignindb/src/checkpoint/error.rs` |
 | `lies before the end of the checkpoint's log and is not closed`, `is not durable through the end of the checkpoint's log`, `holds the end of the checkpoint's log and is not among the log's files` | the reasons that follow `log file … ` | as for `log file … …` | `lignindb/src/checkpoint/create.rs` |
 | `the log: …` | the log refused to be held for the checkpoint, or to say what its files are; the log's words follow | as those words say; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |

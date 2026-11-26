@@ -90,7 +90,7 @@ within() {
   local d=$1
   while :; do
     if same_place "$d" "$2"; then return 0; fi
-    if [ "$d" = / ]; then return 1; fi
+    if [ "$d" = / ] || [ "$d" = . ] || [ -z "$d" ]; then return 1; fi
     d=$(dirname -- "$d")
   done
 }
@@ -316,7 +316,8 @@ remove a directory at that path between them.
 : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint, as the copy block printed it}"
 : "${DB:?set DB to the database directory of the node}"
 plain_path "$CHECKPOINT"
-apart "$(real_dir "$DB")" "$CHECKPOINT"
+DB=$(real_dir "$DB")
+apart "$DB" "$CHECKPOINT"
 if [ -L "$CHECKPOINT" ] || [ ! -d "$CHECKPOINT" ]; then echo "$CHECKPOINT is a link or no directory now: it is not what was copied"; false; fi
 if [ "$(real_dir "$CHECKPOINT")" != "$CHECKPOINT" ]; then echo "$CHECKPOINT is not the path the copy's block wrote: give that one"; false; fi
 : "${CHECKPOINT_ID:?set CHECKPOINT_ID as the copy block printed it}"
@@ -360,9 +361,13 @@ reserve, below.
 ### What to do, in this order
 
 1. **Make room.**
-   - If the database keeps a reserve (`RESERVE` in its directory, below)
-     and the node is stopped, or its session keeps none, remove it with
-     what a fill of it left behind:
+   - If the node's sessions keep a reserve (`Options::reserve` above 0,
+     below), or kept one, and the node is stopped, or its session keeps
+     none, remove the reserve with what a fill of it left behind. A
+     session with a reserve of 0 writes no file of those two names and
+     leaves alone any it finds, so where no session of the node ever kept
+     a reserve, a `RESERVE` or `RESERVE.new` in the directory is not the
+     engine's: leave it.
 
      ```sh
      : "${DB:?set DB to the directory of the database}"

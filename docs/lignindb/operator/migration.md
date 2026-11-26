@@ -48,9 +48,10 @@ about 5% slower at the default setting. Before its last line, every run prints a
 what it took, `migrate: done target=… seconds=…`, with
 `elements_per_second=…` for a run that made the whole target, so the rehearsal of step 3 on your own
 machine gives you a rate to plan with.
-Add the time of `lignin verify` in step 7, which reads the whole store
-again, and of the copies of steps 8 and 9, which are as long as copying
-the database's bytes.
+The node is stopped from step 4 to step 10: add the survey of step 5,
+which reads the whole source, `lignin verify` in steps 7 and 9, each of
+which reads the whole store again, and the copies of steps 8 and 9,
+which are as long as copying the database's bytes.
 
 **Disk.** While it runs, the migration needs about twice the bytes of
 the source's records plus 256 MiB on the device of the target, and says
@@ -162,7 +163,7 @@ within() {
   local d=$1
   while :; do
     if same_place "$d" "$2"; then return 0; fi
-    if [ "$d" = / ]; then return 1; fi
+    if [ "$d" = / ] || [ "$d" = . ] || [ -z "$d" ]; then return 1; fi
     d=$(dirname -- "$d")
   done
 }
@@ -229,6 +230,7 @@ absolute paths too.
 ```sh
 : "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
 : "${WORK:?set WORK to a directory for the build and the reports}"
+outside_databases "$WORK/reports"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
 case "$WORK" in *:*) echo "$WORK has a colon in it, which PATH takes for a separator: give a WORK without one"; false ;; esac
@@ -331,7 +333,8 @@ four paths of which one is another or lies inside another. It compares
 them by the directories they are (`-ef`), and takes two names that
 differ in case alone for one, as a file system that ignores case does.
 It refuses a `WORK` inside `SOURCE`, which the reports would be
-written into. It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
+written into; step 2 has already refused one inside any directory that
+holds a database, before it writes anything. It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
 or a `MANIFEST.deleting`, or a `CURRENT`, a LigninDB or RocksDB
 database or checkpoint whose deletion would remove it, or inside one
 whose name ends in `.creating`.
@@ -413,8 +416,10 @@ answers through GroveDB, checks the target with the physical invariant
 checker, and only then gives the database the name `TARGET`. Until that last step it works
 in the directory `TARGET.migrating`, so nothing is at `TARGET` that is
 not whole, compared and verified. Lines that begin `migrate:` hold
-`name=value` words for a script; the others are for you. Every five
-seconds (or as `--progress` says) a line says where the load stands:
+`name=value` words for a script; the others are for you. After a
+commit of the load, once five seconds (or what `--progress` says) have
+gone by since the last such line, a line says where the load stands, so
+a long commit can keep it longer:
 `migrate: phase=… subtrees=… merks=… nodes=… records=… bytes=… commits=… seconds=…`.
 
 | Exit status | What it means | What to do |
@@ -591,7 +596,11 @@ the path that step 4 printed for `RESTORE`.
 **First**, put into `TARGET` what the application keeps in its RocksDB
 directory beside RocksDB's own files, as the application's
 documentation says: the migration carries GroveDB's records and nothing
-else, and `SOURCE` keeps its own copy for the way back. Copy nothing over
+else, and `SOURCE` keeps its own copy for the way back. Where `SOURCE`
+was a RocksDB checkpoint, those files are to be the ones of the state
+of that checkpoint, as the application keeps them for it: the files in
+the node's own directory can be of commits after it, and step 7 does
+not see a mismatch between them and the grove. Copy nothing over
 a file that `TARGET` has, and put no file there under a name of the
 engine's: `LOCK`, `MANIFEST`, `MANIFEST.tmp`, `MANIFEST.deleting`,
 `RESERVE`, `RESERVE.new`, `wal`, `seg`, `val` and `table`. The engine
