@@ -83,7 +83,10 @@ commit size (`--batch`, 160 MiB unless given), the buffer pool
 for each node of the largest of what it hands over whole: the largest
 Merk, or, with `--unreachable carry`, a prefix that nothing leads to,
 whose aux and meta records count as nodes with three times their bytes. A run whose projection is above the
-limit is refused before it writes anything. On Linux the limit is half of
+limit is refused before it writes anything. The limit is held after the
+survey, which itself holds the records of a prefix that nothing leads to
+while it reads them, whatever `--unreachable` says: a survey of a source
+with a large such prefix can take more than the limit. On Linux the limit is half of
 the machine's memory as `/proc/meminfo` states it, unless
 `--memory-limit` says another; where that file is not there, as on
 macOS, no limit is held unless `--memory-limit` is given. In a container
@@ -656,10 +659,12 @@ takes a file of such a name for its own (an open removes
 or ends in `.sst`, which it takes for RocksDB's. A file of the
 application's under one of these names goes where the application's
 documentation says, outside `TARGET`. The node's account has to be able
-to write `TARGET` and every file in it, its `LOCK` among them, which an
-open locks for writing: where the migration ran under another account,
-give the files to the node's account first, as the system's tools do
-(`chown -R` on Linux and macOS). Then point the
+to search every directory above `TARGET`, to read its files, and to
+write its directories, where a session makes new files, and its `LOCK`,
+which an open locks for writing: where the migration ran under another
+account, give `TARGET` and what it holds to the node's account first,
+with the system's tool for that, recursively, and check the directories
+above it. Then point the
 node at `TARGET` and select the LigninDB engine, as the application's
 configuration says. On GroveDB's side, an application
 opens a database on LigninDB with
@@ -695,7 +700,11 @@ checkpoint, that the node goes back to.
 - **A migration that failed** made nothing at `TARGET` (exit status 1
   and 4, but for the cases the table of step 6 names) or left its
   database in `TARGET.migrating` (exit status 3): start the node on its
-  RocksDB database as before, and remove `TARGET.migrating` when it is
+  RocksDB database as before, but not where the survey refused the
+  source for the mark of a state-sync restore that did not finish (step
+  5): such a database is to be discarded, on RocksDB as here, and the
+  node's state is to be got again as the application's documentation
+  says. Remove `TARGET.migrating` when it is
   no longer needed for a report, after looking into it as step 6 says.
 
 Remove `SOURCE` only when the node has run on LigninDB for as long as you
