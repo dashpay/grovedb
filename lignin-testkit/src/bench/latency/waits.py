@@ -31,8 +31,9 @@ Printed:
    system call it was in and the place in the kernel it left a processor at,
    or the lock of the process it asked for.
 3. For the waits inside the kernel during a write to a file of the engine's
-   log, or an allocation for one (LigninDB's calls of `lignin_store::wal`,
-   RocksDB's write of a commit), two things that are not the same. First, the syncs of the process
+   log, or an allocation for one, by a frame of the user stack that says so
+   (LigninDB's `lignin_store::wal`, RocksDB's `log::Writer` and
+   `WriteToWAL`), two things that are not the same. First, the syncs of the process
    that had a moment in common with the wait, by what they are of: that is
    an overlap in time, and a wait can have several. Beside it is what chance
    gives: how many of the waits would have had a sync beside them had each
@@ -43,8 +44,12 @@ Printed:
    way when the wait began, and the syncs of the process that asked to wait
    for that commit before it had ended (the SYNC record names the
    transaction and when the sync asked, and JSTART and JEND say when the
-   commit ran). The wait is linked to the commit by its stack and by the
-   time, and not by a transaction's number read at the wait. A wait in
+   commit ran; a commit whose end the trace does not have is none). A trace
+   of an earlier form of the tracer does not say when a sync asked: for it
+   the syncs that named the transaction and whose time has the commit's end
+   in it are given, and it is said that this shows less. The wait is linked
+   to the commit by its stack and by the time, and not by a transaction's
+   number read at the wait. A wait in
    which the thread itself writes out old blocks of the journal for room
    is for no commit, and is counted apart.
 4. With a trace that follows every thread (`THREADS=all traced.sh`): for the
@@ -77,6 +82,7 @@ HARNESS = ("lignin_testkit5bench7latency", "lignin_testkit::bench::latency")
 RUNNABLE = ("0", "256")
 ALLOCATOR = "the lock of the C library's allocator"
 ENGINE = "a lock of the engine"
+CONDITION = "a condition variable of the engine"
 
 
 def field(line, name):
@@ -87,9 +93,13 @@ def field(line, name):
 def frames(lines):
     out = []
     for line in lines:
-        found = re.match(r"\s+[0-9a-f]+ (\S+?)\+\d+", line)
-        if found and (not out or out[-1] != found.group(1)):
-            out.append(found.group(1))
+        found = re.match(r"\s+[0-9a-f]+ (.+?)\+\d+(?: \(.*\))?$", line)
+        if not found:
+            continue
+        # A name of C++ comes with its arguments: the name is what is before them.
+        name = found.group(1) if found.group(1).startswith("_R") else found.group(1).split("(", 1)[0]
+        if not out or out[-1] != name:
+            out.append(name)
     return out
 
 
@@ -196,11 +206,10 @@ def of_the_harness(wait):
 
 
 def in_the_log(wait):
-    """A call on a file of the engine's log: LigninDB's log store, and what
-    RocksDB writes inside the commit of a transaction."""
-    if any("lignin_store3wal" in frame or "lignin_store::wal" in frame for frame in wait["user"]):
-        return True
-    return any("rocksdb" in frame and "Commit" in frame for frame in wait["user"]) and in_the_commit(wait)
+    """A call on a file of the engine's log, by a frame that says so:
+    LigninDB's log store, and RocksDB's writer of its log."""
+    return any("lignin_store3wal" in frame or "lignin_store::wal" in frame
+               or frame.startswith("rocksdb::log::Writer::") or "::WriteToWAL" in frame for frame in wait["user"])
 
 
 def what(wait):
@@ -214,6 +223,8 @@ def what(wait):
             return ALLOCATOR
         if any("wait_for_room" in frame or "wait_for_turn" in frame for frame in user):
             return "a turn of write-back, for room"
+        if any("pthread_cond_" in frame or "CondVar" in frame or "Condvar" in frame for frame in user):
+            return CONDITION
         return ENGINE
     if "file_modified" in kernel or "kiocb_modified" in kernel or "touch_atime" in kernel:
         asked = "the file's times"
@@ -280,9 +291,13 @@ def main():
               "it reads the engine's counts. Neither is in a row below." % (
                   len(unplaced), sum(wait["us"] for wait in unplaced) / 1e3,
                   len(between), sum(wait["us"] for wait in between) / 1e3))
-        if marked and len(unplaced) >= 10 and 5 * len(unplaced) >= len(inside):
-            sys.exit("waits.py: %d of the %d waits of %s cannot be placed: the user stacks are cut short, and the "
-                     "build has to keep its frame pointers" % (len(unplaced), len(inside), arguments[0]))
+        # A wait between two blocks says nothing of the stacks inside a
+        # block: the share is of the waits that are not between blocks.
+        elsewhere = len(inside) - len(between)
+        if marked and len(unplaced) >= 10 and 5 * len(unplaced) >= elsewhere:
+            sys.exit("waits.py: %d of the %d waits of %s that are not between two blocks cannot be placed: the "
+                     "user stacks are cut short, and the build has to keep its frame pointers" % (
+                         len(unplaced), elsewhere, arguments[0]))
         for dev in sorted({dev for dev, _ in trace.starts}):
             took = [trace.ends[key] - at for key, at in trace.starts.items()
                     if key[0] == dev and key in trace.ends and trace.measured[0] <= at <= trace.measured[1]]
@@ -315,8 +330,13 @@ def main():
 
     appends = [wait for wait in mine if in_the_log(wait) and wait["state"] not in RUNNABLE
                and any(frame in wait["kernel"] for frame in ("vfs_write", "vfs_fallocate"))]
+    unplaced_ms = [wait["us"] for wait in long if trace.in_the_measured_blocks(wait)
+                   and not in_a_block(wait) and not of_the_harness(wait)] if trace.measured else []
     print("\n%d waits inside the kernel during a write to a file of the engine's log, or an allocation for one, "
-          "%.1f ms in all." % (len(appends), sum(wait["us"] for wait in appends) / 1e3))
+          "%.1f ms in all.%s" % (len(appends), sum(wait["us"] for wait in appends) / 1e3,
+                                " The %d waits that could not be placed (%.1f ms) are not among them, and any of "
+                                "them can be such a wait." % (len(unplaced_ms), sum(unplaced_ms) / 1e3)
+                                if unplaced_ms else ""))
     beside_kind, with_none, longest_beside = collections.Counter(), 0, []
     for wait in appends:
         beside = [sync for sync in trace.syncs if sync["end"] > wait["begin"] and sync["begin"] < wait["end"]]
@@ -344,37 +364,56 @@ def main():
     for_a_commit = [wait for wait in appends if any(frame in wait["kernel"] for frame in FOR_A_COMMIT)]
     for_room = sum(1 for wait in appends if FOR_ROOM in wait["kernel"] and "jbd2_log_wait_commit" not in wait["kernel"])
     if appends and trace.starts:
-        for_kind, in_a_commit, with_a_sync = collections.Counter(), 0, 0
+        # A commit is one that began and ended in the trace: one without its
+        # end would be under way for every later wait.
+        commits = {key: (at, trace.ends[key]) for key, at in trace.starts.items() if key in trace.ends}
+        asked_kind, named_kind, in_a_commit, with_asked, with_named = collections.Counter(), collections.Counter(), 0, 0, 0
         # An earlier form of the tracer had the file system of a write and
         # not of an allocation.
         nowhere = sum(1 for wait in for_a_commit if wait["dev"] == "0,0")
         for wait in for_a_commit:
-            under_way = {key: trace.ends.get(key) for key, at in trace.starts.items()
-                         if key[0] == wait["dev"] and at <= wait["begin"] < trace.ends.get(key, wait["begin"] + 1)}
+            under_way = {key: ended for key, (began, ended) in commits.items()
+                         if key[0] == wait["dev"] and began <= wait["begin"] < ended}
             in_a_commit += bool(under_way)
+            named = [sync for sync in trace.syncs if (sync["dev"], sync["transaction"]) in under_way]
             # A sync waited for the commit if it asked before the commit had
-            # ended. A trace that does not say when a sync asked says when
-            # the sync returned, which is no earlier than the commit's end
-            # if it waited.
-            waited_for = [sync for sync in trace.syncs
-                          if (sync["dev"], sync["transaction"]) in under_way
-                          and (under_way[(sync["dev"], sync["transaction"])] is None
-                               or (sync["asked"] or sync["begin"]) < under_way[(sync["dev"], sync["transaction"])]
-                               <= sync["end"])]
-            with_a_sync += bool(waited_for)
-            for kind in {of(sync["file"]) for sync in waited_for}:
-                for_kind[kind] += 1
+            # ended, which only a trace that says when a sync asked shows.
+            asked = [sync for sync in named
+                     if sync["asked"] and sync["asked"] < under_way[(sync["dev"], sync["transaction"])]]
+            # Without that time: the sync named the transaction, began before
+            # the commit ended and returned no earlier than it. It can still
+            # have asked after the end, and then it waited for nothing.
+            only_named = [sync for sync in named if not sync["asked"]
+                          and sync["begin"] < under_way[(sync["dev"], sync["transaction"])] <= sync["end"]]
+            with_asked += bool(asked)
+            with_named += bool(only_named) and not asked
+            for kind in {of(sync["file"]) for sync in asked}:
+                asked_kind[kind] += 1
+            if not asked:
+                for kind in {of(sync["file"]) for sync in only_named}:
+                    named_kind[kind] += 1
         print("\nBy the journal's transactions: %d of the %d waits were for a commit of an ext4 journal by their "
               "kernel stack, and in %d the thread itself wrote out old blocks of the journal for room, which is "
               "for no commit. Of the %d, %d began while a commit of the journal of the written file's file system "
-              "was under way, and for %d of them a sync of the process had asked to wait for that commit before it "
-              "ended.%s By what those syncs were of:\n" % (
-                  len(for_a_commit), len(appends), for_room, len(for_a_commit), in_a_commit, with_a_sync,
+              "was under way.%s" % (
+                  len(for_a_commit), len(appends), for_room, len(for_a_commit), in_a_commit,
                   " Of %d the trace does not have the file system, so they are linked to no commit." % nowhere
                   if nowhere else ""))
-        print("| A sync that waited for the commit that the wait began in, of | Waits |\n| --- | --- |")
-        for kind, waits_for in sorted(for_kind.items(), key=lambda item: (-item[1], item[0])):
-            print("| %s | %d |" % (kind, waits_for))
+        if any(sync["asked"] for sync in trace.syncs):
+            print("\nFor %d of them a sync of the process had asked to wait for that commit before it ended. "
+                  "By what those syncs were of:\n" % with_asked)
+            print("| A sync that asked to wait for the commit that the wait began in, before it ended, of | Waits |"
+                  "\n| --- | --- |")
+            for kind, waits_for in sorted(asked_kind.items(), key=lambda item: (-item[1], item[0])):
+                print("| %s | %d |" % (kind, waits_for))
+        else:
+            print("\nThis trace does not say when a sync asked to wait for a commit. For %d of them a sync of the "
+                  "process named that commit's transaction as the one it waited for, began before the commit ended "
+                  "and returned no earlier than it: that the sync asked before the commit ended is likely and is "
+                  "not shown. By what those syncs were of:\n" % with_named)
+            print("| A sync that named the commit that the wait began in, of | Waits |\n| --- | --- |")
+            for kind, waits_for in sorted(named_kind.items(), key=lambda item: (-item[1], item[0])):
+                print("| %s | %d |" % (kind, waits_for))
 
     if len({wait["tid"] for wait in trace.waits}) <= 1:
         return
@@ -384,7 +423,7 @@ def main():
     woke, woke_us = collections.Counter(), collections.Counter()
     for wait in mine:
         asked = what(wait)
-        if asked not in (ALLOCATOR, ENGINE):
+        if asked not in (ALLOCATOR, ENGINE, CONDITION):
             continue
         meanwhile = [other for other in by_thread.get(wait["waker_tid"], [])
                      if other["end"] > wait["begin"] and other["begin"] < wait["end"] and other["us"] >= 200]

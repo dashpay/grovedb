@@ -86,6 +86,11 @@ def read(directory):
         if not named:
             continue
         report = json.load(open(path))
+        if (report.get("label"), report["background"]) != (named.group(1), named.group(2)):
+            sys.exit("tables.py: %s says of itself that it is %s under %s" % (
+                path, report.get("label"), report["background"]))
+        made_by = path[:-len(".json")] + ".build"
+        binary = open(made_by).read().strip() if os.path.exists(made_by) else None
         for engine in report["engines"]:
             off = [max(commit - ran, 0) for commit, ran in zip(engine["commit_ns"], engine["ran_ns"])]
             clock, parts = engine["clock"], engine.get("parts_ns")
@@ -97,7 +102,7 @@ def read(directory):
                 room=sum(1 for part in parts if part[5] > 0) if parts else None,
                 turns=engine.get("turns"),
                 late=[clock["late"][at] / max(clock["sleeps"], 1) for at in range(4)],
-                root=engine["root_hash"], build=report["commit"],
+                root=engine["root_hash"], build=report["commit"], binary=binary,
                 stream=(report["seed"], report["documents"], report["owners"],
                         report["warm_blocks"], len(engine["commit_ns"]))))
     return rows
@@ -198,6 +203,23 @@ def main():
                          "not asked for: %s" % (part, ", ".join("%s-%s-r%d %s" % key for key in sorted(want - have))
                                                 or "none", ", ".join("%s-%s-r%d %s" % key for key in sorted(have - want))
                                                 or "none"))
+    # The build of each name, and what `builds.txt` says the campaign's builds are.
+    of_build = collections.defaultdict(lambda: "base", allocated="exp1", covered="exp2")
+    builds = {}
+    builds_path = os.path.join(out, "builds.txt")
+    if os.path.exists(builds_path):
+        for line in open(builds_path):
+            found = re.match(r"(\w+): commit (\w+), sha256 (\w+)", line)
+            if found:
+                builds[found.group(1)] = (found.group(2), found.group(3))
+    if asked and len(builds) < 3:
+        sys.exit("tables.py: %s does not name the three builds of the campaign" % builds_path)
+    for row in main_rows + other_rows if builds else []:
+        if (row["build"], row["binary"]) != builds[of_build[row["label"]]]:
+            sys.exit("tables.py: the report %s-%s-r%d was made by the commit %s and the binary %s, and the "
+                     "campaign's build %s is %s and %s" % (
+                         row["label"], row["background"], row["round"], row["build"], row["binary"],
+                         of_build[row["label"]], *builds[of_build[row["label"]]]))
     streams = collections.defaultdict(set)
     for row in main_rows + other_rows:
         streams[row["stream"]].add(row["root"])
@@ -205,10 +227,36 @@ def main():
         if len(roots) > 1:
             sys.exit("tables.py: runs of one stream ended at different root hashes: " + ", ".join(sorted(roots)))
     waited, refused = [], []
-    for trace in sorted(glob.glob(os.path.join(out, "traces", "*.trace"))):
-        if not os.path.exists(trace[:-len(".trace")] + ".ok"):
-            refused.append((trace, "the traced run did not end well, or was made by an earlier form of "
-                                   "traced.sh: it has no file .ok beside it"))
+    # The traced runs of a campaign, where it made any: those of
+    # `campaign.sh`, by name.
+    there = {os.path.basename(path).split(".")[0] for path in glob.glob(os.path.join(out, "traces", "*"))}
+    wanted = []
+    if there and asked:
+        grounds = asked["backgrounds"].split()
+        wanted = ["%s-%s" % (engine, ground) for ground in grounds for engine in ("lignindb", "rocksdb")]
+        wanted += ["%s-%s%s" % (name, grounds[0], at) for name, at in (
+            ("lignindb", "-every-thread"), ("allocated", ""), ("covered", ""), ("lignindb", "-on-ext4"),
+            ("lignindb", "-on-ext4-lazytime"), ("lignindb", "-on-xfs"), ("allocated", "-on-ext4-lazytime"))]
+    for name in sorted(set(wanted) | there):
+        trace = os.path.join(out, "traces", name + ".trace")
+        stem = trace[:-len(".trace")]
+        if wanted and name not in wanted:
+            refused.append((trace, "it is no traced run of this campaign"))
+            continue
+        if not (os.path.exists(stem + ".ok") and os.path.exists(trace) and os.path.exists(stem + ".json")):
+            refused.append((trace, "the traced run was not made or did not end well: its trace, its report and "
+                                   "the file .ok that `traced.sh` leaves last are not all there"))
+            continue
+        report = json.load(open(stem + ".json"))
+        binary = open(stem + ".build").read().strip() if os.path.exists(stem + ".build") else None
+        build = of_build[name.split("-")[0]]
+        if asked and (report.get("label") != name or "-%s" % report["background"] not in name
+                      or len(report["engines"][0]["commit_ns"]) != int(asked["trace blocks"])
+                      or (report["commit"], binary) != builds[build]):
+            refused.append((trace, "its report is not of this traced run of this campaign: it says %s under %s, "
+                                   "%d blocks, commit %s, binary %s" % (
+                                       report.get("label"), report["background"],
+                                       len(report["engines"][0]["commit_ns"]), report["commit"], binary)))
             continue
         made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), "--marked", trace],
                               capture_output=True, text=True)

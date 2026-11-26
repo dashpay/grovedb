@@ -100,6 +100,12 @@ refuse() {
   exit 1
 }
 [ -z "$missing" ] || refuse "not found:$missing"
+# The script keeps lists of paths in words.
+case "$out$BUILDS" in *[[:space:]]*) refuse "OUT and BUILDS take a path without a space: $out, $BUILDS" ;; esac
+# What a run is of is the campaign's to say, and its tables go by it.
+for flag in --engine --background --blocks --label --commit --out --scratch --watch-files; do
+  case " ${LATENCY:-} " in *" $flag "*) refuse "LATENCY cannot give $flag: the campaign does" ;; esac
+done
 [ "$(uname -s)" = Linux ] || refuse "the traces and the file systems want Linux"
 sudo -n true 2> /dev/null || refuse "sudo asks for a password"
 [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ] ||
@@ -154,7 +160,7 @@ os.close(fd)
 os.unlink(path)
 took.sort()
 print("a sync of a 4 KiB append, of 1,000: median %.2f ms, 99%% %.2f ms, longest %.2f ms"
-      % (took[500] / 1e6, took[989] / 1e6, took[-1] / 1e6))
+      % (took[499] / 1e6, took[989] / 1e6, took[-1] / 1e6))
 PROBE
 }
 describe() { # describe NAME DIRECTORY
@@ -240,10 +246,20 @@ failed() {
   exit 1
 }
 
+# Whether a run that is there was made by the build that would make it now:
+# a campaign is of one set of builds, and a report says which made it.
+made_by() { # made_by FILE BUILD
+  [ "$(cat "$1.build" 2> /dev/null)" = "$(cat "$BUILDS/$2/sha256")" ] ||
+    refuse "$1 was made by another build than $BUILDS/$2: a campaign is of one set of builds"
+}
+
 # One run: run FILE BUILD ENGINES DIRECTORY BACKGROUND LABEL SETTINGS
 run() {
   local file=$1 build=$2 engines=$3 dir=${4:?} background=$5 label=$6 settings=$7 flags="" engine
-  [ -s "$file.json" ] && return 0
+  if [ -s "$file.json" ]; then
+    made_by "$file" "$build"
+    return 0
+  fi
   for engine in $engines; do flags="$flags --engine $engine"; done
   rm -rf "$dir/scratch"
   findmnt -no SOURCE,FSTYPE,OPTIONS -T "$dir" > "$file.mount"
@@ -252,6 +268,7 @@ run() {
     --background "$background" --blocks "$blocks" --label "$label" \
     --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} --out "$file.json.part" \
     > "$file.txt" 2> "$file.err" || failed "$file"
+  cp "$BUILDS/$build/sha256" "$file.build"
   mv "$file.json.part" "$file.json"
   cleared "$dir"
   say "$(basename "$file"): $(grep -E '^\| [^B-]' "$file.txt" | tr '\n' ' ')"
@@ -364,8 +381,11 @@ fi
 
 # Part 4. One traced run: traced FILE BUILD ENGINE DIRECTORY BACKGROUND THREADS SETTINGS
 traced() {
-  local file=$1 build=$2 engine=$3 dir=${4:?} background=$5 threads=$6 settings=$7 watch=""
-  [ -e "$file.ok" ] && return 0
+  local file=$1 build=$2 engine=$3 dir=${4:?} background=$5 threads=$6 settings=$7 watch="" status=0
+  if [ -e "$file.ok" ] && [ -s "$file.trace" ] && [ -s "$file.json" ]; then
+    made_by "$file" "$build"
+    return 0
+  fi
   [ "$engine" = lignindb ] && watch="--watch-files"
   rm -rf "$dir/scratch"
   findmnt -no SOURCE,FSTYPE,OPTIONS -T "$dir" > "$file.mount"
@@ -373,10 +393,20 @@ traced() {
   env $settings BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
     "$dir/scratch" --engine "$engine" --background "$background" --blocks "$trace_blocks" \
     $watch --label "$(basename "$file")" --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} \
-    2> "$file.err" || failed "$file"
+    2> "$file.err" || status=$?
+  cp "$BUILDS/$build/sha256" "$file.build"
   cleared "$dir"
+  # The runs that the experiments are held by are made: a traced run that
+  # failed is said, the others are made, and the tables say which has none.
+  if [ "$status" != 0 ]; then
+    rm -f "$file.ok"
+    traces_failed="$traces_failed $(basename "$file")"
+    say "the traced run $(basename "$file") failed: $(tail -1 "$file.err")"
+    return 0
+  fi
   say "traced $(basename "$file"): $(grep -E '^\| [^B-]' "$file.txt" | tr '\n' ' ')"
 }
+traces_failed=""
 if has traces; then
   mkdir -p "$out/traces" "$out/native"
   first=${backgrounds%% *}
@@ -404,4 +434,5 @@ if has tables; then
   [ "$made" = 0 ] ||
     refuse "the tables of the runs are in $out/tables.md, and a traced run has no table of its waits: it says why there"
 fi
+[ -z "$traces_failed" ] || refuse "these traced runs failed:$traces_failed"
 echo "finished: the tables are in $out/tables.md"
