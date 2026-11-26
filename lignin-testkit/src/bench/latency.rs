@@ -142,6 +142,9 @@ pub const MARK: &str = "lignin-mark commit";
 pub const MARK_BEGIN: &str = "lignin-mark measured begin";
 /// See [`MARK_BEGIN`].
 pub const MARK_END: &str = "lignin-mark measured end";
+/// What a line begins with that says where a block begins, before its
+/// operations: `lignin-mark block <block>`. Written with `--mark-blocks`.
+pub const MARK_BLOCK: &str = "lignin-mark block";
 
 /// What the engines do beside the commits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +209,10 @@ pub struct LatencyOptions {
     pub watch_files: bool,
     /// A commit at least this long is marked; none with zero.
     pub mark: Duration,
+    /// Every block is marked where it begins and where its commit has
+    /// ended, for a trace to tell the operations, the commit and the time
+    /// between two blocks apart by.
+    pub mark_blocks: bool,
     /// How many of the slowest commits a report lists.
     pub slowest: usize,
     /// A name for the build that runs.
@@ -238,6 +245,7 @@ impl LatencyOptions {
             engine: EngineSettings::default(),
             watch_files: false,
             mark: Duration::from_micros(2_000),
+            mark_blocks: false,
             slowest: 12,
             label: None,
             commit: None,
@@ -352,6 +360,14 @@ pub struct EngineLatency {
     /// What the thread that only sleeps saw beside the commits.
     #[serde(default)]
     pub clock: ClockProbe,
+    /// The blocks after whose commit the harness's own work, reading the
+    /// engine's counts, took longer than the pause: the next block began
+    /// late by that much.
+    #[serde(default)]
+    pub pauses_outlasted: u64,
+    /// The longest a block began late by, in nanoseconds.
+    #[serde(default)]
+    pub outlasted_ns: u64,
     /// The syncs the engine made through the watching file layer over the
     /// measured blocks, by what they are of: how many, and their time in
     /// nanoseconds. Empty where the layer was not asked for.
@@ -614,8 +630,8 @@ thread_local! {
 struct Seen {
     /// The syncs under way: a number, when each began, of what.
     under_way: Vec<(u64, Instant, &'static str)>,
-    /// The syncs that ended since the last trim: when each began and
-    /// ended, of what.
+    /// The syncs that ended since the measured blocks began: when each
+    /// began and ended, of what.
     ended: Vec<(Instant, Instant, &'static str)>,
     /// How many syncs ended, and their time in nanoseconds, by what they
     /// are of.
@@ -657,13 +673,10 @@ impl Watch {
         seen.counted.clear();
     }
 
-    /// Forgets the syncs that ended before `before`.
-    fn trim(&self, before: Instant) {
-        self.seen().ended.retain(|(_, ended, _)| *ended >= before);
-    }
-
     /// The syncs that had a moment in common with the time from `from` to
-    /// `to`, once every sync that began before `to` has ended.
+    /// `to`, once every sync that began before `to` has ended. It is asked
+    /// after the measured blocks and not between two of them: the wait for
+    /// a sync to end is no part of a run's pace.
     fn beside(&self, from: Instant, to: Instant) -> Vec<(String, u64)> {
         let seen = loop {
             let seen = self.seen();
@@ -856,15 +869,23 @@ use watching::Watching;
 struct Marker {
     sink: Option<std::fs::File>,
     from: Duration,
+    every: bool,
 }
 
 impl Marker {
-    fn new(from: Duration) -> Self {
+    fn new(from: Duration, every: bool) -> Self {
         let sink = std::fs::OpenOptions::new()
             .write(true)
             .open("/dev/null")
             .ok();
-        Marker { sink, from }
+        Marker { sink, from, every }
+    }
+
+    /// Where a block begins, if every block is marked.
+    fn block(&mut self, block: u64) {
+        if self.every {
+            self.line(&format!("{MARK_BLOCK} {block}"));
+        }
     }
 
     fn line(&mut self, line: &str) {
@@ -874,7 +895,7 @@ impl Marker {
     }
 
     fn mark(&mut self, block: u64, took: Duration) {
-        if !self.from.is_zero() && took >= self.from {
+        if self.every || (!self.from.is_zero() && took >= self.from) {
             self.line(&format!("{MARK} {block} {}", took.as_nanos()));
         }
     }
@@ -962,6 +983,18 @@ fn flushes<E: Engine + Sync>(
 
 fn measure<E: Subject>(options: &LatencyOptions) -> Result<EngineLatency, BenchError> {
     let dir = options.scratch.join(E::NAME);
+    // One run at a time has the database of a scratch directory: a second
+    // one is refused before it removes what the first is measuring. The
+    // lock is the system's, and goes with the process.
+    let lock_path = options.scratch.join(format!("{}.lock", E::NAME));
+    let lock = std::fs::File::create(&lock_path)
+        .map_err(|error| BenchError::io("creating the lock of the scratch directory", error))?;
+    if lock.try_lock().is_err() {
+        return Err(BenchError::Check(format!(
+            "another latency run has {}: give this one a --scratch of its own",
+            dir.display()
+        )));
+    }
     if dir.exists() {
         std::fs::remove_dir_all(&dir)
             .map_err(|error| BenchError::io("removing an earlier database", error))?;
@@ -1013,8 +1046,9 @@ fn measure_in<E: Subject>(
     let mut apply_ns = Vec::with_capacity(blocks);
     let mut ran_ns = Vec::with_capacity(blocks);
     let mut parts_ns = engine.look().map(|_| Vec::with_capacity(blocks));
-    let mut slowest: Vec<SlowCommit> = Vec::new();
-    let mut marker = Marker::new(options.mark);
+    // The slowest commits, each with when it began and ended.
+    let mut slowest: Vec<(SlowCommit, Instant, Instant)> = Vec::new();
+    let mut marker = Marker::new(options.mark, options.mark_blocks);
     let committed = AtomicU64::new(0);
     let stop = AtomicBool::new(false);
     let flushed = options.background == Background::Heavy && E::FLUSHED_BESIDE;
@@ -1022,30 +1056,66 @@ fn measure_in<E: Subject>(
     if let Some(watch) = watch {
         watch.begin();
     }
-    let turns_before = engine.look().map(|(_, turns)| turns);
+    let mut seen = engine.look();
+    let turns_before = seen.map(|(_, turns)| turns);
+    let (mut pauses_outlasted, mut outlasted) = (0, Duration::ZERO);
     let began = Instant::now();
 
-    let (measured, flushes_asked, neighbour_syncs, clock) = std::thread::scope(|scope| {
+    /// Has the helpers end, however the measured blocks are left.
+    struct Stops<'a>(&'a AtomicBool);
+    impl Drop for Stops<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let scoped = std::thread::scope(|scope| {
         let engine = &engine;
-        let probe = scope.spawn(|| clock_probe(&stop));
-        let flusher = flushed
-            .then(|| scope.spawn(|| flushes(engine, &committed, options.flush_blocks, &stop)));
+        // Before any helper is started: a failure to start one, or a panic
+        // of the blocks, leaves through this and ends the others, which the
+        // scope waits for.
+        let stops = Stops(&stop);
+        let start = |error| BenchError::io("starting a thread beside the commits", error);
+        let probe = std::thread::Builder::new()
+            .spawn_scoped(scope, || clock_probe(&stop))
+            .map_err(start)?;
+        let flusher = match flushed {
+            true => Some(
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, || {
+                        flushes(engine, &committed, options.flush_blocks, &stop)
+                    })
+                    .map_err(start)?,
+            ),
+            false => None,
+        };
         let (file, stop_beside) = (&neighbour_file, &stop);
-        let beside = options
-            .neighbour
-            .map(|every| scope.spawn(move || neighbour(file, every, stop_beside)));
+        let beside = match options.neighbour {
+            Some(every) => Some(
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || neighbour(file, every, stop_beside))
+                    .map_err(start)?,
+            ),
+            None => None,
+        };
 
         let mut measure = || -> Result<(), BenchError> {
             marker.line(MARK_BEGIN);
             for number in 0..options.blocks {
-                let before = engine.look();
+                marker.block(number);
                 let (applied, took, from, ran) = block(engine, &mut stream, grove_version, watch)?;
                 let to = from + took;
                 marker.mark(number, took);
+                // From here to the next block is the pause, which is counted
+                // from the commit's end: what the harness does in it, reading
+                // the engine's counts, moves the next block only where it
+                // takes longer than the pause, and then it is counted.
                 let nanos = took.as_nanos() as u64;
-                let parts = before.zip(engine.look()).map(|((before, _), (after, _))| {
+                let now = engine.look();
+                let parts = seen.zip(now).map(|((before, _), (after, _))| {
                     std::array::from_fn(|part| after[part].saturating_sub(before[part]))
                 });
+                seen = now;
                 commit_ns.push(nanos);
                 apply_ns.push(applied.as_nanos() as u64);
                 ran_ns.push(ran);
@@ -1053,30 +1123,37 @@ fn measure_in<E: Subject>(
                     all.push(parts);
                 }
                 let is_slow = slowest.len() < options.slowest
-                    || slowest.last().is_some_and(|last| nanos > last.commit_ns);
+                    || slowest
+                        .last()
+                        .is_some_and(|(last, ..)| nanos > last.commit_ns);
                 if is_slow && options.slowest > 0 {
-                    slowest.push(SlowCommit {
+                    let slow = SlowCommit {
                         block: number,
                         commit_ns: nanos,
                         ran_ns: ran,
                         parts_ns: parts,
                         append_calls: watch.map(Watch::appends),
-                        syncs_beside: watch.map_or_else(Vec::new, |watch| watch.beside(from, to)),
-                    });
-                    slowest.sort_by_key(|slow| std::cmp::Reverse(slow.commit_ns));
+                        syncs_beside: Vec::new(),
+                    };
+                    slowest.push((slow, from, to));
+                    slowest.sort_by_key(|(slow, ..)| std::cmp::Reverse(slow.commit_ns));
                     slowest.truncate(options.slowest);
                 }
-                if let Some(watch) = watch {
-                    watch.trim(from);
-                }
                 committed.fetch_add(1, Ordering::AcqRel);
-                std::thread::sleep(options.pause);
+                let left = (to + options.pause).saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    let late = Instant::now().saturating_duration_since(to + options.pause);
+                    pauses_outlasted += 1;
+                    outlasted = outlasted.max(late);
+                } else {
+                    std::thread::sleep(left);
+                }
             }
             marker.line(MARK_END);
             Ok(())
         };
         let measured = measure();
-        stop.store(true, Ordering::Release);
+        drop(stops);
         let join = |helper: Option<std::thread::ScopedJoinHandle<'_, Result<u64, BenchError>>>| {
             let joined = helper.map(|helper| helper.join());
             match joined {
@@ -1092,8 +1169,9 @@ fn measure_in<E: Subject>(
         let clock = probe.join().map_err(|_| {
             BenchError::Check("the thread that probes the machine's clock ended early".to_string())
         });
-        (measured, join(flusher), join(beside), clock)
+        Ok::<_, BenchError>((measured, join(flusher), join(beside), clock))
     });
+    let (measured, flushes_asked, neighbour_syncs, clock) = scoped?;
     measured?;
     let clock = clock?;
     let seconds = began.elapsed().as_secs_f64();
@@ -1105,6 +1183,16 @@ fn measure_in<E: Subject>(
     // A run whose background work failed is no measurement.
     engine.wait_for_background()?;
     let root_hash = engine.root_hash(grove_version)?;
+    // The syncs beside each of the slowest commits, now that none of them
+    // is under way.
+    let slowest = (slowest.into_iter())
+        .map(|(mut slow, from, to)| {
+            if let Some(watch) = watch {
+                slow.syncs_beside = watch.beside(from, to);
+            }
+            slow
+        })
+        .collect();
 
     Ok(EngineLatency {
         engine: E::NAME.to_string(),
@@ -1120,6 +1208,8 @@ fn measure_in<E: Subject>(
         flushes_asked: flushes_asked?,
         neighbour_syncs: neighbour_syncs?,
         clock,
+        pauses_outlasted,
+        outlasted_ns: outlasted.as_nanos() as u64,
         syncs,
         slowest,
     })
@@ -1219,10 +1309,12 @@ fn micros(nanos: u64) -> String {
 const HEAD: &str = "| Build | Engine | Background | Blocks | Median, µs | 99%, µs | 99.9%, µs | \
                     Longest, µs |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n";
 
-/// The group a row belongs to in a table of several runs: the build, by its
-/// name and its commit, the engine and what it did beside the commits. Two
-/// builds under one name are two groups.
-type Group = (String, String, String);
+/// The group a row belongs to in a table of several runs. Its first three
+/// fields are what a table shows: the build, by its name and the beginning
+/// of its commit, the engine, and what it did beside the commits. The last
+/// is everything the run was asked, the commit whole: two runs are of one
+/// group, and repeats of one another, only where all of it is the same.
+type Group = (String, String, String, String);
 
 fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
     let mut background = report.background.name().to_string();
@@ -1233,7 +1325,21 @@ fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
     if let Some(commit) = &report.commit {
         let _ = write!(build, " ({commit:.8})");
     }
-    (build, engine.engine.clone(), background)
+    let asked = format!(
+        "commit {}, GroveVersion {}, seed {}, {} documents of {} owners, {} warm and {} measured \
+         blocks, a pause of {} µs, a flush every {} blocks, settings [{}]",
+        report.commit.as_deref().unwrap_or("unknown"),
+        report.grove_protocol_version,
+        report.seed,
+        report.documents,
+        report.owners,
+        report.warm_blocks,
+        engine.commit_ns.len(),
+        report.pause_us,
+        report.flush_blocks,
+        engine.settings.join(" "),
+    );
+    (build, engine.engine.clone(), background, asked)
 }
 
 /// One report as text: its row for each engine, and what is told of the
@@ -1253,7 +1359,7 @@ pub fn table(report: &LatencyReport) -> String {
     );
     for engine in &report.engines {
         // One report is of one build, whose commit the line above names.
-        let (_, name, background) = group_of(report, engine);
+        let (_, name, background, _) = group_of(report, engine);
         let build = report.label.as_deref().unwrap_or("-");
         let [median, p99, p999, longest] = quantiles(&engine.commit_ns).map(micros);
         let _ = writeln!(
@@ -1301,6 +1407,13 @@ pub fn table(report: &LatencyReport) -> String {
             clock.late[2],
             clock.late[3],
             micros(clock.latest_ns),
+        );
+        let _ = write!(
+            out,
+            "\n- the pause after a commit is from the commit's end: the harness's own work outlasted \
+             it after {} blocks, by {} µs at the most",
+            engine.pauses_outlasted,
+            micros(engine.outlasted_ns),
         );
         let [median, p99, p999, longest] = quantiles(&engine.apply_ns).map(micros);
         let _ = writeln!(
@@ -1438,7 +1551,7 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
     );
     let mut groups: Vec<(&Group, Vec<&RunRow>)> = Vec::new();
     for row in &rows {
-        let (build, engine, background) = &row.group;
+        let (build, engine, background, _) = &row.group;
         let [median, p99, p999, longest] = row.commit.map(micros);
         let [_, off_p99, off_p999, off_longest] = row.off.map(micros);
         let off = format!("{off_p99} | {off_p999} | {off_longest}");
@@ -1472,7 +1585,23 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
          99.9%, µs | longest, µs |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | \
          --- |\n",
     );
-    for ((build, engine, background), runs) in groups {
+    // Two groups that a table shows alike were asked different things: each
+    // is numbered, and what it was asked is said below the table.
+    let shown = |group: &Group| (group.0.clone(), group.1.clone(), group.2.clone());
+    let mut notes = String::new();
+    for (at, (group, runs)) in groups.iter().enumerate() {
+        let (build, engine, background, asked) = group;
+        let alike = groups
+            .iter()
+            .filter(|(other, _)| shown(other) == shown(group))
+            .count();
+        let build = match alike {
+            1 => build.clone(),
+            _ => {
+                let _ = writeln!(notes, "- [{}] {asked}", at + 1);
+                format!("{build} [{}]", at + 1)
+            }
+        };
         let _ = write!(
             out,
             "| {build} | {engine} | {background} | {} |",
@@ -1487,6 +1616,12 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
             let _ = write!(out, " {} |", ranged(values));
         }
         out.push('\n');
+    }
+    if !notes.is_empty() {
+        let _ = write!(
+            out,
+            "\nRows that are numbered were asked different things:\n\n{notes}"
+        );
     }
     out
 }
@@ -1506,6 +1641,7 @@ pub fn parse_options(args: &[String]) -> Result<(LatencyOptions, Option<PathBuf>
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--watch-files" => options.watch_files = true,
+            "--mark-blocks" => options.mark_blocks = true,
             "--keep" => options.keep = true,
             _ => {
                 let value = args
@@ -1594,7 +1730,7 @@ mod tests {
             "--out r.json --scratch /s --label base --commit abc --engine rocksdb --background \
              heavy --set deferred=0 --seed 7 --documents 400 --owners 4 --warm-blocks 3 --blocks \
              9 --flush-blocks 2 --slowest 5 --pause-us 250 --mark-us 0 --neighbour-ms 4 \
-             --watch-files --keep",
+             --watch-files --mark-blocks --keep",
         ))
         .unwrap();
         assert_eq!(out, Some(PathBuf::from("r.json")));
@@ -1621,7 +1757,7 @@ mod tests {
         assert_eq!(options.pause, Duration::from_micros(250));
         assert_eq!(options.mark, Duration::ZERO);
         assert_eq!(options.neighbour, Some(Duration::from_millis(4)));
-        assert!(options.watch_files && options.keep);
+        assert!(options.watch_files && options.mark_blocks && options.keep);
 
         let (defaults, out) = parse_options(&[]).unwrap();
         assert_eq!(out, None);
@@ -1672,9 +1808,39 @@ mod tests {
         );
     }
 
+    thread_local! {
+        /// How long a look at the counts of [`Noting`] takes on this thread.
+        static LOOK: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+        /// The commit of [`Noting`] on this thread that panics, counted from 1.
+        static PANIC_AT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static COMMITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
     /// An engine that does nothing but note when its calls were made.
     struct Noting {
         noted: Mutex<Vec<(&'static str, Instant)>>,
+    }
+
+    impl Subject for Noting {
+        const FLUSHED_BESIDE: bool = false;
+        const WATCHED: bool = false;
+
+        fn asked(_background: Background) -> &'static [&'static str] {
+            &[]
+        }
+
+        fn open_for(
+            dir: &Path,
+            _settings: &EngineSettings,
+            _watch: Option<&'static Watch>,
+        ) -> Result<Self, BenchError> {
+            Self::open(dir)
+        }
+
+        fn look(&self) -> Option<([u64; 6], u64)> {
+            std::thread::sleep(LOOK.get());
+            Some(([0; 6], 0))
+        }
     }
 
     struct NotingBlock<'a>(&'a Noting);
@@ -1697,6 +1863,12 @@ mod tests {
 
         fn commit(self) -> Result<(), BenchError> {
             self.0.note("commit began");
+            COMMITS.set(COMMITS.get() + 1);
+            assert_ne!(
+                COMMITS.get(),
+                PANIC_AT.get(),
+                "the commit the test asked to panic"
+            );
             self.0.note("commit ended");
             Ok(())
         }
@@ -1797,6 +1969,178 @@ mod tests {
         assert!(
             began + took >= at("commit ended"),
             "the time ends inside the commit"
+        );
+    }
+
+    #[test]
+    fn the_pause_is_from_the_commits_end_and_what_outlasts_it_is_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        // The harness's own work is shorter than the pause: the blocks are
+        // a pause apart and no more, whatever that work took. The times are
+        // long, so that a machine that keeps the thread waiting for a tenth
+        // of a second changes nothing.
+        let options = LatencyOptions {
+            blocks: 4,
+            pause: Duration::from_millis(300),
+            ..small(dir.path())
+        };
+        LOOK.set(Duration::from_millis(100));
+        let paced = measure_in::<Noting>(&options, dir.path()).unwrap();
+        assert_eq!((paced.pauses_outlasted, paced.outlasted_ns), (0, 0));
+        // Four pauses of 0.3 s, and not four of 0.3 s and of the 0.1 s of a
+        // look besides, which are 1.6 s.
+        assert!(
+            (1.2..1.45).contains(&paced.seconds),
+            "{} s for four blocks",
+            paced.seconds
+        );
+        // It is longer than the pause: every block begins late, and the
+        // report says so.
+        let options = LatencyOptions {
+            pause: Duration::from_millis(4),
+            ..small(dir.path())
+        };
+        LOOK.set(Duration::from_millis(9));
+        let late = measure_in::<Noting>(&options, dir.path()).unwrap();
+        assert_eq!(late.pauses_outlasted, 12);
+        assert!(late.outlasted_ns >= 4_000_000, "{}", late.outlasted_ns);
+        let text = table(&LatencyReport {
+            engines: vec![late],
+            ..report_of(&options)
+        });
+        assert!(text.contains("outlasted it after 12 blocks"), "{text}");
+    }
+
+    fn report_of(options: &LatencyOptions) -> LatencyReport {
+        LatencyReport {
+            schema: SCHEMA.to_string(),
+            started_at_unix: 0,
+            machine: Machine::detect(None),
+            load_average_before: None,
+            load_average_after: None,
+            label: options.label.clone(),
+            commit: options.commit.clone(),
+            grove_protocol_version: options.grove_version.protocol_version,
+            seed: options.seed,
+            documents: options.documents,
+            owners: options.owners,
+            warm_blocks: options.warm_blocks,
+            pause_us: options.pause.as_micros() as u64,
+            background: options.background,
+            flush_blocks: options.flush_blocks,
+            neighbour_ms: None,
+            engines: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_panic_in_the_measured_blocks_ends_the_run_and_its_helpers() {
+        let (ended, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = tempfile::tempdir().unwrap();
+            let options = small(dir.path());
+            // The load is 21 blocks and the warm blocks are 2: the third
+            // measured commit panics, with the clock's probe running.
+            PANIC_AT.set(21 + 2 + 3);
+            let run = std::panic::catch_unwind(|| measure_in::<Noting>(&options, dir.path()));
+            let _ = ended.send(run.is_err());
+        });
+        // Without the helpers being told to end, the scope waits for the
+        // probe for ever.
+        let panicked = wait.recv_timeout(Duration::from_secs(60));
+        assert_eq!(panicked, Ok(true), "the run did not end");
+    }
+
+    #[test]
+    fn a_second_run_is_refused_the_scratch_directory_of_a_run() {
+        let scratch = tempfile::tempdir().unwrap();
+        let kept = scratch.path().join("rocksdb");
+        std::fs::create_dir_all(&kept).unwrap();
+        std::fs::write(kept.join("of the first run"), b"").unwrap();
+        let held = std::fs::File::create(scratch.path().join("rocksdb.lock")).unwrap();
+        held.lock().unwrap();
+        let options = LatencyOptions {
+            engines: vec![EngineChoice::RocksDb],
+            ..small(scratch.path())
+        };
+        let refused = run(&options).unwrap_err().to_string();
+        assert!(refused.contains("another latency run has"), "{refused}");
+        // What the first run has there is as it was.
+        assert!(kept.join("of the first run").exists());
+    }
+
+    #[test]
+    fn runs_that_were_asked_different_things_are_no_repeats_of_one_another() {
+        let options = LatencyOptions {
+            label: Some("head".to_string()),
+            commit: Some("fedcba9876543210".to_string()),
+            ..small(Path::new(""))
+        };
+        let engine = EngineLatency {
+            engine: "rocksdb".to_string(),
+            settings: Vec::new(),
+            root_hash: String::new(),
+            seconds: 0.0,
+            thread_id: None,
+            commit_ns: vec![1_000; 12],
+            apply_ns: vec![0; 12],
+            ran_ns: vec![0; 12],
+            parts_ns: None,
+            turns: None,
+            flushes_asked: 0,
+            neighbour_syncs: 0,
+            clock: ClockProbe::default(),
+            pauses_outlasted: 0,
+            outlasted_ns: 0,
+            syncs: BTreeMap::new(),
+            slowest: Vec::new(),
+        };
+        let one = LatencyReport {
+            engines: vec![engine.clone()],
+            ..report_of(&options)
+        };
+        // The same build and the same name, with another pause, another
+        // flush interval, another setting of the engine, and a commit that
+        // begins alike.
+        let paused = LatencyReport {
+            pause_us: 250,
+            ..one.clone()
+        };
+        let flushed = LatencyReport {
+            flush_blocks: 1,
+            ..one.clone()
+        };
+        let set = LatencyReport {
+            engines: vec![EngineLatency {
+                settings: vec!["deferred=0".to_string()],
+                ..engine
+            }],
+            ..one.clone()
+        };
+        let dirty = LatencyReport {
+            commit: Some("fedcba9876543210-dirty".to_string()),
+            ..one.clone()
+        };
+        for other in [paused, flushed, set, dirty] {
+            let apart = runs_table(&[one.clone(), other.clone()]);
+            assert!(!apart.contains("The median of the runs' values"), "{apart}");
+            // Two runs of each are two groups that a table shows alike,
+            // and it says what each was asked.
+            let both = runs_table(&[one.clone(), one.clone(), other.clone(), other]);
+            assert!(
+                both.contains("| head (fedcba98) [1] | rocksdb | default | 2 |"),
+                "{both}"
+            );
+            assert!(
+                both.contains("| head (fedcba98) [2] | rocksdb | default | 2 |"),
+                "{both}"
+            );
+            assert!(both.contains("- [2] commit fedcba9876543210"), "{both}");
+        }
+        let same = runs_table(&[one.clone(), one]);
+        assert!(
+            same.contains("| head (fedcba98) | rocksdb | default | 2 |"),
+            "{same}"
         );
     }
 
@@ -1920,8 +2264,10 @@ mod tests {
         assert_eq!(beside.len(), 8, "{beside:?}");
         assert_eq!(beside[0], "a value-log file");
         assert_eq!(beside[7], "the names of wal/");
-        watch.trim(Instant::now());
-        assert!(watch.beside(from, Instant::now()).is_empty());
+        let later = Instant::now();
+        assert!(watch
+            .beside(later, later + Duration::from_millis(1))
+            .is_empty());
     }
 
     fn small(scratch: &Path) -> LatencyOptions {
