@@ -10,50 +10,256 @@ use std::collections::{HashMap, HashSet};
 
 use lignin_format::tree_page::{Hash, HashField};
 use lignin_tree::{
-    fragment::Pages,
-    hash::{HashError, HashRules, Stale},
+    directory::record,
+    hash::{HashError, HashRules, Refusal, Stale},
+    node::NodeRef,
 };
 
 use super::*;
 use crate::txn::{LinkPut, NodePut, RootPut};
 
+/// A Merk that an evaluation comes to.
+struct Reached {
+    subtree: Subtree,
+    /// The Merk's id in the subtree directory: the Merks that its nodes
+    /// host are entered under it.
+    id: MerkId,
+    /// The cells of its nodes that have a stale hash and that the
+    /// evaluation comes to, in the order it comes to them. A Merk with
+    /// none is read and not written: the hash of its root is made from
+    /// the root's cell.
+    nodes: Vec<CellAddress>,
+}
+
 /// What an evaluation of one Merk comes to, read from the frames before a
-/// hash is made: the cells whose stale hashes it makes, and the Merks they
-/// are of.
+/// hash is made.
 struct Plan {
     /// The Merk that is asked for, and then each Merk that the evaluation
-    /// comes to through the pointer of a host whose value hash is stale,
-    /// in the order it comes to them: the subtree, and the cell of the
-    /// root.
-    merks: Vec<(Subtree, CellAddress)>,
-    /// For each of `merks`, the cells of its nodes that have a stale hash
-    /// and that the evaluation comes to, in the order it comes to them.
-    /// A Merk with none is read and not written: the hash of its root is
-    /// made from the root's cell.
-    nodes: Vec<Vec<CellAddress>>,
-    /// The first host with a stale value hash that is behind the roots it
-    /// hosts: its element is marked pending (`transactions.md` SC9), or
-    /// its cell points at a cell that is the root of no Merk. The
-    /// pointers of the first are not followed, and that pointer of the
-    /// second is not.
+    /// comes to through a host whose value hash is stale, in the order it
+    /// comes to them.
+    merks: Vec<Reached>,
+    /// The first host with a stale value hash that is behind the Merks it
+    /// hosts: its element is marked pending as the caller is shown the
+    /// marks (`transactions.md` SC9), or its cell points at a cell that
+    /// the subtree directory does not have as the root of the Merk the
+    /// host hosts there.
     behind: Option<CellAddress>,
 }
 
 impl Plan {
     /// How many cells have a hash to make.
     fn cells(&self) -> usize {
-        self.nodes.iter().map(Vec::len).sum()
+        self.merks.iter().map(|merk| merk.nodes.len()).sum()
     }
 
     /// The Merks with a hash to make, each by its place among `merks`.
     fn written(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.merks.len()).filter(|merk| !self.nodes[*merk].is_empty())
+        (0..self.merks.len()).filter(|merk| !self.merks[*merk].nodes.is_empty())
+    }
+}
+
+/// A Merk that a host whose value hash is stale points into: the one
+/// that the subtree directory has entered under the host, at the place
+/// of the pointer. The caller has no claim on it yet.
+struct Found {
+    host: CellAddress,
+    /// Where the host's cell points for the Merk's root.
+    pointer: CellAddress,
+    subtree: Subtree,
+}
+
+/// The walk that reads what an evaluation comes to. It goes where the
+/// evaluation goes (`lignin_tree::hash`): down from a cell through stale
+/// hashes only, to the child on a side whose hash is stale, and from a
+/// stale value hash to the root of each Merk the node hosts. A cell with
+/// no stale hash is not read. Each cell with one is passed once.
+///
+/// It stops at each Merk that a host points into until the caller holds
+/// a claim on it: no entry and no cell of a Merk is read before
+/// (`transactions.md` SC3, SC4). A place where a host's cell names no
+/// root is of a Merk with no node as the cell has it: nothing is read
+/// for it, as the evaluation reads nothing.
+struct Walk {
+    plan: Plan,
+    /// Where each Merk of the plan stands in it.
+    places: HashMap<Subtree, usize>,
+    passed: HashSet<CellAddress>,
+    /// The cells to go to, each with its Merk.
+    ahead: Vec<(usize, CellAddress)>,
+    /// The Merks that hosts were found to host and that are not claimed.
+    found: Vec<Found>,
+}
+
+/// The Merk that the node `key` of the Merk with the id `parent` hosts at
+/// `position`, as the subtree directory of `frames` has it.
+fn hosted_at(
+    frames: &Awake<'_, '_>,
+    parent: MerkId,
+    position: usize,
+    key: &[u8],
+) -> Result<Option<Subtree>, TxnError> {
+    let many = TxnError::Damaged("a cell with more places for Merks than a host has");
+    let position = u8::try_from(position).map_err(|_| many)?;
+    let at = record::child_key(parent, position, key);
+    let mut named = Vec::new();
+    let tree = frames.directory.tree();
+    let found = tree.get(&*frames.flat, &at, &mut named);
+    if !found.map_err(DirectoryError::from)? {
+        return Ok(None);
+    }
+    match record::decode_child(&named) {
+        Ok((prefix, _)) => Ok(Some(Subtree::new(prefix))),
+        Err(what) => Err(DirectoryError::Damaged {
+            key: at,
+            what: what.0,
+        }
+        .into()),
+    }
+}
+
+impl Walk {
+    /// A walk of the Merk `subtree`, which has the id `id` and its root at
+    /// `root`: from the root, and from each of `apart`, the cells of nodes
+    /// of the Merk with a stale hash that no stale hash need lead to.
+    fn new(subtree: Subtree, id: MerkId, root: CellAddress, apart: &[CellAddress]) -> Self {
+        let asked = Reached {
+            subtree,
+            id,
+            nodes: Vec::new(),
+        };
+        let mut ahead: Vec<(usize, CellAddress)> = apart.iter().rev().map(|at| (0, *at)).collect();
+        ahead.push((0, root));
+        Self {
+            plan: Plan {
+                merks: vec![asked],
+                behind: None,
+            },
+            places: HashMap::from([(subtree, 0)]),
+            passed: HashSet::new(),
+            ahead,
+            found: Vec::new(),
+        }
     }
 
-    /// The Merks whose root is hashed and that have no hash to make.
-    fn read(&self) -> impl Iterator<Item = Subtree> + '_ {
-        let read = (0..self.merks.len()).filter(|merk| self.nodes[*merk].is_empty());
-        read.map(|merk| self.merks[merk].0)
+    /// Goes on from the Merks that were found, each of which the caller
+    /// holds a claim on by now: to the root of each, where its host
+    /// points. A host that points elsewhere than the directory has the
+    /// root is behind.
+    fn follow(&mut self, frames: &Awake<'_, '_>) -> Result<(), TxnError> {
+        for found in std::mem::take(&mut self.found) {
+            let entry = frames.entry(&found.subtree)?;
+            let root = (entry.as_ref()).and_then(|entry| entry.root().map(|root| root.address));
+            let Some(entry) = entry.filter(|_| root == Some(found.pointer)) else {
+                self.plan.behind.get_or_insert(found.host);
+                continue;
+            };
+            let merks = &mut self.plan.merks;
+            let place = *self.places.entry(found.subtree).or_insert_with(|| {
+                merks.push(Reached {
+                    subtree: found.subtree,
+                    id: entry.id(),
+                    nodes: Vec::new(),
+                });
+                merks.len() - 1
+            });
+            self.ahead.push((place, found.pointer));
+        }
+        Ok(())
+    }
+
+    /// Reads every cell that is ahead, and what it leads to in the Merks
+    /// of the plan. The Merks that the hosts among them point into are
+    /// left in `found`: which Merk a pointer is of is read from the
+    /// subtree directory, under the host and the place of the pointer.
+    ///
+    /// `who` is shown the pending marks by `scopes`. The pointers of a
+    /// host that is marked for it are not looked at.
+    fn go(
+        &mut self,
+        frames: &mut Awake<'_, '_>,
+        scopes: &Scopes,
+        who: Who,
+    ) -> Result<(), TxnError> {
+        while let Some((merk, at)) = self.ahead.pop() {
+            let stale = frames.hashes.stale(at);
+            if stale.is_empty() || !self.passed.insert(at) {
+                continue;
+            }
+            self.plan.merks[merk].nodes.push(at);
+            let hosts = stale.has(HashField::Value);
+            let read = frames.tree.page(at.page(), |page| {
+                let node = page.node(at.slot())?;
+                let children = Side::BOTH.map(|side| {
+                    let link = node.link(side);
+                    link.filter(|_| stale.has(HashField::Child(side)))
+                        .map(|link| link.child)
+                });
+                let hosted = hosts.then(|| {
+                    let pointers: Vec<Option<CellAddress>> = node.hosted_roots().collect();
+                    (node.key().to_vec(), pointers)
+                });
+                Some((children, hosted))
+            })?;
+            let (children, hosted) = read.ok_or(NodeError::NoNode { address: at })?;
+            self.ahead
+                .extend(children.into_iter().flatten().map(|child| (merk, child)));
+            let Some((key, pointers)) = hosted else {
+                continue;
+            };
+            let (subtree, id) = (self.plan.merks[merk].subtree, self.plan.merks[merk].id);
+            if scopes.is_pending(who, &(subtree, key.as_slice().into())) {
+                self.plan.behind.get_or_insert(at);
+                continue;
+            }
+            for (position, pointer) in pointers.into_iter().enumerate() {
+                let Some(pointer) = pointer else {
+                    continue;
+                };
+                match hosted_at(frames, id, position, &key)? {
+                    Some(subtree) => self.found.push(Found {
+                        host: at,
+                        pointer,
+                        subtree,
+                    }),
+                    // No Merk is entered under the host there: the one
+                    // whose root the cell names was dropped, or moved
+                    // from under the host. Which Merk has its root in a
+                    // cell depends on what was laid out, and is not
+                    // asked.
+                    None => drop(self.plan.behind.get_or_insert(at)),
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The caller's rules, with a count of the calls: the hashes the tree
+/// layer computes are counted for the store as those of a commit are.
+struct Counted<'r, R> {
+    rules: &'r mut R,
+    calls: u64,
+}
+
+impl<R: HashRules> HashRules for Counted<'_, R> {
+    fn value_hash(
+        &mut self,
+        node: NodeRef<'_>,
+        value: &[u8],
+        hosted: &[Option<Hash>],
+    ) -> Result<Hash, Refusal> {
+        self.calls += 1;
+        self.rules.value_hash(node, value, hosted)
+    }
+
+    fn kv_hash(&mut self, key: &[u8], value_hash: &Hash) -> Result<Hash, Refusal> {
+        self.calls += 1;
+        self.rules.kv_hash(key, value_hash)
+    }
+
+    fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
+        self.calls += 1;
+        self.rules.node_hash(node)
     }
 }
 
@@ -123,78 +329,6 @@ fn node_hash<P: NodePages, R: HashRules>(
     made.map_err(|refused| TxnError::Hash(HashError::Rule(refused)))
 }
 
-/// Reads from `frames` what an evaluation of the Merk `subtree`, whose
-/// root is at `root`, comes to. Nothing is changed.
-///
-/// It goes where the evaluation goes (`lignin_tree::hash`): down from the
-/// root through stale hashes only, to the child on a side whose hash is
-/// stale, and from a stale value hash to the root of each Merk the node
-/// hosts. A cell with no stale hash is not read. Each cell with one is
-/// passed once, so the walk ends with the stale hashes it can reach.
-///
-/// A Merk that a host points at is named by the subtree directory: the
-/// record of the root's cell says which subtree it is the root of. A
-/// pointer at a cell that the directory has no such record of is not
-/// followed, and its host is taken to be behind.
-fn reached(
-    frames: &mut Awake<'_, '_>,
-    subtree: Subtree,
-    root: CellAddress,
-) -> Result<Plan, TxnError> {
-    let mut plan = Plan {
-        merks: vec![(subtree, root)],
-        nodes: vec![Vec::new()],
-        behind: None,
-    };
-    let mut places = HashMap::from([(subtree, 0)]);
-    let mut passed = HashSet::new();
-    let mut ahead = vec![(0, root)];
-    while let Some((merk, at)) = ahead.pop() {
-        let stale = frames.hashes.stale(at);
-        if stale.is_empty() || !passed.insert(at) {
-            continue;
-        }
-        plan.nodes[merk].push(at);
-        let hosts = stale.has(HashField::Value);
-        let behind = hosts && frames.tree.host_is_behind(at);
-        if behind {
-            plan.behind.get_or_insert(at);
-        }
-        let read = frames.tree.page(at.page(), |page| {
-            let node = page.node(at.slot())?;
-            let children = Side::BOTH.map(|side| {
-                let link = node.link(side);
-                link.filter(|_| stale.has(HashField::Child(side)))
-                    .map(|link| link.child)
-            });
-            let hosted: Vec<CellAddress> = match hosts && !behind {
-                true => node.hosted_roots().flatten().collect(),
-                false => Vec::new(),
-            };
-            Some((children, hosted))
-        })?;
-        let (children, hosted) = read.ok_or(NodeError::NoNode { address: at })?;
-        ahead.extend(children.into_iter().flatten().map(|child| (merk, child)));
-        for hosted_root in hosted {
-            let owner = (frames.directory).root_owner(&*frames.flat, hosted_root)?;
-            let Some(owner) = owner.map(Subtree::new) else {
-                // The cell is the root of no Merk: of one that the
-                // transaction cleared, whose host it has not written
-                // since. The host is behind as one that is marked is.
-                plan.behind.get_or_insert(at);
-                continue;
-            };
-            let place = *places.entry(owner).or_insert_with(|| {
-                plan.merks.push((owner, hosted_root));
-                plan.nodes.push(Vec::new());
-                plan.merks.len() - 1
-            });
-            ahead.push((place, hosted_root));
-        }
-    }
-    Ok(plan)
-}
-
 /// Reads the cell at `at`, whose hashes were made, and then the key of
 /// each of its children from the child's cell (`tree-page.md` TP10).
 fn read_made(frames: &mut Awake<'_, '_>, at: CellAddress) -> Result<Made, TxnError> {
@@ -238,16 +372,16 @@ fn read_made(frames: &mut Awake<'_, '_>, at: CellAddress) -> Result<Made, TxnErr
 /// (`pages::held`).
 fn read_all(frames: &mut Awake<'_, '_>, plan: &Plan) -> Result<Vec<Vec<Made>>, TxnError> {
     let mut all = Vec::with_capacity(plan.merks.len());
-    for (cells, (_subtree, _)) in plan.nodes.iter().zip(&plan.merks) {
+    for merk in &plan.merks {
         #[cfg(any(test, feature = "held_reads"))]
-        let root = frames.root(_subtree)?;
-        let mut nodes = Vec::with_capacity(cells.len());
-        for at in cells {
+        let root = frames.root(&merk.subtree)?;
+        let mut nodes = Vec::with_capacity(merk.nodes.len());
+        for at in &merk.nodes {
             let node = read_made(frames, *at)?;
             #[cfg(any(test, feature = "held_reads"))]
             {
                 let answer = held::Answer::Evaluated(*at);
-                held::to_the_search(&mut frames.tree, _subtree, root, &node.key, answer)?;
+                held::to_the_search(&mut frames.tree, &merk.subtree, root, &node.key, answer)?;
             }
             nodes.push(node);
         }
@@ -256,12 +390,48 @@ fn read_all(frames: &mut Awake<'_, '_>, plan: &Plan) -> Result<Vec<Vec<Made>>, T
     Ok(all)
 }
 
+/// Holds what a walk passed in the Merk `subtree`, whose root is at
+/// `root`, to every key the transaction has put a node under there: a
+/// cell that has a stale hash was passed. So no stale hash of the Merk is
+/// left by the call. It is so in a test build and in one with
+/// `held_reads`, and the searches are not counted as keyed lookups.
+#[cfg(any(test, feature = "held_reads"))]
+fn hold_passed(
+    frames: &mut Awake<'_, '_>,
+    set: &WriteSet,
+    subtree: Subtree,
+    root: CellAddress,
+    passed: &HashSet<CellAddress>,
+) -> Result<(), TxnError> {
+    for key in set.nodes_by_every_key(subtree) {
+        let Some(at) = held::sought(&mut frames.tree, Some(root), key)? else {
+            continue;
+        };
+        assert!(
+            frames.hashes.stale(at).is_empty() || passed.contains(&at),
+            "the node {key:02x?} of {subtree:?} has a stale hash that the call does not come to",
+        );
+    }
+    Ok(())
+}
+
 impl<'s> WriteTxn<'s> {
     /// [`Scope::evaluate`] and [`WriteTxn::evaluate`], for `who`.
-    ///
+    pub(super) fn evaluate_in<R: HashRules>(
+        &self,
+        who: Who,
+        subtree: Subtree,
+        rules: &mut R,
+    ) -> Result<Option<Hash>, TxnError> {
+        let mut rules = Counted { rules, calls: 0 };
+        let hash = self.evaluate_counted(who, subtree, &mut rules);
+        self.path.stats.count_hashes(rules.calls);
+        hash
+    }
+
     /// Nothing is changed before the hashes are made, but for the layout
     /// of the scope's own writes and the claims it is granted.
-    pub(super) fn evaluate_in<R: HashRules>(
+    fn evaluate_counted<R: HashRules>(
         &self,
         who: Who,
         subtree: Subtree,
@@ -285,67 +455,76 @@ impl<'s> WriteTxn<'s> {
             )));
         }
         self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
-        let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
-            // The transaction has written nothing, so no hash is stale:
-            // the Merk is the committed one.
-            let Some(root) = self.seen(state, &op.guard, op.at, &subtree)? else {
+        let gone = || TxnError::Damaged("the frames of an operation are gone");
+        let (root, hosted, mut walk, apart) = {
+            let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
+                // The transaction has written nothing, so no hash is
+                // stale: the Merk is the committed one.
+                let Some(root) = self.seen(state, &op.guard, op.at, &subtree)? else {
+                    return Err(BatchError::NotEntered { subtree }.into());
+                };
+                let Some(root) = root else {
+                    return Ok(None);
+                };
+                let (guard, lease) = (&op.guard, state.lease);
+                let mut pages =
+                    (self.path).committed_pages(guard, op.at, lease, &mut state.buffers);
+                return node_hash(&mut pages, rules, root).map(Some);
+            };
+            let Some(entry) = frames.entry(&subtree)? else {
                 return Err(BatchError::NotEntered { subtree }.into());
             };
-            let Some(root) = root else {
+            let Some(root) = entry.root().map(|root| root.address) else {
                 return Ok(None);
             };
-            let (guard, lease) = (&op.guard, state.lease);
-            let mut pages = (self.path).committed_pages(guard, op.at, lease, &mut state.buffers);
-            return node_hash(&mut pages, rules, root).map(Some);
+            // A stale hash of the Merk that no stale hash above it leads
+            // to is found by the write that left it: the write set lists
+            // those, and the key of each leads to its cell.
+            let mut apart = Vec::new();
+            for (_, key) in state.set.unmade(subtree) {
+                let (at, _) = frames.sought(&subtree, Some(root), key)?;
+                apart.extend(at.filter(|at| !frames.hashes.stale(*at).is_empty()));
+            }
+            let walk = Walk::new(subtree, entry.id(), root, &apart);
+            (root, entry.host().is_some(), walk, apart)
         };
-        let Some(entry) = frames.entry(&subtree)? else {
-            return Err(BatchError::NotEntered { subtree }.into());
-        };
-        let Some(root) = entry.root().map(|root| root.address) else {
-            return Ok(None);
-        };
-        let plan = reached(&mut frames, subtree, root)?;
+        // The walk stops at each Merk that a host hosts, and the claim on
+        // it is taken before anything of it is read.
+        loop {
+            let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
+            walk.follow(&frames)?;
+            walk.go(&mut frames, &state.scopes, who)?;
+            drop(frames);
+            if walk.found.is_empty() {
+                break;
+            }
+            for found in &walk.found {
+                self.claim_read(state, &op.guard, op.at, who, Unit::data(found.subtree))?;
+            }
+        }
+        #[cfg(any(test, feature = "held_reads"))]
+        {
+            let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
+            hold_passed(&mut frames, &state.set, subtree, root, &walk.passed)?;
+        }
+        let plan = walk.plan;
         if plan.cells() == 0 {
+            // No hash of the Merk is stale: its root is read.
+            let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
             return node_hash(&mut frames.tree, rules, root).map(Some);
         }
         // A Merk with a host is anchored in a write that does not hold
         // the host: its root stays where the host's cell points. The
         // Merks after the first were come to through such a pointer.
-        let hosted = entry.host().is_some();
         let anchored = |merk: usize| merk > 0 || hosted;
-        drop(frames);
 
-        // The claims are taken before a hash is made, all of them or none
-        // (SC3), as those of a batch: one that holds a change set of every
-        // Merk a hash is made in, and in which a node names, as Merks it
-        // hosts, the others whose roots are hashed. The value hash of
-        // their host is made from those roots, as the cell of a host
-        // that names a Merk is written with its root: either reads the
-        // Merk's unit. The node stands for nothing else, and the batch
-        // is applied to nothing.
-        let read: Vec<Subtree> = plan.read().collect();
-        let none = [0; 32];
-        let names = [NodePut {
-            key: &[],
-            feature: &[],
-            value_hash: &none,
-            kv_hash: &none,
-            left: None,
-            right: None,
-            hosted: Hosted::Set(&read),
-            value: ValuePut::Keep,
-            stale: Stale::NONE,
-            at: None,
-        }];
+        // The write claims are taken before a hash is made, all of them
+        // or none (SC3), as those of a batch that holds a change set of
+        // every Merk a hash is made in. The batch is applied to nothing.
         let stated: Vec<MerkWrite<'_>> = (plan.written())
             .map(|merk| MerkWrite {
-                subtree: plan.merks[merk].0,
-                // The Merk that is asked for is the first, and has a
-                // hash to make.
-                nodes: match merk {
-                    0 => &names,
-                    _ => &[],
-                },
+                subtree: plan.merks[merk].subtree,
+                nodes: &[],
                 removed: &[],
                 root: RootPut::Keep,
                 anchored: anchored(merk),
@@ -368,9 +547,13 @@ impl<'s> WriteTxn<'s> {
             return Err(TxnError::Hash(HashError::HostBehind { host }));
         }
 
-        let woken = Woken::wake(&mut state.frames, &op.guard);
-        let mut frames = woken.ok_or(TxnError::Damaged("the frames of an operation are gone"))?;
+        let mut frames = Woken::wake(&mut state.frames, &op.guard).ok_or_else(gone)?;
         let before = *frames.hashes.counters();
+        // The hosts that are behind for the caller were refused above. A
+        // mark of another scope that is still open is not shown to it
+        // (SC9), and the caller holds every Merk that a host it comes to
+        // points into: the tree layer is told of no host that is behind.
+        let behind = std::mem::take(&mut frames.tree.behind);
         let hash = {
             let Frames {
                 tree,
@@ -379,11 +562,24 @@ impl<'s> WriteTxn<'s> {
                 hashes,
                 ..
             } = &mut *frames;
-            hashes.hash_of(tree, &mut values.reader(source), rules, root)
+            let mut values = values.reader(source);
+            let hash = hashes.hash_of(tree, &mut values, rules, root);
+            hash.and_then(|hash| {
+                for at in &apart {
+                    if !hashes.stale(*at).is_empty() {
+                        hashes.evaluate(tree, &mut values, rules, *at)?;
+                    }
+                }
+                Ok(hash)
+            })
         };
+        frames.tree.behind = behind;
         let after = *frames.hashes.counters();
+        let nodes = plan.merks.iter().flat_map(|merk| &merk.nodes);
         let all = (after.nodes - before.nodes) as usize == plan.cells()
-            && (plan.nodes.iter().flatten()).all(|at| frames.hashes.stale(*at).is_empty());
+            && nodes
+                .into_iter()
+                .all(|at| frames.hashes.stale(*at).is_empty());
         let read = match hash {
             Ok(hash) if all => read_all(&mut frames, &plan).map(|made| (hash, made)),
             Ok(_) => Err(TxnError::Damaged(
@@ -410,7 +606,7 @@ impl<'s> WriteTxn<'s> {
         for (merk, made) in made.iter().enumerate().filter(|(_, made)| !made.is_empty()) {
             let nodes: Vec<NodePut<'_>> = made.iter().map(Made::put).collect();
             let merks = [MerkWrite {
-                subtree: plan.merks[merk].0,
+                subtree: plan.merks[merk].subtree,
                 nodes: &nodes,
                 removed: &[],
                 root: RootPut::Keep,

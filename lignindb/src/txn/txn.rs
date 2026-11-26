@@ -4254,14 +4254,17 @@ macro_rules! reads {
         /// (`lignin_tree::hash`, `transactions.md` CM3 step 5;
         /// `crate::txn`, "An evaluation before the commit").
         ///
-        /// Every stale hash that the evaluation of the root comes to is
-        /// made once and stored in its cell: of the nodes of the Merk,
-        /// and of the nodes of each Merk that one of them hosts where
-        /// the value hash of the host is stale. A node that is read
-        /// afterwards has those hashes, and none of them is stale
-        /// ([`NodeView::stale`]). A commit that follows makes none of
-        /// them again. Where the root has no stale hash, the call reads
-        /// the root's cell, changes nothing and adds nothing.
+        /// Every stale hash of the Merk is made once: those that the
+        /// evaluation of the root comes to, and those of a node that no
+        /// stale hash leads to. With them, the stale hashes of each Merk
+        /// that a node hosts where the value hash of the host is stale,
+        /// as far as the root hash of that Merk is made from them. A
+        /// node of `subtree` that is read afterwards has its hashes, and
+        /// none of them is stale ([`NodeView::stale`]). A commit that
+        /// follows makes none of them again. Where the Merk has no stale
+        /// hash, the call reads the root's cell, changes nothing and
+        /// adds nothing. The calls of `rules` are counted as hashes of
+        /// the store.
         ///
         /// **It is a write** of every node it makes a hash of: of the
         /// node as its cell has it afterwards, with every hash stated
@@ -4272,9 +4275,13 @@ macro_rules! reads {
         /// and frames that are made again have them again.
         ///
         /// Through a scope it claims a read of `subtree`, as a read of
-        /// its entry does, and then, together or not at all, a write of
-        /// each Merk it makes a hash in and a read of each other Merk
-        /// whose root it hashes (SC3). A scope that keeps its writes in
+        /// its entry does, then a read of each Merk it comes to through
+        /// the pointer of a host, before it reads anything of that Merk,
+        /// and at the end, together or not at all, a write of each Merk
+        /// it makes a hash in (SC3). The Merk under a host is the one
+        /// that the subtree directory has entered there, so the answer
+        /// is the same whether the writes of the scopes beside the
+        /// caller are laid out or not. A scope that keeps its writes in
         /// the write set has them laid out first ([`Scope::lay_out`]),
         /// also where the call is then refused. Through the transaction,
         /// a hash is made only while no scope is open
@@ -4291,17 +4298,26 @@ macro_rules! reads {
         ///   the transaction ([`BatchError::EvaluatedByKey`]), and with
         ///   the refusal of the layout where its writes cannot be laid
         ///   out;
-        /// - where a host with a stale value hash is behind the roots
-        ///   it hosts: it is marked pending, or points at the root that
-        ///   a Merk had before it was cleared ([`TxnError::Hash`] of
+        /// - for a Merk that another open scope holds
+        ///   ([`TxnError::ScopeOverlap`]);
+        /// - where a host with a stale value hash is behind the Merks
+        ///   it hosts: it is marked pending as the caller is shown the
+        ///   marks ([`Scope::is_pending`]), or points elsewhere than at
+        ///   the root of a Merk that is entered under it there, as after
+        ///   a clear or a drop
+        ///   ([`TxnError::Hash`] of
         ///   [`HostBehind`](lignin_tree::hash::HashError::HostBehind)).
         ///
-        /// Where a rule refuses a hash, or a page or a value is not
-        /// read, the error is [`TxnError::Hash`], the write set is what
-        /// it was, and every hash that was stale is stale. If a hash was
-        /// stored before the error, the frames are made again from the
-        /// write set, and every node handle read through the transaction
-        /// has ended (PN8).
+        /// Where a rule refuses a hash, or the evaluation does not read
+        /// a page or a value, the error is [`TxnError::Hash`], the write
+        /// set is what it was, and every hash that was stale is stale.
+        /// If a hash was stored before the error, the frames are made
+        /// again from the write set, and every node handle read through
+        /// the transaction has ended (PN8). A page or a record of the
+        /// subtree directory that is not read outside the evaluation,
+        /// while the call finds what it comes to or reads what it made,
+        /// is told as any read tells it ([`TxnError::Node`],
+        /// [`TxnError::Directory`]), with nothing changed.
         ///
         /// `rules` are called inside the operation: they must not call
         /// the transaction.

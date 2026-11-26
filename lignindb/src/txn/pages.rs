@@ -166,7 +166,9 @@ pub(crate) mod held {
     //! keeps each node it made a hash of in the write set under the
     //! node's key, in the Merk it took the cell to be of. Each such cell
     //! is held to the same search: the key leads to it from the root of
-    //! that Merk.
+    //! that Merk. And every key the transaction put a node under in the
+    //! Merk that was asked for is searched for, with the same search: a
+    //! cell with a stale hash is one the call comes to.
     //!
     //! The search of the hold is not counted as a keyed lookup, as that
     //! of [`find`] is. It reads the cells from the root to the key, which
@@ -225,6 +227,16 @@ pub(crate) mod held {
     #[cfg(test)]
     pub(crate) fn compared() -> Compared {
         COMPARED.replace(Compared::default())
+    }
+
+    /// The cell that `key` leads to from `root`: the search of a hold,
+    /// which is not counted as a keyed lookup.
+    pub(crate) fn sought<P: NodePages>(
+        pages: &mut P,
+        root: Option<CellAddress>,
+        key: &[u8],
+    ) -> Result<Option<CellAddress>, TxnError> {
+        search(pages, root, key, false)
     }
 
     /// Holds what the table answered of `key` in the Merk `subtree`,

@@ -2,11 +2,14 @@
 //! and an index of them by record key (`transactions.md` WT2, WT3).
 
 use std::{
-    collections::{hash_map, BTreeMap, HashMap, HashSet},
+    collections::{hash_map, BTreeMap, BTreeSet, HashMap, HashSet},
     ops::Bound,
 };
 
-use lignin_format::{tree_page::Hash, CommitVersion};
+use lignin_format::{
+    tree_page::{Hash, HashField, Side},
+    CommitVersion,
+};
 use lignin_tree::hash::Stale;
 
 use super::{
@@ -107,6 +110,22 @@ pub(crate) struct NodeEntry {
     pub(crate) value: ValueEntry,
     /// The hashes the write left stale.
     pub(crate) stale: Stale,
+}
+
+impl NodeEntry {
+    /// Whether the write left a hash of its node stale, as the pages
+    /// mark it: the hash of a child the node does not have is none.
+    fn leaves_stale(&self) -> bool {
+        if self.stale.is_empty() {
+            return false;
+        }
+        let links = [(Side::Left, &self.left), (Side::Right, &self.right)];
+        let missing = links.iter().filter(|(_, link)| link.is_none());
+        let stale = missing.fold(self.stale, |stale, (side, _)| {
+            stale.without(HashField::Child(*side))
+        });
+        !stale.is_empty()
+    }
 }
 
 /// What an entry does to its key.
@@ -512,6 +531,9 @@ struct UnitIndex {
     keys: BTreeMap<Box<[u8]>, EntryId>,
     /// The range deletes, oldest first.
     ranges: Vec<EntryId>,
+    /// The puts of nodes that left a hash stale and that no later write
+    /// of the same node has passed ([`WriteSet::unmade`]).
+    stale: BTreeSet<EntryId>,
 }
 
 /// A place in a write set: the writes after it can be taken out again, which
@@ -621,6 +643,11 @@ pub(crate) struct WriteSet {
     /// under: the number of the one that came last. It never goes back.
     first_writes: u64,
     met: usize,
+    /// How many entries the units list as puts that left a hash stale
+    /// (`UnitIndex::stale`), and whether one was listed since the set was
+    /// last cleared.
+    unmade: usize,
+    listed: bool,
     /// The serial of the operation that was added last. It never goes back.
     serial: u64,
 }
@@ -886,6 +913,7 @@ impl WriteSet {
         }
         while self.entries.len() > mark.entries {
             let id = (self.entries.len() - 1) as EntryId;
+            self.unpass(id);
             let entry = self.entries.pop().expect("more entries than the mark");
             if entry.met {
                 self.met -= 1;
@@ -1006,6 +1034,8 @@ impl WriteSet {
         }
         #[cfg(any(test, feature = "held_reads"))]
         self.hold_said();
+        #[cfg(any(test, feature = "held_reads"))]
+        self.hold_unmade();
         true
     }
 
@@ -1146,6 +1176,8 @@ impl WriteSet {
         self.written.clear();
         self.came.clear();
         self.met = 0;
+        self.unmade = 0;
+        self.listed = false;
     }
 
     /// The subtrees below the one a drop or a clear names that the
@@ -1227,7 +1259,108 @@ impl WriteSet {
             };
         }
         self.entries.push(entry);
+        if self.unmade > 0 && !kind.is_range() {
+            // The write of the same record before this one is passed.
+            if let Some(prior) = self.prior(id) {
+                self.set_unmade(prior, false);
+            }
+        }
+        if matches!(kind, Kind::Node(node) if node.leaves_stale()) {
+            self.set_unmade(id, true);
+        }
         id
+    }
+
+    /// Lists the entry `id` among the puts of its unit that left a hash
+    /// stale, or takes it from them.
+    fn set_unmade(&mut self, id: EntryId, listed: bool) {
+        let unit = self.entry(id).unit;
+        let Some(index) = self.units.get_mut(&unit) else {
+            return;
+        };
+        match listed {
+            true if index.stale.insert(id) => {
+                self.unmade += 1;
+                self.listed = true;
+            }
+            false if index.stale.remove(&id) => self.unmade -= 1,
+            _ => {}
+        }
+    }
+
+    /// The entry `id`, the newest, is about to be taken out: it is listed
+    /// no more, and the write of the same record that it passed is listed
+    /// again if that left a hash stale.
+    fn unpass(&mut self, id: EntryId) {
+        if !self.listed || self.entry(id).kind.is_range() {
+            return;
+        }
+        self.set_unmade(id, false);
+        let passed = self.prior(id).filter(
+            |prior| matches!(self.entry(*prior).kind, Kind::Node(node) if node.leaves_stale()),
+        );
+        if let Some(passed) = passed {
+            self.set_unmade(passed, true);
+        }
+    }
+
+    /// The puts of nodes of the Merk `subtree` that left a hash stale and
+    /// are the transaction's newest write of their record, each with its
+    /// key, oldest first within each prefix the Merk was read under.
+    ///
+    /// The list that is kept for this holds each such put from when it is
+    /// added: a later write of the same record takes it out, as the
+    /// transaction read the record's subtree then ([`Self::prior`]), and
+    /// puts it back where that write is taken out. What a drop or a clear
+    /// took is passed here with no step for each. So a call costs the
+    /// puts that are returned, each looked up as a read of its record is
+    /// ([`Self::own`]), and a step for each range delete of the Merk's
+    /// data column.
+    ///
+    /// A put of a node that is in no tree left no hash marked on the
+    /// pages, and is returned all the same.
+    pub(crate) fn unmade(&self, subtree: Subtree) -> Vec<(EntryId, &[u8])> {
+        let mut puts = Vec::new();
+        if self.unmade == 0 {
+            return puts;
+        }
+        let unit = Unit::data(subtree);
+        let stretches = match self.moved.is_empty() {
+            true => vec![Stretch {
+                subtree,
+                after: None,
+                before: None,
+            }],
+            false => self.stretches(subtree, None).0,
+        };
+        for stretch in &stretches {
+            let Some(index) = self.units.get(&Unit::data(stretch.subtree)) else {
+                continue;
+            };
+            let held = index.ranges.iter().rev().copied();
+            let cut = held
+                .filter(|id| stretch.holds(*id))
+                .find(|id| matches!(self.entry(*id).kind, Kind::Dropped | Kind::Cleared));
+            let low = cut.or(stretch.after).map_or(0, |id| id.saturating_add(1));
+            let high = stretch.before.unwrap_or(EntryId::MAX);
+            for id in index.stale.range(low..high).copied() {
+                let key = self.key(id);
+                if self.own(unit, key) == Own::Node(id) {
+                    puts.push((id, key));
+                }
+            }
+            if cut.is_some() {
+                // What is older went with the drop or the clear.
+                break;
+            }
+        }
+        #[cfg(any(test, feature = "held_reads"))]
+        {
+            let listed: BTreeSet<EntryId> = puts.iter().map(|(id, _)| *id).collect();
+            let every = self.unmade_by_every_key(subtree);
+            assert_eq!(listed, every, "the puts that left a hash stale");
+        }
+        puts
     }
 
     fn link(&mut self, link: Option<LinkPut<'_>>) -> Option<LinkEntry> {
@@ -3188,6 +3321,75 @@ mod held {
             scoped
         }
 
+        /// The puts that [`WriteSet::unmade`] returns for `subtree`,
+        /// from every key the set has under each prefix the Merk was read
+        /// under: those that are the newest write of their record and
+        /// left a hash stale.
+        pub(super) fn unmade_by_every_key(&self, subtree: Subtree) -> BTreeSet<EntryId> {
+            let unit = Unit::data(subtree);
+            let (stretches, _) = self.stretches(subtree, None);
+            let mut puts = BTreeSet::new();
+            for stretch in &stretches {
+                let at = Unit::data(stretch.subtree);
+                let Some(index) = self.units.get(&at) else {
+                    continue;
+                };
+                for key in index.keys.keys() {
+                    let Own::Node(id) = self.own(unit, key) else {
+                        continue;
+                    };
+                    let Kind::Node(node) = self.entry(id).kind else {
+                        unreachable!("a node is a put of one");
+                    };
+                    if node.leaves_stale() {
+                        puts.insert(id);
+                    }
+                }
+            }
+            puts
+        }
+
+        /// The keys of the nodes of the Merk `subtree` that the
+        /// transaction put and that are its newest write of their
+        /// record, from every key the set has under each prefix the
+        /// Merk was read under.
+        pub(crate) fn nodes_by_every_key(&self, subtree: Subtree) -> Vec<&[u8]> {
+            let unit = Unit::data(subtree);
+            let (stretches, _) = self.stretches(subtree, None);
+            let indexes = stretches
+                .iter()
+                .filter_map(|stretch| self.units.get(&Unit::data(stretch.subtree)));
+            let keys = indexes.flat_map(|index| index.keys.keys());
+            let nodes = keys.filter(|key| matches!(self.own(unit, key), Own::Node(_)));
+            nodes.map(|key| &**key).collect()
+        }
+
+        /// Holds the puts that the units list as having left a hash
+        /// stale to every entry of the set, oldest first: each lists
+        /// itself if it is such a put, and takes out the write of its
+        /// record before it.
+        pub(super) fn hold_unmade(&self) {
+            let mut every: BTreeSet<(Unit, EntryId)> = BTreeSet::new();
+            for (id, entry) in (0..).zip(&self.entries) {
+                if entry.kind.is_range() {
+                    continue;
+                }
+                if let Some(prior) = self.prior(id) {
+                    every.remove(&(self.entry(prior).unit, prior));
+                }
+                if matches!(entry.kind, Kind::Node(node) if node.leaves_stale()) {
+                    every.insert((entry.unit, id));
+                }
+            }
+            let listed = self.units.iter();
+            let listed: BTreeSet<(Unit, EntryId)> = listed
+                .flat_map(|(unit, index)| index.stale.iter().map(|id| (*unit, *id)))
+                .collect();
+            assert_eq!(listed, every, "the puts that left a hash stale");
+            assert_eq!(listed.len(), self.unmade, "and how many they are");
+            assert!(self.listed || listed.is_empty(), "one was listed");
+        }
+
         /// Holds the operations that the set keeps by subtree and by
         /// open scope to those of every operation
         /// ([`Self::said_by_every_op`], [`Self::scoped_by_every_op`]):
@@ -3853,6 +4055,218 @@ mod tests {
     /// A mark is refused once a write from before it went, whatever was
     /// written since: the place it names is in the middle of other
     /// operations.
+    /// The list of the puts that left a hash stale ([`WriteSet::unmade`]):
+    /// what it has after each kind of write, and after each is taken out
+    /// again. Every answer is held to every key of the Merk where it is
+    /// made, and the list to every entry of the set.
+    #[test]
+    fn the_puts_that_left_a_hash_stale_are_listed_with_the_set() {
+        let subtree = |name: u8| Subtree::new([name; 32]);
+        let hash = [7; 32];
+        let node = |set: &mut WriteSet, name: u8, key: &[u8], stale: Stale, linked: bool| {
+            let link = LinkPut {
+                key: b"below",
+                hash: &hash,
+                heights: (1, 0),
+                aggregate: &[],
+            };
+            let nodes = [NodePut {
+                key,
+                feature: b"f",
+                value_hash: &hash,
+                kv_hash: &hash,
+                left: linked.then_some(link),
+                right: None,
+                hosted: Hosted::Keep,
+                value: ValuePut::Value(b"v"),
+                stale,
+                at: None,
+            }];
+            let merks = [MerkWrite {
+                subtree: subtree(name),
+                nodes: &nodes,
+                removed: &[],
+                root: RootPut::Keep,
+                anchored: false,
+                whole: false,
+            }];
+            let batch = Batch {
+                merks: &merks,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[false], &[], &[], &[], &[]);
+        };
+        let remove = |set: &mut WriteSet, name: u8, key: &[u8]| {
+            let merks = [MerkWrite {
+                subtree: subtree(name),
+                nodes: &[],
+                removed: &[key],
+                root: RootPut::Keep,
+                anchored: false,
+                whole: false,
+            }];
+            let batch = Batch {
+                merks: &merks,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[false], &[], &[], &[], &[]);
+        };
+        let whole = |set: &mut WriteSet, write: SubtreeWrite<'_>| {
+            let batch = Batch {
+                subtrees: &[write],
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[], &[], &[], &[], &[]);
+        };
+        let listed = |set: &WriteSet, name: u8| -> Vec<Vec<u8>> {
+            set.hold_unmade();
+            let puts = set.unmade(subtree(name));
+            let mut keys: Vec<Vec<u8>> = puts.iter().map(|(_, key)| key.to_vec()).collect();
+            keys.sort_unstable();
+            keys
+        };
+        let keys =
+            |keys: &[&[u8]]| -> Vec<Vec<u8>> { keys.iter().map(|key| key.to_vec()).collect() };
+        let value = Stale::of(HashField::Value);
+        let child = Stale::of(HashField::Child(Side::Left));
+
+        let mut set = WriteSet::new();
+        // A set whose writers make every hash lists nothing.
+        node(&mut set, 1, b"x", Stale::NONE, true);
+        assert_eq!(
+            (listed(&set, 1), set.unmade, set.listed),
+            (keys(&[]), 0, false)
+        );
+        // A put that leaves a hash is listed. The hash of a child that
+        // the node does not have is none, and one that it has is one.
+        node(&mut set, 1, b"a", value, false);
+        node(&mut set, 1, b"b", child, false);
+        node(&mut set, 1, b"c", child, true);
+        assert_eq!(listed(&set, 1), keys(&[b"a", b"c"]));
+        assert_eq!(listed(&set, 2), keys(&[]));
+
+        // A later put of the node passes it, as that of a call does, and
+        // so does a delete. Each is taken out again, and the put that it
+        // passed is listed again.
+        let made = set.mark();
+        node(&mut set, 1, b"a", Stale::NONE, false);
+        assert_eq!(listed(&set, 1), keys(&[b"c"]));
+        remove(&mut set, 1, b"c");
+        assert_eq!((listed(&set, 1), set.unmade), (keys(&[]), 0));
+        node(&mut set, 1, b"c", value, false);
+        assert_eq!(listed(&set, 1), keys(&[b"c"]));
+        assert!(set.rewind(made));
+        assert_eq!((listed(&set, 1), set.unmade), (keys(&[b"a", b"c"]), 2));
+
+        // A range delete that covers the key of a put: the put is the
+        // newest write of its record no more, and is not given.
+        let ranged = set.mark();
+        let range = [RecordWrite::DeleteRange {
+            unit: Unit::data(subtree(1)),
+            start: b"b",
+            end: None,
+        }];
+        let batch = Batch {
+            records: &range,
+            ..Batch::default()
+        };
+        set.add(&batch, version(1), &[], &[], &[], &[], &[]);
+        assert_eq!((listed(&set, 1), set.unmade), (keys(&[b"a"]), 2));
+        assert!(set.rewind(ranged));
+        assert_eq!(listed(&set, 1), keys(&[b"a", b"c"]));
+
+        // A clear covers the puts from before it: a call is given those
+        // from after it. They are listed still, and are given again once
+        // the clear is taken out.
+        let cleared = set.mark();
+        whole(
+            &mut set,
+            SubtreeWrite::Clear {
+                subtree: subtree(1),
+            },
+        );
+        assert_eq!((listed(&set, 1), set.unmade), (keys(&[]), 2));
+        node(&mut set, 1, b"d", value, false);
+        assert_eq!(listed(&set, 1), keys(&[b"d"]));
+        assert!(set.rewind(cleared));
+        assert_eq!(listed(&set, 1), keys(&[b"a", b"c"]));
+
+        // A move: the Merk is read under its new prefix, with the puts
+        // that were made under the old one, and a put under the new
+        // prefix passes one of those. A Merk that is entered under the
+        // old prefix afterwards is another.
+        let moved = set.mark();
+        let to = SubtreeWrite::Move {
+            from: subtree(1),
+            to: subtree(2),
+            host: HostPut {
+                subtree: subtree(9),
+                key: b"host",
+                position: 0,
+            },
+            read: None,
+            below: &[],
+        };
+        whole(&mut set, to);
+        assert_eq!(listed(&set, 2), keys(&[b"a", b"c"]));
+        assert_eq!(listed(&set, 1), keys(&[]));
+        let passed = set.mark();
+        node(&mut set, 2, b"a", Stale::NONE, false);
+        assert_eq!((listed(&set, 2), set.unmade), (keys(&[b"c"]), 1));
+        node(&mut set, 2, b"e", value, false);
+        let entered = SubtreeWrite::Enter {
+            subtree: subtree(1),
+            tree_type: b"t",
+            host: None,
+        };
+        whole(&mut set, entered);
+        node(&mut set, 1, b"c", Stale::NONE, false);
+        node(&mut set, 1, b"a", value, false);
+        assert_eq!(listed(&set, 1), keys(&[b"a"]));
+        assert_eq!(listed(&set, 2), keys(&[b"c", b"e"]));
+        assert!(set.rewind(passed));
+        assert_eq!(listed(&set, 2), keys(&[b"a", b"c"]));
+        assert!(set.rewind(moved));
+        assert_eq!(
+            (listed(&set, 1), listed(&set, 2)),
+            (keys(&[b"a", b"c"]), keys(&[]))
+        );
+
+        // A scope that is taken out: the operations that stay are added
+        // again, and the list is what they make it.
+        node(&mut set, 1, b"a", Stale::NONE, false);
+        set.tag_last(7, true);
+        node(&mut set, 3, b"f", value, false);
+        set.tag_last(9, true);
+        node(&mut set, 1, b"c", Stale::NONE, false);
+        set.tag_last(7, true);
+        assert_eq!(
+            (listed(&set, 1), listed(&set, 3)),
+            (keys(&[]), keys(&[b"f"]))
+        );
+        assert!(set.remove_scope(7));
+        assert_eq!(listed(&set, 1), keys(&[b"a", b"c"]));
+        assert_eq!((listed(&set, 3), set.unmade), (keys(&[b"f"]), 3));
+
+        // A drop covers the puts, and the end of the writes has none.
+        whole(
+            &mut set,
+            SubtreeWrite::Drop {
+                subtree: subtree(1),
+            },
+        );
+        assert_eq!(
+            (listed(&set, 1), listed(&set, 3)),
+            (keys(&[]), keys(&[b"f"]))
+        );
+        set.clear();
+        set.hold_unmade();
+        assert_eq!(
+            (listed(&set, 3), set.unmade, set.listed),
+            (keys(&[]), 0, false)
+        );
+    }
+
     #[test]
     fn a_mark_is_a_place_until_a_write_before_it_goes() {
         let mut set = WriteSet::new();
