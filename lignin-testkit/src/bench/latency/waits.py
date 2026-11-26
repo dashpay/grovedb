@@ -108,7 +108,12 @@ def what(wait):
         if any("wait_for_room" in frame or "wait_for_turn" in frame for frame in user):
             return "a turn of write-back, for room"
         return "a lock of the engine"
-    asked = "the file's length" if "ext4_da_write_end" in kernel or "ext4_write_end" in kernel else "the file's times"
+    if "file_modified" in kernel or "touch_atime" in kernel:
+        asked = "the file's times"
+    elif "ext4_da_write_end" in kernel or "ext4_write_end" in kernel:
+        asked = "the file's length"
+    else:
+        asked = "a change of the file"
     if any(frame == "do_get_write_access" for frame in kernel):
         return "%s: ext4 writes %s to the journal, which is writing that block of inodes" % (call, asked)
     if any(frame == "__jbd2_log_wait_for_space" for frame in kernel):
