@@ -260,7 +260,8 @@ const DROP_RECORD: &str = "record of unlinked pages: …";
 const PARTS: [&str; 2] = ["up to …", "offset … of log file …"];
 
 /// The first words of the commands a document can name in a code span.
-const COMMANDS: [&str; 21] = [
+const COMMANDS: [&str; 22] = [
+    "exec",
     "chown",
     "lignin",
     "lignin-bench",
