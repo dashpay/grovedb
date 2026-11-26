@@ -24,11 +24,18 @@ ulimit -n 65536
 
 run="" tracer=""
 # The tracer is this script's own: `sudo` is its child, and bpftrace `sudo`'s.
+# `sudo` runs as another user, so whether it lives is read from /proc.
+tracing() { [ -n "$tracer" ] && [ -d "/proc/$tracer" ]; }
 stop_tracer() {
-  local child
+  local tries
   [ -n "$tracer" ] || return 0
-  child=$(pgrep -P "$tracer" -x bpftrace || true)
-  [ -z "$child" ] || sudo kill -INT "$child" 2> /dev/null || true
+  for tries in $(seq 40); do
+    tracing || break
+    # An interrupt has bpftrace end its script; after ten seconds it is ended.
+    if [ "$tries" -le 20 ]; then sudo pkill -INT -P "$tracer" 2> /dev/null || true
+    else sudo pkill -KILL -P "$tracer" 2> /dev/null || true; fi
+    sleep 0.5
+  done
   wait "$tracer" 2> /dev/null || true
   tracer=""
 }
@@ -42,6 +49,7 @@ refuse() {
   exit 1
 }
 
+sudo -n true 2> /dev/null || refuse "sudo asks for a password"
 "$bin" latency --scratch "$scratch" "$@" --out "$out.json" > "$out.txt" &
 run=$!
 sleep 1
@@ -60,7 +68,7 @@ for _ in $(seq 120); do
     attached=yes
     break
   fi
-  kill -0 "$tracer" 2> /dev/null || break
+  tracing || break
   sleep 0.5
 done
 [ -n "$attached" ] || refuse "the tracer did not attach: $(tail -3 "$out.trace.err")"
@@ -68,7 +76,7 @@ done
 status=0
 wait "$run" || status=$?
 run=""
-kill -0 "$tracer" 2> /dev/null || refuse "the tracer ended before the run: $(tail -3 "$out.trace.err")"
+tracing || refuse "the tracer ended before the run: $(tail -3 "$out.trace.err")"
 sleep 1
 stop_tracer
 [ "$status" = 0 ] || refuse "the run failed with $status"
