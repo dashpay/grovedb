@@ -3,6 +3,7 @@
 //! ```text
 //! lignin-bench run [options]          measure, write the report as JSON
 //! lignin-bench reads [options]        the warm read rows of a kept database
+//! lignin-bench writes [options]       the write rows over a copy of a kept database
 //! lignin-bench table REPORT           the rows of a report, beside the plan's values
 //! lignin-bench compare FIRST SECOND   how far two runs' rows are apart
 //! ```
@@ -21,6 +22,11 @@
 //! `settled`, over the databases that a
 //! `run --keep` with the same `--scratch`, `--seed`, `--documents` and
 //! `--owners` and with `--creates 0 --updates 0 --deletes 0` left there.
+//! `writes` takes the options of `run` too, and applies its `--creates`,
+//! `--updates` and `--deletes` to a copy of such a kept database, opened
+//! with its `--set` settings: the rows of the phases `create`, `update`
+//! and `delete`. With `--keep` the copy stays, in `<engine>-writes` beside
+//! the kept database.
 //! `compare` takes `--tolerance FRACTION` (default 0.10).
 
 use std::{fmt::Write as _, path::PathBuf};
@@ -30,12 +36,11 @@ use grovedb_version::version::GroveVersion;
 use super::{
     compare, reads,
     report::{self, ratio},
-    run, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
+    run, writes, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
-const USAGE: &str =
-    "usage: lignin-bench run [options] | reads [options] | table REPORT | compare FIRST SECOND \
-     [--tolerance F]";
+const USAGE: &str = "usage: lignin-bench run [options] | reads [options] | writes [options] | \
+                     table REPORT | compare FIRST SECOND [--tolerance F]";
 
 /// Runs the command with `args` (the program name excluded) and returns
 /// what it prints.
@@ -43,11 +48,12 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
     let usage = || BenchError::Check(USAGE.to_string());
     let (command, rest) = args.split_first().ok_or_else(usage)?;
     match command.as_str() {
-        "run" | "reads" => {
+        "run" | "reads" | "writes" => {
             let (options, out) = parse_run(rest)?;
             let report = match command.as_str() {
                 "run" => run(&options)?,
-                _ => reads(&options)?,
+                "reads" => reads(&options)?,
+                _ => writes(&options)?,
             };
             let json = report.to_json();
             match out {

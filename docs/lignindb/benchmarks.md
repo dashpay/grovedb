@@ -12,6 +12,7 @@ PERF-05 and PERF-09 read its reports.
 cargo build --release -p lignin-testkit --bin lignin-bench
 lignin-bench run --scratch /path/to/scratch --out run.json --label <machine> [--perf]
 lignin-bench reads --scratch /path/to/scratch --out reads.json   # the warm reads of a kept database
+lignin-bench writes --scratch /path/to/scratch --out writes.json # the writes at size over a copy of a kept database
 lignin-bench table run.json                # rows beside the plan's values
 lignin-bench compare run1.json run2.json   # how far two runs are apart
 ```
@@ -57,6 +58,28 @@ reads of the settled rows are a stream of their own, apart from that of the
 `warm` rows: with the same seed, documents, owners, `--warmup-reads`,
 `--point-reads` and `--reference-reads`, `reads` asks for the documents and
 owners that the run's `settled` rows asked for, in the same order.
+
+`lignin-bench writes` measures the writes at size alone (the phases
+`create`, `update` and `delete`) over a copy of the databases that such a
+run kept (`--keep` and `--creates 0 --updates 0 --deletes 0`). It is given
+the same `--scratch`, `--seed`, `--documents`, `--owners` and engines, and
+the writes to apply as `--creates`, `--updates` and `--deletes`. For each
+engine it copies the kept database to `<engine>-writes` beside it, opens the
+copy with the settings of this call (`--set`), waits for the background work
+of the opened engine, makes the untimed warm-up reads, and applies the
+writes as a whole run applies them after its load: the stream is that
+run's, with the blocks of the set-up and of the load passed over, so with
+the three numbers of writes of a whole run the root hash at the end is that
+run's. The copy is removed at the end unless `--keep` is given, and the kept
+database is never written, so one kept database is measured under any
+number of settings, each from the same state. Its report holds the rows of
+the write phases only, says of its method that no read was timed and nothing
+was read cold, checkpointed or reopened, and has no size on disk.
+
+The cache of the engine is not warm as after a load when the writes begin:
+it holds what the warm-up reads left in it, and the kernel's page cache
+holds what the copying left and the memory allows. A whole run reads every
+file of the database once before its writes at size; `writes` does not.
 
 ### The two states of the warm reads
 

@@ -1297,13 +1297,7 @@ pub fn read_engine<E: Engine>(
     settings: &Settings,
     grove_version: &GroveVersion,
 ) -> Result<EngineReport, BenchError> {
-    let dir = settings.scratch.join(E::NAME);
-    if !dir.is_dir() {
-        return Err(BenchError::Check(format!(
-            "no kept database at {}: `run --keep` leaves one",
-            dir.display()
-        )));
-    }
+    let dir = kept_database::<E>(settings)?;
     let mut reads = Reads::settled(settings)?;
     let mut engine = E::open_with(&dir, &settings.engine)?;
     engine.settle()?;
@@ -1325,6 +1319,128 @@ pub fn read_engine<E: Engine>(
         root_hash_at_end: hex::encode(engine.root_hash(grove_version)?),
         rows,
         phases: Vec::new(),
+        disk_after_load: None,
+        disk_after_flush: None,
+    })
+}
+
+/// The database of `E` that an earlier run kept in
+/// `settings.scratch/<engine>` (`run --keep`).
+fn kept_database<E: Engine>(settings: &Settings) -> Result<PathBuf, BenchError> {
+    let dir = settings.scratch.join(E::NAME);
+    if !dir.is_dir() {
+        return Err(BenchError::Check(format!(
+            "no kept database at {}: `run --keep` leaves one",
+            dir.display()
+        )));
+    }
+    Ok(dir)
+}
+
+/// The writes at size: `measured_creates` creates, then `updates`
+/// replacements and `deletes` deletions, as `stream` gives them, with the
+/// rows and the totals of every phase that applies a transition.
+fn writes_at_size<E: Engine>(
+    engine: &mut E,
+    stream: &mut Stream,
+    settings: &Settings,
+    grove_version: &GroveVersion,
+    rows: &mut Vec<Row>,
+    phases: &mut Vec<PhaseTotals>,
+) -> Result<(), BenchError> {
+    for (phase, transitions) in [
+        ("create", settings.measured_creates),
+        ("update", settings.updates),
+        ("delete", settings.deletes),
+    ] {
+        if transitions == 0 {
+            continue;
+        }
+        let run = write_phase(engine, stream, phase, transitions, settings, grove_version)?;
+        rows.extend(count_rows(&run, E::NAME));
+        phases.push(run.totals.clone());
+        rows.extend(window_time_rows(run));
+    }
+    Ok(())
+}
+
+/// Measures the writes at size alone, over a copy of the `E` database
+/// that an earlier run kept in `settings.scratch/<engine>`: a run with
+/// `keep` and with no creates, updates or deletes after its load, as
+/// [`read_engine`] takes it. The copy is `settings.scratch/<engine>-writes`.
+/// Every call makes it anew and removes it at its end, unless
+/// `settings.keep` is set. The kept database is read and never written,
+/// so every call starts from the same state.
+///
+/// The copy is opened with the engine settings of this call, the
+/// background work of the opened engine is waited for, and the untimed
+/// warm-up reads are made, so that the engine's cache holds what reads of
+/// the loaded state left in it. Then the creates, updates and deletes of
+/// the settings are applied as a whole run applies them after its load:
+/// the stream is that run's, with the blocks of the set-up and of the
+/// load passed over. With the seed, the documents, the owners and the
+/// three numbers of writes of a whole run, the root hash at the end is
+/// that run's.
+///
+/// The report has the rows of the write phases, and no size on disk.
+pub fn write_engine<E: Engine>(
+    settings: &Settings,
+    grove_version: &GroveVersion,
+) -> Result<EngineReport, BenchError> {
+    settings.check()?;
+    let kept = kept_database::<E>(settings)?;
+    let dir = settings.scratch.join(format!("{}-writes", E::NAME));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|error| BenchError::io("removing an earlier copy", error))?;
+    }
+    machine::copy_tree(&kept, &dir)
+        .map_err(|error| BenchError::io("copying the kept database", error))?;
+    let result = measure_writes::<E>(settings, &dir, grove_version);
+    if !settings.keep {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    result
+}
+
+fn measure_writes<E: Engine>(
+    settings: &Settings,
+    dir: &Path,
+    grove_version: &GroveVersion,
+) -> Result<EngineReport, BenchError> {
+    let mut reads = Reads::new(settings)?;
+    let mut stream = settings.workload().stream(settings.seed);
+    // The set-up block and the load are in the kept database.
+    next_block(&mut stream);
+    let mut loaded = 0;
+    while loaded < settings.documents {
+        let block = next_block(&mut stream);
+        if block.is_empty() {
+            break;
+        }
+        loaded += block.iter().filter(|op| is_transition(op)).count() as u64;
+    }
+    let mut engine = E::open_with(dir, &settings.engine)?;
+    engine.settle()?;
+    engine.wait_for_background()?;
+    let root_hash_after_load = engine.root_hash(grove_version)?;
+    warm_up(&engine, &mut reads, settings, grove_version)?;
+    let (mut rows, mut phases) = (Vec::new(), Vec::new());
+    writes_at_size(
+        &mut engine,
+        &mut stream,
+        settings,
+        grove_version,
+        &mut rows,
+        &mut phases,
+    )?;
+    let root_hash_at_end = engine.root_hash(grove_version)?;
+    Ok(EngineReport {
+        engine: E::NAME.to_string(),
+        root_hash_after_load: hex::encode(root_hash_after_load),
+        root_hash_at_end: hex::encode(root_hash_at_end),
+        rows,
+        phases,
         disk_after_load: None,
         disk_after_flush: None,
     })
@@ -1550,26 +1666,14 @@ fn measure<E: Engine>(
 
     rewarm(&engine, &mut reads, settings, grove_version)?;
 
-    for (phase, transitions) in [
-        ("create", settings.measured_creates),
-        ("update", settings.updates),
-        ("delete", settings.deletes),
-    ] {
-        if transitions == 0 {
-            continue;
-        }
-        let run = write_phase(
-            &mut engine,
-            &mut stream,
-            phase,
-            transitions,
-            settings,
-            grove_version,
-        )?;
-        rows.extend(count_rows(&run, E::NAME));
-        phases.push(run.totals.clone());
-        rows.extend(window_time_rows(run));
-    }
+    writes_at_size(
+        &mut engine,
+        &mut stream,
+        settings,
+        grove_version,
+        &mut rows,
+        &mut phases,
+    )?;
     let root_hash_at_end = engine.root_hash(grove_version)?;
 
     Ok(EngineReport {

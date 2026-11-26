@@ -369,6 +369,24 @@ pub fn files_under(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Copies the directory `from`, with every file and every directory under
+/// it, to `to`, which must not exist yet. What is neither a file nor a
+/// directory is left out.
+pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Drops every file under `dir` from the page cache. Returns false if the
 /// directory cannot be listed or the drop could not be made.
 pub fn drop_dir_cache(dir: &Path) -> bool {
@@ -650,6 +668,23 @@ mod tests {
         assert!(files_under(&dir.path().join("missing")).is_err());
         assert!(!cache_drop_works(&dir.path().join("missing").join("probe")));
         assert_eq!(process_io("no_such_field"), None);
+    }
+
+    #[test]
+    fn a_tree_is_copied_with_its_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        std::fs::create_dir_all(from.join("sub").join("empty")).unwrap();
+        std::fs::write(from.join("a"), b"one").unwrap();
+        std::fs::write(from.join("sub").join("b"), b"two").unwrap();
+        let to = dir.path().join("to");
+        copy_tree(&from, &to).unwrap();
+        assert_eq!(std::fs::read(to.join("a")).unwrap(), b"one");
+        assert_eq!(std::fs::read(to.join("sub").join("b")).unwrap(), b"two");
+        assert!(to.join("sub").join("empty").is_dir());
+        // A copy over what is there, and of what is not, is refused.
+        assert!(copy_tree(&from, &to).is_err());
+        assert!(copy_tree(&dir.path().join("missing"), &dir.path().join("other")).is_err());
     }
 
     #[test]
