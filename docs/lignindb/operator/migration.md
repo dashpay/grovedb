@@ -110,9 +110,12 @@ block of step 2 again (it clones nothing that is there and builds only
 what changed, and puts `lignin` on the path), `export` the four paths as
 step 4 printed them, and go on with the step that failed. Steps 3, 8 and 9 claim a directory
 first, and run again they refuse the one that the failed run claimed:
-remove that directory, which the step made and which holds nothing but
-what it built or copied (`$WORK/rehearsal` for step 3, `BACKUP` or
-`RESTORE` for steps 8 and 9), and run the step again. Do not run step 4
+where that run's claim succeeded (it failed after `claim_dir`, which
+printed nothing), remove that directory, which the step made and which
+holds nothing but what it built or copied (`$WORK/rehearsal` for step
+3, `BACKUP` or `RESTORE` for steps 8 and 9), and run the step again.
+Where the claim itself failed, something else is at that path: remove
+nothing, and give the step a new path. Do not run step 4
 again once `TARGET` is there: its first check refuses it.
 
 ```sh

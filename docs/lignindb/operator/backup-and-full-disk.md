@@ -346,6 +346,11 @@ if [ -n "$(find "$CHECKPOINT" -mindepth 2 ! -type f)" ]; then echo "$CHECKPOINT 
 rm -rf -- "$CHECKPOINT"
 ```
 
+A removal that the system stops part way, as a directory that cannot be
+written, leaves part of the checkpoint with neither manifest name: fix
+what the system said, and run the block again, which finds the same
+directory by its identity and removes what is left.
+
 
 ### What a cut-short copy or checkpoint leaves
 
