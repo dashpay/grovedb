@@ -258,6 +258,9 @@ fi
 lignin verify "$RESTORE"
 ```
 
+The account that runs the check has to be able to write the restore's
+`LOCK`, which an open locks for writing, and its directories, as a
+session makes new files there; `cp -a` keeps the modes the backup had.
 `lignin verify` opens the restore, closes it and checks every page and
 every value, and makes every stored hash of the Merks in use again by
 Merk's rules but those the rules take as stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); the cells of a dropped Merk that waits to be reclaimed are

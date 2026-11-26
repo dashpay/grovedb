@@ -340,7 +340,8 @@ Then name four paths. `SOURCE` is there; `TARGET`, `BACKUP` and
 has to be there: make it first.
 
 - `SOURCE`: the directory of the node's RocksDB GroveDB, the one that
-  holds `CURRENT`, `MANIFEST-…` and the `.sst` files. A RocksDB
+  holds `CURRENT` and `MANIFEST-…`, and `.sst` files where it has any
+  (a database whose records are all still in its log has none). A RocksDB
   checkpoint of it can be the source as well: the migration then holds
   the state of that checkpoint, and a node started on it goes on from
   there.
@@ -411,14 +412,18 @@ Read its report before you go on:
   `the source … holds what a migration does not carry`. The survey
   refuses a keyed child under a tree of flat records (grove versions 1
   to 3 let a caller write one; a dense tree's value whose bytes read as
-  a node of its own slot is taken for one too, on any version), the mark of a state-sync restore that
+  a node of its own slot, with a value that reads as an element, is
+  taken for one too, on any version), the mark of a state-sync restore that
   did not finish (such a database is to be discarded, not migrated),
   and records in places where GroveDB writes none; with
   `--unreachable refuse` or `carry`, also the prefixes that nothing leads
   to which that choice does not take.
 - `prefixes that nothing leads to:` counts the prefixes that no element
   leads to, and then the records and bytes under them (a tree that a batch's plain delete removed while it
-  held an element leaves them). Unless `--unreachable` says otherwise
+  held an element leaves them). A prefix that a pending drop names is
+  not among them: its records are counted with the pending drops
+  (`pending drops: …, which leave … records behind and … marks`), which
+  `--unreachable refuse` does not refuse and `carry` does not carry. Unless `--unreachable` says otherwise
   they are left behind (`leave`), and the target is what a database
   written on LigninDB holds, with the same root hash. What can then
   answer otherwise than on RocksDB is a read by the path of such a tree,
@@ -481,6 +486,7 @@ it whatever the interval:
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
 | 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there and holds anything (`the target … is there and …`; an empty directory is taken for none), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there: that database is whole, but no report of a run that finished is held to it (step 7), so migrate again into a new `TARGET`, and leave that one where it is until you know what it holds. Where a power cut took the name back, the database is in `TARGET.migrating` again, and the same command goes on with it: where it ends with status 0 and a whole report, go on with step 7 |
+| 2 | the command line was refused (an option's value, as `--batch 0`, or an operand); nothing was opened | correct the command line, as the error says |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | where the report names a read that the system refused (a page that could not be read, with the system's words), deal with what the system said and run the same command again, which compares and verifies again. Otherwise keep the report and report it as a defect of GroveDB; go back to RocksDB as step 11 says, which says what such a finding tells of the source |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`), or a quota there is used up | make room on that device, or inside that quota, and run the same command again: it goes on from where it stood |
 
@@ -770,9 +776,12 @@ it says nothing of the source.
   database holds, and is brought forward from that state, which is the
   application's to do: where the migration read a checkpoint, that
   database can already hold commits after the checkpoint's.
-- **In either case**, stop the node on LigninDB first, and remove
-  `TARGET` only once the node has been started on its RocksDB database
-  and you have decided not to go back to LigninDB.
+- **In either case**, stop the node on LigninDB first. Remove `TARGET`
+  only once you have decided not to go back to LigninDB and the commits
+  the node made on it are no longer needed: brought forward into the
+  RocksDB database by the application, kept in a copy of `TARGET`, or
+  given up on purpose. The backup of step 8 is older than they are, and
+  GroveDB has no tool that carries them back.
 - **A migration that failed** made nothing at `TARGET` (exit status 1
   and 4, but for the cases the table of step 6 names) or left its
   database in `TARGET.migrating` (exit status 3): start the node on its
