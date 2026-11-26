@@ -182,10 +182,11 @@ once a restore of it has passed `lignin verify` (below).
    file of the system, so there the block makes no sync:
 
    ```sh
-   : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}" "${BACKUP:?set BACKUP to where the backup is to be}"
+   : "${DB:?set DB to the database directory of the node}" "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint}" "${BACKUP:?set BACKUP to where the backup is to be}"
+   DB=$(real_dir "$DB")
    CHECKPOINT=$(real_dir "$CHECKPOINT")
    BACKUP=$(real_new "$BACKUP")
-   apart "$CHECKPOINT" "$BACKUP"
+   apart "$DB" "$CHECKPOINT" "$BACKUP"
    CHECKPOINT_ID="$(df -P -- "$CHECKPOINT" | awk 'NR == 2 {print $1}') $(ls -di -- "$CHECKPOINT" | awk '{print $1}')"
    printf 'CHECKPOINT    %s\nCHECKPOINT_ID %s\nBACKUP        %s\n' "$CHECKPOINT" "$CHECKPOINT_ID" "$BACKUP"
    lignin manifest "$CHECKPOINT"
@@ -298,8 +299,10 @@ directory, and deletes each by the path it made it at.
 Or the checkpoint's directory, as the copy's block wrote it with its
 links followed, is removed once no handle has it open. Give the block
 that path and its identity as the copy's block printed them
-(`CHECKPOINT`, `CHECKPOINT_ID`: the device and the inode). It refuses a
-path that is a link now, no directory, another path once its links are
+(`CHECKPOINT`, `CHECKPOINT_ID`: the device and the inode), and the
+node's database directory as `DB`: it and the copy's block refuse a
+checkpoint that is the node's database, or lies inside it or around it.
+It refuses a path that is a link now, no directory, another path once its links are
 followed, another directory than the one that was copied, or a
 directory that holds anything but the entries a checkpoint of GroveDB
 has (`LOCK`, `MANIFEST`, `wal`, `seg`, `val` and `table`, with nothing
@@ -310,7 +313,9 @@ remove a directory at that path between them.
 
 ```sh
 : "${CHECKPOINT:?set CHECKPOINT to the directory of the checkpoint, as the copy block printed it}"
+: "${DB:?set DB to the database directory of the node}"
 plain_path "$CHECKPOINT"
+apart "$(real_dir "$DB")" "$CHECKPOINT"
 if [ -L "$CHECKPOINT" ] || [ ! -d "$CHECKPOINT" ]; then echo "$CHECKPOINT is a link or no directory now: it is not what was copied"; false; fi
 if [ "$(real_dir "$CHECKPOINT")" != "$CHECKPOINT" ]; then echo "$CHECKPOINT is not the path the copy's block wrote: give that one"; false; fi
 : "${CHECKPOINT_ID:?set CHECKPOINT_ID as the copy block printed it}"

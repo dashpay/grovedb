@@ -142,8 +142,9 @@ If the background falls behind, committers are made to wait
    children are reached by their page and slot, and not looked up by key
    in an index, while Merk compares keys at each node as it does on
    RocksDB. A page that is not in the buffer pool is
-   read from its segment once, its blocks checked against their
-   checksums, and its deltas applied to its last image.
+   read from the blocks of its segments that hold its last image and
+   the deltas after it, each checked against its checksum, and the
+   deltas are applied to the image.
 4. **Hashes are used as stored.** A proof is assembled from the cells:
    the hashes of nodes that it does not show are read from their pages,
    and a value that is kept out of its page is read from the value log
@@ -175,7 +176,7 @@ replacement of the manifest in doubt waits for whoever holds the
 manifest, the creation among them ([lignindb::checkpoint](../../../lignindb/src/checkpoint/mod.rs)
 says each). A creation that finds
 more than 1 MiB of log held for the checkpoint's first open to replay
-has write-back catch up first ([engine.md](../engine.md#checkpoints)).
+has write-back try to catch up first ([engine.md](../engine.md#checkpoints)).
 A checkpoint is a database like any other: opened by the normal open, which recovers it to
 its version, and able to take writes of its own that its source does not
 see. It keeps the files it shares with the live database, so their disk

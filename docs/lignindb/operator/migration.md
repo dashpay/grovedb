@@ -60,9 +60,10 @@ how much is free there. That figure is the tool's estimate from the
 records the survey counts under the prefixes it reaches and from the
 root keys. With `--unreachable carry`, add twice the bytes the survey
 gives for the records under prefixes that nothing leads to, which a run
-then carries too; the marks that a run writes for pending drops (the
-survey's `pending drops: …, which leave … records behind and … marks`)
-are not in it either. The RocksDB database stays where it is, beside
+then carries too. The records of pending drops and the marks a run
+writes for them (the survey's line
+`pending drops: …, which leave … records behind and … marks`) are not
+in it either. The RocksDB database stays where it is, beside
 the new one. Step 8 needs room for one copy of the new database, best on
 another device, and step 9 for one more where `RESTORE` is, until it is
 removed.
@@ -70,8 +71,10 @@ removed.
 **Memory.** A Merk is handed over whole, so the largest Merk of the
 source is the part of the peak that grows with one Merk. The survey
 keeps, besides, the prefixes of every subtree and of the aux and meta
-records, which grow with the number of subtrees and are not in the
-projection: a source of very many subtrees needs more than it says. The
+records, which grow with the number of subtrees, and a run writes the
+records of pending drops and their marks in its last commit, all held
+at once; neither is in the projection, so a source of very many
+subtrees or pending drops needs more than it says. The
 survey says what peak the run projects
 (`the migration projects a peak of about … MiB of memory`): 256 MiB, the
 commit size (`--batch`, 160 MiB unless given), the buffer pool
@@ -190,9 +193,12 @@ database or checkpoint, whose deletion would remove what is inside it.
 
 Set two variables before the next block:
 
-- `GROVEDB_REF`: the GroveDB release your node runs, as a tag of
-  `https://github.com/dashpay/grovedb`. The tool is built from the same
-  release, so that it reads and writes what your node does. A branch is
+- `GROVEDB_REF`: the tag of the GroveDB release that the node is to run
+  on LigninDB, in `https://github.com/dashpay/grovedb`: a release with
+  the package `lignin-tools`, which the build of this block needs, and
+  that reads the node's RocksDB database. A release without it fails the
+  build (cargo finds no package `lignin-tools`). The tool is built from
+  that release, so that it writes what the node will read. A branch is
   taken as it stands when the block runs, and can move between two runs
   of it: a migration that is gone on with after a failure is then gone
   on with by another build. The block prints the commit it builds, on
@@ -315,6 +321,7 @@ BACKUP=$(real_new "$BACKUP")
 RESTORE=$(real_new "$RESTORE")
 apart "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
 outside_databases "$TARGET"
+if within "$WORK" "$SOURCE"; then echo "$WORK lies inside $SOURCE: give a WORK outside the source"; false; fi
 printf 'SOURCE  %s\nTARGET  %s\nBACKUP  %s\nRESTORE %s\n' "$SOURCE" "$TARGET" "$BACKUP" "$RESTORE"
 ```
 
@@ -323,7 +330,8 @@ The block writes each path again with every link followed (`cd -P` and
 four paths of which one is another or lies inside another. It compares
 them by the directories they are (`-ef`), and takes two names that
 differ in case alone for one, as a file system that ignores case does.
-It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
+It refuses a `WORK` inside `SOURCE`, which the reports would be
+written into. It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
 or a `MANIFEST.deleting`, or a `CURRENT`, a LigninDB or RocksDB
 database or checkpoint whose deletion would remove it, or inside one
 whose name ends in `.creating`.
@@ -384,7 +392,13 @@ Read its report before you go on:
   nothing more into those Merks: keep it on RocksDB, and report the
   survey.
 - `the migration projects a peak of about … MiB of memory`, and the
-  limit it holds ("What it takes").
+  limit it holds ("What it takes"). The survey projects with the default
+  `--batch` and `--cache`, and takes neither. Where it refuses the
+  source for memory, and the words after the refusal say that a smaller
+  `--batch` or `--cache` can take it, survey again with a
+  `--memory-limit` that lets it through, and give step 6 the smaller
+  `--batch` and `--cache` with the limit you mean: the migration checks
+  its own projection against that limit before it writes anything.
 - The last line is `the source can be migrated` and the exit status is 0.
 
 ## 6. Migrate

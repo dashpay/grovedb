@@ -122,7 +122,7 @@ These follow `manifest: `, `recovery could not go on: ` or
 | `the valid length … of … lies inside what begins at offset …` | the manifest's length of a log file ends inside a record: damage | restore from a backup, and report it | `lignin-store/src/wal/error.rs` |
 | `the manifest vouches for … bytes of …, and the log ends before that file` | a log file that the manifest needs is missing | restore from a backup | `lignin-store/src/wal/error.rs` |
 | `the header of … says it is log file …` | a log file under another file's name | restore from a backup | `lignin-store/src/wal/error.rs` |
-| `… cannot be opened for direct reads: …` | the application gave the store the file layer with direct reads (`lignin_io::linux::DirectVfs`, Linux), and the file system does not take them for that file; the words after it say why | open with the default file layer, or put the database on a file system that takes direct reads | `lignin-io/src/linux.rs` |
+| `… cannot be opened for direct reads: …` | the application gave the store the file layer with direct reads (`lignin_io::linux::DirectVfs`, Linux), and the file system does not take them for that file, or reports an alignment for them that the file layer cannot use; the words after it say which | open with the default file layer, or put the database on a file system that takes direct reads | `lignin-io/src/linux.rs` |
 | `every log file id has been used` | the log has used the last id a log file can have (2³² − 2) | a database that is built again (a state sync, or a migration from a backup) begins its ids again | `lignin-store/src/wal/error.rs` |
 
 ### Other words of the log and the segments
