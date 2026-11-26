@@ -52,9 +52,15 @@ def us(nanos):
     return "%.0f" % (nanos / 1e3)
 
 
-def ranged(values):
+def median(values):
+    """The median of the values of some runs: the middle one, or the mean of the two middle ones."""
     ordered = sorted(values)
-    return "%s (%s to %s)" % (us(quantile(ordered, 0.5)), us(ordered[0]), us(ordered[-1]))
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def ranged(values):
+    return "%s (%s to %s)" % (us(median(values)), us(min(values)), us(max(values)))
 
 
 def read(directory):
@@ -127,14 +133,14 @@ def held(rows, control, experiments):
         base = of(control)
         if not base:
             continue
-        apart, middle = base[-1] - base[0], quantile(base, 0.5)
+        apart, middle = base[-1] - base[0], median(base)
         print("| %s | %s (the control) | %d | %s | | %s | |" % (
             background, ", ".join(control), len(base), ranged(base), us(apart)))
         for label in experiments:
             values = of([label])
             if not values:
                 continue
-            below = middle - quantile(values, 0.5)
+            below = middle - median(values)
             verdict = "too few runs of the control" if len(base) < 2 else ("yes" if below > apart else "no")
             print("| %s | %s | %d | %s | %s | %s | %s |" % (
                 background, label, len(values), ranged(values), us(below), us(apart), verdict))

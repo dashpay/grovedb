@@ -1374,18 +1374,24 @@ fn run_rows(reports: &[LatencyReport]) -> Vec<RunRow> {
     rows
 }
 
-/// The median of `values` with their range, in microseconds.
+/// The median of the values of some runs with their range, in microseconds:
+/// the middle value, or the mean of the two middle ones.
 fn ranged(mut values: Vec<u64>) -> String {
     values.sort_unstable();
-    match (values.first(), values.last()) {
-        (Some(least), Some(most)) => format!(
-            "{} ({} to {})",
-            micros(quantile(&values, 0.5)),
-            micros(*least),
-            micros(*most)
-        ),
-        _ => "-".to_string(),
-    }
+    let (Some(least), Some(most)) = (values.first(), values.last()) else {
+        return "-".to_string();
+    };
+    let middle = values.len() / 2;
+    let median = match values.len() % 2 {
+        0 => (values[middle - 1] + values[middle]) / 2,
+        _ => values[middle],
+    };
+    format!(
+        "{} ({} to {})",
+        micros(median),
+        micros(*least),
+        micros(*most)
+    )
 }
 
 /// Several reports as tables. First a row for each engine of each run, in
@@ -1759,6 +1765,9 @@ mod tests {
             several.contains("| head | lignindb | quiet | 2 |"),
             "{several}"
         );
+        assert_eq!(ranged(vec![9_000, 1_000]), "5 (1 to 9)");
+        assert_eq!(ranged(vec![9_000, 1_000, 2_000]), "2 (1 to 9)");
+        assert_eq!(ranged(Vec::new()), "-");
         let one = runs_table(std::slice::from_ref(&report));
         assert!(!one.contains("The median of the runs' values"), "{one}");
     }

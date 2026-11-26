@@ -54,7 +54,9 @@
 #                  12 GB)
 #
 # Under `quiet` LigninDB keeps what a run writes, about 10 GB for 100,000
-# blocks: where a file system has less room, name other backgrounds.
+# blocks, and the campaign asks for room for two such runs before it begins:
+# where a file system has less, name fewer blocks or other backgrounds. An
+# OUT that holds the runs of another commit is refused.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
@@ -86,6 +88,16 @@ for patch in log-allocated-ahead fewer-syncs; do
   git -C "$repo" apply --check "$here/$patch.patch" ||
     refuse "$patch.patch does not apply to this commit"
 done
+
+if [ -s "$out/host.txt" ]; then
+  [ "$(head -1 "$out/host.txt")" = "commit $commit" ] ||
+    refuse "$out holds the runs of another commit ($(head -1 "$out/host.txt"))"
+fi
+most=$((blocks > trace_blocks ? blocks : trace_blocks))
+case " $backgrounds " in *" quiet "*) wanted=$((most * 200 + 2097152)) ;; *) wanted=$((most * 40 + 4194304)) ;; esac
+free=$(df -k --output=avail "$out" | tail -1)
+[ "$free" -ge "$wanted" ] || [ -n "$(ls "$out/runs" 2> /dev/null)" ] ||
+  refuse "$out has $((free / 1048576)) GiB free, and runs of $most blocks under \"$backgrounds\" want $((wanted / 1048576 + 1))"
 
 has() {
   case " $parts " in *" $1 "*) return 0 ;; *) return 1 ;; esac
@@ -158,7 +170,21 @@ fi
 cleared() {
   local dir=${1:?}
   rm -rf "$dir/scratch"
-  case "$dir" in "$out/mnt/"*) sudo fstrim "$dir" 2> /dev/null || true ;; esac
+  case "$dir" in
+    "$out/mnt/"*)
+      # What was freed can be given back once the file system has written
+      # that it is free.
+      sync -f "$dir"
+      sudo fstrim "$dir"
+      ;;
+  esac
+}
+
+# Ends the campaign at a run that failed, with what the run said.
+failed() {
+  echo "campaign.sh: the run $1 failed; the end of $1.err:" >&2
+  tail -5 "$1.err" >&2
+  exit 1
 }
 
 # One run: run FILE BUILD ENGINES DIRECTORY BACKGROUND LABEL SETTINGS
@@ -172,7 +198,7 @@ run() {
   env $settings "$BUILDS/$build/lignin-bench" latency --scratch "$dir/scratch" $flags \
     --background "$background" --blocks "$blocks" --label "$label" \
     --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} --out "$file.json.part" \
-    > "$file.txt" 2> "$file.err"
+    > "$file.txt" 2> "$file.err" || failed "$file"
   mv "$file.json.part" "$file.json"
   cleared "$dir"
   say "$(basename "$file"): $(grep -E '^\| [^B-]' "$file.txt" | tr '\n' ' ')"
@@ -214,8 +240,12 @@ fi
 # The file systems of parts 3 and 4, in files under OUT.
 mounted=""
 unmount() {
-  local dir
-  for dir in $mounted; do sudo umount "$dir" 2> /dev/null || true; done
+  local dir device
+  for dir in $mounted; do
+    device=$(findmnt -no SOURCE "$dir" || true)
+    sudo umount "$dir" 2> /dev/null || true
+    [ -z "$device" ] || sudo losetup -d "$device" 2> /dev/null || true
+  done
 }
 trap unmount EXIT
 filesystem() { # filesystem NAME MKFS MOUNT-OPTIONS
@@ -260,7 +290,7 @@ traced() {
   env $settings BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
     "$dir/scratch" --engine "$engine" --background "$background" --blocks "$trace_blocks" \
     $watch --label "$(basename "$file")" --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} \
-    2> "$file.err"
+    2> "$file.err" || failed "$file"
   cleared "$dir"
   say "traced $(basename "$file"): $(grep -E '^\| [^B-]' "$file.txt" | tr '\n' ' ')"
 }

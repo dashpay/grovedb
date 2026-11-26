@@ -17,6 +17,13 @@ bin=${BIN:-target/release/lignin-bench}
 ulimit -n 65536
 "$bin" latency --scratch "$scratch" "$@" --out "$out.json" > "$out.txt" &
 pid=$!
+tracer=""
+# Whatever ends the run, the tracer is stopped.
+stop() {
+  [ -z "$tracer" ] || sudo pkill -INT -x bpftrace || true
+  [ -z "$tracer" ] || wait "$tracer" || true
+}
+trap stop EXIT
 sleep 1
 # A thread that an engine starts from the measuring thread has its name too:
 # the measuring thread is the first of that name.
@@ -28,5 +35,3 @@ sudo BPFTRACE_MAX_MAP_KEYS=262144 bpftrace "$here/trace.bt" "$pid" "${LONG_US:-1
 tracer=$!
 wait "$pid"
 sleep 1
-sudo pkill -INT -x bpftrace || true
-wait "$tracer" || true
