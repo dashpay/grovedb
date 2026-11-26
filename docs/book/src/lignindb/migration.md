@@ -541,8 +541,9 @@ survey of step 5 read from the source to the one the migration read
 from it. The second holds the first line of each report, up to the `;` after
 its last write, to the other: the source's path, which has to be this
 `SOURCE`, its RocksDB identity and the sequence number of its last
-write. Where they are the same, no write reached the source between the
-two runs. That the target has the
+write. Where they are the same, no write of RocksDB reached the source
+between the two runs; a file that something else put in the directory
+is not seen by it. That the target has the
 source's root hash is what `differing=0` says; the migration also
 refuses a source that changes while it reads it. Do not start the node
 on a target for which one of them fails. These checks hold the report to

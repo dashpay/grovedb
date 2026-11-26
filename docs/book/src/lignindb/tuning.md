@@ -40,7 +40,7 @@ fails that test until this chapter says the new one.
 | `Options::flush` | unset: write-back's defaults for the database's page size | write-back's settings, `FlushConfig` ([write-back](#write-back)) | leave it unset; where it is set, start from `FlushConfig::new` with the database's page size, since its sizes follow the page size |
 | `Options::cleaner` | unset: the cleaner's defaults | the cleaner's settings, `CleanerConfig` ([the cleaner](#the-cleaner)) | leave it unset; where it is set, start from `CleanerConfig::new()` |
 | `Options::vfs` | `StdVfs` | the file layer the database's files are read and written through. On Linux, an application built with the feature `direct_io` of `lignin-io` can give `lignin_io::linux::DirectVfs`, which reads with `O_DIRECT`; on a file system that takes no direct reads the open is then refused (`… cannot be opened for direct reads: …`, [messages](messages.md#the-files-at-an-open)) | leave it: `benchmarks.md` has no run with direct reads |
-| `Options::create_if_missing` | yes | whether an open makes a database in a directory that holds none | GroveDB's `open_checkpoint` and `lignin` set it off; a node that must never start on an empty directory sets it off |
+| `Options::create_if_missing` | yes | whether an open makes a database in a directory that holds none | GroveDB's `open_checkpoint` and `lignin`'s commands that read a database set it off (`lignin migrate` makes the target's database); a node that must never start on an empty directory sets it off |
 
 ### Memory
 

@@ -136,8 +136,10 @@ If the background falls behind, committers are made to wait
 ## A read
 
 1. **A read takes a version**: a snapshot holds the one it was taken
-   at for as long as it lives; another read takes the latest for that
-   call, so a later call can see a commit made in between. No lock is
+   at for as long as it lives, and a cursor the one it opened at, with
+   the later writes of its own transaction; another read takes the
+   latest for that call, so a later call can see a commit made in
+   between. No lock is
    taken, and no writer waits for a reader.
 2. **The subtree directory** gives the page and slot of the subtree's
    root, from the path's 32-byte prefix, as RocksDB's prefixes are.

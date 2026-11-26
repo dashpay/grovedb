@@ -167,7 +167,8 @@ once a restore of it has passed `lignin verify` (below).
 
 1. **Make a checkpoint.** The application asks GroveDB for one:
    `GroveDb::create_checkpoint(path)`, where `path` is not there and the
-   directory above it is. A node that makes checkpoints for its own use
+   directory above it is, outside the node's database directory (the
+   copy's block below refuses a checkpoint inside it). A node that makes checkpoints for its own use
    makes one more for the backup. When the call returns `Ok`, the
    checkpoint is durable as far as the directory above `path` is: that
    directory's own name is the application's to have made durable.
