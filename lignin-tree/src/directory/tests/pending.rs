@@ -50,13 +50,28 @@ fn leaves(pages: &Pages) -> u64 {
 #[derive(Debug)]
 struct Done {
     settled: Settled,
-    /// The pages that the keyspace has and did not have before: the
-    /// pieces of the pages that were cut.
+    /// The further pieces of the leaves that were cut
+    /// ([`further_pieces`]).
     made: u64,
     /// The pages that were freed: a leaf that a merge joined into
     /// another, a leaf that was left with no record, and a branch or a
     /// root's only child that went with one.
     freed: u64,
+}
+
+/// The further pieces of the leaves that a settling cut: the leaves that
+/// the keyspace has on pages it did not have before (`had`). Where the
+/// root was a leaf (`levels` was one) and is none any more, every piece of
+/// it went to a new page, the first among them, which is no further one.
+fn further_pieces(
+    pages: &Pages,
+    directory: &Directory,
+    had: &BTreeSet<PageId>,
+    levels: u64,
+) -> u64 {
+    let new = |page: &&PageId| !had.contains(page) && image(pages, **page).leaf().is_some();
+    let new = pages.pages.keys().filter(new).count() as u64;
+    new - u64::from(levels == 1 && pages.levels(directory) > 1)
 }
 
 /// Holds what a settling of `pending` wrote to what the pages were handed
@@ -80,8 +95,8 @@ fn once_a_page(pages: &Pages, from: usize, settled: Settled, counted: u64) {
 /// Settles `pending`, and holds what the settling says to what the pages
 /// were handed and to the leaves that the keys of the records lay in:
 /// **each of those leaves is written once or freed unwritten, one image
-/// more is written for each page that a cut made, and no page is handed
-/// two.** A test that calls this has every record change its leaf, and a
+/// more is written for each further piece of a leaf that is cut, and no
+/// page is handed two.** A test that calls this has every record change its leaf, and a
 /// keyspace that keeps its levels.
 fn settle(pages: &mut Pages, directory: &Directory, pending: Pending) -> Done {
     let homes: BTreeSet<PageId> = (pending.keys())
@@ -97,11 +112,7 @@ fn settle(pages: &mut Pages, directory: &Directory, pending: Pending) -> Done {
     assert_eq!(settled.leaves, homes);
     once_a_page(pages, from, settled, counted);
     assert_eq!(pages.levels(directory), levels);
-    let made = pages
-        .pages
-        .keys()
-        .filter(|page| !had.contains(page))
-        .count() as u64;
+    let made = further_pieces(pages, directory, &had, levels);
     let freed = pages.frees - frees;
     // At most one image for each leaf, and one more for each page that a
     // cut made: what the unit asks of a batch.
@@ -825,11 +836,10 @@ impl Twins {
         assert!(settled.leaves <= settled.records);
         // At most one image for each leaf that took records, and one more
         // for each page that a cut made, whatever the keyspace's shape.
-        let made = pages.pages.keys().filter(|page| !had.contains(page));
-        let made = made.count() as u64;
+        let made = further_pieces(pages, directory, &had, levels);
         assert!(
             settled.leaf_writes <= settled.leaves + made,
-            "{settled:?}, with {made} pages made"
+            "{settled:?}, with {made} further pieces"
         );
         self.counts.lost_levels += u64::from(pages.levels(directory) < levels);
         // No page is handed two images of a leaf, but the root where the

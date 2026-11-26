@@ -104,7 +104,8 @@ pub struct Settled {
     pub records: u64,
     /// The leaves of the directory that the records changed
     /// ([`Written::leaves`](crate::flat::Written::leaves)). A record that
-    /// is put as the pages have it changes none.
+    /// is put as the pages have it changes none where its value is kept
+    /// in its page, and its leaf where the value is kept out of line.
     pub leaves: u64,
     /// The images of leaves that were written for them
     /// ([`Written::leaf_writes`](crate::flat::Written::leaf_writes)): one
