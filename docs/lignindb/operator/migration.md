@@ -421,11 +421,17 @@ Read its report before you go on:
   held an element leaves them). A prefix that a pending drop names is
   not among them: its records are counted with the pending drops
   (`pending drops: …, which leave … records behind and … marks`), which
-  `--unreachable refuse` does not refuse and `carry` does not carry. Unless `--unreachable` says otherwise
+  `--unreachable refuse` does not refuse and `carry` does not carry,
+  but where a tree stands at that path again, its records are carried as
+  that tree's, whatever `--unreachable` says, and the report's line of
+  that drop says `A TREE STANDS AT THE PATH AGAIN`. Unless `--unreachable` says otherwise
   they are left behind (`leave`), and the target is what a database
   written on LigninDB holds, with the same root hash. What can then
   answer otherwise than on RocksDB is a read by the path of such a tree,
-  a tree made again at that path, and a cursor that steps from no key.
+  a tree made again at that path, a cursor that steps from no key, a
+  write below such a tree, which both engines refuse at different costs,
+  and, once a tree is made again there, a write into a subtree of the old
+  one, which RocksDB takes and LigninDB refuses.
   `--unreachable refuse` refuses such a source where those prefixes hold
   records of the data, aux or meta keyspaces (a prefix with a root-key
   record alone counts none, and that record is carried all the same);
@@ -544,7 +550,11 @@ so, and the next commands check each of them:
    the physical invariant checker found every rule of the store to
    hold, with every stored hash of the Merks in use made again by Merk's
    rules but those the rules take as they are stored (the value hash of a reference, and that of a tree whose own records are no Merk: an MMR, a bulk-append, dense or commitment tree, a private document store, whose records the check does not hash again); records that no tree links are carried and compared,
-   and no hash of them is made.
+   and no hash of them is made. A `left_hashes=…` above 0 counts value
+   hashes of the kind grove versions 1 to 3 left after a delete below a
+   tree (GroveDB #686), which the check takes as no damage: where later
+   versions alone wrote the database, report it before the node starts
+   on the target ([the messages](messages.md#lignin)).
 3. The last line, `migrated … into …: loaded, compared and verified`.
 
 ```sh
@@ -764,6 +774,22 @@ the application cannot tell which of its data that is, it checks the
 source as a whole. Where it is of the target's own store (a read its
 device refused, a rule of its pages, its page table or its value log),
 it says nothing of the source.
+
+**Where the node goes back to `SOURCE` itself**, the database is to be
+the one the migration read, and not an older state of it: a RocksDB
+database whose log lost its tail since reads as sound and can be
+migrated, at an earlier last write and another root hash. The block
+surveys it again and holds its first line (its RocksDB identity and its
+last write) and its root hash to the survey of step 5. Where `SOURCE`
+was a checkpoint, the node's own directory has a state of its own,
+which the application identifies; this block is not for it.
+
+```sh
+lignin migrate "$SOURCE" --survey 2>&1 | tee "$WORK/reports/survey-again.txt"
+first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$1"; }
+root_hash() { sed -n 's/^  root hash: //p' "$1"; }
+if [ -n "$(first_line "$WORK/reports/survey.txt")" ] && [ "$(first_line "$WORK/reports/survey.txt")" = "$(first_line "$WORK/reports/survey-again.txt")" ] && [ "$(root_hash "$WORK/reports/survey.txt")" = "$(root_hash "$WORK/reports/survey-again.txt")" ]; then echo "SOURCE is as the migration read it"; else echo "SOURCE IS NOT AS THE MIGRATION READ IT"; false; fi
+```
 
 - **Before the node has committed anything on LigninDB**, going back is
   pointing the node at its RocksDB database again and selecting RocksDB.
