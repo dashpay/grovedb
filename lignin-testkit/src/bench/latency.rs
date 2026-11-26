@@ -2004,9 +2004,6 @@ mod tests {
             watch_files: true,
             label: Some("head".to_string()),
             background: Background::Quiet,
-            // Long enough for write-back to cover a block's values, which
-            // it syncs for, before the last block is committed.
-            pause: Duration::from_millis(20),
             ..small(scratch.path())
         };
         let report = run(&options).unwrap();
@@ -2039,16 +2036,13 @@ mod tests {
             assert!(calls >= 1 && longest > 0 && longest <= total, "{slow:?}");
             assert!(total <= slow.commit_ns, "{slow:?}");
         }
-        // The engine tells the turns of its write-back. The report has
-        // the syncs of the run, of the value log among them, and none is
-        // of a file that the harness cannot name.
+        // The engine tells the turns of its write-back, and no sync of
+        // the run is of a file that the harness cannot name. That the
+        // report has a sync at all is not held here: in twelve blocks
+        // write-back syncs only if the machine gives its thread a turn,
+        // and a test of it failed once in some twenty-five runs. What the
+        // file layer counts is tested by itself, above.
         assert!(lignindb.turns.is_some());
-        let value_log = lignindb.syncs.get("a value-log file");
-        assert!(
-            value_log.is_some_and(|(count, nanos)| *count > 0 && *nanos > 0),
-            "{:?}",
-            lignindb.syncs
-        );
         assert!(
             lignindb.syncs.keys().all(|of| of != "another file"),
             "{:?}",
