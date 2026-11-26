@@ -1287,11 +1287,14 @@ fn every_block_of_commands_is_bash() {
     let mut faults = Vec::new();
     let mut blocks = 0;
     for (name, text) in documents() {
-        // runbook.sh takes a fence as it is written: one with a space after
-        // it would not open a block of commands there.
+        // A fence is written as runbook.sh and the book read it alike: with
+        // no space before its word or after it.
         for (at, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with("```") && line != line.trim_end() {
-                faults.push(format!("{name}:{}: a fence with a space after it", at + 1));
+            let fence = line.trim_start().strip_prefix("```");
+            if fence.is_some_and(|info| {
+                line != line.trim_end() || info.starts_with(char::is_whitespace)
+            }) {
+                faults.push(format!("{name}:{}: a fence with a space in it", at + 1));
             }
         }
         for fence in parse(&text)
@@ -1337,6 +1340,15 @@ fn every_quoted_message_is_in_the_code() {
     let mut by_file: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut faults = Vec::new();
     let mut quoted = 0;
+    // The commands of the documents, which the rehearsal runs on a real
+    // migration's output.
+    let commands: String = documents()
+        .iter()
+        .flat_map(|(_, text)| parse(text).fences)
+        .filter(|fence| fence.info == "sh")
+        .map(|fence| fence.body.join("\n"))
+        .collect::<Vec<_>>()
+        .join("\n");
     for (name, text) in documents() {
         let parsed = parse(&text);
         let mut in_tables = BTreeSet::new();
@@ -1400,6 +1412,13 @@ fn every_quoted_message_is_in_the_code() {
                     if !plausible {
                         faults.push(format!(
                             "{name}:{line}: `{span}` has a value the code does not write"
+                        ));
+                    }
+                    // A value given as itself is one a command looks for in
+                    // a report, so the rehearsal holds it to real output.
+                    if value != "…" && !commands.contains(span.as_str()) {
+                        faults.push(format!(
+                            "{name}:{line}: `{span}` is looked for by no command of the documents"
                         ));
                     }
                     quoted += 1;
