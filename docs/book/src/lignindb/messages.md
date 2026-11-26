@@ -560,7 +560,11 @@ runbook's step 11).
 
 - Errors that GroveDB's operations give for what a caller asked (a path
   that is not there, a reference that does not resolve): they are the
-  same on both engines, and are the application's.
+  application's, and the same on both engines but where records that a
+  plain delete of a batch left behind on RocksDB answer otherwise there
+  (step 5 of [the runbook](migration.md#5-survey-the-source) and the
+  engine's design: a batch below an item kept there, for one, is
+  refused with `CorruptedPath` on RocksDB and `InvalidPath` here).
 - The refusals of a write transaction, a batch and a write scope
   (`lignindb::txn`, `lignindb::batch`, `lignindb::scope`), which answer
   the application's use of a transaction; GroveDB passes them on as its

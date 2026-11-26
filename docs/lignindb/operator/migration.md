@@ -359,6 +359,9 @@ for path in "$TARGET" "$BACKUP" "$RESTORE"; do
   if [ ! -d "$(dirname -- "$path")" ]; then echo "$(dirname -- "$path") is not there: make it first"; false; fi
 done
 SOURCE=$(real_dir "$SOURCE")
+for entry in MANIFEST MANIFEST.deleting wal seg val table; do
+  if [ -e "$SOURCE/$entry" ] || [ -L "$SOURCE/$entry" ]; then echo "$SOURCE holds $entry, an entry of a LigninDB database, beside the RocksDB one: find out which of the two holds the node's state before you go on"; false; fi
+done
 TARGET=$(real_new "$TARGET")
 BACKUP=$(real_new "$BACKUP")
 RESTORE=$(real_new "$RESTORE")
@@ -378,7 +381,14 @@ written into; step 2 has already refused one inside any directory that
 holds a database, before it writes anything. It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
 or a `MANIFEST.deleting`, or a `CURRENT`, a LigninDB or RocksDB
 database or checkpoint whose deletion would remove it, or inside one
-whose name ends in `.creating`.
+whose name ends in `.creating`. And it refuses a `SOURCE` that holds an
+entry of a LigninDB database (`MANIFEST`, `MANIFEST.deleting`, `wal`,
+`seg`, `val` or `table`): RocksDB opened on a LigninDB directory, as an
+open with RocksDB as the build's default engine does, makes an empty
+RocksDB database beside the LigninDB one, which the survey reads and
+the migration carries as an empty grove. Find out which of the two
+holds the node's state; where it is the LigninDB one, the messages
+chapter says what to do (`… was written by another storage engine (…: …)`).
 Use the paths it prints from here on. A second mount of one directory
 is not seen. The migrator
 also refuses a `TARGET` inside `SOURCE`, or around it, before it opens
@@ -479,7 +489,8 @@ Read its report before you go on:
   type is none it knows, it finds a rule that does not hold
   (`the value is no element with a known value hash: …`); and where the
   hash is made from the element decoded (an item with backward
-  references, whose hash leaves them out), a value that does not decode
+  references, whose hash leaves them out, or an indexed tree whose hash
+  takes in its axes), a value that does not decode
   fails the rule as well, with the same words and the decoder's after
   them. Either of
   the last two ends the run with status 3 and nothing at `TARGET`. A node that no tree links
@@ -628,14 +639,17 @@ between the two runs: RocksDB's last sequence number did not move. The
 third holds what each report says the source holds to the other: the
 lines after `the source holds:` (but the largest Merk that is handed
 over, which `--unreachable` decides, and the lines set in under them)
-and the line `migrate: survey …`. These are the number and the bytes of
-the records of each keyspace, which a record lost or changed between
-the runs changes even where the last write and the root hash stay (a
-record of the aux, roots or meta keyspaces, which the root hash does
-not cover), unless the records are as many and of as many bytes as
-before. The records that pending drops leave behind are counted there
-and not weighed, so one of them that changed its bytes alone is not
-seen. A
+and the line `migrate: survey …`. These are totals: the records and the
+bytes of each keyspace of the grove and of the records that no tree
+links, those under the prefixes that nothing leads to taken together,
+and the pending drops by their number, the records they leave behind
+and their marks. A record lost or changed between the runs changes one
+of them even where the last write and the root hash stay (a record of
+the aux, roots or meta keyspaces, which the root hash does not cover),
+unless every total stays: records of as many bytes as before, bytes
+that moved between the keyspaces of a prefix that nothing leads to, or
+a pending-drop record that changed and leaves as many records behind.
+A
 process that opened it can have rewritten RocksDB's own files all the
 same (its `CURRENT` and manifest), and a file that something else put
 in the directory is not seen; which is why nothing is to open the
@@ -857,11 +871,9 @@ all the same; a report that cannot be written ends the shell, as any
 failure does, before an answer, and the block removes the report of an
 earlier way back first, so it never reads one. A match shows that the
 identity, the last write, the grove's root hash and the number and bytes
-of the records of each keyspace are those step 5 saw (of the records
-that pending drops leave behind, the number alone), not that every
-record is: a record of the aux, roots or meta keyspaces can be changed
-with the same last write and root hash and as many records of as many
-bytes. So it is a check the way back needs, and no proof: the
+of the records of each keyspace are those step 5 saw, as the totals
+that step 7 compares, not that every record is: a change that keeps
+every total, with the same last write and root hash, is not seen. So it is a check the way back needs, and no proof: the
 application's own check of its state decides too. Where `SOURCE`
 was a checkpoint, the node's own directory has a state of its own,
 which the application identifies; this block is not for it.

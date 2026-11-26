@@ -2057,6 +2057,12 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
     );
     let (passed, last) = step_7(surveyed(2, "aa", 17, taken), migrated(3, "aa", 17));
     assert!(!passed && last.contains("THE SOURCE CHANGED"), "{last}");
+    // The largest Merk that is handed over is what `--unreachable` makes it.
+    let (passed, last) = step_7(
+        surveyed(2, "aa", 17, taken),
+        migrated(2, "aa", 17).replace("1 nodes", "2 nodes"),
+    );
+    assert!(passed, "step 7 with another largest Merk alone: {last}");
 
     let step_11 = |before: String, again: String| {
         run_block("survey-again.txt", &[("survey.txt", before)], &again)
