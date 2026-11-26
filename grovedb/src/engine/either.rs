@@ -670,9 +670,8 @@ fn is_reserved(path: &Path) -> bool {
 fn refuse_a_reserved_name(path: &Path) -> Result<(), Error> {
     match is_reserved(path) {
         true => Err(Error::NotSupported(format!(
-            "the path {} ends in `{CREATING_SUFFIX}`, the name LigninDB builds a checkpoint \
-             under: RocksDB opens it for the caller only where an entry of the directory says \
-             RocksDB and none says LigninDB, and makes no checkpoint there",
+            "the path {} ends in `{CREATING_SUFFIX}`; it cannot be used for a RocksDB open for \
+             the caller or for checkpoint creation",
             path.display()
         ))),
         false => Ok(()),
