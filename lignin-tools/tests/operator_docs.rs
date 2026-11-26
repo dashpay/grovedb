@@ -124,7 +124,13 @@ const COVERED: [(&str, &[&str]); 26] = [
 /// names that file and quotes that message too (where one is named: an
 /// empty one asks for the row alone), so a reason quoted for one
 /// message does not stand for the same word of another.
-const REASONS: [(&str, &str, &str); 44] = [
+const REASONS: [(&str, &str, &str); 46] = [
+    ("lignin-io/src/linux/ring.rs", "wipe_on_fork().map_err(", ""),
+    (
+        "lignin-io/src/linux/ring.rs",
+        ".ok_or_else(|| io::Error::other(",
+        "",
+    ),
     ("lignin-io/src/std_fs.rs", "io::Error::other(", ""),
     ("lignin-io/src/std_fs.rs", "format!(", ""),
     ("lignin-io/src/std_fs.rs", "path_error(", ""),
@@ -1377,17 +1383,23 @@ fn every_quoted_message_is_in_the_code() {
         }
         for (line, prose) in &parsed.prose {
             for span in code_spans(prose) {
-                // A word of a report line, `name=…`, is held to the words
-                // the code writes before its value.
-                if let Some(field) = span.strip_suffix('…').filter(|field| {
-                    field.len() > 1
-                        && field.ends_with('=')
-                        && field[..field.len() - 1]
-                            .chars()
-                            .all(|c| c.is_ascii_lowercase() || c == '_')
+                // A word of a report line, `name=…` or `name=value`, is held
+                // to the words the code writes before its value, whole.
+                if let Some((field, _)) = span.split_once('=').filter(|(field, value)| {
+                    !field.is_empty()
+                        && !value.contains(char::is_whitespace)
+                        && field.chars().all(|c| c.is_ascii_lowercase() || c == '_')
                 }) {
                     quoted += 1;
-                    if !speakers.iter().any(|pattern| pattern.contains(field)) {
+                    let named = |pattern: &String| {
+                        pattern.match_indices(&format!("{field}=")).any(|(at, _)| {
+                            pattern[..at]
+                                .chars()
+                                .next_back()
+                                .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
+                        })
+                    };
+                    if !speakers.iter().any(named) {
                         faults.push(format!(
                             "{name}:{line}: `{span}` is in no crate of the engine"
                         ));
