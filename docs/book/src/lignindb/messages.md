@@ -432,7 +432,7 @@ The tool's own words, besides the engine's above.
 | `this build of lignin has no …: build lignin-tools with the Cargo feature …` | `migrate` was asked of a build without the feature `migrate` | build as [the runbook](migration.md#2-set-the-variables) does | `lignin-tools/src/error.rs` |
 | `the background work failed: …` | `lignin compact`: a turn of write-back or the cleaner failed; its report is written | as the words say | `lignin-tools/src/error.rs` |
 | `the migration: …` | the refusals and failures of `lignin migrate`, [below](#lignin-migrate) | as they say | `lignin-tools/src/error.rs` |
-| `… at byte …: …` | `lignin segments` or `pages`: a file the manifest names is not what the manifest says at that byte. A file the tool may not look at (a directory without the right to search it) is read as one of 0 bytes, as `lignin manifest` then says `MISSING` of a file that is there | check that the user running the tool can read the directories and files first; where it can, it is damage: restore from a backup, and report it | `lignin-tools/src/error.rs` |
+| `… at byte …: …` | `lignin segments` or `pages`: a file the manifest names is not what the manifest says at that byte. A file the tool may not look at (a directory without the right to search it) is read as one of 0 bytes, as `lignin manifest` then says `MISSING` of a file that is there | check that the user running the tool can read the directories and files first. `lignin segments` reads the manifest and then the files without the database's lock, so the cleaner of a running node can retire a file between the two: run it again on a stopped database, or on a checkpoint that nothing opens. Where it says the same there, it is damage: restore from a backup, and report it | `lignin-tools/src/error.rs` |
 | `a page: …` | a page could not be read; the store's words follow | as they say; damage where they say a page does not decode | `lignin-tools/src/error.rs` |
 | `a read: …` | a record, a node or an entry could not be read | as the words after it say | `lignin-tools/src/error.rs` |
 | `a write: …` | `lignin load`: the write transaction refused a write of the dump | as the words after it say | `lignin-tools/src/error.rs` |
@@ -477,7 +477,7 @@ scripts and hold words of the form name=value.
 | `the target, checked after its close with every hash made again by Merk's rules:` | the physical check of the target follows | `lignin-tools/src/migrate/mod.rs` |
 | `migrated … into …: loaded, compared and verified` | the last line of a run that succeeded | `lignin-tools/src/migrate/mod.rs` |
 | `THE TARGET IS NOT ITS SOURCE: … differences. It is left in … and is not to be used` | exit status 3: keep the report and report it as a defect | `lignin-tools/src/migrate/mod.rs` |
-| `THE TARGET IS NOT SOUND. It is left in … and is not to be used` | exit status 3: the same | `lignin-tools/src/migrate/mod.rs` |
+| `THE TARGET IS NOT SOUND. It is left in … and is not to be used` | exit status 3: a rule of the store does not hold in the target. Where the report names a read that the system refused, deal with what the system said and run the same command again; otherwise the same as the row above | `lignin-tools/src/migrate/mod.rs` |
 | `THE DEVICE OF … IS FULL: the migration stopped (…). Make room and run the same command again: it goes on from where this run stood` | exit status 4 | `lignin-tools/src/migrate/mod.rs` |
 
 Its refusals (exit status 1) follow `the migration: `, after the tool's
@@ -495,7 +495,7 @@ was written to the target unless the words say so.
 | `it changed while it was read (…): something wrote it. Nothing of this run is to be used` | something wrote the source during the run: stop it, and run again | `lignin-tools/src/migrate/source.rs` |
 | `the source …: the records of … are not what they were when the migration first read them: something wrote the source` | the same | `lignin-tools/src/migrate/walk.rs` |
 | `the source is not what its survey found: …: …` | the same | `lignin-tools/src/migrate/compare.rs` |
-| `the source … holds what a migration does not carry (the lines NOT CARRIED above): nothing was written by this run` | the survey's `NOT CARRIED` lines name it; such a source stays on RocksDB | `lignin-tools/src/migrate/mod.rs` |
+| `the source … holds what a migration does not carry (the lines NOT CARRIED above): nothing was written by this run` | the survey's `NOT CARRIED` lines name it where it is among the first 1,000 prefixes the report lists, the rest being counted only; such a source stays on RocksDB | `lignin-tools/src/migrate/mod.rs` |
 | `the source … projects a peak of about … MiB of memory, above the limit of … MiB (…). Nothing was written by this run: …` | the words after it say whether a larger `--memory-limit`, or a smaller `--batch` or `--cache`, can take it | `lignin-tools/src/migrate/mod.rs` |
 | `the target … has no name of its own` | give a target with a last name | `lignin-tools/src/migrate/mod.rs` |
 | `the target … has a name that ends in .creating, under which LigninDB opens no database: give it another name` | as it says | `lignin-tools/src/migrate/mod.rs` |

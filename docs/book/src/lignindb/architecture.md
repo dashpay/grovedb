@@ -256,12 +256,16 @@ left is the exception, since an open can fail on it too
 - **The golden corpus** is what RocksDB answered at a pinned commit:
   root hashes, proofs, costs and results of a fixed set of traces. It is
   replayed on LigninDB in CI ([ci.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/ci.md#the-corpus-gate)).
-- **The physical invariant checker** (`lignin verify`, `Db::verify`)
-  reads every page and value, holds every rule of the store, and makes
-  every stored hash of the Merks in use again by Merk's rules but those
-  the rules take as stored (the value hash of a reference); the cells of
-  a dropped Merk that waits to be reclaimed are walked, and their hashes
-  not made again.
+- **The physical invariant checker** (`lignin verify`) reads every
+  page and value of the store as a close left it, holds every rule of
+  the store, and makes every stored hash of the Merks in use again by
+  Merk's rules but those the rules take as stored (the value hash of a
+  reference); the cells of a dropped Merk that waits to be reclaimed
+  are walked, and their hashes not made again. `Db::verify`, the check
+  beside a running session, leaves out a few comparisons that need the
+  store at rest (the page ids, the counts of live values, the page table
+  against the segments), and makes no hash again unless it is given
+  Merk's rules.
 - **Crash campaigns** cut the engine at millions of points and recover
   each ([crash-tests.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/crash-tests.md)); the full device is swept
   at every file operation ([disk-full-and-backup.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md),

@@ -550,9 +550,12 @@ survey of step 5 read from the source to the one the migration read
 from it. The second holds the first line of each report, up to the `;` after
 its last write, to the other: the source's path, which has to be this
 `SOURCE`, its RocksDB identity and the sequence number of its last
-write. Where they are the same, no write of RocksDB reached the source
-between the two runs; a file that something else put in the directory
-is not seen by it. That the target has the
+write. Where they are the same, no record was written to the source
+between the two runs: RocksDB's last sequence number did not move. A
+process that opened it can have rewritten RocksDB's own files all the
+same (its `CURRENT` and manifest), and a file that something else put
+in the directory is not seen; which is why nothing is to open the
+source between step 4 and step 10. That the target has the
 source's root hash is what `differing=0` says; the migration also
 refuses a source that changes while it reads it. Do not start the node
 on a target for which one of them fails. These checks hold the report to
@@ -654,7 +657,11 @@ takes a file of such a name for its own (an open removes
 `CURRENT`, `IDENTITY`, or a name that begins `MANIFEST-` or `OPTIONS-`
 or ends in `.sst`, which it takes for RocksDB's. A file of the
 application's under one of these names goes where the application's
-documentation says, outside `TARGET`. Then point the
+documentation says, outside `TARGET`. The node's account has to be able
+to write `TARGET` and every file in it, its `LOCK` among them, which an
+open locks for writing: where the migration ran under another account,
+give the files to the node's account first, as the system's tools do
+(`chown -R` on Linux and macOS). Then point the
 node at `TARGET` and select the LigninDB engine, as the application's
 configuration says. On GroveDB's side, an application
 opens a database on LigninDB with

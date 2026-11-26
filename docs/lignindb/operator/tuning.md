@@ -47,7 +47,9 @@ every checkpoint the node has open (a node can keep checkpoints open to
 serve them). **Each pool is sized by the `cache_size` of its own open**,
 so a process that has several databases open has as many pools: size
 them together, within the memory the node may use, beside what the
-application and the rest of the engine hold.
+application and the rest of the engine hold. A pool whose every frame
+is held, as by a large write transaction, takes frames beyond its
+`cache_size` until they are given back, so leave room above the sum.
 
 - **The live database** takes the largest share. A pool that holds the
   pages the node reads again and again answers them without a read of
@@ -131,7 +133,7 @@ is `CleanerConfig::new`.
 | --- | --- | --- | --- |
 | `CleanerConfig::target_dead_percent` | 14 % | the share of dead bytes of the segments that the cleaner works towards | lower to take less disk, at the price of more bytes written for each byte given back; higher for fewer writes and more disk |
 | `CleanerConfig::value_dead_percent` | 14 % | the same for the value log: above it, a pass cleans the file with the largest share of dead bytes | as above |
-| `CleanerConfig::checkpoint_dead_percent` | 4 % | the most of the segments' blocks, as a share of all of them, that may wait for a table checkpoint to be deleted, before the cleaner asks for one | leave it |
+| `CleanerConfig::checkpoint_dead_percent` | 4 % | the most bytes of segment blocks, as a share of the bytes of all segment blocks, that may wait for a table checkpoint to be deleted, before the cleaner asks for one | leave it |
 | `CleanerConfig::seal_dead_percent` | 2 % | a file that is being filled is closed for cleaning when its dead bytes are this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::max_segment_percent` | 1 % | a file that is being filled is closed when it holds this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::min_segment_len` | 64 KiB | no file is closed for the cleaner before it holds this much | leave it |
