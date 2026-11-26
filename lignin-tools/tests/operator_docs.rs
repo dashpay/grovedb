@@ -488,13 +488,17 @@ fn tables(prose: &[(usize, String)]) -> Vec<Table> {
     tables
 }
 
-/// The words of a command line as the shell splits them, up to the first
-/// character that ends a command or begins a redirection.
+/// The words a command line gives its program, as the shell splits them,
+/// up to the first character that ends a command (`|`, `;`, `&`): a
+/// redirection (`>`, `2>&1`, `< file`) is left out with the word it names,
+/// and the words after it are read on.
 fn words(line: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut in_word = false;
-    let mut chars = line.chars();
+    // Whether the word being read is the one a redirection names.
+    let mut target = false;
+    let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '\'' => {
@@ -514,14 +518,26 @@ fn words(line: &str) -> Vec<String> {
                     word.push(c);
                 }
             }
-            '>' | '<' if in_word && word.chars().all(|c| c.is_ascii_digit()) => {
+            '>' | '<' => {
+                // The number of a descriptor before it is no word either.
+                if in_word && !word.chars().all(|c| c.is_ascii_digit()) {
+                    words.push(std::mem::take(&mut word));
+                }
+                word.clear();
                 in_word = false;
-                break;
+                while matches!(chars.peek(), Some('>' | '<' | '&' | '|')) {
+                    chars.next();
+                }
+                target = true;
             }
-            '|' | ';' | '&' | '>' | '<' => break,
+            '|' | ';' | '&' => break,
             c if c.is_whitespace() => {
                 if in_word {
-                    words.push(std::mem::take(&mut word));
+                    let done = std::mem::take(&mut word);
+                    match std::mem::take(&mut target) {
+                        true => {}
+                        false => words.push(done),
+                    }
                     in_word = false;
                 }
             }
@@ -531,7 +547,7 @@ fn words(line: &str) -> Vec<String> {
             }
         }
     }
-    if in_word {
+    if in_word && !target {
         words.push(word);
     }
     words
@@ -557,8 +573,8 @@ fn commands(fence: &Fence) -> Vec<String> {
     commands
 }
 
-/// The simple commands of a command line: its parts between the `;`, `&&`
-/// and `||` that no quote holds, without the words of the shell's grammar
+/// The simple commands of a command line: its parts between the `;`, `&&`,
+/// `||` and `|` that no quote holds, without the words of the shell's grammar
 /// that begin them (`if`, `then`, `else`, `do`, `{`, `!` and the like), so
 /// that a command in a condition or a branch is checked as one on a line of
 /// its own.
@@ -577,6 +593,11 @@ fn simple_commands(line: &str) -> Vec<String> {
             }
             '&' | '|' if !single && !double && chars.peek() == Some(&c) => {
                 chars.next();
+                parts.push(std::mem::take(&mut part));
+                continue;
+            }
+            // Each command of a pipeline is one of its own.
+            '|' if !single && !double => {
                 parts.push(std::mem::take(&mut part));
                 continue;
             }
@@ -1377,6 +1398,27 @@ fn every_command_names_what_the_workspace_has() {
             }
         }
     }
+    // The runbook builds the tool with the feature that `migrate` needs:
+    // `args::parse` takes the subcommand without it, and the binary does not.
+    let builds_migrate = (parse(&read(&operator_dir().join("migration.md")))
+        .fences
+        .iter())
+    .flat_map(commands)
+    .flat_map(|line| simple_commands(&line))
+    .any(|command| {
+        let words = words(&command);
+        let at = |option: &str| words.iter().position(|word| word == option);
+        words.first().is_some_and(|word| word == "cargo")
+            && words.get(1).is_some_and(|word| word == "build")
+            && at("-p")
+                .and_then(|at| words.get(at + 1))
+                .is_some_and(|p| p == "lignin-tools")
+            && (at("--features").and_then(|at| words.get(at + 1)))
+                .is_some_and(|list| list.split(',').any(|feature| feature == "migrate"))
+    });
+    if !builds_migrate {
+        faults.push("migration.md builds lignin-tools with no feature migrate".to_owned());
+    }
     println!("{checked} commands and code spans read");
     assert!(checked > 100, "only {checked} commands and spans were read");
     assert!(faults.is_empty(), "{}", faults.join("\n"));
@@ -2012,6 +2054,14 @@ fn the_readers_of_the_documents_read_what_they_say() {
         words("lignin stats \"$DB\" 2>&1 | tee x"),
         ["lignin", "stats", "$DB"]
     );
+    assert_eq!(
+        words("lignin migrate \"$S\" --survey 2>&1 --bad > \"$W/x\" --worse"),
+        ["lignin", "migrate", "$S", "--survey", "--bad", "--worse"]
+    );
+    assert_eq!(
+        simple_commands("tee x < y | lignin verify --bad"),
+        ["tee x < y", "lignin verify --bad"]
+    );
     let source = "let a = 'x'; // \"no\"\nwrite!(f, \"{} holds no \\\n     database {{here}}: {source}\"); r#\"raw \"q\"\"#";
     assert_eq!(
         literal_patterns(source),
@@ -2029,7 +2079,8 @@ fn the_readers_of_the_documents_read_what_they_say() {
         ),
         [
             r#"[ "$A" != "$B" ]"#,
-            r#"lignin migrate "$B" --survey 2>&1 | tee x"#,
+            r#"lignin migrate "$B" --survey 2>&1"#,
+            "tee x",
             "fi"
         ]
     );
@@ -2038,7 +2089,8 @@ fn the_readers_of_the_documents_read_what_they_say() {
         [
             "lignin verify \"$D\"",
             "true",
-            "} | tee 'a;b'",
+            "}",
+            "tee 'a;b'",
             "echo \"c; d\""
         ]
     );
@@ -2356,6 +2408,69 @@ fn step_4_refuses_a_source_that_holds_an_entry_of_lignindb() {
         assert!(
             !passed && printed.contains("an entry that only a LigninDB database makes"),
             "a source with {entry}: {printed}"
+        );
+    }
+}
+
+#[test]
+fn the_deletion_of_a_checkpoint_removes_nothing_where_it_cannot_look_inside() {
+    let text = read(&operator_dir().join("backup-and-full-disk.md"));
+    let fences = parse(&text).fences;
+    let deletion: Vec<String> = (fences.iter())
+        .filter(|fence| {
+            fence.info == "sh"
+                && fence
+                    .body
+                    .iter()
+                    .any(|line| line.contains("rm -rf -- \"$CHECKPOINT\""))
+        })
+        .map(|fence| fence.body.join("\n"))
+        .collect();
+    assert_eq!(
+        deletion.len(),
+        1,
+        "one block of the backup chapter removes the checkpoint"
+    );
+    let migration = parse(&read(&operator_dir().join("migration.md"))).fences;
+    let step_1: Vec<String> = (migration.iter())
+        .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line == "apart() {"))
+        .map(|fence| fence.body.join("\n"))
+        .collect();
+    let functions = &step_1[0][step_1[0].find("plain_path() {").expect("plain_path")..];
+    // `find` as given, or one that fails as for a directory it cannot read.
+    for (failing, removed) in [(true, false), (false, true)] {
+        let root = tempfile::tempdir().expect("a directory");
+        let db = root.path().join("db");
+        let checkpoint = root.path().join("checkpoint");
+        fs::create_dir(&db).expect("the database");
+        fs::create_dir(&checkpoint).expect("the checkpoint");
+        for file in ["LOCK", "MANIFEST"] {
+            fs::write(checkpoint.join(file), "").expect("a file of the checkpoint");
+        }
+        for dir in ["wal", "seg", "val", "table"] {
+            fs::create_dir(checkpoint.join(dir)).expect("a directory of the checkpoint");
+        }
+        let stand_in = match failing {
+            true => "find() { echo \"find: cannot read a directory\" >&2; return 1; }\n",
+            false => "",
+        };
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -euo pipefail\n{functions}\nCHECKPOINT=$(real_dir \"$CHECKPOINT\")\n\
+                 CHECKPOINT_ID=\"$(df -P -- \"$CHECKPOINT\" | awk 'NR == 2 {{print $1}}') $(ls -di -- \"$CHECKPOINT\" | awk '{{print $1}}')\"\n\
+                 {stand_in}{}\n",
+                deletion[0]
+            ))
+            .env("CHECKPOINT", &checkpoint)
+            .env("DB", &db)
+            .output()
+            .expect("bash");
+        assert_eq!(
+            (output.status.success(), checkpoint.exists()),
+            (removed, !removed),
+            "a find that fails: {failing}; {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

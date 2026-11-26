@@ -393,7 +393,9 @@ entry of a LigninDB database (`MANIFEST`, `MANIFEST.deleting`, `wal`,
 open with RocksDB as the build's default engine does, makes a RocksDB
 database beside the LigninDB one, empty at first and then holding what
 is written through it, which the survey reads and the migration
-carries in place of the LigninDB one's state. Find out which of the two
+carries in place of the LigninDB one's state. `lignin migrate` itself
+does not refuse such a directory: it reads the RocksDB database there,
+and this block is the refusal. Find out which of the two
 holds the node's state; where it is the LigninDB one, the messages
 chapter says what to do (`… was written by another storage engine (…: …)`).
 Use the paths it prints from here on. A second mount of one directory
@@ -734,8 +736,14 @@ among them, and a sync of a log through another name that fails is not
 seen by the database that writes it
 ([BK7](../disk-full-and-backup.md#62-the-procedure)). On macOS `sync`
 takes no file, so the block makes none: a copy made there is written
-once its device has been ejected or the system shut down. Either
-way, step 9's restore is what the backup is relied on by.
+once its device has been ejected or the system shut down. Neither shows
+that the copy reached its device, and a restore made beside it can be
+answered from the system's cache: the backup is relied on once its
+device has been unmounted, or ejected, without an error and mounted
+again, and a restore made from it then has passed step 9's checks and
+the application's own check, as [the backup chapter](backup-and-full-disk.md#check-a-backup-and-restore-one)
+says. Step 9 as written restores the copy just made, which shows it
+sound, and no more.
 
 ```sh
 claim_dir "$BACKUP"
@@ -773,14 +781,21 @@ else
   echo "no sync here: the copy is written once its device has been ejected or the system shut down"
 fi
 lignin verify "$RESTORE" | tee "$WORK/reports/verify-restore.txt"
-lignin stats "$RESTORE"
+lignin stats "$RESTORE" | tee "$WORK/reports/stats-restore.txt"
+lignin stats "$TARGET" > "$WORK/reports/stats-target.txt"
+restored=$(sed -n 1p "$WORK/reports/stats-restore.txt")
+migrated=$(sed -n 1p "$WORK/reports/stats-target.txt")
+if [ -n "$migrated" ] && [ "$restored" = "$migrated" ]; then echo "the restore opens at the target's $migrated"; else echo "THE RESTORE DOES NOT OPEN AT THE TARGET'S VERSION: $restored, the target $migrated"; false; fi
 ```
 
 Every open writes to the directory it opens (the recovery starts a log
 file of its own, and the close writes back), so the check is made on the
-restore and not on the backup. The restore is a copy of the database
-that nothing needs: remove it once you have read the two reports, by
-the path that step 4 printed for `RESTORE`.
+restore and not on the backup. The last command holds the restore to
+the target by the first line of `lignin stats`, `version …`, the commit
+each opens at: a restore that lost a commit of the target opens at an
+earlier one. The restore is a copy of the database that nothing needs:
+remove it once its checks have passed, by the path that step 4 printed
+for `RESTORE`.
 
 ## 10. Start the node on LigninDB
 
@@ -816,7 +831,25 @@ opens a database on LigninDB with
 `GroveDb::from_engine(EitherEngine::open_with(path, &EngineChoice::Lignin(options))?)`,
 or with `LigninEngine::open_with(path, &options)`
 ([engine.md](../engine.md#an-engine-chosen-at-the-open)); the options are
-those of [tuning](tuning.md). Start the node.
+those of [tuning](tuning.md).
+
+**Before the start**, check, as the node's account, that the path the
+application's configuration names holds this database: `lignin manifest`
+reads its manifest without opening it, and fails with
+`… has no MANIFEST` where the path holds no LigninDB database, as where
+the device that holds it is not mounted. An open of a path that holds
+none makes a new, empty database there (`Options::create_if_missing`,
+on by default, [tuning](tuning.md)): an application that can opens on
+LigninDB with it off. And the state the node goes on from is the
+application's to approve: the state that step 5 surveyed, which, where
+`SOURCE` was a checkpoint, is that checkpoint's and not the node's
+last, so the application confirms that it means to go on from it.
+
+```sh
+if lignin manifest "$TARGET" > /dev/null; then echo "$TARGET holds a LigninDB database"; else echo "NO LIGNINDB DATABASE AT $TARGET"; false; fi
+```
+
+Then start the node.
 
 From its first commit on, the node's state is in `TARGET` alone. Keep
 `SOURCE` until you have decided not to go back.

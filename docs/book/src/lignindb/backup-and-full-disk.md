@@ -171,10 +171,10 @@ failed. It runs no `sync` with no file, which would sync the logs of
 other databases on the machine as well (below, and
 [BK7](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md#62-the-procedure)). On macOS `sync`
 takes no file, so the block makes none, and a copy made there is
-written once its device has been ejected or the system shut down. Either way, the
-engine's files of a backup are relied on once a restore of it has passed
-`lignin verify` and holds the state the application expects, and that check can be answered from the system's cache: a restore on
-another machine, from the backup's device attached there, reads what the device holds. `lignin verify` shows that
+written once its device has been ejected or the system shut down. Either way, a
+backup is relied on only as [the check of a backup](#check-a-backup-and-restore-one) says: its
+device unmounted and mounted again, a restore from it through
+`lignin verify`, and the application's own check of that restore. `lignin verify` shows that
 the restore is sound, not that it holds every commit the database had:
 a copy that lost a write to the tail of the log, of a database that was
 stopped without its close, opens at an earlier commit and is sound. So
@@ -188,10 +188,7 @@ restore that lost commits. `lignin manifest`
 reads the backup's manifest without opening it and lists the files it
 names, marking one that is not there `, MISSING` and one that is
 shorter `, SHORT: … bytes on disk`; it exits 0 either way, and reads no page. A backup is relied on
-once a restore of it has passed `lignin verify` (below), which reads
-the engine's files alone, and the application's own check of the
-restored database's state and of the files of its own that the backup
-holds.
+as [the check of a backup](#check-a-backup-and-restore-one) says, and not before.
 
 ## Back up a running node
 
@@ -252,10 +249,29 @@ holds.
 4. **Check the copy**: restore it once and verify it, as the next section
    says.
 5. **Then delete the checkpoint** ([below](#delete-the-checkpoint-of-a-backup)),
-   and not before: until the copy is durable and its restore has passed
-   `lignin verify`, the checkpoint is the one whole copy of that version.
+   and not before: until the backup is relied on, as [the check of a
+   backup](#check-a-backup-and-restore-one) says, the checkpoint is the one whole copy of that
+   version.
 
 ## Check a backup, and restore one
+
+**A backup is relied on**, and what it was copied from let go (the
+checkpoint deleted, the stopped database removed or written on), once
+all three hold:
+
+1. **It is on its device.** Its device was unmounted, or ejected,
+   without an error, and mounted again, so that what is read from it is
+   what the device holds. Neither `cp` nor a `sync` by name shows that:
+   on Linux, a write-back that failed before the sync opened the file is
+   not always reported to that sync ([sync-handles.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/sync-handles.md#3-what-linux-does)),
+   and a restore made on the same machine can be answered from the
+   system's cache.
+2. **A restore made from it then has passed `lignin verify`**, as below.
+3. **The application's own check holds that restore to the state it
+   expects**, with the application's files of that state:
+   `lignin verify` shows a store sound, not which state it holds. Where the
+   version the database was at when it was copied is known, the first
+   line of `lignin stats`, `version …`, is to be it.
 
 A backup that is to be relied on is checked once, on a restore of it:
 the copy of a directory reads no page, and the check reads them all. The
@@ -329,9 +345,12 @@ made may go.
 
 ### Delete the checkpoint of a backup
 
-Once the copy of a checkpoint is durable (on macOS: the node stopped and
-the copy's device ejected, or the system shut down) and its restore has
-passed `lignin verify`, delete the checkpoint. Until it is deleted it
+Once the backup made from a checkpoint is relied on, as [the check of a
+backup](#check-a-backup-and-restore-one) says (its device unmounted and mounted again, a restore
+from it through `lignin verify`, and the application's own check of that
+restore), delete the checkpoint, and not before: a restore that is sound
+can be of another state, and a checkpoint holds none of the
+application's files. Until it is deleted it
 keeps the files it links, which the live database would otherwise let
 go of as it writes on. The application deletes it with the deletion of the engine it
 runs: `GroveDb::<LigninEngine>::delete_checkpoint_with_engine(path)`, or
@@ -359,7 +378,9 @@ followed, another directory than the one that was copied, or a
 directory that holds anything but the entries a checkpoint of GroveDB
 has (`LOCK`, `MANIFEST`, `wal`, `seg`, `val` and `table`, with nothing
 but files in those four), such as a restore made inside it: what is
-there is then not what was copied. The
+there is then not what was copied. A look into the directory that the
+system refuses (`find` fails for a directory it cannot read) ends the
+block before anything is removed. The
 checks and the removal are two steps: nothing else is to make, move or
 remove a directory at that path between them.
 
@@ -380,7 +401,8 @@ for entry in "$CHECKPOINT"/* "$CHECKPOINT"/.[!.]* "$CHECKPOINT"/..?*; do
     *) echo "$CHECKPOINT holds ${entry##*/}, which a checkpoint does not: it is not what was copied"; false ;;
   esac
 done
-if [ -n "$(find "$CHECKPOINT" -mindepth 2 ! -type f)" ]; then echo "$CHECKPOINT holds a directory or a link inside its own directories, which a checkpoint does not: it is not what was copied"; false; fi
+inside=$(find "$CHECKPOINT" -mindepth 2 ! -type f)
+if [ -n "$inside" ]; then echo "$CHECKPOINT holds a directory or a link inside its own directories, which a checkpoint does not: it is not what was copied"; false; fi
 rm -rf -- "$CHECKPOINT"
 ```
 
@@ -450,8 +472,8 @@ reserve, below.
      first refusal for room it is told of.
    - Delete checkpoints that are no longer needed, as
      [their deletion](#delete-the-checkpoint-of-a-backup) says: a
-     checkpoint of a backup only once its copy is durable and its restore
-     has passed `lignin verify`. A checkpoint keeps the files it links,
+     checkpoint of a backup only once the backup is relied on, as [the
+     check of a backup](#check-a-backup-and-restore-one) says. A checkpoint keeps the files it links,
      which the database would otherwise let go of as it writes on.
    - End what holds old versions: a snapshot kept for long, a write
      transaction left open (the application's).
@@ -465,7 +487,16 @@ reserve, below.
    - or GroveDB answers the commit with
      `not durable: the commit happened, but it is not known to survive a crash`
      or `unsettled: the engine could not find out whether the commit happened`.
-     These two give the engine's words no further: [the messages](messages.md#how-a-message-reaches-you).
+     These two give the engine's words no further: [the messages](messages.md#how-a-message-reaches-you);
+   - or, through LigninDB's own API, the commit's error is the first one
+     of a session that ended:
+     `commit … is published and not known to be durable: …`,
+     `whether commit … is in the log is not known, and the session takes no further commit: …`
+     or `commit … is in the log and could not be installed, and the session takes no further commit: …`
+     ([When a session ends](messages.md#when-a-session-ends)). After one
+     whose commit is not known to be in the log, the next open settles
+     whether it happened: the application finds that out before it
+     writes it again.
 
    Then stop the node, and start it again once there is room; but where
    the reason is `every log file id has been used, and the log can be given no further file`,
