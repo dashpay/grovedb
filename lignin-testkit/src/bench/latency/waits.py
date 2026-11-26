@@ -236,7 +236,7 @@ def main():
         longest[key] = max(longest[key], wait["us"])
     print("\n| Where | What the thread waited for | Waits of %.1f ms or more | In all, ms | Longest, ms |" % (floor / 1e3))
     print("| --- | --- | --- | --- | --- |")
-    for key, us in sorted(total.items(), key=lambda item: (item[0][0], -item[1])):
+    for key, us in sorted(total.items(), key=lambda item: (item[0][0], -item[1], item[0])):
         print("| %s | %s | %d | %.1f | %.1f |" % (key[0], key[1], count[key], us / 1e3, longest[key] / 1e3))
 
     appends = [wait for wait in mine if in_the_log(wait) and "vfs_write" in wait["kernel"]
@@ -255,7 +255,7 @@ def main():
         print("\nBy time alone: %d of them had no listed sync of the process under way at any moment of the wait. "
               "The others, by what a sync beside them was of:\n" % with_none)
         print("| A sync with a moment in common with the wait, of | Waits |\n| --- | --- |")
-        for kind, waits_beside in beside_kind.most_common():
+        for kind, waits_beside in sorted(beside_kind.items(), key=lambda item: (-item[1], item[0])):
             print("| %s | %d |" % (kind, waits_beside))
         if longest_beside:
             print("\nThe longest sync beside a wait took a median of %.1f ms, and %.1f ms at most." %
@@ -278,7 +278,7 @@ def main():
               "them a sync of the process waited for that commit. By what those syncs were of:\n" % (
                   len(for_a_commit), len(appends), for_room, len(for_a_commit), in_a_commit, with_a_sync))
         print("| A sync that waited for the commit that the wait began in, of | Waits |\n| --- | --- |")
-        for kind, waits_for in for_kind.most_common():
+        for kind, waits_for in sorted(for_kind.items(), key=lambda item: (-item[1], item[0])):
             print("| %s | %d |" % (kind, waits_for))
 
     if len({wait["tid"] for wait in trace.waits}) <= 1:
@@ -300,7 +300,7 @@ def main():
         woke_us[key] += wait["us"]
     print("\n| The thread waited for | Woken by | What that thread was off a processor for meanwhile | Waits | In all, ms |")
     print("| --- | --- | --- | --- | --- |")
-    for key, us in sorted(woke_us.items(), key=lambda item: (item[0][0], -item[1])):
+    for key, us in sorted(woke_us.items(), key=lambda item: (item[0][0], -item[1], item[0])):
         print("| %s | %s | %s | %d | %.1f |" % (key[0], key[1], key[2], woke[key], us / 1e3))
 
 
