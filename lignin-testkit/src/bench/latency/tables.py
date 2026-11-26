@@ -125,8 +125,9 @@ def runs(rows):
             row["label"], row["engine"], row["background"], row["round"], row["blocks"],
             *map(us, row["commit"]), *map(us, row["off"][1:]),
             100 * row["late"][1], 100 * row["late"][2], row["outlasted"]))
-    print("\nA block begins a pause after the commit before it ended. It began late where the harness's own work "
-          "after that commit, reading the engine's counts, took longer than the pause.")
+    print("\nA block begins a pause after the commit before it ended. It began late where what followed that "
+          "commit took longer than the pause: the machine keeping the thread off a processor, and in a traced run "
+          "the harness's reading of the engine's counts.")
     groups = collections.OrderedDict()
     for row in sorted(rows, key=order):
         groups.setdefault((row["label"], row["engine"], row["background"]), []).append(row)

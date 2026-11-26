@@ -390,9 +390,9 @@ pub struct EngineLatency {
     /// What the thread that only sleeps saw beside the commits.
     #[serde(default)]
     pub clock: ClockProbe,
-    /// The blocks after whose commit the harness's own work, reading the
-    /// engine's counts, took longer than the pause: the next block began
-    /// late by that much.
+    /// The blocks that began late: what followed the commit before them, a
+    /// reading of the engine's counts or the machine keeping the thread off
+    /// a processor, took longer than the pause.
     #[serde(default)]
     pub pauses_outlasted: u64,
     /// The longest a block began late by, in nanoseconds.
@@ -1509,8 +1509,8 @@ pub fn table(report: &LatencyReport) -> String {
         );
         let _ = write!(
             out,
-            "\n- the pause after a commit is from the commit's end: the harness's own work outlasted \
-             it after {} blocks, by {} µs at the most{}",
+            "\n- the pause after a commit is from the commit's end: {} blocks began late, by {} µs at \
+             the most, where what followed the commit outlasted it{}",
             engine.pauses_outlasted,
             micros(engine.outlasted_ns),
             match report.parts {
@@ -2124,7 +2124,7 @@ mod tests {
             parts: true,
             ..report_of(&options)
         });
-        assert!(text.contains("outlasted it after 12 blocks"), "{text}");
+        assert!(text.contains("12 blocks began late"), "{text}");
         assert!(
             text.contains("the engine's counts were read after each commit"),
             "{text}"
