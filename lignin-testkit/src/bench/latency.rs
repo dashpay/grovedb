@@ -13,7 +13,10 @@
 //! opened again as the run's background asks, `--warm-blocks` blocks are
 //! applied untimed, and then `--blocks` blocks of the reference workload's
 //! shape, each in a write transaction of its own, with a pause of
-//! `--pause-us` after each commit. The time of a commit is an `Instant`
+//! `--pause-us` after each commit. The pause is counted from the commit's
+//! end: the harness's own work after a commit, reading the engine's counts,
+//! is inside it, and a block that began late because that work took longer
+//! than the pause is counted. The time of a commit is an `Instant`
 //! around the commit of the block's transaction and nothing else. The
 //! measuring thread's own processor clock is read before and after it as
 //! well: a commit's time less what the thread ran is what the thread was
@@ -219,7 +222,9 @@ pub struct LatencyOptions {
     pub label: Option<String>,
     /// The commit to report; found with `git` when not given.
     pub commit: Option<String>,
-    /// Keep the databases.
+    /// Keep the databases when the run has ended. The next run on the same
+    /// scratch directory begins by removing them: a run measures a fresh
+    /// database.
     pub keep: bool,
     /// The GroveVersion to apply.
     pub grove_version: &'static GroveVersion,
