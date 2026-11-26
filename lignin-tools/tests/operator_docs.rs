@@ -557,6 +557,54 @@ fn commands(fence: &Fence) -> Vec<String> {
     commands
 }
 
+/// The simple commands of a command line: its parts between the `;`, `&&`
+/// and `||` that no quote holds, without the words of the shell's grammar
+/// that begin them (`if`, `then`, `else`, `do`, `{`, `!` and the like), so
+/// that a command in a condition or a branch is checked as one on a line of
+/// its own.
+fn simple_commands(line: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let (mut single, mut double) = (false, false);
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            ';' if !single && !double => {
+                parts.push(std::mem::take(&mut part));
+                continue;
+            }
+            '&' | '|' if !single && !double && chars.peek() == Some(&c) => {
+                chars.next();
+                parts.push(std::mem::take(&mut part));
+                continue;
+            }
+            _ => {}
+        }
+        part.push(c);
+    }
+    parts.push(part);
+    const GRAMMAR: [&str; 10] = [
+        "if", "then", "else", "elif", "do", "while", "until", "!", "{", "(",
+    ];
+    parts
+        .into_iter()
+        .map(|part| {
+            let mut rest = part.trim();
+            while let Some(word) = rest
+                .split_whitespace()
+                .next()
+                .filter(|word| GRAMMAR.contains(word))
+            {
+                rest = rest[word.len()..].trim_start();
+            }
+            rest.to_owned()
+        })
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
 fn os(words: &[&str]) -> Vec<OsString> {
     words.iter().map(OsString::from).collect()
 }
@@ -1265,14 +1313,13 @@ fn every_command_names_what_the_workspace_has() {
             if fence.info != "sh" {
                 continue;
             }
-            for command in commands(fence) {
+            for command in commands(fence)
+                .iter()
+                .flat_map(|line| simple_commands(line))
+            {
                 checked += 1;
-                if let Some(fault) = command_fault(command.trim(), &packages) {
-                    faults.push(format!(
-                        "{name}:{}: `{}` {fault}",
-                        fence.line,
-                        command.trim()
-                    ));
+                if let Some(fault) = command_fault(&command, &packages) {
+                    faults.push(format!("{name}:{}: `{command}` {fault}", fence.line));
                 }
             }
         }
@@ -1976,6 +2023,25 @@ fn the_readers_of_the_documents_read_what_they_say() {
             "see [a](migration.md#x), [b]({PUBLISHED}docs/lignindb/engine.md#y) and [c](https://e.org)"
         )
     );
+    assert_eq!(
+        simple_commands(
+            r#"if [ "$A" != "$B" ]; then lignin migrate "$B" --survey 2>&1 | tee x; fi"#
+        ),
+        [
+            r#"[ "$A" != "$B" ]"#,
+            r#"lignin migrate "$B" --survey 2>&1 | tee x"#,
+            "fi"
+        ]
+    );
+    assert_eq!(
+        simple_commands("{ lignin verify \"$D\" || true; } | tee 'a;b' && echo \"c; d\""),
+        [
+            "lignin verify \"$D\"",
+            "true",
+            "} | tee 'a;b'",
+            "echo \"c; d\""
+        ]
+    );
     assert!(takes(Some("migrate"), "--survey"));
     assert!(takes(None, "--cache"));
     assert!(!takes(Some("verify"), "--batch"));
@@ -2017,8 +2083,19 @@ fn run_block(
     for (name, body) in reports {
         fs::write(work.path().join("reports").join(name), body).expect("a report");
     }
+    // The functions of step 1, without its lines that install Cargo.
+    let functions: Vec<String> = (parse(&text).fences.into_iter())
+        .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line == "apart() {"))
+        .map(|fence| fence.body.join("\n"))
+        .collect();
+    assert_eq!(
+        functions.len(),
+        1,
+        "one block of migration.md defines apart"
+    );
+    let functions = &functions[0][functions[0].find("plain_path() {").expect("plain_path")..];
     let script = format!(
-        "set -euo pipefail\n\
+        "set -euo pipefail\n{functions}\n\
          lignin() {{ if [ \"$2\" != \"${{BACK:-$SOURCE}}\" ]; then echo \"surveyed $2\"; return 1; fi; printf '%s\\n' \"$SURVEY\"; case \"$SURVEY\" in *'the source can be migrated') return 0 ;; esac; return 1; }}\n{}\n",
         blocks[0]
     );
@@ -2035,12 +2112,14 @@ fn run_block(
         // name in lower case.
         let lower = variable.to_lowercase();
         let (variable, name) = variable.split_once('=').unwrap_or((variable, &lower));
+        // A name that ends in `/.` is given so, to the directory without it.
+        let (name, tail) = (name.strip_suffix("/.")).map_or((name, ""), |name| (name, "/."));
         let dir = work.path().join(name);
         fs::create_dir(&dir).expect("a directory of the block");
         if !entry.is_empty() {
             fs::write(dir.join(entry), "").expect("an entry");
         }
-        bash.env(variable, &dir);
+        bash.env(variable, format!("{}{tail}", dir.display()));
     }
     let output = bash.output().expect("bash");
     let printed = String::from_utf8_lossy(&output.stdout);
@@ -2135,7 +2214,7 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
     );
     let back = |dirs: &[(&str, &str)]| {
         run_block(
-            "BACK=${BACK:-$SOURCE}",
+            r#"real_dir "${BACK:-$SOURCE}""#,
             &[],
             "the source can be migrated",
             dirs,
@@ -2160,7 +2239,7 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
         "the way back to a BACK of RocksDB beside a checkpoint SOURCE surveys BACK"
     );
     let (passed, last) = run_block(
-        "BACK=${BACK:-$SOURCE}",
+        r#"real_dir "${BACK:-$SOURCE}""#,
         &[],
         "the source … holds no RocksDB database (no file CURRENT)",
         &[("SOURCE", ""), ("BACK", "")],
@@ -2173,6 +2252,11 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
     assert!(
         !passed && last.contains("ends in .creating"),
         "the way back to a BACK whose name ends in .creating: {last}"
+    );
+    let (passed, last) = back(&[("SOURCE", ""), ("BACK=old.CREATING/.", "")]);
+    assert!(
+        !passed && last.contains("ends in .creating"),
+        "the way back to a BACK whose name ends in .creating, given with /. after it: {last}"
     );
     let alike = surveyed(2, "aa", 17, refused);
     let (passed, last) = step_11(alike.clone(), alike);

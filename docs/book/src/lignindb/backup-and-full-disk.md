@@ -150,7 +150,13 @@ apart "$DB" "$BACKUP"
 lignin manifest "$DB"
 claim_dir "$BACKUP"
 cp -a "$DB/." "$BACKUP/"
-sync
+if [ "$(uname -s)" = Linux ]; then
+  find "$BACKUP" \( -type f -o -type d \) -exec sync {} +
+  d=$(dirname -- "$BACKUP")
+  while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
+else
+  echo "no sync here: the copy is written once its device has been ejected or the system shut down"
+fi
 lignin manifest "$BACKUP"
 ```
 
@@ -158,10 +164,14 @@ The block reads the database's manifest first, so a `DB` whose manifest
 cannot be read (a RocksDB directory given by mistake) is refused before
 anything is copied; a directory with a manifest and files missing is
 copied all the same, and its restore's check finds it. `cp -a` copies every file of the directory
-with the `LOCK` file. `cp` returns before its bytes are on the device. On Linux `sync` returns once
-the system has written them, and tells of no write that failed; on
-macOS `sync` can return before, so a copy made there is written once
-its device has been ejected or the system shut down. Either way, the
+with the `LOCK` file. `cp` returns before its bytes are on the device. On Linux the block syncs
+the copy's files and directories, and those above it, by name: `sync`
+returns once the system has written them, and tells of no write that
+failed. It runs no `sync` with no file, which would sync the logs of
+other databases on the machine as well (below, and
+[BK7](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md#62-the-procedure)). On macOS `sync`
+takes no file, so the block makes none, and a copy made there is
+written once its device has been ejected or the system shut down. Either way, the
 engine's files of a backup are relied on once a restore of it has passed
 `lignin verify`, and that check can be answered from the system's cache: a restore on
 another machine reads what the device holds. `lignin manifest`

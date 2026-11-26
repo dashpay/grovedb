@@ -437,9 +437,12 @@ Read its report before you go on:
   them). Where the node's state is in those records too, the
   application's own check of its state, on the target after step 7,
   decides whether the target holds it. Where it does not, either the
-  source was another database, or the records were under prefixes that
-  nothing leads to, which `--unreachable leave`, the default, leaves
-  behind (the survey's `prefixes that nothing leads to: …`, below).
+  source was another database, or the records were ones the migration
+  does not carry: under prefixes that nothing leads to, which
+  `--unreachable leave`, the default, leaves behind
+  (`prefixes that nothing leads to: …`), or under the prefixes of
+  pending drops, which no `--unreachable` carries but where a tree
+  stands at the path again (`pending drops: …, which leave … records behind and … marks`).
 - The counts after it say what is in the source. A line that begins
   `NOT CARRIED` names something the migrator does not carry, and the
   run is then refused with exit status 1 and
@@ -720,16 +723,28 @@ that checkpoint's state (step 10).
 The block claims `BACKUP` with `mkdir`, which fails where anything is
 there already, and copies the database's files into it; `cp -a` copies
 every file with the `LOCK` file, which an open needs. `cp`
-returns before its bytes are on the device: on Linux, `sync` returns once
-the system has written them, and tells of no write that failed. On macOS
-`sync` can return before they are written, so a copy made there is
-written once its device has been ejected or the system shut down. Either
+returns before its bytes are on the device. On Linux the block syncs
+the copy's files and directories, and the directories above it, by
+name: `sync` returns once the system has written them, and tells of no
+write that failed. It does not run `sync` with no file, which syncs
+every file of the system, the logs of other databases on the machine
+among them, and a sync of a log through another name that fails is not
+seen by the database that writes it
+([BK7](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md#62-the-procedure)). On macOS `sync`
+takes no file, so the block makes none: a copy made there is written
+once its device has been ejected or the system shut down. Either
 way, step 9's restore is what the backup is relied on by.
 
 ```sh
 claim_dir "$BACKUP"
 cp -a "$TARGET/." "$BACKUP/"
-sync
+if [ "$(uname -s)" = Linux ]; then
+  find "$BACKUP" \( -type f -o -type d \) -exec sync {} +
+  d=$(dirname -- "$BACKUP")
+  while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
+else
+  echo "no sync here: the copy is written once its device has been ejected or the system shut down"
+fi
 lignin manifest "$BACKUP"
 ```
 
@@ -748,7 +763,13 @@ the hashes of the Merks in use (step 7 says which it takes as stored), and read 
 ```sh
 claim_dir "$RESTORE"
 cp -a "$BACKUP/." "$RESTORE/"
-sync
+if [ "$(uname -s)" = Linux ]; then
+  find "$RESTORE" \( -type f -o -type d \) -exec sync {} +
+  d=$(dirname -- "$RESTORE")
+  while :; do sync "$d"; if [ "$d" = / ]; then break; fi; d=$(dirname -- "$d"); done
+else
+  echo "no sync here: the copy is written once its device has been ejected or the system shut down"
+fi
 lignin verify "$RESTORE" | tee "$WORK/reports/verify-restore.txt"
 lignin stats "$RESTORE"
 ```
@@ -814,10 +835,13 @@ there, and not the LigninDB one. Set `BACK` to that directory where it
 is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
 directory); the block takes `SOURCE` where `BACK` is not set. It also
 refuses a `BACK` whose name ends in `.creating` (in any case), which the
-open that chooses the engine (`EitherEngine`) refuses for RocksDB.
+open that chooses the engine (`EitherEngine`) refuses for RocksDB; it
+takes the name after it has written the path again with every link
+followed, so a path that ends in `/.` is judged by the directory's
+name.
 
 ```sh
-BACK=${BACK:-$SOURCE}
+BACK=$(real_dir "${BACK:-$SOURCE}")
 case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, which GroveDB's open with the engine chosen refuses for RocksDB: move the database to a name of its own before the node goes back to it"; false ;; esac
 for entry in MANIFEST MANIFEST.deleting wal seg val table; do
   if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
