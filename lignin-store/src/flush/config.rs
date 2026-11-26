@@ -172,6 +172,14 @@ pub struct FlushStats {
     /// The page was written as a base image. Not zero means that a commit
     /// or a page step did not tell write-back what it did.
     pub runs_refused: u64,
+    /// Pages that write-back built from the blocks of their chains, because
+    /// the pool no longer held the version of the newest link: to apply a
+    /// run to before it is written, and to give a value its place in a page
+    /// that a table checkpoint writes.
+    pub chains_read: u64,
+    /// The blocks of those chains: a base image and the runs after it,
+    /// each a read of its segment.
+    pub chain_blocks_read: u64,
     /// Values appended to the value log for a pending value.
     pub values_appended: u64,
     /// The bytes of those values.
@@ -302,6 +310,8 @@ pub(super) struct Counters {
     pub(super) flat_blocks: AtomicU64,
     pub(super) flat_stored_bytes: AtomicU64,
     pub(super) runs_refused: AtomicU64,
+    pub(super) chains_read: AtomicU64,
+    pub(super) chain_blocks_read: AtomicU64,
     pub(super) values_appended: AtomicU64,
     pub(super) value_bytes: AtomicU64,
     pub(super) values_placed: AtomicU64,
@@ -356,6 +366,8 @@ impl Counters {
             flat_blocks: read(&self.flat_blocks),
             flat_stored_bytes: read(&self.flat_stored_bytes),
             runs_refused: read(&self.runs_refused),
+            chains_read: read(&self.chains_read),
+            chain_blocks_read: read(&self.chain_blocks_read),
             values_appended: read(&self.values_appended),
             value_bytes: read(&self.value_bytes),
             values_placed: read(&self.values_placed),

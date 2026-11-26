@@ -1337,6 +1337,11 @@ impl<'s> WriteBack<'s> {
             };
             scratch.clear();
             scratch.resize(size.get(), 0);
+            count(&self.state.counters.chains_read, 1);
+            count(
+                &self.state.counters.chain_blocks_read,
+                readable.len() as u64,
+            );
             result = page::materialize(segments, size, page, readable, scratch, chain).map(Some);
         });
         result

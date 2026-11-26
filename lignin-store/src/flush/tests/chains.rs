@@ -181,8 +181,16 @@ fn a_page_step_of_other_background_work_is_written_as_its_record() {
     assert_eq!(db.chain(page(1))[1].version, born);
     assert_eq!(after.delta_bytes - before.0.delta_bytes, 4 + 19);
     assert_eq!(after.runs_refused, 0);
-    // The page under the run was read from its blocks, under a guard.
+    // The page under the run was read from its blocks, under a guard:
+    // one chain, of its base image alone.
     assert_eq!(db.versions.guards(), before.2 + 1);
+    assert_eq!(
+        (
+            after.chains_read - before.0.chains_read,
+            after.chain_blocks_read - before.0.chain_blocks_read
+        ),
+        (1, 1)
+    );
     db.check_cold();
 
     // The same on a page version that no segment holds yet: the record
