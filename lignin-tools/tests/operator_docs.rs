@@ -1211,11 +1211,24 @@ fn every_command_names_what_the_workspace_has() {
                 }
                 for (line, row) in &table.rows {
                     let option = code_spans(&row[0]).into_iter().next().unwrap_or_default();
-                    let flag = option.split_whitespace().next().unwrap_or_default();
+                    let mut words = option.split_whitespace();
+                    let flag = words.next().unwrap_or_default();
                     if flag.starts_with("--") {
                         checked += 1;
                         if !takes(Some("migrate"), flag) {
                             faults.push(format!("{name}:{line}: `lignin migrate` takes no {flag}"));
+                        }
+                        // A value given as `a|b|c` is each a value the
+                        // option takes.
+                        if let Some(values) = words.next().filter(|values| values.contains('|')) {
+                            for value in values.split('|') {
+                                let line_of = ["migrate", "S", "T", flag, value];
+                                if args::parse(&os(&line_of)).is_err() {
+                                    faults.push(format!(
+                                        "{name}:{line}: `lignin migrate` takes no {flag} {value}"
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
