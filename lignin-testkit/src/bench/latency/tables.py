@@ -13,10 +13,14 @@ thread waited for (`waits.py`).
 It fails, and prints no table, where a report has another number of blocks
 than the campaign was asked for, where a part of the campaign has some of
 its runs and not all (every name of the part, under every background, in
-every round, with both engines), where two runs of one stream ended at
-different root hashes, and where a traced run did not end well (`traced.sh`
-leaves a file that says it did), has no line for its measured blocks, or
-cannot be read: a file of tables is of one campaign that did what it says.
+every round, with both engines), and where two runs of one stream ended at
+different root hashes: a file of tables is of one campaign that did what it
+says.
+
+A traced run that did not end well (`traced.sh` leaves a file that says it
+did), that has no line for its measured blocks, or whose waits cannot be
+placed gets no table of waits: its place says why, the tables of the runs
+are printed all the same, and the script ends with 3.
 
 A percentile is the smallest sample with that share of the samples at or
 below it. A commit's time off a processor is its time less what its thread
@@ -200,15 +204,17 @@ def main():
     for stream, roots in streams.items():
         if len(roots) > 1:
             sys.exit("tables.py: runs of one stream ended at different root hashes: " + ", ".join(sorted(roots)))
-    waited = []
+    waited, refused = [], []
     for trace in sorted(glob.glob(os.path.join(out, "traces", "*.trace"))):
         if not os.path.exists(trace[:-len(".trace")] + ".ok"):
-            sys.exit("tables.py: the traced run of %s did not end well, or was made by an earlier form of "
-                     "traced.sh: it has no file .ok beside it" % trace)
+            refused.append((trace, "the traced run did not end well, or was made by an earlier form of "
+                                   "traced.sh: it has no file .ok beside it"))
+            continue
         made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), "--marked", trace],
                               capture_output=True, text=True)
         if made.returncode != 0:
-            sys.exit("tables.py: waits.py failed on %s: %s" % (trace, made.stderr.strip()))
+            refused.append((trace, made.stderr.strip()))
+            continue
         waited.append((trace, made.stdout.rstrip()))
 
     print("# The tables of PERF-07-F1\n")
@@ -236,8 +242,10 @@ def main():
             print("- %d measurements of seed %d, %d documents of %d owners, %d warm and %d measured blocks "
                   "ended at one root hash, `%s`" % (count, *stream, next(iter(roots))))
         print()
-    if waited:
+    if waited or refused:
         print("## What the measuring thread waited for, in the traced runs\n")
+    for trace, why in refused:
+        print("### %s\n\n**No table of this traced run:** %s\n" % (os.path.basename(trace)[:-len(".trace")], why))
     for trace, tables in waited:
         name = os.path.basename(trace)[:-len(".trace")]
         report_path = trace[:-len(".trace")] + ".json"
@@ -256,6 +264,10 @@ def main():
                     ", ".join("%.2f of %s" % (count / blocks, of) for of, (count, _) in counted)))
         print(tables)
         print()
+    if refused:
+        for trace, why in refused:
+            print("tables.py: no table of %s: %s" % (trace, why), file=sys.stderr)
+        sys.exit(3)
 
 
 main()

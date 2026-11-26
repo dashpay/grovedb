@@ -42,6 +42,17 @@
 #    `lazytime`.
 # 5. `tables`: OUT/tables.md, from all of it (`tables.py`, `waits.py`).
 #
+# Before part 2, where traces are asked for, a traced run of 1,000 blocks of
+# each engine is made and read, so that a tracer that cannot attach here, or
+# user stacks that come out cut short, end the campaign in its first minutes
+# and not after its runs.
+#
+# The tables that an experiment is held by are of parts 2 and 3 and need no
+# trace. Where a traced run fails, or its waits cannot be placed, the script
+# does not say that it finished; `PARTS=tables` then makes OUT/tables.md with
+# the tables of the runs and, in the place of that traced run, why it has
+# none.
+#
 # **The order.** In a round the runs are made in the order above, turned by
 # one for every two rounds; an even round makes them in the reverse of the
 # round before it, so that in two rounds every two runs have been made in
@@ -246,6 +257,33 @@ run() {
   say "$(basename "$file"): $(grep -E '^\| [^B-]' "$file.txt" | tr '\n' ' ')"
 }
 
+# Before the runs: that a traced run can be made here and its waits placed.
+# Every time a thread is off a processor for 20 µs counts, so that a short
+# run has enough of them to say.
+preflight() { # preflight ENGINE
+  local file=$out/preflight/$1 waits
+  [ -e "$file.read" ] && return 0
+  mkdir -p "$out/preflight" "$out/native"
+  rm -rf "$out/native/scratch"
+  OFF_US=20 BIN="$BUILDS/base/lignin-bench" "$here/traced.sh" "$file" "$out/native/scratch" \
+    --engine "$1" --background heavy --blocks 1000 --label preflight \
+    --commit "$commit" 2> "$file.err" || failed "$file"
+  rm -rf "$out/native/scratch"
+  python3 "$here/waits.py" --marked "$file.trace" 20 > "$file.waits.md" ||
+    refuse "the trace of a short run of $1 cannot be read, so no traced run would be: $file.trace"
+  touch "$file.read"
+  waits=$(sed -n '1s/.*: \([0-9]*\) in the measured blocks.*/\1/p' "$file.waits.md")
+  if [ "${waits:-0}" -ge 10 ]; then
+    say "a traced run of $1 can be made here, and its $waits waits can be placed"
+  else
+    say "a traced run of $1 can be made here; it had ${waits:-0} waits, too few to say whether stacks are whole"
+  fi
+}
+if has traces && { has main || has filesystems; }; then
+  preflight lignindb
+  preflight rocksdb
+fi
+
 # Rounds of entries, each `label|build|directory|settings`, one run after the
 # other, every run with both engines. The order of a round is the order
 # given, turned by one for every two rounds, and an even round is the
@@ -358,7 +396,12 @@ fi
 
 # Part 5.
 if has tables; then
-  python3 "$here/tables.py" "$out" > "$out/tables.md.part"
+  made=0
+  python3 "$here/tables.py" "$out" > "$out/tables.md.part" || made=$?
+  # With 3 the tables of the runs are made and a traced run has none.
+  [ "$made" = 0 ] || [ "$made" = 3 ] || exit "$made"
   mv "$out/tables.md.part" "$out/tables.md"
+  [ "$made" = 0 ] ||
+    refuse "the tables of the runs are in $out/tables.md, and a traced run has no table of its waits: it says why there"
 fi
 echo "finished: the tables are in $out/tables.md"
