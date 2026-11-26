@@ -1501,26 +1501,62 @@ fn an_entry_of_rocksdbs_name_alone_under_a_reserved_name_is_rocksdbs_to_answer()
 
 /// Whether no open that can go to RocksDB opens `path`, the two that name
 /// RocksDB refuse it in the type's words, for its name where no entry
-/// says an engine and as LigninDB's where one says LigninDB, and every
+/// says an engine and as LigninDB's where one says LigninDB, each of the
+/// two that name no engine answers what it is to answer there, and every
 /// entry below it is afterwards what it was.
+///
+/// An open that names no engine and is handed to LigninDB answers
+/// LigninDB's own error, in variant and words: the one of a database where
+/// an entry says LigninDB, or where none says an engine and such a path
+/// goes to LigninDB, and the one of a checkpoint where an entry says
+/// LigninDB. Elsewhere the answer is the type's: of the name for a
+/// database, and that the directory is no checkpoint.
 fn kept_from_rocksdb(path: &Path) -> bool {
     let before = files(path);
-    let why = match EitherEngine::found_at(path) {
-        Ok(None) => "ends in `.creating`",
-        Ok(Some(EngineKind::Lignin)) => "a database of LigninDB",
+    let found = match EitherEngine::found_at(path) {
+        Ok(found @ (None | Some(EngineKind::Lignin))) => found,
         _ => return false,
     };
-    let in_words = |opened: Result<EitherEngine, StorageError>| match opened {
+    let why = match found {
+        None => "ends in `.creating`",
+        Some(_) => "a database of LigninDB",
+    };
+    let in_words = |opened: Opened| match opened {
         Err(StorageError::NotSupported(words)) => words.contains(why),
         _ => false,
+    };
+    let as_lignindb = |opened: Opened, by_lignindb: Result<LigninEngine, StorageError>| match (
+        opened,
+        by_lignindb,
+    ) {
+        (Err(of_the_type), Err(of_lignindb)) => {
+            std::mem::discriminant(&of_the_type) == std::mem::discriminant(&of_lignindb)
+                && of_the_type.to_string() == of_lignindb.to_string()
+        }
+        _ => false,
+    };
+    let unnamed = match found.unwrap_or(WHERE_NONE_IS_SAID) {
+        EngineKind::Lignin => as_lignindb(EitherEngine::open(path), LigninEngine::open(path)),
+        EngineKind::RocksDb => in_words(EitherEngine::open(path)),
+    };
+    let of_a_checkpoint = match found {
+        Some(_) => as_lignindb(
+            EitherEngine::open_checkpoint(path),
+            LigninEngine::open_checkpoint(path),
+        ),
+        None => matches!(
+            EitherEngine::open_checkpoint(path),
+            Err(StorageError::StorageError(words))
+                if words.contains("no entry of a database of either engine")
+        ),
     };
     in_words(EitherEngine::open_with(path, &EngineChoice::RocksDb))
         && in_words(EitherEngine::open_checkpoint_with(
             path,
             &EngineChoice::RocksDb,
         ))
-        && EitherEngine::open(path).is_err()
-        && EitherEngine::open_checkpoint(path).is_err()
+        && unnamed
+        && of_a_checkpoint
         && files(path) == before
 }
 
