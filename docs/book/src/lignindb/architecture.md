@@ -214,7 +214,9 @@ section 12).
 4. **The log is replayed** from the first item of the oldest log file
    the manifest keeps, since commits that the checkpoint does not cover
    can lie before the place it was taken at, up to the first item that
-   is not whole, behind which nothing is read: the last whole commit
+   is not whole past the length the manifest vouches for, behind which
+   nothing is read (damage within that length refuses the open, as the
+   messages chapter's rows of a recovery say): the last whole commit
    group before it gives the version the open lands on, or, where the
    log holds none, the version its start record names (and, where the
    manifest names no log file at all, as for a database whose creation

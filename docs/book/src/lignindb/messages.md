@@ -292,8 +292,9 @@ do where it says so; otherwise the row here does.
 ## In a recovery
 
 Every open is a recovery: it loads the table checkpoint the manifest
-names, replays the log on it up to the first item that is not whole,
-landing on the last commit whose group is before it (or, with none, on
+names, replays the log on it up to the first item that is not whole
+past the length the manifest vouches for (damage within it refuses the
+open, in the rows below), landing on the last commit whose group is before it (or, with none, on
 the version the log's start record names, or on the empty version where
 the manifest names no log file, from which the open goes on to make the
 database's keyspaces), and begins a log file of its own. It lands on one committed
@@ -335,7 +336,7 @@ Damage:
 | --- | --- | --- |
 | `the item at … does not apply to page …: …` | a logged change does not fit its page | `lignin-store/src/recovery/error.rs` |
 | `page … is no page of its format as the log leaves it: …` | a page that replay made does not decode | `lignin-store/src/recovery/error.rs` |
-| `the log ends at commit …, and the table checkpoint covers commit …` | the last commit that recovery could read from the log is before the version that the checkpoint of the page table covers, and the comparison does not tell which of the two is wrong: the log lost commits (a file shorter than it was, or a commit in it that does not read), or the page table's files are of a later state than the log's, as in a copy that took them at different times. A log file that the manifest names and that is not there is refused before that, at the open of the files (`cannot … …: …`, as cannot open and the file's path) | `lignin-store/src/recovery/error.rs` |
+| `the log ends at commit …, and the table checkpoint covers commit …` | the last commit that recovery could read from the log is before the version that the checkpoint of the page table covers, and the comparison does not tell which of the two is wrong: the log lost commits (a file shorter than it was, or a commit in it that does not read), or the page table's files are of a later state than the log's, as in a copy that took them at different times. A log file that the manifest names and that is not there is mostly refused before that, at the open of the files (`cannot … …: …`, as cannot open and the file's path), and `lignin manifest` marks it `, MISSING` | `lignin-store/src/recovery/error.rs` |
 | `the log goes on from commit …, and the table checkpoint covers commit …: the commits between them are missing` | commits between the checkpoint and the log are missing | `lignin-store/src/recovery/error.rs` |
 | `the table checkpoint holds … links of versions after …, the last commit of the log` | the checkpoint is ahead of the log | `lignin-store/src/recovery/error.rs` |
 | `no checkpoint mark ends at …, the place of the table checkpoint's sample` | the log does not hold the mark the checkpoint names | `lignin-store/src/recovery/error.rs` |

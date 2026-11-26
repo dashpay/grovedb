@@ -77,8 +77,10 @@ source is the part of the peak that grows with one Merk. The survey
 keeps, besides, the prefixes of every subtree and of the aux and meta
 records, which grow with the number of subtrees, and a run writes the
 records of pending drops and their marks in its last commit, all held
-at once; neither is in the projection, so a source of very many
-subtrees or pending drops needs more than it says. The
+at once, and while it walks a Merk it keeps the order of the nodes of
+each Merk above it on the path; none of these is in the projection, so
+a source of very many subtrees or pending drops, or of large Merks
+nested along one path, needs more than it says. The
 survey says what peak the run projects
 (`the migration projects a peak of about … MiB of memory`): 256 MiB, the
 commit size (`--batch`, 160 MiB unless given), the buffer pool

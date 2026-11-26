@@ -173,7 +173,7 @@ takes no file, so the block makes none, and a copy made there is
 written once its device has been ejected or the system shut down. Either way, the
 engine's files of a backup are relied on once a restore of it has passed
 `lignin verify` and holds the state the application expects, and that check can be answered from the system's cache: a restore on
-another machine reads what the device holds. `lignin verify` shows that
+another machine, from the backup's device attached there, reads what the device holds. `lignin verify` shows that
 the restore is sound, not that it holds every commit the database had:
 a copy that lost a write to the tail of the log, of a database that was
 stopped without its close, opens at an earlier commit and is sound. So
@@ -294,7 +294,7 @@ that grove versions 1 to 3 left after a delete below them (GroveDB
 wrote the database, report it before a node starts on the restore
 ([the messages](messages.md#lignin)). A restore is a database like any other, at the version
 the backup holds (but for a backup of a database whose creation was cut
-short, which the first open of it makes at its first version): point the node at it, with the application's files of
+short, which the first open of it makes at its first version): once the application's own check holds it to the state the application expects (above), point the node at it, with the application's files of
 the same state (a copy of a checkpoint holds none, below), or keep it as
 the check and
 remove it.
