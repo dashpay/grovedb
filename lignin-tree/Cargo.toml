@@ -16,9 +16,13 @@ lignin-store = { version = "7.0.0", path = "../lignin-store" }
 # A check, and no API: an answer of `Directory::rooted_beside` is held to a
 # reference walk of the same entries, which is made within the call at its
 # own cost. Where that ends with an answer too and the two differ, the call
-# panics (the function's documentation says what is compared). It is on in
-# this crate's own tests, `lignindb/held_reads` turns it on with its own
-# checks, and `lignindb` has it on for its own tests by a dev-dependency.
+# panics (the function's documentation says what is compared). In the same
+# way, the records of a batch that `Directory::settle` wrote into the
+# directory are held to the pages: each key is looked up again, at the cost
+# of a lookup a record, and a value that is not the one that was settled
+# panics. It is on in this crate's own tests, `lignindb/held_reads` turns it
+# on with its own checks, and `lignindb` has it on for its own tests by a
+# dev-dependency.
 held_reads = []
 
 [dev-dependencies]

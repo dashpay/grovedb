@@ -753,7 +753,13 @@ element where the first has not.
 As built, the directory's part is at most four records: the entry goes,
 with the record of the root if the Merk has a root and the record of the
 host if it has a host, and a record of the dropped Merk takes their place
-(`lignin-tree::directory`).
+(`lignin-tree::directory`). They are records of the batch that drops the
+Merk, with those of everything else the batch enters, moves, clears and
+names a root of: a batch writes each leaf of the directory's keyspace once
+for all the records it puts there, and not once a record
+(`lignin-tree::directory`, "The records of a batch"). So the pages a drop
+copies are the leaves its records lie in, and a batch of many drops copies
+a leaf once for all of them.
 
 A second exception, as built (D6, `lignin-tree::drop`): **the dropped
 Merk's own flat records go with the drop.** The record that a drop leaves
