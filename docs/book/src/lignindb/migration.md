@@ -249,7 +249,7 @@ absolute paths too.
 : "${GROVEDB_REF:?set GROVEDB_REF to the GroveDB release your node runs: a tag or a branch}"
 : "${WORK:?set WORK to a directory for the build and the reports}"
 case "/$WORK/" in */../*) echo "$WORK has a .. in it, which mkdir -p could make lead elsewhere: give WORK without one"; false ;; esac
-outside_databases "$WORK/reports"
+outside_databases "$WORK/reports/survey.txt"
 mkdir -p "$WORK/reports"
 WORK=$(real_dir "$WORK")
 case "$WORK" in *:*) echo "$WORK has a colon in it, which PATH takes for a separator: give a WORK without one"; false ;; esac
@@ -268,7 +268,7 @@ export CARGO_TARGET_DIR="$WORK/grovedb/target"
 rm -f "$CARGO_TARGET_DIR/release/lignin"
 cargo build --release -p lignin-tools --features migrate
 export PATH="$CARGO_TARGET_DIR/release:$PATH"
-if [ "$(command -v lignin)" != "$CARGO_TARGET_DIR/release/lignin" ]; then echo "the lignin on the path is not the one this block built, which a build target set in the configuration of cargo puts under $CARGO_TARGET_DIR/TARGET-TRIPLE/release: put that directory first on the path"; false; fi
+if [ "$(command -v lignin)" != "$CARGO_TARGET_DIR/release/lignin" ]; then echo "the lignin on the path is not the one this block built: a build target set in the configuration of cargo puts it elsewhere; run this block where that configuration sets none"; false; fi
 lignin help
 ```
 
@@ -438,7 +438,7 @@ answers through GroveDB, checks the target with the physical invariant
 checker, and only then gives the database the name `TARGET`. Until that last step it works
 in the directory `TARGET.migrating`, so nothing is at `TARGET` that is
 not whole, compared and verified. Lines that begin `migrate:` hold
-`name=value` words for a script; the others are for you. After a
+words of the form name=value for a script; the others are for you. After a
 commit of the load, once five seconds (or what `--progress` says) have
 gone by since the last such line, a line says where the load stands, so
 a long commit can keep it longer, and the last commit of the load says
@@ -448,7 +448,7 @@ it whatever the interval:
 | Exit status | What it means | What to do |
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
-| 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there and holds anything (`the target … is there and …`; an empty directory is taken for none), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there; where a power cut took the name back, the database is in `TARGET.migrating` again, and the same command goes on with it and can end with status 0 and a whole report. That database is whole, but no report of a run that finished is held to it (step 7): migrate again into a new `TARGET`, and leave that one where it is until you know what it holds |
+| 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there and holds anything (`the target … is there and …`; an empty directory is taken for none), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there: that database is whole, but no report of a run that finished is held to it (step 7), so migrate again into a new `TARGET`, and leave that one where it is until you know what it holds. Where a power cut took the name back, the database is in `TARGET.migrating` again, and the same command goes on with it: where it ends with status 0 and a whole report, go on with step 7 |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
 

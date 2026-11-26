@@ -451,7 +451,7 @@ and report it with the whole report.
 
 The exit statuses are in [the runbook](migration.md#6-migrate). The run
 writes these lines on its way; lines that begin `migrate:` are for
-scripts and hold `name=value` words.
+scripts and hold words of the form name=value.
 
 | Message | What it means | Code |
 | --- | --- | --- |

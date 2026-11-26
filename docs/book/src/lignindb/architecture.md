@@ -137,8 +137,10 @@ If the background falls behind, committers are made to wait
 
 ## A read
 
-1. **A read pins a version**: the latest, or the one its snapshot was
-   taken at. No lock is taken, and no writer waits for a reader.
+1. **A read takes a version**: a snapshot holds the one it was taken
+   at for as long as it lives; another read takes the latest for that
+   call, so a later call can see a commit made in between. No lock is
+   taken, and no writer waits for a reader.
 2. **The subtree directory** gives the page and slot of the subtree's
    root, from the path's 32-byte prefix, as RocksDB's prefixes are.
 3. **Descent follows page ids and slots** from cell to cell: a node's
@@ -215,8 +217,11 @@ section 12).
 6. **The keyspaces are found**: the open reads the record of where the
    flat keyspaces are and the subtree directory, whatever replay changed
    ([messages](messages.md#at-an-open) has what each refusal says).
-7. **The session begins**: the three background threads start, and
-   write-back writes what replay brought back.
+7. **What replay brought back is written**: on the opening thread, a
+   few turns of write-back, then the fill of the reserve where the
+   options keep one.
+8. **The session begins**: the three background threads start, and go
+   on with what is still owed.
 
 So the database opens at one committed version, never a part of one, and
 never one older than the newest that was made durable. A file that the
