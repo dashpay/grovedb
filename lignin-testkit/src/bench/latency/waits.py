@@ -26,8 +26,10 @@ Printed:
    or the lock of the process it asked for.
 3. For the waits inside the kernel during a write to a file of LigninDB's
    log, two things that are not the same. First, the syncs of the process
-   that had a moment in common with the wait, by what they are of: that is a
-   coincidence in time, and a wait can have several. Second, for a wait
+   that had a moment in common with the wait, by what they are of: that is
+   an overlap in time, and a wait can have several. Beside it is what chance
+   gives: how many of the waits would have had a sync beside them had each
+   begun at a moment of the measured blocks taken at random. Second, for a wait
    that is for a commit of an ext4 journal by its kernel stack (the journal
    is writing the block, or its transaction is being closed), the commit of
    that journal that was under way when the wait began, and the syncs of the
@@ -82,6 +84,29 @@ def median(values):
     ordered = sorted(values)
     middle = len(ordered) // 2
     return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def by_chance(waits, syncs, window):
+    """How many of the waits would have a sync beside them had each begun at a
+    moment of the window taken at random, and the share of the window's time
+    at which a sync was under way."""
+    lo, hi = window
+    union = []
+    for begin, end in sorted((max(sync["begin"], lo), min(sync["end"], hi)) for sync in syncs):
+        if end <= begin:
+            continue
+        if union and begin <= union[-1][1]:
+            union[-1][1] = max(union[-1][1], end)
+        else:
+            union.append([begin, end])
+    under_way = sum(end - begin for begin, end in union)
+    # A wait of some length has a sync beside it if it begins during one, or
+    # less than its length before one: the time between two syncs counts up
+    # to that length.
+    gaps = [after[0] - before[1] for before, after in zip([[lo, lo]] + union, union)]
+    expected = sum(min((under_way + sum(min(gap, wait["end"] - wait["begin"]) for gap in gaps)) / (hi - lo), 1)
+                   for wait in waits)
+    return expected, under_way / (hi - lo)
 
 
 class Trace:
@@ -227,6 +252,12 @@ def main():
               "%d waits of %.1f ms or more have no user stack and are in no row below." % (
                   sum(1 for wait in long if not wait["user"]), floor / 1e3))
     mine = [wait for wait in long if trace.in_the_measured_blocks(wait) and in_a_block(wait)]
+    # The time of the measured blocks: between the harness's two lines, or
+    # for an earlier trace from the first of their waits to the last.
+    counted = [wait for wait in trace.waits
+               if trace.of_the_measuring_thread(wait) and trace.in_the_measured_blocks(wait)]
+    span = trace.measured or (min((wait["begin"] for wait in counted), default=0),
+                              max((wait["end"] for wait in counted), default=1))
 
     total, count, longest = collections.Counter(), collections.Counter(), collections.Counter()
     for wait in mine:
@@ -260,6 +291,10 @@ def main():
         if longest_beside:
             print("\nThe longest sync beside a wait took a median of %.1f ms, and %.1f ms at most." %
                   (median(longest_beside) / 1e3, max(longest_beside) / 1e3))
+        expected, under_way = by_chance(appends, trace.syncs, span)
+        print("\nWhat chance gives: a listed sync was under way for %.0f%% of the time of the measured blocks, and "
+              "had each of these waits begun at a moment of them taken at random, %.1f of the %d would have had "
+              "one beside it, where %d had." % (100 * under_way, expected, len(appends), len(appends) - with_none))
     for_a_commit = [wait for wait in appends if any(frame in wait["kernel"] for frame in FOR_A_COMMIT)]
     for_room = sum(1 for wait in appends if FOR_ROOM in wait["kernel"])
     if appends and trace.starts:
