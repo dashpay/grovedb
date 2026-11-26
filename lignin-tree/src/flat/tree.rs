@@ -668,13 +668,20 @@ pub struct Written {
     pub leaves: u64,
     /// How many images of leaves the write handed to its pages
     /// ([`FlatPagesMut::write`]), in this tree and in the trees of its
-    /// buckets. For the keys that a leaf stores as they are: one for each
-    /// leaf that is counted in `leaves`, but none for a leaf that is left
-    /// with no entry, and one more for each further piece of a leaf that
-    /// is cut. Two things add to that: a root that takes what its only
-    /// child holds is written once more, and each key that is kept in a
-    /// bucket writes what a put or a delete of it writes. An image of a
-    /// branch is not counted.
+    /// buckets. For the keys that a leaf stores as they are, **at most
+    /// one for each leaf that is counted in `leaves`, and one more for
+    /// each further piece of a leaf that is cut**:
+    ///
+    /// - one for a leaf that is written by itself, or with its neighbour
+    ///   as one page, or as the root where the two were the root's only
+    ///   children;
+    /// - none for a leaf that is left with no entry and is freed. Where
+    ///   that leaves the root with one child, the root takes what the
+    ///   child holds, which is one image, of the root. A root that is a
+    ///   leaf and is left with no entry is written, with none.
+    ///
+    /// Each key that is kept in a bucket adds what a put or a delete of
+    /// it writes. An image of a branch is not counted.
     pub leaf_writes: u64,
 }
 
@@ -762,6 +769,9 @@ struct Descent {
     /// the branches on the way have before the child they lead to, or
     /// `None` for the first leaf of the tree.
     begin: Option<Vec<u8>>,
+    /// The same of the branch above the leaf: where the key range of that
+    /// branch's first child begins.
+    above: Option<Vec<u8>>,
 }
 
 /// Writing many keys.
@@ -788,14 +798,24 @@ impl FlatTree {
     ///   delete: the left page of the two takes the entries of both, in
     ///   the one image that is written, and the right one is freed.
     ///
-    /// Then it goes down again for the next key. So no page is handed two
-    /// images of a leaf by one write. Two things follow from that.
-    /// **A leaf is not merged with a neighbour to its left that the write
-    /// has still to come to**: it is written by itself and stays under a
-    /// quarter of a page until a later write looks at it, as a leaf does
-    /// that finds no neighbour to merge with. And where a merge leaves
-    /// the root with one child, the root takes what that child holds, as
-    /// after a delete, which is one image more, of the root.
+    /// Then it goes down again for the next key. So the write hands its
+    /// pages at most one image for each leaf that it changes, and one
+    /// more for each further piece of a leaf that is cut
+    /// ([`Written::leaf_writes`]), and no page but the root is handed two
+    /// images of a leaf. Three things follow from that.
+    ///
+    /// - **A leaf is not merged with a neighbour to its left that the
+    ///   write has still to come to**: it is written by itself and stays
+    ///   under a quarter of a page until a later write looks at it, as a
+    ///   leaf does that finds no neighbour to merge with.
+    /// - **Two leaves that are the only children of the root are merged
+    ///   into the root**, not into the left one of them, which the root
+    ///   would then take the entries of.
+    /// - **The root can be handed two images**: where a leaf that is left
+    ///   with no entry was one of the root's two children, the root takes
+    ///   what the other holds, and the write can still have keys of that
+    ///   one to come to. The leaf that was freed took no image, so the
+    ///   count above holds.
     ///
     /// A leaf in which no change changes anything is neither taken nor
     /// written: each change is a delete of a key that is not there, or a
@@ -834,7 +854,12 @@ impl FlatTree {
             .filter(|(key, _)| short(key))
             .peekable();
         while let Some((key, value)) = rest.next() {
-            let Descent { steps, leaf, begin } = self.descend_within(&pages, key)?;
+            let Descent {
+                steps,
+                leaf,
+                begin,
+                above,
+            } = self.descend_within(&pages, key)?;
             group.clear();
             group.push((key, value.as_deref()));
             let within = |key: &[u8]| begin.as_deref().is_none_or(|begin| key >= begin);
@@ -842,8 +867,12 @@ impl FlatTree {
                 group.push((key, value.as_deref()));
             }
             group.reverse();
+            // The key the write goes on with, and where the key range of
+            // the branch above the leaf begins: what a merge with the leaf
+            // to the left is decided by.
             let next = rest.peek().map(|(key, _)| key.as_slice());
-            leaves += u64::from(self.write_group(&mut pages, steps, leaf, &group, next)?);
+            let ahead = (next, above.as_deref());
+            leaves += u64::from(self.write_group(&mut pages, steps, leaf, &group, ahead)?);
         }
         for (key, value) in changes.iter().filter(|(key, _)| !short(key)) {
             let changed = match value {
@@ -868,12 +897,18 @@ impl FlatTree {
     ) -> Result<Descent, FlatError> {
         let (mut page, mut above) = (self.root, None);
         let (mut steps, mut begin): (_, Option<Vec<u8>>) = (Vec::new(), None);
+        let mut begin_above = None;
         loop {
             let frame = pages.page(page)?;
             let FlatPage::Branch(branch) = Self::checked(&frame, page, above)? else {
-                let leaf = page;
-                return Ok(Descent { steps, leaf, begin });
+                return Ok(Descent {
+                    steps,
+                    leaf: page,
+                    begin,
+                    above: begin_above,
+                });
             };
+            begin_above.clone_from(&begin);
             // The child in position `index` has the keys from the separator
             // before it on. The greatest of those separators on the way is
             // kept: in a tree that is one, each is at or after those above
@@ -895,16 +930,17 @@ impl FlatTree {
 
     /// Makes `changes`, which are in the order of their keys and all in
     /// the key range of the leaf `page` below `steps`, in that leaf, and
-    /// says whether one of them changed it. `next` is the key the write
+    /// says whether one of them changed it. `ahead` is the key the write
     /// goes on with, which is before the leaf's key range, if one is
-    /// left.
+    /// left, and where the key range of the branch above the leaf begins
+    /// ([`Descent::above`]).
     fn write_group<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         mut steps: Vec<Step>,
         page: PageId,
         changes: &[Change<'_>],
-        next: Option<&[u8]>,
+        ahead: (Option<&[u8]>, Option<&[u8]>),
     ) -> Result<bool, FlatError> {
         // A change that changes nothing: a delete of a key that is not
         // there, and a value that the key has already, in the page.
@@ -1004,7 +1040,7 @@ impl FlatTree {
             write_leaf(pages, capacity, page, &now)?;
             return Ok(true);
         } else {
-            match self.merge_written(pages, (parent, index), page, &now, next)? {
+            match self.merge_written(pages, (parent, index), page, &now, ahead)? {
                 Merge::TooLong => {
                     write_leaf(pages, capacity, page, &now)?;
                     return Ok(true);
@@ -1027,32 +1063,49 @@ impl FlatTree {
     /// left page of the two is written with the entries of both, and the
     /// right page is freed. The leaf itself is not written before.
     ///
-    /// A neighbour to the left that the write has still to come to, which
-    /// `next` lies in or may lie in, is left alone, and the answer is
-    /// that of two pages that are too long together.
+    /// **Where the two are the only children of the root, the root takes
+    /// the entries of both** and both pages are freed: the root would
+    /// take what its only child holds next, which would be a second image
+    /// of the same leaf.
+    ///
+    /// A neighbour to the left that the write has still to come to is
+    /// left alone, and the answer is that of two pages that are too long
+    /// together: `next` is the key the write goes on with, and it lies in
+    /// that neighbour or before it where it is at or after the beginning
+    /// of the neighbour's key range. That beginning is the separator
+    /// before the neighbour in the branch, and `above` for the branch's
+    /// first child.
     fn merge_written<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         (parent, index): (PageId, usize),
         page: PageId,
         now: &[LeafEntry<'_>],
-        next: Option<&[u8]>,
+        (next, above): (Option<&[u8]>, Option<&[u8]>),
     ) -> Result<Merge, FlatError> {
         let capacity = self.config.capacity();
-        let (slot, level, left, right, begin) = {
+        let (slot, level, left, right, begin, only) = {
             let frame = pages.page(parent)?;
             let branch = branch(&frame, parent)?;
             let Some(slot) = branch.len().checked_sub(1).map(|last| index.min(last)) else {
                 return Ok(Merge::NoNeighbour);
             };
-            // Where the key range of the left page begins, as this branch
-            // says it: with no separator before it, a branch above does.
+            // Where the key range of the left page begins: at the
+            // separator before it, and for the first child where the
+            // branches above say. The greater of the two is taken, as for
+            // the key range of a leaf.
             let begin = slot
                 .checked_sub(1)
                 .and_then(|before| branch.separator(before));
             let begin = begin.map(|key| key.to_vec());
+            let begin = match (begin, above) {
+                (Some(begin), Some(above)) if above > begin.as_slice() => Some(above.to_vec()),
+                (None, above) => above.map(<[u8]>::to_vec),
+                (begin, _) => begin,
+            };
             let (left, right) = (child(&branch, slot)?, child(&branch, slot + 1)?);
-            (slot, branch.level(), left, right, begin)
+            let only = parent == self.root && branch.len() == 1;
+            (slot, branch.level(), left, right, begin, only)
         };
         let other = match page {
             page if page == left => right,
@@ -1096,6 +1149,15 @@ impl FlatTree {
             true => [&beside[..], now].concat(),
             false => [now, &beside[..]].concat(),
         };
+        if only {
+            // The pages that entries are carried out of are freed after
+            // the page they are carried to is written.
+            pages.take(self.root)?;
+            write_leaf(pages, capacity, self.root, &entries)?;
+            pages.free(left)?;
+            pages.free(right)?;
+            return Ok(Merge::Done);
+        }
         write_leaf(pages, capacity, left, &entries)?;
         pages.free(right)?;
 

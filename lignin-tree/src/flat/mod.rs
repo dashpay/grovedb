@@ -186,12 +186,15 @@
 //! outgrown its image is written as the pieces it needs; one that is left
 //! with no entry is freed and not written; one that lost an entry and is
 //! under a quarter of a page is merged with its neighbour in the one
-//! image that is written. So no page is handed two images of a leaf by
-//! one write, with one exception: where a merge leaves the root with one
-//! child, the root takes what that child holds. A leaf is for that not
-//! merged with a neighbour to its left that the write has still to come
-//! to, and stays under a quarter of a page until a later write looks at
-//! it. A leaf in which no change changes anything (a delete of a key that
+//! image that is written, or into the root where the two are the root's
+//! only children. So the write hands its pages at most one image for each
+//! leaf it changes and one more for each further piece of a cut, and no
+//! page but the root is handed two images of a leaf: the root is where a
+//! leaf that is left with no entry was one of its two children, and the
+//! root takes what the other holds while the write has keys of that one
+//! still to come to. A leaf is for that not merged with a neighbour to
+//! its left that the write has still to come to, and stays under a
+//! quarter of a page until a later write looks at it. A leaf in which no change changes anything (a delete of a key that
 //! is not there, a value that the key has already in its page) is neither
 //! taken nor written. The keyspace holds afterwards what a put and a
 //! delete for each change leave it holding. Its pages can be other pages,

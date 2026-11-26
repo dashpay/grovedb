@@ -26,19 +26,27 @@ fn leaves(pages: &Mem) -> usize {
 
 /// Makes `changes` and holds what the write says it wrote to what the
 /// pages were handed: every image of a leaf, counted by the keyspace's own
-/// count as well, and **no page handed two images of a leaf**, where no
-/// key of the changes is kept in a bucket. The root is the exception
-/// where it is a leaf afterwards and was none: it took what its only
-/// child held, after a merge.
+/// count as well. Where no key of the changes is kept in a bucket:
+/// **at most one image for each leaf that the write changed, and one more
+/// for each page that a cut made**, and **no page handed two images of a
+/// leaf**, but the root where it is a leaf afterwards and was none: it
+/// took what its only child held, after a leaf beside that one was freed.
 fn write(pages: &mut Mem, tree: &FlatTree, changes: &Changes) -> Written {
     let (before, counted) = (pages.leaf_writes, leaf_images_written());
     let from = pages.leaf_pages.len();
     let was_leaf = pages.image(tree.root()).leaf().is_some();
+    let had: BTreeSet<PageId> = pages.pages.keys().copied().collect();
     let written = tree.write(pages, changes).expect("a write of many keys");
     assert_eq!(written.leaf_writes, pages.leaf_writes - before);
     assert_eq!(written.leaf_writes, leaf_images_written() - counted);
     let limit = pages.config.key_limit();
     if changes.keys().all(|key| key.len() <= limit) {
+        let made = pages.pages.keys().filter(|page| !had.contains(page));
+        let made = made.count() as u64;
+        assert!(
+            written.leaf_writes <= written.leaves + made,
+            "{written:?}, with {made} pages made"
+        );
         let handed = &pages.leaf_pages[from..];
         let pages_handed: BTreeSet<PageId> = handed.iter().copied().collect();
         let collapsed = !was_leaf && pages.image(tree.root()).leaf().is_some();
@@ -584,4 +592,207 @@ fn a_write_that_takes_most_records_hands_no_page_two_images() {
         assert!(keep < 17 || 3 * after < before, "leaves are merged");
         pages.commit();
     }
+}
+
+/// Two leaves that are the root's only children are merged into the
+/// root, in one image: the root would take what the merged page holds
+/// next, which would be a second image of the same leaf.
+#[test]
+fn two_leaves_below_the_root_are_merged_into_the_root() {
+    // Keys in no order, so that the root is cut in the middle.
+    let (mut pages, tree) = Mem::tree(small());
+    let mut n = 0;
+    while pages.image(tree.root()).leaf().is_some() {
+        tree.put(&mut pages, &numbered(n * 7_919 % 1_000), &[n as u8; 60])
+            .expect("a put");
+        n += 1;
+    }
+    assert_eq!((leaves(&pages), pages.image(tree.root()).level()), (2, 1));
+    let keys_of = |pages: &Mem, leaf: PageId| -> Vec<Vec<u8>> {
+        (records(pages, &tree).into_iter())
+            .map(|(key, _)| key)
+            .filter(|key| leaf_of(pages, &tree, key) == leaf)
+            .collect()
+    };
+    // The leaf to the right loses all its records but one, and the one to
+    // the left none: one leaf is changed, and one image is written, of
+    // the root.
+    let last = records(&pages, &tree).pop().expect("a record").0;
+    let (left, right) = (
+        leaf_of(&pages, &tree, &numbered(0)),
+        leaf_of(&pages, &tree, &last),
+    );
+    let own = keys_of(&pages, right);
+    assert!(left != right && own.len() > 4);
+    // The leaf to the left is made short enough for the two to be one.
+    let mut kept = records(&pages, &tree).len();
+    for key in keys_of(&pages, left) {
+        if pages.pages[&left].len() < small().capacity() / 2 {
+            break;
+        }
+        assert!(tree.delete(&mut pages, &key).expect("a delete"));
+        kept -= 1;
+    }
+    assert_eq!(leaves(&pages), 2);
+    let from = pages.leaf_pages.len();
+    let changes: Changes = own[1..].iter().map(|key| (key.clone(), None)).collect();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+    assert_eq!(pages.leaf_pages[from..], [tree.root()]);
+    assert_eq!(records(&pages, &tree).len(), kept + 1 - own.len());
+    pages.commit();
+    assert_eq!(pages.pages.len(), 1, "the root holds every record");
+}
+
+/// A leaf that is left with no entry is freed and takes no image. Where
+/// it was one of the root's two children, the root takes what the other
+/// holds: one image, also where the write has changes of that one too.
+#[test]
+fn a_leaf_that_is_emptied_below_the_root_takes_no_image() {
+    for and_the_left in [false, true] {
+        let (mut pages, tree) = Mem::tree(small());
+        let mut n = 0;
+        while pages.image(tree.root()).leaf().is_some() {
+            tree.put(&mut pages, &numbered(n), &[n as u8; 60])
+                .expect("a put");
+            n += 1;
+        }
+        let right = leaf_of(&pages, &tree, &numbered(n - 1));
+        let all = records(&pages, &tree);
+        let mut changes: Changes = (all.iter())
+            .filter(|(key, _)| leaf_of(&pages, &tree, key) == right)
+            .map(|(key, _)| (key.clone(), None))
+            .collect();
+        let gone = changes.len();
+        if and_the_left {
+            changes.insert(numbered(0), Some(vec![9; 60]));
+        }
+        let from = pages.leaf_pages.len();
+        let written = write(&mut pages, &tree, &changes);
+        let both = u64::from(and_the_left);
+        // The emptied leaf takes none; the root takes the other leaf's
+        // entries, and is written again for that leaf's own change.
+        assert_eq!((written.leaves, written.leaf_writes), (1 + both, 1 + both));
+        assert!(pages.leaf_pages[from..]
+            .iter()
+            .all(|page| *page == tree.root()));
+        assert_eq!(records(&pages, &tree).len(), all.len() - gone);
+        if and_the_left {
+            assert_eq!(get(&pages, &tree, &numbered(0)), Some(vec![9; 60]));
+        }
+    }
+}
+
+/// Builds a leaf or a branch by hand, as the page format has it.
+fn leaf_image(page: u32, keys: &[&[u8]]) -> Vec<u8> {
+    use lignin_format::flat_page::FlatLeafBuilder;
+    let mut image = FlatLeafBuilder::new(page_id(page), b"", small().capacity()).expect("a leaf");
+    for key in keys {
+        image
+            .push(key, FlatValue::Inline(b"was"))
+            .expect("an entry");
+    }
+    image.finish()
+}
+
+fn branch_image(page: u32, level: u8, first: u32, rest: &[(&[u8], u32)]) -> Vec<u8> {
+    use lignin_format::flat_page::FlatBranchBuilder;
+    let capacity = small().capacity();
+    let mut image = FlatBranchBuilder::new(page_id(page), b"", capacity, level, page_id(first))
+        .expect("a branch");
+    for (separator, child) in rest {
+        image.push(separator, page_id(*child)).expect("a separator");
+    }
+    image.finish()
+}
+
+fn by_hand(images: Vec<Vec<u8>>) -> (Mem, FlatTree) {
+    let mut pages = Mem::new(small());
+    for (at, image) in images.into_iter().enumerate() {
+        pages.pages.insert(page_id(at as u32 + 1), image);
+    }
+    pages.next_page = pages.pages.len() as u32;
+    pages.base = pages.pages.clone();
+    (pages, FlatTree::open(page_id(1), small()))
+}
+
+/// Where a branch has a separator before the one that the branch above
+/// it has, a key is taken for a leaf only where every branch sends it
+/// there: each key of a write goes where a put of it alone goes.
+#[test]
+fn a_key_is_written_where_a_put_of_it_alone_goes_also_below_a_branch_that_is_damaged() {
+    // The root sends the keys from `m` on to the branch 3, whose own
+    // separator `a` is before `m`.
+    let made = || {
+        by_hand(vec![
+            branch_image(1, 2, 2, &[(b"m", 3)]),
+            branch_image(2, 1, 4, &[(b"f", 5)]),
+            branch_image(3, 1, 6, &[(b"a", 7)]),
+            leaf_image(4, &[b"c"]),
+            leaf_image(5, &[b"g"]),
+            leaf_image(6, &[b"0"]),
+            leaf_image(7, &[b"x"]),
+        ])
+    };
+    let (mut single, tree) = made();
+    for key in [&b"b"[..], b"z"] {
+        tree.put(&mut single, key, b"put").expect("a put");
+    }
+    let (mut pages, tree) = made();
+    let changes: Changes = [
+        (b"b".to_vec(), Some(b"put".to_vec())),
+        (b"z".to_vec(), Some(b"put".to_vec())),
+    ]
+    .into();
+    let written = tree.write(&mut pages, &changes).expect("a write");
+    assert_eq!((written.leaves, written.leaf_writes), (2, 2));
+    assert!(
+        pages.pages == single.pages,
+        "the pages of a put for each key"
+    );
+    for key in [&b"b"[..], b"z"] {
+        assert_eq!(get(&pages, &tree, key), Some(b"put".to_vec()));
+    }
+}
+
+/// A leaf is merged with the leaf to its left where the write has no key
+/// left for that one, also where the two are the first children of a
+/// branch that is not the first of its level: the key the write goes on
+/// with lies below another branch.
+#[test]
+fn a_leaf_is_merged_with_a_left_neighbour_that_no_key_is_left_for() {
+    let made = || {
+        by_hand(vec![
+            branch_image(1, 2, 2, &[(b"m", 3)]),
+            branch_image(2, 1, 4, &[(b"f", 5)]),
+            branch_image(3, 1, 6, &[(b"t", 7), (b"w", 8)]),
+            leaf_image(4, &[b"a", b"b"]),
+            leaf_image(5, &[b"g", b"h"]),
+            leaf_image(6, &[b"n", b"o"]),
+            leaf_image(7, &[b"t", b"u"]),
+            leaf_image(8, &[b"w", b"x"]),
+        ])
+    };
+    // The last child of its branch loses an entry, and a key far to the
+    // left is written: the leaf goes into the one to its left.
+    let (mut pages, tree) = made();
+    let changes: Changes = [(b"x".to_vec(), None), (b"a".to_vec(), Some(b"is".to_vec()))].into();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!((written.leaves, written.leaf_writes), (2, 2));
+    assert!(!pages.pages.contains_key(&page_id(8)), "merged to the left");
+    let keys: Vec<Vec<u8>> = (records(&pages, &tree).into_iter())
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys.concat(), b"abghnotuw");
+
+    // With a key left for the leaf to its left, it is not: that leaf is
+    // written for its own key, and no page is handed two images.
+    let (mut pages, tree) = made();
+    let changes: Changes = [(b"x".to_vec(), None), (b"u".to_vec(), None)].into();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!(written.leaves, 2);
+    let keys: Vec<Vec<u8>> = (records(&pages, &tree).into_iter())
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(keys.concat(), b"abghnotw");
 }
