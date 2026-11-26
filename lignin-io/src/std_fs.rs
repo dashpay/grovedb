@@ -2,9 +2,9 @@
 //!
 //! It is compiled for Linux and macOS only, the platforms LigninDB supports.
 //! It holds no `unsafe` code. Its system calls are `std`'s, and `std` picks
-//! them for each platform, but for one that `std` does not have: the plain
-//! `fsync` of macOS, which [`Vfs::sync_together`] needs there and which comes
-//! from `rustix`. What runs on each:
+//! them for each platform, but for two that `std` does not have, which come
+//! from `rustix`: the plain `fsync` of macOS, which [`Vfs::sync_together`]
+//! needs there, and the hint of a read. What runs on each:
 //!
 //! | Operation | Linux | macOS |
 //! | --- | --- | --- |
@@ -16,6 +16,7 @@
 //! | [`Vfs::hard_link`] | `linkat` | the same |
 //! | [`Vfs::rename`] | `rename` | the same |
 //! | [`VfsFile::read_at`], [`VfsFile::write_at`] | `pread64`, `pwrite64` | `pread`, `pwrite` |
+//! | [`VfsFile::will_read`] | `posix_fadvise(POSIX_FADV_WILLNEED)` on the range | `fcntl(F_RDADVISE)` on the range; neither under Miri, which has no such call |
 //! | [`VfsFile::append`] | `write` on an `O_APPEND` descriptor | the same |
 //! | [`VfsFile::set_len`] | `ftruncate` | the same |
 //!
@@ -411,6 +412,10 @@ impl VfsFile for StdFile {
             }
         }
         Ok(filled)
+    }
+
+    fn will_read(&self, offset: u64, len: u64) {
+        hint_read(&self.file, offset, len);
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
@@ -839,6 +844,31 @@ fn wrong_mode(message: &'static str) -> io::Error {
 fn path_error(kind: ErrorKind, path: &Path, problem: &str) -> io::Error {
     io::Error::new(kind, format!("{} {problem}", path.display()))
 }
+
+/// Tells the system that `len` bytes of `file` from `offset` are about to be
+/// read: `posix_fadvise(POSIX_FADV_WILLNEED)`, on which Linux starts to
+/// read what of the range its page cache does not hold. What the call
+/// answers is not looked at: it is advice, and a range that the system
+/// refuses is read all the same.
+#[cfg(all(target_os = "linux", not(miri)))]
+fn hint_read(file: &File, offset: u64, len: u64) {
+    if let Some(len) = std::num::NonZeroU64::new(len) {
+        let _ = rustix::fs::fadvise(file, offset, Some(len), rustix::fs::Advice::WillNeed);
+    }
+}
+
+/// As on Linux, with `fcntl(F_RDADVISE)`, which is how macOS is told of a
+/// range that is about to be read.
+#[cfg(all(target_os = "macos", not(miri)))]
+fn hint_read(file: &File, offset: u64, len: u64) {
+    if len > 0 {
+        let _ = rustix::fs::fcntl_rdadvise(file, offset, len);
+    }
+}
+
+/// Miri has neither call, and a hint is nothing a read depends on.
+#[cfg(miri)]
+fn hint_read(_file: &File, _offset: u64, _len: u64) {}
 
 #[cfg(test)]
 mod tests;

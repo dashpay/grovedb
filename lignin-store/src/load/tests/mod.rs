@@ -21,7 +21,7 @@ use super::*;
 use crate::{
     cache::{CacheError, OwnerId, PoolConfig},
     segment::{
-        tests::faulty::{FaultyVfs, Op},
+        tests::faulty::{FaultyVfs, Hint, Op},
         FileNames, ManifestStore, SegmentStoreError, SegmentWriter,
     },
     table::Link,

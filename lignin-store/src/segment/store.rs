@@ -214,6 +214,16 @@ impl Segment {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Tells the file layer that the block at `location` is about to be
+    /// read, if it lies inside the segment's blocks.
+    fn will_read(&self, location: BlockLocation) {
+        let end = self.end.load(Ordering::Acquire);
+        let len = u64::from(location.len);
+        if location.offset >= DATA_START && location.offset.saturating_add(len) <= end {
+            self.file.will_read(location.offset, len);
+        }
+    }
+
     fn read_exact(&self, buf: &mut [u8], offset: u64) -> Result<(), SegmentStoreError> {
         self.file
             .read_exact_at(buf, offset)
@@ -838,6 +848,29 @@ impl SegmentStore {
         let bytes = u64::from(location.len);
         self.reads.bytes.fetch_add(bytes, Ordering::Relaxed);
         Ok(block)
+    }
+
+    /// Tells the file layer that the blocks at `locations` are about to be
+    /// read, each with [`Self::read`]: the blocks of one page's chain, which
+    /// were written at different times and lie apart. The file layer can
+    /// then bring them in together ([`VfsFile::will_read`]), and the reads
+    /// that follow wait for the device about once where they would wait
+    /// once for each block.
+    ///
+    /// It is advice: nothing is checked and nothing is reported. A location
+    /// that names no segment of the store, or lies outside its blocks, is
+    /// passed over here and refused by its read. One block alone is not
+    /// worth a call, and none is made for it.
+    pub fn will_read(&self, locations: &[BlockLocation]) {
+        if locations.len() < 2 {
+            return;
+        }
+        let segments = self.segments();
+        for &location in locations {
+            if let Some(segment) = segments.live.get(&location.file) {
+                segment.will_read(location);
+            }
+        }
     }
 
     /// How many blocks [`Self::read`] has read since the store was opened,

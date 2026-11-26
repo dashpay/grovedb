@@ -15,7 +15,7 @@ use lignin_format::{
 use super::{config::max_run_len, error::FlushError};
 use crate::{
     load::FRAME_FORMAT,
-    segment::SegmentStore,
+    segment::{BlockLocation, SegmentStore},
     table::{Link, LinkKind},
 };
 
@@ -160,6 +160,7 @@ pub(super) fn readable(links: &[Link], through: usize) -> Option<&[Link]> {
 pub(super) struct ChainBuffers {
     block: Vec<u8>,
     run: Vec<u8>,
+    locations: Vec<BlockLocation>,
 }
 
 /// Builds the page `page` in `frame` from the blocks of `links`: a base
@@ -180,6 +181,11 @@ pub(super) fn materialize(
         found,
         expected: page,
     };
+    // As a loader does: the file layer is told of every block of the
+    // chain before the first is read.
+    buffers.locations.clear();
+    (buffers.locations).extend(links.iter().filter_map(Link::location));
+    segments.will_read(&buffers.locations);
     let mut kind = None;
     for link in links {
         let Some(location) = link.location() else {
