@@ -240,8 +240,9 @@ and the rehearsal's through `lignin-bench`, which write where the name
 leads; nothing but these steps is to write into `WORK`. It then fetches `GROVEDB_REF` from the
 repository's address and checks it out, so that a clone that a run
 before left behind is moved to the release as well. It names
-where Cargo builds (`CARGO_TARGET_DIR`), so that the `lignin` it puts
-first on the path is the one it built. Give the paths of step 4 as
+where Cargo builds (`CARGO_TARGET_DIR`), removes the `lignin` a build
+before left there, and refuses to go on where the `lignin` first on the
+path is not the one this build made. Give the paths of step 4 as
 absolute paths too.
 
 ```sh
@@ -264,6 +265,7 @@ git fetch --depth 1 https://github.com/dashpay/grovedb.git "$GROVEDB_REF"
 git checkout --detach FETCH_HEAD
 git log -1 --format='building GroveDB at %H'
 export CARGO_TARGET_DIR="$WORK/grovedb/target"
+rm -f "$CARGO_TARGET_DIR/release/lignin"
 cargo build --release -p lignin-tools --features migrate
 export PATH="$CARGO_TARGET_DIR/release:$PATH"
 if [ "$(command -v lignin)" != "$CARGO_TARGET_DIR/release/lignin" ]; then echo "the lignin on the path is not the one this block built, which a build target set in the configuration of cargo puts under $CARGO_TARGET_DIR/TARGET-TRIPLE/release: put that directory first on the path"; false; fi
@@ -309,9 +311,10 @@ variables of step 4 yourself.
 Stop the node, as its own documentation says, and make sure that no
 other process uses its database: not the node, not a second instance of
 it, not a backup job. Where the source has a `LOCK` file, `migrate`
-holds a lock on it for as long as it runs: a process that has the source
-open is refused (`a process has it open`), and a node that is started
-meanwhile cannot open it. A writer whose `LOCK` file was replaced while
+holds a shared lock on it for as long as it runs: a process that has
+the source open for writing is refused (`a process has it open`), and a
+node that is started meanwhile cannot open it to write. Other readers
+are not refused, which is why nothing else is to use the database. A writer whose `LOCK` file was replaced while
 it ran is not seen that way, since the new file says nothing of it.
 
 Then name four paths. `SOURCE` is there; `TARGET`, `BACKUP` and
@@ -445,7 +448,7 @@ it whatever the interval:
 | Exit status | What it means | What to do |
 | --- | --- | --- |
 | 0 | the database is at `TARGET`, loaded, compared and verified | go on with step 7 |
-| 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there (`the target … is there and …`), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there. That database is whole, but no report of a run that finished is held to it (step 7): migrate again into a new `TARGET`, and leave that one where it is until you know what it holds |
+| 1 | the run failed or refused the source or the target; the error says why. The run made nothing at `TARGET`, but where the error says that the database got that name and the name could not be made durable. What was at `TARGET` before the run is there still: a run that looks at `TARGET` refuses one that is there and holds anything (`the target … is there and …`; an empty directory is taken for none), which is also what a run answers that was given a `TARGET` an earlier run had named, and a run refused before it looks there, as at its source, says nothing of it | read the error ([the messages](messages.md#lignin-migrate)), fix what it names, and run the same command again, with its report going to another file so that this one is kept. Where the database got its name and the name could not be made durable, or a run was stopped after it gave the database its name and before its last line, the next run makes the name durable where it has to and refuses the target as one that is there; where a power cut took the name back, the database is in `TARGET.migrating` again, and the same command goes on with it and can end with status 0 and a whole report. That database is whole, but no report of a run that finished is held to it (step 7): migrate again into a new `TARGET`, and leave that one where it is until you know what it holds |
 | 3 | the target differs from the source (`THE TARGET IS NOT ITS SOURCE`) or a rule of the store does not hold (`THE TARGET IS NOT SOUND`). It is left in `TARGET.migrating/database` and is not to be used | keep the report, report it as a defect of GroveDB, and keep running on RocksDB |
 | 4 | the device of the target is full (`THE DEVICE OF … IS FULL`) | make room on that device and run the same command again: it goes on from where it stood |
 

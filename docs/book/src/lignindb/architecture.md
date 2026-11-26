@@ -129,8 +129,9 @@ every commit hashes up to the root of the grove, as on RocksDB.
    back. **The reclaimer**, a third, frees the pages of subtrees that
    were dropped ([background-and-readers.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/background-and-readers.md)).
 
-A commit therefore writes one append to the log, whatever the number of
-changes in it, and the pages reach the segments later in the background.
+A commit with writes therefore makes one append to the log, whatever
+the number of changes in it (one with none appends nothing and publishes
+no version), and the pages reach the segments later in the background.
 If the background falls behind, committers are made to wait
 ([tuning](tuning.md#write-back)).
 
@@ -192,8 +193,9 @@ killed process, a power cut, or nothing at all for a new database or a
 checkpoint ([transactions.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/transactions.md#12-durability-and-recovery),
 section 12).
 
-1. **The lock.** The open takes `LOCK`, so one process at a time has the
-   database open, and looks at the directory: it refuses one of another
+1. **The look, then the lock.** The open looks at the directory first,
+   and then takes `LOCK`, so one process at a time has the database
+   open, and looks again: it refuses one of another
    engine, of a newer format, without its manifest, and the other cases
    that [the messages](messages.md#at-an-open) list first; those are
    found before anything is written.
