@@ -693,6 +693,28 @@ fn a_choice_of_lignindb_looks_at_the_file_system_of_its_options() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "CURRENT");
     assert!(sim.read_dir(&target).is_err());
+
+    // A listing of the directory above that fails once is the error of
+    // the creation, and LigninDB, whose own listing would succeed, is not
+    // called: the directory has its entry afterwards.
+    let listing = OpSet::of(&[OpKind::ReadDir]);
+    sim.add_rule(FaultRule::new(Fault::Eio).on(listing));
+    match db.create_checkpoint(&target) {
+        Err(Error::StorageError(StorageError::StorageError(words))) => {
+            assert!(words.contains("could not be listed"), "{words}");
+            let above = host.path().display().to_string();
+            assert!(
+                words.contains(&format!("the directory {above} could")),
+                "{words}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    sim.clear_rules();
+    let listed = sim.read_dir(&beside).expect("a listing");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "CURRENT");
+    assert!(sim.read_dir(&target).is_err());
 }
 
 #[test]

@@ -755,26 +755,35 @@ enum OfLignin {
 /// and its removal of a path whose last name ends so, as it is written,
 /// is of that directory and of nothing beside it. A name that the
 /// directory above lists in another spelling, as a link or as a file is
-/// not taken. And where the directory above cannot be listed, LigninDB,
-/// which lists it before it takes anything, takes nothing.
-fn taken_beside(vfs: &dyn Vfs, target: &Path, call: OfLignin) -> Option<PathBuf> {
-    let name = target.file_name()?;
+/// not taken, and neither is anything where there is no directory above.
+///
+/// A listing of the directory above that fails otherwise is the error:
+/// LigninDB lists that directory again itself, and its listing can
+/// succeed where this one failed.
+fn taken_beside(vfs: &dyn Vfs, target: &Path, call: OfLignin) -> Result<Option<PathBuf>, Error> {
+    let (Some(name), Some(above)) = (target.file_name(), target.parent()) else {
+        return Ok(None);
+    };
     let its_own = match call {
         OfLignin::Creation => is_reserved(target),
         OfLignin::Removal => (name.as_encoded_bytes()).ends_with(CREATING_SUFFIX.as_bytes()),
     };
     if its_own {
-        return None;
+        return Ok(None);
     }
     let mut beside = name.to_os_string();
     beside.push(CREATING_SUFFIX);
-    let above = match target.parent()? {
-        above if above.as_os_str().is_empty() => Path::new("."),
-        above => above,
+    let above = match above.as_os_str().is_empty() {
+        true => Path::new("."),
+        false => above,
     };
-    let listed = (vfs.read_dir(above).ok()?.iter())
-        .any(|entry| entry.name == beside && entry.kind == EntryKind::Dir);
-    listed.then(|| target.with_file_name(beside))
+    let entries = match vfs.read_dir(above) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(unlisted(above, error)),
+    };
+    let listed = (entries.iter()).any(|entry| entry.name == beside && entry.kind == EntryKind::Dir);
+    Ok(listed.then(|| target.with_file_name(beside)))
 }
 
 /// Refuses to hand `call` for a checkpoint at `target` to LigninDB, which
@@ -787,11 +796,11 @@ fn taken_beside(vfs: &dyn Vfs, target: &Path, call: OfLignin) -> Option<PathBuf>
 ///
 /// Where LigninDB would take no directory, and where no entry of the one
 /// it would take says an engine or one says LigninDB, the call goes on. A
-/// listing of that directory with entries of both engines, and one that
-/// fails otherwise than for a directory that is not there, is the
-/// listing's error.
+/// listing of that directory with entries of both engines, and a listing
+/// of it or of the directory above that fails otherwise than for a
+/// directory that is not there, is the listing's error.
 fn keep_from_lignindb(vfs: &dyn Vfs, target: &Path, call: OfLignin) -> Result<(), Error> {
-    let Some(beside) = taken_beside(vfs, target, call) else {
+    let Some(beside) = taken_beside(vfs, target, call)? else {
         return Ok(());
     };
     match look_on(vfs, &beside)? {
@@ -1174,8 +1183,10 @@ impl Engine for EitherEngine {
     /// A directory that is found is listed, and its entries are told as
     /// [`Self::found_at`] tells them: where one says RocksDB, the creation
     /// is refused with [`Error::NotSupported`], LigninDB is not called and
-    /// nothing is changed, and a listing with entries of both engines, or
-    /// one that fails, is the listing's error.
+    /// nothing is changed, and a listing with entries of both engines is
+    /// the listing's error. So is a listing that fails, of that directory
+    /// or of the one above, though there is a directory to list: LigninDB
+    /// is not called on what this type could not look at.
     ///
     /// The look is at the file system of the choice by which this type
     /// opened the engine ([`Options::vfs`]), which is where the engine
