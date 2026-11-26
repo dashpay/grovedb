@@ -124,7 +124,8 @@ const COVERED: [(&str, &[&str]); 26] = [
 /// names that file and quotes that message too (where one is named: an
 /// empty one asks for the row alone), so a reason quoted for one
 /// message does not stand for the same word of another.
-const REASONS: [(&str, &str, &str); 43] = [
+const REASONS: [(&str, &str, &str); 44] = [
+    ("lignin-io/src/std_fs.rs", "io::Error::other(", ""),
     ("lignin-io/src/std_fs.rs", "format!(", ""),
     ("lignin-io/src/std_fs.rs", "path_error(", ""),
     ("lignin-io/src/std_fs.rs", "wrong_mode(", ""),
@@ -1376,6 +1377,23 @@ fn every_quoted_message_is_in_the_code() {
         }
         for (line, prose) in &parsed.prose {
             for span in code_spans(prose) {
+                // A word of a report line, `name=…`, is held to the words
+                // the code writes before its value.
+                if let Some(field) = span.strip_suffix('…').filter(|field| {
+                    field.len() > 1
+                        && field.ends_with('=')
+                        && field[..field.len() - 1]
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c == '_')
+                }) {
+                    quoted += 1;
+                    if !speakers.iter().any(|pattern| pattern.contains(field)) {
+                        faults.push(format!(
+                            "{name}:{line}: `{span}` is in no crate of the engine"
+                        ));
+                    }
+                    continue;
+                }
                 if !is_message(&span) || in_tables.contains(&(*line, span.clone())) {
                     continue;
                 }
