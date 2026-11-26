@@ -381,14 +381,14 @@ ten rounds each. A ratio is of the two engines in one round:
 
 | Batch | LigninDB applies, before | after | Of RocksDB's time, before | after |
 | --- | --- | --- | --- | --- |
-| moves | 1,073 to 1,167 ms | 372 to 435 ms | 7.5 to 8.4 | 2.6 to 3.2 |
-| mixed | 95 to 112 ms | 93 to 111 ms | 1.3 to 1.9 | 1.5 to 1.9 |
+| moves | 986 to 1,309 ms | 391 to 431 ms | 7.0 to 8.3 | 2.5 to 3.0 |
+| mixed | 98 to 126 ms | 99 to 124 ms | 1.6 to 2.0 | 1.3 to 1.9 |
 
-RocksDB applied the moves in 132 to 151 ms and the mixed batch in 56 to 77
+RocksDB applied the moves in 126 to 171 ms and the mixed batch in 57 to 74
 ms. The mixed batch enters, moves and drops no subtree, so it puts few
 records into the directory, and it is as it was. The commits are within
-each other's spread: LigninDB commits the moves in 17 to 50 ms where it
-did in 20 to 44 ms.
+each other's spread: LigninDB commits the moves in 18 to 43 ms where it
+did in 14 to 56 ms.
 
 ## RocksDB baseline and the plan's recorded values
 
