@@ -124,7 +124,11 @@ const COVERED: [(&str, &[&str]); 26] = [
 /// names that file and quotes that message too (where one is named: an
 /// empty one asks for the row alone), so a reason quoted for one
 /// message does not stand for the same word of another.
-const REASONS: [(&str, &str, &str); 39] = [
+const REASONS: [(&str, &str, &str); 43] = [
+    ("lignin-io/src/std_fs.rs", "format!(", ""),
+    ("lignin-io/src/std_fs.rs", "path_error(", ""),
+    ("lignin-io/src/std_fs.rs", "wrong_mode(", ""),
+    ("lignin-io/src/linux.rs", "format!(", ""),
     ("lignin-io/src/linux.rs", "io::Error::other(", ""),
     ("lignin-io/src/linux.rs", "io::Error::new(", ""),
     ("lignin-io/src/linux/aligned.rs", "io::Error::other(", ""),
