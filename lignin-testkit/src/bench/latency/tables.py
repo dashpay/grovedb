@@ -10,17 +10,20 @@ range; the control and each experiment held against it; the root hash that
 the runs of one stream ended at; and, for each traced run, what its measuring
 thread waited for (`waits.py`).
 
-It fails, and prints no table, where a report has another number of blocks
-than the campaign was asked for, where a part of the campaign has some of
-its runs and not all (every name of the part, under every background, in
-every round, with both engines), and where two runs of one stream ended at
-different root hashes: a file of tables is of one campaign that did what it
-says.
+It fails, and prints no table, where a report is not of the name, the
+background, the blocks, the build or the mount that the campaign has for
+it, and where two runs of one stream ended at different root hashes: a file
+of tables is of one campaign that did what it says.
 
-A traced run that did not end well (`traced.sh` leaves a file that says it
-did), that has no line for its measured blocks, or whose waits cannot be
-placed gets no table of waits: its place says why, the tables of the runs
-are printed all the same, and the script ends with 3.
+A part of the campaign that is not whole gets no table, and its place says
+what is missing: a part of runs (`main`, `filesystems`) that has not every
+name under every background in every round with both engines, and a traced
+run that was not made, that did not end well (`traced.sh` leaves a file
+that says it did), that has no line for its blocks, that lost events, or
+whose user stacks are cut short. The parts a campaign is of are those of
+its first call (`parts.txt`), whichever of them a later call was asked for.
+The tables that can be made are printed all the same, and the script ends
+with 3.
 
 A percentile is the smallest sample with that share of the samples at or
 below it. A commit's time off a processor is its time less what its thread
@@ -91,6 +94,8 @@ def read(directory):
                 path, report.get("label"), report["background"]))
         made_by = path[:-len(".json")] + ".build"
         binary = open(made_by).read().strip() if os.path.exists(made_by) else None
+        made_on = path[:-len(".json")] + ".mount"
+        mount = open(made_on).read().strip() if os.path.exists(made_on) else None
         for engine in report["engines"]:
             off = [max(commit - ran, 0) for commit, ran in zip(engine["commit_ns"], engine["ran_ns"])]
             clock, parts = engine["clock"], engine.get("parts_ns")
@@ -102,7 +107,8 @@ def read(directory):
                 room=sum(1 for part in parts if part[5] > 0) if parts else None,
                 turns=engine.get("turns"),
                 late=[clock["late"][at] / max(clock["sleeps"], 1) for at in range(4)],
-                root=engine["root_hash"], build=report["commit"], binary=binary,
+                root=engine["root_hash"], build=report["commit"], binary=binary, mount=mount,
+                outlasted=engine.get("pauses_outlasted", 0),
                 stream=(report["seed"], report["documents"], report["owners"],
                         report["warm_blocks"], len(engine["commit_ns"]))))
     return rows
@@ -110,14 +116,17 @@ def read(directory):
 
 def runs(rows):
     print("| Rows | Engine | Background | Round | Blocks | Median, µs | 99%, µs | 99.9%, µs | Longest, µs "
-          "| Off a processor: 99%, µs | 99.9%, µs | longest, µs | Sleeps late by 1 ms or more | by 5 ms |")
-    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+          "| Off a processor: 99%, µs | 99.9%, µs | longest, µs | Sleeps late by 1 ms or more | by 5 ms "
+          "| Blocks that began late |")
+    print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     order = lambda row: (row["background"], row["label"], row["engine"], row["round"])
     for row in sorted(rows, key=order):
-        print("| %s | %s | %s | %d | %d | %s | %s | %s | %s | %s | %s | %s | %.2f%% | %.2f%% |" % (
+        print("| %s | %s | %s | %d | %d | %s | %s | %s | %s | %s | %s | %s | %.2f%% | %.2f%% | %d |" % (
             row["label"], row["engine"], row["background"], row["round"], row["blocks"],
             *map(us, row["commit"]), *map(us, row["off"][1:]),
-            100 * row["late"][1], 100 * row["late"][2]))
+            100 * row["late"][1], 100 * row["late"][2], row["outlasted"]))
+    print("\nA block begins a pause after the commit before it ended. It began late where the harness's own work "
+          "after that commit, reading the engine's counts, took longer than the pause.")
     groups = collections.OrderedDict()
     for row in sorted(rows, key=order):
         groups.setdefault((row["label"], row["engine"], row["background"]), []).append(row)
@@ -192,17 +201,40 @@ def main():
                      "number: %s" % (asked["blocks"], ", ".join(short)))
     parts = (("main", main_rows, ("base", "base-again", "allocated", "covered")),
              ("filesystems", other_rows, ("ext4", "ext4-again", "xfs")))
+    # The parts the campaign is of: those of its first call. A campaign of
+    # an earlier form of `campaign.sh` does not say, and is of the parts it
+    # has anything of.
+    intended_path = os.path.join(out, "parts.txt")
+    intended = set(open(intended_path).read().split()) if os.path.exists(intended_path) else None
+    # A part that is not whole, and what it has not.
+    partial = {}
     if asked:
         for part, rows, labels in parts:
+            if intended is not None and part not in intended and not rows:
+                continue
+            if intended is None and not rows:
+                continue
             have = {(row["label"], row["background"], row["round"], row["engine"]) for row in rows}
             want = {(label, background, number, engine) for label in labels
                     for background in asked["backgrounds"].split()
                     for number in range(1, int(asked["rounds"]) + 1) for engine in ("lignindb", "rocksdb")}
-            if have and have != want:
-                sys.exit("tables.py: the runs of %s are not those the campaign was asked for; missing: %s; "
-                         "not asked for: %s" % (part, ", ".join("%s-%s-r%d %s" % key for key in sorted(want - have))
-                                                or "none", ", ".join("%s-%s-r%d %s" % key for key in sorted(have - want))
-                                                or "none"))
+            if have - want:
+                sys.exit("tables.py: the runs of %s have some the campaign was not asked for: %s" % (
+                    part, ", ".join("%s-%s-r%d %s" % key for key in sorted(have - want))))
+            if have != want:
+                partial[part] = "its runs are not all made; missing: " + ", ".join(sorted(
+                    {"%s-%s-r%d" % key[:3] for key in want - have}))
+    # One mount of each file system a campaign: the runs of a part, or of
+    # one of its file systems, were all made on the same one.
+    mounts = {}
+    for part, rows, _ in parts if asked else ():
+        for row in rows:
+            target = part if part == "main" else ("xfs" if row["label"] == "xfs" else "ext4")
+            mounts.setdefault(target, set()).add(row["mount"])
+    for target, made_on in mounts.items():
+        if len(made_on) > 1 or None in made_on:
+            sys.exit("tables.py: the runs of %s were not all made on one mount of its file system, or do not "
+                     "say: %s" % (target, "; ".join(sorted(str(mount) for mount in made_on))))
     # The build of each name, and what `builds.txt` says the campaign's builds are.
     of_build = collections.defaultdict(lambda: "base", allocated="exp1", covered="exp2")
     builds = {}
@@ -231,7 +263,7 @@ def main():
     # `campaign.sh`, by name.
     there = {os.path.basename(path).split(".")[0] for path in glob.glob(os.path.join(out, "traces", "*"))}
     wanted = []
-    if there and asked:
+    if asked and (there if intended is None else "traces" in intended):
         grounds = asked["backgrounds"].split()
         wanted = ["%s-%s" % (engine, ground) for ground in grounds for engine in ("lignindb", "rocksdb")]
         wanted += ["%s-%s%s" % (name, grounds[0], at) for name, at in (
@@ -271,10 +303,23 @@ def main():
                                        report.get("label"), report["background"],
                                        len(report["engines"][0]["commit_ns"]), report["commit"], binary)))
             continue
+        # The mount it was made on is the one the runs of its file system
+        # were made on, where the campaign has such runs.
+        target = next((fs for fs in ("ext4-lazytime", "ext4", "xfs") if name.endswith("-on-" + fs)), "main")
+        mount = open(stem + ".mount").read().strip() if os.path.exists(stem + ".mount") else None
+        if asked and (mount is None or mounts.setdefault(target, {mount}) != {mount}):
+            refused.append((trace, "it was made on %s, and the other runs on that file system on %s" % (
+                mount, "; ".join(sorted(str(other) for other in mounts[target])))))
+            continue
         made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), "--marked", trace],
                               capture_output=True, text=True)
         if made.returncode != 0:
             refused.append((trace, made.stderr.strip()))
+            continue
+        marked = re.search(r"and (\d+) of them are marked", made.stdout)
+        if asked and (not marked or int(marked.group(1)) != int(asked["trace blocks"])):
+            refused.append((trace, "the trace has the lines of %s blocks, and the run was of %s" % (
+                marked.group(1) if marked else "no", asked["trace blocks"])))
             continue
         waited.append((trace, made.stdout.rstrip()))
 
@@ -284,13 +329,19 @@ def main():
         path = os.path.join(out, name)
         if os.path.exists(path):
             print("## %s\n\n```text\n%s\n```\n" % (title, open(path).read().rstrip()))
-    if main_rows:
+    if "main" in partial:
+        print("## The commit of a block, on the file system of the runs\n\n**No table of this part:** %s\n" %
+              partial["main"])
+    elif main_rows:
         print("## The commit of a block, on the file system of the runs\n")
         runs(main_rows)
         print("\n### The control and the two experiments\n")
         held(main_rows, ["base", "base-again"], ["allocated", "covered"])
         print()
-    if other_rows:
+    if "filesystems" in partial:
+        print("## The commit of a block, on file systems in files of that one\n\n**No table of this part:** %s\n" %
+              partial["filesystems"])
+    elif other_rows:
         print("## The commit of a block, on file systems in files of that one\n")
         runs(other_rows)
         print("\n### A second file system: XFS against ext4\n")
@@ -325,9 +376,11 @@ def main():
                     ", ".join("%.2f of %s" % (count / blocks, of) for of, (count, _) in counted)))
         print(tables)
         print()
-    if refused:
-        for trace, why in refused:
-            print("tables.py: no table of %s: %s" % (trace, why), file=sys.stderr)
+    for part, why in partial.items():
+        print("tables.py: no table of the part %s: %s" % (part, why), file=sys.stderr)
+    for trace, why in refused:
+        print("tables.py: no table of %s: %s" % (trace, why), file=sys.stderr)
+    if refused or partial:
         sys.exit(3)
 
 

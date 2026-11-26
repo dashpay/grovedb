@@ -7,9 +7,11 @@
 # failed, OUT.ok: a traced run without it is not one. Wants bpftrace and sudo.
 #
 # It fails, and says why, where the run fails, where the tracer has not
-# attached within a minute or ends before the run does, and where the trace
-# has no line for the beginning and for the end of the measured blocks: a
-# trace that cannot say which waits were of the measured blocks is none.
+# attached within a minute or ends before the run does, where the trace has
+# no line for the beginning and for the end of the measured blocks, where
+# the tracer did not write its last line, and where it says that it lost
+# events: a trace that cannot say which waits were of the measured blocks,
+# or that has not all of them, is none.
 #
 #   BIN       the lignin-bench to run (default: target/release/lignin-bench)
 #   LONG_US   the bound for WRITE, SYNC and BLK lines (default 1000)
@@ -54,7 +56,7 @@ refuse() {
 
 sudo -n true 2> /dev/null || refuse "sudo asks for a password"
 rm -f "$out.ok"
-"$bin" latency --scratch "$scratch" "$@" --out "$out.json" > "$out.txt" &
+"$bin" latency --scratch "$scratch" --mark-blocks "$@" --out "$out.json" > "$out.txt" &
 run=$!
 sleep 1
 # A thread that an engine starts from the measuring thread has its name too:
@@ -62,19 +64,11 @@ sleep 1
 tid=$(ps -L -o tid=,comm= -p "$run" | awk '$2 == "lignin-commit" { print $1; exit }')
 [ -n "$tid" ] || refuse "the run has no measuring thread: $(tail -2 "$out.txt")"
 echo "$run $tid" > "$out.pid"
-# The pause the harness makes after a commit, which the tracer leaves out.
-pause_us=5000 before=""
-for word in "$@"; do
-  [ "$before" = --pause-us ] && pause_us=$word
-  before=$word
-done
-# RocksDB slows its writes down with sleeps of 1,001 µs on the committing
-# thread, which a pause of that length would have the tracer leave out.
-[ "$pause_us" != 1001 ] || refuse "a pause of 1001 µs is the length of RocksDB's own sleep: take another"
 measuring=$tid
 [ "${THREADS:-}" = all ] && tid=0
-sudo env BPFTRACE_MAX_MAP_KEYS=262144 bpftrace "$here/trace.bt" "$run" "${LONG_US:-1000}" \
-  "${OFF_US:-200}" "$tid" "$measuring" "$((pause_us * 1000))" > "$out.trace" 2> "$out.trace.err" &
+# Room for what a busy run prints at once: 16 MiB a processor.
+sudo env BPFTRACE_MAX_MAP_KEYS=262144 BPFTRACE_PERF_RB_PAGES=4096 bpftrace "$here/trace.bt" "$run" \
+  "${LONG_US:-1000}" "${OFF_US:-200}" "$tid" "$measuring" > "$out.trace" 2> "$out.trace.err" &
 tracer=$!
 attached=""
 for _ in $(seq 120); do
@@ -98,4 +92,8 @@ grep -q "lignin-mark measured begin" "$out.trace" ||
   refuse "the trace has no line for the beginning of the measured blocks: the tracer attached after it"
 grep -q "lignin-mark measured end" "$out.trace" ||
   refuse "the trace has no line for the end of the measured blocks"
+grep -q "^trace ended$" "$out.trace" ||
+  refuse "the tracer did not write its last line: the trace was cut off"
+lost=$(grep -hE "^Lost [0-9]+ events" "$out.trace" "$out.trace.err" | head -3 | tr '\n' ' ' || true)
+[ -z "$lost" ] || refuse "the tracer lost events, so the trace has too few lines: $lost"
 touch "$out.ok"

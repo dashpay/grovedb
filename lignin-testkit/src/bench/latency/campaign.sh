@@ -133,11 +133,19 @@ else
     *) wanted=$((most * 40 + 4194304)) ;;
   esac
   case "$BUILDS/" in "$out/"*) [ -s "$BUILDS/exp2/sha256" ] || wanted=$((wanted + 12582912)) ;; esac
+  # The inode tables and the journals of the ext4 file systems it makes,
+  # which are written out when they are made.
+  case " $parts " in *" filesystems "* | *" traces "*) wanted=$((wanted + loop_gb * 65536)) ;; esac
   free=$(df -k --output=avail "$out" | tail -1)
   [ "$free" -ge "$wanted" ] ||
     refuse "$out has $((free / 1048576)) GiB free, and this campaign wants $((wanted / 1048576 + 1))"
   echo "$asked" > "$out/campaign.txt"
+  # The parts the campaign is of are those of its first call: a later call
+  # that is asked for some of them makes those, and the tables say which of
+  # the campaign's parts are not made.
+  echo "$parts" > "$out/parts.txt"
 fi
+[ -s "$out/parts.txt" ] || echo "$parts" > "$out/parts.txt"
 
 has() {
   case " $parts " in *" $1 "*) return 0 ;; *) return 1 ;; esac
@@ -246,23 +254,33 @@ failed() {
   exit 1
 }
 
-# Whether a run that is there was made by the build that would make it now:
-# a campaign is of one set of builds, and a report says which made it.
-made_by() { # made_by FILE BUILD
+# What a directory is mounted from, as a run is held to it: the file
+# system's kind, its options and its own id. The id is the file system's and
+# not the device's, so a loop device of another number is the same.
+mount_of() { # mount_of DIRECTORY
+  findmnt -no FSTYPE,OPTIONS,UUID -T "$1"
+}
+
+# Whether a run that is there was made by the build that would make it now
+# and on the mount that is there now: a campaign is of one set of builds and
+# of one mount of each file system, and a run says which made it.
+made_by() { # made_by FILE BUILD DIRECTORY
   [ "$(cat "$1.build" 2> /dev/null)" = "$(cat "$BUILDS/$2/sha256")" ] ||
     refuse "$1 was made by another build than $BUILDS/$2: a campaign is of one set of builds"
+  [ "$(cat "$1.mount" 2> /dev/null)" = "$(mount_of "$3")" ] ||
+    refuse "$1 was made on $(cat "$1.mount" 2> /dev/null), and $3 is now $(mount_of "$3"): a campaign is of one mount of each file system"
 }
 
 # One run: run FILE BUILD ENGINES DIRECTORY BACKGROUND LABEL SETTINGS
 run() {
   local file=$1 build=$2 engines=$3 dir=${4:?} background=$5 label=$6 settings=$7 flags="" engine
   if [ -s "$file.json" ]; then
-    made_by "$file" "$build"
+    made_by "$file" "$build" "$dir"
     return 0
   fi
   for engine in $engines; do flags="$flags --engine $engine"; done
   rm -rf "$dir/scratch"
-  findmnt -no SOURCE,FSTYPE,OPTIONS -T "$dir" > "$file.mount"
+  mount_of "$dir" > "$file.mount"
   # shellcheck disable=SC2086
   env $settings "$BUILDS/$build/lignin-bench" latency --scratch "$dir/scratch" $flags \
     --background "$background" --blocks "$blocks" --label "$label" \
@@ -366,12 +384,15 @@ filesystem() { # filesystem NAME MKFS MOUNT-OPTIONS
   fi
   grep -q "^$1: " "$out/host.txt" || describe "$1" "$dir"
 }
+# ext4 is made with its inode tables and its journal written out: left to
+# the kernel, they are written after the mount, beside the runs.
+ext4="mkfs.ext4 -q -F -E lazy_itable_init=0,lazy_journal_init=0"
 if has filesystems || has traces; then
-  filesystem ext4 "mkfs.ext4 -q -F" ""
+  filesystem ext4 "$ext4" ""
   filesystem xfs "mkfs.xfs -q -f" ""
 fi
 if has traces; then
-  filesystem ext4-lazytime "mkfs.ext4 -q -F" "lazytime"
+  filesystem ext4-lazytime "$ext4" "lazytime"
 fi
 
 # Part 3.
@@ -386,12 +407,12 @@ fi
 traced() {
   local file=$1 build=$2 engine=$3 dir=${4:?} background=$5 threads=$6 settings=$7 watch="" status=0
   if [ -e "$file.ok" ] && [ -s "$file.trace" ] && [ -s "$file.json" ]; then
-    made_by "$file" "$build"
+    made_by "$file" "$build" "$dir"
     return 0
   fi
   [ "$engine" = lignindb ] && watch="--watch-files"
   rm -rf "$dir/scratch"
-  findmnt -no SOURCE,FSTYPE,OPTIONS -T "$dir" > "$file.mount"
+  mount_of "$dir" > "$file.mount"
   # shellcheck disable=SC2086
   env $settings BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
     "$dir/scratch" --engine "$engine" --background "$background" --blocks "$trace_blocks" \
@@ -435,7 +456,7 @@ if has tables; then
   [ "$made" = 0 ] || [ "$made" = 3 ] || exit "$made"
   mv "$out/tables.md.part" "$out/tables.md"
   [ "$made" = 0 ] ||
-    refuse "the tables of the runs are in $out/tables.md, and a traced run has no table of its waits: it says why there${traces_failed:+; these traced runs failed:$traces_failed}"
+    refuse "the tables that could be made are in $out/tables.md, and it says there what is missing and why${traces_failed:+; these traced runs failed:$traces_failed}"
 fi
 [ -z "$traces_failed" ] || refuse "these traced runs failed:$traces_failed"
 echo "finished: the tables are in $out/tables.md"

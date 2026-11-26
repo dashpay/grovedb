@@ -1,12 +1,11 @@
 #!/usr/bin/env bpftrace
 // What the threads of `lignin-bench latency` are off a processor for.
 //
-//   bpftrace trace.bt PID LONG_US OFF_US TID MEASURING PAUSE_NS
+//   bpftrace trace.bt PID LONG_US OFF_US TID MEASURING
 //
 // PID is the process. TID is the thread to follow, the measuring one
 // (`traced.sh` finds it), or 0 for every thread of the process. MEASURING
-// is the measuring thread, and PAUSE_NS the pause that the harness makes on
-// it after a commit. Lines:
+// is the measuring thread. The harness is run with `--mark-blocks`. Lines:
 //
 //   OFFCPU  a followed thread was off a processor for OFF_US or more: when,
 //           its state when it left, the file
@@ -14,14 +13,17 @@
 //           such a call), which thread woke it, the kernel stack and the
 //           user stack it left with, and the kernel stack of the waking.
 //           The user stack is read by frame pointers: `build.sh` keeps them.
-//           Left out: on the measuring thread the pause of the harness, a
-//           sleep of PAUSE_NS; on any other thread every sleep it asked
-//           for. A sleep that an engine asks for on the measuring thread,
-//           as RocksDB does to slow its writes down, is a wait like another.
+//           Left out: on the measuring thread the pause of the harness,
+//           which is the first sleep the thread asks for after the line of
+//           a commit and before the line of the next block; on any other
+//           thread every sleep it asked for. A sleep that an engine asks
+//           for on the measuring thread inside a block, as RocksDB does to
+//           slow its writes down, is a wait like another.
 //   WRITE   a write call of a followed thread that took LONG_US or more, and
 //           of which file.
 //   MARK    a line the harness writes: where the measured blocks begin and
-//           end, and after a long commit. It names the thread that wrote it.
+//           end, where each block begins, and after each commit with the
+//           commit's length. It names the thread that wrote it.
 //   SYNC    an fsync or fdatasync of any thread of the process that took
 //           LONG_US or more, or that waited for a commit of an ext4 journal
 //           however long it took: of which file, the number of the
@@ -32,6 +34,10 @@
 //   JEND    it has ended it.
 //   BLK     a request to a block device that took LONG_US or more.
 //
+// The last line the script itself prints is `trace ended`: a trace without
+// it was cut off. bpftrace prints `Lost N events` where its buffers were
+// full: such a trace has too few lines.
+//
 // A file is named by its directory and its own name, and a file system by
 // its device, major and minor.
 
@@ -41,9 +47,9 @@ tracepoint:syscalls:sys_enter_clock_nanosleep,
 tracepoint:syscalls:sys_enter_nanosleep
 /pid == $1/
 {
-  $asked = (struct __kernel_timespec *)uptr(args->rqtp);
-  if (tid != $5 || $asked->tv_sec * 1000000000 + $asked->tv_nsec == $6) {
+  if (tid != $5 || @paused[tid]) {
     @pausing[tid] = 1;
+    delete(@paused[tid]);
   }
 }
 
@@ -96,7 +102,16 @@ kprobe:vfs_write
   @wdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
   @wdev[tid] = $f->f_inode->i_sb->s_dev;
   if (@wname[tid] == "null") {
-    printf("MARK at=%llu tid=%d %s", nsecs, tid, str(uptr(arg1), arg2));
+    $line = str(uptr(arg1), arg2);
+    printf("MARK at=%llu tid=%d %s", nsecs, tid, $line);
+    // After the line of a commit the harness pauses, and with the line of
+    // the next block the pause is over, made or not.
+    if (strncmp($line, "lignin-mark commit", 18) == 0) {
+      @paused[tid] = 1;
+    }
+    if (strncmp($line, "lignin-mark block", 17) == 0) {
+      delete(@paused[tid]);
+    }
   }
 }
 
@@ -188,4 +203,6 @@ END
   clear(@wcomm); clear(@wtid); clear(@wk);
   clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
   clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@sasked); clear(@adev); clear(@rq);
+  clear(@paused);
+  printf("trace ended\n");
 }

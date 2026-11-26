@@ -5,21 +5,33 @@ of `trace.bt` beside the run.
     waits.py [--marked] TRACE [MIN_US]
 
 MIN_US is the shortest wait that is counted, 1000 by default. With
-`--marked` a trace that has no line for the beginning and the end of the
-measured blocks is refused, and so is one in which a fifth or more of the
-waits cannot be placed: a campaign's tables are made so.
+`--marked`, as a campaign's tables are made, a trace is refused that has no
+line for the beginning and the end of the measured blocks or for its
+blocks, that did not run to its end, that says it lost events, or in which
+the user stacks of a fifth or more of the waits inside a block are cut
+short.
 
 **Which waits are counted.** A wait is one OFFCPU record of the measuring
 thread: the thread left a processor and was back after the time the record
 says. Only the waits of the measured blocks are counted: those between the
 harness's lines `lignin-mark measured begin` and `lignin-mark measured end`,
 which the trace has as MARK records. The load and the warm blocks, which the
-same thread applies through the same calls, are left out. A wait is placed
-by its user stack: in a block where the stack has the harness's call of the
-block, between two blocks where it has another frame of the harness, where
-the harness reads the engine's counts. A wait whose user stack has no frame
-of the harness cannot be placed and is counted apart: the stack is empty or
-was cut short, as it is where a frame of the process keeps no frame pointer.
+same thread applies through the same calls, are left out.
+
+**Where a wait was** is read from the harness's lines, not from a stack. A
+traced run has a line where each block begins (`lignin-mark block N`) and
+one after each commit with the commit's length (`lignin-mark commit N NS`).
+A wait that ended before the commit began is of the block's operations, one
+that ended after it is of the commit, and one after the commit's line is
+between two blocks, where the harness reads the engine's counts and pauses.
+The thread writes those lines itself, so a wait cannot lie across one. The
+stacks say what a wait was for; where a user stack does not reach the
+harness it was cut short, as it is where a frame of the process keeps no
+frame pointer, and what such a wait was in is known only as far as the
+stack goes. A trace of an earlier form of the harness has no line for its
+blocks: its waits are placed by their user stacks, by the harness's call of
+the block and of the commit, and one whose stack has no frame of the
+harness cannot be placed and is counted apart.
 A wait in which the thread was taken off a processor while it could run is a
 row of its own. The harness's pause after a commit is no wait and is not in
 the trace; a sleep that an engine asks for on the measuring thread is one.
@@ -39,8 +51,9 @@ Printed:
    an overlap in time, and a wait can have several. Beside it is what chance
    gives: how many of the waits would have had a sync beside them had each
    begun at a moment of the measured blocks taken at random. Second, for a wait
-   that is for a commit of an ext4 journal by its kernel stack (the journal
-   is writing the block, its transaction is being closed, or the thread is
+   that is for a commit of an ext4 journal by the frames it blocks in (the
+   journal is writing the block: a wait for the block's shadow bit under
+   `do_get_write_access`; its transaction is being closed; or the thread is
    in `jbd2_log_wait_commit`), the commit of that journal that was under
    way when the wait began, and the syncs of the process that asked to wait
    for that commit before it had ended (the SYNC record names the
@@ -52,8 +65,11 @@ Printed:
    to the commit by its stack and by the time, and not by a transaction's
    number read at the wait. A wait for room in the journal is in the
    journal's checkpoint, by its stack for a buffer or for the device, or
-   for the checkpoint's lock; it is for no commit, and is counted apart.
-   Who had a buffer written, or held the lock, the trace does not say.
+   where the journal's tail is moved on, or for the checkpoint's lock; it
+   is for no commit, and is counted apart. Who had a buffer written, or
+   held the lock, the trace does not say. A wait under
+   `do_get_write_access` for the lock of the block, or for memory, is for
+   neither, and is linked to nothing.
 4. With a trace that follows every thread (`THREADS=all traced.sh`): for the
    waits for a lock of the process, the thread that woke the measuring
    thread and what that thread was off a processor for meanwhile. The thread
@@ -65,6 +81,7 @@ A trace of an earlier form of the tracer has no line for the measured blocks.
 Its waits are then taken by their user stack: the measured blocks are applied
 inside `std::thread::scope` and the others are not.
 """
+import bisect
 import collections
 import re
 import sys
@@ -74,10 +91,10 @@ SLEEP = re.compile(r"^(__schedule|schedule|io_schedule|schedule_timeout|io_sched
                    r"schedule_preempt_disabled|bit_wait|bit_wait_io|__wait_on_bit|"
                    r"out_of_line_wait_on_bit|__wait_for_common|wait_for_completion.*)$")
 SYSCALL = re.compile(r"^__(?:arm64|x64|ia32)_sys_(\w+)$")
-# Where a thread waits for a commit of the journal: for the commit's write
-# of a block, and for a transaction that the commit is closing.
-FOR_A_COMMIT = ("do_get_write_access", "wait_transaction_locked", "jbd2_log_wait_commit")
 FOR_ROOM = "__jbd2_log_wait_for_space"
+# Where a wait of the measured blocks was.
+COMMIT, OPERATIONS, BETWEEN, UNPLACED = "the commit", "the operations", "between two blocks", "nowhere"
+SLEPT = ("nanosleep", "clock_nanosleep")
 HARNESS = ("lignin_testkit5bench7latency", "lignin_testkit::bench::latency")
 # The harness's file layer is under the engine's calls, inside a block: a
 # frame of it does not say that the stack reaches the harness's own loop.
@@ -141,6 +158,9 @@ class Trace:
     def __init__(self, path):
         self.waits, self.syncs, self.marks = [], [], []
         self.starts, self.ends = {}, {}
+        # What the tracer says of itself: the events it lost, and that it
+        # ran to its end.
+        self.lost, self.ended = 0, False
         record, part = None, None
         for line in open(path, errors="replace"):
             line = line.rstrip("\n")
@@ -152,7 +172,8 @@ class Trace:
                 record = dict(begin=int(field(line, "begin")), end=int(field(line, "end")),
                               us=int(field(line, "us")), state=field(line, "state"),
                               dev=field(line, "dev"), tid=int(thread.group(2)) if thread else 0,
-                              waker=waker.group(3), waker_tid=int(waker.group(4)), kernel=[], user=[])
+                              waker=waker.group(3), waker_tid=int(waker.group(4)), kernel=[], user=[],
+                              woken=[])
                 self.waits.append(record)
                 part = None
             elif record is not None and line.startswith(" left at:"):
@@ -160,7 +181,12 @@ class Trace:
             elif record is not None and line.startswith(" called from:"):
                 part = "user"
             elif record is not None and line.startswith(" woken at:"):
-                part = None
+                part = "woken"
+            elif line.startswith("Lost "):
+                found = re.match(r"Lost (\d+) events", line)
+                self.lost += int(found.group(1)) if found else 1
+            elif line == "trace ended":
+                self.ended = True
             elif line.startswith("SYNC"):
                 self.syncs.append(dict(begin=int(field(line, "begin")), end=int(field(line, "end")),
                                        us=int(field(line, "us")), file=field(line, "file"),
@@ -182,11 +208,25 @@ class Trace:
                 record[part].append(line)
         for wait in self.waits:
             wait["kernel"], wait["user"] = frames(wait["kernel"]), frames(wait["user"])
+            wait["woken"] = frames(wait["woken"])
         begins = [(at, tid) for at, tid, what in self.marks if what.startswith("measured begin")]
         ends = [at for at, _, what in self.marks if what.startswith("measured end")]
         # One engine a trace: its measured blocks are one stretch.
         self.measured = (begins[0][0], ends[0]) if begins and ends else None
         self.measuring = begins[0][1] if begins else 0
+        # The blocks that the harness marked: where each began, where its
+        # commit began and where the commit's line was written.
+        began, committed = {}, {}
+        for at, tid, what in self.marks:
+            words = what.split()
+            if tid != self.measuring or len(words) < 2 or not words[1].isdigit():
+                continue
+            if words[0] == "block":
+                began[int(words[1])] = at
+            elif words[0] == "commit" and len(words) > 2 and words[2].isdigit():
+                committed[int(words[1])] = (at - int(words[2]), at)
+        self.blocks = sorted((began[block], *committed[block]) for block in began if block in committed)
+        self.block_begins = [block[0] for block in self.blocks]
 
     def of_the_measuring_thread(self, wait):
         return not self.measuring or not wait["tid"] or wait["tid"] == self.measuring
@@ -195,6 +235,29 @@ class Trace:
         if self.measured:
             return self.measured[0] <= wait["begin"] and wait["end"] <= self.measured[1]
         return any("scoped5scope" in frame or "scoped::scope" in frame for frame in wait["user"])
+
+    def phase(self, wait):
+        """Where a wait of the measured blocks was: by the harness's lines of
+        its blocks, and for a trace that has none by the wait's user stack."""
+        if self.blocks:
+            at = bisect.bisect_right(self.block_begins, wait["begin"]) - 1
+            if at < 0 or wait["begin"] > self.blocks[at][2]:
+                return BETWEEN
+            # The line of a commit is written after it, so the commit began
+            # no later than the line's time less the commit's length: a
+            # wait of the operations has ended by then.
+            return OPERATIONS if wait["end"] <= self.blocks[at][1] else COMMIT
+        if in_a_block(wait):
+            return COMMIT if in_the_commit(wait) else OPERATIONS
+        return BETWEEN if of_the_harness(wait) else UNPLACED
+
+    def the_pause(self, wait):
+        """The harness's pause after a commit, which the tracer leaves out
+        where it knows it."""
+        slept = any(SYSCALL.match(frame) and SYSCALL.match(frame).group(1) in SLEPT for frame in wait["kernel"])
+        if self.blocks:
+            return slept and self.phase(wait) == BETWEEN
+        return slept and of_the_harness(wait) and not in_a_block(wait)
 
 
 def in_a_block(wait):
@@ -212,19 +275,48 @@ def of_the_harness(wait):
                for frame in wait["user"] for mark in HARNESS)
 
 
-def the_pause(wait):
-    """A sleep of the harness between two blocks: its pause after a commit.
-    The tracer leaves it out where it knows it; this knows it by its stack."""
-    return (any(SYSCALL.match(frame) and SYSCALL.match(frame).group(1) in ("nanosleep", "clock_nanosleep")
-                for frame in wait["kernel"])
-            and of_the_harness(wait) and not in_a_block(wait))
-
-
 def in_the_log(wait):
     """A call on a file of the engine's log, by a frame that says so:
     LigninDB's log store, and RocksDB's writer of its log."""
     return any("lignin_store3wal" in frame or "lignin_store::wal" in frame
                or frame.startswith("rocksdb::log::Writer::") or "::WriteToWAL" in frame for frame in wait["user"])
+
+
+def journal(wait):
+    """What a wait under ext4's journal is for, by the frames it blocks in:
+    `commit` where it waits for a commit of the journal, `room` where it
+    waits for room in it, `other` under the journal for neither, with the
+    words for it; and None outside the journal."""
+    kernel = wait["kernel"]
+    if FOR_ROOM in kernel:
+        inner = kernel[:kernel.index(FOR_ROOM)]
+        if "jbd2_log_wait_commit" in inner:
+            return "commit", "which has no room, and the thread waits for a commit"
+        if "jbd2_log_do_checkpoint" in inner:
+            return "room", "which has no room: the thread waits in its checkpoint"
+        if "jbd2_cleanup_journal_tail" in inner:
+            return "room", "which has no room: the thread moves the journal's tail on, and waits for the device"
+        if any("mutex_lock" in frame for frame in inner):
+            return "room", "which has no room: the thread waits for the lock of its checkpoint"
+        rest = [frame for frame in inner if not SLEEP.match(frame)]
+        return "room", "which has no room: " + (" < ".join(rest[:3]) or "the thread gives the processor up")
+    if "jbd2_log_wait_commit" in kernel:
+        return "commit", "and waits for a commit of it"
+    if "wait_transaction_locked" in kernel:
+        return "commit", "whose transaction is being closed"
+    if "do_get_write_access" in kernel:
+        inner = kernel[:kernel.index("do_get_write_access")]
+        # The block's lock is waited for with the bit-lock calls, and the
+        # journal's write of the block, its shadow, with the plain ones.
+        if any(frame in inner for frame in ("__lock_buffer", "__wait_on_bit_lock", "out_of_line_wait_on_bit_lock")):
+            return "other", "and waits for the lock of the block it changes"
+        if any(frame in inner for frame in ("__wait_on_bit", "out_of_line_wait_on_bit")):
+            # The block of the file's inode, where ext4 changes the inode.
+            block = "that block of inodes" if "ext4_reserve_inode_write" in kernel else "the block it changes"
+            return "commit", "which is writing " + block
+        rest = [frame for frame in inner if not SLEEP.match(frame)]
+        return "other", "and waits there: " + (" < ".join(rest[:3]) or "it gives the processor up")
+    return None, None
 
 
 def what(wait):
@@ -233,7 +325,7 @@ def what(wait):
     if wait["state"] in RUNNABLE:
         return "taken off the processor while it could run"
     call = next((found.group(1) for found in map(SYSCALL.match, kernel) if found), "?")
-    if call in ("nanosleep", "clock_nanosleep"):
+    if call in SLEPT:
         return "a sleep that the engine asked for"
     if any("futex" in frame for frame in kernel):
         if any(frame.startswith("__lll_lock_wait_private") for frame in user[:2]):
@@ -249,17 +341,9 @@ def what(wait):
         asked = "the file's length"
     else:
         asked = "a change of the file"
-    if "do_get_write_access" in kernel:
-        return "%s: ext4 writes %s to the journal, which is writing that block of inodes" % (call, asked)
-    if "__jbd2_log_wait_for_space" in kernel and "jbd2_log_wait_commit" in kernel:
-        return "%s: ext4 writes %s to the journal, which has no room, and the thread waits for a commit" % (call, asked)
-    if "__jbd2_log_wait_for_space" in kernel and "jbd2_log_do_checkpoint" in kernel:
-        return "%s: ext4 writes %s to the journal, which has no room: the thread waits in its checkpoint" % (call, asked)
-    if "__jbd2_log_wait_for_space" in kernel:
-        return "%s: ext4 writes %s to the journal, which has no room: the thread waits for the lock of its checkpoint" % (
-            call, asked)
-    if "wait_transaction_locked" in kernel:
-        return "%s: ext4 writes %s to the journal, whose transaction is being closed" % (call, asked)
+    _, at_the_journal = journal(wait)
+    if at_the_journal:
+        return "%s: ext4 writes %s to the journal, %s" % (call, asked, at_the_journal)
     rest = [frame for frame in kernel if not SLEEP.match(frame)]
     if "xfs_ilock" in rest and asked == "the file's times":
         return "%s: XFS stamps %s, and waits for the lock of the inode (xfs_ilock)" % (call, asked)
@@ -293,32 +377,54 @@ def main():
         sys.exit(__doc__)
     floor = int(arguments[1]) if len(arguments) > 1 else 1000
     trace = Trace(arguments[0])
-    if marked and not trace.measured:
-        sys.exit("waits.py: %s has no line for the beginning and the end of the measured blocks" % arguments[0])
+    if marked:
+        refused = None
+        if not trace.measured:
+            refused = "has no line for the beginning and the end of the measured blocks"
+        elif not trace.blocks:
+            refused = "has no line for its blocks: the harness is run with --mark-blocks for a trace"
+        elif not trace.ended:
+            refused = "did not run to its end: the tracer was ended before it had written what it held"
+        elif trace.lost:
+            refused = "says that the tracer lost %d events: its counts are too low by what was lost" % trace.lost
+        if refused:
+            sys.exit("waits.py: %s %s" % (arguments[0], refused))
     long = [wait for wait in trace.waits
-            if wait["us"] >= floor and trace.of_the_measuring_thread(wait) and not the_pause(wait)]
+            if wait["us"] >= floor and trace.of_the_measuring_thread(wait) and not trace.the_pause(wait)]
+    inside = [wait for wait in long if trace.in_the_measured_blocks(wait)]
+    where = {id(wait): trace.phase(wait) for wait in inside}
+    mine = [wait for wait in inside if where[id(wait)] in (COMMIT, OPERATIONS)]
+    between = [wait for wait in inside if where[id(wait)] == BETWEEN]
+    # The waits whose user stack does not say what they were in: with the
+    # harness's lines for its blocks, those inside a block whose stack does
+    # not reach the harness; without, those that could not be placed at all.
+    cut = [wait for wait in mine if not of_the_harness(wait)] if trace.blocks else \
+        [wait for wait in inside if where[id(wait)] == UNPLACED]
     if trace.measured:
         seconds = (trace.measured[1] - trace.measured[0]) / 1e9
-        print("The measured blocks took %.0f s in the trace. Waits of the measuring thread of %.1f ms or more: "
+        print("The measured blocks took %.0f s in the trace%s. Waits of the measuring thread of %.1f ms or more: "
               "%d in the measured blocks and %d before or after them, which are not counted." % (
-                  seconds, floor / 1e3, sum(1 for wait in long if trace.in_the_measured_blocks(wait)),
-                  sum(1 for wait in long if not trace.in_the_measured_blocks(wait))))
-        inside = [wait for wait in long if trace.in_the_measured_blocks(wait)]
-        outside = [wait for wait in inside if not in_a_block(wait)]
-        unplaced = [wait for wait in outside if not of_the_harness(wait)]
-        between = [wait for wait in outside if of_the_harness(wait)]
-        print("Of those in the measured blocks, %d (%.1f ms in all) have no frame of the harness in their user "
-              "stack, so no place can be given them, and %d (%.1f ms) are of the harness between two blocks, where "
-              "it reads the engine's counts. Neither is in a row below." % (
-                  len(unplaced), sum(wait["us"] for wait in unplaced) / 1e3,
-                  len(between), sum(wait["us"] for wait in between) / 1e3))
+                  seconds, ", and %d of them are marked" % len(trace.blocks) if trace.blocks else "",
+                  floor / 1e3, len(inside), len(long) - len(inside)))
+        if trace.blocks:
+            print("Of those in the measured blocks, %d (%.1f ms in all) are between two blocks, where the harness "
+                  "reads the engine's counts, and are in no row below. Of the %d inside a block, %d (%.1f ms) "
+                  "have a user stack that does not reach the harness: the harness's lines say where they were, "
+                  "and what they were in is known only as far as the stack goes." % (
+                      len(between), sum(wait["us"] for wait in between) / 1e3, len(mine),
+                      len(cut), sum(wait["us"] for wait in cut) / 1e3))
+        else:
+            print("Of those in the measured blocks, %d (%.1f ms in all) have no frame of the harness in their user "
+                  "stack, so no place can be given them, and %d (%.1f ms) are of the harness between two blocks, "
+                  "where it reads the engine's counts. Neither is in a row below." % (
+                      len(cut), sum(wait["us"] for wait in cut) / 1e3,
+                      len(between), sum(wait["us"] for wait in between) / 1e3))
         # A wait between two blocks says nothing of the stacks inside a
         # block: the share is of the waits that are not between blocks.
         elsewhere = len(inside) - len(between)
-        if marked and len(unplaced) >= 10 and 5 * len(unplaced) >= elsewhere:
-            sys.exit("waits.py: %d of the %d waits of %s that are not between two blocks cannot be placed: the "
-                     "user stacks are cut short, and the build has to keep its frame pointers" % (
-                         len(unplaced), elsewhere, arguments[0]))
+        if marked and len(cut) >= 10 and 5 * len(cut) >= elsewhere:
+            sys.exit("waits.py: of the %d waits of %s that are not between two blocks, %d have a user stack that "
+                     "is cut short: the build has to keep its frame pointers" % (elsewhere, arguments[0], len(cut)))
         for dev in sorted({dev for dev, _ in trace.starts}):
             took = [trace.ends[key] - at for key, at in trace.starts.items()
                     if key[0] == dev and key in trace.ends and trace.measured[0] <= at <= trace.measured[1]]
@@ -330,7 +436,6 @@ def main():
         print("The trace has no line for the measured blocks: its waits are taken by their user stack. "
               "%d waits of %.1f ms or more have no user stack and are in no row below." % (
                   sum(1 for wait in long if not wait["user"]), floor / 1e3))
-    mine = [wait for wait in long if trace.in_the_measured_blocks(wait) and in_a_block(wait)]
     # The time of the measured blocks: between the harness's two lines, or
     # for an earlier trace from the first of their waits to the last.
     counted = [wait for wait in trace.waits
@@ -340,7 +445,7 @@ def main():
 
     total, count, longest = collections.Counter(), collections.Counter(), collections.Counter()
     for wait in mine:
-        key = ("the commit" if in_the_commit(wait) else "the operations", what(wait))
+        key = (where[id(wait)], what(wait))
         total[key] += wait["us"]
         count[key] += 1
         longest[key] = max(longest[key], wait["us"])
@@ -351,13 +456,12 @@ def main():
 
     appends = [wait for wait in mine if in_the_log(wait) and wait["state"] not in RUNNABLE
                and any(frame in wait["kernel"] for frame in ("vfs_write", "vfs_fallocate"))]
-    unplaced_ms = [wait["us"] for wait in long if trace.in_the_measured_blocks(wait)
-                   and not in_a_block(wait) and not of_the_harness(wait)] if trace.measured else []
+    cut_ms = [wait["us"] for wait in cut] if trace.measured else []
     print("\n%d waits inside the kernel during a write to a file of the engine's log, or an allocation for one, "
           "%.1f ms in all.%s" % (len(appends), sum(wait["us"] for wait in appends) / 1e3,
-                                " The %d waits that could not be placed (%.1f ms) are not among them, and any of "
-                                "them can be such a wait." % (len(unplaced_ms), sum(unplaced_ms) / 1e3)
-                                if unplaced_ms else ""))
+                                " The %d waits whose user stack is cut short (%.1f ms) are not among them, and "
+                                "any of them can be such a wait." % (len(cut_ms), sum(cut_ms) / 1e3)
+                                if cut_ms else ""))
     beside_kind, with_none, longest_beside = collections.Counter(), 0, []
     for wait in appends:
         beside = [sync for sync in trace.syncs if sync["end"] > wait["begin"] and sync["begin"] < wait["end"]]
@@ -382,8 +486,9 @@ def main():
               "engine's background is woken by commits, so the moments of appends are not moments taken at random: "
               "the figure is something to read the table against, and no measure of what the syncs do to appends." % (
                   100 * under_way, expected, len(appends), len(appends) - with_none))
-    for_a_commit = [wait for wait in appends if any(frame in wait["kernel"] for frame in FOR_A_COMMIT)]
-    for_room = sum(1 for wait in appends if FOR_ROOM in wait["kernel"] and "jbd2_log_wait_commit" not in wait["kernel"])
+    for_a_commit = [wait for wait in appends if journal(wait)[0] == "commit"]
+    for_room = sum(1 for wait in appends if journal(wait)[0] == "room")
+    for_neither = sum(1 for wait in appends if journal(wait)[0] == "other")
     if appends and trace.starts:
         # A commit is one that began and ended in the trace: one without its
         # end would be under way for every later wait.
@@ -413,11 +518,11 @@ def main():
             if not asked:
                 for kind in {of(sync["file"]) for sync in only_named}:
                     named_kind[kind] += 1
-        print("\nBy the journal's transactions: %d of the %d waits were for a commit of an ext4 journal by their "
-              "kernel stack, and %d were for room in the journal, in its checkpoint or for the checkpoint's lock, "
-              "which is for no commit. Of the %d, %d began while a commit of the journal of the written file's file system "
-              "was under way.%s" % (
-                  len(for_a_commit), len(appends), for_room, len(for_a_commit), in_a_commit,
+        print("\nBy the journal's transactions: %d of the %d waits were for a commit of an ext4 journal by the "
+              "frames they blocked in, %d were for room in the journal, which is for no commit, and %d were under "
+              "the journal for neither and are linked to nothing. Of the %d, %d began while a commit of the journal "
+              "of the written file's file system was under way.%s" % (
+                  len(for_a_commit), len(appends), for_room, for_neither, len(for_a_commit), in_a_commit,
                   " Of %d the trace does not have the file system, so they are linked to no commit." % nowhere
                   if nowhere else ""))
         if any(sync["asked"] for sync in trace.syncs):
