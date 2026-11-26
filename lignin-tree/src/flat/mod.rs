@@ -1,8 +1,9 @@
 //! The flat keyspace: a B+tree of flat pages for ordered data that is not
 //! part of a Merk tree.
 //!
-//! - [`FlatTree`] is one keyspace: get, put, delete, range delete and a
-//!   [`Cursor`], over keys and values of any length.
+//! - [`FlatTree`] is one keyspace: get, put, delete, range delete, a
+//!   write of many keys and a [`Cursor`], over keys and values of any
+//!   length.
 //! - [`FlatPages`] and [`FlatPagesMut`] are what the tree asks of whoever
 //!   holds its pages: a reader at one version, and the one writer of a
 //!   write transaction.
@@ -172,6 +173,25 @@
 //! other page is. A range delete that finds nothing to remove copies no
 //! page and writes none, in the tree of a bucket as in any other. Unlinking a range without reading it is the
 //! subtree drop's (TREE-09).
+//!
+//! **A write of many keys writes a leaf once** ([`FlatTree::write`]). It
+//! is given changes in the order of their keys ([`Changes`]): for each key
+//! the value it gets, or none where its record goes. It goes down to the
+//! leaf of the first key that is left, takes that leaf once, makes in it
+//! every change whose key lies in the leaf's key range, and writes it
+//! once; then it goes down again for the next key. What the leaf holds
+//! after all its changes is cut and looked at by the rules above: a leaf
+//! that has outgrown its image is cut into the pieces it needs, and one
+//! that lost an entry and was not cut is looked at as after a delete. A
+//! leaf in which no change changes anything is neither taken nor written.
+//! The keyspace holds afterwards what a put and a delete for each change
+//! leave it holding. Its pages can be other pages, because a leaf is cut
+//! once for all it takes and not once for each key: where the new entries
+//! of a leaf stand beside each other and end a run of keys, the cut keeps
+//! the run together as it does for one key. A key that is kept in a
+//! bucket is written by itself. [`Written`] says how many leaves took
+//! changes and how many images of leaves were written for them. The
+//! subtree directory writes the records of one batch this way (TXN-03).
 //!
 //! # Values
 //!
@@ -464,4 +484,4 @@ pub use error::FlatError;
 pub use owners::{FlatOwners, StepLog};
 pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
 pub use store::{Committed, PageIds, Parts, Private, PrivatePage};
-pub use tree::{FlatTree, Unlinked};
+pub use tree::{Changes, FlatTree, Unlinked, Written};

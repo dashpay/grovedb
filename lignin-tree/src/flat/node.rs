@@ -342,10 +342,16 @@ impl Layout {
     /// any two entries fit one page.
     ///
     /// Where one cut is enough, it is put where the two runs are nearest
-    /// in length, unless the entry in position `added` is a new one that
-    /// goes on a run of keys ([`Self::run_end`]). With more cuts each run
-    /// is as long as it can be.
-    pub(super) fn cuts(&self, capacity: usize, skip: usize, added: Option<usize>) -> Vec<usize> {
+    /// in length, unless the entries in the positions `added`, from its
+    /// first to its last, are new ones that go on a run of keys
+    /// ([`Self::run_end`]). With more cuts each run is as long as it can
+    /// be.
+    pub(super) fn cuts(
+        &self,
+        capacity: usize,
+        skip: usize,
+        added: Option<(usize, usize)>,
+    ) -> Vec<usize> {
         let count = self.entries();
         let mut cuts = Vec::new();
         let mut start = 0;
@@ -370,24 +376,26 @@ impl Layout {
         cuts
     }
 
-    /// A cut for keys that arrive in order: where the new entry in
-    /// position `added` ends a run of keys, the cut that keeps the run
-    /// together, so that the keys which follow it find room at the end of
-    /// their page and pages are left full.
+    /// A cut for keys that arrive in order: where the new entries in the
+    /// positions from `first` to `last`, which stand beside each other,
+    /// end a run of keys, the cut that keeps the run together, so that the
+    /// keys which follow it find room at the end of their page and pages
+    /// are left full.
     ///
-    /// The new entry ends a run when at least two keys stand before it in
-    /// the page, and the key after it shares less with it than all of them
-    /// do, or there is no key after it. The cut is behind the new entry,
-    /// or before it if the run is a page already.
-    fn run_end(&self, added: usize, capacity: usize) -> Option<usize> {
-        let run = self.shared.get(..added)?.iter().copied().min()?;
-        if added < 2 || self.shared.get(added).is_some_and(|&next| next >= run) {
+    /// The new entries end a run when at least two keys stand before the
+    /// last of them in the page, and the key after it shares less with it
+    /// than all of them do, or there is no key after it. The cut is behind
+    /// the last new entry, or before it if the run is a page already, or
+    /// before the nearest new entry before that which leaves two pages.
+    fn run_end(&self, (first, last): (usize, usize), capacity: usize) -> Option<usize> {
+        let run = self.shared.get(..last)?.iter().copied().min()?;
+        if last < 2 || self.shared.get(last).is_some_and(|&next| next >= run) {
             return None;
         }
         let count = self.entries();
         let fits = |start, end| self.run_len(start, end) <= capacity;
-        [added + 1, added]
-            .into_iter()
+        (first.max(1)..=last + 1)
+            .rev()
             .find(|&cut| cut < count && fits(0, cut) && fits(cut, count))
     }
 
