@@ -1453,32 +1453,47 @@ fn an_entry_of_rocksdbs_name_alone_under_a_reserved_name_is_rocksdbs_to_answer()
     // directory that holds no database, says RocksDB. Each open is then
     // RocksDB's own of the same directory under another name: one of a
     // database makes the database, and one of a checkpoint fails, makes
-    // none, and leaves what RocksDB's leaves.
+    // none, and leaves what RocksDB's leaves. Where the entry is a
+    // `CURRENT` that names no manifest, every open fails. An error is
+    // RocksDB's own, word for word, and none of the type's.
+    let entries = [
+        ("OPTIONS-of a caller", "", true),
+        ("single.sst", "", true),
+        ("CURRENT", "no manifest", false),
+    ];
     let cases = RESERVED
         .into_iter()
-        .flat_map(|name| ["OPTIONS-of a caller", "single.sst"].map(|entry| (name, entry)));
-    for (name, entry) in cases {
+        .flat_map(|name| entries.map(|entry| (name, entry)));
+    for (name, (entry, bytes, opens)) in cases {
         for (call, of_the_type, of_rocksdb, makes) in OPENS {
             let dir = tempfile::tempdir().expect("a directory");
             let (path, twin) = (dir.path().join(name), dir.path().join("checkpoint"));
             for made in [&path, &twin] {
                 fs::create_dir(made).expect("a directory");
-                fs::write(made.join(entry), b"").expect("a file");
+                fs::write(made.join(entry), bytes).expect("a file");
             }
             let found = EitherEngine::found_at(&path).expect("a look");
             assert_eq!(found, Some(EngineKind::RocksDb), "{call} {entry}");
 
             let opened = of_the_type(&path);
             let by_rocksdb = of_rocksdb(&twin);
-            assert_eq!(by_rocksdb.is_ok(), makes, "{call} {entry}");
-            match (&opened, makes) {
-                (Ok(engine), true) => assert_eq!(engine.kind(), EngineKind::RocksDb, "{call}"),
-                // RocksDB's own refusal, and none of the type's.
-                (Err(StorageError::RocksDBError(_)), false) => {}
+            assert_eq!(by_rocksdb.is_ok(), opens && makes, "{call} {entry}");
+            // The words of an error, but for the directory they name.
+            let words = |error: &StorageError, dir: &Path| {
+                assert!(matches!(error, StorageError::RocksDBError(_)), "{error:?}");
+                error.to_string().replace(&dir.display().to_string(), "")
+            };
+            match (&opened, &by_rocksdb) {
+                (Ok(engine), Ok(_)) => assert_eq!(engine.kind(), EngineKind::RocksDb, "{call}"),
+                (Err(refused), Err(by_rocksdb)) => {
+                    assert_eq!(words(refused, &path), words(by_rocksdb, &twin), "{call}")
+                }
                 _ => panic!("{call} {entry}: {opened:?}"),
             }
             drop((opened, by_rocksdb));
-            assert_eq!(path.join("CURRENT").exists(), makes, "{call} {entry}");
+            if opens {
+                assert_eq!(path.join("CURRENT").exists(), makes, "{call} {entry}");
+            }
             assert_eq!(shapes(&path), shapes(&twin), "{call} {entry}");
         }
     }
@@ -1515,10 +1530,10 @@ fn kept_from_rocksdb(path: &Path) -> bool {
 type Seen = (Option<EngineKind>, Vec<String>, bool);
 
 /// The file system of the process, on which a call that makes, opens,
-/// links, renames or locks an entry in one directory, or removes a file
-/// in it, is followed by a look at that directory. What is written
-/// through an open file is followed by none, and neither is the removal
-/// of a directory.
+/// links or locks an entry in one directory, gives an entry a name in it,
+/// or removes a file in it, is followed by a look at that directory. What
+/// is written through an open file is followed by none, and neither is
+/// the removal of a directory or a rename to a name outside it.
 struct Watched {
     dir: PathBuf,
     seen: Mutex<Vec<Seen>>,
@@ -1616,9 +1631,9 @@ fn what_lignindb_builds_or_holds_under_a_reserved_name_is_kept_from_rocksdb() {
     }
 
     // A directory in which LigninDB is building a checkpoint, looked at
-    // after each call of the file layer that makes, opens, links, renames
-    // or locks an entry of it or removes a file in it, and before it is
-    // given the name of its target.
+    // after each call of the file layer that makes, opens, links or locks
+    // an entry of it, gives an entry a name in it or removes a file in it,
+    // and before it is given the name of its target.
     let dir = tempfile::tempdir().expect("a directory");
     let (live, target) = (dir.path().join("live"), dir.path().join("checkpoint"));
     let watched = Arc::new(Watched {
