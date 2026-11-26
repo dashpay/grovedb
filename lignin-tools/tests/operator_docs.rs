@@ -1291,10 +1291,16 @@ fn every_block_of_commands_is_bash() {
         // no space before its word or after it.
         for (at, line) in text.lines().enumerate() {
             let fence = line.trim_start().strip_prefix("```");
+            let indent = &line[..line.len() - line.trim_start().len()];
             if fence.is_some_and(|info| {
-                line != line.trim_end() || info.starts_with(char::is_whitespace)
+                line != line.trim_end()
+                    || info.starts_with(char::is_whitespace)
+                    || indent.contains('\t')
             }) {
-                faults.push(format!("{name}:{}: a fence with a space in it", at + 1));
+                faults.push(format!(
+                    "{name}:{}: a fence with a space or a tab in it",
+                    at + 1
+                ));
             }
         }
         for fence in parse(&text)
@@ -1346,7 +1352,12 @@ fn every_quoted_message_is_in_the_code() {
         .iter()
         .flat_map(|(_, text)| parse(text).fences)
         .filter(|fence| fence.info == "sh")
-        .map(|fence| fence.body.join("\n"))
+        .flat_map(|fence| fence.body)
+        // A comment is no command: what it says is looked for by nothing.
+        .map(|line| match line.trim_start().starts_with('#') {
+            true => String::new(),
+            false => line.split(" #").next().unwrap_or_default().to_owned(),
+        })
         .collect::<Vec<_>>()
         .join("\n");
     for (name, text) in documents() {
