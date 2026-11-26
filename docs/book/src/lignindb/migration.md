@@ -661,8 +661,9 @@ takes a file of such a name for its own (an open removes
 or ends in `.sst`, which it takes for RocksDB's. A file of the
 application's under one of these names goes where the application's
 documentation says, outside `TARGET`. The node's account has to be able
-to search every directory above `TARGET`, to read its files, and to
-write its directories, where a session makes new files, and its `LOCK`,
+to search every directory above `TARGET`, to list and search its
+directories and read its files, and to write its directories, where a
+session makes new files, and its `LOCK`,
 which an open locks for writing: where the migration ran under another
 account, give `TARGET` and what it holds to the node's account first,
 with the system's tool for that, recursively, and check the directories
@@ -702,11 +703,17 @@ checkpoint, that the node goes back to.
 - **A migration that failed** made nothing at `TARGET` (exit status 1
   and 4, but for the cases the table of step 6 names) or left its
   database in `TARGET.migrating` (exit status 3): start the node on its
-  RocksDB database as before, but not where the survey refused the
-  source for the mark of a state-sync restore that did not finish (step
-  5): such a database is to be discarded, on RocksDB as here, and the
-  node's state is to be got again as the application's documentation
-  says. Remove `TARGET.migrating` when it is
+  RocksDB database as before, once that database is there and the
+  survey reads it (`the source can be migrated`, or a refusal for what
+  a migration does not carry): RocksDB's open makes a new, empty
+  database where it finds none, so a directory that is missing, or that
+  the survey found damaged, is not started on. Not where the survey
+  refused the source for the mark of a state-sync restore that did not
+  finish (step 5): the directory that holds the mark is to be discarded,
+  on RocksDB as here. Where it was a checkpoint, the node's own database
+  can have finished since: survey that before going back to it.
+  Otherwise the node's state is got again as the application's
+  documentation says. Remove `TARGET.migrating` when it is
   no longer needed for a report, after looking into it as step 6 says.
 
 Remove `SOURCE` only when the node has run on LigninDB for as long as you
