@@ -24,7 +24,8 @@ error of the call that met it, and in its counts (`Db::stats`, which
 
 An error is a chain: each layer says what it was doing, then `: `, then
 the words of the layer below. Read it from the left: **the first part
-this chapter lists says what to do**; the parts after it say where, down
+this chapter lists says what to do**, unless its row sends you to the
+row of the words after it; the parts after it say where, down
 to what the system answered ("No space left on device (os error 28)",
 "Permission denied (os error 13)").
 
@@ -103,7 +104,7 @@ checkpoint has one more:
 | ``the path … ends in `…`; it cannot be used for a RocksDB open for the caller or for checkpoint creation`` | a RocksDB open or a checkpoint creation was given a path whose last name ends in `.creating` | give another path: that name is where LigninDB builds a checkpoint | `grovedb/src/engine/either.rs` |
 | `the directory … has no entry of a database of either engine, so it is no checkpoint: no engine was called for it` | a checkpoint was to be opened or removed at a directory that holds neither engine's database | check the path | `grovedb/src/engine/either.rs` |
 | ``the directory … holds a database of … (its entry `…`) and was to be removed as a checkpoint of …: no engine was called for it`` | the deletion of a checkpoint was given the other engine's database | check the path and the engine; nothing was removed | `grovedb/src/engine/either.rs` |
-| `refusing to delete checkpoint: path too short (safety check)` | GroveDB's deletion of a checkpoint refuses a path of fewer than two components before it asks the engine | give the checkpoint's full path | `grovedb/src/checkpoints.rs` |
+| `refusing to delete checkpoint: path too short (safety check)` | after `data corruption error: `, though nothing of a database was read: GroveDB's deletion of a checkpoint refuses a path of fewer than two components before it asks the engine | give the checkpoint's full path | `grovedb/src/checkpoints.rs` |
 
 ### The files at an open
 
@@ -124,7 +125,8 @@ These follow `manifest: `, `recovery could not go on: ` or
 | `the valid length … of … lies inside what begins at offset …` | the manifest's length of a log file ends inside a record: damage | restore from a backup, and report it | `lignin-store/src/wal/error.rs` |
 | `the manifest vouches for … bytes of …, and the log ends before that file` | a log file that the manifest needs is missing | restore from a backup | `lignin-store/src/wal/error.rs` |
 | `the header of … says it is log file …` | a log file under another file's name | restore from a backup | `lignin-store/src/wal/error.rs` |
-| `… cannot be opened for direct reads: …` | the application gave the store the file layer with direct reads (`lignin_io::linux::DirectVfs`, Linux), and the file system does not take them for that file, or reports an alignment for them that the file layer cannot use; the words after it say which | open with the default file layer, or put the database on a file system that takes direct reads | `lignin-io/src/linux.rs` |
+| `… cannot be opened for direct reads: …` | the application gave the store the file layer with direct reads (`lignin_io::linux::DirectVfs`, Linux), and the file system does not take them for that file, or reports an alignment for them that the file layer cannot use (`the system reports the alignment …`); the words after it say which | open with the default file layer, or put the database on a file system that takes direct reads | `lignin-io/src/linux.rs` |
+| `the system reports the alignment …` | the reason that follows `… cannot be opened for direct reads: …` where the system reports an alignment of direct reads that the file layer cannot use | as for `… cannot be opened for direct reads: …` | `lignin-io/src/linux.rs` |
 | `every log file id has been used` | the log has used the last id a log file can have (2³² − 2) | a database that is built again (a state sync, or a migration from a backup) begins its ids again | `lignin-store/src/wal/error.rs` |
 
 ### Other words of the log and the segments
@@ -314,7 +316,8 @@ answered. **What to do is the same for each but one: close the database
 and open it again** (stop the node and start it), once the cause is gone
 (for a full device, [make room](backup-and-full-disk.md#what-to-do-in-this-order)).
 The one is a log with no file id left (`every log file id has been used, and the log can be given no further file`):
-an open needs a new log file, so it fails too. Keep the handle that reads
+an open needs a new log file, and where the manifest has recorded the
+last id as used, the next open fails too. Keep the handle that reads
 until the database is built again, as its row says.
 Nothing that was made durable is lost; the open lands on a committed
 version, which can be earlier than the last one published after a
@@ -337,7 +340,7 @@ A commit that meets the end itself says so in words of its own:
 | `commit … is published and not known to be durable: …` | published; its sync failed | open again | `lignindb/src/commit/error.rs` |
 | `whether commit … is in the log is not known, and the session takes no further commit: …` | as above | open again | `lignindb/src/commit/error.rs` |
 | `commit … is in the log and could not be installed, and the session takes no further commit: …` | as above | open again | `lignindb/src/commit/error.rs` |
-| `the commit was not made: …` | the commit did not happen and never will; the session goes on, but where the words after it are `the log would give the commit version …, and the latest published version is …` (below), after which it takes no commit | for the version gap, open again (its row below); otherwise nothing, unless the words say the device is full: then [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |
+| `the commit was not made: …` | the commit did not happen and never will; the session goes on, but where the words after it are `the log would give the commit version …, and the latest published version is …` (below), after which it takes no commit | as the row of the words after it says: for the version gap, open again (its row below); for a full device, [make room](backup-and-full-disk.md#what-to-do-in-this-order); where those words are a defect's, report it. Where they have no row, nothing | `lignindb/src/commit/error.rs` |
 | `the session takes no commit yet: …` | the session waits for the log to be cut after a failed append, or for a manifest in doubt to be settled; the transaction is whole | make room where the words say the device is full; where they name a directory that was removed or cannot be written, stop the node | `lignindb/src/commit/error.rs` |
 | `the log would give the commit version …, and the latest published version is …` | the log holds a group the session never published: the session has stopped | open again | `lignindb/src/commit/error.rs` |
 | `the log: …` | after `the commit was not made: `: the log refused the commit's group; where its words say the device is full, the session waits for room | [make room](backup-and-full-disk.md#what-to-do-in-this-order) | `lignindb/src/commit/error.rs` |

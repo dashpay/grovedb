@@ -37,11 +37,17 @@ if [ -e "$work" ] && [ -n "$(ls -A "$work")" ]; then
     echo "runbook.sh: $work is not empty" >&2
     exit 2
 fi
-# Nothing is made inside a database directory, the source's among them.
+# Nothing is made inside a database directory, the source's among them:
+# above the part of WORK that is not there yet, the walk goes up the
+# directories it is in, with their links followed.
 case "$work" in
     /*) above=$work ;;
     *) above=$(pwd -P)/$work ;;
 esac
+while [ ! -d "$above" ]; do
+    above=$(dirname -- "$above")
+done
+above=$(cd -P -- "$above" && pwd -P)
 while :; do
     if [ -e "$above/CURRENT" ] || [ -e "$above/MANIFEST" ] || [ -e "$above/MANIFEST.deleting" ]; then
         echo "runbook.sh: $work lies inside $above, a database directory" >&2

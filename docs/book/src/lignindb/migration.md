@@ -110,7 +110,11 @@ end that shell, so that no later command runs on what a failed one left.
 To go on after a failure, start `bash` again, run this block and the
 block of step 2 again (it clones nothing that is there and builds only
 what changed, and puts `lignin` on the path), `export` the four paths as
-step 4 printed them, and go on with the step that failed.
+step 4 printed them, and go on with the step that failed. Where that is
+step 8 or step 9, its directory is there already and the step refuses
+it: give a new `BACKUP` or `RESTORE` (step 4 again checks it), or remove
+the copy that the step left, which it claimed for itself and which holds
+nothing else.
 
 ```sh
 set -euo pipefail
@@ -136,13 +140,20 @@ outside_databases() {
     /*) d=$(dirname -- "$1") ;;
     *) d=$(dirname -- "$(pwd -P)/$1") ;;
   esac
+  while [ ! -d "$d" ]; do
+    case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
+      *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
+    esac
+    d=$(dirname -- "$d")
+  done
+  d=$(real_dir "$d") || return 1
   while :; do
     case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
       *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
     esac
     if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
     if [ -e "$d/CURRENT" ]; then echo "$1 lies inside $d, a RocksDB database directory: choose a path outside it" >&2; return 1; fi
-    if [ "$d" = / ] || [ "$d" = . ]; then return 0; fi
+    if [ "$d" = / ]; then return 0; fi
     d=$(dirname -- "$d")
   done
 }
@@ -557,8 +568,11 @@ database is closed and no process has it open, so a copy of its
 directory is a consistent backup ([backup and full disk](backup-and-full-disk.md)).
 It holds GroveDB's records alone: the application's files go into
 `TARGET` at step 10, after this copy, and a node started on a restore of
-it needs the application's files of the same state, which `SOURCE`
-keeps, as the application's documentation says.
+it needs the application's files of the same state, as the
+application's documentation says: `SOURCE` keeps them where it is the
+node's own directory, and where `SOURCE` was a RocksDB checkpoint, which
+holds RocksDB's files alone, they are those the application keeps for
+that checkpoint's state (step 10).
 The block claims `BACKUP` with `mkdir`, which fails where anything is
 there already, and copies the database's files into it; `cp -a` copies
 every file with the `LOCK` file, which an open needs. `cp`

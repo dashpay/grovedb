@@ -62,13 +62,20 @@ outside_databases() {
     /*) d=$(dirname -- "$1") ;;
     *) d=$(dirname -- "$(pwd -P)/$1") ;;
   esac
+  while [ ! -d "$d" ]; do
+    case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
+      *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
+    esac
+    d=$(dirname -- "$d")
+  done
+  d=$(real_dir "$d") || return 1
   while :; do
     case "$(basename -- "$d" | tr '[:upper:]' '[:lower:]')" in
       *.creating) echo "$1 lies inside $d, which LigninDB takes for the build of a checkpoint: choose a path outside it" >&2; return 1 ;;
     esac
     if [ -e "$d/MANIFEST" ] || [ -e "$d/MANIFEST.deleting" ]; then echo "$1 lies inside $d, a database directory: choose a path outside it" >&2; return 1; fi
     if [ -e "$d/CURRENT" ]; then echo "$1 lies inside $d, a RocksDB database directory: choose a path outside it" >&2; return 1; fi
-    if [ "$d" = / ] || [ "$d" = . ]; then return 0; fi
+    if [ "$d" = / ]; then return 0; fi
     d=$(dirname -- "$d")
   done
 }
@@ -354,7 +361,10 @@ rm -rf -- "$CHECKPOINT"
 Commits fail. The error of the commit has the system's "no space left"
 among its causes (`lignindb::space::out_of_space` says so of an error),
 and its words end with what the system said, such as "No space left on
-device (os error 28)". Reads go on.
+device (os error 28)". A commit beside write-back that met the full
+device first can say only `the log has no file that takes items`, with
+no word of the device: where commits fail so, look at the free space
+too. Reads go on.
 
 **What is true then.** Nothing that was made durable is lost, nothing
 that was committed is damaged, and nothing needs a repair. **Do not

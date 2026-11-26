@@ -233,7 +233,8 @@ of the log or of a segment that the device refused, a commit whose fate
 is unknown, a log that has used its last file id. From the first of
 them, the session takes no write and answers every read, and every
 commit is refused with the same reason, until the database is closed and
-opened again, which settles what the log holds
+opened again, which settles what the log holds; a log with no file id
+left is the exception, since an open can fail on it too
 ([disk-full-and-backup.md](https://github.com/dashpay/grovedb/blob/develop/docs/lignindb/disk-full-and-backup.md), DF8;
 [messages](messages.md#when-a-session-ends)).
 
