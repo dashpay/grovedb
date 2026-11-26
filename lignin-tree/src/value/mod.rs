@@ -371,4 +371,4 @@ pub use owners::{Grouped, Regrouped, TreeOwners};
 pub use policy::InlinePolicy;
 pub use read::{read_placed, read_value, ValueBuf, ValueSource};
 pub use regroup::Regrouping;
-pub use write::{ScopeReader, TreeValues};
+pub use write::{CarriedValues, ScopeReader, TreeValues};

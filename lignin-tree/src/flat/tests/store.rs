@@ -28,7 +28,7 @@ use super::{
     super::{Committed, FlatOwners, PageIds, Private, StepLog},
     *,
 };
-use crate::OperationGuard;
+use crate::{value::CarriedValues, OperationGuard};
 
 /// The guard of a reader's operation, with a number to know it by. It
 /// keeps nothing here: nothing is reclaimed in these tests while a reader
@@ -65,6 +65,8 @@ pub(crate) struct State {
     log: Vec<u8>,
     latest: u64,
     owners: u64,
+    /// What each commit's group repeated for carried entries.
+    carried: Vec<CarriedValues>,
 }
 
 /// A store in a directory, with what the tasks after this one build
@@ -119,6 +121,7 @@ impl Db {
                 log,
                 latest: 0,
                 owners: 0,
+                carried: Vec::new(),
             }),
         }
     }
@@ -179,6 +182,7 @@ impl Db {
             .expect("an address");
         let mut group = GroupWriter::new(version, address, &mut state.log).expect("a group");
         writer.log_values(&mut group).expect("the values");
+        state.carried.push(writer.values_carried());
         let mut pages: Vec<(PageId, bool)> = writer
             .written()
             .map(|page| (page, false))
@@ -334,6 +338,12 @@ impl Db {
 
     /// The groups of the log, each as its values (owner and bytes), the
     /// pages it has runs of, the pages it freed and the pointers released.
+    /// What the group of each commit repeated for carried entries, in
+    /// the order of the commits.
+    pub(crate) fn carried(&self) -> Vec<CarriedValues> {
+        self.state.borrow().carried.clone()
+    }
+
     pub(crate) fn groups(&self) -> Vec<Logged> {
         let state = self.state.borrow();
         let items = scan(&state.log).expect("a log");
@@ -579,6 +589,9 @@ fn a_carried_value_is_appended_again_for_its_new_page_in_the_same_commit() {
         tree.put(&mut writer, &key(n), b"small").expect("a put");
     }
     let split = db.commit(writer);
+    let bytes = (0..8).map(|n| big(n).len() as u64).sum();
+    let counted = [CarriedValues::default(), CarriedValues { values: 8, bytes }];
+    assert_eq!(db.carried(), counted);
     let reader = db.reader();
     assert!(FlatPage::decode(&reader.page(root).expect("the root"), V1)
         .expect("a page")
@@ -1437,6 +1450,11 @@ fn a_group_that_is_written_again_holds_the_values_of_its_writer_again() {
     }
     abandon(&mut writer);
     let split = db.commit(writer);
+    // The abandoned writing counted the six, and the commit's counted none
+    // of them again.
+    let bytes = (0..6).map(|n| big(n).len() as u64).sum();
+    let carried = db.carried().pop().expect("the count of the split");
+    assert_eq!(carried, CarriedValues { values: 6, bytes });
     let reader = db.reader();
     let group = db.groups().pop().expect("the group of the split");
     assert_eq!(group.values.len(), 6);
