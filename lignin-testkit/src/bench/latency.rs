@@ -936,8 +936,9 @@ fn neighbour(path: &Path, every: Duration, stop: &AtomicBool) -> Result<u64, Ben
 
 /// Asks `engine` for a flush once `flush_blocks` more blocks are committed
 /// than when it last asked, until `stop`: a flush that outlasts that many
-/// blocks is followed by one flush and not by several. Returns how many it
-/// asked for.
+/// blocks is followed by one flush and not by several. A flush that is owed
+/// at `stop` is asked for then, so a run of that many blocks has one
+/// however its threads were run. Returns how many it asked for.
 fn flushes<E: Engine + Sync>(
     engine: &E,
     committed: &AtomicU64,
@@ -945,16 +946,18 @@ fn flushes<E: Engine + Sync>(
     stop: &AtomicBool,
 ) -> Result<u64, BenchError> {
     let (mut asked, mut at) = (0, 0);
-    while !stop.load(Ordering::Acquire) {
+    loop {
+        let stopping = stop.load(Ordering::Acquire);
         if committed.load(Ordering::Acquire) >= at + flush_blocks {
             at = committed.load(Ordering::Acquire);
             engine.flush()?;
             asked += 1;
+        } else if stopping {
+            return Ok(asked);
         } else {
             std::thread::sleep(Duration::from_micros(500));
         }
     }
-    Ok(asked)
 }
 
 fn measure<E: Subject>(options: &LatencyOptions) -> Result<EngineLatency, BenchError> {
@@ -1956,10 +1959,14 @@ mod tests {
             .iter()
             .all(|slow| slow.append_calls.is_none()));
         // A flush is asked for beside the commits, after every three blocks
-        // at the most often: how many of the four are asked for follows how
-        // the two threads are run. That one is asked for at all is the test
-        // of `flushes` by itself.
-        assert!(rocksdb.flushes_asked <= 4, "{}", rocksdb.flushes_asked);
+        // at the most often, and one that is owed at the end is asked for
+        // then: one at least, and how many of the four follows how the two
+        // threads are run.
+        assert!(
+            (1..=4).contains(&rocksdb.flushes_asked),
+            "{}",
+            rocksdb.flushes_asked
+        );
         // A sleep that is late by more is late by less as well.
         assert!(rocksdb.clock.late.is_sorted_by(|more, fewer| more >= fewer));
         assert!(rocksdb.clock.late[0] <= rocksdb.clock.sleeps);
