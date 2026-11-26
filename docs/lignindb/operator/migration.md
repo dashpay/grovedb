@@ -701,10 +701,17 @@ made again by Merk's rules, but those the rules take as stored. Exit
 status 0 is a sound store, 3 a store in
 which a rule does not hold, and 4 a database that holds the mark of a
 state-sync restore that did not finish (the survey refuses a source with
-that mark, so a migration leaves none).
+that mark, so a migration leaves none). The block then records, before
+the backup, the commit the target opens at (the first line of
+`lignin stats`, `version …`), which step 9 holds the restore to, and
+the target's directory by its device and inode, which step 10 holds the
+path the node opens to.
 
 ```sh
 lignin verify "$TARGET" | tee "$WORK/reports/verify.txt"
+lignin stats "$TARGET" | tee "$WORK/reports/stats-target.txt"
+TARGET_ID="$(df -P -- "$TARGET" | awk 'NR == 2 {print $1}') $(ls -di -- "$TARGET" | awk '{print $1}')"
+echo "TARGET_ID $TARGET_ID"
 ```
 
 A grove written on grove versions 1 to 3 can hold value hashes that a
@@ -782,7 +789,6 @@ else
 fi
 lignin verify "$RESTORE" | tee "$WORK/reports/verify-restore.txt"
 lignin stats "$RESTORE" | tee "$WORK/reports/stats-restore.txt"
-lignin stats "$TARGET" > "$WORK/reports/stats-target.txt"
 restored=$(sed -n 1p "$WORK/reports/stats-restore.txt")
 migrated=$(sed -n 1p "$WORK/reports/stats-target.txt")
 if [ -n "$migrated" ] && [ "$restored" = "$migrated" ]; then echo "the restore opens at the target's $migrated"; else echo "THE RESTORE DOES NOT OPEN AT THE TARGET'S VERSION: $restored, the target $migrated"; false; fi
@@ -791,8 +797,8 @@ if [ -n "$migrated" ] && [ "$restored" = "$migrated" ]; then echo "the restore o
 Every open writes to the directory it opens (the recovery starts a log
 file of its own, and the close writes back), so the check is made on the
 restore and not on the backup. The last command holds the restore to
-the target by the first line of `lignin stats`, `version …`, the commit
-each opens at: a restore that lost a commit of the target opens at an
+the version step 7 recorded for the target before the backup, by the
+first line of `lignin stats`, `version …`, the commit each opens at: a restore that lost a commit of the target opens at an
 earlier one. The restore is a copy of the database that nothing needs:
 remove it once its checks have passed, by the path that step 4 printed
 for `RESTORE`.
@@ -834,10 +840,17 @@ or with `LigninEngine::open_with(path, &options)`
 those of [tuning](tuning.md).
 
 **Before the start**, check, as the node's account, that the path the
-application's configuration names holds this database: `lignin manifest`
-reads its manifest without opening it, and fails with
-`… has no MANIFEST` where the path holds no LigninDB database, as where
-the device that holds it is not mounted. An open of a path that holds
+application's configuration names is the directory that step 7
+verified: set `NODE_DB` to that path (the block takes `TARGET` where it
+is not set). The block holds it, with every link followed, to the device
+and inode step 7 recorded, so that a directory under a mount point whose
+volume is not mounted, which can hold an older database, is refused. It
+then reads the manifest there with `lignin manifest`, which opens
+nothing and fails with `… has no MANIFEST` where the path holds no
+LigninDB database, and refuses a file the manifest names that is not
+there (`, MISSING`) or shorter (`, SHORT: … bytes on disk`). It checks
+the manifest and the length of each file, and no more: neither that the
+database opens nor which state it holds. An open of a path that holds
 none makes a new, empty database there (`Options::create_if_missing`,
 on by default, [tuning](tuning.md)): an application that can opens on
 LigninDB with it off. And the state the node goes on from is the
@@ -846,7 +859,10 @@ application's to approve: the state that step 5 surveyed, which, where
 last, so the application confirms that it means to go on from it.
 
 ```sh
-if lignin manifest "$TARGET" > /dev/null; then echo "$TARGET holds a LigninDB database"; else echo "NO LIGNINDB DATABASE AT $TARGET"; false; fi
+NODE_DB=$(real_dir "${NODE_DB:-$TARGET}")
+if [ "$(df -P -- "$NODE_DB" | awk 'NR == 2 {print $1}') $(ls -di -- "$NODE_DB" | awk '{print $1}')" = "$TARGET_ID" ]; then echo "$NODE_DB is the directory step 7 verified"; else echo "$NODE_DB IS NOT THE DIRECTORY STEP 7 VERIFIED"; false; fi
+lignin manifest "$NODE_DB" | tee "$WORK/reports/manifest-node.txt"
+if grep -q -e ', MISSING' -e ', SHORT: ' "$WORK/reports/manifest-node.txt"; then echo "A FILE THAT THE MANIFEST NAMES IS MISSING OR SHORT IN $NODE_DB"; false; fi
 ```
 
 Then start the node.

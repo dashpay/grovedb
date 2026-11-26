@@ -596,8 +596,9 @@ fn simple_commands(line: &str) -> Vec<String> {
                 parts.push(std::mem::take(&mut part));
                 continue;
             }
-            // Each command of a pipeline is one of its own.
-            '|' if !single && !double => {
+            // Each command of a pipeline is one of its own; `>|` is a
+            // redirection and no pipe.
+            '|' if !single && !double && !part.ends_with('>') => {
                 parts.push(std::mem::take(&mut part));
                 continue;
             }
@@ -1403,6 +1404,7 @@ fn every_command_names_what_the_workspace_has() {
     let builds_migrate = (parse(&read(&operator_dir().join("migration.md")))
         .fences
         .iter())
+    .filter(|fence| fence.info == "sh")
     .flat_map(commands)
     .flat_map(|line| simple_commands(&line))
     .any(|command| {
@@ -1410,6 +1412,7 @@ fn every_command_names_what_the_workspace_has() {
         let at = |option: &str| words.iter().position(|word| word == option);
         words.first().is_some_and(|word| word == "cargo")
             && words.get(1).is_some_and(|word| word == "build")
+            && words.iter().any(|word| word == "--release")
             && at("-p")
                 .and_then(|at| words.get(at + 1))
                 .is_some_and(|p| p == "lignin-tools")
@@ -1417,7 +1420,10 @@ fn every_command_names_what_the_workspace_has() {
                 .is_some_and(|list| list.split(',').any(|feature| feature == "migrate"))
     });
     if !builds_migrate {
-        faults.push("migration.md builds lignin-tools with no feature migrate".to_owned());
+        faults.push(
+            "no block of migration.md builds lignin-tools for release with the feature migrate"
+                .to_owned(),
+        );
     }
     println!("{checked} commands and code spans read");
     assert!(checked > 100, "only {checked} commands and spans were read");
@@ -2061,6 +2067,10 @@ fn the_readers_of_the_documents_read_what_they_say() {
     assert_eq!(
         simple_commands("tee x < y | lignin verify --bad"),
         ["tee x < y", "lignin verify --bad"]
+    );
+    assert_eq!(
+        words(&simple_commands(r#"lignin manifest "$BACKUP" >|report --bad"#)[0]),
+        ["lignin", "manifest", "$BACKUP", "--bad"]
     );
     let source = "let a = 'x'; // \"no\"\nwrite!(f, \"{} holds no \\\n     database {{here}}: {source}\"); r#\"raw \"q\"\"#";
     assert_eq!(

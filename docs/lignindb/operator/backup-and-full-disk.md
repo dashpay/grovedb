@@ -497,7 +497,10 @@ reserve, below.
      ([When a session ends](messages.md#when-a-session-ends)). After one
      whose commit is not known to be in the log, the next open settles
      whether it happened: the application finds that out before it
-     writes it again.
+     writes it again;
+   - or `the commit was not made: …` with, after it,
+     `the log would give the commit version …, and the latest published version is …`,
+     after which the session takes no commit ([the messages](messages.md#when-a-session-ends)).
 
    Then stop the node, and start it again once there is room; but where
    the reason is `every log file id has been used, and the log can be given no further file`,
@@ -507,9 +510,12 @@ reserve, below.
    land on an earlier commit than the last one the node published, since
    a sync that the device refused makes no promise of what it was for;
    the open also settles whether an unsettled commit happened.
-   `Db::version` says where the open landed. With none of these, the
-   session goes on by itself, and the next commit is taken once there is
-   room and the engine has also cut the log and replaced its manifest.
+   `Db::version` says where the open landed. Where the error is none of
+   these and its words end with what the system said of a full device
+   ("No space left on device", "Disk quota exceeded"), the session goes
+   on by itself, and the next commit is taken once there is room and the
+   engine has also cut the log and replaced its manifest. Any other error
+   is looked up in [the messages](messages.md) before you wait on it.
    Where commits still answer `the session takes no commit yet: …` with
    room on the device (the directory itself refuses a write, as a
    directory that cannot be written), close the database and open it
