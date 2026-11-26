@@ -222,6 +222,13 @@ if has builds; then
     REPO=$repo "$here/build.sh" exp1 "$commit" "$here/log-allocated-ahead.patch"
   built exp2 "$here/fewer-syncs.patch" ||
     REPO=$repo "$here/build.sh" exp2 "$commit" "$here/fewer-syncs.patch"
+fi
+
+# The builds a campaign's runs are made by are said in its directory, by
+# whichever call finds them there: a call that makes no build as well.
+if has builds || has main || has filesystems || has traces; then
+  { built base && built exp1 "$here/log-allocated-ahead.patch" && built exp2 "$here/fewer-syncs.patch"; } ||
+    refuse "the builds under $BUILDS are not those of this commit and these patches: make the part builds"
   for build in base exp1 exp2; do
     line="$build: commit $(cat "$BUILDS/$build/commit"), sha256 $(cat "$BUILDS/$build/sha256")"
     if [ -f "$BUILDS/$build/patch-sha256" ]; then
@@ -229,11 +236,6 @@ if has builds; then
     fi
     echo "$line"
   done > "$out/builds.txt"
-fi
-
-if has main || has filesystems || has traces; then
-  { built base && built exp1 "$here/log-allocated-ahead.patch" && built exp2 "$here/fewer-syncs.patch"; } ||
-    refuse "the builds under $BUILDS are not those of this commit and these patches: make the part builds"
 fi
 
 # Removes a run's database, and gives what it took of a file system of part 3
