@@ -104,7 +104,7 @@ def read(directory):
     """A row for every engine of every report of a directory of runs."""
     rows = []
     for path in sorted(glob.glob(os.path.join(directory, "*.json"))):
-        named = re.match(r"(.+)-([a-z]+)-r(\d+)\.json$", os.path.basename(path))
+        named = re.match(r"(.+)-([a-z]+)-r([1-9]\d*)\.json$", os.path.basename(path))
         if not named:
             continue
         report = json.load(open(path))
@@ -166,6 +166,13 @@ def not_the_slots(told, want, host):
     if host is None or told[".host"] != host:
         return "it was made on the host and file system %s, and the campaign is of %s" % (
             json.dumps(told[".host"]), json.dumps(host))
+    # Its own mount is the campaign's file system, or a file system in a
+    # file on it.
+    under = host.rsplit("the file system of the runs: ", 1)[-1].strip()
+    mount = told[".mount"] or ""
+    if mount != under and not mount.endswith(", in a file on " + under):
+        return "the mount written beside it is %s, which is neither the campaign's file system nor in a file on " \
+               "it: %s" % (json.dumps(mount), json.dumps(under))
     # The mount written beside it has the kind and the options that the
     # report itself read of its scratch directory: the report has the
     # options of the mount and those of the file system apart, and the
@@ -278,6 +285,9 @@ def main():
     other_rows = read(os.path.join(out, "runs", "filesystems"))
     asked = {}
     asked_path = os.path.join(out, "campaign.txt")
+    if not os.path.exists(asked_path):
+        sys.exit("tables.py: %s is not there: without what the campaign was asked no report can be held to its "
+                 "place, and no table is made" % asked_path)
     if os.path.exists(asked_path):
         for line in open(asked_path):
             for key in ("directory", "commit", "blocks", "rounds", "backgrounds", "trace blocks", "further options"):
@@ -459,6 +469,9 @@ def main():
             if why:
                 refused.append((trace, "its report is not the traced run the campaign has in that place: " + why))
                 continue
+            # The traced runs after this one are held to it as well: a call
+            # of traces alone has no other report to hold them to.
+            tolds.append((name, told))
         if asked and (report.get("label") != name or "-%s" % report["background"] not in name
                       or len(report["engines"][0]["commit_ns"]) != int(asked["trace blocks"])
                       or (report["commit"], binary) != builds[build]):

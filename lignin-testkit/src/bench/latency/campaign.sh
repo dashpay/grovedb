@@ -64,6 +64,14 @@
 # is made, and where that has too few as well the script says that the
 # question is open on this machine, and goes on.
 #
+# **What a campaign assumes of its host.** A host that is given to it alone
+# for as long as it runs. A fresh OUT, with nothing mounted under it that
+# the campaign did not mount. One copy of the builds a host, on a file
+# system of that host. Its reports, traces and the files beside them left
+# where the script wrote them, and none copied by hand from one directory
+# into another. What the script checks of this it refuses by name; it does
+# not look for every way a host can be otherwise.
+#
 # **What the script touches.** One call at a time has OUT, and one a
 # directory of builds: each is locked for as long as the script runs. A
 # campaign is of one host and of one file system under OUT (`host-id.txt`):
@@ -265,18 +273,20 @@ describe() { # describe NAME DIRECTORY
     echo "$1: $(probe "$2")"
   } >> "$out/host.txt"
 }
-if [ ! -s "$out/host.txt" ]; then
-  {
-    echo "commit $commit"
-    echo "kernel $(uname -srm)"
-    lscpu | grep -E "^(Model name|CPU\(s\)|Thread\(s\) per core|Hypervisor vendor|Virtualization type)" | sed 's/  */ /g' || true
-    echo "memory $(awk '/MemTotal/ { printf "%.0f GiB", $2 / 1048576 }' /proc/meminfo)"
-    echo "load average $(cut -d' ' -f1-3 /proc/loadavg)"
-    lsblk -n -o NAME,SIZE,ROTA,TYPE,MODEL -s "$(findmnt -no SOURCE -T "$out")" 2> /dev/null |
-      sed 's/^/device (name, size, rotational, type, model) /' || true
-  } > "$out/host.txt"
-  describe "the file system of the runs" "$out"
-fi
+# The description of the host, for the tables: written with its identity, by
+# the first call that makes a run, and so of the host the runs are made on.
+described() {
+    {
+      echo "commit $commit"
+      echo "kernel $(uname -srm)"
+      lscpu | grep -E "^(Model name|CPU\(s\)|Thread\(s\) per core|Hypervisor vendor|Virtualization type)" | sed 's/  */ /g' || true
+      echo "memory $(awk '/MemTotal/ { printf "%.0f GiB", $2 / 1048576 }' /proc/meminfo)"
+      echo "load average $(cut -d' ' -f1-3 /proc/loadavg)"
+      lsblk -n -o NAME,SIZE,ROTA,TYPE,MODEL -s "$(findmnt -no SOURCE -T "$out")" 2> /dev/null |
+        sed 's/^/device (name, size, rotational, type, model) /' || true
+    } > "$out/host.txt"
+    describe "the file system of the runs" "$out"
+}
 
 # Part 1.
 # Whether a build that is there is the one that would be made: of this
@@ -357,6 +367,12 @@ own() { # own DIRECTORY
         *" $1 "*) ;;
         *) refuse "$1 was not verified to be a file system of this campaign: nothing is removed under it" ;;
       esac
+      ;;
+    "$out/native")
+      # The runs of part 2 are on OUT's own file system, in a directory of
+      # it: a mount at that directory is none of the campaign's.
+      ! findmnt -rn --mountpoint "$1" > /dev/null ||
+        refuse "$1 is a mount point, which the campaign did not make: the runs on OUT's own file system are not made on it, and nothing is removed under it"
       ;;
   esac
 }
@@ -460,6 +476,7 @@ case " $parts " in *" main "* | *" filesystems "* | *" traces "*)
       refuse "$out was begun on another host or another file system, which $out/host-id.txt names, and this one is: $(echo "$host" | tr '\n' ';'): a campaign is of one host; runs made elsewhere are another campaign, with its own controls"
   else
     echo "$host" > "$out/host-id.txt"
+    described
   fi
   ;;
 esac
@@ -665,7 +682,10 @@ fi
 # Part 4. One traced run: traced FILE BUILD ENGINE DIRECTORY BACKGROUND THREADS SETTINGS
 traced() {
   local file=$1 build=$2 engine=$3 dir=${4:?} background=$5 threads=$6 settings=$7 watch="" status=0
-  if [ -e "$file.ok" ] && [ -s "$file.trace" ] && [ -s "$file.json" ]; then
+  # A traced run is there with all that the tables read of it: one that has
+  # lost its tracer's error output or the ids of its process is made again.
+  if [ -e "$file.ok" ] && [ -s "$file.trace" ] && [ -s "$file.json" ] && [ -e "$file.trace.err" ] &&
+    [ -s "$file.pid" ]; then
     made_by "$file" "$build" "$dir"
     return 0
   fi

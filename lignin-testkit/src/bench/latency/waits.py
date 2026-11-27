@@ -19,17 +19,22 @@ output, which `traced.sh` keeps as `TRACE.err`. Where that file is there its
 lines are counted, and what is printed says how many stacks were dropped and
 how many waits inside a block have no user stack at all. With `--marked` a
 trace is refused in which more stacks were dropped than five in a hundred
-of its waits, and one that has not that file beside it: what a campaign tables
+of its waits, one in which more than five in a hundred of the measuring
+thread's waits inside a block have no user stack, whatever the other
+threads' waits have, and one that has not that file beside it: what a campaign tables
 is held to the count. Without `--marked` a trace is read without it.
 
 **Whether the user stacks are whole** is asked of every wait inside a block
 that the trace has, of whatever length: a stack is whole where it reaches
-the harness's own loop. Twenty such waits are wanted to say anything. With
-twenty or more, a trace in which a fifth or more are cut short is refused
-with `--marked`; with fewer the trace says that it is inconclusive, and is
-refused only with `--stacks` as well, by which a campaign asks before its
-runs whether a tracer on this machine reads user stacks at all (the script
-then ends with 4).
+the harness's own loop. Twenty whole stacks are wanted to say that they are
+whole. With twenty waits or more of which a fifth or more are cut short, a
+trace is refused with `--marked`; otherwise, with fewer than twenty whole,
+the trace says that it is inconclusive, and is refused only with `--stacks`
+as well, by which a campaign asks before its runs whether a tracer on this
+machine reads user stacks at all (the script then ends with 4). With
+`--stacks` a trace that has no wait at all is refused outright: its marks
+and syncs come from other probes, and a tracer whose probe for a thread
+that comes back never fired makes such a trace.
 
 **Which waits are counted.** A wait is one OFFCPU record of the measuring
 thread: the thread left a processor and was back after the time the record
@@ -363,8 +368,12 @@ LOG_FILES = ("a log file", "a log file of RocksDB")
 
 
 def in_a_file_call(wait):
-    """Whether the thread left the processor inside a write or an allocation."""
-    return wait["state"] not in RUNNABLE and any(frame in wait["kernel"] for frame in ("vfs_write", "vfs_fallocate"))
+    """Whether the thread left the processor inside a write or an allocation:
+    by the call the tracer recorded for the wait, and for a trace that
+    records none by the kernel stack."""
+    if wait["state"] in RUNNABLE:
+        return False
+    return wait["call"] is not None or any(frame in wait["kernel"] for frame in ("vfs_write", "vfs_fallocate"))
 
 
 def owner(wait):
@@ -493,6 +502,12 @@ def main():
     if trace.off_us is not None and floor < trace.off_us:
         sys.exit("waits.py: %s has the waits of %d µs or more, and none shorter to count from %d µs: the tracer "
                  "was given that bound (OFF_US)" % (arguments[0], trace.off_us, floor))
+    if stacks and not trace.waits:
+        # The marks and the syncs come from other probes: a trace that has
+        # them and not one wait is of a tracer whose probe for a thread that
+        # comes back never fired, and says nothing of the stacks.
+        sys.exit("waits.py: %s has no wait at all, of any thread: the tracer's probe for a thread that comes back "
+                 "on a processor (finish_task_switch) did not fire" % arguments[0])
     if marked:
         refused = None
         if trace.dropped is None:
@@ -555,12 +570,15 @@ def main():
                         if trace.of_the_measuring_thread(wait) and trace.in_the_measured_blocks(wait)
                         and not trace.the_pause(wait) and trace.phase(wait) in (COMMIT, OPERATIONS)]
             whole = sum(1 for wait in evidence if of_the_harness(wait))
-            if len(evidence) < EVIDENCE:
-                verdict = "too few to say whether user stacks are whole here: inconclusive"
-            elif 5 * (len(evidence) - whole) >= len(evidence):
+            # Cut short with twenty waits of which a fifth do not reach the
+            # harness; whole with twenty that do; and between the two, too
+            # few to say.
+            if len(evidence) >= EVIDENCE and 5 * (len(evidence) - whole) >= len(evidence):
                 verdict = "the stacks are cut short"
-            else:
+            elif whole >= EVIDENCE:
                 verdict = "the stacks are whole"
+            else:
+                verdict = "too few to say whether user stacks are whole here: inconclusive"
             print("User stacks: the trace has %d waits of any length inside a block, and %d of them reach the "
                   "harness: %s." % (len(evidence), whole, verdict))
             without = [wait for wait in evidence if not wait["user"]]
@@ -573,6 +591,13 @@ def main():
                     sys.exit("waits.py: the tracer of %s dropped %d stacks, more than %d in a hundred of its %d "
                              "waits: too many of them have no stack" % (
                                  arguments[0], trace.dropped, round(100 * DROPPED), len(trace.waits)))
+            # The waits a table is made of are the measuring thread's inside
+            # a block, and they are held to the limit by themselves: whole
+            # waits of other threads do not make up for theirs.
+            if marked and len(without) > DROPPED * len(evidence):
+                sys.exit("waits.py: of the %d waits of the measuring thread of %s inside a block, %d have no user "
+                         "stack at all, more than %d in a hundred: the tracer dropped their stacks" % (
+                             len(evidence), arguments[0], len(without), round(100 * DROPPED)))
             elif without:
                 print("%d waits inside a block have no user stack at all; the tracer's error output, which says how "
                       "many stacks it dropped, is not beside the trace." % len(without))
@@ -580,9 +605,10 @@ def main():
                 sys.exit("waits.py: of the %d waits of %s inside a block, %d have a user stack that is cut short: "
                          "the build has to keep its frame pointers" % (
                              len(evidence), arguments[0], len(evidence) - whole))
-            if stacks and len(evidence) < EVIDENCE:
-                print("waits.py: %s has %d waits inside a block, and %d are wanted to say whether user stacks are "
-                      "whole: inconclusive" % (arguments[0], len(evidence), EVIDENCE), file=sys.stderr)
+            if stacks and verdict != "the stacks are whole":
+                print("waits.py: %s has %d waits inside a block of which %d reach the harness, and %d that do are "
+                      "wanted to say that user stacks are whole: inconclusive" % (
+                          arguments[0], len(evidence), whole, EVIDENCE), file=sys.stderr)
                 sys.exit(4)
         for dev in sorted({dev for dev, _ in trace.starts}):
             took = [trace.ends[key] - at for key, at in trace.starts.items()
