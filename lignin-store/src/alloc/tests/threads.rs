@@ -1,25 +1,24 @@
 //! The allocator under threads: writers that allocate, commit and roll
 //! back, readers on snapshots and in operations, and reclaims, all at once.
+//! First an id is freed under a reader on a snapshot and another under a
+//! reader in an operation, on purpose; then the threads run free for a
+//! number of rounds.
 
 use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Barrier, Mutex,
+        Mutex,
     },
     thread,
-    time::{Duration, Instant},
 };
 
 use super::*;
 
 const IDS: u32 = 48;
 const THREADS: u64 = 4;
-/// What the threads go on for: ids that came back, and looks at an id
-/// through a view.
-const ENOUGH: (u64, u64) = (40_000, 400_000);
-/// How long the writers go on if that never comes.
-const AT_MOST: Duration = Duration::from_secs(120);
+/// The rounds of each writer.
+const ROUNDS: u64 = if cfg!(miri) { 20 } else { 10_000 };
 
 /// Counts a writer out when it ends, also when it panics.
 struct Leaving<'a>(&'a AtomicU64);
@@ -27,6 +26,17 @@ struct Leaving<'a>(&'a AtomicU64);
 impl Drop for Leaving<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Tells the other threads to stop if the thread that holds it panics.
+struct Failed<'a>(&'a AtomicBool);
+
+impl Drop for Failed<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -43,8 +53,9 @@ struct Shared {
     next_page: AtomicU64,
     reused: AtomicU64,
     checked: AtomicU64,
-    start: Barrier,
+    started: AtomicBool,
     writing: AtomicU64,
+    failed: AtomicBool,
 }
 
 impl Shared {
@@ -56,11 +67,23 @@ impl Shared {
         assert!(self.held[raw as usize].swap(false, Ordering::SeqCst));
     }
 
-    fn reclaim(&self) {
+    fn reclaim(&self) -> Vec<PageId> {
         let mut released = Vec::new();
         self.ids.reclaim(&self.pins, &mut released);
         self.reused
             .fetch_add(released.len() as u64, Ordering::Relaxed);
+        released
+    }
+
+    /// Waits until every thread is started. False if one failed first.
+    fn start(&self) -> bool {
+        while !self.started.load(Ordering::SeqCst) {
+            if self.failed.load(Ordering::SeqCst) {
+                return false;
+            }
+            thread::yield_now();
+        }
+        true
     }
 
     fn progress(&self) -> (u64, u64) {
@@ -72,12 +95,13 @@ impl Shared {
 
     fn write(&self, seed: u64) {
         let _leaving = Leaving(&self.writing);
-        self.start.wait();
+        let _failed = Failed(&self.failed);
+        if !self.start() {
+            return;
+        }
         let mut rng = Rng::new(seed);
-        let started = Instant::now();
-        while started.elapsed() < AT_MOST {
-            let (reused, checked) = self.progress();
-            if reused >= ENOUGH.0 && checked >= ENOUGH.1 {
+        for _ in 0..ROUNDS {
+            if self.failed.load(Ordering::SeqCst) {
                 break;
             }
             thread::yield_now();
@@ -142,7 +166,10 @@ impl Shared {
     }
 
     fn read(&self, seed: u64) {
-        self.start.wait();
+        let _failed = Failed(&self.failed);
+        if !self.start() {
+            return;
+        }
         let mut rng = Rng::new(seed);
         while self.writing.load(Ordering::SeqCst) > 0 {
             if rng.below(2) == 0 {
@@ -165,6 +192,86 @@ impl Shared {
     }
 }
 
+/// One id is freed while a reader holds a view of it, under a snapshot pin
+/// if `pinned` and under an operation guard if not: no reclaim gives it
+/// back and no allocation hands it out before the reader has looked and
+/// let go, and a reclaim gives it back after.
+fn an_id_freed_under_a_reader(shared: &Shared, pinned: bool) {
+    let raw = shared.ids.allocate().expect("an id is free").get();
+    assert!(!shared.held[raw as usize].swap(true, Ordering::SeqCst));
+    let new = shared.next_page.fetch_add(1, Ordering::SeqCst);
+    shared.named[raw as usize].store(new, Ordering::SeqCst);
+    shared.ids.publish(page(raw)).expect("it is private");
+    shared.committed().insert(raw, new);
+    let commit = shared.pins.latest() + 1;
+    shared.pins.publish(commit);
+
+    let (holding, release) = (AtomicBool::new(false), AtomicBool::new(false));
+    thread::scope(|scope| {
+        let _failed = Failed(&shared.failed);
+        scope.spawn(|| {
+            let _failed = Failed(&shared.failed);
+            let (hold, view) = {
+                let committed = shared.committed();
+                let hold = match pinned {
+                    true => shared.pins.pin(),
+                    false => shared.pins.guard(),
+                };
+                (hold, committed.clone())
+            };
+            assert_eq!(view.get(&raw), Some(&new));
+            holding.store(true, Ordering::SeqCst);
+            while !release.load(Ordering::SeqCst) {
+                if shared.failed.load(Ordering::SeqCst) {
+                    return;
+                }
+                thread::yield_now();
+            }
+            shared.look(&view, &mut Rng::new(1));
+            match pinned {
+                true => shared.pins.unpin(hold),
+                false => shared.pins.unguard(hold),
+            }
+        });
+        while !holding.load(Ordering::SeqCst) {
+            assert!(!shared.failed.load(Ordering::SeqCst), "the reader failed");
+            thread::yield_now();
+        }
+        {
+            let _committed = shared.committed().remove(&raw);
+            shared.give_up(raw);
+            let freed_at = version(commit + 1);
+            shared.ids.free(page(raw), freed_at).expect("it is live");
+            shared.pins.publish(commit + 1);
+        }
+        for _ in 0..3 {
+            let released = shared.reclaim();
+            assert!(
+                !released.contains(&page(raw)),
+                "id {raw} came back under its reader"
+            );
+        }
+        let mut handed = Vec::new();
+        while let Ok(id) = shared.ids.allocate() {
+            handed.push(id);
+            assert!(handed.len() < IDS as usize, "more ids than there are");
+        }
+        assert!(
+            !handed.contains(&page(raw)),
+            "id {raw} was handed out under its reader"
+        );
+        for id in handed {
+            shared.ids.release(id).expect("it is private");
+        }
+        release.store(true, Ordering::SeqCst);
+    });
+    let came_back: Vec<_> = (0..3).flat_map(|_| shared.reclaim()).collect();
+    assert!(
+        came_back.contains(&page(raw)),
+        "id {raw} did not come back: {came_back:?}"
+    );
+}
+
 #[test]
 fn no_reader_sees_an_id_change_hands_while_threads_allocate_commit_and_reclaim() {
     let shared = Shared {
@@ -176,15 +283,20 @@ fn no_reader_sees_an_id_change_hands_while_threads_allocate_commit_and_reclaim()
         next_page: AtomicU64::new(1),
         reused: AtomicU64::new(0),
         checked: AtomicU64::new(0),
-        start: Barrier::new(2 * THREADS as usize),
+        started: AtomicBool::new(false),
         writing: AtomicU64::new(THREADS),
+        failed: AtomicBool::new(false),
     };
+    an_id_freed_under_a_reader(&shared, true);
+    an_id_freed_under_a_reader(&shared, false);
     thread::scope(|scope| {
+        let _failed = Failed(&shared.failed);
         for seed in 1..=THREADS {
             let shared = &shared;
             scope.spawn(move || shared.write(seed));
             scope.spawn(move || shared.read(100 + seed));
         }
+        shared.started.store(true, Ordering::SeqCst);
     });
 
     shared.reclaim();
@@ -200,8 +312,5 @@ fn no_reader_sees_an_id_change_hands_while_threads_allocate_commit_and_reclaim()
         .collect();
     assert_eq!(in_use(&shared.ids), live);
     let (reused, checked) = shared.progress();
-    assert!(
-        reused >= ENOUGH.0 && checked >= ENOUGH.1,
-        "{reused} ids came back, {checked} looks"
-    );
+    println!("{reused} ids came back, {checked} looks");
 }
