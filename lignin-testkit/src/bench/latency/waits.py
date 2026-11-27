@@ -13,6 +13,14 @@ line for the beginning and the end of the measured blocks or for its
 blocks, that did not run to its end, that says it lost events, or whose
 user stacks are cut short.
 
+**Stacks the tracer dropped.** bpftrace keeps stacks in maps of a fixed size
+and drops one that falls where another is kept; it says so in its error
+output, which `traced.sh` keeps as `TRACE.err`. Where that file is there its
+lines are counted, and what is printed says how many stacks were dropped and
+how many waits inside a block have no user stack at all. With `--marked` a
+trace is refused in which more stacks were dropped than two in a hundred of
+its waits.
+
 **Whether the user stacks are whole** is asked of every wait inside a block
 that the trace has, of whatever length: a stack is whole where it reaches
 the harness's own loop. Twenty such waits are wanted to say anything. With
@@ -110,6 +118,7 @@ inside `std::thread::scope` and the others are not.
 """
 import bisect
 import collections
+import os
 import re
 import sys
 
@@ -143,6 +152,9 @@ RUST_PRIMITIVE = ("3std3sys", "std::sys", "3std4sync", "std::sync", "parking_lot
 ENGINES = ("lignin_store", "lignindb", "lignin_tree", "lignin_io", "rocksdb::", "rocksdb_", "grovedb")
 # How many waits inside a block say whether user stacks are whole.
 EVIDENCE = 20
+# The share of a trace's waits up to which the tracer may have dropped a
+# stack.
+DROPPED = 0.02
 
 
 def field(line, name):
@@ -202,6 +214,12 @@ class Trace:
         # From which length the tracer wrote a sync, a write or a request,
         # and from which a wait, in microseconds: its first line says.
         self.long_us, self.off_us = None, None
+        # The stacks the tracer says it dropped, in its error output beside
+        # the trace: None where that file is not there.
+        self.dropped = None
+        if os.path.exists(path + ".err"):
+            self.dropped = sum(1 for line in open(path + ".err", errors="replace")
+                               if re.search(r"failed to look up stack id -\d+ ", line))
         record, part = None, None
         # The call a wait was in and its file, by the wait's thread and
         # beginning: the tracer says it in a record before the wait's.
@@ -541,6 +559,19 @@ def main():
                 verdict = "the stacks are whole"
             print("User stacks: the trace has %d waits of any length inside a block, and %d of them reach the "
                   "harness: %s." % (len(evidence), whole, verdict))
+            without = [wait for wait in evidence if not wait["user"]]
+            if trace.dropped is not None:
+                print("The tracer says that it dropped %d stacks, of the %d waits it wrote: its map of stacks is of "
+                      "a fixed size. %d waits inside a block have no user stack at all, the longest of %.2f ms."
+                      % (trace.dropped, len(trace.waits), len(without),
+                         max((wait["us"] for wait in without), default=0) / 1e3))
+                if marked and trace.dropped > DROPPED * len(trace.waits):
+                    sys.exit("waits.py: the tracer of %s dropped %d stacks, more than %d in a hundred of its %d "
+                             "waits: too many of them have no stack" % (
+                                 arguments[0], trace.dropped, round(100 * DROPPED), len(trace.waits)))
+            elif without:
+                print("%d waits inside a block have no user stack at all; the tracer's error output, which says how "
+                      "many stacks it dropped, is not beside the trace." % len(without))
             if marked and verdict == "the stacks are cut short":
                 sys.exit("waits.py: of the %d waits of %s inside a block, %d have a user stack that is cut short: "
                          "the build has to keep its frame pointers" % (

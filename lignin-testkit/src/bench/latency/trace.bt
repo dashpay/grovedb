@@ -42,6 +42,12 @@
 // it was cut off. bpftrace prints `Lost N events` where its buffers were
 // full: such a trace has too few lines.
 //
+// bpftrace keeps the stacks in maps of a fixed size (131,072 entries in
+// 0.20, whatever it is given), and a stack that falls where another is kept
+// is not kept: the record then has no frame of it, and bpftrace says
+// `failed to look up stack id -17` to its error output. `traced.sh` keeps
+// that output beside the trace, and `waits.py` counts those lines.
+//
 // A file is named by its directory and its own name, and a file system by
 // its device, major and minor.
 //
@@ -80,6 +86,7 @@ tracepoint:sched:sched_switch
 tracepoint:sched:sched_waking
 /@off[args->pid]/
 {
+  @woken[args->pid] = 1;
   @wcomm[args->pid] = comm;
   @wtid[args->pid] = tid;
   @wk[args->pid] = kstack(perf, 30);
@@ -100,13 +107,23 @@ tracepoint:sched:sched_switch
     if (@adev[$t]) {
       printf("INCALL begin=%llu tid=%d call=allocate file=%s/%s\n", @off[$t], $t, @adir[$t], @aname[$t]);
     }
-    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
-           @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
-           (@wdev[$t] | @adev[$t]) & 0xfffff,
-           @offcomm[$t], $t, @wcomm[$t], @wtid[$t], @offk[$t], @offu[$t], @wk[$t]);
+    // A thread that was taken off its processor while it could run is put
+    // back with no waking: the record then has no stack of one, and the
+    // tracer is not asked for a stack it never took.
+    if (@woken[$t]) {
+      printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
+             @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
+             (@wdev[$t] | @adev[$t]) & 0xfffff,
+             @offcomm[$t], $t, @wcomm[$t], @wtid[$t], @offk[$t], @offu[$t], @wk[$t]);
+    } else {
+      printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=/0\n left at:\n%s called from:\n%s woken at:\n\n",
+             @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
+             (@wdev[$t] | @adev[$t]) & 0xfffff,
+             @offcomm[$t], $t, @offk[$t], @offu[$t]);
+    }
   }
   delete(@off[$t]); delete(@offk[$t]); delete(@offu[$t]); delete(@offstate[$t]);
-  delete(@offcomm[$t]); delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]);
+  delete(@offcomm[$t]); delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]); delete(@woken[$t]);
 }
 
 kprobe:vfs_write
@@ -219,7 +236,7 @@ tracepoint:block:block_rq_complete
 END
 {
   clear(@pausing); clear(@off); clear(@offk); clear(@offu); clear(@offstate); clear(@offcomm);
-  clear(@wcomm); clear(@wtid); clear(@wk);
+  clear(@wcomm); clear(@wtid); clear(@wk); clear(@woken);
   clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
   clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@sasked); clear(@adev); clear(@rq);
   clear(@aname); clear(@adir);
