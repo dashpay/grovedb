@@ -21,6 +21,7 @@ mod listed;
 mod load;
 mod moves;
 mod open;
+mod open_files;
 mod pacing;
 mod power;
 mod quiet;
