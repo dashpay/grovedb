@@ -235,74 +235,56 @@ impl StorageReads {
 }
 
 /// The `io.stat` file of the cgroup this process runs in (cgroup v2), or
-/// nothing where the cgroup's directory cannot be found or the file
-/// cannot be read.
+/// nothing where the cgroup's directory is not known or the file cannot be
+/// read.
 fn cgroup_io_stat() -> Option<String> {
     let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let group = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
     let mounts = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
-    cgroup_dirs(&mounts, group)
-        .iter()
-        .find_map(|dir| std::fs::read_to_string(dir.join("io.stat")).ok())
+    std::fs::read_to_string(cgroup_dir(&mounts, group)?.join("io.stat")).ok()
 }
 
-/// Where the cgroup `group` (its path in `/proc/self/cgroup`) can be
-/// found: its directory under each cgroup v2 mount of `mountinfo` (the
-/// text of `/proc/self/mountinfo`) that shows it, in the order of the
-/// mounts. A mount shows the part of the hierarchy under its root, so the
-/// directory is the mount point and what of the group's path follows
-/// that root. A mount whose root the group does not lie under gives none,
-/// and neither does a group whose path climbs (`..`, as a path from
-/// outside a cgroup namespace does): it would name a directory that is
-/// not the group's.
-fn cgroup_dirs(mountinfo: &str, group: &str) -> Vec<PathBuf> {
+/// The directory of the cgroup `group` (its path in `/proc/self/cgroup`)
+/// by `mountinfo` (the text of `/proc/self/mountinfo`), in the one layout
+/// this reads: the cgroup v2 hierarchy mounted whole, once, at
+/// `/sys/fs/cgroup`, with nothing else mounted there or under it. The
+/// directory is then that one and the group's path.
+///
+/// In every other layout there is none, and a run has no counts of its
+/// cgroup: a part of the hierarchy mounted there, a second mount over it,
+/// a mount of anything under it, the hierarchy mounted elsewhere only, a
+/// table this cannot read, or a group whose path climbs (`..`). A path
+/// built in one of those could be another group's.
+fn cgroup_dir(mountinfo: &str, group: &str) -> Option<PathBuf> {
+    const AT: &str = "/sys/fs/cgroup";
     let climbs = Path::new(group)
         .components()
         .any(|part| part == std::path::Component::ParentDir);
-    if climbs {
-        return Vec::new();
+    if !group.starts_with('/') || climbs {
+        return None;
     }
-    let under = |line: &str| {
+    let mut found = false;
+    for line in mountinfo.lines() {
+        // The fields of a line are parted by one space each, and a space
+        // in a path is written as an escape.
         let (mount, filesystem) = line.split_once(" - ")?;
-        if filesystem.split_whitespace().next() != Some("cgroup2") {
+        let mut fields = mount.split(' ').skip(3);
+        let (mount_root, mount_point) = (fields.next()?, fields.next()?);
+        let under = mount_point
+            .strip_prefix(AT)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        if !under {
+            continue;
+        }
+        let whole = mount_point == AT
+            && mount_root == "/"
+            && filesystem.split(' ').next() == Some("cgroup2");
+        if !whole || found {
             return None;
         }
-        let mut fields = mount.split_whitespace().skip(3);
-        let (root, mount_point) = (unescaped(fields.next()?), unescaped(fields.next()?));
-        let below = match root.trim_end_matches('/') {
-            "" => group,
-            root => group
-                .strip_prefix(root)
-                .filter(|rest| rest.is_empty() || rest.starts_with('/'))?,
-        };
-        Some(Path::new(&mount_point).join(below.trim_start_matches('/')))
-    };
-    mountinfo.lines().filter_map(under).collect()
-}
-
-/// A path of `/proc/self/mountinfo` as it is: the file writes a space, a
-/// tab, a newline and a backslash as a backslash and three octal digits.
-fn unescaped(field: &str) -> String {
-    let mut bytes = Vec::with_capacity(field.len());
-    let mut rest = field.as_bytes();
-    while let Some((&first, after)) = rest.split_first() {
-        let code = (first == b'\\')
-            .then(|| after.get(..3))
-            .flatten()
-            .and_then(|digits| std::str::from_utf8(digits).ok())
-            .and_then(|digits| u8::from_str_radix(digits, 8).ok());
-        match code {
-            Some(byte) => {
-                bytes.push(byte);
-                rest = &after[3..];
-            }
-            None => {
-                bytes.push(first);
-                rest = after;
-            }
-        }
+        found = true;
     }
-    String::from_utf8_lossy(&bytes).into_owned()
+    found.then(|| Path::new(AT).join(group.trim_start_matches('/')))
 }
 
 /// The read requests and the bytes read of every device in the text of
@@ -649,51 +631,55 @@ mod tests {
     }
 
     #[test]
-    fn the_directory_of_a_cgroup_is_found_through_the_mount_table() {
-        let dirs = |mountinfo: &str, group: &str| -> Vec<String> {
-            cgroup_dirs(mountinfo, group)
-                .iter()
+    fn the_directory_of_a_cgroup_is_known_in_one_layout_of_the_mounts() {
+        let dir = |mountinfo: &str, group: &str| {
+            cgroup_dir(mountinfo, group)
                 .map(|dir| dir.to_string_lossy().trim_end_matches('/').to_owned())
-                .collect()
         };
-        let whole = "24 30 0:22 / /sys rw,nosuid - sysfs sysfs rw\n\
-                     35 24 0:30 / /sys/fs/cgroup rw,nosuid,nodev - cgroup2 cgroup2 rw,nsdelegate\n";
+        let found = |path: &str| Some(path.to_owned());
+        let sys = "24 30 0:22 / /sys rw,nosuid - sysfs sysfs rw\n";
+        let whole = "35 24 0:30 / /sys/fs/cgroup rw,nosuid,nodev - cgroup2 cgroup2 rw,nsdelegate\n";
+        let usual = format!("{sys}{whole}36 24 0:31 / /sys/fs/bpf rw - bpf bpf rw\n");
         assert_eq!(
-            dirs(whole, "/system.slice/run.service"),
-            ["/sys/fs/cgroup/system.slice/run.service"]
+            dir(&usual, "/system.slice/run.service"),
+            found("/sys/fs/cgroup/system.slice/run.service")
         );
-        assert_eq!(dirs(whole, "/"), ["/sys/fs/cgroup"]);
+        assert_eq!(dir(&usual, "/"), found("/sys/fs/cgroup"));
+        // A path that climbs, or that is none, names no directory.
+        assert_eq!(dir(&usual, "/../sibling"), None);
+        assert_eq!(dir(&usual, "/a/../../b"), None);
+        assert_eq!(dir(&usual, "run"), None);
 
-        // A mount of a part of the hierarchy shows what is under its root.
+        // A part of the hierarchy mounted there: its paths are not the
+        // group's.
         let part = "35 24 0:30 /team /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n";
-        assert_eq!(dirs(part, "/team/run"), ["/sys/fs/cgroup/run"]);
-        assert_eq!(dirs(part, "/team"), ["/sys/fs/cgroup"]);
-        // A group that is not under the root of the mount has no directory
-        // there: not one of another group whose path begins alike.
-        assert_eq!(dirs(part, "/teams/run"), [""; 0]);
-        assert_eq!(dirs(part, "/other"), [""; 0]);
+        assert_eq!(dir(part, "/team/run"), None);
+        // A second mount there covers the first, and a mount under it
+        // covers a part of it: whichever is seen is not known.
+        assert_eq!(dir(&format!("{part}{whole}"), "/team/run"), None);
+        assert_eq!(dir(&format!("{whole}{whole}"), "/run"), None);
+        let over = "40 35 0:40 / /sys/fs/cgroup/run rw - tmpfs tmpfs rw\n";
+        assert_eq!(dir(&format!("{whole}{over}"), "/run"), None);
+        let hybrid = "35 24 0:30 / /sys/fs/cgroup ro - tmpfs tmpfs ro\n\
+                      36 35 0:31 / /sys/fs/cgroup/unified rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(dir(hybrid, "/run"), None);
+        // The hierarchy mounted elsewhere only, or not at all.
+        let elsewhere = "35 24 0:30 / /mnt/cg rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(dir(elsewhere, "/run"), None);
+        assert_eq!(dir(sys, "/run"), None);
+        assert_eq!(dir("", "/run"), None);
+        // A line that is no line of the table.
+        assert_eq!(dir(&format!("{whole}nonsense\n"), "/run"), None);
 
-        // A path that climbs out of what the process can see names no
-        // directory of the group, under any mount.
-        assert_eq!(dirs(whole, "/../sibling"), [""; 0]);
-        assert_eq!(dirs(whole, "/a/../../b"), [""; 0]);
-
-        // The mount table writes a space in a path as `\040`, and a
-        // backslash as `\134`: the directory is the one with the space.
-        let spaced = "35 24 0:30 /my\\040team /mnt/cg\\040one rw - cgroup2 cgroup2 rw\n";
-        assert_eq!(dirs(spaced, "/my team/run"), ["/mnt/cg one/run"]);
-        assert_eq!(unescaped("a\\134b\\011c\\04"), "a\\b\tc\\04");
-
-        // Every cgroup v2 mount that shows the group, in their order.
-        let two = "35 24 0:30 /team /first rw - cgroup2 cgroup2 rw\n\
-                   36 24 0:30 / /second rw - cgroup2 cgroup2 rw\n";
-        assert_eq!(dirs(two, "/team/run"), ["/first/run", "/second/team/run"]);
-        assert_eq!(dirs(two, "/other"), ["/second/other"]);
-
-        // No cgroup v2 mount: version 1 alone, or none.
-        let old = "35 24 0:30 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n";
-        assert_eq!(dirs(old, "/run"), [""; 0]);
-        assert_eq!(dirs("", "/run"), [""; 0]);
+        // A path beside it whose name only begins alike is another place,
+        // also where it holds a space that is no ASCII space, which the
+        // table writes as it is.
+        let beside = "41 24 0:41 / /sys/fs/cgroup2 rw - cgroup2 cgroup2 rw\n\
+                      42 24 0:42 / /sys/fs/cgroup\u{a0}one rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(
+            dir(&format!("{whole}{beside}"), "/run"),
+            found("/sys/fs/cgroup/run")
+        );
     }
 
     #[test]

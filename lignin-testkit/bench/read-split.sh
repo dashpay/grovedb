@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The device reads of one `lignin-bench` call by the kind of file they read, under a memory limit.
+# What ext4 reads into the page cache while one `lignin-bench` call runs under a memory limit, by
+# the kind of file.
 #
 # usage: read-split.sh MEMORY-MAX|none DIVISOR OUT -- LIGNIN-BENCH COMMAND [OPTIONS...]
 #
@@ -17,14 +18,15 @@
 #
 # With DROP_PAGE_CACHE=1 the system's page cache is emptied before the call, for a call that is
 # to read from storage a database that was written before it (`reads`): what of such files
-# lies in the page cache is read from memory. The programs that start the call are then read
-# from storage too, and are in the counts, under the kind `other`.
+# lies in the page cache is read from memory. Whatever else is then read into the page cache
+# from a file on ext4 while the probes are in place, as the programs that start the call may
+# be, is in the counts too, under the kind `other`.
 #
 # It runs the call as a transient systemd unit with memory and I/O accounting on, and
 # `read-split.bt` beside it for as long as the call runs. It needs root (bpftrace, systemd-run),
 # Linux with systemd and cgroup v2, a database on ext4 (the probes are ext4's), and a machine at
-# rest: the probes count every process's reads. The times of such a call are no result, since
-# every read of the device goes through a probe.
+# rest: the probes count every process's reads. The times of such a call are no result: the
+# probes take time.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 limit=${1:?the memory limit, or none}
@@ -38,7 +40,8 @@ properties=(-p MemoryAccounting=yes -p IOAccounting=yes)
 [ "$limit" = none ] || properties+=(-p "MemoryMax=$limit" -p MemorySwapMax=0)
 
 # Ends the tracer if it still runs, and waits for it; its status is this function's. A tracer
-# that does not end when it is asked to is killed, and has then printed no counts.
+# that does not end when it is asked to is killed: what it had printed by then is not its counts,
+# and its status says so.
 stop_tracer() {
     if kill -0 "$tracer" 2>/dev/null; then
         kill -INT "$tracer" 2>/dev/null || true
@@ -81,12 +84,15 @@ status=0
 systemd-run --quiet --wait --collect --same-dir "${properties[@]}" \
     -p StandardOutput="file:$out.log" -p StandardError="file:$out.log" \
     "$@" || status=$?
+# The counts are the call's only if the tracer ran until the call had ended.
+through=1
+kill -0 "$tracer" 2>/dev/null || through=0
 traced=0
 stop_tracer || traced=$?
 trap - EXIT
-if [ "$traced" != 0 ]; then
+if [ "$through" != 1 ] || [ "$traced" != 0 ]; then
     cat "$out.bt.err" >&2
-    echo "read-split.sh: the probes ended with status $traced" >&2
+    echo "read-split.sh: the probes ended before the call did, or with an error (status $traced)" >&2
     exit 1
 fi
 python3 "$here/read-split.py" "$out.bt" "$operations" "$(getconf PAGESIZE)" > "$out.split"

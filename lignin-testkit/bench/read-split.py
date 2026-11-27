@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The device reads of one run by the kind of file they read, from what read-split.bt printed.
+"""What ext4 read into the page cache during one run, by kind of file, from read-split.bt's output.
 
 usage: read-split.py BPFTRACE-OUTPUT DIVISOR PAGE-BYTES
 

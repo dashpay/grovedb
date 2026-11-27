@@ -1,6 +1,6 @@
 #!/usr/bin/env bpftrace
 /*
- * Which files the kernel reads from the device into its page cache, by name.
+ * Which files ext4 is asked to read into the page cache, by name.
  *
  * ext4 is asked for the pages that the page cache does not hold through two operations: its
  * read-ahead, for a window of pages, and its read of one folio. A read system call and a fault

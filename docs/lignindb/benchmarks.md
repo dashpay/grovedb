@@ -208,11 +208,12 @@ readings (`bench::machine::StorageReads`), on Linux:
 | `device_read_bytes` | the same file, `rbytes`, summed likewise | the bytes the kernel counted as read for the cgroup |
 
 The two counts of the cgroup are read from `io.stat` in the directory of
-the cgroup the process runs in (cgroup v2), which is found through the
-mount table. They need the `io` controller on for that cgroup, as a
-systemd unit with `IOAccounting=yes` has it; where the directory is not
-found or the file cannot be read, a run has no such row. What the four
-counts are of:
+the cgroup the process runs in, where the cgroup v2 hierarchy is mounted
+whole and once at `/sys/fs/cgroup` with nothing mounted under it, as a
+machine that systemd runs has it. They need the `io` controller on for
+that cgroup, as a unit with `IOAccounting=yes` has it. In any other
+layout of the mounts, or where the file cannot be read, a run has no such
+row. What the four counts are of:
 
 - The cgroup's two are of **every process of that cgroup**, so a run that
   is to be read by them runs in a cgroup of its own. They are the
@@ -240,7 +241,7 @@ kept one of `reads`, may lie in the page cache whatever the run's limit
 is; to have such a run read it from storage, the page cache is emptied
 before the run (`echo 3 > /proc/sys/vm/drop_caches`).
 
-### The device reads by kind of file
+### What ext4 reads into the page cache, by kind of file
 
 The counts above do not say which files a run's reads were of.
 `lignin-testkit/bench/read-split.sh` runs one `lignin-bench` call under a
