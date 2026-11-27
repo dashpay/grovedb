@@ -1,0 +1,30 @@
+#!/usr/bin/env bpftrace
+/*
+ * Which files the kernel reads from the device into its page cache, by name.
+ *
+ * ext4 is asked for the pages that the page cache does not hold through two operations: its
+ * read-ahead, for a window of pages, and its read of one folio. A read system call and a fault
+ * on a mapping both come here, so the reads of an engine that reads with `pread` and of one that
+ * maps its files are counted the same way. Each call is counted, with its pages, under the name
+ * of the file and of the directory it is in, taken from the open file the read came through. A
+ * count by inode number will not do: ext4 gives the number of a deleted file to the next new
+ * one, and a database deletes and makes files all the time.
+ *
+ * The maps are printed when the script is ended (SIGINT). read-split.py puts kinds to the names.
+ * The probes are of every process of the machine, so the machine is otherwise at rest.
+ */
+kprobe:ext4_readahead
+{
+	$rac = (struct readahead_control *)arg0;
+	$d = $rac->file->f_path.dentry;
+	@calls[str($d->d_parent->d_name.name), str($d->d_name.name)] = count();
+	@pages[str($d->d_parent->d_name.name), str($d->d_name.name)] = sum($rac->_nr_pages);
+}
+
+kprobe:ext4_read_folio
+{
+	$file = (struct file *)arg0;
+	$d = $file->f_path.dentry;
+	@calls[str($d->d_parent->d_name.name), str($d->d_name.name)] = count();
+	@pages[str($d->d_parent->d_name.name), str($d->d_name.name)] = sum(1);
+}

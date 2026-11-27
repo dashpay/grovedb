@@ -241,6 +241,38 @@ cache on another cgroup's account, and is read from memory until the
 page cache is emptied (`echo 3 > /proc/sys/vm/drop_caches`) before the
 run.
 
+### The device reads by kind of file
+
+The counts above say how often a run's reads reached a device, and not
+which files they read. `lignin-testkit/bench/read-split.sh` runs one
+`lignin-bench` call under a memory limit and counts, in the kernel, each
+time ext4 is asked to fill the page cache (`read-split.bt`, a bpftrace
+script on ext4's read-ahead and read-folio operations), by the name of the
+file. `read-split.py` then gives the calls and the bytes for one
+transition or read by kind of file: for LigninDB the value log (`val`),
+the segments (`seg`, page images and delta runs), the log and the table
+checkpoints; for RocksDB its table files and logs.
+
+```bash
+# The writes at size over a kept reference state, one phase a call, pool 162 MiB,
+# under the memory limit of the engine (its peak anonymous memory plus 32 MiB):
+sudo lignin-testkit/bench/read-split.sh 233M 50000 /tmp/split-create -- \
+  "$PWD/target/release/lignin-bench" writes --engine lignindb --scratch /data/ref \
+  --out /tmp/split-create.json --creates 50000 --updates 0 --deletes 0 --set cache_mb=162
+# The reads over the kept state itself, whose files must leave the page cache first:
+sudo DROP_PAGE_CACHE=1 lignin-testkit/bench/read-split.sh 233M 5000 /tmp/split-reads -- \
+  "$PWD/target/release/lignin-bench" reads --engine lignindb --scratch /data/ref \
+  --out /tmp/split-reads.json --creates 0 --updates 0 --deletes 0 --set cache_mb=162
+```
+
+It needs root, Linux with systemd and cgroup v2, bpftrace, a database on
+ext4, and a machine at rest: the probes count the reads of every process.
+A call is one time the page cache was filled, so neighbouring calls can
+reach the device as one request, and the cgroup's `device_reads` of the
+same run is a little lower. A call that makes reads of several kinds
+(`reads` times gets, proofs and references proofs in turn) is split as a
+whole. The times of a run under the probes are no result.
+
 ### RocksDB's counters
 
 GroveDB opens RocksDB with statistics off and keeps the handle private, so the
