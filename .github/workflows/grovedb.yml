@@ -99,6 +99,8 @@ jobs:
               - 'docs/book/src/lignindb/**'
               - 'docs/book/src/SUMMARY.md'
               - 'lignin-tools/tests/operator_docs.rs'
+              - 'lignin-testkit/tests/runbook_rehearsal.rs'
+              - 'lignin-tools/tests/document_text/**'
               - '.github/workflows/grovedb.yml'
               - '.github/actions/**'
       - name: Check if Rust changes are doc-comment-only
@@ -544,6 +546,10 @@ jobs:
       # this build compiles no RocksDB.
       - name: Hold the operator's documents to the code
         run: cargo test -p lignin-tools --test operator_docs
+      # The documents' commands of the benchmark, held to its own parser.
+      # lignin-testkit builds GroveDB on RocksDB.
+      - name: Hold the benchmark's commands to its parser
+        run: cargo test -p lignin-testkit --test runbook_rehearsal
 
   formatting:
     name: Formatting
