@@ -292,23 +292,33 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// the frames lend out changes it.
     base: CommitVersion,
     /// Everything else the frames hold that is bound to no guard
-    /// ([`Unbound`]), in a place of its own: binding the frames to
-    /// another guard ([`Self::under`]) then moves a pointer, the
-    /// version and the flat pages. A [`Woken`] binds the frames a
-    /// transaction keeps to the guard of an operation when it is made,
-    /// and binds those it still holds to no operation when it is
-    /// dropped.
+    /// ([`Held`]), in a place of its own: binding the frames to another
+    /// guard ([`Self::under`]) then moves a pointer, the version and the
+    /// flat pages. A [`Woken`] binds the frames a transaction keeps to
+    /// the guard of an operation when it is made, and binds those it
+    /// still holds to no operation when it is dropped.
     ///
-    /// The frames give the fields of it as their own (`Deref`). Where
-    /// two of them are borrowed at once and one of them to be changed,
-    /// they are named through this field, which is a path the borrow
-    /// checker takes apart.
-    unbound: Box<Unbound<'s>>,
+    /// The frames give the fields of the part they lend out as their own
+    /// (`Deref` to [`Unbound`]). Where two of those are borrowed at once
+    /// and one of them to be changed, they are named through this field,
+    /// which is a path the borrow checker takes apart. What the module
+    /// keeps to itself ([`Kept`]) is reached through this field alone.
+    held: Box<Held<'s>>,
     pub(crate) flat: FlatFrames<'s, 'g, G>,
 }
 
-/// What [`Frames`] hold whichever guard they are bound to, but for their
-/// flat pages and the version they are built over.
+/// What [`Frames`] hold that is bound to no guard, but for the version they
+/// are built over: in one place, which the frames point at.
+struct Held<'s> {
+    /// The part the crate reads and changes. The frames give its fields as
+    /// their own.
+    lent: Unbound<'s>,
+    /// The part this module alone reads and changes.
+    kept: Kept,
+}
+
+/// What [`Frames`] lend out as their own fields, whichever guard they are
+/// bound to: what the transaction reads and changes of them.
 pub(crate) struct Unbound<'s> {
     pub(crate) tree: TreePages<'s>,
     /// The values of the transaction's cells that are not in their cells,
@@ -327,6 +337,36 @@ pub(crate) struct Unbound<'s> {
     /// nothing: whoever applies a batch says it before
     /// ([`Awake::apply`]).
     pub(crate) kinds: Option<FlatKinds>,
+    /// Whether the batch that was applied last was taken by the tree type
+    /// of a subtree: the pages asked the tree type for a flat record or
+    /// for a change set of it ([`Awake::apply`]). The write set is told of
+    /// an operation that is taken so when it is added
+    /// (`WriteSet::tell_both`).
+    pub(crate) both: bool,
+    /// What each Merk that the transaction dropped or cleared left for the
+    /// reclaimer.
+    pub(crate) dropped: Vec<Dropped>,
+    /// Which hashes of the frames' cells are stale: marked by the writes
+    /// that left them so, and evaluated by the commit (`lignin_tree::hash`).
+    /// They are marks of these pages, so they are made again with them.
+    pub(crate) hashes: Hashes,
+    /// Which of the subtrees that the write set has an entry under are
+    /// asked whether they are below a Merk that a batch takes
+    /// ([`Awake::below`], `super::below`). It is of the directory of these
+    /// frames, so it is made again with them, and starts empty.
+    pub(crate) written_below: Below,
+    /// Where the cells of the nodes are that a search of these frames
+    /// found or that a write applied to them put, under the lease the
+    /// frames are read under (`super::places`).
+    pub(crate) seen: Places,
+}
+
+/// What [`Frames`] keep to this module of what they hold with their pages.
+/// It is not among what the frames lend out ([`Unbound`]), so nothing
+/// outside this module reads it, sets it or exchanges it between two sets
+/// of frames: much of it is true of these flat pages alone, such as whether
+/// a subtree holds a record in them (`unlinked`).
+struct Kept {
     /// The subtrees of whose Merk an operation that is laid out on these
     /// frames wrote a node or removed one (`noded`), and those into whose
     /// data column one put a flat record or deleted one (`recorded`),
@@ -345,19 +385,6 @@ pub(crate) struct Unbound<'s> {
     /// The two are of these pages, so they are made again with them.
     noded: HashSet<Subtree>,
     recorded: HashSet<Subtree>,
-    /// Whether the batch that was applied last was taken by the tree type
-    /// of a subtree: the pages asked the tree type for a flat record or
-    /// for a change set of it ([`Awake::apply`]). The write set is told of
-    /// an operation that is taken so when it is added
-    /// (`WriteSet::tell_both`).
-    pub(crate) both: bool,
-    /// What each Merk that the transaction dropped or cleared left for the
-    /// reclaimer.
-    pub(crate) dropped: Vec<Dropped>,
-    /// Which hashes of the frames' cells are stale: marked by the writes
-    /// that left them so, and evaluated by the commit (`lignin_tree::hash`).
-    /// They are marks of these pages, so they are made again with them.
-    pub(crate) hashes: Hashes,
     fragments: Fragments,
     key: Vec<u8>,
     /// For each Merk of the batch that was applied last, whether it had no
@@ -407,28 +434,19 @@ pub(crate) struct Unbound<'s> {
     /// The subtrees that the batch which was applied last dropped because
     /// it found them entered ([`SubtreeWrite::DropIfEntered`]).
     took: Vec<Subtree>,
-    /// Which of the subtrees that the write set has an entry under are
-    /// asked whether they are below a Merk that a batch takes
-    /// ([`Awake::below`], `super::below`). It is of the directory of these
-    /// frames, so it is made again with them, and starts empty.
-    pub(crate) written_below: Below,
-    /// Where the cells of the nodes are that a search of these frames
-    /// found or that a write applied to them put, under the lease the
-    /// frames are read under (`super::places`).
-    pub(crate) seen: Places,
 }
 
 impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> std::ops::Deref for Frames<'s, 'g, G> {
     type Target = Unbound<'s>;
 
     fn deref(&self) -> &Self::Target {
-        &self.unbound
+        &self.held.lent
     }
 }
 
 impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> std::ops::DerefMut for Frames<'s, 'g, G> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.unbound
+        &mut self.held.lent
     }
 }
 
@@ -1004,13 +1022,13 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
     /// Whether the frames keep a subtree that the commit holds to its
     /// host ([`Awake::unhosted`], [`Awake::pointed_at`]).
     pub(crate) fn holds_to_hosts(&self) -> bool {
-        !self.if_absent.is_empty() || !self.cleared.is_empty()
+        !self.held.kept.if_absent.is_empty() || !self.held.kept.cleared.is_empty()
     }
 
     /// Ends the frames: what they lend out as their own fields, and their
-    /// flat pages.
+    /// flat pages. What the module keeps to itself ends here.
     pub(crate) fn into_unbound(self) -> (Unbound<'s>, FlatFrames<'s, 'g, G>) {
-        (*self.unbound, self.flat)
+        (self.held.lent, self.flat)
     }
 
     /// The same frames, with all they hold, bound to `guard`.
@@ -1021,7 +1039,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
     {
         Frames {
             base: self.base,
-            unbound: self.unbound,
+            held: self.held,
             flat: self.flat.under(guard),
         }
     }
@@ -1049,18 +1067,22 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let owner = WritePath::next_owner();
         let size = path.layout.page_size();
         let flat = FlatWriter::new(path.committed(guard, at), path.pool, owner, path.ids);
-        let unbound = Unbound {
+        let lent = Unbound {
             tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size)
                 .counted_in(path.stats),
             values: TreeValues::new(path.inline),
             source: ValueSource::new(path.values, path.loader, at),
             directory: path.directory_at(at)?,
             kinds: None,
-            noded: HashSet::new(),
-            recorded: HashSet::new(),
             both: false,
             dropped: Vec::new(),
             hashes: Hashes::new(),
+            written_below: Below::default(),
+            seen: Places::default(),
+        };
+        let kept = Kept {
+            noded: HashSet::new(),
+            recorded: HashSet::new(),
             fragments: Fragments::new(path.layout),
             key: Vec::new(),
             empty: Vec::new(),
@@ -1072,12 +1094,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             renewed: HashMap::new(),
             stored: Vec::new(),
             took: Vec::new(),
-            written_below: Below::default(),
-            seen: Places::default(),
         };
         Ok(Self {
             base: at,
-            unbound: Box::new(unbound),
+            held: Box::new(Held { lent, kept }),
             flat: FlatFrames(Some(flat)),
         })
     }
@@ -1090,34 +1110,34 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// For each Merk of the batch that was applied last, whether it had no
     /// root before.
     pub(crate) fn empty_before(&self) -> &[bool] {
-        &self.empty
+        &self.held.kept.empty
     }
 
     /// The subtrees below a moved one that left with the moves of the
     /// batch that was applied last: those the moves named no prefix for.
     pub(crate) fn left_with_moves(&self) -> &[Subtree] {
-        &self.left
+        &self.held.kept.left
     }
 
     /// The subtrees that the batch which was applied last dropped because
     /// it found them entered under the node it names
     /// ([`SubtreeWrite::DropIfEntered`]).
     pub(crate) fn took(&self) -> &[Subtree] {
-        &self.took
+        &self.held.kept.took
     }
 
     /// The id that the Merk which has `id` in these frames had before the
     /// clears that were applied to them: its own, where none of them gave
     /// it another.
     pub(crate) fn before_clears(&self, id: MerkId) -> MerkId {
-        self.renewed.get(&id).copied().unwrap_or(id)
+        self.held.kept.renewed.get(&id).copied().unwrap_or(id)
     }
 
     /// Takes the places of the values that the loads of the batch that
     /// was applied last put into the value log, as the write set keeps
     /// them ([`Again::stored`]). The frames keep none of them.
     pub(crate) fn take_stored(&mut self) -> Vec<(u32, StoredValue)> {
-        std::mem::take(&mut self.stored)
+        std::mem::take(&mut self.held.kept.stored)
     }
 
     /// The lease the nodes of the frames are read under. It ends with the
@@ -1164,7 +1184,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         &mut self,
         wrote: impl Fn(&Subtree, &[u8]) -> bool,
     ) -> Result<Option<Subtree>, TxnError> {
-        let mut subtrees: Vec<Subtree> = self.if_absent.iter().copied().collect();
+        let mut subtrees: Vec<Subtree> = self.held.kept.if_absent.iter().copied().collect();
         subtrees.sort_unstable();
         for subtree in subtrees {
             let Some(entry) = self.entry(&subtree)? else {
@@ -1174,8 +1194,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 continue;
             };
             let above = Subtree::new(*host.parent);
-            stored_key(&mut self.key, &above, host.key);
-            if wrote(&above, host.key) && !self.own.contains(&self.key) {
+            stored_key(&mut self.held.kept.key, &above, host.key);
+            if wrote(&above, host.key) && !self.held.kept.own.contains(&self.held.kept.key) {
                 continue;
             }
             let root = self.root(&above)?;
@@ -1194,7 +1214,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// each that is entered so. A subtree that has a node is passed: its
     /// pointer is its writers' to state.
     pub(crate) fn pointed_at(&mut self) -> Result<Option<Subtree>, TxnError> {
-        let mut subtrees: Vec<Subtree> = self.cleared.iter().copied().collect();
+        let mut subtrees: Vec<Subtree> = self.held.kept.cleared.iter().copied().collect();
         subtrees.sort_unstable();
         for subtree in subtrees {
             let Some(entry) = self.entry(&subtree)? else {
@@ -1789,8 +1809,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 return Err(BatchError::NotFlat { unit }.into());
             }
         };
-        stored_key(&mut self.key, &unit.subtree, key);
-        let unlinked = !anew && self.own.contains(&self.key);
+        stored_key(&mut self.held.kept.key, &unit.subtree, key);
+        let unlinked = !anew && self.held.kept.own.contains(&self.held.kept.key);
         if unlinked || find(&mut self.tree, root, key)?.is_some() {
             return Err(BatchError::RecordUnderNode { unit }.into());
         }
@@ -1896,11 +1916,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         path: &WritePath<'s>,
         subtree: &Subtree,
     ) -> Result<bool, TxnError> {
-        if let Some(known) = self.unlinked.get(subtree) {
+        if let Some(known) = self.held.kept.unlinked.get(subtree) {
             return Ok(*known);
         }
         let has = unlinked::any(&path.keyspaces.data, &*self.flat, subtree)?;
-        self.unlinked.insert(*subtree, has);
+        self.held.kept.unlinked.insert(*subtree, has);
         Ok(has)
     }
 
@@ -1931,8 +1951,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         subtree: &Subtree,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, TxnError> {
-        stored_key(&mut self.key, subtree, key);
-        if !self.own.contains(&self.key) {
+        stored_key(&mut self.held.kept.key, subtree, key);
+        if !self.held.kept.own.contains(&self.held.kept.key) {
             return Ok(None);
         }
         let mut record = Vec::new();
@@ -1951,7 +1971,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             values,
             source,
             ..
-        } = &mut *self.unbound;
+        } = &mut self.held.lent;
         let read = tree.shown(address.page(), |page, committed| {
             let node = page.node(address.slot())?;
             let mut buf = ValueBuf::new();
@@ -1989,7 +2009,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         again: Option<Again<'_>>,
         loaded: &mut Loaded,
     ) -> Result<Applied, Refused> {
-        self.took.clear();
+        self.held.kept.took.clear();
         let took = again.map(|again| again.took);
         let Some(laid) = self.lay(batch, took).map_err(Refused::clean)? else {
             return self.apply_laid(path, batch, &[], again, loaded);
@@ -2009,13 +2029,13 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let applied = self.apply_laid(path, &laid.batch(), &removing, again, loaded)?;
         // A Merk whose change set was left out is one with no root to
         // the write set: it says nothing of the root.
-        let mut empty = std::mem::take(&mut self.empty).into_iter();
+        let mut empty = std::mem::take(&mut self.held.kept.empty).into_iter();
         let empty = laid.kept.iter().map(|kept| match kept {
             true => empty.next().unwrap_or(true),
             false => true,
         });
-        self.empty = empty.collect();
-        self.took = laid.took;
+        self.held.kept.empty = empty.collect();
+        self.held.kept.took = laid.took;
         Ok(applied)
     }
 
@@ -2063,7 +2083,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             // enters as one that is new.
             let anew = batch.leaves(subtree) || view.entering.contains(&subtree);
             let own = batch.merks.iter().any(|merk| merk.subtree == subtree);
-            let wrote = !anew && self.noded.contains(&subtree);
+            let wrote = !anew && self.held.kept.noded.contains(&subtree);
             if root.is_some() || own || wrote {
                 let kept = self.keeps_flat(batch, &subtree);
                 if !kept.map_err(Refused::clean)? {
@@ -2079,7 +2099,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             // batch has it: the tree type says that as well.
             let subtree = merk.subtree;
             let anew = batch.leaves(subtree) || view.entering.contains(&subtree);
-            if !anew && self.recorded.contains(&subtree) {
+            if !anew && self.held.kept.recorded.contains(&subtree) {
                 // What is known is of a subtree that is entered. One that
                 // is not entered is not judged here: its change set goes
                 // on to where the change sets are applied.
@@ -2112,7 +2132,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let cleared = cleared.map_err(Refused::dirty)?;
             let was = left.entry.id();
             if let Some(now) = cleared.map(|entry| entry.id()).filter(|now| *now != was) {
-                self.unbound.renewed.insert(now, self.before_clears(was));
+                self.held.kept.renewed.insert(now, self.before_clears(was));
             }
         }
         // The unlinked records: those under the keys that the change sets
@@ -2125,7 +2145,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             if taken.map_err(Refused::dirty)? {
                 // Whether the subtree holds another one is not known any
                 // more: it is looked up when it is next asked.
-                self.unlinked.remove(subtree);
+                self.held.kept.unlinked.remove(subtree);
             }
         }
         for (key, record) in &unlinked.kept {
@@ -2135,17 +2155,17 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for write in batch.subtrees {
             match write {
                 SubtreeWrite::Enter { subtree, .. } | SubtreeWrite::Clear { subtree } => {
-                    self.unlinked.insert(*subtree, false);
+                    self.held.kept.unlinked.insert(*subtree, false);
                 }
                 // A subtree that was found entered keeps its records.
                 SubtreeWrite::EnterIfAbsent { subtree, .. } => {
                     if !view.entering.contains(subtree) {
                         continue;
                     }
-                    self.unlinked.insert(*subtree, false);
+                    self.held.kept.unlinked.insert(*subtree, false);
                 }
                 SubtreeWrite::Drop { subtree } => {
-                    self.unlinked.remove(subtree);
+                    self.held.kept.unlinked.remove(subtree);
                 }
                 SubtreeWrite::Convert { .. }
                 | SubtreeWrite::Move { .. }
@@ -2157,19 +2177,19 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             // What the transaction left under a subtree goes with it, and
             // so does what is known of what it wrote there.
             let prefix = write.subtree();
-            (self.own).retain(|key| !key.starts_with(prefix.as_bytes()));
-            self.noded.remove(&prefix);
-            self.recorded.remove(&prefix);
+            (self.held.kept.own).retain(|key| !key.starts_with(prefix.as_bytes()));
+            self.held.kept.noded.remove(&prefix);
+            self.held.kept.recorded.remove(&prefix);
         }
         // What the commit holds to its host. The drops and the clears of
         // a batch come before its moves, and its enters after them.
         for write in batch.subtrees {
             match write {
                 SubtreeWrite::Drop { subtree } => {
-                    self.if_absent.remove(subtree);
-                    self.cleared.remove(subtree);
+                    self.held.kept.if_absent.remove(subtree);
+                    self.held.kept.cleared.remove(subtree);
                 }
-                SubtreeWrite::Clear { subtree } => drop(self.cleared.insert(*subtree)),
+                SubtreeWrite::Clear { subtree } => drop(self.held.kept.cleared.insert(*subtree)),
                 _ => {}
             }
         }
@@ -2185,21 +2205,21 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 .map(|(from, to, _)| (Subtree::new(*from), Subtree::new(*to)))
                 .collect();
             let known: Vec<(Subtree, Option<bool>)> = (moved.iter())
-                .map(|(from, to)| (*to, self.unlinked.remove(from)))
+                .map(|(from, to)| (*to, self.held.kept.unlinked.remove(from)))
                 .collect();
             for left in plan.left() {
-                self.unlinked.remove(&Subtree::new(*left));
+                self.held.kept.unlinked.remove(&Subtree::new(*left));
             }
             for (to, known) in known {
                 match known {
-                    Some(known) => drop(self.unlinked.insert(to, known)),
-                    None => drop(self.unlinked.remove(&to)),
+                    Some(known) => drop(self.held.kept.unlinked.insert(to, known)),
+                    None => drop(self.held.kept.unlinked.remove(&to)),
                 }
             }
             // And so does what is known of what the transaction wrote
             // into it, of either kind.
-            let hosted = [&mut self.unbound.if_absent, &mut self.unbound.cleared];
-            for written in [&mut self.unbound.noded, &mut self.unbound.recorded]
+            let hosted = [&mut self.held.kept.if_absent, &mut self.held.kept.cleared];
+            for written in [&mut self.held.kept.noded, &mut self.held.kept.recorded]
                 .into_iter()
                 .chain(hosted)
             {
@@ -2224,7 +2244,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 .collect();
             let mut gone: HashSet<&[u8]> = plan.left().iter().map(|left| &left[..]).collect();
             gone.extend(moved.iter().map(|(_, to)| &to.as_bytes()[..]));
-            let own = std::mem::take(&mut self.own);
+            let own = std::mem::take(&mut self.held.kept.own);
             let rekeyed = own.into_iter().filter_map(|key| {
                 let (prefix, rest) = key.split_at(Subtree::LEN.min(key.len()));
                 if let Some(to) = goes.get(prefix) {
@@ -2232,7 +2252,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 }
                 (!gone.contains(prefix)).then_some(key)
             });
-            self.own = rekeyed.collect();
+            self.held.kept.own = rekeyed.collect();
         }
         // An entry that the batch made is no cleared one, and is held
         // to its host where an enter if absent under an element made it.
@@ -2240,30 +2260,30 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             if !view.entering.contains(&enter.subtree) {
                 continue;
             }
-            self.cleared.remove(&enter.subtree);
+            self.held.kept.cleared.remove(&enter.subtree);
             match enter.if_absent && enter.host.is_some() {
-                true => drop(self.if_absent.insert(enter.subtree)),
-                false => drop(self.if_absent.remove(&enter.subtree)),
+                true => drop(self.held.kept.if_absent.insert(enter.subtree)),
+                false => drop(self.held.kept.if_absent.remove(&enter.subtree)),
             }
         }
         for subtree in unlinked.holding {
-            self.unlinked.insert(subtree, true);
+            self.held.kept.unlinked.insert(subtree, true);
         }
         for (_, key) in &unlinked.taken {
-            self.own.remove(key);
+            self.held.kept.own.remove(key);
         }
-        (self.own).extend(unlinked.kept.into_iter().map(|(key, _)| key));
+        (self.held.kept.own).extend(unlinked.kept.into_iter().map(|(key, _)| key));
         // A change set that writes no node and removes none says nothing
         // of what the subtree holds.
         let written = |merk: &&MerkWrite<'_>| !merk.nodes.is_empty() || !merk.removed.is_empty();
         let written = batch.merks.iter().filter(written);
         let said = |subtree: &Subtree| !removing.contains(subtree);
-        (self.noded).extend(written.map(|merk| merk.subtree).filter(said));
+        (self.held.kept.noded).extend(written.map(|merk| merk.subtree).filter(said));
         for record in batch.records {
             let tree = path.keyspaces.of(record.unit().column);
             let subtree = record.unit().subtree;
             if record.unit().column == Column::Data && said(&subtree) {
-                self.recorded.insert(subtree);
+                self.held.kept.recorded.insert(subtree);
             }
             // A delete in the data column can take the last record out:
             // whether the subtree holds one is looked up when it is next
@@ -2278,21 +2298,22 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     // What is known of the data column of the subtree
                     // stays true.
                     if record.unit().column == Column::Data
-                        && let Some(holds) = self.unlinked.get_mut(&subtree)
+                        && let Some(holds) = self.held.kept.unlinked.get_mut(&subtree)
                     {
                         *holds = true;
                     }
-                    stored_key(&mut self.key, &subtree, key);
-                    tree.put(&mut *self.flat, &self.unbound.key, value)
+                    stored_key(&mut self.held.kept.key, &subtree, key);
+                    tree.put(&mut *self.flat, &self.held.kept.key, value)
                 }
                 RecordWrite::Delete { key, .. } => {
-                    forget(&mut self.unlinked);
-                    stored_key(&mut self.key, &subtree, key);
-                    tree.delete(&mut *self.flat, &self.unbound.key).map(|_| ())
+                    forget(&mut self.held.kept.unlinked);
+                    stored_key(&mut self.held.kept.key, &subtree, key);
+                    tree.delete(&mut *self.flat, &self.held.kept.key)
+                        .map(|_| ())
                 }
                 RecordWrite::DeleteRange { start, end, .. } => {
-                    forget(&mut self.unlinked);
-                    stored_key(&mut self.key, &subtree, start);
+                    forget(&mut self.held.kept.unlinked);
+                    stored_key(&mut self.held.kept.key, &subtree, start);
                     let end = match end {
                         Some(end) => {
                             let mut stored = Vec::new();
@@ -2301,7 +2322,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         }
                         None => subtree_end(&subtree),
                     };
-                    tree.delete_range(&mut *self.flat, &self.unbound.key, end.as_deref())
+                    tree.delete_range(&mut *self.flat, &self.held.kept.key, end.as_deref())
                 }
             };
             done.map_err(Refused::dirty)?;
@@ -2387,9 +2408,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         again: Option<Again<'_>>,
         loaded: &mut Loaded,
     ) -> Result<(Applied, UnlinkedWrites), Refused> {
-        self.empty.clear();
-        self.left.clear();
-        self.stored.clear();
+        self.held.kept.empty.clear();
+        self.held.kept.left.clear();
+        self.held.kept.stored.clear();
         let merks = batch.merks;
         if merks.is_empty() && batch.subtrees.is_empty() {
             return Ok(Default::default());
@@ -2407,9 +2428,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let root = self.entered(view, &subtree).map_err(Refused::clean)?;
             roots.push(root.ok_or_else(|| Refused::clean(BatchError::NotEntered { subtree }))?);
         }
-        self.empty.extend(roots.iter().map(Option::is_none));
+        self.held
+            .kept
+            .empty
+            .extend(roots.iter().map(Option::is_none));
         let made = made.unwrap_or_default().iter();
-        for ((merk, made), empty) in merks.iter().zip(made).zip(&self.empty) {
+        for ((merk, made), empty) in merks.iter().zip(made).zip(&self.held.kept.empty) {
             // The transaction made the first node of this Merk, and it has
             // a root now that is not the transaction's.
             if *made && !*empty {
@@ -2489,7 +2513,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             if again.is_some() {
                 // The write set has the places of a batch that is applied
                 // again: nobody takes these.
-                self.stored = Vec::new();
+                self.held.kept.stored = Vec::new();
             }
             (resolver.loaded, handles) = (done.roots, done.handles);
             load = Some((done.counters, done.least_filled));
@@ -2563,8 +2587,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         };
         let report = match (merks.is_empty(), view.leaving.is_empty()) {
             (true, true) => Ok(Report::default()),
-            (false, true) => (self.unbound.fragments)
-                .apply(&mut self.unbound.tree, &mut self.unbound.values, &write)
+            (false, true) => (self.held.kept.fragments)
+                .apply(&mut self.held.lent.tree, &mut self.held.lent.values, &write)
                 .map_err(DropError::Fragment),
             // The drop: the one write to the tree pages, in which the root
             // of each Merk that leaves is named as dropped, the Merk's
@@ -2579,16 +2603,16 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     })
                     .collect();
                 drop::unlink(
-                    &mut self.unbound.fragments,
-                    &mut self.unbound.tree,
-                    &mut self.unbound.values,
-                    &mut self.unbound.directory,
+                    &mut self.held.kept.fragments,
+                    &mut self.held.lent.tree,
+                    &mut self.held.lent.values,
+                    &mut self.held.lent.directory,
                     &mut flats,
                     &write,
                     &leaving,
                 )
                 .map(|unlinked| {
-                    self.unbound.dropped.extend(unlinked.left);
+                    self.held.lent.dropped.extend(unlinked.left);
                     unlinked.report
                 })
             }
@@ -2607,19 +2631,19 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             }
             Err(error) => return Err(Refused::dropping(error)),
         };
-        self.unbound.values.check().map_err(Refused::dirty)?;
+        self.held.lent.values.check().map_err(Refused::dirty)?;
         // The marks follow the cells the write moved. Then each node of
         // the write has the marks its writer states, under the address the
         // report gives: a hash the writer made is stale no more. Where
         // nothing is or was stale, nothing is done.
-        self.unbound.hashes.follow(&write, &report);
-        let marks = !self.unbound.hashes.is_empty() || linked().any(|put| !put.stale.is_empty());
+        self.held.lent.hashes.follow(&write, &report);
+        let marks = !self.held.lent.hashes.is_empty() || linked().any(|put| !put.stale.is_empty());
         for (put, node) in linked().zip(&report.nodes).filter(|_| marks) {
             let stale = put.marked();
             for field in Stale::ALL.fields() {
                 match stale.has(field) {
-                    true => self.unbound.hashes.mark(node.address(), field),
-                    false => self.unbound.hashes.unmark(node.address(), field),
+                    true => self.held.lent.hashes.mark(node.address(), field),
+                    false => self.held.lent.hashes.unmark(node.address(), field),
                 }
             }
         }
@@ -2633,11 +2657,13 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // told below, under the prefixes the Merks have then.
         let rekeyed = match &view.rekey {
             Some(plan) => {
-                let left = drop::rekey(&mut self.unbound.directory, &mut flats, plan);
-                self.unbound
+                let left = drop::rekey(&mut self.held.lent.directory, &mut flats, plan);
+                self.held
+                    .lent
                     .dropped
                     .extend(left.map_err(Refused::dropping)?);
-                (self.unbound.left).extend(plan.left().iter().map(|prefix| Subtree::new(*prefix)));
+                (self.held.kept.left)
+                    .extend(plan.left().iter().map(|prefix| Subtree::new(*prefix)));
                 true
             }
             None => false,
@@ -2667,7 +2693,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             })
             .collect();
         if !restated.is_empty() {
-            match self.unbound.directory.restate(flats.pages, &restated) {
+            match self.held.lent.directory.restate(flats.pages, &restated) {
                 Ok(()) => untouched = false,
                 Err(error) if untouched && refuses(&error) => return Err(Refused::clean(error)),
                 Err(error) => return Err(Refused::dirty(error)),
@@ -2682,7 +2708,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             });
             let prefix = enter.subtree.as_bytes();
             match drop::enter(
-                &self.unbound.directory,
+                &self.held.lent.directory,
                 &mut flats,
                 prefix,
                 enter.tree_type,
@@ -2724,8 +2750,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         #[cfg(all(test, not(loom)))]
         probe::count(&changes);
         if !changes.is_empty() {
-            (self.unbound.directory.set_roots(&mut *self.flat, &changes))
-                .map_err(Refused::dirty)?;
+            (self
+                .held
+                .lent
+                .directory
+                .set_roots(&mut *self.flat, &changes))
+            .map_err(Refused::dirty)?;
         }
         let unlinked = (0..total).filter(|node| !reach.linked[*node]).collect();
         // The handles in the order of the batch: those the write reports,
@@ -3045,17 +3075,25 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // level fills one more, which holds what the load ends with.
         let mut least_filled = None;
         for page in loader.drain_pages() {
-            self.fragments.hints_mut().note(page.page, page.used);
+            self.held
+                .kept
+                .fragments
+                .hints_mut()
+                .note(page.page, page.used);
             least_filled =
                 Some(least_filled.map_or(page.used, |least: usize| least.min(page.used)));
         }
         let report = (loader.finish()).map_err(|error| load_error(error, None, first))?;
         for page in &report.pages {
-            self.fragments.hints_mut().note(page.page, page.used);
+            self.held
+                .kept
+                .fragments
+                .hints_mut()
+                .note(page.page, page.used);
         }
         let mut stored = placing.stored;
         stored.sort_unstable_by_key(|(entry, _)| *entry);
-        self.stored = stored;
+        self.held.kept.stored = stored;
         Ok(Load {
             roots,
             handles,
@@ -3135,9 +3173,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     None if view.ends_handles() => {
                         find(&mut self.tree, resolver.roots[merk], put.key)?
                     }
-                    None => {
-                        resolver.cell(&mut self.unbound.tree, &self.unbound.seen, merk, put.key)?
-                    }
+                    None => resolver.cell(
+                        &mut self.held.lent.tree,
+                        &self.held.lent.seen,
+                        merk,
+                        put.key,
+                    )?,
                 });
             }
             linked.resize(offset + nodes.len(), false);
@@ -3313,7 +3354,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         && unlinked::get(&data, &*self.flat, &subtree, put.key, &mut record)?
                     {
                         let stored = stored(put.key);
-                        if put.value == ValuePut::Keep && self.own.contains(&stored) {
+                        if put.value == ValuePut::Keep && self.held.kept.own.contains(&stored) {
                             let value = unlinked::decode(put.key, &record)?.value.to_vec();
                             writes.relinked.insert(offset + node, value);
                         }
@@ -3384,7 +3425,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let merks = resolver.merks;
         let mut root_targets = Vec::with_capacity(merks.len());
         for merk in 0..merks.len() {
-            root_targets.push(resolver.root(&mut self.unbound.tree, &self.unbound.seen, merk)?);
+            root_targets.push(resolver.root(
+                &mut self.held.lent.tree,
+                &self.held.lent.seen,
+                merk,
+            )?);
         }
         let mut nodes = Vec::with_capacity(reach.linked.len());
         let mut hosted: Vec<Vec<Option<Target>>> = Vec::new();
@@ -3429,7 +3474,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     Some(at) => linked_children(&mut self.tree, at)?,
                     None => [None, None],
                 });
-                let (tree, seen) = (&mut self.unbound.tree, &self.unbound.seen);
+                let (tree, seen) = (&mut self.held.lent.tree, &self.held.lent.seen);
                 let mut link = |side: Side, link: &Option<LinkPut<'a>>| {
                     let parent = at.map(|at| (at, side));
                     (link.as_ref())
@@ -3496,7 +3541,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 // A delete of a key with no node is a write of the key and
                 // changes no page (ST5).
                 if let Some(at) =
-                    resolver.cell(&mut self.unbound.tree, &self.unbound.seen, merk, key)?
+                    resolver.cell(&mut self.held.lent.tree, &self.held.lent.seen, merk, key)?
                 {
                     below_removed.extend(linked_children(&mut self.tree, at)?);
                     removed.push(at);
@@ -3643,26 +3688,26 @@ mod moved {
     /// [`Woken`] does that when it is made, and again when it is dropped
     /// with frames it still holds. What moves is their flat pages, the
     /// version those are over and one pointer: everything else they hold
-    /// stays where it is ([`Unbound`]), however much that comes to be.
-    /// The frames parked and the frames awake are as large as those
-    /// three, and the place a transaction keeps them in is no larger.
+    /// stays where it is ([`Held`]), however much that comes to be. The
+    /// frames parked and the frames awake are as large as those three,
+    /// and the place a transaction keeps them in is no larger.
     #[test]
     fn frames_move_as_their_flat_pages_their_version_and_a_pointer() {
-        type Kept = Box<Unbound<'static>>;
+        type Place = Box<Held<'static>>;
         type FlatParked = FlatFrames<'static, 'static, Idle>;
         type FlatAwake = FlatFrames<'static, 'static, OperationGuard<'static>>;
         let (parked, awake) = (
             size_of::<Parked<'static>>(),
             size_of::<Awake<'static, 'static>>(),
         );
-        assert_eq!(parked, size_of::<(CommitVersion, Kept, FlatParked)>());
-        assert_eq!(awake, size_of::<(CommitVersion, Kept, FlatAwake)>());
+        assert_eq!(parked, size_of::<(CommitVersion, Place, FlatParked)>());
+        assert_eq!(awake, size_of::<(CommitVersion, Place, FlatAwake)>());
         assert_eq!(size_of::<Option<Parked<'static>>>(), parked);
-        assert_eq!(size_of::<Kept>(), size_of::<usize>());
+        assert_eq!(size_of::<Place>(), size_of::<usize>());
         let flat = size_of::<FlatParked>();
         println!(
             "the frames move {parked} bytes, {flat} of them flat pages, and keep {} in place",
-            size_of::<Unbound<'static>>()
+            size_of::<Held<'static>>()
         );
     }
 }
