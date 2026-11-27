@@ -120,7 +120,8 @@ fn a_miss_is_loaded_and_then_hit() {
             evictions: 0,
             overflows: 0,
             releases: 0,
-            overtaken: 0
+            overtaken: 0,
+            loads: 1
         }
     );
     let census = pool.census();

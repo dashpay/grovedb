@@ -33,7 +33,10 @@ pub struct StoreStats {
     pub flush_bytes: u64,
     /// Bytes the cleaners wrote.
     pub cleaner_bytes: u64,
-    /// Page versions read from storage because the pool did not hold them.
+    /// Page versions read from storage because the pool did not hold them:
+    /// the loads ([`PoolStats::loads`](crate::cache::PoolStats::loads)),
+    /// and not the pool's misses, which count an ask for a page that does
+    /// not exist and miss a writer's first copy of a page.
     pub page_reads: u64,
     /// Page versions the pool held when they were asked for.
     pub cache_hits: u64,
@@ -262,7 +265,7 @@ impl Stats {
                 + flush.regroup_stored_bytes
                 + flush.checkpoint_bytes,
             cleaner_bytes: self.cleaner_bytes(),
-            page_reads: pool.misses,
+            page_reads: pool.loads,
             cache_hits: pool.hits,
             hashes: self.hashes(),
             keyed_lookups: self.keyed_lookups(),

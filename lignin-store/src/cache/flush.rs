@@ -7,7 +7,7 @@ use super::{
     error::CacheError,
     frame::{flag, kind, NO_VERSION},
     guard::PageRef,
-    pool::{evictable, published, BufferPool, Held, Spent},
+    pool::{evictable, published, BufferPool, Held},
     sync::lock,
 };
 use crate::alloc::Pins;
@@ -53,9 +53,10 @@ impl BufferPool {
     /// table has its link. The page version leaves the unwritten lists, and
     /// the frame can be evicted once it has no pin.
     ///
-    /// The versions of the page before it that a segment holds are spent
-    /// from here on: write-back checks no run against them any more, and
-    /// [`Self::reclaim`] takes them out once no reader can ask for them.
+    /// The version of the page before it that a segment holds, the newest
+    /// such in the pool, is spent from here on: write-back checks no run
+    /// against it any more. It is listed, and [`Self::reclaim`] takes it
+    /// out once no reader can ask for it, if it has no pin then.
     ///
     /// The link is pushed before this is called: a reader that misses the
     /// page afterwards reads the page table, and has to find it there.
@@ -112,23 +113,24 @@ impl BufferPool {
         }
         let kept = if hold { flag::HELD } else { 0 };
         header.set_flags((flags & !flag::UNWRITTEN) | kept);
-        let mut spent = Spent::default();
-        if !hold {
-            // A version before this one is superseded, and one that a
-            // segment holds was the page under the run of this one, or of
-            // none.
-            for entry in published(&chain, page) {
-                let before = entry.frame();
-                if before.born() < born.get() && before.flags() == 0 {
-                    spent.push(Held {
-                        page,
-                        born: before.born(),
-                        superseded: before.superseded(),
-                        epoch: None,
-                    });
-                }
-            }
-        }
+        // The newest version before this one that a segment holds was the
+        // page under this one's run, and no run is checked against it any
+        // more. The written versions before that one were listed when it
+        // was written.
+        let spent = (!hold)
+            .then(|| {
+                published(&chain, page)
+                    .map(|entry| entry.frame())
+                    .filter(|before| before.born() < born.get() && before.flags() == 0)
+                    .max_by_key(|before| before.born())
+            })
+            .flatten()
+            .map(|before| Held {
+                page,
+                born: before.born(),
+                superseded: before.superseded(),
+                epoch: None,
+            });
         drop(chain);
         let mut unwritten = lock(&self.turnover.unwritten);
         unwritten.remove(born.get(), page);
@@ -161,12 +163,14 @@ impl BufferPool {
     /// of a page whose later version is in a segment too
     /// ([`Self::mark_written`]) or that was freed ([`Self::free`]). The
     /// pool keeps it for no one but the readers on a version before the
-    /// one that superseded it, so it is asked the same three questions and
-    /// then leaves its frame to the next page that needs one, where it
-    /// would otherwise wait for the clock, which cannot tell it from a
-    /// page that is read. It is taken out as an eviction takes a frame
-    /// out: only with no pin on it. A reader that asks for it afterwards
-    /// all the same reads it from its segments, as after an eviction.
+    /// one that superseded it, so a listed one is asked the same three
+    /// questions and then leaves its frame to the next page that needs
+    /// one, where it would otherwise wait for the clock, which cannot tell
+    /// it from a page that is read. It is taken out as an eviction takes a
+    /// frame out: only with no pin on it. One that has a pin at that
+    /// moment is listed no more and is the clock's from there on. A reader
+    /// that asks for a version that was taken out all the same reads it
+    /// from its segments, as after an eviction.
     ///
     /// Call it where the allocator's reclaim is called: after a commit is
     /// published and after the oldest pin is dropped. With nothing held and

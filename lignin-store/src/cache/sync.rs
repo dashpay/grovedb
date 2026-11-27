@@ -56,11 +56,26 @@ impl Counter {
     pub(super) fn get(&self) -> usize {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
+}
 
-    /// Adds one, and returns what the number was before. Each caller is
-    /// given another number, and after the largest comes 0.
-    pub(super) fn take(&self) -> usize {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+/// The hand of the pool's clock: the number of steps that evictions have
+/// taken. It decides which frame an eviction looks at, so in a model it is
+/// one of the model's atomics, and the orders of its steps are explored.
+#[derive(Debug)]
+pub(super) struct Hand(AtomicUsize);
+
+impl Hand {
+    pub(super) fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    /// Takes a step: adds one, and returns what the number was before.
+    /// Each caller is given another number. After the largest comes 0,
+    /// which is a jump of the hand unless the number of frames is a power
+    /// of two; where the hand stands is a matter of which frame is looked
+    /// at next and of nothing else.
+    pub(super) fn step(&self) -> usize {
+        self.0.fetch_add(1, Ordering::Relaxed)
     }
 }
 

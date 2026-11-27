@@ -10,7 +10,7 @@ use super::{
     error::{CacheError, StepRefusal},
     frame::{flag, kind, Exclusive, Links, NO_VERSION},
     guard::{Blank, PageRef, PrivateRef},
-    pool::{current, lookup, privates, published, BufferPool, Held, Miss, Spent},
+    pool::{current, lookup, privates, published, BufferPool, Held, Miss},
     sync::{lock, MutexGuard},
 };
 
@@ -383,7 +383,7 @@ impl BufferPool {
             entry.frame().set_superseded(version.get());
         }
         let mut held = Vec::new();
-        let mut spent = Spent::default();
+        let mut spent = Vec::new();
         for entry in published(&chain, page) {
             let frame = entry.frame();
             let flags = frame.flags();

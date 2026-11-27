@@ -89,18 +89,25 @@
 //! | held | No segment holds it, and none will: it is kept for the readers that can still ask for it (FL6, FL7). | no; [`BufferPool::reclaim`] drops it |
 //! | written | A segment holds its content, and the page table has its link. | yes, once it has no pin |
 //!
-//! **A written page version that is superseded does not wait for the
+//! **A written page version that is superseded need not wait for the
 //! clock.** Once the version after it is in a segment as well, or its page
 //! is freed, nothing in the pool needs it: write-back checks a run against
 //! the newest version of the page that a segment holds, and a reader of the
-//! latest version reads the current one. It is *spent*, and
-//! [`BufferPool::reclaim`] takes it out as soon as no reader can ask for
-//! it, as it drops a held one. Left to the clock it would keep its frame
-//! until the hand had come by twice, and the clock would take pages that
-//! are read to make room beside it: a commit supersedes a version of every
-//! page it changes. Until the version after it is written it stays, as any
-//! written page version does: it is the page that write-back applies the
-//! next run to before the run is written.
+//! latest version reads the current one. It is *spent*: the pool lists it,
+//! and [`BufferPool::reclaim`] takes a listed one out once no reader can
+//! ask for it, as it drops a held one. Left to the clock it would keep its
+//! frame until the hand had come by, twice if it was read since, and the
+//! clock would take pages that are read to make room beside it: a commit
+//! supersedes a version of every page it changes.
+//!
+//! The list is a help and no rule. A spent version that has a pin when its
+//! turn comes, or that the list's bound dropped (4,096 are listed at most),
+//! is left to the clock, like any written page version. And until the
+//! version after it is written, a superseded written version is not spent:
+//! it is the page that write-back applies the next run to before the run
+//! is written. Nothing keeps it for that. It is an evictable frame, and if
+//! the clock takes it first, write-back reads the page from the blocks of
+//! its chain instead.
 //!
 //! # Reading
 //!
@@ -332,7 +339,7 @@
 //! | --- | --- | --- |
 //! | 4 | the latch of a private copy | one physical step of its owner |
 //! | 5 | the page step lock of a page | one page step: a [`PageStep`], or inside the calls that install, free, copy, load, mark or drop a frame |
-//! | below 5 | the pool's own: one part of its table, the free list, the unwritten lists, the list of frames that were taken out while they were pinned | a few instructions each, and for the last a look through the lanes. An eviction takes the lock of one part of the table for the frame it means to take, with no other lock held, and a frame is put on the last list under the lock of its part of the table. Nothing else is taken under them, and no other module is called |
+//! | below 5 | the pool's own: one part of its table, the free list, the unwritten lists, the list of frames that were taken out while they were pinned | a few instructions each, and for the last a look through the lanes. An eviction takes the lock of one part of the table for the frame it means to take, with no other lock of the pool held (the call that needs the frame may hold a page step lock, as a page step that takes a blank frame does), and a frame is put on the last list under the lock of its part of the table. Nothing else is taken under them, and no other module is called |
 //!
 //! No call into the pool waits for more than that. A reader that finds its
 //! page in a fixed frame takes no lock at all, to find it or to give it

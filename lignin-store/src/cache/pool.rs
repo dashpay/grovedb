@@ -13,7 +13,7 @@ use super::{
     },
     guard::{Blank, PageRef},
     lanes::Lanes,
-    sync::{lock, Counter, Mutex, Padded},
+    sync::{lock, Counter, Hand, Mutex, Padded},
 };
 use crate::alloc::Epoch;
 
@@ -72,12 +72,24 @@ pub enum Loaded<'p> {
 pub struct PoolStats {
     /// Calls of [`BufferPool::get`] that found the page version.
     pub hits: u64,
-    /// Calls of [`BufferPool::get`] that did not.
+    /// Calls of [`BufferPool::get`] that did not. A miss is not a page
+    /// that was read: the page may not exist at that version, and a
+    /// writer's first copy of a page that the pool does not hold
+    /// ([`BufferPool::make_private`]) is loaded with no call of `get`.
+    /// [`Self::loads`] counts what was read.
     pub misses: u64,
+    /// Page versions that were read from their segments in full, a base
+    /// image and the runs after it, and offered to the pool
+    /// ([`BufferPool::install_loaded`]). The loads that found the page
+    /// version put there by another thread meanwhile, those that the table
+    /// overtook ([`Self::overtaken`]) and those that were refused are among
+    /// them: their blocks were read.
+    pub loads: u64,
     /// Page versions taken out of the pool to make room.
     pub evictions: u64,
-    /// Frames allocated beside the fixed ones, because none of those could
-    /// be evicted.
+    /// Frames allocated beside the fixed ones, because an eviction found
+    /// none of those to take: none could be evicted, or, with other
+    /// evictions running, its own steps did not come to one that could.
     pub overflows: u64,
     /// Page versions taken out of the pool because no reader could ask
     /// for them any more ([`BufferPool::reclaim`]): superseded, with their
@@ -85,8 +97,9 @@ pub struct PoolStats {
     pub releases: u64,
     /// Loads that [`BufferPool::install_loaded`] took nothing of, because
     /// a commit or a page step had changed that part of the table since
-    /// the miss ([`Loaded::Again`]): the caller reads the page's blocks
-    /// once more for each.
+    /// the miss ([`Loaded::Again`]). The caller asks the pool again, and
+    /// reads the page's blocks once more unless the pool holds the page
+    /// version by then.
     pub overtaken: u64,
 }
 
@@ -144,33 +157,14 @@ pub(super) struct Held {
 pub(super) struct Unwritten {
     pub(super) versions: BTreeMap<u64, Vec<PageId>>,
     pub(super) held: Vec<Held>,
-    /// Spent page versions, oldest listing first. A frame of one is an
-    /// evictable frame like any other; the list is how
-    /// [`BufferPool::reclaim`] finds it before the clock does.
+    /// Spent page versions, oldest listing first, [`Self::SPENT_BOUND`] of
+    /// them at most. A frame of one is an evictable frame like any other;
+    /// the list is how [`BufferPool::reclaim`] finds it before the clock
+    /// does, where it finds it.
     pub(super) spent: Vec<Held>,
-    /// What a reclaim found gone, kept from one reclaim to the next.
+    /// What a reclaim found gone, kept from one reclaim to the next: as
+    /// many entries, at most, as the two lists above had at once.
     pub(super) gone: Vec<(PageId, u64)>,
-}
-
-/// The spent page versions one call found of one page: one or two, as a
-/// rule, which take no allocation.
-#[derive(Debug, Default)]
-pub(super) struct Spent {
-    few: [Option<Held>; 2],
-    more: Vec<Held>,
-}
-
-impl Spent {
-    pub(super) fn push(&mut self, version: Held) {
-        match self.few.iter_mut().find(|slot| slot.is_none()) {
-            Some(slot) => *slot = Some(version),
-            None => self.more.push(version),
-        }
-    }
-
-    fn versions(self) -> impl Iterator<Item = Held> {
-        self.few.into_iter().flatten().chain(self.more)
-    }
 }
 
 impl Unwritten {
@@ -179,13 +173,15 @@ impl Unwritten {
     /// the list.
     pub(super) const SPENT_BOUND: usize = 4096;
 
-    /// Lists `spent`. Past [`Self::SPENT_BOUND`] the older half of the
-    /// list is dropped from it: those frames are left to the clock.
-    pub(super) fn spend(&mut self, spent: Spent) {
-        self.spent.extend(spent.versions());
-        if self.spent.len() > Self::SPENT_BOUND {
-            let over = self.spent.len() - Self::SPENT_BOUND / 2;
-            self.spent.drain(..over);
+    /// Lists `spent`, in its order. The list never holds more than
+    /// [`Self::SPENT_BOUND`]: when it is full its older half is dropped
+    /// from it first, and those frames are left to the clock.
+    pub(super) fn spend(&mut self, spent: impl IntoIterator<Item = Held>) {
+        for version in spent {
+            if self.spent.len() >= Self::SPENT_BOUND {
+                self.spent.drain(..Self::SPENT_BOUND / 2);
+            }
+            self.spent.push(version);
         }
     }
 
@@ -211,7 +207,7 @@ pub(super) struct Turnover {
     /// Where the clock stands: the steps its hand has taken, each of which
     /// one eviction took. It says where an eviction looks next and nothing
     /// else, so it is a number and no lock.
-    hand: Counter,
+    hand: Hand,
     pub(super) unwritten: Mutex<Unwritten>,
     overflow: Counter,
     attached: Counter,
@@ -219,6 +215,7 @@ pub(super) struct Turnover {
     overflows: Counter,
     pub(super) releases: Counter,
     overtaken: Counter,
+    loads: Counter,
 }
 
 /// The buffer pool. See the [module documentation](super).
@@ -372,7 +369,7 @@ impl BufferPool {
             capacity,
             turnover: Padded(Turnover {
                 free: Mutex::new(free),
-                hand: Counter::default(),
+                hand: Hand::new(),
                 unwritten: Mutex::new(Unwritten::default()),
                 overflow: Counter::default(),
                 attached: Counter::default(),
@@ -380,6 +377,7 @@ impl BufferPool {
                 overflows: Counter::default(),
                 releases: Counter::default(),
                 overtaken: Counter::default(),
+                loads: Counter::default(),
             }),
         })
     }
@@ -420,8 +418,12 @@ impl BufferPool {
     ///
     /// What is beside the fixed part belongs to frames that cannot be
     /// evicted, so this never exceeds the configured size plus those
-    /// frames. The lists of unwritten pages ([`Self::unwritten_pages`]),
-    /// four bytes a page, are not counted.
+    /// frames. Not counted are the lists of unwritten pages
+    /// ([`Self::unwritten_pages`]), four bytes a page, and the two lists
+    /// [`Self::reclaim`] works from: the spent page versions, of which at
+    /// most 4,096 are listed, and what the last reclaim found gone. An
+    /// entry of either is under 64 bytes, and a list keeps the room it
+    /// once took.
     pub fn memory(&self) -> usize {
         self.fixed_memory()
             + self.turnover.overflow.get() * self.overflow_cost()
@@ -467,6 +469,7 @@ impl BufferPool {
             overflows: self.turnover.overflows.get() as u64,
             releases: self.turnover.releases.get() as u64,
             overtaken: self.turnover.overtaken.get() as u64,
+            loads: self.turnover.loads.get() as u64,
         }
     }
 
@@ -630,6 +633,8 @@ impl BufferPool {
         if !blank.is_of(self) {
             return Err(CacheError::WrongPool);
         }
+        // What is offered here was read, whatever becomes of it.
+        self.turnover.loads.add(1);
         if born > at {
             return Err(CacheError::LoadedTooNew { page, born, at });
         }
@@ -718,18 +723,24 @@ impl BufferPool {
     /// under the lock of the frame's part of the table, where it looks
     /// through the lanes as well. So evictions that run at once wait for
     /// each other only where their frames share a part of the table. The
-    /// table's lock is what makes a frame's leaving one step: a frame that
-    /// another thread took, pinned or filled again since its header was
-    /// read is not found as it was there, and is passed.
+    /// table's lock is what makes a frame's leaving one step: under it the
+    /// frame is looked at again, and it is taken only if it is then a page
+    /// version of that part of the table that can be evicted and has no
+    /// pin. A frame that another thread took or pinned since its header
+    /// was read is passed. One that was taken and filled again in between
+    /// is judged as what it holds by then, and goes if that can be
+    /// evicted.
     ///
     /// An eviction gives up after as many steps of its own as two rounds
-    /// have, and the caller then takes a frame beside the fixed ones. With
-    /// other evictions running, those steps are not every frame twice:
-    /// each of them saw a part of the frames.
+    /// have. The caller then takes a dead frame whose last pin is gone, if
+    /// there is one, and else a frame beside the fixed ones. With other
+    /// evictions running, those steps are not every frame twice: each of
+    /// them saw a part of the frames, so a frame beside the fixed ones can
+    /// be taken while one of them could have been evicted.
     fn evict(&self) -> Option<OwnedFrame> {
         let count = self.arena.len();
         for _ in 0..2 * count {
-            let index = self.turnover.hand.take() % count;
+            let index = self.turnover.hand.step() % count;
             let frame = self.arena.frame(index);
             let page = frame.page_raw();
             if page == 0 || !evictable(frame) || !frame.is_unpinned() {

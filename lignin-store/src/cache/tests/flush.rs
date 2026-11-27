@@ -314,7 +314,9 @@ fn a_reader_that_holds_a_spent_page_version_keeps_it() {
     drop(second);
 
     pins.set_oldest(2);
+    let asked = pins.asked();
     pool.reclaim(&pins);
+    assert!(pins.asked() > asked, "it was listed");
     assert_eq!(pool.stats().releases, 0);
     assert_eq!(Content::read(&reader), content(1, 1, 0));
     assert!(pool.get(page(1), version(1)).is_ok());
@@ -327,11 +329,11 @@ fn a_reader_that_holds_a_spent_page_version_keeps_it() {
     check(&pool, 0);
 }
 
-/// Every version of a page that a segment holds is spent when a later
-/// one is written, however many commits lie between them: the version
-/// that was held for readers between them goes as a held one does.
+/// The version of a page that a segment holds is spent when a later one
+/// is written, however many commits lie between them: the version that
+/// was held for readers between them goes as a held one does.
 #[test]
-fn every_written_version_before_the_one_that_is_written_is_spent() {
+fn the_written_version_before_the_one_that_is_written_is_spent() {
     let pool = pool(4);
     let pins = TestPins::at(3);
     let first = create(&pool, 1, 1);
@@ -357,11 +359,12 @@ fn every_written_version_before_the_one_that_is_written_is_spent() {
     check(&pool, 0);
 }
 
-/// The list of spent page versions is bounded: past the bound its older
-/// half is dropped from it, and those frames are the clock's.
+/// The list of spent page versions is bounded: it never holds more than
+/// its bound, a full one loses its older half before it takes another,
+/// and those frames are the clock's.
 #[test]
 fn the_list_of_spent_page_versions_is_bounded() {
-    use super::super::pool::{Held, Spent, Unwritten};
+    use super::super::pool::{Held, Unwritten};
 
     let one = |born: u64| Held {
         page: page(1),
@@ -371,23 +374,139 @@ fn the_list_of_spent_page_versions_is_bounded() {
     };
     let bound = Unwritten::SPENT_BOUND as u64;
     let mut unwritten = Unwritten::default();
-    for born in 0..=bound {
-        let mut spent = Spent::default();
-        spent.push(one(born));
-        unwritten.spend(spent);
+    for born in 0..bound {
+        unwritten.spend([one(born)]);
     }
-    assert_eq!(unwritten.spent.len() as u64, bound / 2);
-    assert_eq!(unwritten.spent[0].born, bound / 2 + 1);
+    assert_eq!(unwritten.spent.len() as u64, bound);
+    assert_eq!(unwritten.spent[0].born, 0);
+    unwritten.spend([one(bound)]);
+    assert_eq!(unwritten.spent.len() as u64, bound / 2 + 1);
+    assert_eq!(unwritten.spent[0].born, bound / 2);
     assert_eq!(unwritten.spent.last().map(|last| last.born), Some(bound));
 
-    // More versions of one page than a call finds as a rule keep their
-    // order.
+    // The versions of one call, many of them, as the written versions of a
+    // page that is freed: in their order, and never more than the bound.
     let mut unwritten = Unwritten::default();
-    let mut spent = Spent::default();
-    (0..5).for_each(|born| spent.push(one(born)));
-    unwritten.spend(spent);
+    unwritten.spend((0..3 * bound).map(one));
+    assert!(unwritten.spent.len() as u64 <= bound);
+    assert!(unwritten.spent.capacity() as u64 <= bound);
     let listed: Vec<u64> = unwritten.spent.iter().map(|spent| spent.born).collect();
-    assert_eq!(listed, [0, 1, 2, 3, 4]);
+    assert!(listed.windows(2).all(|pair| pair[0] + 1 == pair[1]));
+    assert_eq!(listed.last(), Some(&(3 * bound - 1)));
+}
+
+/// Of several versions of a page that a segment holds, the one that is
+/// listed when a later version is written is the newest of them: the
+/// others were listed when that one was written. So a page that is
+/// written again and again while a reader keeps every version in the pool
+/// is listed once for each write, and not once for each pair of them.
+#[test]
+fn a_page_version_is_listed_once_however_many_versions_are_written_after_it() {
+    let pool = pool(8);
+    let pins = TestPins::at(1);
+    let first = create(&pool, 1, 1);
+    pool.mark_written(&first).expect("owed");
+    drop(first);
+    for at in 1..5 {
+        let next = commit(&pool, 1, at);
+        pool.mark_written(&next).expect("owed");
+    }
+    // The reader on version 1 keeps all of them: nothing goes, and four
+    // are listed, the versions 1 to 4.
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(pool.stats().releases, 0);
+    assert_eq!(spent_listed(&pool), 4);
+
+    pins.set_oldest(5);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(pool.stats().releases, 4);
+    assert_eq!(spent_listed(&pool), 0);
+    assert_eq!(free_frames(&pool), 7);
+    check(&pool, 0);
+}
+
+/// A listing outlives its frame. The clock takes the frame of a spent
+/// version, a reader loads the version again into another frame, and the
+/// reclaim that comes to the stale entry takes that frame out as it would
+/// have taken the first: it holds a version no reader can ask for. Read
+/// again after that, the version is what it was.
+#[test]
+fn a_spent_page_version_that_was_loaded_again_is_taken_out_like_any_other() {
+    let pool = pool(2);
+    let mut disk = Disk::default();
+    let pins = TestPins::at(1);
+    let first = create(&pool, 1, 1);
+    disk.write(content(1, 1, 0));
+    pool.mark_written(&first).expect("owed");
+    drop(first);
+    let second = commit(&pool, 1, 1);
+    disk.write(content(1, 2, 0));
+    pool.mark_written(&second).expect("owed");
+    drop(second);
+    assert_eq!(spent_listed(&pool), 1);
+
+    // Two other pages take both frames: the clock has taken version 1.
+    disk.write(content(2, 1, 0));
+    disk.write(content(3, 1, 0));
+    drop(fetch(&pool, &disk, 2, 1).expect("in a segment"));
+    drop(fetch(&pool, &disk, 3, 1).expect("in a segment"));
+    assert!(pool.get_version(page(1), version(1)).is_none());
+    assert_eq!(pool.stats().evictions, 2);
+    assert_eq!(spent_listed(&pool), 1);
+
+    // The reader on version 1 loads it again, and goes.
+    let again = fetch(&pool, &disk, 1, 1).expect("in a segment");
+    assert_eq!(Content::read(&again), content(1, 1, 0));
+    drop(again);
+    pins.set_oldest(2);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(pool.stats().releases, 1);
+    assert!(pool.get_version(page(1), version(1)).is_none());
+    assert_eq!(spent_listed(&pool), 0);
+    assert_eq!(
+        Content::read(&fetch(&pool, &disk, 1, 1).expect("in a segment")),
+        content(1, 1, 0)
+    );
+    check(&pool, 0);
+}
+
+/// A listing names a page version by the id of its page and the commit
+/// that bore it. When the id of a freed page names a new page, the entry
+/// of the old page's version takes the old frame, and nothing of the page
+/// that has the id now.
+#[test]
+fn a_spent_version_of_a_freed_page_takes_nothing_of_the_page_that_has_its_id_now() {
+    let pool = pool(4);
+    let pins = TestPins::at(1);
+    let old = create(&pool, 1, 1);
+    pool.mark_written(&old).expect("owed");
+    drop(old);
+    pool.free(page(1), version(2)).expect("a later commit");
+    assert_eq!(spent_listed(&pool), 1);
+    let new = create(&pool, 1, 3);
+
+    pins.set_oldest(3);
+    assert_eq!(pool.reclaim(&pins), 0);
+    assert_eq!(pool.stats().releases, 1);
+    assert!(
+        pool.get(page(1), version(1)).is_err(),
+        "the old page is gone"
+    );
+    assert_eq!(Content::read(&new), content(1, 3, 0));
+    assert_eq!(pool.census().unwritten, 1);
+
+    // Written, the new page's version is the current one: nothing is
+    // listed of it, and a reclaim leaves it.
+    pool.mark_written(&new).expect("owed");
+    drop(new);
+    assert_eq!(spent_listed(&pool), 0);
+    pool.reclaim(&pins);
+    assert_eq!(pool.stats().releases, 1);
+    assert_eq!(
+        Content::read(&pool.get(page(1), version(3)).expect("the new page")),
+        content(1, 3, 0)
+    );
+    check(&pool, 0);
 }
 
 #[test]

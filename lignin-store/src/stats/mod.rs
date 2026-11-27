@@ -26,7 +26,7 @@
 //! | [`other_records`](StoreStats::other_records), [`other_record_bytes`](StoreStats::other_record_bytes) | the changes of flat pages the groups carry: the flat keyspace | [`WriteBack::committed`] |
 //! | [`flush_bytes`](StoreStats::flush_bytes) | bytes write-back wrote: blocks as stored in segments, values as stored in the value log, the copies of regrouped values among them, table-checkpoint files | [`FlushState::stats`] |
 //! | [`cleaner_bytes`](StoreStats::cleaner_bytes) | bytes the cleaners wrote when they moved live blocks and values | [`Stats::count_cleaner_bytes`] |
-//! | [`page_reads`](StoreStats::page_reads) | page versions the pool did not hold and that were read from storage | [`BufferPool::stats`] (misses) |
+//! | [`page_reads`](StoreStats::page_reads) | page versions that were read from storage: each a base image and its runs, read in full for a load | [`BufferPool::stats`] (loads) |
 //! | [`cache_hits`](StoreStats::cache_hits) | page versions the pool held | [`BufferPool::stats`] (hits) |
 //! | [`hashes`](StoreStats::hashes) | hashes the tree computed | [`Stats::count_hashes`] |
 //! | [`keyed_lookups`](StoreStats::keyed_lookups) | searches by key that went on below a tree's root | [`Stats::count_keyed_lookups`] |
