@@ -9,11 +9,16 @@
 # one that is measured: put it on the disk and the file system in question
 # (ext4 on a local disk, for the reference class of the plan).
 #
-# It wants git, cargo and what GroveDB's build wants, python3, bpftrace,
-# xfsprogs, e2fsprogs and util-linux. On Ubuntu:
+# It wants git, cargo and what GroveDB's build wants, python3, bpftrace 0.19
+# or later, xfsprogs, e2fsprogs and util-linux. On Ubuntu 24.04:
 #
 #   sudo apt-get install build-essential clang libclang-dev cmake pkg-config \
 #     git python3 bpftrace xfsprogs
+#
+# The bpftrace of Ubuntu 22.04 and of Debian 12 is older than 0.19 and has
+# not the clock the tracer reads: the script says so before it builds, and
+# `PARTS="builds main filesystems tables"` makes the tables of the runs, which
+# need no trace, with any bpftrace or none.
 #
 # What it does, each run only where its report is not there yet, so that a
 # campaign that was stopped goes on where it was:
@@ -94,7 +99,9 @@ export PATH=$PATH:/usr/sbin:/sbin
 ulimit -n 65536
 
 missing=""
-for tool in git cargo python3 sha256sum sudo bpftrace mkfs.xfs mkfs.ext4 losetup findmnt fstrim; do
+tools="git cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt fstrim"
+case " $parts " in *" traces "*) tools="$tools bpftrace" ;; esac
+for tool in $tools; do
   command -v "$tool" > /dev/null || missing="$missing $tool"
 done
 refuse() {
@@ -110,6 +117,13 @@ for flag in --engine --background --blocks --label --commit --out --scratch --wa
 done
 [ "$(uname -s)" = Linux ] || refuse "the traces and the file systems want Linux"
 sudo -n true 2> /dev/null || refuse "sudo asks for a password"
+# The tracer stamps its lines with the monotonic clock by name, which
+# bpftrace has from 0.19 on: asked here, before anything is built.
+case " $parts " in *" traces "*)
+  sudo bpftrace -e 'BEGIN { printf("%llu\n", nsecs(monotonic)); exit(); }' > /dev/null 2>&1 ||
+    refuse "this bpftrace ($(bpftrace --version 2> /dev/null)) has no nsecs(monotonic): the traces want bpftrace 0.19 or later, and PARTS without traces makes the tables of the runs without one"
+  ;;
+esac
 [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ] ||
   refuse "the checkout has changes, and the builds are of its commit"
 commit=$(git -C "$repo" rev-parse HEAD)
