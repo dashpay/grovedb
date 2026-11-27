@@ -1223,6 +1223,42 @@ fn a_walk_counts_what_its_page_holds_in_one_step() {
 }
 
 #[test]
+fn a_walk_names_a_missing_cell_when_it_comes_to_it() {
+    // One page: `m` over `c` and `x`, where the left link of `c` names a
+    // slot of the page that holds no cell.
+    let layout = Layout::proposed(SIZE);
+    let mut mem = Mem::new(SIZE);
+    let page = mem.create().expect("a page");
+    let gone = CellAddress::new(page, slot(40));
+    let x = stored_cell(&mut mem, page, b"x", 95, [None, None], false);
+    let c = stored_cell(&mut mem, page, b"c", 47, [Some(gone), None], false);
+    let m = stored_cell(&mut mem, page, b"m", 5, [Some(c), Some(x)], true);
+    assert!(mem.view(page).node(gone.slot()).is_none());
+    let mut nodes = Vec::new();
+    let write = kept(m, b"m", &mut nodes);
+
+    // A limit that `c` reaches: the walk ends there, in the step that read
+    // `x` and `c`, and the slot that `c` names is not looked at.
+    mem.touched.clear();
+    let limit = taken(&mem, &[m, x, c]);
+    let (bytes, cells) = counted(&layout, &mut mem, &write, m, limit).expect("a count");
+    assert_eq!((bytes, cells), (limit, vec![m, x, c]));
+    assert_eq!(mem.touched, [page, page]);
+
+    // One byte more, and to the end: the walk comes to the slot in the
+    // same step, and the count is refused with the address it names.
+    for limit in [limit + 1, usize::MAX] {
+        mem.touched.clear();
+        let refused = counted(&layout, &mut mem, &write, m, limit);
+        let FragmentError::Write(error) = refused.expect_err("no cell is there") else {
+            panic!("the write is what is refused");
+        };
+        assert_eq!(error, WriteError::NoNode { address: gone });
+        assert_eq!(mem.touched, [page, page]);
+    }
+}
+
+#[test]
 fn a_walk_leaves_its_step_at_a_host() {
     // One page: `m` over `h` and `x`, where `h` hosts a Merk whose root
     // `r` is in the page.
