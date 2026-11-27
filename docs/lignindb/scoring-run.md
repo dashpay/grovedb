@@ -12,10 +12,10 @@ The engine scored is that of `feat/LigninDB` at `588668e1f`. This document sits 
 | --- | --- | --- | --- | --- | --- | --- |
 | Bytes logged per transition | 0.100 | 0.134 | 0.173 / 0.155 / 0.110 (B, paced, 162 MiB) | 3,944 / 3,253 / 2,431 B against 22,828 / 21,004 / 22,022 B | missed (accept met in delete) | The commit groups alone, the cells and hashes of the nodes a transition changes, are 3,366 / 2,574 / 2,112 B, and the page steps of the values that regrouping and the cleaner move add 578 / 679 / 320 B, against an accept of 3,056 / 2,812 / 2,949 B (the log's parts: PERF-04) |
 | Physical bytes written per transition | 0.089 | 0.143 | 0.649 / 0.740 / 0.662 (B, paced, 162 MiB) | 43.9 / 42.5 / 40.5 KB against 67.6 / 57.5 / 61.2 KB | missed | The commit groups, the new blocks and the new values alone are 12.3 / 10.7 / 9.8 KB, above the accept of 9.7 / 8.2 / 8.7 KB; the segment cleaner's copies are 20.8 / 20.0 / 21.5 KB, about half of the whole, and the table checkpoints 5.3 / 5.2 / 5.9 KB (the parts: PERF-04; the segment cleaner's share: PERF-08) |
-| Wall time per transition | 0.168 | 0.268 | 2.41 in the one phase of one regime (delete, B, back to back, 256 MiB); 2.37 to 2.43 in the phases of two (section 3) | 1,206 µs against 500 µs | missed | On the CPU, 452 µs of the 562 µs a transition between the two engines are below the storage seam, where LigninDB's store spends 633 µs and RocksDB's whole store 181 µs (PERF-03) |
+| Wall time per transition | 0.168 | 0.268 | 2.07 / 2.10 / 2.11 and 2.06 / 2.06 / 2.09 (C, paced, 256 MiB, twice, every phase of one regime); 2.41 in the one back-to-back phase of one regime (B, delete) | 1,210 / 1,188 / 1,270 µs against 583 / 567 / 603 µs (C, first call) | missed | On the CPU, 452 µs of the 562 µs a transition between the two engines are below the storage seam, where LigninDB's store spends 633 µs and RocksDB's whole store 181 µs (PERF-03) |
 | Keyed lookups per transition | 0 | 0 | 0.054 load, 0.051 / 0.019 / 0.018 (A and B) | 3.08 load, 3.10 / 1.10 / 1.10 against 57.0, 60.5 / 58.5 / 62.5 | missed | What is left is a write of a key new to its Merk and the first read in a transaction of the element that hosts a Merk, by call site (PERF-03) |
 | Hashes per transition, iteration two | 0.500 | 0.574 | not scored | 159 and 159 `hash_node_calls` | iteration two | |
-| Commit of a 20-transition block | 0.2 | 0.5 | 0.482 in the one phase of one regime (delete, B, back to back, 256 MiB); 0.466 to 0.549 in the phases of two (section 3) | 1.28 ms against 2.66 ms | accept met in delete; create and update not scored (no phase of one regime) | On the CPU, about half of LigninDB's commit is the tree-page codec (0.48 of 1.03 ms), then the buffer pool (0.17 ms) and the transaction's seal (0.14 ms) (PERF-03) |
+| Commit of a 20-transition block | 0.2 | 0.5 | 0.475 / 0.469 / 0.418 and 0.480 / 0.467 / 0.420 (C, paced, 256 MiB, twice, every phase of one regime); 0.482 in the one back-to-back phase of one regime (B, delete) | 1.41 / 1.33 / 1.26 ms against 2.98 / 2.83 / 3.01 ms (C, first call) | accept met | On the CPU, about half of LigninDB's commit is the tree-page codec (0.48 of 1.03 ms), then the buffer pool (0.17 ms) and the transaction's seal (0.14 ms) (PERF-03) |
 | Write throughput, 8 threads, iteration two | 5× | 3× | not scored | | iteration two | |
 | Bulk load of 1M transitions | 0.173 | 0.346 | less than 0.0312 (B) | 16.6 s against more than 533.5 s, GroveDB's build of the same grove on RocksDB in that run (section 6) | target met | |
 | Point get | 0.225 | 0.562 | 0.85 / 0.79 warm, 0.72 / 0.74 settled (A, twice) | 28.8 / 26.9 µs warm against 34.0 / 34.1 µs | missed | Above the storage seam a get takes 2.5 µs on LigninDB and 1.8 µs on RocksDB; below it LigninDB takes 14.3 µs against RocksDB's 23.3 µs (0.62), where the accept leaves about 12 µs (PERF-05, settled) |
@@ -30,18 +30,19 @@ The engine scored is that of `feat/LigninDB` at `588668e1f`. This document sits 
 
 ## 2. The head, the binary and the hosts
 
-**The binary.** The benchmark, bulk-load and recovery runs of this document used one build of `lignin-bench` and two test binaries, of the commit `9d60d8f1f` of the branch of this task: the engine at `588668e1f` and this task's harness, which adds the churn, the size and dead shares of each phase and `Db::space` to read them, and the score. Built from nothing (`git archive` of the commit and its lock file, an empty target directory) at one path with rustc 1.99.1, three times on the two hosts, it came out byte for byte the same each time: `lignin-bench` sha256 `77bf94e5fff72f8c8c79b8e086b3a6039504ea78d239fb5e0bd518827d39f643`, the bulk-load test binary `6ce64346…`, `lignin-store`'s test binary `299482c6…`. The path is in the binary: two builds of one tree at two paths differ. The branch's later commits change the score and its tests, the refusal of a churn that would overflow, comments and documents; the score was run again over the reports of that binary.
+**The binary.** The benchmark, bulk-load and recovery runs of hosts A and B used one build of `lignin-bench` and two test binaries, of the commit `9d60d8f1f` of the branch of this task: the engine at `588668e1f` and this task's harness, which adds the churn, the size and dead shares of each phase and `Db::space` to read them, and the score. Built from nothing (`git archive` of the commit and its lock file, an empty target directory) at one path with rustc 1.99.1, three times on the two hosts, it came out byte for byte the same each time: `lignin-bench` sha256 `77bf94e5fff72f8c8c79b8e086b3a6039504ea78d239fb5e0bd518827d39f643`, the bulk-load test binary `6ce64346…`, `lignin-store`'s test binary `299482c6…`. The path is in the binary: two builds of one tree at two paths differ. The branch's later commits change the score and its tests, the refusal of a churn that would overflow, comments and documents; the score was run again over the reports of that binary. Host C ran the merge `d8957896e` of this task into `feat/LigninDB`, built the same way: `lignin-bench` sha256 `b66eea17d8e9d3084f9d934355ab514581dca34d2b4024004de82b029ff91900`; its engine is the scored engine (the head line above), its harness the branch's last.
 
-**The hosts.** Two DigitalOcean `so-16vcpu-128gb-intel` droplets (16 dedicated vCPUs, 128 GB, local NVMe; ext4 with `discard`, kernel 6.8.0-149, Ubuntu 24.04, no attached volume), each running nothing but the calls of this document, one call at a time unless a table says otherwise. They are of one class and not of one processor:
+**The hosts.** Three DigitalOcean `so-16vcpu-128gb-intel` droplets (16 dedicated vCPUs, 128 GB, local NVMe; ext4 with `discard`, kernel 6.8.0-149, Ubuntu 24.04, no attached volume), each running nothing but the calls of this document, one call at a time unless a table says otherwise. They are of one class and not of one processor:
 
 | | Processor | `fdatasync` of a 4 KiB append, median of 200 |
 | --- | --- | --- |
 | A | Intel Xeon Gold 5318Y, 2.1 GHz | 0.73 to 1.01 ms |
 | B | Intel Xeon Gold 6548N | 0.47 to 0.97 ms |
+| C | Intel Xeon Platinum 8358, 2.6 GHz | 0.87 to 1.03 ms |
 
-B takes a little over half of A's time for the same call of RocksDB (a transition of the load 440 against 765 µs, a warm point get 17.7 against 34.0 µs), and the ratios of the two engines differ between the sittings of the two hosts by as much as 0.1 to 0.3 (a settled proof of 100 references 0.70 on A and 0.80 on B; a cold point proof 0.68 and 1.00), with a load back to back on A and paced on B. So every ratio is given with its host, and no ratio of one host is held against one of the other.
+B takes a little over half of A's time for the same call of RocksDB (a transition of the load 440 against 765 µs, a warm point get 17.7 against 34.0 µs), and the ratios of the two engines differ between the sittings of the two hosts by as much as 0.1 to 0.3 (a settled proof of 100 references 0.70 on A and 0.80 on B; a cold point proof 0.68 and 1.00), with a load back to back on A and paced on B. So every ratio is given with its host, and no ratio of one host is held against one of another.
 
-**The reference state.** The reference workload of `benchmarks.md` (a million documents of 400 bytes over 10,000 owners, a reference each, 20 transitions a block, seed 1). The whole runs of A load it back to back (`pace=free`, as RocksDB's baseline is measured); the steady-state sittings of B run over the state that a paced load left (`--set pace=block`), kept and copied for every call.
+**The reference state.** The reference workload of `benchmarks.md` (a million documents of 400 bytes over 10,000 owners, a reference each, 20 transitions a block, seed 1). The whole runs of A load it back to back (`pace=free`, as RocksDB's baseline is measured); the steady-state sittings of B and C run over the state that a paced load on the same host left (`--set pace=block`), kept and copied for every call.
 
 ## 3. The write rows at steady state
 
@@ -68,7 +69,16 @@ RocksDB's bytes are the same in every call to within 0.01%: 22,828 / 21,004 / 22
 | 256 MiB, second | 1,136 / 1,127 / 1,206 µs | 480 / 468 / 500 µs | 2.37 / 2.41 / 2.41 | 1.44 / 1.35 / 1.28 ms | 2.64 / 2.47 / 2.66 ms | 0.544 / 0.545 / 0.482 |
 | 162 MiB | 1,164 / 1,141 / 1,220 µs | 481 / 470 / 502 µs | 2.42 / 2.43 / 2.43 | 1.41 / 1.31 / 1.25 ms | 2.66 / 2.50 / 2.68 ms | 0.530 / 0.524 / 0.466 |
 
-The value log's ends in these calls, create / update / delete: 256 MiB first 15.8 → 17.8 / 17.8 → 10.2 / 10.2 → 18.2%, second 11.4 → 17.7 / 17.7 → 19.6 / 19.6 → 19.1%, 162 MiB 17.2 → 8.3 / 8.3 → 20.0 / 20.0 → 17.9%. Only the second call's delete is of one regime, and the time rows are scored there: wall time 2.41, commit 0.482. The other phases are given: their wall time is 2.37 to 2.43 and their commit 0.466 to 0.549. The two calls at 256 MiB differ by −1.0 to +1.4% in LigninDB's wall time and by under 0.2% in RocksDB's.
+The value log's ends in these calls, create / update / delete: 256 MiB first 15.8 → 17.8 / 17.8 → 10.2 / 10.2 → 18.2%, second 11.4 → 17.7 / 17.7 → 19.6 / 19.6 → 19.1%, 162 MiB 17.2 → 8.3 / 8.3 → 20.0 / 20.0 → 17.9%. Only the second call's delete is of one regime: wall time 2.41, commit 0.482. The other phases are given: their wall time is 2.37 to 2.43 and their commit 0.466 to 0.549. The two calls at 256 MiB differ by −1.0 to +1.4% in LigninDB's wall time and by under 0.2% in RocksDB's.
+
+**The time rows, paced**, on C, one call at a time, the default pool of 256 MiB, create / update / delete. Pacing is LigninDB's setting alone: RocksDB takes no setting, and in the same call it applies its blocks back to back, as its baseline is measured.
+
+| Call | LigninDB, wall time a transition | RocksDB | Ratio | LigninDB, commit of a block | RocksDB | Ratio | Value log dead, start → end |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| first | 1,210 / 1,188 / 1,270 µs | 583 / 567 / 603 µs | 2.07 / 2.10 / 2.11 | 1.41 / 1.33 / 1.26 ms | 2.98 / 2.83 / 3.01 ms | 0.475 / 0.469 / 0.418 | 18.0 → 17.6 / 17.6 → 17.6 / 17.6 → 17.9% |
+| second | 1,211 / 1,184 / 1,276 µs | 587 / 574 / 610 µs | 2.06 / 2.06 / 2.09 | 1.43 / 1.33 / 1.27 ms | 2.98 / 2.85 / 3.03 ms | 0.480 / 0.467 / 0.420 | 17.9 → 17.6 / 17.6 → 17.8 / 17.8 → 17.8% |
+
+Every phase of both calls is of one regime, and the time rows of section 1 are scored on them; the back-to-back phase of one regime on B agrees in its verdicts (wall time 2.41, missed; commit 0.482, accept met). The two calls differ by under 0.8% in LigninDB's wall time and by up to 1.4% in RocksDB's.
 
 **The state far larger than the memory.** Paced at 162 MiB, each engine in a call of its own, under a memory limit of its own (`MemoryMax` of a systemd unit, with the page cache emptied first): LigninDB 233 MiB and RocksDB 687 MiB, the limits of PERF-06's measurement of this workload (each engine's peak memory there, with 32 and 194 MiB more), so RocksDB has about three times the memory for its cache. The two ran at once, beside the control below (a call of LigninDB alone), so their times are of that sitting and their ratios are of one sitting, not of one call; they are given and not scored. Create / update / delete:
 
@@ -180,6 +190,13 @@ systemd-run -p MemoryMax=233M -p MemorySwapMax=0 -p IOAccounting=yes lignin-benc
 systemd-run -p MemoryMax=687M -p MemorySwapMax=0 -p IOAccounting=yes lignin-bench writes --scratch S5 --engine rocksdb $W                                   # the page cache emptied first
 lignin-bench writes --scratch S6 --engine lignindb $W --set pace=block --set cache_mb=162 --set cleaner_value_target=100
 BULK_LOAD_DIR=DIR bulk_load-tests --ignored --nocapture --exact the_reference_workload_loads_through_the_engine_within_the_time_and_fill
+```
+
+Host C, from `git archive` of `d8957896e` with its lock file, the same `W`:
+
+```sh
+lignin-bench run --scratch REF --engine rocksdb --engine lignindb --keep --creates 0 --updates 0 --deletes 0 --set pace=block
+lignin-bench writes --scratch REF --engine rocksdb --engine lignindb $W --set pace=block   # twice, alone
 ```
 
 Every `lignin-bench` call also took `--out REPORT.json --label so-16vcpu-128gb-intel --commit COMMIT`. Then `lignin-bench score REPORT...` of the branch's head (its rules of which phases are scored are later than the measured binary's) over the reports, which prints the scored rows and the steady state of each phase.
