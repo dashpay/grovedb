@@ -404,6 +404,10 @@ fn a_run_of_both_engines_gives_one_grove_and_the_same_charges() {
             assert_eq!(row.value, rocksdb.row(id, phase).unwrap().value, "{id}");
         }
     }
+    for detail in lignin_testkit::bench::lignindb::DETAIL_IDS {
+        let id = format!("{detail}_to_flushed");
+        assert!(lignindb.row(&id, "flushed").is_some(), "no row {id}");
+    }
     for (id, phase) in [
         ("point_get", "warm"),
         ("point_query_proof", "warm"),

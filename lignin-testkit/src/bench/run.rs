@@ -1609,7 +1609,7 @@ fn measure<E: Engine>(
     engine.flush()?;
     engine.wait_for_background()?;
     let disk_after_flush = disk_usage(dir)?;
-    let settling = engine.counters()?.since(&after_load);
+    let flushed_counters = engine.counters()?;
     let settling_details = details_since(engine.details()?, &details_after_load)?;
     rows.push(measured_row(
         "size_on_disk",
@@ -1624,7 +1624,9 @@ fn measure<E: Engine>(
         "physical_bytes_to_flushed",
         "flushed",
         "B",
-        settling.physical_bytes() as f64,
+        flushed_counters
+            .physical_bytes()
+            .saturating_sub(after_load.physical_bytes()) as f64,
         1,
         "engine counters: log, flush and compaction bytes from the reading that ended the load \
          to the size after the flush: the warm reads, the checkpoints at size, the flush and \
