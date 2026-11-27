@@ -7,7 +7,8 @@
 // (`traced.sh` finds it), or 0 for every thread of the process. MEASURING
 // is the measuring thread. The harness is run with `--mark-blocks`. Lines:
 //
-//   OFFCPU  a followed thread was off a processor for OFF_US or more: when,
+//   OFFCPU  a followed thread was off a processor for OFF_US or more inside
+//           the measured blocks, between the harness's two lines: when,
 //           its state when it left, the file system of the file it was
 //           writing or allocating for (0,0 outside such a call), the waking
 //           thread, which is the one that made it runnable again and need
@@ -46,7 +47,11 @@
 // 0.20, whatever it is given), and a stack that falls where another is kept
 // is not kept: the record then has no frame of it, and bpftrace says
 // `failed to look up stack id -17` to its error output. `traced.sh` keeps
-// that output beside the trace, and `waits.py` counts those lines.
+// that output beside the trace, and `waits.py` counts those lines. So that
+// few stacks fall on one another, a stack is taken only when a wait has
+// ended and was long enough to be written, in the thread that comes back
+// (`finish_task_switch`), and only inside the measured blocks: not at every
+// time a thread leaves a processor, nearly all of which are short.
 //
 // A file is named by its directory and its own name, and a file system by
 // its device, major and minor.
@@ -73,14 +78,14 @@ tracepoint:syscalls:sys_exit_nanosleep
 /@pausing[tid]/
 { delete(@pausing[tid]); }
 
+// A followed thread leaves a processor inside the measured blocks: when, and
+// in what state. No stack is taken here: most of these times are short, and
+// bpftrace keeps every stack it takes for as long as it runs.
 tracepoint:sched:sched_switch
-/pid == $1 && ($4 == 0 || tid == $4) && !@pausing[tid]/
+/pid == $1 && ($4 == 0 || tid == $4) && !@pausing[tid] && @measured/
 {
   @off[tid] = nsecs(monotonic);
-  @offk[tid] = kstack(perf, 40);
-  @offu[tid] = ustack(perf, 127);
   @offstate[tid] = args->prev_state;
-  @offcomm[tid] = comm;
 }
 
 tracepoint:sched:sched_waking
@@ -92,13 +97,17 @@ tracepoint:sched:sched_waking
   @wk[args->pid] = kstack(perf, 30);
 }
 
-tracepoint:sched:sched_switch
-/@off[args->next_pid]/
+// It is back on a processor. The kernel calls this in the thread that comes
+// back, before it goes on from where it left: its kernel stack is the one
+// it left with, under the two frames of the switch, and its user stack has
+// not moved. The stacks are taken here, and only for a wait that is long
+// enough to be written.
+kprobe:finish_task_switch*
+/@off[tid]/
 {
-  $t = args->next_pid;
+  $t = tid;
   $d = (nsecs(monotonic) - @off[$t]) / 1000;
   if ($d >= $3) {
-    // One record, so that the lines of two threads' waits cannot mix.
     // The file of the call the thread was in, in a record of its own with
     // the wait's thread and beginning: one record cannot hold it as well.
     if (@w[$t]) {
@@ -114,16 +123,16 @@ tracepoint:sched:sched_switch
       printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
              @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
              (@wdev[$t] | @adev[$t]) & 0xfffff,
-             @offcomm[$t], $t, @wcomm[$t], @wtid[$t], @offk[$t], @offu[$t], @wk[$t]);
+             comm, $t, @wcomm[$t], @wtid[$t], kstack(perf, 40), ustack(perf, 127), @wk[$t]);
     } else {
       printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=/0\n left at:\n%s called from:\n%s woken at:\n\n",
              @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
              (@wdev[$t] | @adev[$t]) & 0xfffff,
-             @offcomm[$t], $t, @offk[$t], @offu[$t]);
+             comm, $t, kstack(perf, 40), ustack(perf, 127));
     }
   }
-  delete(@off[$t]); delete(@offk[$t]); delete(@offu[$t]); delete(@offstate[$t]);
-  delete(@offcomm[$t]); delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]); delete(@woken[$t]);
+  delete(@off[$t]); delete(@offstate[$t]);
+  delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]); delete(@woken[$t]);
 }
 
 kprobe:vfs_write
@@ -138,12 +147,21 @@ kprobe:vfs_write
   if (@wname[tid] == "null") {
     $line = str(uptr(arg1), arg2);
     printf("MARK at=%llu tid=%d %s", nsecs(monotonic), tid, $line);
+    // A line of the harness is `lignin-mark ` and then `measured begin`,
+    // `measured end`, `block N` or `commit N ...`: what follows the twelve
+    // characters says which, by its first letter, and for the first two
+    // the letter after `measured ` says which of them.
+    $kind = *(uint8 *)uptr(arg1 + 12);
+    // Waits are followed between the two lines around the measured blocks.
+    if ($kind == 109) {
+      if (*(uint8 *)uptr(arg1 + 21) == 98) { @measured = 1; } else { @measured = 0; }
+    }
     // After the line of a commit the harness pauses, and with the line of
     // the next block the pause is over, made or not.
-    if (strncmp($line, "lignin-mark commit", 18) == 0) {
+    if ($kind == 99) {
       @paused[tid] = 1;
     }
-    if (strncmp($line, "lignin-mark block", 17) == 0) {
+    if ($kind == 98) {
       delete(@paused[tid]);
     }
   }
@@ -235,7 +253,7 @@ tracepoint:block:block_rq_complete
 
 END
 {
-  clear(@pausing); clear(@off); clear(@offk); clear(@offu); clear(@offstate); clear(@offcomm);
+  clear(@pausing); clear(@off); clear(@offstate); clear(@measured);
   clear(@wcomm); clear(@wtid); clear(@wk); clear(@woken);
   clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
   clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@sasked); clear(@adev); clear(@rq);

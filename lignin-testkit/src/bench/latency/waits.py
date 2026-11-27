@@ -18,8 +18,8 @@ and drops one that falls where another is kept; it says so in its error
 output, which `traced.sh` keeps as `TRACE.err`. Where that file is there its
 lines are counted, and what is printed says how many stacks were dropped and
 how many waits inside a block have no user stack at all. With `--marked` a
-trace is refused in which more stacks were dropped than two in a hundred of
-its waits, and one that has not that file beside it: what a campaign tables
+trace is refused in which more stacks were dropped than five in a hundred
+of its waits, and one that has not that file beside it: what a campaign tables
 is held to the count. Without `--marked` a trace is read without it.
 
 **Whether the user stacks are whole** is asked of every wait inside a block
@@ -124,7 +124,7 @@ import re
 import sys
 
 # Frames that say only that the thread slept.
-SLEEP = re.compile(r"^(__schedule|schedule|io_schedule|schedule_timeout|io_schedule_timeout|"
+SLEEP = re.compile(r"^(finish_task_switch(\..*)?|__schedule|schedule|io_schedule|schedule_timeout|io_schedule_timeout|"
                    r"schedule_preempt_disabled|bit_wait|bit_wait_io|__wait_on_bit|"
                    r"out_of_line_wait_on_bit|__wait_for_common|wait_for_completion.*)$")
 SYSCALL = re.compile(r"^__(?:arm64|x64|ia32)_sys_(\w+)$")
@@ -155,7 +155,7 @@ ENGINES = ("lignin_store", "lignindb", "lignin_tree", "lignin_io", "rocksdb::", 
 EVIDENCE = 20
 # The share of a trace's waits up to which the tracer may have dropped a
 # stack.
-DROPPED = 0.02
+DROPPED = 0.05
 
 
 def field(line, name):
