@@ -189,7 +189,7 @@ for tool in $tools; do
 done
 [ -z "$missing" ] || refuse "not found:$missing"
 # The script keeps lists of paths in words.
-case "$out$BUILDS" in *[[:space:]\\]*) refuse "OUT and BUILDS take a path without a space or a backslash: $out, $BUILDS" ;; esac
+case "$out$BUILDS" in *[!A-Za-z0-9/._+@:,=~-]*) refuse "OUT and BUILDS take a path of letters, digits and / . _ - + @ : , = ~ alone: $out, $BUILDS" ;; esac
 # What a run is of is the campaign's to say, and its tables go by it.
 for flag in --engine --background --blocks --label --commit --out --scratch --watch-files --mark-blocks --parts; do
   case " ${LATENCY:-} " in *" $flag "*) refuse "LATENCY cannot give $flag: the campaign does" ;; esac
@@ -365,14 +365,20 @@ own() { # own DIRECTORY
 # where the directory is the campaign's own, and never across a mount. What
 # is mounted at the scratch directory or below it is another's, and a
 # removal would go into it.
+plain() { # plain PATH
+  case "$1" in *[!A-Za-z0-9/._+@:,=~-]*) return 1 ;; esac
+}
 emptied() { # emptied DIRECTORY
   local dir=${1:?} at
   own "$dir"
+  local mounts
   at=$(realpath -m "$dir/scratch")
-  # The mount points are read as the system escapes them, and a path with
-  # a space or a backslash in it would not be found among them.
-  case "$at" in *[[:space:]\\]*) refuse "$at has a space or a backslash in it, and nothing is removed under such a path" ;; esac
-  if findmnt -rn -o TARGET | at="$at" awk '$0 == ENVIRON["at"] || index($0, ENVIRON["at"] "/") == 1 { found = 1 } END { exit !found }'; then
+  # The mount points are read as the system writes them, with its escapes
+  # for what is no plain character: a path is looked for among them only
+  # where it has none to escape.
+  plain "$at" || refuse "$at has a character in it that is no letter, digit or one of / . _ - + @ : , = ~, and nothing is removed under such a path"
+  mounts=$(findmnt -rn -o TARGET) || refuse "the mounts cannot be listed, so nothing is removed under $at"
+  if echo "$mounts" | at="$at" awk '$0 == ENVIRON["at"] || index($0, ENVIRON["at"] "/") == 1 { found = 1 } END { exit !found }'; then
     refuse "something is mounted at $at or below it: nothing is removed across a mount"
   fi
   rm -rf "$dir/scratch"

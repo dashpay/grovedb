@@ -78,7 +78,10 @@ sha256sum "$to/lignin-bench" | cut -d' ' -f1 > "$to/sha256"
 # the order of bytes, whatever the caller's language, and has its name only
 # once it is whole.
 find "$to/target/release" -name 'lib*.rlib' | while read -r library; do
-  echo "$(basename "$library" | sed -E 's/^lib(.*)-[0-9a-f]+\.rlib$/\1/') $(sha256sum "$library" | cut -d' ' -f1)"
+  # A library whose checksum cannot be taken ends the build: the list is of
+  # every library or is none.
+  sum=$(sha256sum "$library" | cut -d' ' -f1) && [ -n "$sum" ] || exit 1
+  echo "$(basename "$library" | sed -E 's/^lib(.*)-[0-9a-f]+\.rlib$/\1/') $sum"
 done | LC_ALL=C sort > "$to/libraries.part"
 [ -s "$to/libraries.part" ] || {
   echo "build.sh: no library of the build was found under $to/target/release" >&2

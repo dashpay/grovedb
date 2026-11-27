@@ -7,8 +7,9 @@
 // (`traced.sh` finds it), or 0 for every thread of the process. MEASURING
 // is the measuring thread. The harness is run with `--mark-blocks`. Lines:
 //
-//   OFFCPU  a followed thread was off a processor for OFF_US or more inside
-//           the measured blocks, between the harness's two lines: when,
+//   OFFCPU  a followed thread was off a processor for OFF_US or more, at
+//           some moment of the measured blocks, which are between the
+//           harness's two lines: when,
 //           its state when it left, the file system of the file it was
 //           writing or allocating for (0,0 outside such a call), the waking
 //           thread, which is the one that made it runnable again and need
@@ -50,8 +51,9 @@
 // that output beside the trace, and `waits.py` counts those lines. So that
 // few stacks fall on one another, a stack is taken only when a wait has
 // ended and was long enough to be written, in the thread that comes back
-// (`finish_task_switch`), and only inside the measured blocks: not at every
-// time a thread leaves a processor, nearly all of which are short.
+// (`finish_task_switch`), and only for a wait with a moment of the measured
+// blocks: not at every time a thread leaves a processor, nearly all of which
+// are short.
 //
 // A file is named by its directory and its own name, and a file system by
 // its device, major and minor.
@@ -78,14 +80,15 @@ tracepoint:syscalls:sys_exit_nanosleep
 /@pausing[tid]/
 { delete(@pausing[tid]); }
 
-// A followed thread leaves a processor inside the measured blocks: when, and
-// in what state. No stack is taken here: most of these times are short, and
-// bpftrace keeps every stack it takes for as long as it runs.
+// A followed thread leaves a processor: when, in what state, and whether
+// inside the measured blocks. No stack is taken here: most of these times
+// are short, and bpftrace keeps every stack it takes for as long as it runs.
 tracepoint:sched:sched_switch
-/pid == $1 && ($4 == 0 || tid == $4) && !@pausing[tid] && @measured/
+/pid == $1 && ($4 == 0 || tid == $4) && !@pausing[tid]/
 {
   @off[tid] = nsecs(monotonic);
   @offstate[tid] = args->prev_state;
+  @offin[tid] = @measured;
 }
 
 tracepoint:sched:sched_waking
@@ -107,7 +110,10 @@ kprobe:finish_task_switch*
 {
   $t = tid;
   $d = (nsecs(monotonic) - @off[$t]) / 1000;
-  if ($d >= $3) {
+  // A wait is written if it has a moment of the measured blocks: it began
+  // inside them or ends inside them. One of a thread of the background that
+  // began before them and ends in the first of them is such a wait.
+  if ($d >= $3 && (@measured || @offin[$t])) {
     // The file of the call the thread was in, in a record of its own with
     // the wait's thread and beginning: one record cannot hold it as well.
     if (@w[$t]) {
@@ -131,7 +137,7 @@ kprobe:finish_task_switch*
              comm, $t, kstack(perf, 40), ustack(perf, 127));
     }
   }
-  delete(@off[$t]); delete(@offstate[$t]);
+  delete(@off[$t]); delete(@offstate[$t]); delete(@offin[$t]);
   delete(@wcomm[$t]); delete(@wtid[$t]); delete(@wk[$t]); delete(@woken[$t]);
 }
 
@@ -253,7 +259,7 @@ tracepoint:block:block_rq_complete
 
 END
 {
-  clear(@pausing); clear(@off); clear(@offstate); clear(@measured);
+  clear(@pausing); clear(@off); clear(@offstate); clear(@offin); clear(@measured);
   clear(@wcomm); clear(@wtid); clear(@wk); clear(@woken);
   clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
   clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@sasked); clear(@adev); clear(@rq);
