@@ -224,12 +224,21 @@
 //! several records for each. So **a batch writes each leaf of the
 //! directory once for the records it puts there, and not once a record**:
 //!
-//! - Every call that writes has a form that is given the records of the
-//!   batch ([`Pending`]): [`Directory::add_in`], [`Directory::set_roots_in`],
+//! - **Six writes have a form that is given the records of the batch**
+//!   ([`Pending`]): [`Directory::add_in`], [`Directory::set_roots_in`],
 //!   [`Directory::unlink_in`], [`Directory::clear_in`],
-//!   [`Directory::restate_in`] and [`Directory::rekey_pairs_in`]. It puts
-//!   its records there and changes no page. The form without is the same
-//!   call with records of its own, which it settles before it returns.
+//!   [`Directory::restate_in`] and [`Directory::rekey_pairs_in`]. Each
+//!   puts its records there and changes no page. The form without is the
+//!   same call with records of its own, which it settles before it
+//!   returns.
+//! - **Every other write changes pages at once and reads no pending
+//!   record**: [`Directory::set_tree_type`], [`Directory::rekey`], which
+//!   writes each Merk as its walk comes to it, and the reclaimer's
+//!   ([`Directory::reclaim_child`], [`Directory::reclaimed`]). So does a
+//!   form without `_in` of the six. A caller that holds pending records
+//!   settles them before it makes one of these on the same pages: such a
+//!   write would read the directory without them and be written over by
+//!   them.
 //! - **A call reads what the calls before it put.** Each of them looks a
 //!   record up among the pending ones first, and in the pages where
 //!   nothing is pending under the key; a walk of the Merks below a Merk
@@ -262,10 +271,7 @@
 //!   image, or freed unwritten where it is left with no record. Where
 //!   that leaves the keyspace's root with one leaf below it, the root
 //!   takes what the leaf holds, which is the image that the freed leaf
-//!   did not take. This is of a keyspace whose root, where it is a
-//!   branch, has two children or more, as every write leaves it
-//!   ([`Written::leaf_writes`](crate::flat::Written::leaf_writes) says
-//!   what a root with one child adds).
+//!   did not take.
 //!
 //! What the directory holds afterwards is what the same calls leave when
 //! each is settled by itself, record for record, and each call answers as
@@ -294,25 +300,33 @@
 //! dropped unsettled is loaded again ([`Directory::load`]), as one whose
 //! writer rolled back is.
 //!
-//! **One difference on a store with a page that cannot be read.** A call
-//! that asks for the first Merk below a Merk ([`Directory::first_child_in`],
-//! [`Directory::has_children_in`], and so [`Directory::unlink_in`] of a
-//! Merk with no node and [`drop::unlink`](crate::drop::unlink) of one)
-//! seeks the first child record in the pages before it compares it with
-//! the first pending one. Where the pending record is the first and no
-//! record of the pages is under the id in the leaf it belongs to, the
-//! seek goes on to the next leaf. If that page cannot be read, the call
-//! ends with the error of the keyspace, where the same calls, each
-//! settled by itself, find the settled record and read no further: a drop
-//! of the Merk is then refused for the Merks below it
-//! ([`DirectoryError::NotEmpty`]), and a clear of it is taken. On a store
-//! whose pages can be read the two answer alike. A seek that ends at a
-//! key would close it, and is the flat cursor's to have.
+//! **An operation answers for the records and the pages it needs.** That
+//! is what "each call answers as it does when it is settled by itself"
+//! says of a store with a page that is damaged or cannot be read: the
+//! two answer alike on the pages they both need, and a damaged page
+//! beside those is the checker's to find ([`Directory::check`]), and no
+//! write's. Two things follow, and both are held by tests:
+//!
+//! - A lookup of the first Merk below a Merk ([`Directory::first_child_in`],
+//!   [`Directory::has_children_in`], and so [`Directory::unlink_in`] of a
+//!   Merk with no node and [`drop::unlink`](crate::drop::unlink) of one)
+//!   searches the pages up to the first pending record under the id, and
+//!   reads no leaf whose key range begins at or after that record's key:
+//!   it reads the pages that the search reads once the record is settled.
+//!   A leaf before it that cannot be read ends the lookup with its error.
+//! - Records that a batch changes in place are written where they are.
+//!   Calls that are settled one by one can take a record out of a leaf and
+//!   put it again, and a leaf that a delete leaves short is merged with
+//!   the leaf beside it, which is read for that; a batch whose records
+//!   come to puts alone reads no leaf beside theirs. So a batch can
+//!   succeed where the same calls, settled one by one, fail on a leaf
+//!   that none of their records is in.
 //!
 //! In a test build of this crate, and in a build with the feature
 //! `held_reads`, the pages are held to the records that were settled into
 //! them: a lookup of each key finds the value that was pending, or none
-//! where the record went.
+//! where the record went. Only a lookup that succeeds is compared: one
+//! that fails says nothing, and the settling ends as it ended.
 //!
 //! # The reclaimer
 //!

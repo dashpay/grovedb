@@ -746,7 +746,8 @@ impl Directory {
     /// pending record takes out is passed by its key, whatever it holds,
     /// and the value of the first one that stays is read, and not
     /// decoded. A pending record is the first where no record of the
-    /// pages that stays is before it.
+    /// pages that stays is before it, and the pages are searched up to
+    /// its key: no leaf is read whose key range begins at or after it.
     pub fn has_children_in<P: FlatPages + ?Sized>(
         &self,
         pending: &Pending,
@@ -784,6 +785,11 @@ impl Directory {
 
     /// The key and the value of the first child record under the id
     /// `parent`, as the records of a batch leave the directory.
+    ///
+    /// The pages are searched up to the first pending record under the
+    /// id, and no leaf is read whose key range begins at or after its
+    /// key ([`FlatTree::first_under`](crate::flat::FlatTree)): the search
+    /// reads the pages that a search reads once the records are settled.
     fn child_record_in<P: FlatPages + ?Sized>(
         &self,
         pending: &Pending,
@@ -796,25 +802,16 @@ impl Directory {
             .take_while(|(key, _)| key.starts_with(&within))
             .filter_map(|(key, record)| Some((key, record.as_ref()?)));
         let put = put.next();
-        let mut cursor = self.tree.cursor_within(&within);
-        let (mut key, mut value) = (Vec::new(), Vec::new());
-        cursor.seek_to_first(pages)?;
-        while let Some(rest) = cursor.key() {
-            key.clear();
-            key.extend_from_slice(&within);
-            key.extend_from_slice(rest);
-            // A pending record at this key or before it is the first.
-            if put.is_some_and(|(put, _)| *put <= key) {
-                break;
-            }
-            value.clear();
-            // A record that a page step took out under the walk is passed.
-            if pending.get(&key).is_none() && cursor.value(pages, &mut value)? {
-                return Ok(Some((key, value)));
-            }
-            cursor.next(pages)?;
-        }
-        Ok(put.map(|(key, value)| (key.clone(), value.clone())))
+        let end = put.map(|(key, _)| key.as_slice());
+        // A record of the pages that a pending record takes out is
+        // passed by its key. None of them is put again before `end`.
+        let taken_out = |key: &[u8]| pending.get(key).is_some();
+        let mut value = Vec::new();
+        let found = (self.tree).first_under(pages, &within, end, taken_out, &mut value)?;
+        Ok(match found {
+            Some(key) => Some((key, value)),
+            None => put.map(|(key, value)| (key.clone(), value.clone())),
+        })
     }
 
     /// [`Self::live`] as the records of a batch leave the directory.

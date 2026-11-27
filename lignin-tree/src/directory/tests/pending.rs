@@ -1297,3 +1297,264 @@ fn a_batch_that_empties_a_leaf_and_cuts_another_writes_no_image_more() {
         "no directory of these was emptied and cut in one batch"
     );
 }
+
+/// Parents that stand alone, in turns of three: one that hosts `children`
+/// Merks, one that hosts one, and one that hosts none. Their ids follow
+/// each other, so their child records do too. Returns, for each turn, the
+/// prefix and the id of the second and of the third.
+type Turn = ((Prefix, MerkId), (Prefix, MerkId));
+
+fn turns(children: u32) -> (Pages, Directory, Vec<Turn>) {
+    let (mut pages, directory) = Pages::directory();
+    let name = |kind: &str, turn: u32| prefix_of(&[(format!("{kind}{turn:03}").into_bytes(), 7)]);
+    let mut ids = Vec::new();
+    for turn in 0..24 {
+        let mut add = |kind: &str| {
+            let prefix = name(kind, turn);
+            let id = directory.add(&mut pages, &prefix, b"tree", None);
+            (prefix, id.expect("entered"))
+        };
+        ids.push((add("many"), add("one"), add("none")));
+    }
+    let mut turn_of = Vec::new();
+    for (turn, ((many, _), (one, one_id), (none, none_id))) in ids.into_iter().enumerate() {
+        for child in 0..children {
+            let key = format!("c{child:03}").into_bytes();
+            let below = prefix_of(&[(many.to_vec(), 1), (key.clone(), 0)]);
+            let host = Host {
+                parent: &many,
+                key: &key,
+                position: 0,
+            };
+            directory
+                .add(&mut pages, &below, b"tree", Some(host))
+                .expect("entered");
+        }
+        let host = Host {
+            parent: &one,
+            key: b"a",
+            position: 0,
+        };
+        let below = prefix_of(&[(one.to_vec(), 1), (b"a".to_vec(), turn as u8)]);
+        directory
+            .add(&mut pages, &below, b"tree", Some(host))
+            .expect("entered");
+        turn_of.push(((one, one_id), (none, none_id)));
+    }
+    (pages, directory, turn_of)
+}
+
+/// The Merk that the Merk under `parent` hosts under the key `a`
+/// ([`turns`]).
+fn only_child(parent: &Prefix, turn: usize) -> Prefix {
+    prefix_of(&[(parent.to_vec(), 1), (b"a".to_vec(), turn as u8)])
+}
+
+/// A lookup of the first Merk below a Merk, where that Merk is a pending
+/// record, reads no leaf beyond the record: a leaf after it that cannot
+/// be read is not asked for, with the pending record first under the id
+/// and with it behind a record that another pending record takes out. A
+/// leaf before it that cannot be read ends the lookup with its error.
+/// Each answer is the one the same calls give once the records are
+/// settled.
+#[test]
+fn a_lookup_of_a_pending_child_reads_no_leaf_beyond_it() {
+    use super::super::record::{child_key, children_key};
+    let mut hit = 0;
+    for children in 2..40 {
+        let (pages, directory, turn_of) = turns(children);
+        let all = records(&pages, &directory);
+        for (turn, ((one, one_id), (none, none_id))) in turn_of.into_iter().enumerate() {
+            // The turn this test is for: the record of the one Merk that
+            // `one` hosts is the last of its leaf, so what is under the
+            // id of `none` would be at that leaf's end, and the records
+            // of the next parent are in the leaf after it.
+            let last = child_key(one_id, 0, b"a");
+            let here = leaf_of(&pages, &directory, &last);
+            let after = all.iter().map(|(key, _)| key).find(|key| **key > last);
+            let Some(after) = after.filter(|key| key.starts_with(&[3])) else {
+                continue;
+            };
+            let beyond = leaf_of(&pages, &directory, after);
+            let within = children_key(none_id);
+            if beyond == here || leaf_of(&pages, &directory, &within) != here {
+                continue;
+            }
+            hit += 1;
+            let entered = prefix_of(&[(none.to_vec(), 1), (b"z".to_vec(), 0)]);
+            let enter = |directory: &Directory, pending: &mut Pending, pages: &Pages, parent| {
+                let host = Host {
+                    parent,
+                    key: b"z",
+                    position: 0,
+                };
+                let prefix = prefix_of(&[(parent.to_vec(), 1), (b"z".to_vec(), 0)]);
+                directory
+                    .add_in(pending, pages, &prefix, b"tree", Some(host))
+                    .expect("entered");
+                prefix
+            };
+
+            // The leaf after cannot be read.
+            let mut faulted = pages.clone();
+            faulted.pages.remove(&beyond);
+
+            // The pending record is the first under the id of `none`.
+            let (mut pending, mut handle) = (Pending::new(), directory.clone());
+            assert_eq!(enter(&directory, &mut pending, &faulted, &none), entered);
+            let first = directory.first_child_in(&pending, &faulted, none_id);
+            assert_eq!(
+                first.expect("no leaf beyond").map(|child| child.prefix),
+                Some(entered)
+            );
+            let dropped = handle.unlink_in(&mut pending, &faulted, &none);
+            // Settled first, the same calls answer the same.
+            let (mut settled, mut same) = (faulted.clone(), directory.clone());
+            let mut alone = Pending::new();
+            enter(&same, &mut alone, &settled, &none);
+            same.settle(&mut settled, alone).expect("settled");
+            let single = same.unlink(&mut settled, &none);
+            assert!(
+                matches!(single, Err(DirectoryError::NotEmpty { .. })),
+                "{single:?}"
+            );
+            assert_eq!(answer(&dropped), answer(&single));
+
+            // The pending record is behind the record of the Merk that
+            // `one` hosts, which a pending record takes out.
+            let (mut pending, mut handle) = (Pending::new(), directory.clone());
+            // (It is dropped on the pages as they were: that drop asks
+            // what is below the dropped Merk, elsewhere in the keyspace.)
+            handle
+                .unlink_in(&mut pending, &pages, &only_child(&one, turn))
+                .expect("dropped");
+            let put = enter(&directory, &mut pending, &faulted, &one);
+            let first = handle.first_child_in(&pending, &faulted, one_id);
+            assert_eq!(
+                first.expect("no leaf beyond").map(|child| child.prefix),
+                Some(put)
+            );
+            let dropped = handle.unlink_in(&mut pending, &faulted, &one);
+            assert!(
+                matches!(dropped, Err(DirectoryError::NotEmpty { .. })),
+                "{dropped:?}"
+            );
+
+            // The leaf that the records under the id belong to cannot be
+            // read: a record before the pending one could be in it.
+            let mut faulted = pages.clone();
+            faulted.pages.remove(&here);
+            let mut pending = Pending::new();
+            let host = Host {
+                parent: &none,
+                key: b"z",
+                position: 0,
+            };
+            // The enter reads that leaf too, for the place of its host.
+            let refused = directory.add_in(&mut pending, &faulted, &entered, b"tree", Some(host));
+            assert!(
+                matches!(refused, Err(DirectoryError::Flat(_))),
+                "{refused:?}"
+            );
+            let mut pending = Pending::new();
+            enter(&directory, &mut pending, &pages, &none);
+            let first = directory.first_child_in(&pending, &faulted, none_id);
+            assert!(
+                matches!(first, Err(DirectoryError::Flat(FlatError::Freed { .. }))),
+                "{first:?}"
+            );
+        }
+    }
+    assert!(
+        hit > 0,
+        "no turn ends a leaf with the record of its one Merk"
+    );
+}
+
+/// An operation answers for the records and the pages it needs. Two Merks
+/// that exchange the cells of their roots change four records in place,
+/// in the leaves those are in: a leaf beside them that cannot be read is
+/// not asked for. A put and a delete for each record would look at that
+/// leaf, to merge the one that a delete left short.
+#[test]
+fn a_batch_reads_the_pages_of_its_records_and_no_leaf_beside_them() {
+    use lignin_format::flat_page::{FlatBranchBuilder, FlatLeafBuilder, FlatValue};
+
+    use super::super::record::root_key;
+    // Two Merks with a node each, and what a third left.
+    let (mut made, mut directory) = Pages::directory();
+    let (a, b, c) = ([0xA1; 32], [0xB2; 32], [0xC3; 32]);
+    for prefix in [&a, &b, &c] {
+        directory
+            .add(&mut made, prefix, b"tree", None)
+            .expect("entered");
+    }
+    let rooted = [
+        named(&a, Some((cell(5, 1), b"k"))),
+        named(&b, Some((cell(5, 2), b"k"))),
+    ];
+    directory.set_roots(&mut made, &rooted).expect("roots");
+    directory.unlink(&mut made, &c).expect("dropped");
+
+    // The same records in three leaves below the root: the header and
+    // the entries, the records of the roots, and what was left.
+    let all = records(&made, &directory);
+    let kind = |key: &[u8]| RecordKind::of(key).expect("a kind");
+    let of = |wanted: &[RecordKind]| -> Vec<&(Vec<u8>, Vec<u8>)> {
+        (all.iter())
+            .filter(|(key, _)| wanted.contains(&kind(key)))
+            .collect()
+    };
+    let groups = [
+        of(&[RecordKind::Header, RecordKind::Entry]),
+        of(&[RecordKind::Root]),
+        of(&[RecordKind::Dropped]),
+    ];
+    assert_eq!(groups.each_ref().map(Vec::len), [3, 2, 1]);
+    let mut pages = Pages::new();
+    let capacity = pages.config.capacity();
+    let root = directory.root_page();
+    let leaves = [
+        page(root.get() + 1),
+        page(root.get() + 2),
+        page(root.get() + 3),
+    ];
+    for (leaf, group) in leaves.iter().zip(&groups) {
+        let mut image = FlatLeafBuilder::new(*leaf, b"", capacity).expect("a leaf");
+        for (key, value) in group {
+            image.push(key, FlatValue::Inline(value)).expect("an entry");
+        }
+        pages.pages.insert(*leaf, image.finish());
+    }
+    let mut image = FlatBranchBuilder::new(root, b"", capacity, 1, leaves[0]).expect("a branch");
+    for (leaf, group) in leaves.iter().zip(&groups).skip(1) {
+        image.push(&group[0].0, *leaf).expect("a separator");
+    }
+    pages.pages.insert(root, image.finish());
+    pages.next_page = root.get() + 3;
+    let directory = Directory::load(&pages, root, pages.config).expect("a directory");
+    directory.check(&pages).expect("a directory");
+
+    // The leaf of what was left cannot be read from here on.
+    pages.pages.remove(&leaves[2]);
+    let swapped = [
+        named(&a, Some((cell(5, 2), b"k"))),
+        named(&b, Some((cell(5, 1), b"k"))),
+    ];
+    // One record at a time: the leaf of the roots is short once a record
+    // is taken out, and the leaf beside it is read to merge the two.
+    let (mut single, tree) = (pages.clone(), *directory.tree());
+    let one = tree.delete(&mut single, &root_key(cell(5, 1)));
+    assert!(matches!(one, Err(FlatError::Freed { .. })), "{one:?}");
+    // The batch: the four records are changed where they are.
+    let before = pages.leaf_writes;
+    directory.set_roots(&mut pages, &swapped).expect("swapped");
+    assert_eq!(pages.leaf_writes - before, 2, "the entries, and the roots");
+    for (prefix, at) in [(&a, cell(5, 2)), (&b, cell(5, 1))] {
+        let entry = directory.open(&pages, prefix).expect("a lookup");
+        let entry = entry.expect("entered");
+        assert_eq!(entry.root().map(|root| root.address), Some(at));
+        let owner = directory.root_owner(&pages, at).expect("a lookup");
+        assert_eq!(owner, Some(*prefix));
+    }
+}
