@@ -850,6 +850,14 @@ fn the_writes_at_size_are_measured_over_a_copy_of_a_kept_database() {
         "--churn 20 --creates 20 --updates 20 --deletes 20",
     );
     assert_eq!(churned.workload.churn, 20);
+    let names = |report: &Report| -> Vec<String> {
+        report
+            .engines
+            .iter()
+            .map(|engine| engine.engine.clone())
+            .collect()
+    };
+    assert_eq!(names(&churned), names(&wrote));
     for (churned, wrote) in churned.engines.iter().zip(&wrote.engines) {
         assert_eq!(churned.root_hash_at_end, wrote.root_hash_at_end);
         let phases: Vec<(&str, u64)> = (churned.phases.iter())

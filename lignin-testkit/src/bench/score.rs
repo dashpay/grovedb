@@ -6,17 +6,22 @@
 //! of the predicted range, all on a machine the project does not have. So
 //! a row is scored as a ratio: LigninDB's value over RocksDB's for the
 //! same row in the same run, against the target and the accept over the
-//! plan's RocksDB value. A row whose RocksDB value the plan only
-//! estimated, or did not measure, is scored by its value. Every row is
+//! plan's RocksDB value. The page reads a transition, of which RocksDB
+//! counts none and the plan's value is an estimate, are scored by their
+//! value, as the gate's rulings read that row. Every scored row is
 //! lower-is-better.
 //!
-//! [`TARGETS`] holds every row of the table. The rows that no report of
-//! this harness measures are listed by the score with what measures them
-//! instead.
+//! A row is scored only in the state the plan means: the reference
+//! workload; the write rows at steady state, in a write phase at size of
+//! at least [`STEADY_TRANSITIONS`] transitions after a churn; the reads
+//! warm and settled; the size, the checkpoint and the reopen after the
+//! flush. [`TARGETS`] holds every row of the table; for a row that no
+//! report of this harness measures, it says what does.
 
 use std::fmt::Write as _;
 
-use super::{Engine, Report, Row};
+use super::{Report, Row, RowKind};
+use crate::workload::drive::Documents;
 
 /// One row of the plan's prediction table.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,9 +29,7 @@ pub struct Target {
     /// The plan's words for the row.
     pub measure: &'static str,
     /// The report rows that measure it, each an id with the phases it is
-    /// scored in; none for a row this harness does not measure. The other
-    /// phases of the id are not the plan's state: the cold reads, the
-    /// churn, the page reads of a load that a cache still holds.
+    /// scored in; none for a row this harness does not measure.
     pub rows: &'static [(&'static str, &'static [&'static str])],
     /// The plan's RocksDB value, where it measured one: the row is scored
     /// as a ratio to RocksDB in the same run. `None` scores the value.
@@ -35,8 +38,11 @@ pub struct Target {
     pub target: f64,
     /// The accept, the edge of the predicted range, in the same unit.
     pub accept: f64,
-    /// For a row no report measures, why or what does.
-    pub elsewhere: &'static str,
+    /// Whether the row is scored at steady state only ([`STEADY_TRANSITIONS`]).
+    pub steady: bool,
+    /// For a row scored by its value, why; for a row no report measures,
+    /// what measures it; else empty.
+    pub note: &'static str,
 }
 
 impl Target {
@@ -50,7 +56,8 @@ impl Target {
         self.rocksdb.map(|rocksdb| self.accept / rocksdb)
     }
 
-    /// How `value` scores against the target and the accept.
+    /// How `value`, a ratio for a ratio row and a value else, scores
+    /// against the target and the accept. Lower is better.
     pub fn verdict(&self, value: f64) -> Verdict {
         let (target, accept) = match (self.target_ratio(), self.accept_ratio()) {
             (Some(target), Some(accept)) => (target, accept),
@@ -87,13 +94,21 @@ impl std::fmt::Display for Verdict {
     }
 }
 
-const NOT_HERE: &str = "";
+/// The transitions a write phase at size has at least for its write rows
+/// to be scored, after a churn: the gate's rulings read
+/// the write rows at steady state, and shorter phases end before the value
+/// cleaner wakes.
+pub const STEADY_TRANSITIONS: u64 = 100_000;
 
-/// The write phases a write row is scored in: the load and the writes at
-/// size, and not the churn before them.
-const WRITES: &[&str] = &["load", "create", "update", "delete"];
+/// The names of the two engines in a report.
+const LIGNINDB: &str = "lignindb";
+const ROCKSDB: &str = "rocksdb";
+
 /// The write phases at size.
 const AT_SIZE: &[&str] = &["create", "update", "delete"];
+/// The write phases of a count that no regime moves: the load and the
+/// writes at size.
+const WRITES: &[&str] = &["load", "create", "update", "delete"];
 /// The warm reads: right after the load, and settled.
 const READS: &[&str] = &["warm", "settled"];
 
@@ -101,27 +116,30 @@ const READS: &[&str] = &["warm", "settled"];
 pub const TARGETS: &[Target] = &[
     Target {
         measure: "Bytes logged per transition",
-        rows: &[("bytes_logged_per_transition", WRITES)],
+        rows: &[("bytes_logged_per_transition", AT_SIZE)],
         rocksdb: Some(23_900.0),
         target: 2_400.0,
         accept: 3_200.0,
-        elsewhere: NOT_HERE,
+        steady: true,
+        note: "",
     },
     Target {
         measure: "Physical bytes written per transition",
-        rows: &[("physical_bytes_per_transition", WRITES)],
+        rows: &[("physical_bytes_per_transition", AT_SIZE)],
         rocksdb: Some(56_000.0),
         target: 5_000.0,
         accept: 8_000.0,
-        elsewhere: NOT_HERE,
+        steady: true,
+        note: "",
     },
     Target {
         measure: "Wall time per transition",
-        rows: &[("wall_per_transition", WRITES)],
+        rows: &[("wall_per_transition", AT_SIZE)],
         rocksdb: Some(298.0),
         target: 50.0,
         accept: 80.0,
-        elsewhere: NOT_HERE,
+        steady: true,
+        note: "",
     },
     Target {
         measure: "Keyed lookups per transition",
@@ -129,7 +147,8 @@ pub const TARGETS: &[Target] = &[
         rocksdb: Some(70.0),
         target: 0.0,
         accept: 0.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "",
     },
     Target {
         measure: "Hashes computed per transition, iteration two",
@@ -137,15 +156,17 @@ pub const TARGETS: &[Target] = &[
         rocksdb: Some(122.0),
         target: 61.0,
         accept: 70.0,
-        elsewhere: "iteration two (PERF-02): not scored before stop points",
+        steady: false,
+        note: "iteration two (PERF-02): not scored before stop points",
     },
     Target {
         measure: "Commit of a 20-transition block",
-        rows: &[("block_commit", WRITES)],
+        rows: &[("block_commit", AT_SIZE)],
         rocksdb: Some(1.0),
         target: 0.2,
         accept: 0.5,
-        elsewhere: NOT_HERE,
+        steady: true,
+        note: "",
     },
     Target {
         measure: "Write throughput, 8 threads on disjoint Merks, iteration two",
@@ -153,15 +174,21 @@ pub const TARGETS: &[Target] = &[
         rocksdb: None,
         target: 5.0,
         accept: 3.0,
-        elsewhere: "iteration two (PERF-10): not scored before parallel writers",
+        steady: false,
+        note: "iteration two (PERF-10): not scored before parallel writers; higher is better",
     },
     Target {
         measure: "Bulk load of 1M transitions",
-        rows: &[("bulk_load", &["load"])],
+        rows: &[],
         rocksdb: Some(144.5),
         target: 25.0,
         accept: 50.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "the bulk loader's test through the engine (TREE-10, TXN-10: lignin-testkit's \
+               `the_reference_workload_loads_through_the_engine_within_the_time_and_fill`), \
+               against GroveDB's build of the same grove on RocksDB in that run; RocksDB's \
+               value is the middle of the plan's 138 to 151 s. A report's `bulk_load` is the \
+               load through GroveDB's write transactions, not the loader",
     },
     Target {
         measure: "Point get",
@@ -169,7 +196,8 @@ pub const TARGETS: &[Target] = &[
         rocksdb: Some(8.9),
         target: 2.0,
         accept: 5.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "",
     },
     Target {
         measure: "Point query with proof",
@@ -177,7 +205,8 @@ pub const TARGETS: &[Target] = &[
         rocksdb: Some(73.6),
         target: 10.0,
         accept: 20.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "",
     },
     Target {
         measure: "100 references to documents, with proof",
@@ -185,7 +214,8 @@ pub const TARGETS: &[Target] = &[
         rocksdb: Some(1_262.0),
         target: 450.0,
         accept: 750.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "",
     },
     Target {
         measure: "Page reads per transition, state far larger than cache",
@@ -193,26 +223,27 @@ pub const TARGETS: &[Target] = &[
         rocksdb: None,
         target: 2.0,
         accept: 3.0,
-        elsewhere: NOT_HERE,
+        steady: true,
+        note: "by its value: RocksDB counts no page reads and the plan's 8 is an estimate \
+               (the gate's rulings read the row so)",
     },
     Target {
         measure: "Size after 1M transitions, random documents",
-        rows: &[
-            ("size_on_disk", &["flushed"]),
-            ("size_on_disk_at_end", AT_SIZE),
-        ],
+        rows: &[("size_on_disk", &["flushed"])],
         rocksdb: Some(1_010_000_000.0),
         target: 850_000_000.0,
         accept: 1_000_000_000.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "",
     },
     Target {
         measure: "Checkpoint",
-        rows: &[("checkpoint", &["at-size", "flushed"])],
+        rows: &[("checkpoint", &["flushed"])],
         rocksdb: Some(10.0),
         target: 15.0,
         accept: 40.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "",
     },
     Target {
         measure: "Reopen",
@@ -220,7 +251,8 @@ pub const TARGETS: &[Target] = &[
         rocksdb: Some(31.0),
         target: 20.0,
         accept: 60.0,
-        elsewhere: NOT_HERE,
+        steady: false,
+        note: "",
     },
     Target {
         measure: "Crash recovery, 256 MB of log",
@@ -228,8 +260,9 @@ pub const TARGETS: &[Target] = &[
         rocksdb: None,
         target: 1.0,
         accept: 5.0,
-        elsewhere: "s, absolute: lignin-store's ignored test \
-                    `recovery_after_256_mb_of_log_completes_within_5_s` (STORE-07)",
+        steady: false,
+        note: "by its value in s, as the plan measured none on RocksDB: lignin-store's \
+               ignored test `recovery_after_256_mb_of_log_completes_within_5_s` (STORE-07)",
     },
     Target {
         measure: "Root hash, proof bytes, OperationCost",
@@ -237,8 +270,10 @@ pub const TARGETS: &[Target] = &[
         rocksdb: None,
         target: 0.0,
         accept: 0.0,
-        elsewhere: "identical: the golden corpus replayed on LigninDB (VER-02), and the root \
-                    hashes and proof sizes of both engines in every report",
+        steady: false,
+        note: "identical: the golden corpus replayed on LigninDB (VER-02), which compares \
+               root hashes, proof bytes and every OperationCost; a report shows only that \
+               both engines end on one root hash",
     },
 ];
 
@@ -252,32 +287,76 @@ pub struct Scored<'a> {
     /// RocksDB's row of the same id and phase in the same report.
     pub rocksdb: Option<&'a Row>,
     /// The value scored: the ratio to RocksDB for a row scored as a ratio,
-    /// else the row's value. `None` for a ratio row of a report without
-    /// RocksDB.
+    /// else the row's value. `None` for a ratio row with no RocksDB row
+    /// to divide by, or one of 0.
     pub scored: Option<f64>,
 }
 
+/// Why `report` is not of the reference workload, if it is not: no row of
+/// it is scored then.
+pub fn not_reference(report: &Report) -> Option<String> {
+    let reference = Documents::reference();
+    let workload = &report.workload;
+    let same = workload.seed == 1
+        && workload.documents == reference.documents
+        && workload.owners == reference.owners
+        && workload.document_size == reference.document_size
+        && workload.transitions_per_block == reference.transitions_per_block;
+    (!same).then(|| {
+        format!(
+            "not the reference workload ({} documents over {} owners, seed {}, where the plan's \
+             is {} over {}, seed 1): no row is scored",
+            workload.documents,
+            workload.owners,
+            workload.seed,
+            reference.documents,
+            reference.owners
+        )
+    })
+}
+
+/// Whether a row of `phase` of `report` is at steady state: a write phase
+/// at size of at least [`STEADY_TRANSITIONS`] transitions, after a churn.
+fn steady(report: &Report, engine: &str, phase: &str) -> bool {
+    let transitions = (report.engines.iter())
+        .find(|one| one.engine == engine)
+        .and_then(|one| one.phases.iter().find(|totals| totals.phase == phase))
+        .map_or(0, |totals| totals.transitions);
+    report.workload.churn > 0 && transitions >= STEADY_TRANSITIONS
+}
+
+/// A time row with no sample was not measured: a run that asked for none
+/// of its kind still has the row, at 0.
+fn measured(row: &Row) -> bool {
+    row.kind != RowKind::Time || !row.samples.is_empty()
+}
+
 /// The rows of `report` that the plan's table scores: every LigninDB row
-/// whose id and phase a [`Target`] names, in the table's order and then
-/// the report's.
+/// whose id and phase a [`Target`] names, in the state the target asks
+/// for, of a report of the reference workload, in the table's order and
+/// then the report's.
 pub fn scored(report: &Report) -> Vec<Scored<'_>> {
     let engine = |name: &str| report.engines.iter().find(|engine| engine.engine == name);
-    let Some(lignindb) = engine(super::LigninDbEngine::NAME) else {
+    let Some(lignindb) = engine(LIGNINDB) else {
         return Vec::new();
     };
-    let rocksdb = engine(super::RocksDbEngine::NAME);
+    if not_reference(report).is_some() {
+        return Vec::new();
+    }
+    let rocksdb = engine(ROCKSDB);
     let mut scored = Vec::new();
     for target in TARGETS {
         let of_target = |row: &&Row| {
             (target.rows.iter())
                 .any(|(id, phases)| *id == row.id && phases.contains(&row.phase.as_str()))
+                && measured(row)
+                && (!target.steady || steady(report, LIGNINDB, &row.phase))
         };
         for row in lignindb.rows.iter().filter(of_target) {
             let rocksdb = rocksdb.and_then(|engine| {
-                engine
-                    .rows
-                    .iter()
+                (engine.rows.iter())
                     .find(|other| other.id == row.id && other.phase == row.phase)
+                    .filter(|other| measured(other))
             });
             let value = match target.rocksdb {
                 Some(_) => rocksdb
@@ -308,22 +387,81 @@ fn number(value: f64) -> String {
     }
 }
 
-/// The score of `report` as a Markdown table: for each scored row the
-/// plan's target and accept (as ratios to RocksDB where the row is scored
-/// so), LigninDB's value, RocksDB's in the same run, the scored value and
-/// where it stands; then the rows of the table that the report does not
-/// measure, with what measures them.
-pub fn score(report: &Report) -> String {
+fn share(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".to_string(), |value| format!("{:.1}%", value * 100.0))
+}
+
+/// The steady state of `report`'s write phases at size and churn, for a
+/// report whose LigninDB rows say what its files held: the dead shares of
+/// the segments and of the value log at each phase's start and end, the
+/// values the value cleaner moved a transition, and the size of each
+/// engine's database at the phase's end.
+fn steady_state(report: &Report) -> String {
     let mut out = String::new();
+    let Some(lignindb) = report.engines.iter().find(|one| one.engine == LIGNINDB) else {
+        return out;
+    };
+    let rocksdb = report.engines.iter().find(|one| one.engine == ROCKSDB);
+    let phases: Vec<_> = (lignindb.phases.iter())
+        .filter(|totals| {
+            lignindb
+                .row("value_log_dead_share_at_start", &totals.phase)
+                .is_some()
+        })
+        .collect();
+    if phases.is_empty() {
+        return out;
+    }
     let _ = writeln!(
         out,
-        "| Measure | Row | Phase | Target | Accept | LigninDB | RocksDB, same run | Scored | |"
+        "\n| Phase | Transitions | Segments dead, start / end | Value log dead, start / end | \
+         Values the value cleaner moved a transition | Size at the end, LigninDB / RocksDB |"
+    );
+    let _ = writeln!(out, "| --- | --- | --- | --- | --- | --- |");
+    for totals in phases {
+        let phase = totals.phase.as_str();
+        let value = |id: &str| lignindb.row(id, phase).map(|row| row.value);
+        let size = |engine: Option<&super::report::EngineReport>| {
+            engine
+                .and_then(|one| one.row("size_on_disk_at_end", phase))
+                .map_or_else(|| "-".to_string(), |row| number(row.value))
+        };
+        let _ = writeln!(
+            out,
+            "| {phase} | {} | {} / {} | {} / {} | {} | {} / {} B |",
+            totals.transitions,
+            share(value("segment_dead_share_at_start")),
+            share(value("segment_dead_share_at_end")),
+            share(value("value_log_dead_share_at_start")),
+            share(value("value_log_dead_share_at_end")),
+            value("cleaner_values_moved_per_transition").map_or_else(|| "-".to_string(), number),
+            size(Some(lignindb)),
+            size(rocksdb),
+        );
+    }
+    out
+}
+
+/// The score of `report` as Markdown: for each scored row the plan's
+/// target and accept (as ratios to RocksDB where the row is scored so),
+/// LigninDB's value, RocksDB's in the same run, the scored value and where
+/// it stands; the steady state of its write phases; then the rows of the
+/// table that the report does not score, with what measures them.
+pub fn score(report: &Report) -> String {
+    let mut out = String::new();
+    if let Some(why) = not_reference(report) {
+        let _ = writeln!(out, "{why}\n");
+    }
+    let rows = scored(report);
+    let _ = writeln!(
+        out,
+        "| Measure | Row | Phase | Target | Accept | LigninDB | RocksDB, same run | Scored | \
+         Verdict |"
     );
     let _ = writeln!(
         out,
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
     );
-    let rows = scored(report);
     for one in &rows {
         let target = one.target;
         let (goal, edge, how) = match (target.target_ratio(), target.accept_ratio()) {
@@ -333,10 +471,10 @@ pub fn score(report: &Report) -> String {
         let rocksdb = one
             .rocksdb
             .map_or_else(|| "-".to_string(), |row| number(row.value));
-        let (scored, verdict) = match one.scored {
-            Some(value) => (number(value), target.verdict(value).to_string()),
-            None if one.rocksdb.is_some() => ("-".to_string(), "RocksDB's row is 0".to_string()),
-            None => ("-".to_string(), "no RocksDB in the run".to_string()),
+        let (scored, verdict) = match (one.scored, one.rocksdb) {
+            (Some(value), _) => (number(value), target.verdict(value).to_string()),
+            (None, Some(_)) => ("-".to_string(), "RocksDB's row is 0".to_string()),
+            (None, None) => ("-".to_string(), "no RocksDB row in the run".to_string()),
         };
         let _ = writeln!(
             out,
@@ -350,18 +488,23 @@ pub fn score(report: &Report) -> String {
             one.row.unit,
         );
     }
+    out.push_str(&steady_state(report));
     let mut missing = TARGETS
         .iter()
         .filter(|target| !rows.iter().any(|one| one.target == *target))
         .peekable();
     if missing.peek().is_some() {
-        let _ = writeln!(out, "\nNot in this report:\n");
+        let _ = writeln!(out, "\nNot scored in this report:\n");
         for target in missing {
-            let elsewhere = match target.elsewhere {
-                NOT_HERE => "measured by another kind of report (`run`, `reads` or `writes`)",
-                elsewhere => elsewhere,
+            let why = match (target.rows.is_empty(), target.steady) {
+                (true, _) => target.note,
+                (false, true) => {
+                    "scored at steady state: a `writes` report with a churn, in phases of \
+                     100,000 transitions or more"
+                }
+                (false, false) => "measured by another kind of report (`run` or `reads`)",
             };
-            let _ = writeln!(out, "- {}: {elsewhere}", target.measure);
+            let _ = writeln!(out, "- {}: {why}", target.measure);
         }
     }
     out
@@ -370,7 +513,10 @@ pub fn score(report: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bench::report::tests::{engine, report, row};
+    use crate::bench::report::{
+        tests::{engine, report, row},
+        PhaseTotals,
+    };
 
     fn target(measure: &str) -> &'static Target {
         TARGETS
@@ -408,67 +554,260 @@ mod tests {
         }
     }
 
-    /// Every row of the plan's table is in it once, in its order, and a
-    /// row that no report of the harness measures says what measures it.
+    type Expected = (
+        &'static str,
+        &'static [(&'static str, &'static [&'static str])],
+        Option<f64>,
+        f64,
+        f64,
+        bool,
+    );
+
+    const AT: &[&str] = &["create", "update", "delete"];
+
+    /// Every row of the plan's table, in its order, with its values, the
+    /// rows and phases it is scored in, and whether at steady state only.
     #[test]
     fn the_table_holds_every_row_of_the_plan() {
-        let measures: Vec<_> = TARGETS.iter().map(|target| target.measure).collect();
-        assert_eq!(measures.len(), 17);
-        assert_eq!(measures[0], "Bytes logged per transition");
-        assert_eq!(measures[16], "Root hash, proof bytes, OperationCost");
-        for target in TARGETS {
-            assert_eq!(
-                target.rows.is_empty(),
-                target.elsewhere != NOT_HERE,
-                "{target:?}"
+        let expected: &[Expected] = &[
+            (
+                "Bytes logged per transition",
+                &[("bytes_logged_per_transition", AT)],
+                Some(23_900.0),
+                2_400.0,
+                3_200.0,
+                true,
+            ),
+            (
+                "Physical bytes written per transition",
+                &[("physical_bytes_per_transition", AT)],
+                Some(56_000.0),
+                5_000.0,
+                8_000.0,
+                true,
+            ),
+            (
+                "Wall time per transition",
+                &[("wall_per_transition", AT)],
+                Some(298.0),
+                50.0,
+                80.0,
+                true,
+            ),
+            (
+                "Keyed lookups per transition",
+                &[(
+                    "keyed_lookups_per_transition",
+                    &["load", "create", "update", "delete"],
+                )],
+                Some(70.0),
+                0.0,
+                0.0,
+                false,
+            ),
+            (
+                "Hashes computed per transition, iteration two",
+                &[],
+                Some(122.0),
+                61.0,
+                70.0,
+                false,
+            ),
+            (
+                "Commit of a 20-transition block",
+                &[("block_commit", AT)],
+                Some(1.0),
+                0.2,
+                0.5,
+                true,
+            ),
+            (
+                "Write throughput, 8 threads on disjoint Merks, iteration two",
+                &[],
+                None,
+                5.0,
+                3.0,
+                false,
+            ),
+            (
+                "Bulk load of 1M transitions",
+                &[],
+                Some(144.5),
+                25.0,
+                50.0,
+                false,
+            ),
+            (
+                "Point get",
+                &[("point_get", &["warm", "settled"])],
+                Some(8.9),
+                2.0,
+                5.0,
+                false,
+            ),
+            (
+                "Point query with proof",
+                &[("point_query_proof", &["warm", "settled"])],
+                Some(73.6),
+                10.0,
+                20.0,
+                false,
+            ),
+            (
+                "100 references to documents, with proof",
+                &[("references_proof", &["warm", "settled"])],
+                Some(1_262.0),
+                450.0,
+                750.0,
+                false,
+            ),
+            (
+                "Page reads per transition, state far larger than cache",
+                &[("page_reads_per_transition", AT)],
+                None,
+                2.0,
+                3.0,
+                true,
+            ),
+            (
+                "Size after 1M transitions, random documents",
+                &[("size_on_disk", &["flushed"])],
+                Some(1_010_000_000.0),
+                850_000_000.0,
+                1_000_000_000.0,
+                false,
+            ),
+            (
+                "Checkpoint",
+                &[("checkpoint", &["flushed"])],
+                Some(10.0),
+                15.0,
+                40.0,
+                false,
+            ),
+            (
+                "Reopen",
+                &[("reopen", &["flushed"])],
+                Some(31.0),
+                20.0,
+                60.0,
+                false,
+            ),
+            ("Crash recovery, 256 MB of log", &[], None, 1.0, 5.0, false),
+            (
+                "Root hash, proof bytes, OperationCost",
+                &[],
+                None,
+                0.0,
+                0.0,
+                false,
+            ),
+        ];
+        assert_eq!(TARGETS.len(), expected.len());
+        for (target, expected) in TARGETS.iter().zip(expected) {
+            let found = (
+                target.measure,
+                target.rows,
+                target.rocksdb,
+                target.target,
+                target.accept,
+                target.steady,
             );
-            assert!(target.target <= target.accept || target.measure.contains("threads"));
+            assert_eq!(found, *expected);
+            // A row scored by its value, and one no report measures, say why.
+            let unscored = target.rows.is_empty() || target.rocksdb.is_none();
+            assert_eq!(unscored, !target.note.is_empty(), "{}", target.measure);
         }
     }
 
-    /// LigninDB's rows are scored as their ratio to RocksDB's same row of
-    /// the same report, or by their value; a RocksDB row of 0 gives no
-    /// ratio; the table names the rows the report does not measure.
-    #[test]
-    fn a_report_is_scored_row_by_row() {
-        let both = report(vec![
+    /// A report of the reference workload, its write phases at size after
+    /// a churn of `churn` of `transitions` each.
+    fn reference(
+        churn: u64,
+        transitions: u64,
+        engines: Vec<super::super::report::EngineReport>,
+    ) -> Report {
+        let mut report = report(engines);
+        let workload = &mut report.workload;
+        let documents = Documents::reference();
+        (workload.seed, workload.documents, workload.owners) =
+            (1, documents.documents, documents.owners);
+        workload.document_size = documents.document_size;
+        workload.transitions_per_block = documents.transitions_per_block;
+        workload.churn = churn;
+        for engine in &mut report.engines {
+            engine.phases = ["churn", "create", "update", "delete"]
+                .map(|phase| PhaseTotals {
+                    phase: phase.to_string(),
+                    transitions,
+                    ..PhaseTotals::default()
+                })
+                .to_vec();
+        }
+        report
+    }
+
+    fn engines() -> Vec<super::super::report::EngineReport> {
+        let mut unmeasured = row("reopen", "flushed", 0.0);
+        unmeasured.samples.clear();
+        vec![
             engine(
                 "rocksdb",
                 vec![
                     row("wall_per_transition", "create", 500.0),
                     row("point_get", "warm", 20.0),
-                    row("keyed_lookups_per_transition", "create", 50.0),
+                    row("point_get", "cold", 1_000.0),
+                    row("keyed_lookups_per_transition", "load", 50.0),
                     row("bytes_logged_per_transition", "create", 0.0),
+                    unmeasured.clone(),
                 ],
             ),
             engine(
                 "lignindb",
                 vec![
                     row("wall_per_transition", "create", 1_100.0),
+                    row("wall_per_transition", "churn", 1_000.0),
                     row("point_get", "warm", 10.0),
-                    row("keyed_lookups_per_transition", "create", 0.0),
+                    row("point_get", "cold", 900.0),
+                    row("keyed_lookups_per_transition", "load", 3.0),
                     row("bytes_logged_per_transition", "create", 4_500.0),
                     row("page_reads_per_transition", "create", 2.8),
                     row("page_reads_per_transition", "load", 0.0),
-                    row("point_get", "cold", 900.0),
-                    row("wall_per_transition", "churn", 1_000.0),
                     row("hashes_per_transition", "create", 159.0),
+                    row("value_log_dead_share_at_start", "create", 0.17),
+                    row("value_log_dead_share_at_end", "create", 0.18),
+                    row("segment_dead_share_at_start", "create", 0.15),
+                    row("segment_dead_share_at_end", "create", 0.16),
+                    row("cleaner_values_moved_per_transition", "create", 4.8),
+                    row("size_on_disk_at_end", "create", 980_000_000.0),
+                    unmeasured,
                 ],
             ),
-        ]);
+        ]
+    }
+
+    fn ids<'a>(rows: &'a [Scored<'a>]) -> Vec<(&'a str, &'a str, Option<f64>)> {
+        (rows.iter())
+            .map(|one| (one.row.id.as_str(), one.row.phase.as_str(), one.scored))
+            .collect()
+    }
+
+    /// LigninDB's rows are scored as their ratio to RocksDB's same row of
+    /// the same report, or by their value, in the phases and the state the
+    /// plan means: no churn, cold read, load's page reads or unmeasured
+    /// row is scored, and a RocksDB row of 0 gives no ratio.
+    #[test]
+    fn a_report_is_scored_in_the_plans_state() {
+        let both = reference(100_000, 200_000, engines());
         let rows = scored(&both);
-        let found: Vec<_> = rows
-            .iter()
-            .map(|one| (one.row.id.as_str(), one.scored))
-            .collect();
         assert_eq!(
-            found,
+            ids(&rows),
             vec![
-                ("bytes_logged_per_transition", None),
-                ("wall_per_transition", Some(2.2)),
-                ("keyed_lookups_per_transition", Some(0.0)),
-                ("point_get", Some(0.5)),
-                ("page_reads_per_transition", Some(2.8)),
+                ("bytes_logged_per_transition", "create", None),
+                ("wall_per_transition", "create", Some(2.2)),
+                ("keyed_lookups_per_transition", "load", Some(0.06)),
+                ("point_get", "warm", Some(0.5)),
+                ("page_reads_per_transition", "create", Some(2.8)),
             ]
         );
         let text = score(&both);
@@ -486,17 +825,57 @@ mod tests {
             text.contains("| 4500 us | 0 | - | RocksDB's row is 0 |"),
             "{text}"
         );
-        assert!(text.contains("- Crash recovery, 256 MB of log: s, absolute"));
+        assert!(
+            text.contains(
+                "| create | 200000 | 15.0% / 16.0% | 17.0% / 18.0% | 4.80 | 980.0 M / - B |"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("- Bulk load of 1M transitions: the bulk loader's test"));
         assert!(text.contains("- Reopen: measured by another kind of report"));
         assert!(!text.contains("- Point get:"));
+        assert!(!text.contains("not the reference workload"));
+    }
 
-        let alone = report(vec![engine(
-            "lignindb",
-            vec![row("point_get", "warm", 10.0)],
-        )]);
+    /// The write rows are scored at steady state only: not without a
+    /// churn, and not in a phase shorter than the steady state's; a count
+    /// that no regime moves is scored all the same.
+    #[test]
+    fn the_write_rows_are_scored_at_steady_state_only() {
+        for unsteady in [
+            reference(0, 200_000, engines()),
+            reference(100_000, 20_000, engines()),
+        ] {
+            assert_eq!(
+                ids(&scored(&unsteady)),
+                vec![
+                    ("keyed_lookups_per_transition", "load", Some(0.06)),
+                    ("point_get", "warm", Some(0.5)),
+                ]
+            );
+            assert!(score(&unsteady).contains("- Wall time per transition: scored at steady state"));
+        }
+    }
+
+    /// No row of a report of another workload is scored, and the score
+    /// says why; a ratio row of a report with no RocksDB has no score.
+    #[test]
+    fn only_the_reference_workload_is_scored() {
+        let small = report(engines());
+        assert!(scored(&small).is_empty());
+        assert!(score(&small).starts_with("not the reference workload (1 documents over 1 owners"));
+        let alone = reference(
+            0,
+            0,
+            vec![engine("lignindb", vec![row("point_get", "warm", 10.0)])],
+        );
         assert_eq!(scored(&alone)[0].scored, None);
-        assert!(score(&alone).contains("| - | - | no RocksDB in the run |"));
-        let rocksdb_alone = report(vec![engine("rocksdb", vec![row("point_get", "warm", 1.0)])]);
+        assert!(score(&alone).contains("| - | - | no RocksDB row in the run |"));
+        let rocksdb_alone = reference(
+            0,
+            0,
+            vec![engine("rocksdb", vec![row("point_get", "warm", 1.0)])],
+        );
         assert!(scored(&rocksdb_alone).is_empty());
         assert!(score(&rocksdb_alone).contains("- Point get: measured by another kind"));
     }

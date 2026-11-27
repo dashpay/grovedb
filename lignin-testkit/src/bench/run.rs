@@ -116,10 +116,19 @@ impl Settings {
         }
     }
 
+    /// The documents the workload creates: the load, the churn and the
+    /// measured creates. A sum past `u64::MAX` is refused by
+    /// [`Self::check`] and is `u64::MAX` here.
+    fn created(&self) -> u64 {
+        self.documents
+            .saturating_add(self.churn)
+            .saturating_add(self.measured_creates)
+    }
+
     /// The documents workload these settings apply.
     pub fn workload(&self) -> Documents {
         Documents {
-            documents: self.documents + self.churn + self.measured_creates,
+            documents: self.created(),
             owners: self.owners,
             updates: self.updates,
             deletes: self.deletes,
@@ -183,7 +192,18 @@ impl Settings {
                 "the run needs documents and owners".to_string(),
             ));
         }
-        if self.deletes > self.documents + self.churn + self.measured_creates {
+        if self
+            .documents
+            .checked_add(self.churn)
+            .and_then(|sum| sum.checked_add(self.measured_creates))
+            .is_none()
+        {
+            return Err(BenchError::Check(
+                "the documents, the churn and the measured creates add up to more than a u64"
+                    .to_string(),
+            ));
+        }
+        if self.deletes > self.created() {
             return Err(BenchError::Check("more deletes than documents".to_string()));
         }
         Ok(())
@@ -1454,10 +1474,12 @@ fn writes_at_size<E: Engine>(
 /// the settings are applied as a whole run applies them after its load:
 /// the stream is that run's, with the blocks of the set-up and of the
 /// load passed over. With the seed, the documents, the owners and the
-/// three numbers of writes of a whole run, the root hash at the end is
-/// that run's.
+/// three numbers of writes and the churn of a whole run, the root hash at
+/// the end is that run's.
 ///
-/// The report has the rows of the write phases, and no size on disk.
+/// The report has the rows of the write phases, each phase's size at its
+/// end among them, and no size of the database after the load or the
+/// flush.
 pub fn write_engine<E: Engine>(
     settings: &Settings,
     grove_version: &GroveVersion,

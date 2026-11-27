@@ -95,15 +95,17 @@ copy with the settings of this call (`--set`), waits for the background work
 of the opened engine, makes the untimed warm-up reads, and applies the
 writes as a whole run applies them after its load: the stream is that
 run's, with the blocks of the set-up and of the load passed over, so with
-the three numbers of writes of a whole run the root hash at the end is that
-run's. The copy is removed at the end unless `--keep` is given, and the kept
+the three numbers of writes and the churn of a whole run the root hash at
+the end is that run's. The kept database is made with no churn (the
+default), as below. The copy is removed at the end unless `--keep` is given, and the kept
 database is never written, so one kept database is measured under any
 number of settings, each from the same state, one call at a time: while a
 call has the copy of an engine it holds the lock file `<engine>-writes.lock`
 beside it, and a second call for that engine and scratch directory is
 refused. Its report holds the rows of
 the write phases only, says of its method that no read was timed and nothing
-was read cold, checkpointed or reopened, and has no size on disk.
+was read cold, checkpointed or reopened, and has no size after the load
+or the flush (each write phase has its size at its end, below).
 
 `--churn N` applies N creates after the load and before the measured
 creates, as a write phase of its own, `churn`, with every row of a write
@@ -510,19 +512,36 @@ table). The plan's values were measured on a machine the project does not
 have, so a row is scored as LigninDB's value over RocksDB's value of the
 same row in the same report, against the target and the accept over the
 plan's RocksDB value: for the wall time a transition, 50 / 298 = 0.168
-and 80 / 298 = 0.268. A row whose RocksDB value the plan estimated or did
-not measure (the page reads a transition, the crash recovery) is scored
-by its value. A row is scored in the phases of the state the plan means:
-the write rows in the load and the writes at size, not in the churn; the
-page reads a transition and the size at a phase's end in the writes at
-size; the reads warm and settled, not cold; the size flushed; the
-checkpoints at size and flushed; the reopen flushed. A row is "target met" at or under the target, "accept met"
-at or under the accept, and "missed" above it. A ratio row of a report
-without RocksDB, or whose RocksDB row is 0, has no score. The score lists
-the rows of the table that the report does not measure, and for those
-that no report of this harness measures (iteration two, the crash
-recovery, the identity of answers) what measures them. `scoring-run.md`
-is the scoring of the reference workload that M6 rests on.
+and 80 / 298 = 0.268. The page reads a transition, of which RocksDB
+counts none and the plan's value is an estimate, are scored by their
+value, as the gate's rulings read that row. A row is "target met" at or
+under the target, "accept met" at or under the accept, and "missed"
+above it; a ratio row with no RocksDB row in the report, or one of 0, has
+no score.
+
+A row is scored only in the state the plan means, and a report of
+another workload than the reference (seed 1, a million documents over
+10,000 owners) has none scored:
+
+- the bytes logged and physical, the wall time, the commit of a block and
+  the page reads a transition at steady state: in a write phase at size
+  (`create`, `update`, `delete`) of 100,000 transitions or more of a
+  report with a churn, not in the load or the churn;
+- the keyed lookups, a count that no regime moves, in the load and every
+  write phase at size;
+- the reads warm and settled, not cold;
+- the size, the checkpoint and the reopen after the flush (`flushed`).
+
+Under the scored rows the score gives the steady state of each write
+phase whose rows say it: the dead shares of the segments and of the value
+log at its start and end, the values the value cleaner moved a
+transition, and each engine's size at the phase's end. It then lists the
+rows of the table it did not score, and for those that no report of this
+harness measures what measures them: iteration two; the bulk load, which
+is the bulk loader's test through the engine (a report's `bulk_load` is
+the load through GroveDB's write transactions); the crash recovery; the
+identity of answers. `scoring-run.md` is the scoring of the reference
+workload that M6 rests on.
 
 ## The report
 
