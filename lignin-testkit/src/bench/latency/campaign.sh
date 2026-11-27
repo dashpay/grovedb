@@ -94,17 +94,14 @@ out=$(cd "$out" && pwd)
 blocks=${BLOCKS:-100000} rounds=${ROUNDS:-2} backgrounds=${BACKGROUNDS:-quiet heavy}
 trace_blocks=${TRACE_BLOCKS:-30000} loop_gb=${LOOP_GB:-64}
 parts=${PARTS:-builds main filesystems traces tables}
-export BUILDS=${BUILDS:-$out/builds}
-export PATH=$PATH:/usr/sbin:/sbin
-ulimit -n 65536
 
 refuse() {
   echo "campaign.sh: $*" >&2
   exit 1
 }
-# What the campaign is asked. Only git is wanted to say it, and it is said
-# before anything else is looked at.
-command -v git > /dev/null || refuse "not found: git"
+# What the campaign is asked. It is said before anything else is looked at
+# or set: up to here the script has found its checkout, which wants git, and
+# made OUT, without which there is no campaign to speak of, and nothing more.
 commit=$(git -C "$repo" rev-parse HEAD) || refuse "$repo is no checkout of GroveDB"
 asked="commit $commit
 blocks $blocks
@@ -129,6 +126,13 @@ if [ -s "$out/campaign.txt" ]; then
     refuse "$out holds another campaign; what it was asked is in $out/campaign.txt"
   plan
 fi
+
+# What is set from here on can refuse a call, and a call to a campaign that
+# is there has its parts written down by now.
+export BUILDS=${BUILDS:-$out/builds}
+export PATH=$PATH:/usr/sbin:/sbin
+ulimit -n 65536 2> /dev/null ||
+  refuse "the limit of open files is $(ulimit -n) and cannot be raised to 65536, which the engines want"
 
 missing=""
 tools="cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt fstrim"
