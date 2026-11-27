@@ -234,14 +234,38 @@ impl StorageReads {
     }
 }
 
-/// The `io.stat` file of the cgroup this process runs in: cgroup v2,
-/// with the whole hierarchy mounted at `/sys/fs/cgroup`. Where a part of
-/// it is mounted there, as in some containers, the path this builds names
-/// no file, and there is no count.
+/// The `io.stat` file of the cgroup this process runs in (cgroup v2), or
+/// nothing where the cgroup's directory cannot be found or the file
+/// cannot be read.
 fn cgroup_io_stat() -> Option<String> {
     let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let group = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
-    std::fs::read_to_string(format!("/sys/fs/cgroup{group}/io.stat")).ok()
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    std::fs::read_to_string(cgroup_dir(&mounts, group)?.join("io.stat")).ok()
+}
+
+/// The directory of the cgroup `group` (its path in `/proc/self/cgroup`),
+/// by the first cgroup v2 mount of `mountinfo` (the text of
+/// `/proc/self/mountinfo`). A mount shows the part of the hierarchy under
+/// its root, so the group's directory is the mount point and what of the
+/// group's path follows that root. Nothing if there is no such mount, or
+/// if the group does not lie under the mount's root.
+fn cgroup_dir(mountinfo: &str, group: &str) -> Option<PathBuf> {
+    let (root, mount_point) = mountinfo.lines().find_map(|line| {
+        let (mount, filesystem) = line.split_once(" - ")?;
+        if filesystem.split_whitespace().next() != Some("cgroup2") {
+            return None;
+        }
+        let mut fields = mount.split_whitespace().skip(3);
+        Some((fields.next()?, fields.next()?))
+    })?;
+    let below = match root.trim_end_matches('/') {
+        "" => group,
+        root => group
+            .strip_prefix(root)
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))?,
+    };
+    Some(Path::new(mount_point).join(below.trim_start_matches('/')))
 }
 
 /// The read requests and the bytes read of every device in the text of
@@ -375,11 +399,19 @@ pub fn files_under(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 /// Copies the directory `from`, with every file and every directory under
 /// it, to `to`, which must not exist yet. What is neither a file nor a
 /// directory is left out. If the copy fails after `to` was made, what was
-/// copied is removed again: a copy is whole or is not there.
+/// copied is removed again, so that a copy is whole or is not there; where
+/// that removal fails too, the error says so, with the path.
 pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir(to)?;
-    copy_into(from, to).inspect_err(|_| {
-        let _ = std::fs::remove_dir_all(to);
+    copy_into(from, to).map_err(|error| match std::fs::remove_dir_all(to) {
+        Ok(()) => error,
+        Err(left) => std::io::Error::new(
+            error.kind(),
+            format!(
+                "{error}; and what was copied to {} could not be removed: {left}",
+                to.display()
+            ),
+        ),
     })
 }
 
@@ -577,6 +609,40 @@ mod tests {
         let partial = dir.path().join("partial");
         assert!(copy_tree(&dir.path().join("missing"), &partial).is_err());
         assert!(!partial.exists());
+    }
+
+    #[test]
+    fn the_directory_of_a_cgroup_is_found_through_the_mount_table() {
+        let whole = "24 30 0:22 / /sys rw,nosuid - sysfs sysfs rw\n\
+                     35 24 0:30 / /sys/fs/cgroup rw,nosuid,nodev - cgroup2 cgroup2 rw,nsdelegate\n";
+        assert_eq!(
+            cgroup_dir(whole, "/system.slice/run.service"),
+            Some(PathBuf::from("/sys/fs/cgroup/system.slice/run.service"))
+        );
+        assert_eq!(
+            cgroup_dir(whole, "/"),
+            Some(PathBuf::from("/sys/fs/cgroup"))
+        );
+
+        // A mount of a part of the hierarchy shows what is under its root.
+        let part = "35 24 0:30 /team /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n";
+        assert_eq!(
+            cgroup_dir(part, "/team/run"),
+            Some(PathBuf::from("/sys/fs/cgroup/run"))
+        );
+        assert_eq!(
+            cgroup_dir(part, "/team"),
+            Some(PathBuf::from("/sys/fs/cgroup"))
+        );
+        // A group that is not under the root of the mount has no directory
+        // there: not one of another group whose path begins alike.
+        assert_eq!(cgroup_dir(part, "/teams/run"), None);
+        assert_eq!(cgroup_dir(part, "/other"), None);
+
+        // No cgroup v2 mount: version 1 alone, or none.
+        let old = "35 24 0:30 / /sys/fs/cgroup/memory rw - cgroup cgroup rw,memory\n";
+        assert_eq!(cgroup_dir(old, "/run"), None);
+        assert_eq!(cgroup_dir("", "/run"), None);
     }
 
     #[test]

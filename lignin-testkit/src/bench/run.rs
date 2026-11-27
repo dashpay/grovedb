@@ -1137,12 +1137,13 @@ fn page_rows(read: &str, phase: &str, counted: &Counters, reads: u64) -> Vec<Row
         row(
             "asked",
             read_in + held,
-            "engine: pages the buffer pool was asked for over the timed reads, held or not",
+            "engine: page versions read from storage and asks the buffer pool answered from \
+             memory, over the timed reads",
         ),
         row(
             "missed",
             read_in,
-            "engine: pages the buffer pool was asked for and did not hold, over the timed reads",
+            "engine: page versions read from storage over the timed reads, each in full for a load",
         ),
     ]
 }
@@ -1399,10 +1400,25 @@ pub fn write_engine<E: Engine>(
     machine::copy_tree(&kept, &dir)
         .map_err(|error| BenchError::io("copying the kept database", error))?;
     let result = measure_writes::<E>(settings, &dir, grove_version);
-    if !settings.keep {
-        let _ = std::fs::remove_dir_all(&dir);
+    if settings.keep {
+        return result;
     }
-    result
+    // A copy that cannot be removed is said, and fails a call that
+    // measured: the next call would find it and may not remove it either.
+    match (result, std::fs::remove_dir_all(&dir)) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(BenchError::io(
+            format!("removing the copy {}", dir.display()),
+            error,
+        )),
+        (Err(first), Err(error)) => {
+            eprintln!(
+                "lignin-bench: the copy {} could not be removed: {error}",
+                dir.display()
+            );
+            Err(first)
+        }
+    }
 }
 
 /// The lock of the copy that `writes` measures over: the file

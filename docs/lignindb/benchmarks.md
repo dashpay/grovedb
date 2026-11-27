@@ -170,7 +170,7 @@ only.
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
 | `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: the page versions that were read from storage over the timed reads of one kind (`_pages_missed`), and those together with the asks its buffer pool answered from memory (`_pages_asked`), for one read (LigninDB only; measured, since the engine counts its background threads too; no row for a kind of which no read was timed) |
 | `page_reads_per_transition`, `pages_asked_per_transition` | pages | engine: the page versions that were read from storage over a write phase, and those together with the asks its buffer pool answered from memory, for one transition. A page version that is read is a base image and the runs after it, read in full for a load; a writer's first copy of a page that the pool does not hold is one, and so is a load that found the page put there by another thread meanwhile. It is the loads that are counted and not the pool's misses (the detail `pool_misses`), which count an ask for a page that does not exist and miss the writer's copy (LigninDB only; measured, since the engine counts its background threads too) |
-| `process_read_bytes_per_transition`, `process_read_calls_per_transition`, `device_reads_per_transition`, `device_read_bytes_per_transition` | B, calls, requests, B | the operating system's counts of the process's reads over a write phase, for one transition ("The system's counts of reads" below; Linux only, measured) |
+| `process_read_bytes_per_transition`, `process_read_calls_per_transition`, `device_reads_per_transition`, `device_read_bytes_per_transition` | B, calls, requests, B | the operating system's counts of reads over a write phase, two of the process and two of its cgroup, for one transition ("The system's counts of reads" below; Linux only, measured) |
 | `<read>_process_read_bytes`, `<read>_process_read_calls`, `<read>_device_reads`, `<read>_device_read_bytes` | B, calls, requests, B | the same counts over the timed reads of one kind, for one read |
 | `checkpoint`, `reopen` | ms | `Instant` around one checkpoint or open |
 
@@ -204,74 +204,78 @@ readings (`bench::machine::StorageReads`), on Linux:
 | --- | --- | --- |
 | `process_read_bytes` | `/proc/self/io`, `read_bytes` | bytes the process caused to be read from storage, read-ahead included |
 | `process_read_calls` | `/proc/self/io`, `syscr` | the process's read system calls, whatever they read and wherever it came from |
-| `device_reads` | `io.stat` of the process's cgroup, `rios`, every device | read requests that reached a device |
-| `device_read_bytes` | the same file, `rbytes` | the bytes of those requests |
+| `device_reads` | `io.stat` of the process's cgroup, `rios`, summed over the devices the file lists | the read I/Os the kernel counted for the cgroup |
+| `device_read_bytes` | the same file, `rbytes`, summed likewise | the bytes the kernel counted as read for the cgroup |
 
-The two counts of the cgroup are read from `io.stat` of the cgroup the
-process runs in, at `/sys/fs/cgroup` and the cgroup's path: cgroup v2,
-mounted whole there, with the `io` controller on for that cgroup. A
-systemd unit with `IOAccounting=yes` has it, and so has any cgroup whose
-`io.stat` can be read; where it cannot, as in a container that mounts a
-part of the hierarchy, a run has no such row. What the four counts are of:
+The two counts of the cgroup are read from `io.stat` in the directory of
+the cgroup the process runs in (cgroup v2), which is found through the
+mount table. They need the `io` controller on for that cgroup, as a
+systemd unit with `IOAccounting=yes` has it; where the directory is not
+found or the file cannot be read, a run has no such row. What the four
+counts are of:
 
-- The cgroup's counts are of **every process of that cgroup**, so a run
-  that is to be read by them runs in a cgroup of its own. A request is
-  what the block layer was handed, after its merging, on every device the
-  file names: a device that is stacked on another is counted on both.
-- The process's counts are of **the whole process**: the engine's
-  background threads, and the harness too. The harness reads files of
-  `/proc` between the phases, and for RocksDB it reads the end of the
-  write-ahead log after each commit and RocksDB's own `LOG` while it waits
-  for background work, so `process_read_calls` is not the engine's reads
+- The cgroup's two are of **every process of that cgroup**, so a run that
+  is to be read by them runs in a cgroup of its own. They are the
+  kernel's `rios` and `rbytes`, summed over the devices the file lists,
+  and no more is said of them here than that.
+- The process's two are of **the whole process**: the engine's background
+  threads, and the harness too. The harness reads files of `/proc`
+  between the phases, and for RocksDB it reads the end of the write-ahead
+  log after each commit and RocksDB's own `LOG` while it waits for
+  background work, so `process_read_calls` is not the engine's reads
   alone, least of all over few reads.
 
 So the rows are measured rows, and they compare two runs that were made
 the same way.
 
-**What they say depends on the memory the kernel's page cache has.** With
-the page cache free, a file that was written or read before is as a rule
-read from memory, and only `process_read_calls` counts the read. Under a
-memory limit on the run's cgroup that leaves the page cache little room
-(`MemoryMax` of a systemd unit), the counts of the device say how often
-the reads of a run reached storage, which is the count the two engines
-can be compared by where the state is far larger than the memory. That
-holds for files whose pages the run itself brought in: a database that
-was written before the run, as the kept one of `reads`, lies in the page
-cache on another cgroup's account, and is read from memory until the
-page cache is emptied (`echo 3 > /proc/sys/vm/drop_caches`) before the
-run.
+**What they say depends on what the kernel's page cache holds.** A read
+of pages that the page cache holds is answered from memory, and only
+`process_read_calls` counts it. Under a memory limit on the run's cgroup
+that leaves the page cache little room (`MemoryMax` of a systemd unit),
+most reads that the engine's own cache does not answer reach storage,
+and the counts of the cgroup then say how often: the count the two
+engines can be compared by where the state is far larger than the
+memory. A database that was written before the run, as the kept one of
+`reads`, may lie in the page cache whatever the run's limit is; to have
+such a run read it from storage, the page cache is emptied before the run
+(`echo 3 > /proc/sys/vm/drop_caches`).
 
 ### The device reads by kind of file
 
-The counts above say how often a run's reads reached a device, and not
-which files they read. `lignin-testkit/bench/read-split.sh` runs one
-`lignin-bench` call under a memory limit and counts, in the kernel, each
-time ext4 is asked to fill the page cache (`read-split.bt`, a bpftrace
+The counts above do not say which files a run's reads were of.
+`lignin-testkit/bench/read-split.sh` runs one `lignin-bench` call under a
+memory limit and counts, in the kernel, each time ext4 is asked to fill
+the page cache and the pages it is asked for (`read-split.bt`, a bpftrace
 script on ext4's read-ahead and read-folio operations), by the name of the
-file. `read-split.py` then gives the calls and the bytes for one
-transition or read by kind of file: for LigninDB the value log (`val`),
+file. `read-split.py` then gives the calls and the bytes by kind of file,
+divided by a number the caller gives: for LigninDB the value log (`val`),
 the segments (`seg`, page images and delta runs), the log and the table
 checkpoints; for RocksDB its table files and logs.
 
 ```bash
-# The writes at size over a kept reference state, one phase a call, pool 162 MiB,
-# under the memory limit of the engine (its peak anonymous memory plus 32 MiB):
+# The creates at size over a kept reference state, pool 162 MiB, under the memory
+# limit of the engine (its peak anonymous memory plus 32 MiB). The kept database is
+# read into the page cache first, so that the copy `writes` makes of it reads no device.
+cat /data/ref/lignindb/*/* /data/ref/lignindb/* > /dev/null 2>&1
 sudo lignin-testkit/bench/read-split.sh 233M 50000 /tmp/split-create -- \
   "$PWD/target/release/lignin-bench" writes --engine lignindb --scratch /data/ref \
   --out /tmp/split-create.json --creates 50000 --updates 0 --deletes 0 --set cache_mb=162
-# The reads over the kept state itself, whose files must leave the page cache first:
-sudo DROP_PAGE_CACHE=1 lignin-testkit/bench/read-split.sh 233M 5000 /tmp/split-reads -- \
+# The reads over the kept state itself, which leaves the page cache first: the totals
+# of the whole call (the open, the warm-up, the timed reads of each kind, their checks).
+sudo DROP_PAGE_CACHE=1 lignin-testkit/bench/read-split.sh 233M 1 /tmp/split-reads -- \
   "$PWD/target/release/lignin-bench" reads --engine lignindb --scratch /data/ref \
   --out /tmp/split-reads.json --creates 0 --updates 0 --deletes 0 --set cache_mb=162
 ```
 
-It needs root, Linux with systemd and cgroup v2, bpftrace, a database on
-ext4, and a machine at rest: the probes count the reads of every process.
-A call is one time the page cache was filled, so neighbouring calls can
-reach the device as one request, and the cgroup's `device_reads` of the
-same run is a little lower. A call that makes reads of several kinds
-(`reads` times gets, proofs and references proofs in turn) is split as a
-whole. The times of a run under the probes are no result.
+The counts are of the whole call, from its start to its end, and of every
+process of the machine: it needs a machine at rest, and a divisor that
+fits what the call did. Of a `writes` call with one phase, whose copy was
+read from memory, that is the phase's transitions, with the open and the
+warm-up reads in the sum. A call and its pages are what ext4 was asked
+for, not what reached the device: the cgroup's `device_reads` of the same
+run is the count of that. It needs root, Linux with systemd and cgroup
+v2, bpftrace and a database on ext4. The times of a run under the probes
+are no result.
 
 ### RocksDB's counters
 
@@ -366,7 +370,7 @@ counters. They say where the logged and the background bytes went:
 | `table_checkpoints`, `cleaner_checkpoints`, `log_files_dropped`, `room_waits` | table checkpoints in all and those the cleaner asked for, log files, and commits that waited for write-back |
 | `cleaner_blocks_moved`, `cleaner_values_moved`, `cleaner_bytes_trimmed`, `cleaner_bytes_dropped`, `cleaner_segments_dropped`, `cleaner_value_files_dropped` | what the cleaner moved and gave back |
 | `pages_freed`, `value_reads` | pages the reclaimer freed; values read from the value log |
-| `block_reads`, `block_read_bytes` | the blocks read from segments by their locations, and their bytes as stored, each one read of the file layer: the base image and each delta run of a page that is loaded, what write-back reads of a page it builds (`chain_blocks_read`), each block the cleaner moves (`cleaner_blocks_moved`), and what a verification reads. So the reads a loaded page costs are these less the cleaner's and write-back's, over the page versions read, in a run that verifies nothing |
+| `block_reads`, `block_read_bytes` | the blocks read from segments by their locations, and their bytes as stored, each one read of the file layer: the base image and each delta run of a page that is loaded, what write-back reads of a page it builds (`chain_blocks_read`), each block the cleaner reads to move it, whether or not the move then stands, and what a verification reads. The blocks of the loaded pages alone are not counted apart |
 | `pool_evictions`, `pool_overflows` | page versions the buffer pool took out to make room, and frames it allocated beside its fixed ones because an eviction found none of those to take (none could be evicted, or, with evictions on several threads at once, its own steps did not come to one that could) |
 | `pool_releases`, `pool_loads_overtaken`, `pool_misses` | superseded page versions that a segment holds and that the pool gave up before the clock came to them, once no reader could ask for them; loads that the pool took nothing of because a commit or a page step changed that part of its table meanwhile (their blocks are read once more unless another thread's load put the page there first); and the asks the pool did not answer from memory, an ask for a page that does not exist among them |
 

@@ -705,6 +705,10 @@ fn the_writes_at_size_are_measured_over_a_copy_of_a_kept_database() {
     // would remove the copy under the first.
     let lock = std::fs::File::create(kept.join("rocksdb-writes.lock")).unwrap();
     lock.try_lock().unwrap();
+    // What stands for the first call's copy is not touched by the second.
+    let copy = kept.join("rocksdb-writes");
+    std::fs::create_dir(&copy).unwrap();
+    std::fs::write(copy.join("in-use"), b"the first call's").unwrap();
     let args: Vec<String> = format!("writes --scratch {} {engines} {sizes}", kept.display())
         .split_whitespace()
         .map(str::to_string)
@@ -716,7 +720,10 @@ fn the_writes_at_size_are_measured_over_a_copy_of_a_kept_database() {
             .contains("another `writes` call is measuring over the copy of rocksdb"),
         "{refused}"
     );
-    assert!(!kept.join("rocksdb-writes").exists());
+    assert_eq!(
+        std::fs::read(copy.join("in-use")).unwrap(),
+        b"the first call's"
+    );
     drop(lock);
 
     let wrote = call("writes", &kept, "writes.json", writes);

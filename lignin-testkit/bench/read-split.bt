@@ -10,9 +10,29 @@
  * count by inode number will not do: ext4 gives the number of a deleted file to the next new
  * one, and a database deletes and makes files all the time.
  *
- * The maps are printed when the script is ended (SIGINT). read-split.py puts kinds to the names.
+ * What is counted is what ext4 was asked for: a call, and the pages of its window (one for a
+ * folio that is read alone, which is its size where a folio is one page, as ext4 has them in the
+ * kernels this was run on). It is not what reached the device: the block layer merges and
+ * splits, and a hole in a file is filled with no read.
+ *
+ * The maps are printed when the script is ended (SIGINT); `@attached` is among them, so that an
+ * output with no read in it can be told from no output. read-split.py puts kinds to the names.
  * The probes are of every process of the machine, so the machine is otherwise at rest.
  */
+BEGIN
+{
+	@attached = 1;
+}
+
+/* Said once, when the probes below are in place and events are being read. */
+interval:ms:100
+{
+	if (@ready == 0) {
+		printf("probes ready\n");
+		@ready = 1;
+	}
+}
+
 kprobe:ext4_readahead
 {
 	$rac = (struct readahead_control *)arg0;
