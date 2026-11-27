@@ -102,12 +102,12 @@
 //!
 //! The list is a help and no rule. A spent version that has a pin when its
 //! turn comes, or that the list's bound dropped (4,096 are listed at most),
-//! is left to the clock, like any written page version. And until the
-//! version after it is written, a superseded written version is not spent:
-//! it is the page that write-back applies the next run to before the run
-//! is written. Nothing keeps it for that. It is an evictable frame, and if
-//! the clock takes it first, write-back reads the page from the blocks of
-//! its chain instead.
+//! is left to the clock, like any written page version. And until a
+//! later version of its page is written, a superseded written version is
+//! not spent: it can be the page that write-back applies the next run to
+//! before the run is written. Nothing keeps it for that. It is an
+//! evictable frame, and if the clock takes it first, write-back reads the
+//! page from the blocks of its chain instead.
 //!
 //! # Reading
 //!
@@ -318,9 +318,10 @@
 //! are not every frame. It
 //! never refuses a page for lack of room. Such a frame is freed the moment
 //! it could be evicted: when its last pin goes, if nothing else keeps it.
-//! So **what [`BufferPool::memory`] counts never exceeds the configured
-//! size plus the frames that cannot be evicted**, with their attached
-//! values ([`Census`]). The plan says "plus pinned
+//! So, in a pool at rest, **what [`BufferPool::memory`] counts never
+//! exceeds the configured size plus the frames that cannot be evicted**,
+//! with their attached values ([`Census`]); a reading that is taken while
+//! frames come and go adds up counts of different moments. The plan says "plus pinned
 //! frames": a pin is one thing that keeps a frame, and a private copy and a
 //! page version that no segment holds are the others. How many frames are
 //! unwritten is write-back's to bound (FL5), and how many are private is

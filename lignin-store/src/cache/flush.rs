@@ -115,11 +115,12 @@ impl BufferPool {
         }
         let kept = if hold { flag::HELD } else { 0 };
         header.set_flags((flags & !flag::UNWRITTEN) | kept);
-        // Listed is the version with the greatest birth before this one's
-        // among those of the page that are in the pool and that a segment
-        // holds: a superseded version with a later one in a segment. Any
-        // other such version stays what it is, a frame that can be
-        // evicted, whether a listing of it is still there or not.
+        // Where this version is written (and not held for readers), one
+        // version is listed: the one with the greatest birth before this
+        // one's among those of the page that are in the pool and that a
+        // segment holds. It is a superseded version with a later one in a
+        // segment. Any other such version stays what it is, a frame that
+        // can be evicted, whether a listing of it is still there or not.
         let spent = (!hold)
             .then(|| {
                 published(&chain, page)

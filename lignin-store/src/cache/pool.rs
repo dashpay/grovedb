@@ -152,7 +152,7 @@ pub(super) struct Held {
 /// The page versions no segment holds: by the commit that bore them, those
 /// write-back owes, and apart from them those that are held for readers.
 /// And the page versions a segment holds that are spent: superseded, with
-/// the version after them written as well, or their page freed.
+/// a later version of their page written as well, or their page freed.
 #[derive(Debug, Default)]
 pub(super) struct Unwritten {
     pub(super) versions: BTreeMap<u64, Vec<PageId>>,
@@ -417,8 +417,9 @@ impl BufferPool {
     /// share is counted once for each.
     ///
     /// What is beside the fixed part belongs to frames that cannot be
-    /// evicted, so this never exceeds the configured size plus those
-    /// frames. Not counted are the lists of unwritten pages
+    /// evicted, so in a pool at rest this never exceeds the configured
+    /// size plus those frames; taken while frames come and go, it adds up
+    /// counts of different moments. Not counted are the lists of unwritten pages
     /// ([`Self::unwritten_pages`]), four bytes a page, and the two lists
     /// [`Self::reclaim`] works from: the spent page versions, of which at
     /// most 4,096 are listed, and what the last reclaim found gone. An
