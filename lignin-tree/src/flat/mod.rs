@@ -186,8 +186,8 @@
 //! outgrown its image is written as the pieces it needs; one that is left
 //! with no entry is freed and not written; one that lost an entry and is
 //! under a quarter of a page is merged with its neighbour in the one
-//! image that is written, or into the root where the two are the root's
-//! only children. So the write hands its pages at most one image for each
+//! image that is written, or into the root where that leaves one leaf in
+//! the tree. So the write hands its pages at most one image for each
 //! leaf it changes and one more for each further piece of a cut, and no
 //! page but the root is handed two images of a leaf: the root is where a
 //! leaf that is left with no entry was one of its two children, and the

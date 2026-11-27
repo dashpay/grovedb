@@ -854,24 +854,70 @@ fn a_root_that_is_cut_is_written_as_its_pieces() {
     assert_eq!((written.leaves, written.leaf_writes), (1, 2));
 }
 
-/// A tree whose root has one child, a leaf, which no write of this code
-/// leaves: a write that takes an entry out of the leaf puts the tree
-/// right in the one image it writes, of the root.
+/// Trees whose root has one child, which the page format allows and no
+/// write of this code leaves. Where a write that takes an entry out
+/// leaves one leaf in the tree, the root takes its entries in the one
+/// image that is written, and every page below the root is freed.
 #[test]
-fn a_root_with_one_child_takes_what_the_leaf_holds_in_one_image() {
-    let (mut pages, tree) = by_hand(vec![
-        branch_image(1, 1, 2, &[]),
-        leaf_image(2, &[b"a", b"b", b"c"]),
-    ]);
-    let from = pages.leaf_pages.len();
-    let changes: Changes = [(b"b".to_vec(), None)].into();
-    let written = write(&mut pages, &tree, &changes);
-    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
-    assert_eq!(pages.leaf_pages[from..], [tree.root()]);
-    pages.commit();
-    assert_eq!(pages.pages.len(), 1);
-    let found = records(&pages, &tree).into_iter().map(|(key, _)| key);
-    assert_eq!(found.collect::<Vec<_>>().concat(), b"ac");
+fn a_root_with_one_child_takes_the_last_leaf_in_one_image() {
+    let keys = |pages: &Mem, tree: &FlatTree| -> Vec<u8> {
+        let keys = records(pages, tree).into_iter().map(|(key, _)| key);
+        keys.collect::<Vec<_>>().concat()
+    };
+    // The child is a leaf; it is a branch over one leaf; it is a branch
+    // over two leaves, which are merged; and the same a level deeper.
+    type Shape = (Vec<Vec<u8>>, &'static [u8], &'static [u8]);
+    let shapes: [Shape; 4] = [
+        (
+            vec![
+                branch_image(1, 1, 2, &[]),
+                leaf_image(2, &[b"a", b"b", b"c"]),
+            ],
+            b"b",
+            b"ac",
+        ),
+        (
+            vec![
+                branch_image(1, 2, 2, &[]),
+                branch_image(2, 1, 3, &[]),
+                leaf_image(3, &[b"a", b"b", b"c"]),
+            ],
+            b"b",
+            b"ac",
+        ),
+        (
+            vec![
+                branch_image(1, 2, 2, &[]),
+                branch_image(2, 1, 3, &[(b"m", 4)]),
+                leaf_image(3, &[b"a", b"b"]),
+                leaf_image(4, &[b"m", b"n", b"o"]),
+            ],
+            b"n",
+            b"abmo",
+        ),
+        (
+            vec![
+                branch_image(1, 3, 2, &[]),
+                branch_image(2, 2, 3, &[]),
+                branch_image(3, 1, 4, &[(b"m", 5)]),
+                leaf_image(4, &[b"a", b"b"]),
+                leaf_image(5, &[b"m", b"n", b"o"]),
+            ],
+            b"n",
+            b"abmo",
+        ),
+    ];
+    for (images, gone, left) in shapes {
+        let (mut pages, tree) = by_hand(images);
+        let from = pages.leaf_pages.len();
+        let changes: Changes = [(gone.to_vec(), None)].into();
+        let written = write(&mut pages, &tree, &changes);
+        assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+        assert_eq!(pages.leaf_pages[from..], [tree.root()]);
+        pages.commit();
+        assert_eq!(pages.pages.len(), 1, "the root is all that is left");
+        assert_eq!(keys(&pages, &tree), left);
+    }
 }
 
 /// A leaf that is the only child of a branch which is not the root has no
@@ -898,4 +944,63 @@ fn a_leaf_that_is_alone_below_a_branch_is_written_by_itself() {
     assert_eq!((leaves(&pages), pages.image(tree.root()).level()), (3, 1));
     let found = records(&pages, &tree).into_iter().map(|(key, _)| key);
     assert_eq!(found.collect::<Vec<_>>().concat(), b"acnotu");
+}
+
+/// The first record under a prefix is searched up to a key, and no leaf
+/// is read whose key range begins at or after that key.
+#[test]
+fn a_search_up_to_a_key_reads_no_leaf_beyond_it() {
+    let made = || {
+        by_hand(vec![
+            branch_image(1, 1, 2, &[(b"c", 3), (b"e", 4)]),
+            leaf_image(2, &[b"aa", b"ab"]),
+            leaf_image(3, &[b"ca", b"cb"]),
+            leaf_image(4, &[b"ea", b"eb"]),
+        ])
+    };
+    let first = |pages: &Mem, tree: &FlatTree, under: &[u8], end: Option<&[u8]>, pass: &[u8]| {
+        let mut value = Vec::new();
+        let found = tree.first_under(pages, under, end, |key| key == pass, &mut value);
+        found.map(|key| key.map(|key| (key, value)))
+    };
+    let (pages, tree) = made();
+    let was = |key: &[u8]| Some((key.to_vec(), b"was".to_vec()));
+    // The first record under a prefix, also in a leaf further on, and
+    // none where the next key is of another prefix.
+    assert_eq!(first(&pages, &tree, b"a", None, b"").unwrap(), was(b"aa"));
+    assert_eq!(first(&pages, &tree, b"a", None, b"aa").unwrap(), was(b"ab"));
+    assert_eq!(first(&pages, &tree, b"b", None, b"").unwrap(), None);
+    assert_eq!(first(&pages, &tree, b"c", None, b"ca").unwrap(), was(b"cb"));
+    assert_eq!(first(&pages, &tree, b"", None, b"").unwrap(), was(b"aa"));
+    // Up to a key: a record at the key or after it is not found.
+    assert_eq!(
+        first(&pages, &tree, b"a", Some(b"ab"), b"aa").unwrap(),
+        None
+    );
+    assert_eq!(
+        first(&pages, &tree, b"", Some(b"cb"), b"").unwrap(),
+        was(b"aa")
+    );
+
+    // The leaf in the middle cannot be read. A search that ends before
+    // its key range does not read it, and one that reaches it fails.
+    let (mut pages, tree) = made();
+    pages.pages.remove(&page_id(3));
+    let passed = |key: &[u8]| key.starts_with(b"a");
+    let mut value = Vec::new();
+    for end in [&b"ac"[..], b"b", b"c"] {
+        // With every record of the first leaf passed, the search comes
+        // to the end of that leaf, and goes no further.
+        let none = tree.first_under(&pages, b"", Some(end), passed, &mut value);
+        assert_eq!(none.unwrap(), None, "up to {end:?}");
+        let found = first(&pages, &tree, b"", Some(end), b"aa");
+        assert_eq!(found.unwrap(), was(b"ab"));
+    }
+    let beyond = tree.first_under(&pages, b"", Some(b"ca"), passed, &mut value);
+    assert!(beyond.is_err(), "the leaf from `c` on is read: {beyond:?}");
+    let unbounded = tree.first_under(&pages, b"", None, passed, &mut value);
+    assert!(unbounded.is_err(), "{unbounded:?}");
+    // Under a prefix whose keys the first leaf has none of, the leaf that
+    // follows is read, as a cursor reads it.
+    assert!(first(&pages, &tree, b"b", None, b"").is_err());
 }
