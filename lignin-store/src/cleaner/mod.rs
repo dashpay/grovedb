@@ -333,16 +333,44 @@
 //! the order [`crate::values`] asks for (CL5). It drops the files that
 //! are empty for every reader; if the dead space that a cleaning can
 //! give back is above [`CleanerConfig::value_dead_percent`], it cleans
-//! the closed file with the largest share of dead bytes, unless less
-//! than one byte in a hundred of that file is dead and the target is not
-//! zero ([`ValueStore::copy_live`], a sync, a manifest,
-//! [`ValueStore::install`]); and it makes the log durable and asks which
-//! files are empty from now on ([`ValueStore::retire`]). Those are
-//! dropped once the operations that are running then have ended: in the
-//! same pass if none is, and by a later pass otherwise. The owners read
-//! pages, so the pass takes an operation guard for the cleaning of the
-//! file, and gives it back before it asks: a guard of its own over the
-//! whole pass would keep the file it has just emptied.
+//! the closed file with the largest share of dead bytes, and after it the
+//! files that are nearly empty ([`ValueStore::copy_live`], a sync, a
+//! manifest, [`ValueStore::install`]); and it makes the log durable and
+//! asks which files are empty from now on ([`ValueStore::retire`]). Those
+//! are dropped once the operations that are running then have ended: in
+//! the same pass if none is, and by a later pass otherwise. The owners
+//! read pages, so the pass takes an operation guard for the cleaning of
+//! the files, and gives it back before it asks: a guard of its own over
+//! the whole pass would keep the file it has just emptied.
+//!
+//! **Which files a pass cleans.** Each live value of a file costs a copy,
+//! and a page step that loads the page of its owner and has write-back
+//! write it again, so a file is worth cleaning for the share of it that
+//! is dead:
+//!
+//! - The file with the largest share of dead bytes is cleaned if at least
+//!   [`CleanerConfig::value_min_file_dead_percent`] of it is dead (40 in a
+//!   hundred by default). A target alone, with files of which a little is
+//!   dead, has the cleaner copy files that are mostly live: under a churn
+//!   of the reference workload at a target of 14, nine bytes in ten of
+//!   what it copied came from files less than a fifth dead.
+//! - Over [`CleanerConfig::value_ceiling_dead_percent`] (20 by default),
+//!   that file is cleaned whatever its share, from one byte in a hundred.
+//!   **This is the worst case of the value log's dead share:** where the
+//!   deaths are spread evenly over the files, as regroupings spread them,
+//!   no file need reach the floor, and the log is held at the ceiling, as
+//!   read after a pass. Where they are not, files reach the floor first,
+//!   and the log is held between the target and the ceiling.
+//! - After it, the files that are at least 90 in a hundred dead are
+//!   cleaned in the same pass, most dead first, while their live bytes
+//!   stay within [`CleanerConfig::max_pass_bytes`]: a burst of deletes
+//!   empties files faster than one a pass.
+//! - A file whose cleaning moved nothing, because write transactions held
+//!   the pages of its values, is set aside for a fixed number of passes,
+//!   and is not replaced by a file under the floor.
+//!
+//! With a target of nothing dead, any dead byte is enough, whatever the
+//! floor: that is how `lignin compact` asks for every byte back.
 //!
 //! A file that is empty and waits to be deleted, for a pin on a version
 //! that still points into it or for a checkpoint's hold, is dead space
@@ -501,7 +529,11 @@ mod values;
 mod tests;
 
 pub use clean::{Cleaner, Pass};
-pub use config::{CleanerConfig, CleanerStats, DEFAULT_PASS_BYTES, DEFAULT_TARGET_DEAD_PERCENT};
+pub use config::{
+    CleanerConfig, CleanerStats, DEFAULT_PASS_BYTES, DEFAULT_TARGET_DEAD_PERCENT,
+    DEFAULT_VALUE_CEILING_DEAD_PERCENT, DEFAULT_VALUE_DEAD_PERCENT,
+    DEFAULT_VALUE_MIN_FILE_DEAD_PERCENT,
+};
 pub use error::CleanerError;
 pub use owners::{BothOwners, FoundBy};
 pub use space::{SegmentSpace, Space, ValueSpace};

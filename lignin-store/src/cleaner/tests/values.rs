@@ -573,9 +573,9 @@ fn a_move_under_a_private_copy_is_put_off_and_made_later() {
 
 /// Files whose values cannot be moved, because a write transaction holds
 /// copies of their pages, take no pass from a file that can be cleaned.
-/// Each of them is set aside when it was tried, for longer the more of
-/// them there are: about one pass in [`BUSY_PASSES`] tries one of them
-/// again, however many they are.
+/// Each of them is set aside when it was tried, for [`BUSY_PASSES`] passes
+/// however many are set aside with it, and a pass in which every file is
+/// set aside is counted.
 #[test]
 fn files_with_busy_pages_keep_no_other_file_from_being_cleaned() {
     const PAGES: u8 = 6;
@@ -619,21 +619,25 @@ fn files_with_busy_pages_keep_no_other_file_from_being_cleaned() {
     assert_eq!((did.values_moved, did.values_left), (1, busy), "{did:?}");
     assert_eq!(unmoved(), [true, true, true, true, true, false]);
 
-    // From then on a pass now and then tries one of the five again, each
-    // of them in its turn.
+    // From then on each of the five is tried again once in every
+    // BUSY_PASSES passes, and a pass in which none is due tries none of
+    // them and is counted. The others clean the files that the tries
+    // filled with copies nothing points to.
     let passes = 10 * BUSY_PASSES;
+    let all_busy = state.stats().value_passes_all_busy;
     let mut again = BTreeMap::new();
     for file in (0..passes).filter_map(|_| tried_in_vain()) {
         *again.entry(file).or_insert(0u64) += 1;
     }
     let tried: u64 = again.values().sum();
+    let idle = state.stats().value_passes_all_busy - all_busy;
     assert!(
-        tried <= passes / BUSY_PASSES + 2,
-        "{tried} tries in {passes} passes"
+        idle > 0 && tried + idle <= passes,
+        "{tried} tries and {idle} idle passes"
     );
     assert!(again.keys().eq(set_aside.iter()), "{again:?}");
     assert!(
-        again.values().all(|tries| (1..=3).contains(tries)),
+        again.values().all(|tries| (9..=11).contains(tries)),
         "{again:?}"
     );
     assert_eq!(unmoved(), [true, true, true, true, true, false]);

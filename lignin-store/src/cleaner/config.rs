@@ -14,6 +14,39 @@ pub const DEFAULT_TARGET_DEAD_PERCENT: u8 = 14;
 /// The most bytes of blocks one pass moves by default: 8 MiB.
 pub const DEFAULT_PASS_BYTES: u64 = 8 << 20;
 
+/// The share of dead bytes of the value log, in a hundred, above which the
+/// cleaner cleans value-log files by default.
+pub const DEFAULT_VALUE_DEAD_PERCENT: u8 = 18;
+
+/// The share of a value-log file's own bytes, in a hundred, that must be
+/// dead for the file to be cleaned by default, while the value log is
+/// under its ceiling.
+pub const DEFAULT_VALUE_MIN_FILE_DEAD_PERCENT: u8 = 40;
+
+/// The share of dead bytes of the value log, in a hundred, over which the
+/// cleaner cleans the file most worth it whatever its own share, by
+/// default.
+pub const DEFAULT_VALUE_CEILING_DEAD_PERCENT: u8 = 20;
+
+/// Five classes of the share of a file's bytes that are dead when a
+/// cleaner takes it: from 0 to 20 in a hundred, from 20 to 40, and so on,
+/// the last from 80 to all of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct DeadClass(usize);
+
+impl DeadClass {
+    /// The class of a file of `len` bytes of which `dead` are dead.
+    pub(super) fn of(dead: u64, len: u64) -> Self {
+        let percent = u128::from(dead) * 100 / u128::from(len.max(1));
+        Self((percent / 20).min(4) as usize)
+    }
+
+    /// Its place in the arrays of [`CleanerStats`].
+    pub(super) fn index(self) -> usize {
+        self.0
+    }
+}
+
 /// The settings of the cleaner.
 ///
 /// They decide when blocks and values are moved and how fast. None of them
@@ -61,19 +94,38 @@ pub struct CleanerConfig {
     /// sealed and the next one begun.
     pub segment_len: u64,
     /// The share of dead bytes among the bytes of all values in the value
-    /// log, in a hundred, above which a pass cleans a value-log file. One
-    /// file is cleaned in a pass: the one with the largest share of dead
-    /// bytes, and none of which less than one byte in a hundred is dead.
-    /// With 0 here, a file is cleaned for any dead byte.
+    /// log, in a hundred, above which a pass cleans value-log files: the
+    /// one with the largest share of dead bytes, if that share is at least
+    /// [`Self::value_min_file_dead_percent`] (or one byte in a hundred over
+    /// [`Self::value_ceiling_dead_percent`]), and after it the files that
+    /// are nearly empty, within [`Self::max_pass_bytes`]. With 0 here, a
+    /// file is cleaned for any dead byte.
     pub value_dead_percent: u8,
+    /// The share of a value-log file's own bytes, in a hundred, that must
+    /// be dead for a pass to clean it while the value log is above its
+    /// target and not over its ceiling. Each live value of a file costs a
+    /// copy and a page step, so a file that is mostly live is not worth
+    /// the space it gives back.
+    pub value_min_file_dead_percent: u8,
+    /// The share of dead bytes of the value log, in a hundred, over which a
+    /// pass cleans the file with the largest share of dead bytes whatever
+    /// that share is, from one byte in a hundred. Where the deaths are
+    /// spread over every file, no file may reach the floor, and this is
+    /// where the value log is held: its dead share stays at it, as read
+    /// after a pass, with what a burst of commits frees faster than the
+    /// cleaner cleans on top. Below [`Self::value_dead_percent`] it is
+    /// over whenever the target is.
+    pub value_ceiling_dead_percent: u8,
     /// How long the background loop sleeps between two passes when nobody
     /// wakes it.
     pub idle: Duration,
 }
 
 impl CleanerConfig {
-    /// The defaults: work towards 14 dead bytes in a hundred, in segments
-    /// and in the value log; let at most 4 in a hundred wait for a table
+    /// The defaults: work towards 14 dead bytes in a hundred in segments;
+    /// in the value log, clean files at least 40 in a hundred dead once 18
+    /// in a hundred of its bytes are, and the file most worth it whatever
+    /// its share over 20; let at most 4 in a hundred wait for a table
     /// checkpoint; close a file that is being filled when it holds 1 in a
     /// hundred of the store, or when 2 in a hundred of the store are dead
     /// in it, and none before it holds 64 KiB; copy 8 MiB of blocks in a
@@ -81,8 +133,10 @@ impl CleanerConfig {
     ///
     /// With these, the dead space of a store stays below 20 in a hundred
     /// under a steady load of commits, as read after a pass of the
-    /// cleaner: 14 that the cleaner leaves, and at most 4 more in what
-    /// was emptied and waits to be deleted. That is for a store with no
+    /// cleaner: in the segments, 14 that the cleaner leaves, and at most 4
+    /// more in what was emptied and waits to be deleted; in the value log,
+    /// 20, the ceiling, where its deaths are spread evenly over its files,
+    /// and less where they are not. That is for a store with no
     /// reader on an old version, no operation that runs for long, and
     /// blocks that are large against [`Self::min_segment_len`]. What a
     /// burst of commits kills faster than [`Self::max_pass_bytes`] and
@@ -97,7 +151,9 @@ impl CleanerConfig {
             min_segment_len: 64 << 10,
             max_pass_bytes: DEFAULT_PASS_BYTES,
             segment_len: DEFAULT_SEGMENT_LEN,
-            value_dead_percent: DEFAULT_TARGET_DEAD_PERCENT,
+            value_dead_percent: DEFAULT_VALUE_DEAD_PERCENT,
+            value_min_file_dead_percent: DEFAULT_VALUE_MIN_FILE_DEAD_PERCENT,
+            value_ceiling_dead_percent: DEFAULT_VALUE_CEILING_DEAD_PERCENT,
             idle: Duration::from_millis(100),
         }
     }
@@ -171,6 +227,26 @@ pub struct CleanerStats {
     pub values_left: u64,
     /// The bytes that were appended to the value log for copies.
     pub value_bytes_copied: u64,
+    /// The value-log files that were cleaned, by the share of their bytes
+    /// that was dead when a pass took them: from 0 to 20 in a hundred, from
+    /// 20 to 40, from 40 to 60, from 60 to 80, and from 80.
+    pub value_files_by_dead: [u64; 5],
+    /// The bytes appended for the copies of each class of
+    /// [`Self::value_files_by_dead`].
+    pub value_bytes_by_dead: [u64; 5],
+    /// Passes over the value log in which the dead space was above its
+    /// target and every file that could be cleaned was set aside, because
+    /// its last cleaning moved nothing while write transactions held the
+    /// pages of its values.
+    pub value_passes_all_busy: u64,
+    /// The segments that blocks were moved out of, by the share of their
+    /// bytes that was dead when the pass chose them, in the classes of
+    /// [`Self::value_files_by_dead`]. A segment that two passes move blocks
+    /// out of is counted by each.
+    pub segments_by_dead: [u64; 5],
+    /// The bytes of the copies of blocks out of each class of
+    /// [`Self::segments_by_dead`], those whose link was gone with them.
+    pub segment_bytes_by_dead: [u64; 5],
     /// Value-log files that were taken out of the store.
     pub value_files_dropped: u64,
     /// Value-log files for the cleaner's own copies that it gave up
@@ -214,6 +290,11 @@ pub(super) struct Counters {
     pub(super) values_moved: AtomicU64,
     pub(super) values_left: AtomicU64,
     pub(super) value_bytes_copied: AtomicU64,
+    pub(super) value_files_by_dead: [AtomicU64; 5],
+    pub(super) value_bytes_by_dead: [AtomicU64; 5],
+    pub(super) value_passes_all_busy: AtomicU64,
+    pub(super) segments_by_dead: [AtomicU64; 5],
+    pub(super) segment_bytes_by_dead: [AtomicU64; 5],
     pub(super) value_files_dropped: AtomicU64,
     pub(super) value_files_given_up: AtomicU64,
     pub(super) errors: AtomicU64,
@@ -226,6 +307,7 @@ pub(super) fn count(counter: &AtomicU64, by: u64) {
 impl Counters {
     pub(super) fn snapshot(&self) -> CleanerStats {
         let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        let classes = |counters: &[AtomicU64; 5]| counters.each_ref().map(read);
         CleanerStats {
             passes: read(&self.passes),
             scans: read(&self.scans),
@@ -249,6 +331,11 @@ impl Counters {
             values_moved: read(&self.values_moved),
             values_left: read(&self.values_left),
             value_bytes_copied: read(&self.value_bytes_copied),
+            value_files_by_dead: classes(&self.value_files_by_dead),
+            value_bytes_by_dead: classes(&self.value_bytes_by_dead),
+            value_passes_all_busy: read(&self.value_passes_all_busy),
+            segments_by_dead: classes(&self.segments_by_dead),
+            segment_bytes_by_dead: classes(&self.segment_bytes_by_dead),
             value_files_dropped: read(&self.value_files_dropped),
             value_files_given_up: read(&self.value_files_given_up),
             errors: read(&self.errors),

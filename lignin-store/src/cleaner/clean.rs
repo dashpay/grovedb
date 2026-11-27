@@ -11,7 +11,7 @@ use lignin_format::{
 };
 
 use super::{
-    config::{count, CleanerConfig},
+    config::{count, CleanerConfig, DeadClass},
     error::CleanerError,
     space::{is_at_least, is_over, trimmable, Live, SegmentSpace, Space},
     state::{lock, CleanerState, RetiredSegment, Seen, Work},
@@ -568,6 +568,29 @@ impl<'s> Cleaner<'s> {
         for (at, ..) in &blocks {
             left[*at] += 1;
         }
+        // The class of each victim's dead share as the pass chose it, and
+        // whether this pass has moved a block out of it yet.
+        let mut classes: Vec<(DeadClass, bool)> = victims
+            .iter()
+            .map(|file| {
+                let found = space.segments.iter().find(|segment| segment.file == *file);
+                let (dead, len) = found.map_or((0, 0), |segment| {
+                    (segment.dead_bytes(), segment.block_bytes)
+                });
+                (DeadClass::of(dead, len), false)
+            })
+            .collect();
+        let mut copied = |at: usize, len: u32| {
+            let (class, counted) = &mut classes[at];
+            count(
+                &counters.segment_bytes_by_dead[class.index()],
+                u64::from(len),
+            );
+            if !*counted {
+                *counted = true;
+                count(&counters.segments_by_dead[class.index()], 1);
+            }
+        };
         let mut buf = Vec::new();
         let mut gone = BTreeSet::new();
         for (at, from, page) in blocks {
@@ -584,12 +607,14 @@ impl<'s> Cleaner<'s> {
                     pass.bytes_moved += u64::from(to.len);
                     count(&counters.blocks_moved, 1);
                     count(&counters.bytes_moved, u64::from(to.len));
+                    copied(at, to.len);
                 }
                 Ok(Moved::Lost(to)) => {
                     pass.blocks_lost += 1;
                     pass.bytes_lost += u64::from(to.len);
                     count(&counters.blocks_lost, 1);
                     count(&counters.bytes_lost, u64::from(to.len));
+                    copied(at, to.len);
                 }
                 // The store has the segment no more, and no link of the
                 // page points to the block: the block lost its link after

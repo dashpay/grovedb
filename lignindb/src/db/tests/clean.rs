@@ -104,6 +104,15 @@ fn the_cleaner_of_a_session_gives_back_what_drops_left_dead() {
     assert_eq!(stats.background, Background::default());
     assert_eq!(stats.cleaner.errors, 0);
     assert!(stats.to_string().contains("cleaner: "));
+    let took = |counts: &[u64; 5]| counts.iter().sum::<u64>();
+    assert!(
+        took(&stats.cleaner.segments_by_dead) > 0,
+        "{:?}",
+        stats.cleaner
+    );
+    assert!(stats
+        .to_string()
+        .contains("cleaner, by the dead share of what it took"));
 
     let whole = |db: &Db| {
         let snapshot = db.snapshot();

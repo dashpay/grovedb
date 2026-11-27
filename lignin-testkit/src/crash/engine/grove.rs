@@ -118,6 +118,8 @@ impl Tuning {
                 max_pass_bytes: 32 << 10,
                 segment_len: 48 << 10,
                 value_dead_percent: 20,
+                value_min_file_dead_percent: 40,
+                value_ceiling_dead_percent: 30,
                 idle: eager,
             },
             idle: eager,
