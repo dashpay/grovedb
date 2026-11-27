@@ -1391,35 +1391,108 @@ fn every_command_names_what_the_workspace_has() {
             }
         }
     }
-    // The runbook builds the tool with the feature that `migrate` needs:
-    // `args::parse` takes the subcommand without it, and the binary does not.
-    let builds_migrate = (parse(&read(&operator_dir().join("migration.md")))
-        .fences
-        .iter())
-    .filter(|fence| fence.info == "sh")
-    .flat_map(commands)
-    .flat_map(|line| simple_commands(&line))
-    .any(|command| {
-        let words = words(&command);
-        let at = |option: &str| words.iter().position(|word| word == option);
-        words.first().is_some_and(|word| word == "cargo")
-            && words.get(1).is_some_and(|word| word == "build")
-            && words.iter().any(|word| word == "--release")
-            && at("-p")
-                .and_then(|at| words.get(at + 1))
-                .is_some_and(|p| p == "lignin-tools")
-            && (at("--features").and_then(|at| words.get(at + 1)))
-                .is_some_and(|list| list.split(',').any(|feature| feature == "migrate"))
+    println!("{checked} commands and code spans read");
+    assert!(checked > 100, "only {checked} commands and spans were read");
+    assert!(faults.is_empty(), "{}", faults.join("\n"));
+}
+
+/// Whether the `cargo` command `command` builds or runs `lignin-tools`,
+/// and with that whether it enables the feature `migrate`, by any of the
+/// ways Cargo takes features.
+fn builds_the_tool(command: &str) -> Option<bool> {
+    let words = words(command);
+    let at = |option: &str| words.iter().position(|word| word == option);
+    let tool = (at("-p").or_else(|| at("--package")))
+        .and_then(|at| words.get(at + 1))
+        .is_some_and(|package| package == "lignin-tools");
+    if words.first().is_none_or(|word| word != "cargo") || !tool {
+        return None;
+    }
+    let mut lists = (words.iter().enumerate()).filter_map(|(at, word)| match word.as_str() {
+        "--features" | "-F" => words.get(at + 1).map(String::as_str),
+        "--all-features" => Some("migrate"),
+        _ => word.strip_prefix("--features="),
     });
-    if !builds_migrate {
+    Some(lists.any(|list| list.split([',', ' ']).any(|feature| feature == "migrate")))
+}
+
+/// The runbook builds the tool with the feature that `migrate` needs:
+/// `args::parse` takes the subcommand without it, and the binary does not
+/// (`migrate_is_in_a_build_with_its_feature`). `migration.md` builds it for
+/// release, and no block of a document builds or runs it without the
+/// feature.
+#[test]
+fn the_runbook_builds_the_tool_with_migrate() {
+    let mut faults = Vec::new();
+    let mut release = false;
+    for (name, text) in documents() {
+        for fence in parse(&text)
+            .fences
+            .iter()
+            .filter(|fence| fence.info == "sh")
+        {
+            for command in commands(fence)
+                .iter()
+                .flat_map(|line| simple_commands(line))
+            {
+                let words = words(&command);
+                match builds_the_tool(&command) {
+                    Some(false) => faults.push(format!(
+                        "{name}:{}: `{command}` builds lignin-tools without the feature migrate",
+                        fence.line
+                    )),
+                    Some(true) => {
+                        release |= name == "migration.md"
+                            && words.get(1).is_some_and(|word| word == "build")
+                            && words.iter().any(|word| word == "--release");
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    if !release {
         faults.push(
             "no block of migration.md builds lignin-tools for release with the feature migrate"
                 .to_owned(),
         );
     }
-    println!("{checked} commands and code spans read");
-    assert!(checked > 100, "only {checked} commands and spans were read");
     assert!(faults.is_empty(), "{}", faults.join("\n"));
+    for (command, migrates) in [
+        (
+            "cargo build --release -p lignin-tools --features migrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p lignin-tools --features=grovedb,migrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p lignin-tools -F migrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p lignin-tools --all-features",
+            Some(true),
+        ),
+        ("cargo build --release -p lignin-tools", Some(false)),
+        (
+            "cargo build --release -p lignin-tools --features grovedb",
+            Some(false),
+        ),
+        (
+            "cargo build --release -p lignin-tools --features migrated",
+            Some(false),
+        ),
+        (
+            "cargo build --release -p lignin-testkit --features migrate",
+            None,
+        ),
+        ("cargo run --package lignin-tools -- help", Some(false)),
+        ("lignin migrate S T", None),
+    ] {
+        assert_eq!(builds_the_tool(command), migrates, "{command}");
+    }
 }
 
 #[test]
