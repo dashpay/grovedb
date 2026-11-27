@@ -190,22 +190,30 @@ pub struct NodePut<'a> {
     pub at: Option<NodeHandle>,
 }
 
+/// The hashes that a put which states `stale` leaves stale as the pages
+/// mark them, where `linked` says for each side, left first, whether the
+/// node has a child there: the hash of a child that the node does not
+/// have is none, and a stale value hash has the key-value hash stale with
+/// it, which is made of it.
+pub(crate) fn marked(stale: Stale, linked: [bool; 2]) -> Stale {
+    let missing = Side::BOTH
+        .into_iter()
+        .zip(linked)
+        .filter(|(_, linked)| !linked);
+    let stale = missing.fold(stale, |stale, (side, _)| {
+        stale.without(HashField::Child(side))
+    });
+    match stale.has(HashField::Value) {
+        true => stale.with(HashField::KeyValue),
+        false => stale,
+    }
+}
+
 impl NodePut<'_> {
-    /// The hashes that the put leaves stale as the pages mark them, and as
-    /// the write set keeps them: of what the writer states
-    /// ([`Self::stale`]), the hash of a child that the node does not have
-    /// is none, and a stale value hash has the key-value hash stale with
-    /// it, which is made of it.
+    /// The hashes that the put leaves stale as the pages mark them
+    /// ([`marked`]), of what the writer states ([`Self::stale`]).
     pub(crate) fn marked(&self) -> Stale {
-        let links = [(Side::Left, &self.left), (Side::Right, &self.right)];
-        let missing = links.iter().filter(|(_, link)| link.is_none());
-        let stale = missing.fold(self.stale, |stale, (side, _)| {
-            stale.without(HashField::Child(*side))
-        });
-        match stale.has(HashField::Value) {
-            true => stale.with(HashField::KeyValue),
-            false => stale,
-        }
+        marked(self.stale, [self.left.is_some(), self.right.is_some()])
     }
 }
 

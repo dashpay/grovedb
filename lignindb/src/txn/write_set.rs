@@ -16,7 +16,7 @@ use super::{
     load::StoredValue,
     view::{FlatKinds, SubtreeView},
     write::{
-        Batch, Entering, HostNode, HostPut, Hosted, LinkPut, MerkWrite, Moving, NodePut,
+        marked, Batch, Entering, HostNode, HostPut, Hosted, LinkPut, MerkWrite, Moving, NodePut,
         RecordWrite, RootPut, SubtreeWrite, ValuePut,
     },
 };
@@ -105,16 +105,19 @@ pub(crate) struct NodeEntry {
     pub(crate) right: Option<LinkEntry>,
     pub(crate) hosted: HostedEntry,
     pub(crate) value: ValueEntry,
-    /// The hashes the write left stale, as the pages mark them
-    /// ([`NodePut::marked`]): a node that is shown from its entry has the
-    /// stale hashes that its cell has.
+    /// The hashes the write left stale, as its writer stated them
+    /// ([`NodePut::stale`]): what a node that is shown from its entry
+    /// shows.
     pub(crate) stale: Stale,
 }
 
 impl NodeEntry {
-    /// Whether the write left a hash of its node stale.
+    /// Whether the write left a hash of its node stale as the pages mark
+    /// them ([`marked`]): a mark on the hash of a child that the node
+    /// does not have leaves none.
     fn leaves_stale(&self) -> bool {
-        !self.stale.is_empty()
+        let linked = [self.left.is_some(), self.right.is_some()];
+        !marked(self.stale, linked).is_empty()
     }
 }
 
@@ -1634,7 +1637,7 @@ impl WriteSet {
                     right: self.link(node.right),
                     hosted,
                     value,
-                    stale: node.marked(),
+                    stale: node.stale,
                 };
                 self.push(unit, node.key, Kind::Node(entry), first_write);
             }
@@ -4158,9 +4161,6 @@ mod tests {
         assert_eq!((set.first_open(), set.laid(0)), (0, true));
     }
 
-    /// A mark is refused once a write from before it went, whatever was
-    /// written since: the place it names is in the middle of other
-    /// operations.
     /// The list of the puts that left a hash stale ([`WriteSet::unmade`]):
     /// what it has after each kind of write, and after each is taken out
     /// again. Every answer is held to every key of the Merk where it is
@@ -4250,9 +4250,9 @@ mod tests {
         node(&mut set, 1, b"c", child, true);
         assert_eq!(listed(&set, 1), keys(&[b"a", b"c"]));
         assert_eq!(listed(&set, 2), keys(&[]));
-        // An entry has the hashes as the pages mark them, which is what a
-        // node that is shown from its entry shows: the key-value hash
-        // with the value hash, and no hash of a child that is not there.
+        // An entry has the hashes as its writer stated them, which is
+        // what a node that is shown from its entry shows. The list goes
+        // by what the pages mark.
         let kept = |set: &WriteSet, key: &[u8]| {
             let id = set.newest(Unit::data(subtree(1)), key).expect("an entry");
             match set.entry(id).kind {
@@ -4260,8 +4260,8 @@ mod tests {
                 other => panic!("a put of a node, and not {other:?}"),
             }
         };
-        assert_eq!(kept(&set, b"a"), value.with(HashField::KeyValue));
-        assert_eq!((kept(&set, b"b"), kept(&set, b"c")), (Stale::NONE, child));
+        assert_eq!(kept(&set, b"a"), value);
+        assert_eq!((kept(&set, b"b"), kept(&set, b"c")), (child, child));
 
         // A later put of the node passes it, as that of a call does, and
         // so does a delete. Each is taken out again, and the put that it
