@@ -512,7 +512,10 @@
 //! One whose node is in no tree has none, and a call passes it. A call
 //! is given the puts that no newer range delete covers: a range delete
 //! is searched for among those since the newest drop or clear, and a put
-//! is compared with the ones that are newer than it. Where the subtree
+//! is compared with the ones that are newer than it. Under the prefix
+//! that the Merk was first read under, which is its only one where it
+//! was not moved, nothing older than the oldest put that is listed is
+//! looked at, and nothing at all where none is listed. Where the subtree
 //! was moved, the prefixes it was read under are asked for as a read of
 //! one of its records asks for them: one step for each move in its
 //! history, and for each step a search among the moves of a prefix. In a
@@ -581,10 +584,13 @@
 //! comes to make a hash: the transaction has frames, and they show the
 //! caller's own writes. In a test build and under `held_reads` two
 //! things are held for it at every call: each page that the tree layer's
-//! evaluation reads is the page of a cell the walk went to, so nothing
-//! of a Merk is read that was not claimed first; and what the walk takes
-//! a host's mark to be is what its scope is answered
-//! ([`Scope::is_pending`]).
+//! evaluation reads is the page of a cell the walk went to; and what the
+//! walk takes a host's mark to be is what its scope is answered
+//! ([`Scope::is_pending`]). The first holds the evaluation to the pages
+//! of the walk, and not to its cells: a read of a cell of another Merk
+//! in one of those pages would pass it. That the evaluation follows the
+//! links and the pointers that the walk follows rests on the two being
+//! written alike, here and in `lignin_tree::hash`.
 //!
 //! Two things stand before that, and neither is of the call. Both are
 //! of the frames, which the scopes of a transaction share
