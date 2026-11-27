@@ -424,6 +424,34 @@ pages it does not leave for a later turn. The cleaner and the
 reclaimer are not waited for. `pace=free`, the default, applies blocks back
 to back, which is how the RocksDB baseline is measured.
 
+### The log file's length
+
+`Options::log_file_len` is 16 MiB by default. It is the length at which
+the log turns to its next file, not when the log is dropped: a file is
+deleted once a table checkpoint covers all of it and no hold keeps it, and
+write-back decides when a checkpoint is taken
+(`FlushConfig::checkpoint_log_bytes`), so a store can hold several files.
+What it costs
+the commits, measured with `lignin-bench writes` over one kept reference
+state, with a pool of 162 MiB and `pace=block`, 200,000 transitions (10,000
+blocks) a phase, the runs at once on a DigitalOcean `so-8vcpu-64gb-intel`
+droplet, one run a row. The default before, 64 MiB, ran twice under two
+names, which shows the spread of one setting:
+
+| `log_file_len` | p99 of `block_commit`: create / update / delete | maximum |
+| --- | --- | --- |
+| 64 MiB, first name | 7.31 / 5.15 / 3.43 ms | 16.4 / 20.1 / 14.6 ms |
+| 64 MiB, second name | 7.24 / 5.17 / 3.19 ms | 14.9 / 20.2 / 24.4 ms |
+| 16 MiB | 7.00 / 5.15 / 3.26 ms | 17.5 / 15.2 / 26.6 ms |
+
+At p99, 16 MiB is at or under the slower of the two runs of 64 MiB in
+every phase: 0.24 and 0.31 ms under them in create, where those two differ
+by 0.07 ms. Its maxima are 1.1 ms and 2.2 ms over the higher of them in
+create and delete, where those two differ by 1.5 ms and 9.8 ms, and 4.9 and
+5.0 ms under them in update, where they differ by 0.1 ms. Back to back, churns over the reference state ended, after the
+run's last checkpoint, with 0 to 51 MB of log with files of 64 MiB (three
+runs) and with 1.5 and 2.3 MB with files of 16 MiB (two runs).
+
 A run with `--engine rocksdb --engine lignindb` reports every row of both
 engines, with each LigninDB row's ratio to RocksDB's in the same run. With no
 `--engine` a run measures RocksDB alone.

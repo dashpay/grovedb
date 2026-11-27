@@ -34,8 +34,14 @@ use crate::{
 };
 
 /// The length at which the log turns to its next file, unless
-/// [`LogOptions::target_file_len`] sets another.
-pub const DEFAULT_TARGET_FILE_LEN: u64 = 64 << 20;
+/// [`LogOptions::target_file_len`] sets another: 16 MiB.
+///
+/// It is when the log turns, not when it is dropped: a file is deleted
+/// once a table checkpoint covers all of it and no hold keeps it, and
+/// write-back decides when a checkpoint is taken.
+/// `docs/lignindb/benchmarks.md` ("The log file's length") has what the
+/// length costs the commits.
+pub const DEFAULT_TARGET_FILE_LEN: u64 = 16 << 20;
 
 const HEADER_LEN: u64 = FileHeader::ENCODED_LEN as u64;
 
