@@ -6,6 +6,8 @@
 //! lignin-bench writes [options]       the write rows over a copy of a kept database
 //! lignin-bench table REPORT           the rows of a report, beside the plan's values
 //! lignin-bench compare FIRST SECOND   how far two runs' rows are apart
+//! lignin-bench latency [options]      the commit of a block at a pace, on each engine
+//! lignin-bench latency-table REPORT.. the rows of latency reports, and their ranges
 //! ```
 //!
 //! `run` options: `--out FILE` (default: standard output), `--scratch DIR`
@@ -27,20 +29,24 @@
 //! with its `--set` settings: the rows of the phases `create`, `update`
 //! and `delete`. With `--keep` the copy stays, in `<engine>-writes` beside
 //! the kept database.
-//! `compare` takes `--tolerance FRACTION` (default 0.10).
+//! `compare` takes `--tolerance FRACTION` (default 0.10). The options of
+//! `latency` are those of [`latency`].
 
 use std::{fmt::Write as _, path::PathBuf};
 
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    compare, reads,
+    compare,
+    latency::{self, LatencyReport},
+    reads,
     report::{self, ratio},
     run, writes, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
 const USAGE: &str = "usage: lignin-bench run [options] | reads [options] | writes [options] | \
-                     table REPORT | compare FIRST SECOND [--tolerance F]";
+                     table REPORT | compare FIRST SECOND [--tolerance F] | latency [options] | \
+                     latency-table REPORT...";
 
 /// Runs the command with `args` (the program name excluded) and returns
 /// what it prints.
@@ -79,6 +85,33 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
                 _ => return Err(usage()),
             };
             comparison(&read_report(paths[0])?, &read_report(paths[1])?, tolerance)
+        }
+        "latency" => {
+            let (options, out) = latency::parse_options(rest)?;
+            let report = latency::run(&options)?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, report.to_json()).map_err(|error| {
+                        BenchError::io(format!("writing {}", path.display()), error)
+                    })?;
+                    Ok(latency::table(&report))
+                }
+                None => Ok(report.to_json()),
+            }
+        }
+        "latency-table" if !rest.is_empty() => {
+            let reports = rest
+                .iter()
+                .map(|path| {
+                    let text = std::fs::read_to_string(path)
+                        .map_err(|error| BenchError::io(format!("reading {path}"), error))?;
+                    LatencyReport::from_json(&text)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(match &reports[..] {
+                [one] => latency::table(one),
+                several => latency::runs_table(several),
+            })
         }
         _ => Err(usage()),
     }
@@ -442,6 +475,42 @@ mod tests {
                 .to_string(),
             "--tolerance takes a number, not \"x\""
         );
+    }
+
+    #[test]
+    fn the_latency_commands_make_a_report_and_table_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (scratch, out) = (dir.path().join("scratch"), dir.path().join("r.json"));
+        let path = |path: &std::path::Path| path.display().to_string();
+        let mut line = args(
+            "latency --engine rocksdb --label head --documents 400 --owners 4 --warm-blocks 2 \
+             --blocks 4 --pause-us 200 --scratch",
+        );
+        line.push(path(&scratch));
+        // Without `--out` the command prints the report itself.
+        let json = main_with(&line).unwrap();
+        let report = LatencyReport::from_json(&json).unwrap();
+        assert_eq!(report.engines[0].commit_ns.len(), 4);
+        // With it the report is written there and its table is printed.
+        line.extend(["--out".to_string(), path(&out)]);
+        let text = main_with(&line).unwrap();
+        assert!(text.contains("| head | rocksdb | default | 4 |"), "{text}");
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(LatencyReport::from_json(&written).unwrap().engines.len(), 1);
+        // One report is tabled as the run printed it, and two of one run
+        // as a row each and a row of both.
+        let table = |reports: &[&std::path::Path]| {
+            let mut line = args("latency-table");
+            line.extend(reports.iter().map(|report| path(report)));
+            main_with(&line)
+        };
+        assert_eq!(table(&[&out]).unwrap(), text);
+        let both = table(&[&out, &out]).unwrap();
+        assert!(both.contains("| rocksdb | default | 2 |"), "{both}");
+        // No report, and a file that is none, are refused.
+        assert_eq!(table(&[]).unwrap_err().to_string(), USAGE);
+        let refused = table(&[&dir.path().join("none.json")]).unwrap_err();
+        assert!(refused.to_string().contains("reading"), "{refused}");
     }
 
     #[test]

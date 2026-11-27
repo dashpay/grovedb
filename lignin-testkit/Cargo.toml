@@ -25,6 +25,7 @@ lignin-io = { version = "7.0.0", path = "../lignin-io" }
 lignin-store = { version = "7.0.0", path = "../lignin-store" }
 lignin-tree = { version = "7.0.0", path = "../lignin-tree" }
 lignindb = { version = "7.0.0", path = "../lignindb" }
+rustix = { version = "1", features = ["time"] }
 serde = { workspace = true }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 tempfile = { workspace = true }

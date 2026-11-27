@@ -447,7 +447,7 @@ fn details_since(now: Vec<Detail>, then: &[Detail]) -> Result<Vec<Detail>, Bench
 }
 
 /// The next block of `stream`, its commit last. Empty at the end.
-fn next_block(stream: &mut Stream) -> Vec<Op> {
+pub(super) fn next_block(stream: &mut Stream) -> Vec<Op> {
     let mut block = Vec::new();
     for op in stream.by_ref() {
         let end = matches!(op, Op::Commit);
