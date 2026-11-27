@@ -4,8 +4,7 @@
 //! - every `lignin` command in them parses, and every option they name is
 //!   one the subcommand takes;
 //! - every `cargo` line names a package, a feature and a program the
-//!   workspace has, and every `lignin-bench` line options that its parser
-//!   reads;
+//!   workspace has;
 //! - every message they quote is in the code: in the file that the
 //!   messages chapter names for it, and anywhere in the engine's crates for
 //!   a message quoted elsewhere;
@@ -729,18 +728,8 @@ fn command_fault(line: &str, packages: &BTreeMap<String, (PathBuf, String)>) -> 
         Some("lignin") => args::parse(&os(&words[1..]))
             .err()
             .map(|error| format!("does not parse: {error}")),
-        Some("lignin-bench") => {
-            let cli = read(&repository().join("lignin-testkit/src/bench/cli.rs"));
-            if words.get(1) != Some(&"run") {
-                return Some("lignin-bench is run here with `run` alone".to_owned());
-            }
-            let body = function_body(&cli, "pub fn parse_run(");
-            let unknown: Vec<&str> = (words[2..].iter().copied())
-                .filter(|word| word.starts_with("--"))
-                .filter(|word| !body.contains(&format!("\"{word}\"")))
-                .collect();
-            (!unknown.is_empty()).then(|| format!("lignin-bench run does not read {unknown:?}"))
-        }
+        // A `lignin-bench` line is held to the benchmark's parser by
+        // `lignin-testkit/tests/runbook_rehearsal.rs`.
         Some("cargo") => {
             let value = |option: &str| {
                 let at = words.iter().position(|word| *word == option)?;
@@ -1358,7 +1347,6 @@ fn every_command_names_what_the_workspace_has() {
             for span in code_spans(prose) {
                 let tokens: Vec<&str> = span.split_whitespace().collect();
                 let fault = match tokens.as_slice() {
-                    ["lignin-bench", _, ..] => command_fault(&span, &packages),
                     // The tool takes `lignin SUBCOMMAND DIR [OPTIONS]`: no
                     // option before its subcommand.
                     ["lignin", first, more @ ..] if first.starts_with("--") && !more.is_empty() => {
