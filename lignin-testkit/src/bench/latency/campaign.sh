@@ -135,7 +135,7 @@ ulimit -n 65536 2> /dev/null ||
   refuse "the limit of open files is $(ulimit -n) and cannot be raised to 65536, which the engines want"
 
 missing=""
-tools="cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt fstrim"
+tools="cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt blkid fstrim"
 case " $parts " in *" traces "*) tools="$tools bpftrace" ;; esac
 for tool in $tools; do
   command -v "$tool" > /dev/null || missing="$missing $tool"
@@ -305,13 +305,23 @@ failed() {
 
 # What a directory is mounted from, as a run is held to it: the file
 # system's kind, its options and its own id. The id is the file system's and
-# not the device's, so a loop device of another number is the same.
+# not the device's, so a loop device of another number is the same. It is
+# read from the device itself: what findmnt says of it is the system's
+# record of its devices, which can be without the id of a file system that
+# was just made and have it at a later call. A mount that is of no device
+# has no id, and is held to its kind and its options.
+mounted_from() { # mounted_from DIRECTORY
+  local source id
+  source=$(findmnt -no SOURCE -T "$1")
+  id=$(sudo blkid -p -o value -s UUID "${source%%\[*}" 2> /dev/null || true)
+  echo "$(findmnt -no FSTYPE,OPTIONS -T "$1") $id"
+}
 mount_of() { # mount_of DIRECTORY
   local of
-  of=$(findmnt -no FSTYPE,OPTIONS,UUID -T "$1")
+  of=$(mounted_from "$1")
   # A file system the campaign keeps in a file is also of the mount its
   # file is on: its syncs end in syncs of that file.
-  case "$1" in "$out/mnt/"*) of="$of, in a file on $(findmnt -no FSTYPE,OPTIONS,UUID -T "$out/fs")" ;; esac
+  case "$1" in "$out/mnt/"*) of="$of, in a file on $(mounted_from "$out/fs")" ;; esac
   echo "$of"
 }
 
