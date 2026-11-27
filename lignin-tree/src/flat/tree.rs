@@ -892,6 +892,24 @@ struct Descent {
     /// The same of the branch above the leaf: where the key range of that
     /// branch's first child begins.
     above: Option<Vec<u8>>,
+    /// Whether every branch above that one has one child: the branch
+    /// above the leaf is then all that the root leads to.
+    one_path: bool,
+}
+
+/// What a merge of a leaf that a write of many keys has changed is decided
+/// by, beside the leaf.
+#[derive(Clone, Copy)]
+struct Ahead<'a> {
+    /// The key the write goes on with, which is before the leaf's key
+    /// range, if one is left.
+    next: Option<&'a [u8]>,
+    /// Where the key range of the branch above the leaf begins
+    /// ([`Descent::above`]).
+    above: Option<&'a [u8]>,
+    /// Whether every branch above that one has one child
+    /// ([`Descent::one_path`]).
+    one_path: bool,
 }
 
 /// Writing many keys.
@@ -983,6 +1001,7 @@ impl FlatTree {
                 leaf,
                 begin,
                 above,
+                one_path,
             } = self.descend_within(&pages, key)?;
             group.clear();
             group.push((key, value.as_deref()));
@@ -991,11 +1010,14 @@ impl FlatTree {
                 group.push((key, value.as_deref()));
             }
             group.reverse();
-            // The key the write goes on with, and where the key range of
-            // the branch above the leaf begins: what a merge with the leaf
-            // to the left is decided by.
-            let next = rest.peek().map(|(key, _)| key.as_slice());
-            let ahead = (next, above.as_deref());
+            // The key the write goes on with, and what the way down saw
+            // of the branches above the leaf: what a merge of the leaf is
+            // decided by.
+            let ahead = Ahead {
+                next: rest.peek().map(|(key, _)| key.as_slice()),
+                above: above.as_deref(),
+                one_path,
+            };
             leaves += u64::from(self.write_group(&mut pages, steps, leaf, &group, ahead)?);
         }
         for (key, value) in changes.iter().filter(|(key, _)| !short(key)) {
@@ -1022,6 +1044,9 @@ impl FlatTree {
         let (mut page, mut above) = (self.root, None);
         let (mut steps, mut begin): (_, Option<Vec<u8>>) = (Vec::new(), None);
         let mut begin_above = None;
+        // Whether every branch so far has one child, and the same of the
+        // branches above the last one.
+        let (mut one_child, mut one_path) = (true, true);
         loop {
             let frame = pages.page(page)?;
             let FlatPage::Branch(branch) = Self::checked(&frame, page, above)? else {
@@ -1030,9 +1055,12 @@ impl FlatTree {
                     leaf: page,
                     begin,
                     above: begin_above,
+                    one_path,
                 });
             };
             begin_above.clone_from(&begin);
+            one_path = one_child;
+            one_child &= branch.is_empty();
             // The child in position `index` has the keys from the separator
             // before it on. The greatest of those separators on the way is
             // kept: in a tree that is one, each is at or after those above
@@ -1054,17 +1082,15 @@ impl FlatTree {
 
     /// Makes `changes`, which are in the order of their keys and all in
     /// the key range of the leaf `page` below `steps`, in that leaf, and
-    /// says whether one of them changed it. `ahead` is the key the write
-    /// goes on with, which is before the leaf's key range, if one is
-    /// left, and where the key range of the branch above the leaf begins
-    /// ([`Descent::above`]).
+    /// says whether one of them changed it. `ahead` is what a merge of
+    /// the leaf is decided by ([`Ahead`]).
     fn write_group<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         mut steps: Vec<Step>,
         page: PageId,
         changes: &[Change<'_>],
-        ahead: (Option<&[u8]>, Option<&[u8]>),
+        ahead: Ahead<'_>,
     ) -> Result<bool, FlatError> {
         // Deletes of keys that are not there cost no copy of the page, as
         // one of them alone costs none. A key that gets a value is judged
@@ -1209,33 +1235,32 @@ impl FlatTree {
     /// that neighbour or before it where it is at or after the beginning
     /// of the neighbour's key range. That beginning is the separator
     /// before the neighbour in the branch, and `above` for the branch's
-    /// first child.
+    /// first child. Both, and whether every branch above has one child,
+    /// are as the way down to the leaf saw them ([`Ahead`]): no branch
+    /// above the leaf's own is read again.
     fn merge_written<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         steps: &[Step],
         page: PageId,
         now: &[LeafEntry<'_>],
-        (next, above): (Option<&[u8]>, Option<&[u8]>),
+        Ahead {
+            next,
+            above,
+            one_path,
+        }: Ahead<'_>,
     ) -> Result<MergedLeaf, FlatError> {
         let capacity = self.config.capacity();
-        let Some((
-            &Step {
-                page: parent,
-                index,
-            },
-            branches,
-        )) = steps.split_last()
+        let Some(&Step {
+            page: parent,
+            index,
+        }) = steps.last()
         else {
             return Ok(MergedLeaf::NoNeighbour);
         };
-        // Whether the branch above the leaf is all that the root leads
-        // to: every branch above it has one child.
-        let mut one_path = true;
-        for step in branches {
-            let frame = pages.page(step.page)?;
-            one_path &= branch(&frame, step.page)?.is_empty();
-        }
+        // `one_path` says whether the branch above the leaf is all that
+        // the root leads to: the way down saw every branch above it, and
+        // none of them has changed since, so none is read again.
         let alone = {
             let frame = pages.page(parent)?;
             branch(&frame, parent)?.is_empty()

@@ -9,7 +9,10 @@ mod shape;
 mod steps;
 pub(crate) mod store;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+};
 
 use lignin_format::{
     flat_page::{common_prefix_len, FlatPage, FlatValue},
@@ -89,6 +92,8 @@ struct Mem {
     takes: u64,
     /// The page of each image of a leaf that was written, in order.
     leaf_pages: Vec<PageId>,
+    /// The page of each read, in order.
+    reads: RefCell<Vec<PageId>>,
     /// A step of background work that is made just before the page is
     /// taken: it gives the image the page has from then on.
     step_before_take: Option<(PageId, Vec<u8>)>,
@@ -116,6 +121,7 @@ impl Mem {
             leaf_writes: 0,
             takes: 0,
             leaf_pages: Vec::new(),
+            reads: RefCell::default(),
             step_before_take: None,
         }
     }
@@ -265,6 +271,7 @@ impl FlatPages for Mem {
     type Page<'a> = &'a [u8];
 
     fn page(&self, page: PageId) -> Result<&[u8], FlatError> {
+        self.reads.borrow_mut().push(page);
         let image = self.pages.get(&page).ok_or(FlatError::Freed { page })?;
         Ok(image)
     }

@@ -946,6 +946,51 @@ fn a_leaf_that_is_alone_below_a_branch_is_written_by_itself() {
     assert_eq!(found.collect::<Vec<_>>().concat(), b"acnotu");
 }
 
+/// A leaf that a write leaves short is merged with the leaf beside it,
+/// and what the root takes then is decided by what the way down saw of
+/// the branches: none above the leaf's own is read a second time.
+#[test]
+fn a_merge_of_a_changed_leaf_reads_no_branch_above_its_own_again() {
+    // The branch 2 has five leaves under long separators: with four it
+    // is no short page, and nothing above it is looked at after the
+    // merge.
+    let long = |first: u8| [&[first][..], &vec![b'~'; small().key_limit() - 1]].concat();
+    let (b, d, f, h) = (long(b'b'), long(b'd'), long(b'f'), long(b'h'));
+    let (mut pages, tree) = by_hand(vec![
+        branch_image(1, 2, 2, &[(b"m", 3), (b"u", 12)]),
+        branch_image(2, 1, 4, &[(&b, 5), (&d, 6), (&f, 7), (&h, 8)]),
+        branch_image(3, 1, 9, &[(b"p", 10), (b"r", 11)]),
+        leaf_image(4, &[b"a1", b"b0"]),
+        leaf_image(5, &[b"c1", b"d0"]),
+        leaf_image(6, &[b"e1", b"f0"]),
+        leaf_image(7, &[b"g1", b"h0"]),
+        leaf_image(8, &[b"i1", b"j0"]),
+        leaf_image(9, &[b"n1", b"o0"]),
+        leaf_image(10, &[b"p1", b"q0"]),
+        leaf_image(11, &[b"r1", b"s0"]),
+        branch_image(12, 1, 13, &[(b"x", 14), (b"z", 15)]),
+        leaf_image(13, &[b"v1", b"w0"]),
+        leaf_image(14, &[b"x1", b"y0"]),
+        leaf_image(15, &[b"z1", b"~0"]),
+    ]);
+    pages.reads.borrow_mut().clear();
+    let from = pages.leaf_pages.len();
+    let changes: Changes = [(b"e1".to_vec(), None)].into();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+    // The leaf took the entries of the one to its right.
+    assert_eq!(pages.leaf_pages[from..], [page_id(6)]);
+    assert!(!pages.pages.contains_key(&page_id(7)));
+    let reads = pages.reads.borrow().clone();
+    let of = |page: u32| reads.iter().filter(|read| **read == page_id(page)).count();
+    assert_eq!(of(1), 1, "the root, on the way down: {reads:?}");
+    pages.commit();
+    assert_eq!(pages.image(page_id(2)).branch().expect("a branch").len(), 3);
+    let found = records(&pages, &tree).into_iter().map(|(key, _)| key);
+    let found = found.collect::<Vec<_>>().concat();
+    assert_eq!(found, b"a1b0c1d0f0g1h0i1j0n1o0p1q0r1s0v1w0x1y0z1~0");
+}
+
 /// The first record under a prefix is searched up to a key, and no leaf
 /// is read whose key range begins at or after that key.
 #[test]
