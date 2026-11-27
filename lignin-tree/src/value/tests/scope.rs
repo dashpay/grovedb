@@ -321,7 +321,26 @@ fn a_cell_carried_while_its_value_is_pending_takes_the_bytes_along() {
     }
     assert_eq!(scope.values.released_pointers(), []);
 
+    // The group is written for another place first (`log-format.md` LG22):
+    // that writing counts each carried value, and the commit's writing of
+    // the group counts it no more.
+    let carried = CarriedValues {
+        values: moved.len() as u64,
+        bytes: moved.iter().map(|read| read.value.len() as u64).sum(),
+    };
+    let mut discarded = Vec::new();
+    let elsewhere = LogStart::FIRST.address(1 << 20).expect("an address");
+    let mut group = GroupWriter::new(version(9), elsewhere, &mut discarded).expect("a group");
+    let source = db.source();
+    scope
+        .values
+        .log_values(&mut scope.pages, &source, &mut group)
+        .expect("the values");
+    drop((group, source));
+    assert_eq!(scope.values.values_carried(), carried);
+
     db.commit(scope);
+    assert_eq!(db.carried(), [CarriedValues::default(), carried]);
     let group = db.groups().pop().expect("a group");
     assert_eq!(group.released, []);
     assert_eq!(group.values.len(), moved.len());

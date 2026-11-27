@@ -565,7 +565,7 @@ again when room is back. It is set by `Options::reserve`
 ([tuning](tuning.md)), in bytes, and **is 0 by default: no reserve**.
 How large it should be has not been measured for a node's database; the
 design text's first estimate is one log file and one segment at their
-configured lengths, 128 MiB with the defaults
+configured lengths, 80 MiB with the defaults
 ([section 5.3](../disk-full-and-backup.md#53-how-much-room-is-a-little)).
 
 ### The log grows and does not shrink

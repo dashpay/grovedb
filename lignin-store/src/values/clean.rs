@@ -1,7 +1,10 @@
 //! Cleaning a value-log file: moving its live values to another file and
 //! giving their owners the new pointers.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use lignin_format::{value_log::ValuePointer, CommitVersion, FileId, FormatVersion, PageId};
 
@@ -13,6 +16,20 @@ use super::{
     writer::{ValueHold, ValueWriter},
 };
 use crate::segment::ManifestStore;
+
+/// How many times [`ValueStore::install`] tries a page step again after it
+/// was refused with [`Refusal::Busy`], each time with a fresh look at the
+/// page ([`ValueOwners::find`]).
+///
+/// The look of [`ValueStore::copy_live`] is made before the copies are made
+/// durable, and a page that most commits change is superseded by then. A
+/// look just before the step leaves a commit little time to come between.
+pub const BUSY_RETRIES: u32 = 3;
+
+/// How long [`ValueStore::install`] waits before it looks at a page again
+/// after a refused step: time for a write transaction that holds a private
+/// copy of it to commit. It holds no lock of the store while it waits.
+pub const BUSY_RETRY_WAIT: Duration = Duration::from_micros(200);
 
 /// The cells that own values, as the cleaner sees them.
 ///
@@ -308,8 +325,14 @@ impl ValueStore {
     /// value take the pointer to the copy.
     ///
     /// For each copy it asks `owners` to install the new pointer in one page
-    /// step ([`ValueOwners::rewrite`]). If the step is refused, the copy is
-    /// dead space and the value stays where it was.
+    /// step ([`ValueOwners::rewrite`]). A step refused with
+    /// [`Refusal::Busy`] is tried again, up to [`BUSY_RETRIES`] times: it
+    /// waits [`BUSY_RETRY_WAIT`], holding no lock of the store, looks at
+    /// the page again ([`ValueOwners::find`]) and makes the step with what
+    /// that look found, an ordinary step under the same checks. A look that
+    /// finds no cell of the page holding the pointer ends the tries as
+    /// [`Refusal::OwnerGone`] does. If the last try is refused, the copy is dead space and the
+    /// value stays where it was.
     ///
     /// Fails with [`ValueStoreError::NotCovered`], and installs nothing, if
     /// the durable manifest does not cover every copy: a page must not point
@@ -360,22 +383,40 @@ impl ValueStore {
             found,
         } in moves
         {
-            let counted = AtomicBool::new(false);
-            let step = PointerRewrite {
-                counts: self.count_step(),
-                counted: &counted,
-                page,
-                from,
-                to,
+            let mut look = Some(found);
+            let mut retries = 0;
+            let outcome = loop {
+                let Some(found) = look.take() else {
+                    break Ok(Rewrite::Refused(Refusal::OwnerGone));
+                };
+                let counted = AtomicBool::new(false);
+                let step = PointerRewrite {
+                    counts: self.count_step(),
+                    counted: &counted,
+                    page,
+                    from,
+                    to,
+                };
+                let outcome = owners.rewrite(step, found);
+                let counted = counted.into_inner();
+                if counted && !matches!(outcome, Ok(Rewrite::Installed(_))) {
+                    self.mark_miscounted(from.file());
+                    miscount.get_or_insert(ValueStoreError::Miscounted {
+                        pointer: from,
+                        why: Miscount::NotInstalled,
+                    });
+                }
+                let busy = matches!(outcome, Ok(Rewrite::Refused(Refusal::Busy)));
+                if counted || !busy || retries == BUSY_RETRIES {
+                    break outcome;
+                }
+                retries += 1;
+                std::thread::sleep(BUSY_RETRY_WAIT);
+                match owners.find(page, from) {
+                    Ok(again) => look = again,
+                    Err(error) => break Err(error),
+                }
             };
-            let outcome = owners.rewrite(step, found);
-            if counted.into_inner() && !matches!(outcome, Ok(Rewrite::Installed(_))) {
-                self.mark_miscounted(from.file());
-                miscount.get_or_insert(ValueStoreError::Miscounted {
-                    pointer: from,
-                    why: Miscount::NotInstalled,
-                });
-            }
             match outcome {
                 Ok(Rewrite::Installed(installed)) => {
                     cleaned.moved += 1;

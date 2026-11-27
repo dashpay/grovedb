@@ -97,6 +97,8 @@
 //! | `flush_idle_ms` | [`FlushConfig::idle`] |
 //! | `cleaner_target` | [`CleanerConfig::target_dead_percent`] |
 //! | `cleaner_value_target` | [`CleanerConfig::value_dead_percent`] |
+//! | `cleaner_value_floor` | [`CleanerConfig::value_min_file_dead_percent`] |
+//! | `cleaner_value_ceiling` | [`CleanerConfig::value_ceiling_dead_percent`] |
 //! | `cleaner_checkpoint_dead` | [`CleanerConfig::checkpoint_dead_percent`] |
 //! | `cleaner_seal_dead` | [`CleanerConfig::seal_dead_percent`] |
 //! | `cleaner_max_segment` | [`CleanerConfig::max_segment_percent`] |
@@ -327,6 +329,8 @@ impl Tuning {
                 }
                 "cleaner_target"
                 | "cleaner_value_target"
+                | "cleaner_value_floor"
+                | "cleaner_value_ceiling"
                 | "cleaner_checkpoint_dead"
                 | "cleaner_seal_dead"
                 | "cleaner_max_segment"
@@ -338,6 +342,12 @@ impl Tuning {
                     match key {
                         "cleaner_target" => cleaner.target_dead_percent = percent(key, value)?,
                         "cleaner_value_target" => cleaner.value_dead_percent = percent(key, value)?,
+                        "cleaner_value_floor" => {
+                            cleaner.value_min_file_dead_percent = percent(key, value)?
+                        }
+                        "cleaner_value_ceiling" => {
+                            cleaner.value_ceiling_dead_percent = percent(key, value)?
+                        }
                         "cleaner_checkpoint_dead" => {
                             cleaner.checkpoint_dead_percent = percent(key, value)?
                         }
@@ -454,7 +464,7 @@ fn cleaner_copied(stats: &DbStats) -> u64 {
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 51] = [
+pub const DETAIL_IDS: [&str; 53] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
@@ -464,6 +474,8 @@ pub const DETAIL_IDS: [&str; 51] = [
     "log_removes",
     "log_values",
     "log_value_bytes",
+    "log_values_carried",
+    "log_value_bytes_carried",
     "segment_bytes",
     "base_blocks",
     "base_payload_bytes",
@@ -530,6 +542,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("records", flush.remove_records, GROUPS),
         ("values", flush.values_logged, GROUPS),
         ("B", flush.value_logged_bytes, GROUPS),
+        ("values", stats.commits.values_carried, GROUPS),
+        ("B", stats.commits.value_bytes_carried, GROUPS),
         ("B", flush.appended_bytes, FLUSH),
         ("blocks", flush.base_blocks, FLUSH),
         ("B", flush.base_bytes, FLUSH),
@@ -950,6 +964,8 @@ mod settings_tests {
             "flush_idle_ms=23",
             "cleaner_target=29",
             "cleaner_value_target=0",
+            "cleaner_value_floor=31",
+            "cleaner_value_ceiling=43",
             "cleaner_checkpoint_dead=37",
             "cleaner_seal_dead=41",
             "cleaner_max_segment=100",
@@ -984,6 +1000,8 @@ mod settings_tests {
             Some(CleanerConfig {
                 target_dead_percent: 29,
                 value_dead_percent: 0,
+                value_min_file_dead_percent: 31,
+                value_ceiling_dead_percent: 43,
                 checkpoint_dead_percent: 37,
                 seal_dead_percent: 41,
                 max_segment_percent: 100,

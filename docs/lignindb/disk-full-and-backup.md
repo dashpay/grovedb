@@ -725,7 +725,7 @@ grows with the number of pages, `FlushConfig::max_unwritten` is where
 committers are made to wait for the pages that wait, and no bound on
 their bytes, and the bytes of a commit are its caller's. As a first
 estimate, and no more than that, this document suggests one log file plus
-one segment at their configured lengths (64 MiB each by default), until a
+one segment at their configured lengths (16 MiB and 64 MiB by default), until a
 measurement on a database of a node's size replaces it (PERF-08). For the
 database of the measurement that estimate is 384 KiB, with the table
 checkpoint and the manifest beside the two files.

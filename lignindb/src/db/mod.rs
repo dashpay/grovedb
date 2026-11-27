@@ -827,6 +827,24 @@ impl fmt::Display for DbStats {
             self.cleaner.value_files_dropped,
             self.cleaner.segments_not_durable
         )?;
+        let classes = |counts: &[u64; 5]| {
+            counts
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        writeln!(
+            f,
+            "cleaner, by the dead share of what it took (0-20/20-40/40-60/60-80/80-100 %): \
+             value-log files {} ({} bytes copied), {} passes with every file set aside; \
+             segments {} ({} bytes copied)",
+            classes(&self.cleaner.value_files_by_dead),
+            classes(&self.cleaner.value_bytes_by_dead),
+            self.cleaner.value_passes_all_busy,
+            classes(&self.cleaner.segments_by_dead),
+            classes(&self.cleaner.segment_bytes_by_dead)
+        )?;
         writeln!(
             f,
             "readers: {} pins, {} guards, {} directory handles kept",

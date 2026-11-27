@@ -424,6 +424,9 @@ struct PhaseRun {
     details: Vec<Detail>,
     /// The engine's gauges over the phase.
     gauges: Vec<Detail>,
+    /// The counters and the details as the reading that ended the phase
+    /// gave them, from which a span that follows the phase is counted.
+    ended: (Counters, Vec<Detail>),
 }
 
 /// What `now` counts more than `then`, detail by detail.
@@ -525,8 +528,10 @@ fn write_phase<E: Engine>(
     }
     // Flushes and compactions the phase set off are counted in it.
     engine.wait_for_background()?;
-    totals.counters = engine.counters()?.since(&counters_before);
-    let details = details_since(engine.details()?, &details_before)?;
+    let ended = engine.counters()?;
+    totals.counters = ended.since(&counters_before);
+    let ended_details = engine.details()?;
+    let details = details_since(ended_details.clone(), &details_before)?;
     let gauges = engine.gauges()?;
     totals.node_anatomy = engine
         .node_anatomy()
@@ -545,6 +550,7 @@ fn write_phase<E: Engine>(
         commit_meter: commit_meter.finish(),
         details,
         gauges,
+        ended: (ended, ended_details),
     })
 }
 
@@ -1577,6 +1583,7 @@ fn measure<E: Engine>(
     phases.push(load.totals);
 
     let root_hash_after_load = engine.root_hash(grove_version)?;
+    let (after_load, details_after_load) = load.ended.clone();
     let disk_after_load = disk_usage(dir)?;
     rows.push(measured_row(
         "size_on_disk",
@@ -1602,6 +1609,8 @@ fn measure<E: Engine>(
     engine.flush()?;
     engine.wait_for_background()?;
     let disk_after_flush = disk_usage(dir)?;
+    let flushed_counters = engine.counters()?;
+    let settling_details = details_since(engine.details()?, &details_after_load)?;
     rows.push(measured_row(
         "size_on_disk",
         "flushed",
@@ -1611,6 +1620,28 @@ fn measure<E: Engine>(
         "lengths of the files in the database directory after a flush, once the engine's \
          background work is idle",
     ));
+    rows.push(measured_row(
+        "physical_bytes_to_flushed",
+        "flushed",
+        "B",
+        flushed_counters
+            .physical_bytes()
+            .saturating_sub(after_load.physical_bytes()) as f64,
+        1,
+        "engine counters: log, flush and compaction bytes from the reading that ended the load \
+         to the size after the flush: the warm reads, the checkpoints at size, the flush and \
+         what the background work did meanwhile",
+    ));
+    for detail in &settling_details {
+        rows.push(measured_row(
+            &format!("{}_to_flushed", detail.id),
+            "flushed",
+            detail.unit,
+            detail.total as f64,
+            1,
+            detail.source,
+        ));
+    }
     rows.push(checkpoints(&engine, settings, "flushed")?);
 
     let mut reopen_meter = Meter::new(settings, "reopen");
@@ -1849,6 +1880,7 @@ mod tests {
                 total: 4_000,
                 source: "lignindb engine: the log that no table checkpoint covers",
             }],
+            ended: (Counters::default(), Vec::new()),
         };
         let rows = count_rows(&run, "lignindb");
         let gauge = rows

@@ -77,10 +77,11 @@ pub(super) struct Work {
     pub(super) asks_spared: u32,
     /// How many passes over the value log have begun.
     pub(super) value_passes: u64,
-    /// The files whose last cleaning moved nothing because write
-    /// transactions held copies of the pages of their values, each with
-    /// the pass from which it is tried again.
-    pub(super) busy_files: BTreeMap<FileId, u64>,
+    /// The files whose last cleaning moved nothing because the page steps
+    /// of their values were refused, each with the pass from which it is
+    /// tried again and how many cleanings in a row moved nothing, counted
+    /// up to the number of times its wait is doubled.
+    pub(super) busy_files: BTreeMap<FileId, (u64, u32)>,
     /// The version at which chains are trimmed.
     pub(super) trim_bound: TrimBound,
     /// Where the blocks of each sealed segment end.

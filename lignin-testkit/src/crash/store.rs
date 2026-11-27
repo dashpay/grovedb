@@ -2601,7 +2601,10 @@ mod tests {
         );
         let (tree, flat) = (made[0], made[1]);
         session.pass().expect("a pass");
-        let moved = |pass: &ValuePass| pass.cleaned.map_or(0, |(_, cleaned)| cleaned.moved);
+        let moved = |pass: &ValuePass| {
+            let cleaned = pass.cleaned.iter().chain(&pass.swept);
+            cleaned.map(|(_, cleaned)| cleaned.moved).sum::<u64>()
+        };
         assert_eq!(moved(&session.clean_values().expect("a pass")), 0);
         // Two of the three values of the first file die: the file is
         // closed, and has a live value and dead bytes.

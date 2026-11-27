@@ -190,6 +190,7 @@ only.
 | `engine_hashes_per_transition` | calls | engine: hashes computed, where it counts them (LigninDB only) |
 | `node_record_*_share` | fraction | the node records in the log, decoded (RocksDB only) |
 | `size_on_disk` | B | file lengths under the database directory |
+| `physical_bytes_to_flushed` | B | engine: log plus flush plus compaction (cleaner) bytes from the end of the load to the `flushed` size, what the background work did after the last commit of the load included; a total, not per transition. Each detail of the engine (below) has a row `<detail>_to_flushed` of the same span |
 | `point_proof_bytes`, `references_proof_bytes` | B | proof lengths |
 | `wall_per_transition`, `block_commit`, `bulk_load` | µs, ms, s | `Instant` around apply and commit |
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
@@ -390,6 +391,7 @@ counters. They say where the logged and the background bytes went:
 | --- | --- |
 | `log_group_bytes`, `log_page_step_bytes`, `log_mark_bytes` | the bytes logged: commit groups, the records of background page steps (a value given its place, a regrouped or cleaned value given its new pointer, a reclaiming step), checkpoint marks. `log_page_steps` counts the steps. |
 | `log_inserts`, `log_insert_bytes`, `log_removes`, `log_values`, `log_value_bytes` | what the commit groups carry of cells put into pages (a new node's, and a cell carried from another page, repeated whole), of cells taken out, and of out-of-line values (new ones, and those of carried cells, repeated) |
+| `log_values_carried`, `log_value_bytes_carried` | of those values, the ones the groups repeat because a cell or a flat entry was carried to another page: the value log's move rule (`value-log-format.md` O5), counted by the commit that logs them |
 | `segment_bytes`, `value_log_bytes`, `regroup_bytes`, `table_checkpoint_bytes` | the flush bytes: every block write-back appended to a segment (also one whose link the page table then refused, which is dead), new values in the value log, the values a regrouping appended again, table-checkpoint files |
 | `cleaner_block_bytes`, `cleaner_value_bytes` | the compaction bytes, which for LigninDB are the sum of these two and not the store's own count of the cleaner's appends. The cleaner counts a block once it has pointed the page at the copy or found the link gone, and the values of a file once its pass over the file has ended. A copy that is appended and not counted so yet is in no row until it is, in however many readings |
 | `base_blocks`, `base_payload_bytes`, `delta_blocks`, `delta_payload_bytes`, `consolidations`, `runs_refused` | the blocks: base images and runs of deltas, before compression; how many images were written because a chain had reached a threshold, and how many because a run was refused |
@@ -446,6 +448,34 @@ block by itself, as where blocks come seconds apart, and writes in it the
 pages it does not leave for a later turn. The cleaner and the
 reclaimer are not waited for. `pace=free`, the default, applies blocks back
 to back, which is how the RocksDB baseline is measured.
+
+### The log file's length
+
+`Options::log_file_len` is 16 MiB by default. It is the length at which
+the log turns to its next file, not when the log is dropped: a file is
+deleted once a table checkpoint covers all of it and no hold keeps it, and
+write-back decides when a checkpoint is taken
+(`FlushConfig::checkpoint_log_bytes`), so a store can hold several files.
+What it costs
+the commits, measured with `lignin-bench writes` over one kept reference
+state, with a pool of 162 MiB and `pace=block`, 200,000 transitions (10,000
+blocks) a phase, the runs at once on a DigitalOcean `so-8vcpu-64gb-intel`
+droplet, one run a row. The default before, 64 MiB, ran twice under two
+names, which shows the spread of one setting:
+
+| `log_file_len` | p99 of `block_commit`: create / update / delete | maximum |
+| --- | --- | --- |
+| 64 MiB, first name | 7.31 / 5.15 / 3.43 ms | 16.4 / 20.1 / 14.6 ms |
+| 64 MiB, second name | 7.24 / 5.17 / 3.19 ms | 14.9 / 20.2 / 24.4 ms |
+| 16 MiB | 7.00 / 5.15 / 3.26 ms | 17.5 / 15.2 / 26.6 ms |
+
+At p99, 16 MiB is at or under the slower of the two runs of 64 MiB in
+every phase: 0.24 and 0.31 ms under them in create, where those two differ
+by 0.07 ms. Its maxima are 1.1 ms and 2.2 ms over the higher of them in
+create and delete, where those two differ by 1.5 ms and 9.8 ms, and 4.9 and
+5.0 ms under them in update, where they differ by 0.1 ms. Back to back, churns over the reference state ended, after the
+run's last checkpoint, with 0 to 51 MB of log with files of 64 MiB (three
+runs) and with 1.5 and 2.3 MB with files of 16 MiB (two runs).
 
 A run with `--engine rocksdb --engine lignindb` reports every row of both
 engines, with each LigninDB row's ratio to RocksDB's in the same run. With no

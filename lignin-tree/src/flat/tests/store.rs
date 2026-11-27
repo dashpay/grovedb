@@ -28,7 +28,7 @@ use super::{
     super::{Committed, FlatOwners, PageIds, Private, StepLog},
     *,
 };
-use crate::OperationGuard;
+use crate::{value::CarriedValues, OperationGuard};
 
 /// The guard of a reader's operation, with a number to know it by. It
 /// keeps nothing here: nothing is reclaimed in these tests while a reader
@@ -65,6 +65,8 @@ pub(crate) struct State {
     log: Vec<u8>,
     latest: u64,
     owners: u64,
+    /// What each commit's group repeated for carried entries.
+    carried: Vec<CarriedValues>,
 }
 
 /// A store in a directory, with what the tasks after this one build
@@ -119,6 +121,7 @@ impl Db {
                 log,
                 latest: 0,
                 owners: 0,
+                carried: Vec::new(),
             }),
         }
     }
@@ -179,6 +182,7 @@ impl Db {
             .expect("an address");
         let mut group = GroupWriter::new(version, address, &mut state.log).expect("a group");
         writer.log_values(&mut group).expect("the values");
+        state.carried.push(writer.values_carried());
         let mut pages: Vec<(PageId, bool)> = writer
             .written()
             .map(|page| (page, false))
@@ -330,6 +334,12 @@ impl Db {
             .push(page, Link::base(born, block))
             .expect("a link");
         self.pool.mark_written(frame).expect("written");
+    }
+
+    /// What the group of each commit repeated for carried entries, in
+    /// the order of the commits.
+    pub(crate) fn carried(&self) -> Vec<CarriedValues> {
+        self.state.borrow().carried.clone()
     }
 
     /// The groups of the log, each as its values (owner and bytes), the
@@ -579,6 +589,9 @@ fn a_carried_value_is_appended_again_for_its_new_page_in_the_same_commit() {
         tree.put(&mut writer, &key(n), b"small").expect("a put");
     }
     let split = db.commit(writer);
+    let bytes = (0..8).map(|n| big(n).len() as u64).sum();
+    let counted = [CarriedValues::default(), CarriedValues { values: 8, bytes }];
+    assert_eq!(db.carried(), counted);
     let reader = db.reader();
     assert!(FlatPage::decode(&reader.page(root).expect("the root"), V1)
         .expect("a page")
@@ -867,8 +880,93 @@ impl Db {
     }
 }
 
-/// The three checks of a pointer rewrite (`transactions.md` PV7), each
-/// refused alone.
+/// Owners of flat leaves that count the rewrites refused as busy.
+struct CountsRefusals<'o, O> {
+    owners: &'o O,
+    busy: std::cell::Cell<u32>,
+}
+
+impl<O: ValueOwners> ValueOwners for CountsRefusals<'_, O> {
+    type Found = O::Found;
+
+    fn find(&self, page: PageId, pointer: ValuePointer) -> Result<Option<O::Found>, OwnersError> {
+        self.owners.find(page, pointer)
+    }
+
+    fn rewrite(
+        &self,
+        step: lignin_store::values::PointerRewrite<'_>,
+        found: O::Found,
+    ) -> Result<lignin_store::values::Rewrite, OwnersError> {
+        let rewrite = self.owners.rewrite(step, found);
+        if matches!(
+            rewrite,
+            Ok(lignin_store::values::Rewrite::Refused(
+                lignin_store::values::Refusal::Busy
+            ))
+        ) {
+            self.busy.set(self.busy.get() + 1);
+        }
+        rewrite
+    }
+}
+
+/// A commit supersedes the leaf between the cleaner's look and its
+/// rewrites: each rewrite is refused for the version it was looked at,
+/// and made on the fresh look the store takes before it tries again
+/// ([`lignin_store::values::BUSY_RETRIES`]).
+#[test]
+fn a_rewrite_for_a_leaf_superseded_since_the_look_is_refused_and_made_on_a_fresh_look() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 1];
+    let key = |n: u8| vec![n; 20];
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    for n in 0..5 {
+        tree.put(&mut writer, &key(n), &big(n)).expect("a put");
+    }
+    db.commit(writer);
+    db.write_back();
+    let file = home(&db.reader(), &tree, &key(0))
+        .1
+        .pointer()
+        .expect("placed")
+        .file();
+    let mut to = db.close_value_file();
+    let flat = FlatOwners::new(db.loader(), &db.pool, db.config, &db);
+    let owners = CountsRefusals {
+        owners: &flat,
+        busy: 0.into(),
+    };
+    let copies = db.values.copy_live(file, &mut to, &owners).expect("copied");
+    to.sync().expect("synced");
+    db.values
+        .commit(&mut db.manifest.borrow_mut())
+        .expect("covered");
+    assert_eq!(copies.len(), 5);
+    let mut writer = db.writer();
+    tree.put(&mut writer, &key(9), b"another entry")
+        .expect("a put");
+    db.commit(writer);
+    let cleaned = db.values.install(copies, &owners).expect("a pass");
+    assert_eq!(owners.busy.get(), 5, "each rewrite was refused once");
+    assert_eq!(
+        (cleaned.moved, cleaned.busy, cleaned.gone, cleaned.live),
+        (5, 0, 0, 0)
+    );
+    for n in 0..5 {
+        let moved = home(&db.reader(), &tree, &key(n))
+            .1
+            .pointer()
+            .expect("placed");
+        assert_eq!(moved.file(), to.file_id());
+    }
+}
+
+/// A pointer rewrite (`transactions.md` PV7) refused for a private copy
+/// that a write transaction holds through every try, for an owner that is
+/// gone, and for a page that is freed. The refusal for a page that a
+/// commit superseded since the look is the next test's.
 #[test]
 fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     let db = Db::new();
@@ -897,15 +995,16 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
         copies
     };
 
-    // A commit supersedes the page between the look and the rewrite: the
-    // values wait for the next pass.
+    // A write transaction holds a private copy of the page through the
+    // rewrite and each try of it again, and then commits: the values wait
+    // for the next pass, and the page is superseded since the look.
     let copies = copy(&mut to);
     assert_eq!(copies.len(), 5);
     let mut writer = db.writer();
     tree.put(&mut writer, &key(9), b"another entry")
         .expect("a put");
-    db.commit(writer);
     let cleaned = db.values.install(copies, &owners).expect("a pass");
+    db.commit(writer);
     assert_eq!(
         (cleaned.moved, cleaned.busy, cleaned.gone, cleaned.live),
         (0, 5, 0, 5)
@@ -1437,6 +1536,11 @@ fn a_group_that_is_written_again_holds_the_values_of_its_writer_again() {
     }
     abandon(&mut writer);
     let split = db.commit(writer);
+    // The abandoned writing counted the six, and the commit's counted none
+    // of them again.
+    let bytes = (0..6).map(|n| big(n).len() as u64).sum();
+    let carried = db.carried().pop().expect("the count of the split");
+    assert_eq!(carried, CarriedValues { values: 6, bytes });
     let reader = db.reader();
     let group = db.groups().pop().expect("the group of the split");
     assert_eq!(group.values.len(), 6);

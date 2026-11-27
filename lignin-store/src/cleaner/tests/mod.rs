@@ -4,6 +4,7 @@
 
 mod acceptance;
 mod account;
+mod choice;
 mod crash;
 mod deleting;
 mod errors;
@@ -57,6 +58,8 @@ pub(super) fn eager() -> CleanerConfig {
         max_pass_bytes: u64::MAX,
         segment_len: 300,
         value_dead_percent: 0,
+        value_min_file_dead_percent: 0,
+        value_ceiling_dead_percent: 0,
         idle: std::time::Duration::from_millis(1),
     }
 }
@@ -201,7 +204,12 @@ pub(super) fn settle_values<O: ValueOwners>(
     let (mut moved, mut dropped, mut idle) = (0, Vec::new(), 0);
     for _ in 0..64 {
         let pass = cleaner.pass_values(owners).expect("a pass");
-        moved += pass.cleaned.map_or(0, |(_, cleaned)| cleaned.moved);
+        moved += pass
+            .cleaned
+            .iter()
+            .chain(&pass.swept)
+            .map(|(_, cleaned)| cleaned.moved)
+            .sum::<u64>();
         dropped.extend(&pass.dropped);
         idle = match pass.progressed() {
             true => 0,

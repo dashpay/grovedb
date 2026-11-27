@@ -1020,7 +1020,7 @@ impl Run {
                     self.tolerate(lineage, "a pass of the cleaner over the value log", cleaned);
                 if let Some(pass) = cleaned {
                     let tally = &mut self.tally;
-                    if let Some((_, cleaned)) = pass.cleaned {
+                    for (_, cleaned) in pass.cleaned.iter().chain(&pass.swept) {
                         tally.count("value-log files cleaned", 1);
                         tally.count("values moved by the cleaner", cleaned.moved);
                     }

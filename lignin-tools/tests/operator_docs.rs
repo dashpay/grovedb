@@ -1716,6 +1716,8 @@ fn defaults() -> BTreeMap<String, String> {
         max_pass_bytes,
         segment_len: cleaner_segment_len,
         value_dead_percent,
+        value_min_file_dead_percent,
+        value_ceiling_dead_percent,
         idle: cleaner_idle,
     } = cleaner.unwrap_or(CleanerConfig::new());
     let migrate = read(&repository().join("lignin-tools/src/migrate/mod.rs"));
@@ -1778,6 +1780,14 @@ fn defaults() -> BTreeMap<String, String> {
         (
             "CleanerConfig::value_dead_percent",
             percent(value_dead_percent),
+        ),
+        (
+            "CleanerConfig::value_min_file_dead_percent",
+            percent(value_min_file_dead_percent),
+        ),
+        (
+            "CleanerConfig::value_ceiling_dead_percent",
+            percent(value_ceiling_dead_percent),
         ),
         (
             "CleanerConfig::checkpoint_dead_percent",

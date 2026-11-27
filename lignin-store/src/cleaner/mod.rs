@@ -333,16 +333,88 @@
 //! the order [`crate::values`] asks for (CL5). It drops the files that
 //! are empty for every reader; if the dead space that a cleaning can
 //! give back is above [`CleanerConfig::value_dead_percent`], it cleans
-//! the closed file with the largest share of dead bytes, unless less
-//! than one byte in a hundred of that file is dead and the target is not
-//! zero ([`ValueStore::copy_live`], a sync, a manifest,
-//! [`ValueStore::install`]); and it makes the log durable and asks which
-//! files are empty from now on ([`ValueStore::retire`]). Those are
-//! dropped once the operations that are running then have ended: in the
-//! same pass if none is, and by a later pass otherwise. The owners read
-//! pages, so the pass takes an operation guard for the cleaning of the
-//! file, and gives it back before it asks: a guard of its own over the
-//! whole pass would keep the file it has just emptied.
+//! the closed file with the largest share of dead bytes, and after it the
+//! files that are nearly empty ([`ValueStore::copy_live`], a sync, a
+//! manifest, [`ValueStore::install`]); and it makes the log durable and
+//! asks which files are empty from now on ([`ValueStore::retire`]). Those
+//! are dropped once the operations that are running then have ended: in
+//! the same pass if none is, and by a later pass otherwise. The owners
+//! read pages, so the pass takes an operation guard for the cleaning of
+//! the files, and gives it back before it asks: a guard of its own over
+//! the whole pass would keep the file it has just emptied.
+//!
+//! ## Which files a pass cleans
+//!
+//! Each live value of a file costs a copy,
+//! and a page step that loads the page of its owner and has write-back
+//! write it again, so a file is worth cleaning for the share of it that
+//! is dead. A target alone has the cleaner copy files that are mostly
+//! live: under a churn of the reference workload at a target of 14, nine
+//! bytes in ten of what it copied came from files less than a fifth dead.
+//! The rule, over the closed files that a cleaning can help
+//! ([`ValueStore::cleanable`](crate::values::ValueStore::cleanable)) and
+//! the files being filled, which together
+//! are the counted bytes:
+//!
+//! 1. A pass cleans nothing unless the dead share of the counted bytes is
+//!    over [`CleanerConfig::value_dead_percent`].
+//! 2. The floor is [`CleanerConfig::value_min_file_dead_percent`], and
+//!    at least one byte in a hundred, while that share is at most
+//!    [`CleanerConfig::value_ceiling_dead_percent`]; one byte in a hundred
+//!    over it; and any dead byte with a target of 0, which is how
+//!    `lignin compact` asks for every byte back.
+//! 3. Of the closed files that are at least the floor dead and not set
+//!    aside, the one with the largest dead share is cleaned whole, and
+//!    after it those of them at least 90 in a hundred dead, most dead
+//!    first, while their live bytes stay within
+//!    [`CleanerConfig::max_pass_bytes`]. If none of those cleanings moved
+//!    anything, the pass goes on to the next of those files, most dead
+//!    first, one at a time, until one moves something or the live bytes
+//!    of the files after the first are over
+//!    [`CleanerConfig::max_pass_bytes`]: it looks before each file, so the
+//!    last can take it past.
+//! 4. A page step that was refused, because a commit had superseded the
+//!    page since the cleaner looked or a write transaction held a private
+//!    copy of it, is tried again with a fresh look, up to three times, and
+//!    a try that is taken installs the copy already made
+//!    ([`ValueStore::install`](crate::values::ValueStore::install)). A file
+//!    whose cleaning moved nothing, with a step still refused as busy
+//!    after its last try, is set aside: no pass takes it before 8 passes
+//!    after that one, and each further such cleaning in a row doubles that
+//!    delay, to 16, 32 and at most 256 passes, however many files are set
+//!    aside, unless a pass
+//!    finds it missing from the closed files a cleaning can help, after
+//!    which it is set aside no more.
+//!
+//! **The worst case of the value log's dead share:** with the ceiling at
+//! or above the target, a pass that finds the counted bytes over the
+//! ceiling cleans a file, if one is at least a byte in a hundred dead and
+//! not set aside, so once the cleaner has caught up they are at most the
+//! ceiling but for what no pass cleans: the files being filled, of which
+//! one shorter than [`CleanerConfig::min_segment_len`] is not closed
+//! however much of it is dead. Files that wait to be deleted, and those
+//! that only a pin or a checkpoint's hold keeps, are not counted and come
+//! on top. So do the dead bytes of the files set aside (step 4), which are
+//! counted and which no pass cleans while they wait: under commits back to
+//! back, a file whose owners lie in the pages that most commits change can
+//! be refused at every try, and it stays until a try finds those pages
+//! free.
+//! Deaths spread evenly over the files, as regroupings spread them, can
+//! bring the log to the ceiling: no file need reach the floor before it.
+//! It is not a bound a pass keeps, and the log can come to rest well under
+//! the target, a cleaning giving back whole files.
+//!
+//! **Under commits back to back** the log is not held there. A file whose
+//! last live values belong to pages that a write transaction holds at
+//! nearly every try can stay until the load pauses: a step from the
+//! cleaner's thread loses to the private copy, and only the commit that
+//! holds the page could move such a value. Under updates of the reference
+//! workload back to back on a DigitalOcean `so-16vcpu-128gb-intel`
+//! droplet, the refusals fell on 376 pages, most of them for a private
+//! copy; the value log's dead share grew while the load lasted, to 62 to
+//! 69 in a hundred at worst, and the store to 1.6 to 1.9 GB where a paced
+//! churn holds it under 1 GB. It came back when the load ended, to 534 to
+//! 556 MB of values.
 //!
 //! A file that is empty and waits to be deleted, for a pin on a version
 //! that still points into it or for a checkpoint's hold, is dead space
@@ -351,12 +423,19 @@
 //! that waits is.
 //!
 //! A move is refused while a write transaction holds a private copy of
-//! the page (PV7), and the copy that was appended for it is dead. A file
-//! whose cleaning moved nothing for that reason is set aside, for longer
-//! the more files are set aside with it. So once each of the files that a
-//! long transaction keeps busy has been tried, about one pass in eight
-//! appends values again for nothing, however many those files are, and
-//! the passes between are for the files that can be cleaned.
+//! the page (PV7), or when a commit superseded the page after the cleaner
+//! looked; after the last try the copy that was appended for it is dead.
+//! A file whose cleaning moved nothing for that reason is set aside (step
+//! 4 of the rule above), and a pass whose files all moved nothing goes on
+//! to the next file worth cleaning while its budget lasts (step 3). The
+//! budget is counted in live bytes, so files refused at every try that
+//! hold many live values can spend it before the pass comes to a file
+//! that moves; each delay before they may be taken again is then twice
+//! the one before, up to 256 passes. Each try of a file
+//! that a long transaction keeps busy appends its live values again for
+//! nothing; a file is tried because the floor let the cleaner take it,
+//! so at least that share of it is dead, unless the log is over its
+//! ceiling or the target is nothing dead.
 //!
 //! A cleaning rewrites pointers in the pool, and the pages it changed are
 //! unwritten until write-back's next pass. Until then the block that the
@@ -374,8 +453,9 @@
 //! [`CleanerConfig::max_pass_bytes`] and one block more, counting the
 //! copies whose links were gone when they were to be switched, and reads
 //! the page table a few times at most. A pass over the value log cleans
-//! one file, and the loop sleeps [`CleanerConfig::idle`] between two
-//! turns. A pass that moved nothing on, with no segment waiting to be
+//! one file whole, and after it the files that are nearly empty while
+//! their live bytes stay within [`CleanerConfig::max_pass_bytes`], and the
+//! loop sleeps [`CleanerConfig::idle`] between two turns. A pass that moved nothing on, with no segment waiting to be
 //! deleted and no trim waiting for an operation, is remembered: the next
 //! one does not read the page table if it finds the store as that pass
 //! left it. It looks at a few counts and at the list of segments. The
@@ -501,7 +581,11 @@ mod values;
 mod tests;
 
 pub use clean::{Cleaner, Pass};
-pub use config::{CleanerConfig, CleanerStats, DEFAULT_PASS_BYTES, DEFAULT_TARGET_DEAD_PERCENT};
+pub use config::{
+    CleanerConfig, CleanerStats, DEFAULT_PASS_BYTES, DEFAULT_TARGET_DEAD_PERCENT,
+    DEFAULT_VALUE_CEILING_DEAD_PERCENT, DEFAULT_VALUE_DEAD_PERCENT,
+    DEFAULT_VALUE_MIN_FILE_DEAD_PERCENT,
+};
 pub use error::CleanerError;
 pub use owners::{BothOwners, FoundBy};
 pub use space::{SegmentSpace, Space, ValueSpace};

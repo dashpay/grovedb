@@ -34,7 +34,7 @@ use super::{
     node::{place, view},
     pages::{value_len, FlatPages, FlatPagesMut, Revision},
 };
-use crate::OperationGuard;
+use crate::{value::CarriedValues, OperationGuard};
 
 /// The pending values of the leaf at the start of `bytes`, each with the
 /// position of its entry. A branch has none.
@@ -239,6 +239,9 @@ struct Held {
     /// the log group of an earlier commit holds it. Every other value is
     /// the writer's, and goes into the group of the writer's commit.
     inherited: bool,
+    /// Whether the value is in the log already and its entry was carried
+    /// here: the writer's group repeats it (O5, LG23).
+    carried: bool,
 }
 
 /// One private copy of a writer.
@@ -329,6 +332,7 @@ pub struct Private<'s, 'r, G: ?Sized, I> {
     released: Vec<ValuePointer>,
     values: u64,
     revision: Revision,
+    carried: CarriedValues,
 }
 
 impl<G: ?Sized, I> fmt::Debug for Private<'_, '_, G, I> {
@@ -374,6 +378,7 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
             released: Vec::new(),
             values: 0,
             revision: next_revision(),
+            carried: CarriedValues::default(),
         }
     }
 
@@ -405,6 +410,7 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
             released: self.released,
             values: self.values,
             revision: self.revision,
+            carried: self.carried,
         }
     }
 
@@ -417,6 +423,13 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
     /// The committed pages the writer freed, in ascending order.
     pub fn freed(&self) -> impl Iterator<Item = PageId> + '_ {
         self.freed.keys().copied()
+    }
+
+    /// The values of carried entries that [`Self::log_values`] has
+    /// repeated. Each is counted by the first call that writes it: a call
+    /// for another place counts it no more.
+    pub const fn values_carried(&self) -> CarriedValues {
+        self.carried
     }
 
     /// The value pointers that entries stopped holding, in ascending order
@@ -454,14 +467,24 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
                 }
                 let held = own.values.remove(&id);
                 let held = held.ok_or(FlatError::NoValue { page })?;
+                if held.carried {
+                    self.carried.add(held.bytes.len());
+                }
                 logged.push((slot, group.value(page, &held.bytes)?, held.bytes));
             }
             for (slot, name, bytes) in logged {
                 if !stamp_pending(&mut latch, slot, name)? {
                     return Err(FlatError::NoValue { page });
                 }
-                let inherited = false;
-                own.values.insert(name.id(), Held { bytes, inherited });
+                let (inherited, carried) = (false, false);
+                own.values.insert(
+                    name.id(),
+                    Held {
+                        bytes,
+                        inherited,
+                        carried,
+                    },
+                );
             }
             // The bytes follow their values to the new names.
             attach(&mut latch, page, &own.values)?;
@@ -581,8 +604,15 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
                 .inspect(|bytes| drop(latch.attach(name, Arc::clone(bytes))))
                 .filter(|bytes| bytes.len() == pending.value_len() as usize)
                 .ok_or(FlatError::NoValue { page })?;
-            let inherited = true;
-            values.insert(name, Held { bytes, inherited });
+            let (inherited, carried) = (true, false);
+            values.insert(
+                name,
+                Held {
+                    bytes,
+                    inherited,
+                    carried,
+                },
+            );
         }
         Ok(values)
     }
@@ -654,7 +684,12 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
 
     /// Holds `bytes` as a value of `page` that no log has, under a name
     /// that no other value of the page has.
-    fn hold(&mut self, page: PageId, bytes: Arc<[u8]>) -> Result<ValueId, FlatError> {
+    fn hold(
+        &mut self,
+        page: PageId,
+        bytes: Arc<[u8]>,
+        carried: bool,
+    ) -> Result<ValueId, FlatError> {
         let mut next = self.values;
         let values = &mut self.own(page)?.values;
         let name = loop {
@@ -665,7 +700,14 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
             }
         };
         let inherited = false;
-        values.insert(name, Held { bytes, inherited });
+        values.insert(
+            name,
+            Held {
+                bytes,
+                inherited,
+                carried,
+            },
+        );
         self.values = next;
         Ok(name)
     }
@@ -837,7 +879,7 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> FlatPagesMut for Privat
 
     fn hold_value(&mut self, page: PageId, value: &[u8]) -> Result<PendingValue, FlatError> {
         let len = value_len(value)?;
-        let name = self.hold(page, Arc::from(value))?;
+        let name = self.hold(page, Arc::from(value), false)?;
         Ok(PendingValue::new(name, len)?)
     }
 
@@ -859,20 +901,24 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> FlatPagesMut for Privat
         place: ValuePlace,
     ) -> Result<PendingValue, FlatError> {
         // The bytes go to the new page as they are. A value that was in
-        // the value log is read once, and its pointer is released.
-        let bytes = match place {
+        // the value log is read once, and its pointer is released. A value
+        // that a group has already is repeated in this one: it is counted
+        // as carried.
+        let (bytes, carried) = match place {
             ValuePlace::Pending(pending) => {
                 let held = self.own(from)?.values.remove(&pending.id());
-                held.ok_or(FlatError::NoValue { page: from })?.bytes
+                let held = held.ok_or(FlatError::NoValue { page: from })?;
+                let carried = held.inherited || held.carried;
+                (held.bytes, carried)
             }
             ValuePlace::Placed(pointer) => {
                 let mut value = Vec::new();
                 self.base.read_placed(pointer, from, &mut value)?;
                 self.released.push(pointer);
-                Arc::from(value)
+                (Arc::from(value), true)
             }
         };
-        let name = self.hold(to, bytes)?;
+        let name = self.hold(to, bytes, carried)?;
         Ok(PendingValue::new(name, place.value_len())?)
     }
 }
