@@ -79,7 +79,10 @@ mod tests;
 
 use std::{
     path::Path,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
 };
 
 use grovedb_costs::{
@@ -108,6 +111,7 @@ use grovedb_storage::{
     Error, FlatStore, RawIterator,
 };
 use grovedb_version::version::GroveVersion;
+use lignin_io::Vfs;
 use lignindb::{
     commit::NoStaleHashes,
     txn::{Batch, Column, RecordWrite, Subtree, SubtreeWrite, Unit, WriteTxn},
@@ -128,6 +132,10 @@ const ROOT: SubtreePrefix = [0; 32];
 #[derive(Debug)]
 pub struct LigninEngine {
     db: Db,
+    /// The file system the database is on, where this type opened it
+    /// ([`Self::open_with`]). `None` for a database that its caller opened
+    /// ([`Self::new`]): `lignindb` does not say which one that is on.
+    vfs: Option<Arc<dyn Vfs>>,
 }
 
 impl LigninEngine {
@@ -162,7 +170,7 @@ impl LigninEngine {
             let rules = MerkHashRules::for_check(GroveVersion::latest()).naming_left_hashes();
             db.check_hashes_by(Box::new(rules));
         }
-        let engine = Self { db };
+        let engine = Self { db, vfs: None };
         engine.enter_hostless()?;
         Ok(engine)
     }
@@ -186,7 +194,17 @@ impl LigninEngine {
 
     /// Opens the database at `path` with `options`.
     pub fn open_with<P: AsRef<Path>>(path: P, options: &Options) -> Result<Self, Error> {
-        Self::new(Db::open(path, options).map_err(failed)?)
+        let mut engine = Self::new(Db::open(path, options).map_err(failed)?)?;
+        engine.vfs = Some(options.vfs.clone());
+        Ok(engine)
+    }
+
+    /// The file system the database is on ([`Options::vfs`]), where this
+    /// type opened it: by [`Self::open_with`], or by an open of
+    /// [`Engine`]. `None` for an engine on a database that its caller
+    /// opened ([`Self::new`]).
+    pub fn file_system(&self) -> Option<&Arc<dyn Vfs>> {
+        self.vfs.as_ref()
     }
 
     /// The LigninDB database underneath.

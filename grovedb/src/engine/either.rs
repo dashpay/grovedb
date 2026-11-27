@@ -30,7 +30,6 @@ use std::{
     fmt,
     io::ErrorKind,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use grovedb_costs::{
@@ -817,14 +816,15 @@ fn keep_from_lignindb(vfs: &dyn Vfs, target: &Path, call: OfLignin) -> Result<()
     }
 }
 
-/// Why no checkpoint is made at `target` by a LigninDB engine that its
-/// caller opened and handed to the type.
+/// Why no checkpoint is made at `target` by a LigninDB engine that was
+/// built on a database its caller opened, and does not say which file
+/// system it is on.
 fn not_looked_beside(target: &Path) -> Error {
     Error::NotSupported(format!(
-        "no checkpoint was made at {}: the LigninDB engine was opened by its caller, so the file \
-         system it builds on is not known here and the directory beside the path, which LigninDB \
-         empties, was not looked at; open the database with the engine chosen at the open, or \
-         hand the engine over with the options it was opened with, to make checkpoints through it",
+        "no checkpoint was made at {}: the LigninDB engine was built on a database that its \
+         caller opened, so the file system it builds on is not known here and the directory \
+         beside the path, which LigninDB empties, was not looked at; open the database with \
+         GroveDB's own open of the engine to make checkpoints through it",
         target.display()
     ))
 }
@@ -842,12 +842,6 @@ fn not_looked_beside(target: &Path) -> Error {
 /// returns no `Result`.
 pub struct EitherEngine {
     held: OneOf<RocksDbEngine, LigninEngine>,
-    /// The file system on which this type opened the LigninDB engine it
-    /// holds ([`Options::vfs`]): the one of the choice, or the one of the
-    /// default options for an open that names no engine. `None` where it
-    /// holds RocksDB, and where the caller opened the engine: the type
-    /// does not know which file system that one is on.
-    lignin_vfs: Option<Arc<dyn Vfs>>,
 }
 
 impl fmt::Debug for EitherEngine {
@@ -861,7 +855,6 @@ impl From<RocksDbEngine> for EitherEngine {
     fn from(engine: RocksDbEngine) -> Self {
         Self {
             held: OneOf::RocksDb(engine),
-            lignin_vfs: None,
         }
     }
 }
@@ -869,18 +862,18 @@ impl From<RocksDbEngine> for EitherEngine {
 impl From<LigninEngine> for EitherEngine {
     /// The engine holding a LigninDB engine that its caller opened.
     ///
-    /// The type does not know which file system such an engine is on, so
-    /// it cannot look at the directory beside a checkpoint path as
-    /// [`Engine::create_checkpoint`] of the type does: it makes no
-    /// checkpoint through such an engine, and refuses the call with
-    /// [`Error::NotSupported`]. An engine that is to make checkpoints
-    /// through the type is opened by [`EitherEngine::open_with`], or
-    /// handed over with the options it was opened with
-    /// ([`EitherEngine::from_lignin_with`]).
+    /// An engine that [`LigninEngine`] opened, by
+    /// [`LigninEngine::open_with`] or by an open of [`Engine`], keeps the
+    /// file system it is on, and makes its checkpoints through this type
+    /// as one that this type opened does. One that was built on a
+    /// database its caller opened ([`LigninEngine::new`]) does not say
+    /// which file system it is on. The type cannot then look at the
+    /// directory beside a checkpoint path as [`Engine::create_checkpoint`]
+    /// of the type does, and makes no checkpoint through such an engine:
+    /// the call is refused with [`Error::NotSupported`].
     fn from(engine: LigninEngine) -> Self {
         Self {
             held: OneOf::Lignin(engine),
-            lignin_vfs: None,
         }
     }
 }
@@ -923,8 +916,7 @@ impl EitherEngine {
             }
             EngineChoice::Lignin(options) => {
                 refuse_the_other(path, choice)?;
-                let engine = LigninEngine::open_with(path, options)?;
-                Ok(Self::opened(engine, options))
+                LigninEngine::open_with(path, options).map(Self::from)
             }
         }
     }
@@ -960,8 +952,7 @@ impl EitherEngine {
                     create_if_missing: false,
                     ..options.clone()
                 };
-                let engine = LigninEngine::open_with(path, &options)?;
-                Ok(Self::opened(engine, &options))
+                LigninEngine::open_with(path, &options).map(Self::from)
             }
         }
     }
@@ -1039,28 +1030,6 @@ impl EitherEngine {
                 }
             },
         }
-    }
-
-    /// The engine holding a LigninDB engine that this type opened with
-    /// `options`.
-    fn opened(engine: LigninEngine, options: &Options) -> Self {
-        Self {
-            held: OneOf::Lignin(engine),
-            lignin_vfs: Some(options.vfs.clone()),
-        }
-    }
-
-    /// The engine holding a LigninDB engine that its caller opened with
-    /// `options`, as [`From`] holds one, with the file system that the
-    /// engine is on said by its caller ([`Options::vfs`]).
-    ///
-    /// An engine that is held so makes checkpoints through the type: the
-    /// directory beside a checkpoint path is looked for on the file system
-    /// of `options` ([`Engine::create_checkpoint`] of the type). The type
-    /// takes the caller's word for it, and looks nowhere else: `options`
-    /// has to be what the engine was opened with.
-    pub fn from_lignin_with(engine: LigninEngine, options: &Options) -> Self {
-        Self::opened(engine, options)
     }
 
     /// Which engine is held.
@@ -1184,11 +1153,7 @@ impl Engine for EitherEngine {
                 }
                 RocksDbEngine::open(path).map(Self::from)
             }
-            EngineKind::Lignin => {
-                let options = Options::default();
-                let engine = LigninEngine::open_with(path, &options)?;
-                Ok(Self::opened(engine, &options))
-            }
+            EngineKind::Lignin => LigninEngine::open(path).map(Self::from),
         }
     }
 
@@ -1202,10 +1167,7 @@ impl Engine for EitherEngine {
         let path = path.as_ref();
         match Self::found_at(path)? {
             Some(EngineKind::RocksDb) => RocksDbEngine::open_checkpoint(path).map(Self::from),
-            // LigninDB's open of a checkpoint is on the file system of the
-            // default options.
-            Some(EngineKind::Lignin) => LigninEngine::open_checkpoint(path)
-                .map(|engine| Self::opened(engine, &Options::default())),
+            Some(EngineKind::Lignin) => LigninEngine::open_checkpoint(path).map(Self::from),
             None => Err(no_checkpoint(path)),
         }
     }
@@ -1231,14 +1193,16 @@ impl Engine for EitherEngine {
     /// or of the one above, though there is a directory to list: LigninDB
     /// is not called on what this type could not look at.
     ///
-    /// The look is at the file system on which this type opened the
-    /// engine, which is where the engine builds: the one of the choice
-    /// ([`Options::vfs`]), or the one of the default options for an open
-    /// that names no engine. For an engine that its caller opened it is
-    /// the one the caller said ([`Self::from_lignin_with`]). Where the
-    /// caller said none ([`From`]), the type does not know it and does not
-    /// guess: the creation is refused with [`Error::NotSupported`], and
-    /// LigninDB is not called.
+    /// The look is at the file system the engine is on, which is where it
+    /// builds, and the type asks the engine it holds for it
+    /// ([`Options::vfs`] of the options [`LigninEngine`] opened it with:
+    /// those of the choice, or the default ones for an open that names no
+    /// engine). So it is for an engine that this type opened and for one
+    /// that its caller opened by [`LigninEngine`]'s opens and handed over
+    /// ([`From`]). An engine that was built on a database its caller
+    /// opened ([`LigninEngine::new`]) does not say which file system it is
+    /// on. The type does not guess: the creation is then refused with
+    /// [`Error::NotSupported`], and LigninDB is not called.
     ///
     /// The look and the creation are two steps. The type refuses what is
     /// there when it looks, and holds nothing: a database of RocksDB that
@@ -1251,7 +1215,7 @@ impl Engine for EitherEngine {
                 engine.create_checkpoint(path)
             }
             OneOf::Lignin(engine) => {
-                let Some(vfs) = &self.lignin_vfs else {
+                let Some(vfs) = engine.file_system() else {
                     return Err(not_looked_beside(path));
                 };
                 keep_from_lignindb(&**vfs, path, OfLignin::Creation)?;

@@ -2,7 +2,7 @@
 //! seam, and the errors of `lignindb` as the seam reports them.
 //!
 //! `docs/lignindb/engine.md`, "Checkpoints", says what each call does. A
-//! checkpoint is made by `lignindb` ([`Db::checkpoint`]), opened by the
+//! checkpoint is made by `lignindb` ([`lignindb::Db::checkpoint`]), opened by the
 //! open of any database, which is told not to make one, and removed by
 //! [`lignindb::checkpoint::delete`].
 
@@ -11,7 +11,7 @@ use std::path::Path;
 use grovedb_storage::Error;
 use lignindb::{
     checkpoint::{self, CheckpointError, CheckpointOptions},
-    Db, Options,
+    Options,
 };
 
 use super::{
@@ -36,7 +36,7 @@ impl LigninEngine {
             create_if_missing: false,
             ..Options::default()
         };
-        Self::new(Db::open(path, &options).map_err(failed)?)
+        Self::open_with(path, &options)
     }
 
     /// [`Engine::delete_checkpoint`](crate::Engine::delete_checkpoint):
