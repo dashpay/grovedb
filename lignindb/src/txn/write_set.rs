@@ -3476,7 +3476,20 @@ mod held {
         /// stale to every entry of the set, oldest first: each lists
         /// itself if it is such a put, and takes out the write of its
         /// record before it.
+        ///
+        /// A set in which no put left a hash stale lists nothing, which
+        /// is seen by going through its entries and its units once: the
+        /// write before a write is not looked for, which costs a search
+        /// for each where the set holds a move.
         pub(super) fn hold_unmade(&self) {
+            let leaves =
+                |entry: &Entry| matches!(entry.kind, Kind::Node(node) if node.leaves_stale());
+            if !self.entries.iter().any(leaves) {
+                let listed = self.units.values().any(|index| !index.stale.is_empty());
+                assert!(!listed, "no put left a hash stale, and one is listed");
+                assert_eq!(self.unmade, 0, "and none is counted");
+                return;
+            }
             let mut every: BTreeSet<(Unit, EntryId)> = BTreeSet::new();
             for (id, entry) in (0..).zip(&self.entries) {
                 if !Self::passes(entry.unit, &entry.kind) {
@@ -4534,6 +4547,88 @@ mod tests {
         assert_eq!(set.unmade(subtree(6)).len(), 39);
     }
 
+    /// A rollback to a mark in a set whose writers made every hash looks
+    /// for no write before a write: the list of the puts that left a hash
+    /// stale is held to the entries with one pass over them, however
+    /// often one key was written and although the set holds a move. With
+    /// one such put in the set the list is held to each entry's write
+    /// before it, which is asked for once for each.
+    #[test]
+    fn a_rollback_in_a_set_with_no_stale_hash_looks_for_no_write_before_a_write() {
+        const WRITES: u64 = 300;
+        let subtree = |name: u8| Subtree::new([name; 32]);
+        let hash = [7; 32];
+        let node = |set: &mut WriteSet, name: u8, key: &[u8], stale: Stale| {
+            let nodes = [NodePut {
+                key,
+                feature: b"f",
+                value_hash: &hash,
+                kv_hash: &hash,
+                left: None,
+                right: None,
+                hosted: Hosted::Keep,
+                value: ValuePut::Value(b"v"),
+                stale,
+                at: None,
+            }];
+            let merks = [MerkWrite {
+                subtree: subtree(name),
+                nodes: &nodes,
+                removed: &[],
+                root: RootPut::Keep,
+                anchored: false,
+                whole: false,
+            }];
+            let batch = Batch {
+                merks: &merks,
+                ..Batch::default()
+            };
+            set.add(&batch, version(1), &[false], &[], &[], &[], &[]);
+        };
+        let moves = [SubtreeWrite::Move {
+            from: subtree(1),
+            to: subtree(2),
+            host: HostPut {
+                subtree: subtree(9),
+                key: b"host",
+                position: 0,
+            },
+            read: None,
+            below: &[],
+        }];
+        let moved = Batch {
+            subtrees: &moves,
+            ..Batch::default()
+        };
+        // A move of another subtree, and one key that is written again
+        // and again.
+        let mut set = WriteSet::new();
+        set.add(&moved, version(1), &[], &[], &[], &[], &[]);
+        for _ in 0..WRITES {
+            node(&mut set, 5, b"k", Stale::NONE);
+        }
+        let last = set.mark();
+        node(&mut set, 5, b"k", Stale::NONE);
+        counted::take();
+        assert!(set.rewind(last));
+        assert_eq!(counted::take().0, 0, "no put left a hash stale");
+
+        // One put that left a hash stale: every write is held to the
+        // write before it.
+        node(&mut set, 6, b"s", Stale::of(HashField::Value));
+        let last = set.mark();
+        node(&mut set, 5, b"k", Stale::NONE);
+        counted::take();
+        assert!(set.rewind(last));
+        let asked = counted::take().0;
+        assert!((WRITES..WRITES + 8).contains(&asked), "{asked}");
+        set.hold_unmade();
+        assert_eq!(set.unmade(subtree(6)).len(), 1);
+    }
+
+    /// A mark is refused once a write from before it went, whatever was
+    /// written since: the place it names is in the middle of other
+    /// operations.
     #[test]
     fn a_mark_is_a_place_until_a_write_before_it_goes() {
         let mut set = WriteSet::new();
