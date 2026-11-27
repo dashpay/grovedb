@@ -728,18 +728,20 @@ impl Watch {
     fn sync<T>(&self, of: &'static str, sync: impl FnOnce() -> T) -> T {
         /// A sync that is left by a panic has not ended: it is taken off
         /// the list of those under way, and is none that ended.
-        struct Listed<'a>(&'a Watch, u64);
+        struct Listed<'a>(&'a Watch, Option<u64>);
         impl Drop for Listed<'_> {
             fn drop(&mut self) {
-                let number = self.1;
-                (self.0.seen().under_way).retain(|(other, ..)| *other != number);
+                if let Some(number) = self.1 {
+                    (self.0.seen().under_way).retain(|(other, ..)| *other != number);
+                }
             }
         }
         let (number, began) = self.begun(of);
-        let listed = Listed(self, number);
+        let mut listed = Listed(self, Some(number));
         let synced = sync();
         self.ended(number, began, monotonic(), of);
-        drop(listed);
+        // It is listed as ended: nothing is left to take back.
+        listed.1 = None;
         synced
     }
 
@@ -911,6 +913,12 @@ mod watching {
     impl VfsFile for Watched {
         fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
             self.file.read_at(buf, offset)
+        }
+
+        // The layer under this one is told of a read to come as an engine
+        // on that layer alone tells it: a watched run reads as another.
+        fn will_read(&self, offset: u64, len: u64) {
+            self.file.will_read(offset, len);
         }
 
         fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
@@ -1380,24 +1388,37 @@ fn measure_in<E: Subject>(
     // What the helpers did after the last commit, and what the engine
     // synced while they were waited for, is after the measured blocks.
     let (from, to) = measured_from_to;
-    let syncs = match watch {
-        Some(watch) => watch.counted(from, to, SETTLE)?,
-        None => BTreeMap::new(),
+    // The syncs of the measured blocks, and those beside each of the
+    // slowest commits, once none that began in them is under way.
+    let settled = || -> Result<_, BenchError> {
+        let Some(watch) = watch else {
+            let slowest: Vec<SlowCommit> = slowest.into_iter().map(|(slow, ..)| slow).collect();
+            return Ok((BTreeMap::new(), slowest));
+        };
+        let syncs = watch.counted(from, to, SETTLE)?;
+        let slowest = (slowest.into_iter())
+            .map(|(mut slow, from, to)| {
+                slow.syncs_beside = watch.beside(from, to, SETTLE)?;
+                Ok(slow)
+            })
+            .collect::<Result<_, BenchError>>()?;
+        Ok((syncs, slowest))
+    };
+    let (syncs, slowest) = match settled() {
+        Ok(settled) => settled,
+        Err(error) => {
+            // A sync of the engine has not ended. Closing the engine would
+            // wait for the thread that is in it, and the run would end
+            // without saying why: the engine is left as it is, for the
+            // process to end with the error.
+            std::mem::forget(engine);
+            return Err(error);
+        }
     };
     let _ = std::fs::remove_file(&neighbour_file);
     // A run whose background work failed is no measurement.
     engine.wait_for_background()?;
     let root_hash = engine.root_hash(grove_version)?;
-    // The syncs beside each of the slowest commits, now that none of them
-    // is under way.
-    let slowest = (slowest.into_iter())
-        .map(|(mut slow, from, to)| {
-            if let Some(watch) = watch {
-                slow.syncs_beside = watch.beside(from, to, SETTLE)?;
-            }
-            Ok(slow)
-        })
-        .collect::<Result<_, BenchError>>()?;
 
     Ok(EngineLatency {
         engine: E::NAME.to_string(),
@@ -3103,6 +3124,97 @@ mod tests {
             .beside(later, later + 1_000_000, soon)
             .unwrap()
             .is_empty());
+    }
+
+    /// The engine tells its file layer of a read to come, and the system's
+    /// layer tells the system: a watched run that kept the word to itself
+    /// would read as another engine than the one the other runs time.
+    #[cfg(grovedb_engine_seam)]
+    #[test]
+    fn the_watching_layer_passes_the_word_of_a_read_to_come_on() {
+        use std::{io, sync::Arc};
+
+        use lignin_io::{DirEntry, OpenMode, Vfs, VfsFile, VfsLock};
+
+        #[derive(Debug, Default)]
+        struct Told(Mutex<Vec<(u64, u64)>>);
+        #[derive(Debug)]
+        struct File(Arc<Told>);
+        impl VfsFile for File {
+            fn read_at(&self, _: &mut [u8], _: u64) -> io::Result<usize> {
+                Ok(0)
+            }
+            fn will_read(&self, offset: u64, len: u64) {
+                self.0 .0.lock().unwrap().push((offset, len));
+            }
+            fn write_at(&self, _: &[u8], _: u64) -> io::Result<()> {
+                Ok(())
+            }
+            fn append(&self, _: &[u8]) -> io::Result<u64> {
+                Ok(0)
+            }
+            fn sync_data(&self) -> io::Result<()> {
+                Ok(())
+            }
+            fn sync_all(&self) -> io::Result<()> {
+                Ok(())
+            }
+            fn len(&self) -> io::Result<u64> {
+                Ok(0)
+            }
+            fn set_len(&self, _: u64) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        #[derive(Debug)]
+        struct Under(Arc<Told>);
+        fn none<T>() -> io::Result<T> {
+            Err(io::Error::other("not in this test"))
+        }
+        impl Vfs for Under {
+            fn open(&self, _: &Path, _: OpenMode) -> io::Result<Box<dyn VfsFile>> {
+                Ok(Box::new(File(Arc::clone(&self.0))))
+            }
+            fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {
+                none()
+            }
+            fn hard_link(&self, _: &Path, _: &Path) -> io::Result<()> {
+                none()
+            }
+            fn remove_file(&self, _: &Path) -> io::Result<()> {
+                none()
+            }
+            fn create_dir(&self, _: &Path) -> io::Result<()> {
+                none()
+            }
+            fn remove_dir(&self, _: &Path) -> io::Result<()> {
+                none()
+            }
+            fn read_dir(&self, _: &Path) -> io::Result<Vec<DirEntry>> {
+                none()
+            }
+            fn sync_dir(&self, _: &Path) -> io::Result<()> {
+                none()
+            }
+            fn lock(&self, _: &Path) -> io::Result<Box<dyn VfsLock>> {
+                none()
+            }
+            fn lock_existing(&self, _: &Path) -> io::Result<Box<dyn VfsLock>> {
+                none()
+            }
+        }
+
+        let told = Arc::new(Told::default());
+        let layer = Watching {
+            inner: Arc::new(Under(Arc::clone(&told))),
+            watch: Box::leak(Box::new(Watch::default())),
+        };
+        let segment = layer
+            .open(Path::new("db/seg/00000001.seg"), OpenMode::Read)
+            .unwrap();
+        segment.will_read(8192, 4096);
+        segment.will_read(0, 12);
+        assert_eq!(*told.0.lock().unwrap(), [(8192, 4096), (0, 12)]);
     }
 
     fn small(scratch: &Path) -> LatencyOptions {
