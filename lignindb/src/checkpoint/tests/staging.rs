@@ -17,7 +17,7 @@ use super::{
     store_with_log, turn, Before, Meddling, DIR, TIDYING_OPS,
 };
 use crate::{
-    checkpoint::{self, CheckpointError, BUILDING_DIR_NAME},
+    checkpoint::{self, AtPath, Beside, CheckpointError, Finished, BUILDING_DIR_NAME},
     snapshot::Versions,
     txn::tests::{
         model::Committed,
@@ -382,6 +382,8 @@ enum Call {
     DeletionWhereNothingIs,
     /// Of the staging directory, given itself.
     DeletionOfTheDirectory,
+    /// [`checkpoint::finish`] at the target, where a checkpoint is.
+    Finishing,
 }
 
 /// A call to the file layer before which the directory is changed.
@@ -398,6 +400,19 @@ enum Boundary {
     TheRemoval,
 }
 
+/// What a creation left under the staging name before the call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Left {
+    /// Nothing: no directory has the name.
+    Nothing,
+    /// Its lock file, and the directory it built in.
+    WithItsLockFile,
+    /// The directory it built in, without the lock file.
+    WithoutALockFile,
+    /// The directory, empty.
+    Empty,
+}
+
 /// What is done to the directory at the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Change {
@@ -406,6 +421,8 @@ enum Change {
     Another(Foreign),
     /// A file of somebody's is put into it.
     AFileInIt,
+    /// Something is written into its lock file.
+    ItsLockFileIsWritten,
 }
 
 /// What is done once, before the call of `boundary` on `path`.
@@ -427,32 +444,52 @@ fn hook(trap: &Arc<Mutex<Option<Trap>>>, boundary: Boundary) -> Option<Before> {
     }))
 }
 
+/// `held` without the entries `names`, and without the directory itself:
+/// what a snapshot is compared by where the directory was given an entry.
+fn without(mut held: BTreeMap<PathBuf, Entry>, names: &[&str]) -> BTreeMap<PathBuf, Entry> {
+    held.remove(Path::new(""));
+    for name in names {
+        held.remove(Path::new(name));
+    }
+    held
+}
+
 /// **What is decided under the lock is decided of the directory that is
 /// there then, and again right before the first removal.** A directory
 /// that comes under the staging name, and a file that comes into what a
 /// creation left there, after a first look and before the takeover, is
 /// preserved: at each boundary of the file layer between the first look
-/// and the removal, for a creation and for each deletion that removes
-/// what a creation left.
+/// and the removal, for a creation, for each deletion that removes what a
+/// creation left, and for [`checkpoint::finish`].
 ///
 /// - Before the staging directory is made, where the creation found
 ///   nothing at the target: a foreign directory comes under its name, and
 ///   the creation is refused for it.
 /// - Before the lock is taken, after the first look found what a creation
-///   left: the look under the lock finds the foreign directory, or the
-///   file. One with no lock file is given none: the taking of the lock
-///   fails.
+///   left: the look under the lock finds the foreign directory, the file,
+///   or a lock file that holds something. Where what a creation left
+///   listed its lock file, a foreign directory with no lock file is given
+///   none: the taking of the lock fails.
 /// - Before the removal, under the lock, while the names are made
 ///   durable: the look before the first removal does not find the
 ///   directory whose lock is held ([`CheckpointError::Replaced`]), or
-///   finds the file.
+///   finds the file, or the lock file that holds something.
 ///
-/// In each case the foreign directory is as it was, entry for entry;
-/// what a creation left is as it was where it was moved to, or beside
-/// the file that came into it; and nothing is at the target. A deletion
-/// of a checkpoint at the target deletes it, passes over a directory
-/// that no creation left, and returns another error of the look though
-/// the checkpoint is gone.
+/// In each case nothing of the foreign directory is removed, and it is as
+/// it was, entry for entry, with one exception that the file layer leaves
+/// no way around: **where what a creation left had no lock file, and the
+/// foreign directory that takes its place before the lock has none
+/// either, the call that takes the lock makes an empty one in it**, and
+/// does nothing else to it. What a creation left is as it was where it
+/// was moved to, or beside the file that came into it, but for a lock
+/// file that it was given. Nothing is at the target.
+///
+/// A creation and a deletion of the staging directory itself answer the
+/// look's error. A deletion of a checkpoint at the target deletes it and
+/// passes over what it finds under the staging name then, with no error;
+/// a deletion where nothing has the target's name finds nothing that a
+/// creation left; and [`checkpoint::finish`] leaves the checkpoint as it
+/// was and says that what is beside it is no creation's.
 #[test]
 fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
     let trap: Arc<Mutex<Option<Trap>>> = Arc::default();
@@ -464,51 +501,61 @@ fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
     }));
     let with_a_lock_file = Foreign::NamesOfAnotherStore;
     let without_one = Foreign::Unrelated;
+    let has_a_lock_file = |foreign: Foreign| foreign != without_one;
+    let another = |foreign| (Call::Creation, Boundary::ItsMaking, Left::Nothing, foreign);
     let mut cases = vec![
-        (
-            Call::Creation,
-            Boundary::ItsMaking,
-            Change::Another(with_a_lock_file),
-        ),
-        (
-            Call::Creation,
-            Boundary::ItsMaking,
-            Change::Another(Foreign::AWholeDatabase),
-        ),
+        another(Change::Another(with_a_lock_file)),
+        another(Change::Another(Foreign::AWholeDatabase)),
     ];
     for call in [
         Call::Creation,
         Call::DeletionOfTheCheckpoint,
         Call::DeletionWhereNothingIs,
         Call::DeletionOfTheDirectory,
+        Call::Finishing,
     ] {
-        for boundary in [Boundary::TheLock, Boundary::TheRemoval] {
+        for (boundary, left) in [
+            (Boundary::TheLock, Left::WithItsLockFile),
+            (Boundary::TheLock, Left::WithoutALockFile),
+            (Boundary::TheLock, Left::Empty),
+            (Boundary::TheRemoval, Left::WithItsLockFile),
+            (Boundary::TheRemoval, Left::WithoutALockFile),
+        ] {
             for change in [
                 Change::Another(with_a_lock_file),
                 Change::Another(without_one),
                 Change::Another(Foreign::AWholeDatabase),
                 Change::AFileInIt,
             ] {
-                cases.push((call, boundary, change));
+                cases.push((call, boundary, left, change));
+            }
+            if left == Left::WithItsLockFile {
+                cases.push((call, boundary, left, Change::ItsLockFileIsWritten));
             }
         }
     }
 
-    for (call, boundary, change) in cases {
-        let context = format!("{call:?}, {boundary:?}, {change:?}");
+    let mut given_a_lock_file = 0;
+    for (call, boundary, left, change) in cases {
+        let context = format!("{call:?}, {boundary:?}, {left:?}, {change:?}");
         let target = scene.fresh("target");
         let (staged, aside, away) = (staging(&target), scene.fresh("aside"), scene.fresh("away"));
-        let left_there = boundary != Boundary::ItsMaking;
-        if left_there {
-            files::leave_built(&staged, false);
+        match left {
+            Left::Nothing => {}
+            Left::WithItsLockFile => files::leave_built(&staged, false),
+            Left::WithoutALockFile => files::leave_built(&staged, true),
+            Left::Empty => std::fs::create_dir(&staged).expect("a directory"),
         }
-        if call == Call::DeletionOfTheCheckpoint {
+        let checkpoint = matches!(call, Call::DeletionOfTheCheckpoint | Call::Finishing);
+        if checkpoint {
             scene.place(&target);
         }
-        let left = left_there.then(|| exactly(&staged));
+        let was_left = (left != Left::Nothing).then(|| exactly(&staged));
+        let was_at_the_target = checkpoint.then(|| exactly(&target));
         let (foreign, found) = match change {
             Change::Another(foreign) => (Some(foreign), scene.put(foreign, &aside)),
             Change::AFileInIt => (None, "theirs"),
+            Change::ItsLockFileIsWritten => (None, "LOCK"),
         };
         let theirs = foreign.map(|_| exactly(&aside));
 
@@ -519,13 +566,13 @@ fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
         let (at, from, to) = (staged.clone(), aside.clone(), away.clone());
         let change: Box<dyn FnOnce() + Send> = match foreign {
             Some(_) => Box::new(move || {
-                if left_there {
+                if left != Left::Nothing {
                     std::fs::rename(&at, &to).expect("it is moved away");
                 }
                 std::fs::rename(&from, &at).expect("another is given its name");
             }),
             None => Box::new(move || {
-                std::fs::write(at.join("theirs"), b"put there meanwhile").expect("a file");
+                std::fs::write(at.join(found), b"put there meanwhile").expect("a file");
             }),
         };
         *trap.lock().expect("the trap") = Some(Trap {
@@ -533,77 +580,301 @@ fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
             path,
             change,
         });
+        let finished = match call {
+            Call::Finishing => Some(checkpoint::finish(&*scene.db.vfs, &target)),
+            _ => None,
+        };
         let done = match call {
             Call::Creation => scene.create(&target),
             Call::DeletionOfTheCheckpoint | Call::DeletionWhereNothingIs => scene.delete(&target),
             Call::DeletionOfTheDirectory => scene.delete(&staged),
+            Call::Finishing => Ok(()),
         };
         assert!(
             trap.lock().expect("the trap").is_none(),
             "{context}: {done:?}"
         );
 
-        // What the look that met the change says.
+        // What the look that met the change says. A lock that is taken
+        // where what a creation left had no lock file makes one where
+        // there is none: in the foreign directory, where that has come.
         #[derive(Debug, PartialEq, Eq)]
         enum Look {
             NotStaging,
             NoLockFile,
             Replaced,
         }
+        let makes_a_lock_file = matches!(left, Left::WithoutALockFile | Left::Empty);
         let look = match (boundary, foreign) {
-            (Boundary::TheLock, Some(foreign)) if foreign == without_one => Look::NoLockFile,
+            (Boundary::TheLock, Some(foreign))
+                if !has_a_lock_file(foreign) && !makes_a_lock_file =>
+            {
+                Look::NoLockFile
+            }
             (Boundary::TheRemoval, Some(_)) => Look::Replaced,
             _ => Look::NotStaging,
         };
-        let said = match &look {
-            Look::NotStaging => is_not_staging(&done, &staged, found),
-            Look::NoLockFile => matches!(
-                &done,
-                Err(CheckpointError::Io { action: "lock", path, source })
-                    if *path == staged.join("LOCK") && source.kind() == ErrorKind::NotFound
-            ),
-            Look::Replaced => {
-                matches!(&done, Err(CheckpointError::Replaced { dir }) if *dir == staged)
+        match call {
+            Call::Creation | Call::DeletionOfTheDirectory => {
+                let said = match &look {
+                    Look::NotStaging => is_not_staging(&done, &staged, found),
+                    Look::NoLockFile => matches!(
+                        &done,
+                        Err(CheckpointError::Io { action: "lock", path, source })
+                            if *path == staged.join("LOCK")
+                                && source.kind() == ErrorKind::NotFound
+                    ),
+                    Look::Replaced => {
+                        matches!(&done, Err(CheckpointError::Replaced { dir }) if *dir == staged)
+                    }
+                };
+                assert!(said, "{context}: {done:?}");
             }
-        };
-        match (call, &look) {
-            (Call::DeletionOfTheCheckpoint, Look::NotStaging) => {
-                assert!(done.is_ok(), "{context}: {done:?}")
-            }
-            (Call::DeletionWhereNothingIs, Look::NotStaging) => {
+            Call::DeletionOfTheCheckpoint => assert!(done.is_ok(), "{context}: {done:?}"),
+            Call::DeletionWhereNothingIs => {
                 assert!(is_no_directory(&done, &target), "{context}: {done:?}")
             }
-            _ => assert!(said, "{context}: {done:?}"),
+            Call::Finishing => {
+                let finished = finished.expect("it was asked");
+                assert!(
+                    matches!(
+                        finished,
+                        Ok(Finished {
+                            at: AtPath::Database,
+                            beside: Beside::NotStaging
+                        })
+                    ),
+                    "{context}: {finished:?}"
+                );
+            }
         }
-        assert!(!target.exists(), "{context}");
+        match (call, &was_at_the_target) {
+            (Call::Finishing, Some(was)) => assert_eq!(exactly(&target), *was, "{context}"),
+            _ => assert!(!target.exists(), "{context}"),
+        }
 
-        match (&theirs, &left) {
+        match (&theirs, &was_left) {
             // The foreign directory is as it was, and so is what a
-            // creation left, where it was moved to.
-            (Some(theirs), left) => {
-                assert_eq!(exactly(&staged), *theirs, "{context}");
-                if let Some(left) = left {
-                    assert_eq!(exactly(&away), *left, "{context}");
+            // creation left, where it was moved to: each but for a lock
+            // file that the taking of the lock made in it.
+            (Some(theirs), was_left) => {
+                let given = boundary == Boundary::TheLock
+                    && makes_a_lock_file
+                    && !foreign.is_some_and(has_a_lock_file);
+                match given {
+                    false => assert_eq!(exactly(&staged), *theirs, "{context}"),
+                    true => {
+                        let now = exactly(&staged);
+                        assert!(
+                            matches!(&now[Path::new("LOCK")], Entry::File(bytes, _) if bytes.is_empty()),
+                            "{context}"
+                        );
+                        assert_eq!(
+                            without(now, &["LOCK"]),
+                            without(theirs.clone(), &[]),
+                            "{context}"
+                        );
+                        given_a_lock_file += 1;
+                    }
+                }
+                if let Some(was_left) = was_left {
+                    match boundary == Boundary::TheRemoval && makes_a_lock_file {
+                        false => assert_eq!(exactly(&away), *was_left, "{context}"),
+                        true => assert_eq!(
+                            without(exactly(&away), &["LOCK"]),
+                            without(was_left.clone(), &[]),
+                            "{context}"
+                        ),
+                    }
                 }
             }
-            // Their file is there, and everything a creation left is as
-            // it was beside it: only the directory itself has changed,
-            // by their file.
-            (None, left) => {
-                let mut now = exactly(&staged);
-                let theirs = now.remove(Path::new("theirs"));
+            // Their file is there, or what they wrote into the lock file,
+            // and everything else a creation left is as it was beside it,
+            // but for a lock file that it was given.
+            (None, was_left) => {
+                let now = exactly(&staged);
                 assert!(
-                    matches!(&theirs, Some(Entry::File(bytes, _)) if bytes == b"put there meanwhile"),
-                    "{context}: {theirs:?}"
+                    matches!(&now[Path::new(found)], Entry::File(bytes, _)
+                        if bytes == b"put there meanwhile"),
+                    "{context}"
                 );
-                let mut left = left.clone().expect("what a creation left");
-                assert!(
-                    now.remove(Path::new("")).is_some() && left.remove(Path::new("")).is_some()
+                let was_left = was_left.clone().expect("what a creation left");
+                let given: &[&str] = match makes_a_lock_file {
+                    true => &[found, "LOCK"],
+                    false => &[found],
+                };
+                assert_eq!(
+                    without(now, given),
+                    without(was_left, &[found]),
+                    "{context}"
                 );
-                assert_eq!(now, left, "{context}");
             }
         }
         scene.outside_is_as_it_was();
+    }
+    // The exception was met: for each call, a foreign directory with no
+    // lock file in the place of what a creation left with none, with the
+    // directory that was built in and empty.
+    assert_eq!(given_a_lock_file, 5 * 2);
+    scene.the_store_is_as_it_was();
+}
+
+/// **The staging directory is looked at once more before its lock file is
+/// removed.** What an earlier creation built in it is removed entry by
+/// entry, which takes as long as it takes. Here the directory is changed
+/// right before the last of those removals, the one of the directory that
+/// was built in, which is empty by then:
+///
+/// - A file of somebody's comes into the staging directory. A deletion
+///   does not remove the lock file beside it: the directory stays, with
+///   its lock file and their file, and a deletion that was given the
+///   directory is refused for the file. A creation builds in the
+///   directory, finds the file before it gives its checkpoint a name,
+///   and takes away what it built and nothing else.
+/// - The staging directory is moved away, and a foreign directory is
+///   given its name. The removal finds nothing to remove there, and no
+///   lock file of the foreign directory is removed: it is as it was,
+///   entry for entry.
+///
+/// A deletion of a checkpoint at the target has deleted the checkpoint by
+/// then, and returns no error for what it finds under the staging name.
+#[test]
+fn what_comes_while_a_staging_directory_is_emptied_keeps_its_lock_file() {
+    let trap: Arc<Mutex<Option<Trap>>> = Arc::default();
+    let mut scene = Scene::on(files::store_on_meddling(|plain, _| Meddling {
+        before_remove_dir: hook(&trap, Boundary::TheRemoval),
+        ..Meddling::plain(plain)
+    }));
+    for call in [
+        Call::Creation,
+        Call::DeletionOfTheCheckpoint,
+        Call::DeletionWhereNothingIs,
+        Call::DeletionOfTheDirectory,
+        Call::Finishing,
+    ] {
+        for foreign in [None, Some(Foreign::NamesOfAnotherStore)] {
+            let context = format!("{call:?}, {foreign:?}");
+            let target = scene.fresh("target");
+            let (staged, aside, away) =
+                (staging(&target), scene.fresh("aside"), scene.fresh("away"));
+            files::leave_built(&staged, false);
+            let checkpoint = matches!(call, Call::DeletionOfTheCheckpoint | Call::Finishing);
+            if checkpoint {
+                scene.place(&target);
+            }
+            let theirs = foreign.map(|foreign| {
+                scene.put(foreign, &aside);
+                exactly(&aside)
+            });
+            let (at, from, to) = (staged.clone(), aside.clone(), away.clone());
+            let change: Box<dyn FnOnce() + Send> = match foreign {
+                Some(_) => Box::new(move || {
+                    std::fs::rename(&at, &to).expect("it is moved away");
+                    std::fs::rename(&from, &at).expect("another is given its name");
+                }),
+                None => Box::new(move || {
+                    std::fs::write(at.join("theirs"), b"put there meanwhile").expect("a file");
+                }),
+            };
+            *trap.lock().expect("the trap") = Some(Trap {
+                boundary: Boundary::TheRemoval,
+                path: built_in(&target),
+                change,
+            });
+            let finished = match call {
+                Call::Finishing => Some(checkpoint::finish(&*scene.db.vfs, &target)),
+                _ => None,
+            };
+            let done = match call {
+                Call::Creation => scene.create(&target),
+                Call::DeletionOfTheCheckpoint | Call::DeletionWhereNothingIs => {
+                    scene.delete(&target)
+                }
+                Call::DeletionOfTheDirectory => scene.delete(&staged),
+                Call::Finishing => Ok(()),
+            };
+            assert!(
+                trap.lock().expect("the trap").is_none(),
+                "{context}: {done:?}"
+            );
+
+            let gone = |done: &Result<(), CheckpointError>| {
+                matches!(
+                    done,
+                    Err(CheckpointError::Io { action: "remove the directory", path, source })
+                        if *path == built_in(&target) && source.kind() == ErrorKind::NotFound
+                )
+            };
+            match (call, foreign) {
+                // The creation built in the directory that their file had
+                // come into, and found the file before the rename.
+                (Call::Creation, None) => assert!(
+                    matches!(&done, Err(CheckpointError::Replaced { dir }) if *dir == staged),
+                    "{context}: {done:?}"
+                ),
+                (Call::DeletionOfTheDirectory, None) => {
+                    assert!(
+                        is_not_staging(&done, &staged, "theirs"),
+                        "{context}: {done:?}"
+                    )
+                }
+                (Call::Creation | Call::DeletionOfTheDirectory, Some(_)) => {
+                    assert!(gone(&done), "{context}: {done:?}")
+                }
+                (Call::DeletionOfTheCheckpoint, _) => {
+                    assert!(done.is_ok(), "{context}: {done:?}")
+                }
+                (Call::DeletionWhereNothingIs, _) => {
+                    assert!(is_no_directory(&done, &target), "{context}: {done:?}")
+                }
+                (Call::Finishing, _) => {
+                    let finished = finished.expect("it was asked");
+                    assert!(
+                        matches!(
+                            finished,
+                            Ok(Finished {
+                                at: AtPath::Database,
+                                beside: Beside::NotStaging
+                            })
+                        ),
+                        "{context}: {finished:?}"
+                    );
+                }
+            }
+            assert_eq!(target.exists(), call == Call::Finishing, "{context}");
+
+            match &theirs {
+                // The foreign directory is as it was. What a creation
+                // left is where it was moved to, with its lock file and
+                // the directory that was built in, emptied.
+                Some(theirs) => {
+                    assert_eq!(exactly(&staged), *theirs, "{context}");
+                    let left: Vec<PathBuf> = exactly(&away).into_keys().collect();
+                    let held = ["", "LOCK", BUILDING_DIR_NAME].map(PathBuf::from);
+                    assert_eq!(left, held, "{context}");
+                }
+                // Their file is there, beside the lock file, which is
+                // empty, and nothing else is.
+                None => {
+                    let now = exactly(&staged);
+                    assert_eq!(
+                        now.keys().collect::<Vec<_>>(),
+                        ["", "LOCK", "theirs"].map(Path::new),
+                        "{context}"
+                    );
+                    assert!(
+                        matches!(&now[Path::new("LOCK")], Entry::File(bytes, _) if bytes.is_empty()),
+                        "{context}"
+                    );
+                    assert!(
+                        matches!(&now[Path::new("theirs")], Entry::File(bytes, _)
+                            if bytes == b"put there meanwhile"),
+                        "{context}"
+                    );
+                }
+            }
+            scene.outside_is_as_it_was();
+        }
     }
     scene.the_store_is_as_it_was();
 }
@@ -670,7 +941,9 @@ fn stage_of(state: &dyn Vfs, target: &Path, context: &str) -> Stage {
 /// lists nothing but its lock file and the directory the checkpoint is
 /// built in, and the stage is one of [`Stage`]. On each state the next
 /// creation makes its checkpoint, which opens at its version, and a
-/// deletion of the target leaves neither name. Each stage is met: the
+/// deletion of the target leaves neither name. And each state is
+/// recovered a second time and given to a deletion of the target alone,
+/// which removes what the cut left under both names. Each stage is met: the
 /// directory made, the lock taken, the mark made, the files partly
 /// written, the whole checkpoint under the name it was built under, and
 /// the checkpoint at the target.
@@ -705,6 +978,20 @@ fn every_stage_of_a_cut_creation_is_taken_over_or_removed() {
             let live = open_on(Arc::new(state.clone()), Path::new(DIR), &made.db)
                 .unwrap_or_else(|error| panic!("{context}: the live store: {error}"));
             made.check_leftover(&state, &live, &context);
+            // And the same state once more, as the cut left it: a
+            // deletion of the target removes what is there of both names,
+            // with no creation before it.
+            let untouched = image.recover(plan).expect("the same state");
+            match checkpoint::delete(&untouched, &made.target) {
+                Ok(()) => assert!(stage != Stage::Nothing, "{context}"),
+                Err(CheckpointError::NotADirectory { .. }) => {
+                    assert_eq!(stage, Stage::Nothing, "{context}")
+                }
+                Err(error) => panic!("{context}: the deletion: {error}"),
+            }
+            for path in [made.target.clone(), staging(&made.target)] {
+                assert!(untouched.read_dir(&path).is_err(), "{context}: {path:?}");
+            }
         }
     }
     let mut met: BTreeMap<Stage, usize> = BTreeMap::new();

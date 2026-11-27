@@ -233,10 +233,11 @@ pub(super) fn built_in(target: &Path) -> PathBuf {
 
 /// How many operations a creation asks of the file layer once its
 /// checkpoint is durable at the target, to remove its staging directory:
-/// the listing of the directory above and of the staging directory, and
-/// the removal of its lock file and of the directory itself. A creation
-/// that the power cuts at any of them has returned its checkpoint.
-pub(super) const TIDYING_OPS: u64 = 4;
+/// the listing of the directory above and of the staging directory, the
+/// two that measure its lock file, and the removal of that file and of
+/// the directory itself. A creation that the power cuts at any of them
+/// has returned its checkpoint.
+pub(super) const TIDYING_OPS: u64 = 6;
 
 /// Whether nothing has the name `path` in `vfs`.
 pub(super) fn gone(vfs: &dyn Vfs, path: &Path) -> bool {
@@ -528,6 +529,8 @@ pub(super) struct Meddling {
     /// Before a directory is synced by a call of its own
     /// ([`Vfs::sync_dir`]).
     pub(super) before_sync_dir: Option<Before>,
+    /// Before a directory is removed.
+    pub(super) before_remove_dir: Option<Before>,
     /// Under this directory the file system keeps a name in another
     /// spelling than it is given in, as HFS+ does: a name that is given
     /// with [`ONE_LETTER`] is listed with [`TWO_LETTERS`], and either
@@ -553,6 +556,8 @@ pub(super) struct Meddling {
     /// How many syncs each set had that was asked for
     /// ([`Vfs::sync_together`]).
     pub(super) sets: Mutex<Vec<usize>>,
+    /// The directories of each such set, in its order.
+    pub(super) set_dirs: Mutex<Vec<Vec<PathBuf>>>,
 }
 
 impl Meddling {
@@ -566,12 +571,14 @@ impl Meddling {
             before_list: None,
             before_create_dir: None,
             before_sync_dir: None,
+            before_remove_dir: None,
             respelled: None,
             respelling: Arc::new(AtomicBool::new(true)),
             folds: None,
             made_read_only: None,
             unlisted: Arc::default(),
             sets: Mutex::default(),
+            set_dirs: Mutex::default(),
         }
     }
 
@@ -766,6 +773,9 @@ impl Vfs for Meddling {
     }
 
     fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        if let Some(before) = &self.before_remove_dir {
+            before(path)?;
+        }
         self.inner.remove_dir(&self.kept(path))
     }
 
@@ -800,6 +810,11 @@ impl Vfs for Meddling {
 
     fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
         (self.sets.lock().expect("the sets")).push(items.len());
+        let named = items.iter().filter_map(|item| match item {
+            SyncItem::Dir(path) => Some(path.to_path_buf()),
+            _ => None,
+        });
+        (self.set_dirs.lock().expect("the sets")).push(named.collect());
         let dirs: Vec<Option<PathBuf>> = (items.iter())
             .map(|item| match item {
                 SyncItem::Dir(path) => Some(self.kept(path)),

@@ -354,7 +354,10 @@
 //!   ([`CheckpointError::NotStaging`]): a creation at the target does not
 //!   build, a [`delete`] that is given the directory does not remove it,
 //!   and a [`delete`] of the target passes it over. Nothing in it is
-//!   removed, no lock is taken in it and no lock file is made in it. That
+//!   removed. Where it lies there when the call first looks, no lock is
+//!   taken in it and no lock file is made in it either; what can be done
+//!   to one that comes under the name later, between two calls of the
+//!   file layer, is under "What the looks do not tell". That
 //!   is a database of any engine that lies there closed, this engine's
 //!   among them, and whatever else somebody put or restored under that
 //!   name. The rule names what a creation of this engine makes, and
@@ -440,6 +443,11 @@
 //!   staging directory is looked for, and read by the rule, a third time
 //!   right before the first removal, and what is removed is the
 //!   directory under [`BUILDING_DIR_NAME`] and nothing else.
+//! - Whoever removes the staging directory itself, a deletion and a
+//!   creation that ends, looks for it once more right before that: it
+//!   has to be the directory whose lock is held and to list that lock
+//!   file and nothing else. Then the lock file goes, and the directory by
+//!   a removal that fails if something has come into it.
 //! - The directory the creation makes in its staging directory is looked
 //!   for under its own lock in the same way, in the staging directory.
 //! - Right before the rename, the creation looks for both directories
@@ -484,6 +492,14 @@
 //!   look under the lock has refused it. Nothing in it is written, made
 //!   or removed for that; whoever asks for that lock meanwhile finds it
 //!   held.
+//! - **The two names inside a staging directory, in another spelling.**
+//!   The rule reads the names `LOCK` and `checkpoint.creating` as the
+//!   staging directory lists them, byte for byte. Both are ASCII, which a
+//!   file system that keeps names in a form of its own leaves as they
+//!   are. On one that listed either otherwise, a creation would not find
+//!   the directory it had just made ([`CheckpointError::Replaced`]), and
+//!   what a creation left would be refused for the entry
+//!   ([`CheckpointError::NotStaging`]).
 //! - **Who made a directory that the rule admits.** The rule goes by the
 //!   two names and what is listed under them, and a listing says no more:
 //!   a directory under the staging name in which somebody else made an
@@ -656,22 +672,27 @@
 //!   has its name, and, given a directory of that kind itself, removes
 //!   that: where the looks of that section find it and its lock is not
 //!   held. **A directory under that name that no creation left is not
-//!   touched**: a deletion of the target passes it over, with no error,
-//!   whether it lay there before or came while the target was removed,
-//!   and a deletion that is given the directory itself is refused
-//!   ([`CheckpointError::NotStaging`]).
+//!   removed, and nothing in it is**: a deletion of the target passes it
+//!   over, with no error, whether it lay there before or came while the
+//!   target was removed, and a deletion that is given the directory
+//!   itself is refused ([`CheckpointError::NotStaging`]). What a
+//!   directory that comes under the name between two calls of the file
+//!   layer can be given, a lock or an empty lock file, is under "What the
+//!   looks do not tell".
 //!
 //! **[`finish`] is the call for what was cut short, where nothing whole is
 //! to go.** [`delete`] removes the database it is given, and a caller that
 //! only wants to clear away what a power cut left, at the paths of
 //! checkpoints that may be whole and open, cannot ask it to. [`finish`]
-//! does the last two of the three points above and never the first: it
-//! finishes a deletion whose mark is in the directory, removes an empty
-//! directory and one with an empty lock file alone, and removes the
-//! staging directory that a creation left beside the path. A database
-//! that no deletion has begun on is as it was, and its lock is not taken,
-//! so a handle can have it open meanwhile. [`Finished`] says which it
-//! found.
+//! is [`delete`] without the step that makes a database stop being one:
+//! it renames no manifest. It finishes a deletion whose mark is in the
+//! directory already, with no manifest under the manifest's own name,
+//! removes an empty directory and one with an empty lock file alone, and
+//! removes the staging directory that a creation left beside the path. A
+//! database that no deletion has begun on is as it was, and its lock is
+//! not taken, so a handle can have it open meanwhile: that is one with
+//! its manifest and no mark, and also one with a manifest under both
+//! names, which no deletion leaves. [`Finished`] says which it found.
 //!
 //! Platform removes the directory of a checkpoint while a handle has it
 //! open. That handle goes on reading: its pages are in its pool, and the

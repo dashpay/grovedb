@@ -12,9 +12,11 @@ use lignin_store::{flush::FlushError, segment::SegmentStoreError, wal::LogError}
 
 use crate::commit::Stopped;
 
-/// Why [`Checkpointer::create`](super::Checkpointer::create) or
-/// [`delete`](super::delete) failed. Each of the two says what is left
-/// then.
+/// Why [`Checkpointer::create`](super::Checkpointer::create),
+/// [`delete`](super::delete) or [`finish`](super::finish) failed. Each of
+/// the three says what is left then, and what is said of
+/// [`delete`](super::delete) under an error holds for
+/// [`finish`](super::finish) where it does what a deletion does.
 ///
 /// Whatever the error, the live database holds what it held. What a
 /// creation does to it is write-back's work before a directory is made,
@@ -53,10 +55,13 @@ pub enum CheckpointError {
         dir: PathBuf,
     },
     /// A look at the path of a creation's staging directory
-    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), or of the directory
+    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), of the directory
     /// a checkpoint is built in inside it
-    /// ([`BUILDING_DIR_NAME`](super::BUILDING_DIR_NAME)), did not find
-    /// what the call looked for. Under a lock it has just taken, and
+    /// ([`BUILDING_DIR_NAME`](super::BUILDING_DIR_NAME)), or of a
+    /// database directory that [`delete`](super::delete) or
+    /// [`finish`](super::finish) has locked, did not find the directory
+    /// whose lock is held, or not as
+    /// the call looked for it. Under a lock it has just taken, and
     /// again before it removes what was built there, a creation, or a
     /// deletion of what a creation left, looks for a directory of its own
     /// in the directory above, with the lock file it holds. Right before
@@ -72,14 +77,19 @@ pub enum CheckpointError {
     /// A staging directory
     /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) did not list a file
     /// under the name of its lock file, byte for byte, and the call made
-    /// none there: it lists nothing under that name, and the call found
-    /// that the name leads to something all the same; or what it listed
-    /// there was changed, after the look that found a file, into
-    /// something that is not one. The lock of the directory was not
-    /// taken, and the call went no further: a creation does not build in
-    /// such a directory, and [`delete`](super::delete) does not go on to
-    /// remove it. One that lists something else than a file under that
-    /// name is refused before, as [`Self::NotStaging`].
+    /// none there: it lists nothing under that name, and the call found,
+    /// twice, that the name leads to something all the same, as it can
+    /// where a file system takes several spellings for one name. The lock
+    /// of the directory was not taken, and the call went no further: a
+    /// creation does not build in such a directory, and
+    /// [`delete`](super::delete) does not go on to remove it. One that
+    /// lists something else than a file under that name is refused
+    /// before, as [`Self::NotStaging`].
+    ///
+    /// Or [`delete`](super::delete) or [`finish`](super::finish) was to
+    /// take the lock of a database directory, and that directory lists
+    /// something else than a file under the name of its lock file, such
+    /// as a link: the lock was not taken, and nothing was removed.
     NotALock {
         /// The path of the lock file.
         path: PathBuf,
