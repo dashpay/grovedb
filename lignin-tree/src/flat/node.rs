@@ -439,10 +439,34 @@ pub(super) mod written {
     thread_local! {
         static LEAVES: Cell<u64> = const { Cell::new(0) };
         static PIECES: Cell<u64> = const { Cell::new(0) };
+        static FAIL_AFTER: Cell<Option<u64>> = const { Cell::new(None) };
     }
 
     pub(super) fn count() {
         LEAVES.set(LEAVES.get() + 1);
+    }
+
+    /// Has the write of an image of a leaf fail, once, on this thread:
+    /// the one after `images` more have been written. It is for a test of
+    /// what a write that fails half way leaves, and nothing else arms it.
+    pub fn fail_leaf_image_after(images: u64) {
+        FAIL_AFTER.set(Some(images));
+    }
+
+    /// Whether the image that is about to be written is the one a test
+    /// has fail.
+    pub(super) fn fails() -> bool {
+        match FAIL_AFTER.get() {
+            Some(0) => {
+                FAIL_AFTER.set(None);
+                true
+            }
+            Some(left) => {
+                FAIL_AFTER.set(Some(left - 1));
+                false
+            }
+            None => false,
+        }
     }
 
     /// Notes that a leaf was cut `cuts` times: into that many pieces
@@ -498,6 +522,11 @@ pub(super) fn write_leaf<P: FlatPagesMut + ?Sized>(
             KeyRef::Page(key) => image.push_key(key, value)?,
             KeyRef::Whole(key) => image.push(key, value)?,
         }
+    }
+    #[cfg(any(test, feature = "held_reads"))]
+    if written::fails() {
+        let what = "an image of a leaf whose write a test has fail";
+        return Err(FlatError::Damaged { page, what });
     }
     pages.write(page, &image.finish())?;
     #[cfg(any(test, feature = "held_reads"))]

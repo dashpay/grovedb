@@ -521,6 +521,22 @@ impl FlatTree {
         if layout.len() <= capacity {
             return write_leaf(pages, capacity, page, entries);
         }
+        self.cut_leaf(pages, steps, page, entries, &layout, added)
+    }
+
+    /// Writes the leaf `page` with `entries`, which are too long for one
+    /// page and whose lengths `layout` has, as the pieces it is cut into
+    /// ([`Self::store_leaf`]).
+    fn cut_leaf<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        steps: &[Step],
+        page: PageId,
+        entries: &[LeafEntry<'_>],
+        layout: &Layout,
+        added: Option<(usize, usize)>,
+    ) -> Result<(), FlatError> {
+        let capacity = self.config.capacity();
         let cuts = layout.cuts(capacity, 0, added);
         #[cfg(any(test, feature = "held_reads"))]
         super::node::written::cut(cuts.len());
@@ -826,9 +842,13 @@ impl FlatTree {
     ///   one to come to. The leaf that was freed took no image, so the
     ///   count above holds.
     ///
-    /// A leaf in which no change changes anything is neither taken nor
-    /// written: each change is a delete of a key that is not there, or a
-    /// value that the key has already, in the page.
+    /// A leaf in which no change changes anything is not written: each
+    /// change is a delete of a key that is not there, or a value that the
+    /// key has already, in the page. It is not taken either where every
+    /// change is such a delete. A key that gets the value it has is judged
+    /// by the leaf as it is taken, as a put of it takes the leaf: from
+    /// then on no step of background work takes the record out under the
+    /// writer.
     ///
     /// The pages are cut and merged by the rules of one key, applied to
     /// what a leaf holds after all its changes. So the pages that this
@@ -951,23 +971,17 @@ impl FlatTree {
         changes: &[Change<'_>],
         ahead: (Option<&[u8]>, Option<&[u8]>),
     ) -> Result<bool, FlatError> {
-        // A change that changes nothing: a delete of a key that is not
-        // there, and a value that the key has already, in the page.
-        let idle = |leaf: &FlatLeaf<'_>, key: &[u8], value: Option<&[u8]>| {
-            let found = leaf.search(key).ok().and_then(|slot| leaf.value(slot));
-            match (found, value) {
-                (None, None) => true,
-                (Some(FlatValue::Inline(has)), Some(value)) => has == value,
-                _ => false,
-            }
-        };
-        // A leaf that no change changes costs no copy of the page.
-        let all_idle = {
+        // Deletes of keys that are not there cost no copy of the page, as
+        // one of them alone costs none. A key that gets a value is judged
+        // by the image that is taken: until then a step of background
+        // work can take its record out.
+        let absent = {
             let frame = pages.page(page)?;
             let leaf = leaf(&frame, page)?;
-            (changes.iter()).all(|&(key, value)| idle(&leaf, key, value))
+            let absent = |key| leaf.search(key).is_err();
+            (changes.iter()).all(|&(key, value)| value.is_none() && absent(key))
         };
-        if all_idle {
+        if absent {
             return Ok(false);
         }
         let old = pages.take(page)?;
@@ -983,13 +997,22 @@ impl FlatTree {
             // What the leaf holds is read from the image that was taken:
             // a step of background work can have taken entries out since
             // the leaf was read.
-            if idle(&leaf, key, value) {
-                continue;
-            }
             let (slot, found) = match leaf.search(key) {
                 Ok(slot) => (slot, true),
                 Err(slot) => (slot, false),
             };
+            // A change that changes nothing: a delete of a key that is
+            // not there, and a value that the key has already, in the
+            // page.
+            let has = leaf.value(slot).filter(|_| found);
+            let same = match (has, value) {
+                (None, None) => true,
+                (Some(FlatValue::Inline(has)), Some(value)) => has == value,
+                _ => false,
+            };
+            if same {
+                continue;
+            }
             now.extend_from_slice(entries.get(from..slot).unwrap_or_default());
             from = slot + usize::from(found);
             if let Some(entry) = entries.get(slot).filter(|_| found) {
@@ -1026,9 +1049,10 @@ impl FlatTree {
         }
 
         let capacity = self.config.capacity();
-        let len = Layout::of(&now).len();
+        let layout = Layout::of(&now);
+        let len = layout.len();
         if len > capacity {
-            self.store_leaf(pages, &steps, page, &now, added)?;
+            self.cut_leaf(pages, &steps, page, &now, &layout, added)?;
             return Ok(true);
         }
         // A leaf that lost an entry is looked at as after a delete, before
@@ -1158,14 +1182,18 @@ impl FlatTree {
             };
             Ok(leaf_entries(&beside))
         }
-        // The other page is looked at before it is taken: a page that
-        // stays as it is costs no copy of its own.
-        let image = Self::image(pages, other)?;
-        let joined = |beside: Vec<LeafEntry<'_>>| match other == left {
-            true => Layout::of(&[&beside[..], now].concat()).len(),
-            false => Layout::of(&[now, &beside[..]].concat()).len(),
+        // The other page is looked at before it is taken, as it is held:
+        // a page that stays as it is costs no copy.
+        let fits = {
+            let frame = pages.page(other)?;
+            let beside = join(&frame, other, level)?;
+            let joined = match other == left {
+                true => Layout::of(&[&beside[..], now].concat()).len(),
+                false => Layout::of(&[now, &beside[..]].concat()).len(),
+            };
+            joined <= self.config.merge_limit()
         };
-        if joined(join(&image, other, level)?) > self.config.merge_limit() {
+        if !fits {
             return Ok(Merge::TooLong);
         }
         let taken = pages.take(other)?;

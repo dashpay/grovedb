@@ -195,8 +195,10 @@
 //! still to come to. A leaf is for that not merged with a neighbour to
 //! its left that the write has still to come to, and stays under a
 //! quarter of a page until a later write looks at it. A leaf in which no change changes anything (a delete of a key that
-//! is not there, a value that the key has already in its page) is neither
-//! taken nor written. The keyspace holds afterwards what a put and a
+//! is not there, a value that the key has already in its page) is not
+//! written, and is not taken where every change is such a delete; a key
+//! that gets the value it has is judged by the leaf as it is taken, as a
+//! put of it is. The keyspace holds afterwards what a put and a
 //! delete for each change leave it holding. Its pages can be other pages,
 //! because a leaf is cut and merged once for all it takes: where the new
 //! entries of a leaf stand beside each other and end a run of keys, the
@@ -496,7 +498,7 @@ pub(crate) mod tests;
 pub use cursor::{Cursor, Look};
 pub use error::FlatError;
 #[cfg(any(test, feature = "held_reads"))]
-pub use node::written::{leaf_images_written, leaf_pieces_cut};
+pub use node::written::{fail_leaf_image_after, leaf_images_written, leaf_pieces_cut};
 pub use owners::{FlatOwners, StepLog};
 pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
 pub use store::{Committed, PageIds, Parts, Private, PrivatePage};

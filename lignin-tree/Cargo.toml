@@ -24,7 +24,9 @@ lignin-store = { version = "7.0.0", path = "../lignin-store" }
 # `lignindb`: how many images of leaves the thread has written into flat
 # keyspaces and into how many further pieces it has cut leaves
 # (`flat::leaf_images_written`, `flat::leaf_pieces_cut`), for the tests that
-# hold a batch to the leaves it may write. It is on in this crate's own tests,
+# hold a batch to the leaves it may write; and a fault that only a test arms,
+# for its own thread: the write of one image of a leaf fails
+# (`flat::fail_leaf_image_after`). It is on in this crate's own tests,
 # `lignindb/held_reads` turns it on with its own checks, and `lignindb` has
 # it on for its own tests by a dev-dependency.
 held_reads = []

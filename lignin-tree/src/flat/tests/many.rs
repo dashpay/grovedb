@@ -529,17 +529,18 @@ fn a_long_key_does_not_part_the_keys_of_a_leaf() {
 }
 
 /// A value that a key has already, in its page, changes nothing: its leaf
-/// is neither taken nor written.
+/// is taken, as a put of the key takes it, and is not written.
 #[test]
 fn a_value_that_a_key_has_already_writes_nothing() {
     let (mut pages, tree) = spread(600);
-    let (revision, takes) = (pages.revision, pages.takes);
+    let (revision, takes, all) = (pages.revision, pages.takes, leaves(&pages) as u64);
     let changes: Changes = (0..600)
         .map(|n| (numbered(n), Some(vec![n as u8; 60])))
         .collect();
     let written = write(&mut pages, &tree, &changes);
     assert_eq!(written, Written::default());
-    assert_eq!((pages.revision, pages.takes), (revision, takes));
+    assert_eq!(pages.revision, revision, "no page is written");
+    assert_eq!(pages.takes - takes, all, "each leaf is taken once");
 
     // One of them gets another value, and one key that is not there is
     // deleted beside it: one leaf is written.
@@ -548,7 +549,6 @@ fn a_value_that_a_key_has_already_writes_nothing() {
     changes.insert([&numbered(300)[..], b"?"].concat(), None);
     let written = write(&mut pages, &tree, &changes);
     assert_eq!((written.leaves, written.leaf_writes), (1, 1));
-    assert_eq!(pages.takes - takes, 1);
     assert_eq!(get(&pages, &tree, &numbered(300)), Some(vec![9; 60]));
 
     // A value out of line is written again: it is not read to be
@@ -558,6 +558,36 @@ fn a_value_that_a_key_has_already_writes_nothing() {
     assert_eq!(write(&mut pages, &tree, &one).leaf_writes, 1);
     assert_eq!(write(&mut pages, &tree, &one).leaf_writes, 1);
     assert_eq!(get(&pages, &tree, &numbered(1)), Some(long));
+}
+
+/// A key that gets the value it has is judged by the leaf as it is taken:
+/// where a step of background work took its record out since the leaf was
+/// read, the record is put, as a put of the key alone puts it.
+#[test]
+fn a_value_that_a_step_took_out_before_the_leaf_is_taken_is_put() {
+    let (mut pages, tree) = Mem::tree(small());
+    for n in 0..8 {
+        tree.put(&mut pages, &numbered(n), b"a value")
+            .expect("a put");
+    }
+    pages.commit();
+    // The leaf as a step leaves it, without the first two records.
+    let (mut after, same) = Mem::tree(small());
+    for n in 2..8 {
+        same.put(&mut after, &numbered(n), b"a value")
+            .expect("a put");
+    }
+    let image = after.pages[&tree.root()].clone();
+    pages.step_before_take = Some((tree.root(), image));
+    let changes: Changes = [(numbered(0), Some(b"a value".to_vec()))].into();
+    let takes = pages.takes;
+    let written = tree.write(&mut pages, &changes).expect("a write");
+    assert_eq!(pages.takes - takes, 1, "the leaf is taken");
+    assert!(pages.step_before_take.is_none(), "the step was made");
+    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+    assert_eq!(get(&pages, &tree, &numbered(0)), Some(b"a value".to_vec()));
+    assert_eq!(get(&pages, &tree, &numbered(1)), None);
+    assert_eq!(records(&pages, &tree).len(), 7);
 }
 
 /// Leaves that are emptied and merged by one write, from one end of the
