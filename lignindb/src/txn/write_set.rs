@@ -1373,21 +1373,21 @@ impl WriteSet {
             let Some(index) = self.units.get(&Unit::data(stretch.subtree)) else {
                 continue;
             };
-            // The puts that the stretch lists, oldest first.
+            // The oldest put that the stretch lists.
             let low = match stretch.after {
                 Some(id) => Bound::Excluded(id),
                 None => Bound::Unbounded,
             };
-            let listed = index.stale.range((low, Bound::Unbounded));
-            let listed = listed.take_while(|id| stretch.before.is_none_or(|before| **id < before));
-            let mut listed = listed.copied().peekable();
+            let held = |id: &&EntryId| stretch.before.is_none_or(|before| **id < before);
+            let first = index.stale.range((low, Bound::Unbounded)).next();
+            let first = first.filter(held).copied();
             // After the last stretch nothing older is asked for. So what
             // is older than the oldest put it lists is not looked at: a
             // drop or a clear from before a put did not take it, and a
             // range delete from before it does not cover it.
-            let oldest = match (at + 1 == stretches.len(), listed.peek()) {
+            let oldest = match (at + 1 == stretches.len(), first) {
                 (true, None) => break,
-                (true, Some(oldest)) => Some(*oldest),
+                (true, oldest) => oldest,
                 (false, _) => None,
             };
             // The ranges that the stretch holds. They are in the order of
@@ -1400,16 +1400,25 @@ impl WriteSet {
                 .map_or(0, |after| older(after.saturating_add(1)));
             let from = oldest.map_or(from, |oldest| from.max(older(oldest)));
             let to = stretch.before.map_or(ranges.len(), older);
-            let held = ranges.get(from..to).unwrap_or(&[]);
+            let between = ranges.get(from..to).unwrap_or(&[]);
             let whole = |id: &EntryId| {
                 #[cfg(test)]
                 counted::cut();
                 matches!(self.entry(*id).kind, Kind::Dropped | Kind::Cleared)
             };
-            let cut = held.iter().rposition(whole);
-            let deletes = &held[cut.map_or(0, |cut| cut + 1)..];
-            let taken = cut.map(|cut| held[cut]);
-            for id in listed.skip_while(|id| taken.is_some_and(|taken| *id < taken)) {
+            let cut = between.iter().rposition(whole);
+            let deletes = &between[cut.map_or(0, |cut| cut + 1)..];
+            // The puts since the newest drop or clear: the list is
+            // entered after it, and none of those it took is gone
+            // through.
+            let since = match cut.map(|cut| between[cut]) {
+                Some(id) => Bound::Excluded(id),
+                None => low,
+            };
+            let listed = index.stale.range((since, Bound::Unbounded));
+            #[cfg(test)]
+            let listed = listed.inspect(|_| counted::listed());
+            for id in listed.take_while(held).copied() {
                 let key = self.key(id);
                 let newer = &deletes[deletes.partition_point(|range| *range < id)..];
                 let mut newer = newer.iter().chain(&later);
@@ -3318,6 +3327,7 @@ mod counted {
         static RANGES: Cell<u64> = const { Cell::new(0) };
         static MOVES: Cell<u64> = const { Cell::new(0) };
         static CUTS: Cell<u64> = const { Cell::new(0) };
+        static LISTED: Cell<u64> = const { Cell::new(0) };
     }
 
     /// An entry was asked whether it is a drop or a clear, to find the
@@ -3329,6 +3339,16 @@ mod counted {
     /// How many entries were asked that since the count was last taken.
     pub(super) fn take_cut() -> u64 {
         CUTS.with(|count| count.replace(0))
+    }
+
+    /// A put that left a hash stale was come to in the list of its unit.
+    pub(super) fn listed() {
+        LISTED.with(|count| count.set(count.get() + 1));
+    }
+
+    /// How many such puts were come to since the count was last taken.
+    pub(super) fn take_listed() -> u64 {
+        LISTED.with(|count| count.replace(0))
     }
 
     /// A move was compared with an entry, to find the newest before it.
@@ -4631,16 +4651,24 @@ mod tests {
         record(&mut set, outside);
         assert_eq!(set.unmade(subtree(7)).len(), 1);
         assert_eq!((counted::take_cut(), counted::take().1), (1, 1));
+        // A clear takes the puts from before it, here fifty-one. They
+        // stay listed, and a call does not go through them: the list is
+        // entered after the clear.
+        for index in 0..50u8 {
+            node(&mut set, 7, &[b'o', index], value);
+        }
         set.add(&cleared, version(1), &[], &[], &[], &[], &[]);
         node(&mut set, 7, b"t", value);
         record(&mut set, outside);
+        counted::take_cut();
+        counted::take_listed();
         let after: Vec<&[u8]> = (set.unmade(subtree(7)).iter())
             .map(|(_, key)| *key)
             .collect();
         assert_eq!(after, [&b"t"[..]]);
         // From the newest entry back to the clear: the range delete
-        // after it, and the clear.
-        assert_eq!(counted::take_cut(), 2);
+        // after it, and the clear. And one put is come to.
+        assert_eq!((counted::take_cut(), counted::take_listed()), (2, 1));
     }
 
     /// A rollback to a mark in a set whose writers made every hash looks
