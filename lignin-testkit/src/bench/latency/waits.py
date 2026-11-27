@@ -32,9 +32,11 @@ trace is refused with `--marked`; otherwise, with fewer than twenty whole,
 the trace says that it is inconclusive, and is refused only with `--stacks`
 as well, by which a campaign asks before its runs whether a tracer on this
 machine reads user stacks at all (the script then ends with 4). With
-`--stacks` a trace that has no wait at all is refused outright: its marks
-and syncs come from other probes, and a tracer whose probe for a thread
-that comes back never fired makes such a trace.
+`--stacks` a trace that has no wait at all, and in which the tracer does
+not count one time that its probe for a thread that comes back fired
+(`@resumed`), is refused outright: its marks and syncs come from other
+probes, and a tracer whose probe never fired makes such a trace. One whose
+probe fired and wrote no wait is inconclusive.
 
 **Which waits are counted.** A wait is one OFFCPU record of the measuring
 thread: the thread left a processor and was back after the time the record
@@ -223,6 +225,9 @@ class Trace:
         # The stacks the tracer says it dropped, in its error output beside
         # the trace: None where that file is not there.
         self.dropped = None
+        # How often the tracer's probe for a thread that comes back fired,
+        # which it prints when it ends.
+        self.resumed = 0
         if os.path.exists(path + ".err"):
             self.dropped = sum(1 for line in open(path + ".err", errors="replace")
                                if re.search(r"failed to look up stack id -\d+ ", line))
@@ -257,6 +262,8 @@ class Trace:
                 bounds = re.search(r"from (\d+) us, off a processor from (\d+) us", line)
                 if bounds:
                     self.long_us, self.off_us = int(bounds.group(1)), int(bounds.group(2))
+            elif line.startswith("@resumed:"):
+                self.resumed = int(line.split(":", 1)[1])
             elif line.startswith("Lost "):
                 found = re.match(r"Lost (\d+) events", line)
                 self.lost += int(found.group(1)) if found else 1
@@ -502,12 +509,14 @@ def main():
     if trace.off_us is not None and floor < trace.off_us:
         sys.exit("waits.py: %s has the waits of %d µs or more, and none shorter to count from %d µs: the tracer "
                  "was given that bound (OFF_US)" % (arguments[0], trace.off_us, floor))
-    if stacks and not trace.waits:
+    if stacks and not trace.waits and not trace.resumed:
         # The marks and the syncs come from other probes: a trace that has
-        # them and not one wait is of a tracer whose probe for a thread that
-        # comes back never fired, and says nothing of the stacks.
-        sys.exit("waits.py: %s has no wait at all, of any thread: the tracer's probe for a thread that comes back "
-                 "on a processor (finish_task_switch) did not fire" % arguments[0])
+        # them, not one wait, and no count of a thread that came back is of
+        # a tracer whose probe for that never fired, and says nothing of the
+        # stacks. One whose probe fired and wrote no wait, because none was
+        # long enough, is inconclusive like any with too few.
+        sys.exit("waits.py: %s has no wait at all, of any thread, and the tracer does not say that its probe for a "
+                 "thread that comes back on a processor (finish_task_switch) ever fired" % arguments[0])
     if marked:
         refused = None
         if trace.dropped is None:
@@ -591,6 +600,9 @@ def main():
                     sys.exit("waits.py: the tracer of %s dropped %d stacks, more than %d in a hundred of its %d "
                              "waits: too many of them have no stack" % (
                                  arguments[0], trace.dropped, round(100 * DROPPED), len(trace.waits)))
+            elif without:
+                print("%d waits inside a block have no user stack at all; the tracer's error output, which says how "
+                      "many stacks it dropped, is not beside the trace." % len(without))
             # The waits a table is made of are the measuring thread's inside
             # a block, and they are held to the limit by themselves: whole
             # waits of other threads do not make up for theirs.
@@ -598,9 +610,6 @@ def main():
                 sys.exit("waits.py: of the %d waits of the measuring thread of %s inside a block, %d have no user "
                          "stack at all, more than %d in a hundred: the tracer dropped their stacks" % (
                              len(evidence), arguments[0], len(without), round(100 * DROPPED)))
-            elif without:
-                print("%d waits inside a block have no user stack at all; the tracer's error output, which says how "
-                      "many stacks it dropped, is not beside the trace." % len(without))
             if marked and verdict == "the stacks are cut short":
                 sys.exit("waits.py: of the %d waits of %s inside a block, %d have a user stack that is cut short: "
                          "the build has to keep its frame pointers" % (

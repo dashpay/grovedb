@@ -31,8 +31,8 @@ root=${BUILDS:-$HOME/builds}
 fs_a=${FS_A:?the first file system} fs_b=${FS_B:?the second file system}
 # The two runs of a pair each remove their scratch directory, and are held
 # against one another as runs on two file systems.
-if [ "$(realpath "$fs_a")" = "$(realpath "$fs_b")" ]; then
-  echo "pairs.sh: FS_A and FS_B are one directory, $(realpath "$fs_a"): the two runs of a pair want one each" >&2
+if [ "$fs_a" -ef "$fs_b" ]; then
+  echo "pairs.sh: FS_A ($fs_a) and FS_B ($fs_b) are one directory: the two runs of a pair want one each" >&2
   exit 1
 fi
 mkdir -p "$out"; rm -f "$out/done"; ulimit -n 65536

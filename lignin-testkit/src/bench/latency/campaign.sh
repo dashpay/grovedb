@@ -271,21 +271,24 @@ describe() { # describe NAME DIRECTORY
       xfs) xfs_info "$2" 2> /dev/null | grep -E "^log" | sed "s/^/$1: /" || true ;;
     esac
     echo "$1: $(probe "$2")"
-  } >> "$out/host.txt"
+  }
 }
 # The description of the host, for the tables: written with its identity, by
 # the first call that makes a run, and so of the host the runs are made on.
 described() {
-    {
-      echo "commit $commit"
-      echo "kernel $(uname -srm)"
-      lscpu | grep -E "^(Model name|CPU\(s\)|Thread\(s\) per core|Hypervisor vendor|Virtualization type)" | sed 's/  */ /g' || true
-      echo "memory $(awk '/MemTotal/ { printf "%.0f GiB", $2 / 1048576 }' /proc/meminfo)"
-      echo "load average $(cut -d' ' -f1-3 /proc/loadavg)"
-      lsblk -n -o NAME,SIZE,ROTA,TYPE,MODEL -s "$(findmnt -no SOURCE -T "$out")" 2> /dev/null |
-        sed 's/^/device (name, size, rotational, type, model) /' || true
-    } > "$out/host.txt"
+  {
+    echo "commit $commit"
+    echo "kernel $(uname -srm)"
+    lscpu | grep -E "^(Model name|CPU\(s\)|Thread\(s\) per core|Hypervisor vendor|Virtualization type)" | sed 's/  */ /g' || true
+    echo "memory $(awk '/MemTotal/ { printf "%.0f GiB", $2 / 1048576 }' /proc/meminfo)"
+    echo "load average $(cut -d' ' -f1-3 /proc/loadavg)"
+    lsblk -n -o NAME,SIZE,ROTA,TYPE,MODEL -s "$(findmnt -no SOURCE -T "$out")" 2> /dev/null |
+      sed 's/^/device (name, size, rotational, type, model) /' || true
     describe "the file system of the runs" "$out"
+  } > "$out/host.txt.part"
+  # It has its name once it is whole: a call that was stopped here leaves
+  # none, and the next call that makes a run writes it.
+  mv "$out/host.txt.part" "$out/host.txt"
 }
 
 # Part 1.
@@ -658,7 +661,7 @@ filesystem() { # filesystem NAME MKFS MOUNT-OPTIONS
     esac
   done
   sudo chown "$(id -u):$(id -g)" "$dir"
-  grep -q "^$1: " "$out/host.txt" || describe "$1" "$dir"
+  grep -q "^$1: " "$out/host.txt" || describe "$1" "$dir" >> "$out/host.txt"
 }
 # ext4 is made with its inode tables and its journal written out: left to
 # the kernel, they are written after the mount, beside the runs.

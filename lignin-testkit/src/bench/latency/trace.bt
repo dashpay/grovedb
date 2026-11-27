@@ -115,6 +115,9 @@ tracepoint:sched:sched_waking
 kprobe:finish_task_switch*
 /@off[tid]/
 {
+  // How often this fired, whether or not the wait is written: printed when
+  // the script ends, for a trace without a wait to say that the probe works.
+  @resumed = count();
   $t = tid;
   $d = (nsecs(monotonic) - @off[$t]) / 1000;
   // A wait is written if it has a moment of the measured blocks: it began

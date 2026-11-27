@@ -469,9 +469,6 @@ def main():
             if why:
                 refused.append((trace, "its report is not the traced run the campaign has in that place: " + why))
                 continue
-            # The traced runs after this one are held to it as well: a call
-            # of traces alone has no other report to hold them to.
-            tolds.append((name, told))
         if asked and (report.get("label") != name or "-%s" % report["background"] not in name
                       or len(report["engines"][0]["commit_ns"]) != int(asked["trace blocks"])
                       or (report["commit"], binary) != builds[build]):
@@ -505,6 +502,11 @@ def main():
                 marked.group(1) if marked else "no", asked["trace blocks"])))
             continue
         waited.append((trace, made.stdout.rstrip()))
+        # The traced runs after this one are held to it as well, now that it
+        # is taken: a call of traces alone has no other report to hold them
+        # to.
+        if asked:
+            tolds.append((name, told))
 
     print("# The tables of PERF-07-F1\n")
     for title, name in (("The machine", "host.txt"), ("The host and the file system the campaign is of", "host-id.txt"),
