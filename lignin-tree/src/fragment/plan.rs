@@ -640,31 +640,21 @@ pub(super) mod held {
         WALKS.set(walks);
     }
 
-    /// Walks the fragment under `root` again over the plan as `walk` left
-    /// it, a cell at a time: the last cell that was come to is counted, and
-    /// its kids in the page are come to unless the count has reached the
-    /// limit. This is the walk that reads each cell in a step of its own,
-    /// without the reads: `walk` has made them.
+    /// Makes the walk under `root` again over the plan as `walk` left it,
+    /// a cell at a time and with no read: the walk that takes a step for
+    /// each cell.
     ///
-    /// It is a check of the order of a walk and of where it ends, over what
-    /// the plan holds of each cell. It does not hold what the plan holds of
-    /// a cell to the cell's page: a walk that read another cell's length
-    /// passes it, and the tests that hold a count to the pages find that
-    /// one (`a_walk_counts_what_its_page_holds_in_one_step`).
-    ///
-    /// The two walks read the same cells in the same order when they count
-    /// the same cells in the same order, every cell that is counted is
-    /// read, and `walk` read no cell but in the moment before it counted
-    /// it: the walk cell by cell reads a cell when it comes to count it
-    /// and at no other time.
+    /// It runs over what the plan holds of each cell. So it holds the
+    /// order of a walk and where it ends, and cannot hold a length to the
+    /// cell's page: the tests that count against pages made by hand do
+    /// (`a_walk_counts_what_its_page_holds_in_one_step`).
     ///
     /// # Panics
     ///
-    /// If this walk comes to a cell the plan has not read, or does not
-    /// count the cells that `walk` counted, in the same order and to the
-    /// same bytes; or if the plan read a cell while `walk` went on that
-    /// `walk` did not take in ([`Walk::take`]), which counts each cell it
-    /// takes in.
+    /// If it comes to a cell the plan has not read; if it does not count
+    /// the cells that `walk` counted, in the same order and to the same
+    /// bytes; or if the plan read a cell while `walk` went on that `walk`
+    /// did not take in and count ([`Walk::take`]).
     pub(super) fn cell_by_cell(plan: &Plan<'_>, root: usize, walk: &Walk) {
         let mut bytes = 0;
         let mut counted = Vec::with_capacity(walk.counted.len());
