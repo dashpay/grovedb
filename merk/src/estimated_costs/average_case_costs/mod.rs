@@ -4,16 +4,18 @@
 // `<function>/{mod.rs, v0.rs, v1.rs, ...}` — `mod.rs` holds the
 // version-dispatching wrapper and the `v*.rs` files hold the
 // per-version implementations.
+mod add_average_case_merk_finalize;
 mod add_average_case_merk_propagate;
 mod estimated_sum_trees_size;
+mod subtree_with_feature_and_flags_size;
 mod value_with_feature_and_flags_size;
 
+pub use add_average_case_merk_finalize::add_average_case_merk_finalize;
 pub use add_average_case_merk_propagate::{
     add_average_case_merk_propagate, average_case_merk_propagate,
 };
 
 use grovedb_costs::OperationCost;
-use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;
 
 use crate::{
@@ -192,35 +194,53 @@ impl EstimatedLayerSizes {
         }
     }
 
-    /// Returns the size of a subtree's feature and flags
-    /// This only takes into account subtrees in the estimated layer info
-    /// Only should be used when it is known to be a subtree
-    pub fn subtree_with_feature_and_flags_size(
-        &self,
-        grove_version: &GroveVersion,
-    ) -> Result<u32, Error> {
-        match self {
-            EstimatedLayerSizes::AllSubtrees(_, estimated_sum_trees, flags_size) => {
-                // 1 for enum type
-                // 1 for empty
-                // 1 for flags size
-                Ok(estimated_sum_trees.estimated_size(grove_version)?
-                    + flags_size.unwrap_or_default()
-                    + 3)
+    /// Refuses sizes that an estimate cannot count: the value and the flags
+    /// of one element together within 65,536 bytes of what 32 bits hold.
+    /// An estimate adds the key, the hashes and the lengths of a node to
+    /// them, well under that many bytes, in 32 bits.
+    pub fn check_sizes(&self) -> Result<(), Error> {
+        const MOST: u64 = u32::MAX as u64 - 65_536;
+        let fits = |value: u32, flags: &Option<AverageFlagsSize>| {
+            u64::from(value) + u64::from(flags.unwrap_or(0)) <= MOST
+        };
+        let all_fit = match self {
+            EstimatedLayerSizes::AllSubtrees(_, _, flags) => fits(0, flags),
+            EstimatedLayerSizes::AllItems(_, value, flags)
+            | EstimatedLayerSizes::AllReference(_, value, flags)
+            | EstimatedLayerSizes::AllItemsWithSumItem(_, value, flags)
+            | EstimatedLayerSizes::AllReferencesWithSumItem(_, value, flags) => fits(*value, flags),
+            EstimatedLayerSizes::Mix {
+                subtrees_size,
+                items_size,
+                references_size,
+                items_with_sum_item_size,
+                references_with_sum_item_size,
+            } => {
+                subtrees_size
+                    .as_ref()
+                    .is_none_or(|(_, _, flags, _)| fits(0, flags))
+                    && [
+                        items_size,
+                        references_size,
+                        items_with_sum_item_size,
+                        references_with_sum_item_size,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .all(|(_, value, flags, _)| fits(*value, flags))
             }
-            EstimatedLayerSizes::Mix { subtrees_size, .. } => match subtrees_size {
-                None => Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                    "this layer is a mix but doesn't have subtrees",
-                )),
-                Some((_, est, fs, _)) => {
-                    Ok(est.estimated_size(grove_version)? + fs.unwrap_or_default() + 3)
-                }
-            },
-            _ => Err(Error::WrongEstimatedCostsElementTypeForLevel(
-                "this layer needs to have trees",
-            )),
+        };
+        if all_fit {
+            Ok(())
+        } else {
+            Err(Error::Overflow(
+                "a layer is estimated with elements longer than an estimate can count",
+            ))
         }
     }
+
+    // `subtree_with_feature_and_flags_size` is dispatched by version in the
+    // submodule of that name.
 
     // `value_with_feature_and_flags_size` and its version-dispatched
     // implementations now live in the
@@ -279,6 +299,21 @@ impl EstimatedLayerCount {
                     ((n + 1) as f32).log2().ceil() as u32
                 }
             }
+            EstimatedLayerCount::PotentiallyAtMaxElements => 32,
+            EstimatedLayerCount::EstimatedLevel(n, _) => *n,
+        }
+    }
+
+    /// The fewest levels a Merk of this layer can have, counted in whole
+    /// numbers: a tree of `l` levels holds at most `2^l - 1` nodes.
+    ///
+    /// [`estimate_levels`](Self::estimate_levels) takes a logarithm in 32-bit
+    /// floating point, and gives a level too few for a count that is a power
+    /// of two from 2^21 on. It is what the estimates of grove versions 1 to
+    /// 5 count levels by.
+    pub fn fewest_levels(&self) -> u32 {
+        match self {
+            EstimatedLayerCount::ApproximateElements(n) => u32::BITS - n.leading_zeros(),
             EstimatedLayerCount::PotentiallyAtMaxElements => 32,
             EstimatedLayerCount::EstimatedLevel(n, _) => *n,
         }
@@ -387,7 +422,7 @@ pub fn add_average_case_merk_root_hash(cost: &mut OperationCost) {
 #[cfg(test)]
 mod tests {
     use grovedb_costs::OperationCost;
-    use grovedb_version::version::GroveVersion;
+    use grovedb_version::version::{v5::GROVE_V5, v6::GROVE_V6, GroveVersion};
 
     use super::*;
 
@@ -1695,10 +1730,10 @@ mod tests {
         }
     }
 
-    /// `add_average_case_merk_propagate` rejects unknown versions
-    /// (regression for the v2 dispatch row).
+    /// `add_average_case_merk_propagate` rejects unknown versions, and
+    /// names every version it has.
     #[test]
-    fn test_propagate_unknown_version_error_lists_all_three() {
+    fn test_propagate_unknown_version_error_lists_every_version() {
         let mut bad = GroveVersion::latest().clone();
         bad.merk_versions
             .average_case_costs
@@ -1716,9 +1751,912 @@ mod tests {
                     known_versions,
                     ..
                 },
-            ) => assert_eq!(known_versions, vec![0, 1, 2]),
+            ) => assert_eq!(known_versions, vec![0, 1, 2, 3]),
             other => panic!("expected UnknownVersionMismatch, got {:?}", other),
         }
+    }
+
+    /// Every tree that keeps its elements in one Merk, with the word a
+    /// layer has for a layer of such trees.
+    fn merk_trees() -> [(TreeType, EstimatedSumTrees); 12] {
+        use EstimatedSumTrees::*;
+        [
+            (TreeType::NormalTree, NoSumTrees),
+            (TreeType::SumTree, AllSumTrees),
+            (TreeType::BigSumTree, AllBigSumTrees),
+            (TreeType::CountTree, AllCountTrees),
+            (TreeType::CountSumTree, AllCountSumTrees),
+            (TreeType::ProvableCountTree, AllProvableCountTrees),
+            (TreeType::ProvableCountSumTree, AllProvableCountSumTrees),
+            (TreeType::ProvableSumTree, AllProvableSumTrees),
+            (TreeType::ProvableBigSumTree, AllProvableBigSumTrees),
+            (
+                TreeType::ProvableCountProvableSumTree,
+                AllProvableCountProvableSumTrees,
+            ),
+            (
+                TreeType::ProvableCountProvableBigSumTree,
+                AllProvableCountProvableBigSumTrees,
+            ),
+            (TreeType::CountBigSumTree, AllCountBigSumTrees),
+        ]
+    }
+
+    #[test]
+    fn es2_a_layer_of_trees_is_sized_as_the_cost_of_their_elements_on_grove_version_6() {
+        use crate::tree_type::CostSize;
+        for (tree_type, trees) in merk_trees() {
+            // What the element of such a tree costs over a tree with no
+            // aggregate: 9 bytes for each count and sum, 16 for a wide sum.
+            let aggregates = tree_type.cost_size() - TreeType::NormalTree.cost_size();
+            assert_eq!(
+                trees.estimated_size(&GROVE_V6).unwrap(),
+                aggregates,
+                "{tree_type}"
+            );
+            // Grove version 5 sizes them as the feature of a node: a byte
+            // less for each count and sum.
+            let as_a_node = tree_type.inner_node_type().cost();
+            assert_eq!(
+                trees.estimated_size(&GROVE_V5).unwrap(),
+                as_a_node,
+                "{tree_type}"
+            );
+            let counts_and_sums = match aggregates {
+                0 | 16 => 0,
+                9 | 25 => 1,
+                18 => 2,
+                other => panic!("{tree_type}: {other} bytes of aggregates"),
+            };
+            assert_eq!(aggregates - as_a_node, counts_and_sums, "{tree_type}");
+        }
+        // A layer of two kinds: the average of the two, by weight.
+        let mixed = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 1,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 2,
+            non_sum_trees_weight: 1,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
+            count_big_sum_trees_weight: 0,
+            provable_big_sum_trees_weight: 0,
+        };
+        assert_eq!(mixed.estimated_size(&GROVE_V6).unwrap(), (9 + 2 * 18) / 4);
+        assert_eq!(mixed.estimated_size(&GROVE_V5).unwrap(), (8 + 2 * 16) / 4);
+    }
+
+    #[test]
+    fn es2_a_level_has_the_fetch_of_each_node_below_its_root_on_grove_version_6() {
+        for levels in 0..=6u32 {
+            for sizes in [
+                EstimatedLayerSizes::AllItems(8, 32, None),
+                EstimatedLayerSizes::AllSubtrees(8, EstimatedSumTrees::NoSumTrees, None),
+            ] {
+                let info = EstimatedLayerInformation {
+                    tree_type: TreeType::NormalTree,
+                    estimated_layer_count: EstimatedLayerCount::EstimatedLevel(levels, false),
+                    estimated_layer_sizes: sizes,
+                };
+                let mut released = OperationCost::default();
+                add_average_case_merk_propagate(&mut released, &info, &GROVE_V5).unwrap();
+                let mut stopped = OperationCost::default();
+                add_average_case_merk_propagate(&mut stopped, &info, &GROVE_V6).unwrap();
+                // One seek more for each node it rewrites but the root,
+                // and nothing else: the sizes are those of grove version 5.
+                // It rewrites a node for each level, and beyond one level
+                // a node beside the way.
+                let rewritten = levels + u32::from(levels > 1);
+                assert_eq!(released.seek_count, rewritten, "{levels} levels");
+                assert_eq!(
+                    stopped.seek_count,
+                    released.seek_count + rewritten.saturating_sub(1),
+                    "{levels} levels"
+                );
+                stopped.seek_count = released.seek_count;
+                assert_eq!(stopped, released, "{levels} levels");
+            }
+        }
+        // A height no Merk can have is refused, and nothing is added.
+        for unreal in [92, u32::MAX] {
+            let info = EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(unreal, false),
+                estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
+            };
+            let mut cost = OperationCost::default();
+            assert!(matches!(
+                add_average_case_merk_propagate(&mut cost, &info, &GROVE_V6),
+                Err(Error::Overflow(_))
+            ));
+            assert_eq!(cost, OperationCost::default());
+        }
+    }
+
+    #[test]
+    fn es2_the_levels_of_a_count_are_the_fewest_a_tree_of_that_count_has() {
+        use EstimatedLayerCount::{ApproximateElements, EstimatedLevel, PotentiallyAtMaxElements};
+        // A tree of `l` levels holds `2^l - 1` nodes at the most.
+        assert_eq!(ApproximateElements(0).fewest_levels(), 0);
+        for levels in 1..=31u32 {
+            let full = (1u32 << levels) - 1;
+            assert_eq!(ApproximateElements(full).fewest_levels(), levels);
+            assert_eq!(ApproximateElements(full + 1).fewest_levels(), levels + 1);
+            if levels > 1 {
+                assert_eq!(ApproximateElements(full - 1).fewest_levels(), levels);
+            }
+        }
+        assert_eq!(ApproximateElements(u32::MAX).fewest_levels(), 32);
+        assert_eq!(PotentiallyAtMaxElements.fewest_levels(), 32);
+        assert_eq!(EstimatedLevel(17, false).fewest_levels(), 17);
+        // Up to a million elements the two counts of levels are one.
+        for count in (0..=1_048_576u32).step_by(7).chain(1_048_570..=1_048_580) {
+            assert_eq!(
+                ApproximateElements(count).fewest_levels(),
+                ApproximateElements(count).estimate_levels(),
+                "{count}"
+            );
+        }
+        // 2,097,152 elements do not fit 21 levels, which is what the
+        // logarithm gives. Grove version 6 estimates a level of them by 22:
+        // 23 nodes and 22 fetches.
+        let count = ApproximateElements(2_097_152);
+        assert_eq!((count.estimate_levels(), count.fewest_levels()), (21, 22));
+        let info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: count,
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_propagate(&mut cost, &info, &GROVE_V6).unwrap();
+        assert_eq!((cost.seek_count, cost.hash_node_calls), (23 + 22, 2 * 23));
+        let mut earlier = OperationCost::default();
+        add_average_case_merk_propagate(&mut earlier, &info, &GROVE_V5).unwrap();
+        assert_eq!((earlier.seek_count, earlier.hash_node_calls), (22, 2 * 22));
+    }
+
+    #[test]
+    fn es2_the_size_of_a_value_too_long_to_count_is_refused_on_grove_version_6() {
+        // Version 1 of the size adds the aggregates of a tree, its flags
+        // and 3 in 32 bits. A count is 8 bytes there on grove version 5 and
+        // 9 on grove version 6, so these flags are the longest version 5
+        // counts.
+        let flags = u32::MAX - 11;
+        let trees =
+            EstimatedLayerSizes::AllSubtrees(1, EstimatedSumTrees::AllCountTrees, Some(flags));
+        assert_eq!(
+            trees.value_with_feature_and_flags_size(&GROVE_V5).unwrap(),
+            u32::MAX
+        );
+        assert!(matches!(
+            trees.value_with_feature_and_flags_size(&GROVE_V6),
+            Err(Error::Overflow(_))
+        ));
+        // The size of a subtree of the layer is the same sum.
+        assert_eq!(
+            trees
+                .subtree_with_feature_and_flags_size(&GROVE_V5)
+                .unwrap(),
+            u32::MAX
+        );
+        assert!(matches!(
+            trees.subtree_with_feature_and_flags_size(&GROVE_V6),
+            Err(Error::Overflow(_))
+        ));
+        let mixed = EstimatedLayerSizes::Mix {
+            subtrees_size: Some((1, EstimatedSumTrees::AllCountTrees, Some(flags), 1)),
+            items_size: None,
+            references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
+        };
+        assert_eq!(
+            mixed
+                .subtree_with_feature_and_flags_size(&GROVE_V5)
+                .unwrap(),
+            u32::MAX
+        );
+        assert!(matches!(
+            mixed.subtree_with_feature_and_flags_size(&GROVE_V6),
+            Err(Error::Overflow(_))
+        ));
+        // Below what an estimate refuses the two differ by the byte.
+        for sizes in [
+            EstimatedLayerSizes::AllSubtrees(1, EstimatedSumTrees::AllCountTrees, Some(77)),
+            EstimatedLayerSizes::AllSubtrees(1, EstimatedSumTrees::NoSumTrees, None),
+            EstimatedLayerSizes::AllItems(8, 300, Some(5)),
+            EstimatedLayerSizes::AllReference(8, 300, None),
+        ] {
+            let aggregates_longer = u32::from(matches!(
+                sizes,
+                EstimatedLayerSizes::AllSubtrees(_, EstimatedSumTrees::AllCountTrees, _)
+            ));
+            assert_eq!(
+                sizes.value_with_feature_and_flags_size(&GROVE_V6).unwrap(),
+                sizes.value_with_feature_and_flags_size(&GROVE_V5).unwrap() + aggregates_longer
+            );
+        }
+    }
+
+    #[test]
+    fn es2_no_size_of_a_layer_overflows_an_estimate_of_grove_version_6() {
+        // Sizes at the end of 32 bits, on both sides of what an estimate
+        // refuses, for every kind of layer: each estimate of grove version
+        // 6 counts them or refuses them. A panic fails the test.
+        let edges: Vec<u32> = [0u32, 1, 2, 3, 5, 9, 11, 12, 13, 15, 16, 17, 60]
+            .into_iter()
+            .map(|below| u32::MAX - below)
+            .chain([u32::MAX - 65_535, u32::MAX - 65_536, u32::MAX - 65_537])
+            .chain([0, 1, 65_535, 1 << 31])
+            .collect();
+        let trees = [
+            EstimatedSumTrees::NoSumTrees,
+            EstimatedSumTrees::AllSumTrees,
+            EstimatedSumTrees::AllBigSumTrees,
+            EstimatedSumTrees::AllCountTrees,
+            EstimatedSumTrees::AllCountSumTrees,
+        ];
+        let mut counted = 0;
+        let mut refused = 0;
+        for value in &edges {
+            for flags in [
+                None,
+                Some(0),
+                Some(1),
+                Some(65_536),
+                Some(u32::MAX - 11),
+                Some(u32::MAX),
+            ] {
+                let mut layers = vec![
+                    EstimatedLayerSizes::AllItems(255, *value, flags),
+                    EstimatedLayerSizes::AllReference(255, *value, flags),
+                    EstimatedLayerSizes::AllItemsWithSumItem(255, *value, flags),
+                    EstimatedLayerSizes::AllReferencesWithSumItem(255, *value, flags),
+                    EstimatedLayerSizes::Mix {
+                        subtrees_size: Some((
+                            255,
+                            EstimatedSumTrees::AllCountTrees,
+                            Some(*value),
+                            1,
+                        )),
+                        items_size: Some((255, *value, flags, 1)),
+                        references_size: Some((255, *value, flags, 0)),
+                        items_with_sum_item_size: Some((255, *value, flags, 255)),
+                        references_with_sum_item_size: None,
+                    },
+                ];
+                layers.extend(
+                    trees
+                        .iter()
+                        .map(|kind| EstimatedLayerSizes::AllSubtrees(255, *kind, Some(*value))),
+                );
+                for sizes in layers {
+                    for count in [
+                        EstimatedLayerCount::ApproximateElements(1),
+                        EstimatedLayerCount::EstimatedLevel(91, false),
+                        EstimatedLayerCount::PotentiallyAtMaxElements,
+                    ] {
+                        let info = EstimatedLayerInformation {
+                            tree_type: TreeType::CountSumTree,
+                            estimated_layer_count: count,
+                            estimated_layer_sizes: sizes,
+                        };
+                        let size = sizes.value_with_feature_and_flags_size(&GROVE_V6);
+                        // Of a layer with no tree this is another error.
+                        let _ = sizes.subtree_with_feature_and_flags_size(&GROVE_V6);
+                        let mut cost = OperationCost::default();
+                        let level = add_average_case_merk_propagate(&mut cost, &info, &GROVE_V6);
+                        let mut cost = OperationCost::default();
+                        let finalize =
+                            add_average_case_merk_finalize(&mut cost, &info, 3, &GROVE_V6);
+                        for result in [size.map(|_| ()), level, finalize] {
+                            match result {
+                                Ok(()) => counted += 1,
+                                Err(_) => refused += 1,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            counted > 0 && refused > 0,
+            "{counted} counted, {refused} refused"
+        );
+    }
+
+    #[test]
+    fn es2_a_level_of_long_elements_is_counted_in_full_or_refused() {
+        let level_of = |tree_type, levels, sizes| {
+            let info = EstimatedLayerInformation {
+                tree_type,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(levels, false),
+                estimated_layer_sizes: sizes,
+            };
+            let mut cost = OperationCost::default();
+            let result = add_average_case_merk_propagate(&mut cost, &info, &GROVE_V6);
+            (result, cost)
+        };
+        let level = |levels, sizes| level_of(TreeType::NormalTree, levels, sizes);
+        // 33 nodes of an item of 130,150,400 bytes under a key of two: the
+        // replaced bytes fit 32 bits and the loaded bytes do not. The
+        // estimate of grove version 5 multiplies both in 32 bits.
+        let (result, cost) = level(32, EstimatedLayerSizes::AllItems(2, 130_150_400, None));
+        result.unwrap();
+        assert_eq!(cost.storage_cost.replaced_bytes, 4_294_966_731);
+        assert_eq!(cost.storage_loaded_bytes, 4_294_967_886);
+        assert_eq!(cost.seek_count, 33 + 32);
+        assert_eq!(cost.hash_node_calls, 2 * 33);
+
+        // One node more, and the replaced bytes no longer fit their field.
+        // Nothing is added.
+        let (result, cost) = level(33, EstimatedLayerSizes::AllItems(2, 130_150_400, None));
+        assert!(matches!(result, Err(Error::Overflow(_))));
+        assert_eq!(cost, OperationCost::default());
+
+        // One node of an item of a gigabyte is counted.
+        let (result, cost) = level(1, EstimatedLayerSizes::AllItems(1, 1 << 30, None));
+        result.unwrap();
+        assert_eq!(cost.storage_cost.replaced_bytes, 1_073_741_931);
+        assert_eq!(cost.storage_loaded_bytes, 1_073_741_965);
+
+        // The longest element an estimate counts is 65,536 bytes short of
+        // what 32 bits hold, its flags among them. One node of it is
+        // counted in every kind of layer and of tree, and one byte more is
+        // refused, with nothing added.
+        let most = u32::MAX - 65_536;
+        let layers = |value: u32, flags: Option<u32>| {
+            let kind = |weight| Some((255, value, flags, weight));
+            let none = None;
+            vec![
+                EstimatedLayerSizes::AllItems(255, value, flags),
+                EstimatedLayerSizes::AllReference(255, value, flags),
+                EstimatedLayerSizes::AllItemsWithSumItem(255, value, flags),
+                EstimatedLayerSizes::AllReferencesWithSumItem(255, value, flags),
+                EstimatedLayerSizes::Mix {
+                    subtrees_size: none,
+                    items_size: kind(255),
+                    references_size: kind(255),
+                    items_with_sum_item_size: kind(255),
+                    references_with_sum_item_size: kind(255),
+                },
+            ]
+        };
+        let trees_with = |flags: u32| {
+            let trees = EstimatedSumTrees::AllBigSumTrees;
+            vec![
+                EstimatedLayerSizes::AllSubtrees(255, trees, Some(flags)),
+                EstimatedLayerSizes::Mix {
+                    subtrees_size: Some((255, trees, Some(flags), 255)),
+                    items_size: None,
+                    references_size: None,
+                    items_with_sum_item_size: None,
+                    references_with_sum_item_size: None,
+                },
+            ]
+        };
+        for tree_type in [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountProvableBigSumTree,
+            TreeType::CountBigSumTree,
+        ] {
+            let counted = layers(most, None)
+                .into_iter()
+                .chain(layers(most / 2, Some(most - most / 2)))
+                .chain(trees_with(most));
+            for sizes in counted {
+                let (result, cost) = level_of(tree_type, 1, sizes);
+                result.unwrap_or_else(|e| panic!("{tree_type} {sizes:?}: {e}"));
+                assert!(cost.storage_cost.replaced_bytes > most);
+            }
+            let refused = layers(most + 1, None)
+                .into_iter()
+                .chain(layers(most / 2, Some(most - most / 2 + 1)))
+                .chain(layers(u32::MAX, Some(u32::MAX)))
+                .chain(trees_with(most + 1))
+                .chain(trees_with(u32::MAX));
+            for sizes in refused {
+                for levels in [1, 2, 91] {
+                    let (result, cost) = level_of(tree_type, levels, sizes);
+                    assert!(
+                        matches!(result, Err(Error::Overflow(_))),
+                        "{tree_type} {sizes:?} at {levels} levels"
+                    );
+                    assert_eq!(cost, OperationCost::default());
+                }
+            }
+            // The longest at the most levels: refused for the product.
+            for sizes in layers(most, None).into_iter().chain(trees_with(most)) {
+                let (result, cost) = level_of(tree_type, 91, sizes);
+                assert!(matches!(result, Err(Error::Overflow(_))), "{sizes:?}");
+                assert_eq!(cost, OperationCost::default());
+            }
+        }
+    }
+
+    #[test]
+    fn es2_a_level_of_several_kinds_of_element_is_sized_as_the_version_before_sizes_it() {
+        // A layer of several kinds is a weighted average, which the version
+        // before rounds once, after the nodes have multiplied it. Grove
+        // version 6 has the same bytes, and the fetches. The version before
+        // is taken with the rest of grove version 6, which sizes the
+        // aggregates of a tree by a version of its own.
+        let mut before = GROVE_V6.clone();
+        before
+            .merk_versions
+            .average_case_costs
+            .add_average_case_merk_propagate = GROVE_V5
+            .merk_versions
+            .average_case_costs
+            .add_average_case_merk_propagate;
+        let sizes = EstimatedLayerSizes::Mix {
+            subtrees_size: Some((8, EstimatedSumTrees::AllSumTrees, Some(3), 1)),
+            items_size: Some((3, 10, None, 1)),
+            references_size: Some((3, 11, None, 1)),
+            items_with_sum_item_size: Some((5, 7, Some(2), 3)),
+            references_with_sum_item_size: None,
+        };
+        let mut rounded_after = false;
+        for levels in 0..=12u32 {
+            let info = EstimatedLayerInformation {
+                tree_type: TreeType::SumTree,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(levels, false),
+                estimated_layer_sizes: sizes,
+            };
+            let mut released = OperationCost::default();
+            add_average_case_merk_propagate(&mut released, &info, &before).unwrap();
+            let mut stopped = OperationCost::default();
+            add_average_case_merk_propagate(&mut stopped, &info, &GROVE_V6).unwrap();
+            assert_eq!(
+                stopped.seek_count,
+                released.seek_count + if levels > 1 { levels } else { 0 }
+            );
+            stopped.seek_count = released.seek_count;
+            assert_eq!(stopped, released, "{levels} levels");
+            // The bytes of one node, rounded and then multiplied, are fewer.
+            let one = EstimatedLayerInformation {
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(1, false),
+                ..info
+            };
+            let mut one_node = OperationCost::default();
+            add_average_case_merk_propagate(&mut one_node, &one, &before).unwrap();
+            let nodes = levels + u32::from(levels > 1);
+            rounded_after |=
+                nodes * one_node.storage_cost.replaced_bytes < released.storage_cost.replaced_bytes;
+        }
+        assert!(rounded_after);
+    }
+
+    #[test]
+    fn es2_a_layer_of_one_kind_is_counted_the_same_as_a_mix_of_it() {
+        // A layer of items, given as items and given as a `Mix` that names
+        // items alone, is one layer. Two levels are three nodes, and items
+        // of 1,431,655,658 bytes under keys of one byte replace all that a
+        // field of 32 bits holds and load 102 bytes more, which the 64 bits
+        // of that field hold. Grove version 6 counts both the same. The
+        // version before refuses the `Mix`, whose loaded bytes it holds to
+        // 32 bits.
+        let size = 1_431_655_658;
+        let level = |sizes, version: &GroveVersion| {
+            let info = EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(2, false),
+                estimated_layer_sizes: sizes,
+            };
+            let mut cost = OperationCost::default();
+            add_average_case_merk_propagate(&mut cost, &info, version).map(|()| cost)
+        };
+        let of_items_alone = |size| EstimatedLayerSizes::Mix {
+            subtrees_size: None,
+            items_size: Some((1, size, None, 1)),
+            references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
+        };
+        let as_items = level(EstimatedLayerSizes::AllItems(1, size, None), &GROVE_V6)
+            .expect("the level is counted");
+        assert_eq!(
+            (
+                as_items.storage_cost.replaced_bytes,
+                as_items.storage_loaded_bytes
+            ),
+            (4_294_967_295, 4_294_967_397)
+        );
+        assert_eq!(
+            level(of_items_alone(size), &GROVE_V6).expect("the level is counted"),
+            as_items
+        );
+        assert!(matches!(
+            level(of_items_alone(size), &GROVE_V5),
+            Err(Error::Overflow(_))
+        ));
+        // A byte more is more replaced bytes than their field holds: both
+        // are refused.
+        for sizes in [
+            EstimatedLayerSizes::AllItems(1, size + 1, None),
+            of_items_alone(size + 1),
+        ] {
+            assert!(matches!(level(sizes, &GROVE_V6), Err(Error::Overflow(_))));
+        }
+        // And a kind of each: the weights, the order and the rounding of
+        // the version before, at sizes whose loaded bytes fit 32 bits.
+        for weight in [1u8, 2, 7, 255] {
+            assert_eq!(
+                level(
+                    EstimatedLayerSizes::Mix {
+                        subtrees_size: None,
+                        items_size: Some((1, 1_000, None, weight)),
+                        references_size: None,
+                        items_with_sum_item_size: None,
+                        references_with_sum_item_size: None,
+                    },
+                    &GROVE_V6
+                )
+                .expect("the level is counted")
+                .storage_loaded_bytes,
+                level(EstimatedLayerSizes::AllItems(1, 1_000, None), &GROVE_V6)
+                    .expect("the level is counted")
+                    .storage_loaded_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn es2_a_kind_of_no_weight_in_a_layer_of_several_is_not_sized() {
+        // A `Mix` can name a kind and give it no weight: it adds nothing to
+        // the average. Trees whose kinds all have no weight cannot be sized
+        // at all (their aggregates are an average over those weights), and
+        // a layer that names them so, with no weight, is the layer without
+        // them: one level is a seek and two hash calls, and no bytes, as
+        // on the version before.
+        let trees_of_no_kind = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 0,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
+            count_big_sum_trees_weight: 0,
+            provable_big_sum_trees_weight: 0,
+        };
+        assert!(matches!(
+            trees_of_no_kind.estimated_size(&GROVE_V6),
+            Err(Error::DivideByZero(_))
+        ));
+        let level = |sizes, version: &GroveVersion| {
+            let info = EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(1, false),
+                estimated_layer_sizes: sizes,
+            };
+            let mut cost = OperationCost::default();
+            add_average_case_merk_propagate(&mut cost, &info, version).map(|()| cost)
+        };
+        let mix = |subtrees_size, items_size| EstimatedLayerSizes::Mix {
+            subtrees_size,
+            items_size,
+            references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
+        };
+        let unweighed = Some((8, trees_of_no_kind, None, 0));
+        let nothing = OperationCost {
+            seek_count: 1,
+            hash_node_calls: 2,
+            ..Default::default()
+        };
+        for version in [&GROVE_V5, &GROVE_V6] {
+            assert_eq!(level(mix(unweighed, None), version).unwrap(), nothing);
+            assert_eq!(level(mix(None, None), version).unwrap(), nothing);
+        }
+        // Beside a kind that has a weight, grove version 6 leaves the one
+        // without out, and the version before sizes it and fails.
+        let items = Some((3, 10, None, 2));
+        assert_eq!(
+            level(mix(unweighed, items), &GROVE_V6).unwrap(),
+            level(mix(None, items), &GROVE_V6).unwrap()
+        );
+        assert!(matches!(
+            level(mix(unweighed, items), &GROVE_V5),
+            Err(Error::DivideByZero(_))
+        ));
+    }
+
+    fn finalize_of(levels: u32, marked: u32, version: &GroveVersion) -> OperationCost {
+        let info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(levels, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
+                8,
+                EstimatedSumTrees::NoSumTrees,
+                None,
+            ),
+        };
+        let mut cost = OperationCost::default();
+        add_average_case_merk_finalize(&mut cost, &info, marked, version).unwrap();
+        cost
+    }
+
+    #[test]
+    fn es3_a_finalize_in_one_merk_is_the_nodes_above_its_marked_elements() {
+        // A node of this layer is a tree element with no flags under a key
+        // of eight bytes, in a tree whose nodes have no feature.
+        //
+        // Its value costs 82 bytes: 3 for a tree, 32 for a hash and 2, and
+        // the 45 of the link to it (the key and its length byte, a hash,
+        // two heights and two tags).
+        let value_cost = 3 + 32 + 2 + 45;
+        // It loads 123 bytes: the 37 of the value, 41 for the key under its
+        // prefix with its length, and the link.
+        let bytes_of_a_node = 37 + (32 + 8 + 1) + 45;
+
+        // Two levels and one marked element: the root above it is put and
+        // hashed. The element is fetched on the way and read by its key;
+        // the root's fetch is the open's. The bytes are those of the root,
+        // of the element, and of the element again.
+        assert_eq!(
+            finalize_of(2, 1, &GROVE_V6),
+            OperationCost {
+                seek_count: 1 + 1 + 1,
+                storage_cost: grovedb_costs::storage_cost::StorageCost {
+                    replaced_bytes: value_cost,
+                    ..Default::default()
+                },
+                storage_loaded_bytes: 3 * bytes_of_a_node,
+                hash_node_calls: 2,
+                ..Default::default()
+            }
+        );
+
+        // A Merk of one level: its only node is the marked element, which
+        // the open fetched. Nothing is above it and nothing is read again.
+        assert_eq!(
+            finalize_of(1, 1, &GROVE_V6),
+            OperationCost {
+                storage_loaded_bytes: bytes_of_a_node,
+                ..Default::default()
+            }
+        );
+        // A layer that is estimated to be empty hosts a marked element all
+        // the same: it is taken as a Merk of one level.
+        assert_eq!(finalize_of(0, 1, &GROVE_V6), finalize_of(1, 1, &GROVE_V6));
+        // Nothing marked, nothing charged.
+        assert_eq!(finalize_of(5, 0, &GROVE_V6), OperationCost::default());
+
+        // Four levels and three marked elements: six nodes above them, nine
+        // changed. The puts of the six, the fetches of all nine but the
+        // root, and the three reads by key.
+        assert_eq!(crate::estimated_costs::nodes_above_marked(4, 3), 6);
+        assert_eq!(
+            finalize_of(4, 3, &GROVE_V6),
+            OperationCost {
+                seek_count: 6 + (9 - 1) + 3,
+                storage_cost: grovedb_costs::storage_cost::StorageCost {
+                    replaced_bytes: 6 * value_cost,
+                    ..Default::default()
+                },
+                storage_loaded_bytes: (9 + 3) * bytes_of_a_node,
+                hash_node_calls: 2 * 6,
+                ..Default::default()
+            }
+        );
+
+        // A height no Merk can have is refused, and nothing is added.
+        let unreal = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(u32::MAX, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
+        };
+        let mut cost = OperationCost::default();
+        assert!(matches!(
+            add_average_case_merk_finalize(&mut cost, &unreal, 1, &GROVE_V6),
+            Err(Error::Overflow(_))
+        ));
+        assert!(matches!(
+            add_average_case_merk_propagate(&mut cost, &unreal, &GROVE_V6),
+            Err(Error::Overflow(_))
+        ));
+        assert_eq!(cost, OperationCost::default());
+    }
+
+    #[test]
+    fn es3_a_finalize_counts_the_levels_of_a_count_in_whole_numbers() {
+        // 2,097,152 trees do not fit 21 levels, which is what the logarithm
+        // gives: a finalize in a Merk of that count is one in 22.
+        let count = EstimatedLayerCount::ApproximateElements(2_097_152);
+        assert_eq!((count.estimate_levels(), count.fewest_levels()), (21, 22));
+        let trees = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: count,
+            estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
+                8,
+                EstimatedSumTrees::NoSumTrees,
+                None,
+            ),
+        };
+        for marked in [1, 5] {
+            let mut by_count = OperationCost::default();
+            add_average_case_merk_finalize(&mut by_count, &trees, marked, &GROVE_V6).unwrap();
+            assert_eq!(by_count, finalize_of(22, marked, &GROVE_V6));
+        }
+    }
+
+    #[test]
+    fn es3_a_refused_estimate_adds_nothing_to_the_cost_it_was_given() {
+        use crate::estimated_costs::worst_case_costs::{
+            add_worst_case_merk_finalize, WorstCaseLayerInformation,
+        };
+        // A full Merk of 17 levels has 65,536 leaves, and a finalize of all
+        // of them replaces more bytes than 32 bits count: the worst case
+        // by the biggest value, and the average case with flags of 65,536
+        // bytes on each tree.
+        let marked = 65_536;
+        let trees = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::ApproximateElements(131_071),
+            estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
+                3,
+                EstimatedSumTrees::NoSumTrees,
+                Some(65_536),
+            ),
+        };
+        let worst = WorstCaseLayerInformation::NumberOfLevels(17);
+        // From a cost of nothing, and from one that is all but full in a
+        // field: each refusal leaves the cost it was given.
+        let mut given = vec![OperationCost::default()];
+        for field in 0..4 {
+            let mut cost = OperationCost {
+                seek_count: 11,
+                storage_loaded_bytes: 13,
+                hash_node_calls: 17,
+                ..Default::default()
+            };
+            cost.storage_cost.replaced_bytes = 19;
+            match field {
+                0 => cost.seek_count = u32::MAX - 1,
+                1 => cost.storage_loaded_bytes = u64::MAX - 1,
+                2 => cost.hash_node_calls = u32::MAX - 1,
+                _ => cost.storage_cost.replaced_bytes = u32::MAX - 1,
+            }
+            given.push(cost);
+        }
+        let mut refused = 0;
+        for before in given {
+            let estimates: [&dyn Fn(&mut OperationCost) -> Result<(), Error>; 4] = [
+                &|cost| add_average_case_merk_finalize(cost, &trees, marked, &GROVE_V6),
+                &|cost| {
+                    add_worst_case_merk_finalize(
+                        cost,
+                        &worst,
+                        marked,
+                        crate::estimated_costs::worst_case_costs::MERK_BIGGEST_VALUE_SIZE,
+                        &GROVE_V6,
+                    )
+                },
+                &|cost| add_average_case_merk_finalize(cost, &trees, 1, &GROVE_V6),
+                &|cost| {
+                    add_worst_case_merk_finalize(
+                        cost,
+                        &worst,
+                        1,
+                        crate::estimated_costs::worst_case_costs::MERK_BIGGEST_VALUE_SIZE,
+                        &GROVE_V6,
+                    )
+                },
+            ];
+            for (number, estimate) in estimates.iter().enumerate() {
+                let mut cost = before.clone();
+                match estimate(&mut cost) {
+                    Ok(()) => assert_ne!(cost, before, "{number}"),
+                    Err(Error::Overflow(_)) => {
+                        assert_eq!(cost, before, "{number}");
+                        refused += 1;
+                    }
+                    Err(other) => panic!("{number}: {other}"),
+                }
+            }
+        }
+        // The two finalizes of every leaf are refused from nothing, and
+        // each of the four from a cost that is all but full in some field.
+        assert!(refused >= 2 + 4, "{refused}");
+    }
+
+    #[test]
+    fn es2_a_refused_level_adds_nothing_to_the_cost_it_was_given() {
+        use crate::estimated_costs::worst_case_costs::{
+            add_worst_case_merk_propagate_versioned, WorstCaseLayerInformation,
+        };
+        // The same of the estimates of a level: given a cost that is all
+        // but full in a field, each refuses and leaves the cost as it was.
+        let trees = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::ApproximateElements(131_071),
+            estimated_layer_sizes: EstimatedLayerSizes::AllSubtrees(
+                3,
+                EstimatedSumTrees::NoSumTrees,
+                Some(65_536),
+            ),
+        };
+        let worst = WorstCaseLayerInformation::NumberOfLevels(17);
+        for case in [false, true] {
+            let mut counted = OperationCost::default();
+            let level = |cost: &mut OperationCost| {
+                if case {
+                    add_worst_case_merk_propagate_versioned(cost, &worst, &GROVE_V6)
+                } else {
+                    add_average_case_merk_propagate(cost, &trees, &GROVE_V6)
+                }
+            };
+            level(&mut counted).expect("the level is estimated");
+            assert_ne!(counted, OperationCost::default());
+            for field in 0..4 {
+                let mut before = OperationCost {
+                    seek_count: 11,
+                    storage_loaded_bytes: 13,
+                    hash_node_calls: 17,
+                    ..Default::default()
+                };
+                before.storage_cost.replaced_bytes = 19;
+                match field {
+                    0 => before.seek_count = u32::MAX - 1,
+                    1 => before.storage_loaded_bytes = u64::MAX - 1,
+                    2 => before.hash_node_calls = u32::MAX - 1,
+                    _ => before.storage_cost.replaced_bytes = u32::MAX - 1,
+                }
+                let mut cost = before.clone();
+                assert!(
+                    matches!(level(&mut cost), Err(Error::Overflow(_))),
+                    "{field}"
+                );
+                assert_eq!(cost, before, "{case} {field}");
+            }
+        }
+    }
+
+    #[test]
+    fn es3_a_grove_version_with_no_finalize_has_no_estimate_of_one_in_a_merk() {
+        for version in grovedb_version::version::GROVE_VERSIONS {
+            let info = EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(2, false),
+                estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
+            };
+            let mut cost = OperationCost::default();
+            assert!(matches!(
+                add_average_case_merk_finalize(&mut cost, &info, 1, version),
+                Err(Error::NotSupported(_))
+            ));
+            assert_eq!(cost, OperationCost::default());
+        }
+        let mut unknown = GROVE_V6.clone();
+        unknown
+            .merk_versions
+            .average_case_costs
+            .add_average_case_merk_finalize = 1;
+        let info = EstimatedLayerInformation {
+            tree_type: TreeType::NormalTree,
+            estimated_layer_count: EstimatedLayerCount::EstimatedLevel(2, false),
+            estimated_layer_sizes: EstimatedLayerSizes::AllItems(8, 32, None),
+        };
+        assert!(matches!(
+            add_average_case_merk_finalize(&mut OperationCost::default(), &info, 1, &unknown),
+            Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    ref known_versions,
+                    received: 1,
+                    ..
+                }
+            )) if known_versions == &[0]
+        ));
     }
 
     /// `value_with_feature_and_flags_size` dispatcher rejects unknown

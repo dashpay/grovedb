@@ -8,10 +8,12 @@
 mod v0;
 mod v1;
 mod v2;
+mod v3;
 
 use v0::add_average_case_merk_propagate_v0;
 use v1::add_average_case_merk_propagate_v1;
 use v2::add_average_case_merk_propagate_v2;
+use v3::add_average_case_merk_propagate_v3;
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
@@ -42,10 +44,11 @@ pub fn add_average_case_merk_propagate(
         0 => add_average_case_merk_propagate_v0(cost, input, grove_version),
         1 => add_average_case_merk_propagate_v1(cost, input, grove_version),
         2 => add_average_case_merk_propagate_v2(cost, input, grove_version),
+        3 => add_average_case_merk_propagate_v3(cost, input, grove_version),
         version => Err(Error::VersionError(
             GroveVersionError::UnknownVersionMismatch {
                 method: "add_average_case_merk_propagate".to_string(),
-                known_versions: vec![0, 1, 2],
+                known_versions: vec![0, 1, 2, 3],
                 received: version,
             },
         )),
