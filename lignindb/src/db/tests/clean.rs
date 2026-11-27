@@ -539,3 +539,50 @@ fn a_close_that_cannot_make_the_cleaners_segment_durable_fails_for_room() {
         whole_of(&db, stays, goes);
     }
 }
+
+/// What [`Db::space`] says of a store: after a first session every value
+/// of the value log is live, and after a second that wrote every value
+/// anew the first session's values are dead. The segments hold blocks, of
+/// which no more are live than there are. The cleaner of both sessions
+/// moves nothing, so the dead bytes stay where the writes left them.
+#[test]
+fn the_space_of_a_store_says_what_its_writes_left_dead() {
+    const VALUES: u64 = 12;
+    let dir = temp();
+    let still = Options {
+        cleaner: Some(CleanerConfig {
+            target_dead_percent: 100,
+            value_dead_percent: 100,
+            value_ceiling_dead_percent: 100,
+            ..policy()
+        }),
+        ..options()
+    };
+    let db = Db::open(dir.path(), &still).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', VALUES as u32, 1500));
+    db.close().expect("the first session ends");
+    let db = Db::open(dir.path(), &still).expect("the database is opened again");
+    let (segments, values) = db.space().expect("the space");
+    assert!(segments.block_bytes() > 0, "{segments:?}");
+    assert!(segments
+        .segments
+        .iter()
+        .all(|one| one.live_bytes <= one.block_bytes));
+    assert!(
+        values.files > 0 && values.live_bytes >= VALUES * 1500,
+        "{values:?}"
+    );
+    assert_eq!(values.dead_bytes(), 0, "{values:?}");
+    Writes {
+        merks: vec![(subtree(1), Merk::sized(b'k', VALUES as u32, 1600))],
+        ..Writes::default()
+    }
+    .commit(&db);
+    db.close().expect("the second session ends");
+    let db = Db::open(dir.path(), &still).expect("the database is opened a third time");
+    let (_, values) = db.space().expect("the space");
+    assert!(values.live_bytes >= VALUES * 1600, "{values:?}");
+    assert!(values.dead_bytes() >= VALUES * 1500, "{values:?}");
+    assert_eq!(db.stats().cleaner.values_moved, 0);
+    db.close().expect("the third session ends");
+}
