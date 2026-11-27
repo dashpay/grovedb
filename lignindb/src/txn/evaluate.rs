@@ -608,7 +608,7 @@ impl<'s> WriteTxn<'s> {
     }
 
     /// Nothing is changed before the hashes are made, but for the layout
-    /// of the scope's own writes and the claims it is granted.
+    /// of the scope's own writes and the read claims it is granted.
     fn evaluate_counted<R: HashRules>(
         &self,
         who: Who,
@@ -701,10 +701,13 @@ impl<'s> WriteTxn<'s> {
         let anchored = |merk: usize| merk > 0 || hosted;
 
         // No host and no read has refused the call. The write claims are
-        // taken now, before a hash is made, all of them or none (SC3), as
         // those of a batch that holds a change set of every Merk a hash
-        // is made in. The batch is applied to nothing. A rule that
-        // refuses a hash, and a page that is not read, come after them.
+        // is made in, and is applied to nothing. They are asked for now,
+        // before a hash is made, all of them (SC3), and are taken once
+        // the hashes are made: a rule that refuses a hash, and a page
+        // that is not read, leave the caller the read claims it had. The
+        // transaction's lock is held from the one to the other, so what
+        // is granted here is granted then.
         let stated: Vec<MerkWrite<'_>> = (plan.written())
             .map(|merk| MerkWrite {
                 subtree: plan.merks[merk].subtree,
@@ -720,7 +723,12 @@ impl<'s> WriteTxn<'s> {
             ..Batch::default()
         };
         match who.id() {
-            Some(id) => self.claim_batch(state, &op, id, &stated)?,
+            Some(id) => {
+                let units: Vec<Unit> = (stated.merks.iter())
+                    .map(|merk| Unit::data(merk.subtree))
+                    .collect();
+                self.check_writes(state, &op, id, &units)?;
+            }
             // A write goes through a scope (SC1), or is made while none
             // is open.
             None if state.scopes.any_open() => return Err(TxnError::ScopeOpen),
@@ -767,19 +775,26 @@ impl<'s> WriteTxn<'s> {
             )),
             Err(error) => Err(TxnError::Hash(error)),
         };
-        let (hash, made) = match read {
+        let changed = after.written != before.written || after.nodes != before.nodes;
+        drop(frames);
+        let taken = read.and_then(|read| match who.id() {
+            Some(id) => self.claim_batch(state, &op, id, &stated).map(|()| read),
+            None => Ok(read),
+        });
+        let (hash, made) = match taken {
             Ok(read) => read,
             Err(error) => {
-                if after.written != before.written || after.nodes != before.nodes {
+                if changed {
                     // The frames hold hashes that the write set does not:
                     // they are made again from it (WT3, WT10).
-                    frames.discard();
+                    if let Some(frames) = Woken::wake(&mut state.frames, &op.guard) {
+                        frames.discard();
+                    }
                     state.renew_lease();
                 }
                 return Err(error);
             }
         };
-        drop(frames);
 
         // What was made is a write of each node, of its hashes alone: one
         // operation for each Merk.
