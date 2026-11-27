@@ -49,6 +49,13 @@
 #    `lazytime`.
 # 5. `tables`: OUT/tables.md, from all of it (`tables.py`, `waits.py`).
 #
+# **Several hosts.** A campaign is of one host. To split the work over hosts
+# of one kind, give each its own OUT and the PARTS and BACKGROUNDS it is to
+# make, with a background's control and its experiments on one host: every
+# OUT is then a campaign of its own, with its own controls and its own
+# tables, which name its host. No figure of one is to be held against a
+# figure of another.
+#
 # Before part 2, where traces are asked for, a traced run of 1,000 blocks of
 # each engine is made and read, so that a tracer that cannot attach here, or
 # user stacks that come out cut short, end the campaign in its first minutes
@@ -276,7 +283,7 @@ fi
 # commit, with this patch or none, and the binary its checksum names.
 built() { # built NAME [PATCH]
   local to=$BUILDS/$1 patch=${2:-} parent
-  [ -s "$to/sha256" ] && [ -x "$to/lignin-bench" ] || return 1
+  [ -s "$to/sha256" ] && [ -x "$to/lignin-bench" ] && [ -s "$to/libraries" ] || return 1
   [ "$(sha256sum "$to/lignin-bench" | cut -d' ' -f1)" = "$(cat "$to/sha256")" ] || return 1
   if [ -z "$patch" ]; then
     [ "$(cat "$to/commit")" = "$commit" ] && [ ! -e "$to/patch-sha256" ]
@@ -312,6 +319,13 @@ if has builds || has main || has filesystems || has traces; then
     fi
     echo "$line"
   done > "$out/builds.txt.now"
+  # Which libraries an experiment's build has otherwise than the base's:
+  # every build writes the paths of its checkout the same way, so a crate
+  # that the patch does not reach comes out the same.
+  for build in exp1 exp2; do
+    changed=$(comm -3 "$BUILDS/base/libraries" "$BUILDS/$build/libraries" | awk '{ print $1 }' | sort -u | tr '\n' ' ')
+    echo "$build differs from base in the libraries: ${changed:-none}" >> "$out/builds.txt.now"
+  done
   if [ -s "$out/builds.txt" ]; then
     cmp -s "$out/builds.txt" "$out/builds.txt.now" || {
       rm -f "$out/builds.txt.now"
@@ -492,9 +506,10 @@ preflight() { # preflight ENGINE
     off=20
     [ "$blocks" = 1000 ] || off=5
     emptied "$out/native"
+    # shellcheck disable=SC2086
     LONG_US=1000 OFF_US=$off THREADS="" BIN="$BUILDS/base/lignin-bench" "$here/traced.sh" "$file" "$out/native/scratch" \
       --engine "$1" --background heavy --blocks "$blocks" --label preflight \
-      --commit "$commit" 2> "$file.err" || failed "$file"
+      --commit "$commit" ${LATENCY:-} 2> "$file.err" || failed "$file"
     emptied "$out/native"
     status=0
     python3 "$here/waits.py" --marked --stacks "$file.trace" "$off" > "$file.waits.md" 2> "$file.waits.err" ||
@@ -512,7 +527,7 @@ preflight() { # preflight ENGINE
   done
   say "whether user stacks are whole for $1 on this machine is inconclusive: the traced runs are made all the same, and each says of its own stacks what it has"
 }
-if has traces && { has main || has filesystems; }; then
+if has traces; then
   preflight lignindb
   preflight rocksdb
 fi

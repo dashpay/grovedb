@@ -9,6 +9,12 @@
 # with its commit, its sha256 and the sha256 of the patch beside it, and
 # prints them.
 #
+# The paths of the checkout and of the target directory are written as
+# `/src` and `/target` in what is compiled, so that a crate that no patch
+# touches comes out the same in every build, and `$BUILDS/NAME/libraries`
+# lists every library of the build by its name and sha256: two builds can
+# then be held against one another library by library.
+#
 # Every build keeps its frame pointers, in Rust and in what is compiled from
 # C and C++: the trace of `trace.bt` reads a user stack by them, and on a
 # target that leaves them out by default a stack ends at its first frame.
@@ -59,14 +65,23 @@ fi
 [ -z "$(git -C "$to/src" status --porcelain)" ]
 if [ -f "$builds/Cargo.lock" ]; then cp "$builds/Cargo.lock" "$to/src/Cargo.lock"; fi
 (cd "$to/src" && CARGO_TARGET_DIR="$to/target" \
-  RUSTFLAGS="${RUSTFLAGS:-} -C force-frame-pointers=yes" \
-  CFLAGS="${CFLAGS:-} -fno-omit-frame-pointer" CXXFLAGS="${CXXFLAGS:-} -fno-omit-frame-pointer" \
+  RUSTFLAGS="${RUSTFLAGS:-} -C force-frame-pointers=yes --remap-path-prefix=$to/src=/src --remap-path-prefix=$to/target=/target" \
+  CFLAGS="${CFLAGS:-} -fno-omit-frame-pointer -ffile-prefix-map=$to/src=/src -ffile-prefix-map=$to/target=/target" \
+  CXXFLAGS="${CXXFLAGS:-} -fno-omit-frame-pointer -ffile-prefix-map=$to/src=/src -ffile-prefix-map=$to/target=/target" \
   cargo build --release -p lignin-testkit --bin lignin-bench 2>&1 | tail -2)
 [ -f "$builds/Cargo.lock" ] || cp "$to/src/Cargo.lock" "$builds/Cargo.lock"
 cmp "$builds/Cargo.lock" "$to/src/Cargo.lock"
 cp "$to/target/release/lignin-bench" "$to/lignin-bench"
 git -C "$to/src" rev-parse HEAD > "$to/commit"
 sha256sum "$to/lignin-bench" | cut -d' ' -f1 > "$to/sha256"
+# Wherever under the target directory this cargo keeps them.
+find "$to/target/release" -name 'lib*.rlib' | while read -r library; do
+  echo "$(basename "$library" | sed -E 's/^lib(.*)-[0-9a-f]+\.rlib$/\1/') $(sha256sum "$library" | cut -d' ' -f1)"
+done | sort > "$to/libraries"
+[ -s "$to/libraries" ] || {
+  echo "build.sh: no library of the build was found under $to/target/release" >&2
+  exit 1
+}
 line="$name: commit $(cat "$to/commit"), sha256 $(cat "$to/sha256")"
 if [ -n "$patch" ]; then
   line="$line, which is $commit with $(basename "$patch") (sha256 $(cat "$to/patch-sha256"))"
