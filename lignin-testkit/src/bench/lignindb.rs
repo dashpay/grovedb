@@ -454,7 +454,7 @@ fn cleaner_copied(stats: &DbStats) -> u64 {
 }
 
 /// The ids of the details, in the order [`Engine::details`] gives them.
-pub const DETAIL_IDS: [&str; 42] = [
+pub const DETAIL_IDS: [&str; 51] = [
     "log_group_bytes",
     "log_page_step_bytes",
     "log_page_steps",
@@ -473,6 +473,8 @@ pub const DETAIL_IDS: [&str; 42] = [
     "flat_blocks",
     "flat_block_bytes",
     "runs_refused",
+    "chains_read",
+    "chain_blocks_read",
     "versions_held_for_readers",
     "value_log_bytes",
     "values_appended",
@@ -497,6 +499,13 @@ pub const DETAIL_IDS: [&str; 42] = [
     "cleaner_checkpoints",
     "pages_freed",
     "value_reads",
+    "block_reads",
+    "block_read_bytes",
+    "pool_evictions",
+    "pool_overflows",
+    "pool_releases",
+    "pool_loads_overtaken",
+    "pool_misses",
 ];
 
 /// Where the bytes of [`Counters`] went, and what the background work did
@@ -509,6 +518,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
     const CLEANER: &str = "lignindb engine counters: the cleaner";
     const RECLAIMER: &str = "lignindb engine counters: the reclaimer";
     const VALUES: &str = "lignindb engine counters: values read from the value log";
+    const BLOCKS: &str = "lignindb engine counters: blocks read from segments by their locations";
+    const POOL: &str = "lignindb engine counters: the buffer pool's frames";
     let totals = [
         ("B", log.group_bytes, LOG),
         ("B", log.change_bytes, LOG),
@@ -528,6 +539,8 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("blocks", flush.flat_blocks, FLUSH),
         ("B", flush.flat_stored_bytes, FLUSH),
         ("blocks", flush.runs_refused, FLUSH),
+        ("pages", flush.chains_read, FLUSH),
+        ("blocks", flush.chain_blocks_read, FLUSH),
         ("versions", flush.held_for_readers, FLUSH),
         ("B", flush.value_stored_bytes, FLUSH),
         ("values", flush.values_appended, FLUSH),
@@ -552,6 +565,13 @@ fn details(stats: &DbStats) -> Vec<Detail> {
         ("checkpoints", cleaner.checkpoints, CLEANER),
         ("pages", stats.reclaimed.pages_freed, RECLAIMER),
         ("values", stats.store.value_reads, VALUES),
+        ("blocks", stats.store.block_reads, BLOCKS),
+        ("B", stats.store.block_read_bytes, BLOCKS),
+        ("frames", stats.store.pool.evictions, POOL),
+        ("frames", stats.store.pool.overflows, POOL),
+        ("frames", stats.store.pool.releases, POOL),
+        ("loads", stats.store.pool.overtaken, POOL),
+        ("asks", stats.store.pool.misses, POOL),
     ];
     DETAIL_IDS
         .into_iter()

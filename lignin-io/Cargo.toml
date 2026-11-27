@@ -11,15 +11,15 @@ publish = false
 [features]
 # The direct I/O path of Linux (`lignin_io::linux`). On any other system the
 # feature builds nothing.
-direct_io = ["dep:rustix"]
+direct_io = ["rustix/io_uring", "rustix/mm"]
 
 [dependencies]
 
-[target.'cfg(target_os = "macos")'.dependencies]
+# The std backend's calls that `std` does not have: on macOS the plain
+# `fsync` and `fstatfs`, and the hint of a read (`posix_fadvise` on Linux,
+# `fcntl(F_RDADVISE)` on macOS).
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { version = "1", features = ["fs"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1", features = ["fs", "io_uring", "mm"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

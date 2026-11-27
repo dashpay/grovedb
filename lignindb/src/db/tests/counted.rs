@@ -52,7 +52,7 @@ fn the_counts_say_what_the_pool_holds_the_ids_and_the_values_read() {
 
     let report = after.to_string();
     for part in [
-        "values read from the value log: 4 (12000 bytes)\n",
+        "values read from the value log: 4 (12000 bytes); blocks read from segments: ",
         "pool memory: ",
         " of them a mapping, backed as frames are first used",
         &format!("page ids: {} live", after.ids.live),

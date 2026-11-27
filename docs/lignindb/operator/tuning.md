@@ -54,7 +54,10 @@ is held, as by a large write transaction, takes frames beyond its
 - **The live database** takes the largest share. A pool that holds the
   pages the node reads again and again answers them without a read of
   the device; how much that is worth on a given workload is in
-  [benchmarks.md](../benchmarks.md).
+  [benchmarks.md](../benchmarks.md), whose table
+  ["The pool's size"](../benchmarks.md#the-pools-size) has the pages a
+  transition and a read take from storage at four pool sizes on the
+  reference state.
 - **A checkpoint that is opened to be read** needs less: it takes no
   commits, so no private copies and no page versions of its own commits
   fill its pool. The example in the documentation of `lignindb::Options`
@@ -105,7 +108,7 @@ the database's page size, and the defaults below are for pages of
 | `FlushConfig::checkpoint_log_bytes` | 64 MiB | a table checkpoint is taken when this much was logged since the last one | with `max_log_held`; keep it below that |
 | `FlushConfig::max_unwritten` | 4096 | the most page versions that wait to be written before a committer is made to wait | higher where the pool is large and commits come in bursts; it is pool memory that cannot be evicted |
 | `FlushConfig::max_pending_bytes` | 32 MiB | the most bytes of values in pages that wait for write-back before a committer is made to wait | with `max_unwritten` |
-| `FlushConfig::max_chain_deltas` | 8 | the most delta runs after a page's base image before the page is written whole again | lower makes reads of a page cheaper and writes larger; leave it |
+| `FlushConfig::max_chain_deltas` | 8 | the most delta runs after a page's base image before the page is written whole again | lower makes a page that is not in memory fewer blocks to read and writes larger; higher (16) writes a quarter to a half fewer bytes for more reads of the device and a larger database. ["The chain threshold"](../benchmarks.md#the-chain-threshold) has one measurement of 4, 8 and 16; leave it unless the bytes written are what the node is short of |
 | `FlushConfig::max_chain_bytes` | 16 KiB | the most bytes of delta runs after a base image (half a page) | as above |
 | `FlushConfig::segment_len` | 64 MiB | the length at which a segment is sealed | leave it; the reserve's estimate depends on it |
 | `FlushConfig::max_deferred` | 1024 | the most pages a turn of write-back's loop leaves for a later turn: those that changed last, flat pages before tree pages. A turn leaves no more than half of `max_unwritten` and a quarter of the pool's frames whatever this says, and none where a table checkpoint is due; a table checkpoint and the end of a session leave none. 0 writes every page it can at every turn | no reason known |

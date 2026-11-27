@@ -12,6 +12,7 @@ PERF-05 and PERF-09 read its reports.
 cargo build --release -p lignin-testkit --bin lignin-bench
 lignin-bench run --scratch /path/to/scratch --out run.json --label <machine> [--perf]
 lignin-bench reads --scratch /path/to/scratch --out reads.json   # the warm reads of a kept database
+lignin-bench writes --scratch /path/to/scratch --out writes.json # the writes at size over a copy of a kept database
 lignin-bench table run.json                # rows beside the plan's values
 lignin-bench compare run1.json run2.json   # how far two runs are apart
 ```
@@ -57,6 +58,31 @@ reads of the settled rows are a stream of their own, apart from that of the
 `warm` rows: with the same seed, documents, owners, `--warmup-reads`,
 `--point-reads` and `--reference-reads`, `reads` asks for the documents and
 owners that the run's `settled` rows asked for, in the same order.
+
+`lignin-bench writes` measures the writes at size alone (the phases
+`create`, `update` and `delete`) over a copy of the databases that such a
+run kept (`--keep` and `--creates 0 --updates 0 --deletes 0`). It is given
+the same `--scratch`, `--seed`, `--documents`, `--owners` and engines, and
+the writes to apply as `--creates`, `--updates` and `--deletes`. For each
+engine it copies the kept database to `<engine>-writes` beside it, opens the
+copy with the settings of this call (`--set`), waits for the background work
+of the opened engine, makes the untimed warm-up reads, and applies the
+writes as a whole run applies them after its load: the stream is that
+run's, with the blocks of the set-up and of the load passed over, so with
+the three numbers of writes of a whole run the root hash at the end is that
+run's. The copy is removed at the end unless `--keep` is given, and the kept
+database is never written, so one kept database is measured under any
+number of settings, each from the same state, one call at a time: while a
+call has the copy of an engine it holds the lock file `<engine>-writes.lock`
+beside it, and a second call for that engine and scratch directory is
+refused. Its report holds the rows of
+the write phases only, says of its method that no read was timed and nothing
+was read cold, checkpointed or reopened, and has no size on disk.
+
+The cache of the engine is not warm as after a load when the writes begin:
+it holds what the warm-up reads left in it, and the kernel's page cache
+holds what the copying left and the memory allows. A whole run reads every
+file of the database once before its writes at size; `writes` does not.
 
 ### The two states of the warm reads
 
@@ -142,7 +168,10 @@ only.
 | `point_proof_bytes`, `references_proof_bytes` | B | proof lengths |
 | `wall_per_transition`, `block_commit`, `bulk_load` | µs, ms, s | `Instant` around apply and commit |
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
-| `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: how often its buffer pool was asked for a page over the timed reads of one kind, and how often it did not hold the page, for one read (LigninDB only; measured, since the pool counts its background threads too; no row for a kind of which no read was timed) |
+| `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: the page versions that were read from storage over the timed reads of one kind (`_pages_missed`), and those together with the asks its buffer pool answered from memory (`_pages_asked`), for one read (LigninDB only; measured, since the engine counts its background threads too; no row for a kind of which no read was timed) |
+| `page_reads_per_transition`, `pages_asked_per_transition` | pages | engine: the page versions that were read from storage over a write phase, and those together with the asks its buffer pool answered from memory, for one transition. A page version that is read is a base image and the runs after it, read in full for a load; a writer's first copy of a page that the pool does not hold is one, and so is a load that found the page put there by another thread meanwhile. It is the loads that are counted and not the pool's misses (the detail `pool_misses`), which count an ask for a page that does not exist and miss the writer's copy (LigninDB only; measured, since the engine counts its background threads too) |
+| `process_read_bytes_per_transition`, `process_read_calls_per_transition`, `device_reads_per_transition`, `device_read_bytes_per_transition` | B, calls, requests, B | the operating system's counts of reads over a write phase, two of the process and two of its cgroup, for one transition ("The system's counts of reads" below; Linux only, measured) |
+| `<read>_process_read_bytes`, `<read>_process_read_calls`, `<read>_device_reads`, `<read>_device_read_bytes` | B, calls, requests, B | the same counts over the timed reads of one kind, for one read |
 | `checkpoint`, `reopen` | ms | `Instant` around one checkpoint or open |
 
 GroveDB's storage layer charges one seek for every record it writes. So, for
@@ -162,6 +191,96 @@ older row counts every search that the newer one counts and, beyond those,
 each search that the root of a Merk answered. So `lignin-bench compare` of an
 older report with a newer one can show a change of the row that is one of the
 count and not of the work.
+
+### The system's counts of reads
+
+RocksDB counts no read for the harness, and LigninDB's pool counts the pages
+it loads, not the reads a load makes. So beside the engines' counts a write
+phase, and the timed reads of each kind in the phases `warm` and `settled`,
+carry four counts of the operating system, each the difference of two
+readings (`bench::machine::StorageReads`), on Linux:
+
+| Row | From | What it counts |
+| --- | --- | --- |
+| `process_read_bytes` | `/proc/self/io`, `read_bytes` | bytes the process caused to be read from storage, read-ahead included |
+| `process_read_calls` | `/proc/self/io`, `syscr` | the process's read system calls, whatever they read and wherever it came from |
+| `device_reads` | `io.stat` of the process's cgroup, `rios`, summed over the devices the file lists | the read I/Os the kernel counted for the cgroup |
+| `device_read_bytes` | the same file, `rbytes`, summed likewise | the bytes the kernel counted as read for the cgroup |
+
+The two counts of the cgroup are read from `io.stat` in the directory of
+the cgroup the process runs in, where the cgroup v2 hierarchy is mounted
+whole and once at `/sys/fs/cgroup` with nothing mounted under it, as a
+machine that systemd runs has it, and the file that is opened is on that
+mount. They need the `io` controller on for that cgroup, as a unit with
+`IOAccounting=yes` has it. In any other layout of the mounts, or where
+the file cannot be read, a run has no such row. What the four counts are
+of:
+
+- The cgroup's two are of **every process of that cgroup**, so a run that
+  is to be read by them runs in a cgroup of its own. They are the
+  kernel's `rios` and `rbytes`, summed over the devices the file lists,
+  and no more is said of them here than that.
+- The process's two are of **the whole process**: the engine's background
+  threads, and the harness too. The harness reads files of `/proc`
+  between the phases, and for RocksDB it reads the end of the write-ahead
+  log after each commit and RocksDB's own `LOG` while it waits for
+  background work, so `process_read_calls` is not the engine's reads
+  alone, least of all over few reads.
+
+So the rows are measured rows, and they compare two runs that were made
+the same way.
+
+**What they say depends on what the kernel's page cache holds.** A read
+of pages that the page cache holds is answered from memory, and only
+`process_read_calls` counts it. Under a memory limit on the run's cgroup
+that leaves the page cache little room (`MemoryMax` of a systemd unit),
+the cgroup's counts are how the storage I/O of the two engines can be
+compared where the state is far larger than the memory. They are the
+kernel's count of I/Os, not of the engine's reads: one I/O can answer
+several of those. A database that was written before the run, as the
+kept one of `reads`, may lie in the page cache whatever the run's limit
+is; to have such a run read it from storage, the page cache is emptied
+before the run (`echo 3 > /proc/sys/vm/drop_caches`).
+
+### What ext4 reads into the page cache, by kind of file
+
+The counts above do not say which files a run's reads were of.
+`lignin-testkit/bench/read-split.sh` runs one `lignin-bench` call under a
+memory limit and counts, in the kernel, each time ext4 is asked to fill
+the page cache and the pages it is asked for (`read-split.bt`, a bpftrace
+script on ext4's read-ahead and read-folio operations), by the name of the
+file. `read-split.py` then gives the calls and the bytes by kind of file,
+divided by a number the caller gives: for LigninDB the value log (`val`),
+the segments (`seg`, page images and delta runs), the log and the table
+checkpoints; for RocksDB its table files and logs.
+
+```bash
+# The creates at size over a kept reference state, pool 162 MiB, under the memory
+# limit of the engine (its peak anonymous memory plus 32 MiB). The kept database is
+# read once first: what of it the page cache still holds when `writes` copies it is
+# copied from memory.
+find /data/ref/lignindb -type f -exec cat {} + > /dev/null
+sudo lignin-testkit/bench/read-split.sh 233M 50000 /tmp/split-create -- \
+  "$PWD/target/release/lignin-bench" writes --engine lignindb --scratch /data/ref \
+  --out /tmp/split-create.json --creates 50000 --updates 0 --deletes 0 --set cache_mb=162
+# The reads over the kept state itself, which leaves the page cache first: the totals
+# of the whole call (the open, the warm-up, the timed reads of each kind, their checks).
+sudo DROP_PAGE_CACHE=1 lignin-testkit/bench/read-split.sh 233M 1 /tmp/split-reads -- \
+  "$PWD/target/release/lignin-bench" reads --engine lignindb --scratch /data/ref \
+  --out /tmp/split-reads.json --creates 0 --updates 0 --deletes 0 --set cache_mb=162
+```
+
+The counts are of the time the probes are in place, from before the call
+is started until after it has ended, and of the whole machine: the call
+from its open to its close, the programs that start it, and whatever
+else reads files meanwhile. So it needs a machine at rest, and a divisor
+that fits what the call did: of a `writes` call with one phase, whose
+copy was read from memory, the phase's transitions, with the open and the
+warm-up reads in the sum. What is counted is what ext4 was asked for by
+those two operations, a call and the pages of its window. It is not the
+kernel's count of I/Os, which the cgroup's `device_reads` of the same run
+is. It needs root, Linux with systemd and cgroup v2, bpftrace and a
+database on ext4. The times of a run under the probes are no result.
 
 ### RocksDB's counters
 
@@ -250,11 +369,15 @@ counters. They say where the logged and the background bytes went:
 | `cleaner_block_bytes`, `cleaner_value_bytes` | the compaction bytes, which for LigninDB are the sum of these two and not the store's own count of the cleaner's appends. The cleaner counts a block once it has pointed the page at the copy or found the link gone, and the values of a file once its pass over the file has ended. A copy that is appended and not counted so yet is in no row until it is, in however many readings |
 | `base_blocks`, `base_payload_bytes`, `delta_blocks`, `delta_payload_bytes`, `consolidations`, `runs_refused` | the blocks: base images and runs of deltas, before compression; how many images were written because a chain had reached a threshold, and how many because a run was refused |
 | `flat_blocks`, `flat_block_bytes` | the images among the base images that are of flat pages, and the bytes they take in their segments |
+| `chains_read`, `chain_blocks_read` | the pages write-back built from the blocks of their chains: the page under a run that is about to be written, where the pool does not hold it as a version of its own (it was evicted, or the run is a page step's on a version that a segment already holds), and a page whose chain is consolidated. And the blocks it read for them, each counted when its segment gave it, those of a chain it could not read to the end among them; they are among `block_reads` |
 | `versions_held_for_readers` | page versions that were kept in memory and got no block of their own: their changes go into the block of a later version of their page, or into none where the page is freed first |
 | `values_appended`, `value_payload_bytes`, `values_regrouped`, `regroup_copies_left`, `regroup_left_bytes`, `values_given_up` | the values: those appended for a commit and their bytes, those a regrouping moved, the copies of a regrouping that no cell had been given when it returned (a step is refused where the page is no longer the frame whose values were copied, because a commit superseded it, a write transaction holds a copy of it or a page step replaced it, and where the cell holds that value no more; after a refusal of the first kind the remaining steps are not tried) with the bytes of their values, and those given up. The two regroup counts are of regroupings that ended without an error. The bytes of every copy that was appended, moved or left, in a regrouping that failed or not, are in `regroup_bytes` |
 | `table_checkpoints`, `cleaner_checkpoints`, `log_files_dropped`, `room_waits` | table checkpoints in all and those the cleaner asked for, log files, and commits that waited for write-back |
 | `cleaner_blocks_moved`, `cleaner_values_moved`, `cleaner_bytes_trimmed`, `cleaner_bytes_dropped`, `cleaner_segments_dropped`, `cleaner_value_files_dropped` | what the cleaner moved and gave back |
 | `pages_freed`, `value_reads` | pages the reclaimer freed; values read from the value log |
+| `block_reads`, `block_read_bytes` | the blocks read from segments by their locations, and their bytes as stored, each one read of the file layer: the base image and each delta run of a page that is loaded, what write-back reads of a page it builds (`chain_blocks_read`), each block the cleaner reads to move it, whether or not the move then stands, and what a verification reads. The blocks of the loaded pages alone are not counted apart |
+| `pool_evictions`, `pool_overflows` | page versions the buffer pool took out to make room, and frames it allocated beside its fixed ones because an eviction found none of those to take (none could be evicted, or, with evictions on several threads at once, its own steps did not come to one that could) |
+| `pool_releases`, `pool_loads_overtaken`, `pool_misses` | superseded page versions that a segment holds and that the pool gave up before the clock came to them, once no reader could ask for them; loads that the pool took nothing of because a commit or a page step changed that part of its table meanwhile (their blocks are read once more unless another thread's load put the page there first); and the asks the pool did not answer from memory, an ask for a page that does not exist among them |
 
 It also reports **gauges**, read once after every commit of a write phase and
 given as they are, not per transition: `log_held_mean` and `log_held_max`, the
@@ -521,3 +644,78 @@ How well the runs agree, within 10%:
 
 In a run of RocksDB alone every ratio to RocksDB in the same run is 1. The
 ratio is computed for every engine a run measures after RocksDB.
+
+## Where the state is larger than the memory
+
+LigninDB task PERF-06 ([plan](https://github.com/dashpay/grovedb/issues/1052)).
+What a transition and a read make the engine read from storage when the
+pool holds a part of the state, measured on a rented machine of the class
+that is used for disk results (`so-8vcpu-64gb-intel`, 8 dedicated CPUs,
+its own NVMe, ext4, kernel 6.8), with `lignin-bench writes` and `reads`
+over one kept reference state (the load of a whole run with the default
+sizes, 0.9 GB on disk). A page read is a page version that was read from
+its segments for a load (`page_reads_per_transition`); "paced" is one turn
+of write-back a block (`--set pace=block`), as where blocks come seconds
+apart.
+
+**How long a phase is decides what such a row holds.** For the first
+20,000 to 40,000 transitions after the kept state is opened the value
+cleaner moves nothing; from then on it moves some 10 to 100 values a
+transition, each by a page step on the page that owns the value, which is
+loaded if the pool does not hold it and is written again by write-back.
+Every table below says how long its phases were.
+
+### The pool's size
+
+Paced, the page cache free, 100,000 transitions a phase (create, update,
+delete, in that order), then the reads over the kept state with each
+pool; the commit `a31331d78`:
+
+| Pool (`Options::cache_size`) | Pages read a transition: create / update / delete | Values the value cleaner moved a transition | Physical bytes a transition | Pages read a point get | a point proof | a proof of 100 references |
+| --- | --- | --- | --- | --- | --- | --- |
+| 128 MiB | 3.03 / 3.38 / 3.53 | 10 / 14 / 10 | 46 / 48 / 45 KB | 0.49 | 0.64 | 51 |
+| 162 MiB | 3.36 / 4.00 / 6.25 | 22 / 25 / 86 | 60 / 61 / 128 KB | 0.35 | 0.46 | 38 |
+| 162 MiB, the value cleaner held off (`cleaner_value_target=100`) | 2.11 / 2.13 / 2.15 | 0 | 36 / 36 / 36 KB | | | |
+| 256 MiB (the default) | 2.33 / 3.49 / 3.57 | 31 / 84 / 107 | 69 / 127 / 151 KB | 0.06 | 0.06 | 5.2 |
+| 512 MiB | 0.59 / 0.67 / 0.66 | 10 / 14 / 9 | 46 / 49 / 44 KB | 0.006 | 0.004 | 1.1 |
+
+The rows of a transition follow the value cleaner more than the pool: the
+pool of 256 MiB read more pages than that of 128 MiB in two phases of
+these runs, in which the cleaner moved six to ten times as many values.
+The row with the cleaner held off is what the transitions themselves and
+write-back read. One run of each; how much the cleaner moves differs from
+run to run of one setting.
+
+The same with phases of 20,000 transitions, in which the value cleaner
+moved nothing in create and update and 10 values a transition in delete
+(an earlier commit, `a630ea831`, which counted the pool's misses; they
+differ from the pages read by a few in a hundred): 128 MiB 2.51 / 2.26 /
+2.72; 162 MiB 2.22 / 2.08 / 2.47; 256 MiB 1.68 / 1.61 / 1.85; 512 MiB
+0.58 / 0.50 / 0.54, with 30 to 46 KB of physical bytes a transition.
+
+### The chain threshold
+
+`FlushConfig::max_chain_deltas` at 4, 8 (the default) and 16, each on a
+reference state that was loaded with it; pool 162 MiB, paced, phases of
+20,000 transitions, the commit `934c766b5`. The rows "under the limit" are
+of runs whose cgroup had 233 MiB (`MemoryMax`), 32 MiB more than the
+process's own memory, so that the page cache held little; the reads there
+are over the kept state with the page cache emptied first.
+
+| | 4 | 8 | 16 |
+| --- | --- | --- | --- |
+| physical bytes a transition, create / update / delete (page cache free) | 48 / 54 / 58 KB | 32 / 43 / 41 KB | 24 / 22 / 35 KB |
+| the database after the load | 869 MB | 902 MB | 978 MB |
+| under the limit: wall time a transition | 1,875 / 1,827 / 1,976 µs | 1,941 / 1,832 / 1,987 µs | 1,976 / 1,915 / 2,088 µs |
+| the cgroup's read I/Os a transition (`device_reads`) | 9.6 / 10.6 / 11.0 | 11.4 / 12.7 / 15.8 | 16.5 / 20.9 / 24.9 |
+| the cgroup's bytes read a transition | 117 / 140 / 151 KB | 113 / 134 / 187 KB | 132 / 175 / 226 KB |
+| under the limit, mean time: a point get / a point proof / a proof of 100 references | 203 µs / 330 µs / 20.0 ms | 200 µs / 328 µs / 21.6 ms | 197 µs / 307 µs / 20.9 ms |
+| the cgroup's read I/Os a get / a proof of 100 references | 1.4 / 147 | 1.6 / 167 | 1.9 / 200 |
+
+A longer chain is fewer bytes written, more blocks to read for a page
+that is not in the pool, and a larger database. Since the blocks of a
+chain are named to the file layer before they are read
+(`VfsFile::will_read`), the reads under the limit took no longer with 16
+than with 4. It is one round, with no second run of any setting, and
+without the cold rows of a whole run: an operator's choice on those
+numbers, and the default stays 8.

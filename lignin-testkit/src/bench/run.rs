@@ -35,7 +35,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     engine::{timed, Block, Counters, Detail, Engine, EngineSettings},
-    machine::{self, ColdMethod, Perf},
+    machine::{self, ColdMethod, Perf, StorageReads},
     report::{
         ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
         WorkloadSpec,
@@ -480,6 +480,7 @@ fn write_phase<E: Engine>(
     engine.gauges()?;
     let anatomy_before = engine.node_anatomy();
     let written_before = machine::process_io("write_bytes");
+    let reads_before = StorageReads::now();
     while totals.transitions < transitions {
         let block = next_block(stream);
         let Some((Op::Commit, ops)) = block.split_last() else {
@@ -535,6 +536,7 @@ fn write_phase<E: Engine>(
         (Some(before), Some(after)) => Some(after.saturating_sub(before)),
         _ => None,
     };
+    totals.storage_reads = StorageReads::now().since(&reads_before);
     Ok(PhaseRun {
         totals,
         transition_us,
@@ -714,6 +716,37 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             "/proc/self/io write_bytes of the whole process: a cross-check of physical bytes",
         ));
     }
+    if let (Some(read_in), Some(held)) = (counters.page_reads, counters.cache_hits) {
+        rows.push(measured_row(
+            "page_reads_per_transition",
+            phase,
+            "pages",
+            read_in as f64,
+            n,
+            &format!(
+                "{engine} engine counters: page versions that were read from storage, \
+                 each in full for a load, its background threads' among them"
+            ),
+        ));
+        rows.push(measured_row(
+            "pages_asked_per_transition",
+            phase,
+            "pages",
+            (read_in + held) as f64,
+            n,
+            &format!(
+                "{engine} engine counters: page versions read from storage and asks the \
+                 buffer pool answered from memory, its background threads' among them"
+            ),
+        ));
+    }
+    rows.extend(storage_read_rows(
+        "",
+        "_per_transition",
+        phase,
+        &totals.storage_reads,
+        n,
+    ));
     for detail in &run.details {
         rows.push(measured_row(
             &format!("{}_per_transition", detail.id),
@@ -735,6 +768,61 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
         ));
     }
     rows
+}
+
+/// The rows of what the operating system counted of the process's reads
+/// (`reads`) over `per` units of work: `<prefix>process_read_bytes<suffix>`,
+/// `<prefix>process_read_calls<suffix>`, `<prefix>device_reads<suffix>` and
+/// `<prefix>device_read_bytes<suffix>`, each for one unit. No row for a
+/// count the system did not give, and none where `per` is 0. They are of
+/// the whole process, and the last two of its whole cgroup, so they are
+/// measured rows.
+fn storage_read_rows(
+    prefix: &str,
+    suffix: &str,
+    phase: &str,
+    reads: &StorageReads,
+    per: u64,
+) -> Vec<Row> {
+    if per == 0 {
+        return Vec::new();
+    }
+    [
+        (
+            "process_read_bytes",
+            "B",
+            reads.process_bytes,
+            "/proc/self/io read_bytes of the whole process: bytes it caused to be read from \
+             storage, read-ahead included",
+        ),
+        (
+            "process_read_calls",
+            "calls",
+            reads.process_calls,
+            "/proc/self/io syscr of the whole process: its read system calls, whatever they \
+             read and wherever it came from",
+        ),
+        (
+            "device_reads",
+            "requests",
+            reads.device_reads,
+            "io.stat rios of the process's cgroup, summed over its devices: the read I/Os \
+             the kernel counted for the cgroup",
+        ),
+        (
+            "device_read_bytes",
+            "B",
+            reads.device_bytes,
+            "io.stat rbytes of the process's cgroup, summed over its devices: the bytes the \
+             kernel counted as read for the cgroup",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(what, unit, total, source)| {
+        let id = format!("{prefix}{what}{suffix}");
+        Some(measured_row(&id, phase, unit, total? as f64, per, source))
+    })
+    .collect()
 }
 
 /// The time rows of a write phase sampled per block.
@@ -1027,13 +1115,14 @@ fn warm_up<E: Engine>(
     Ok(())
 }
 
-/// The rows `<read>_pages_asked` and `<read>_pages_missed` of `phase`:
-/// how often the engine's buffer pool was asked for a page while `reads`
-/// reads of the kind `read` were timed, and how often it did not hold the
-/// page it was asked for, for one read. None for an engine that counts
-/// neither, and none where no read was timed. The counts are the pool's
-/// own, so what the engine's background threads asked for meanwhile is in
-/// them: the rows are measured, and no counts.
+/// The rows `<read>_pages_asked` and `<read>_pages_missed` of `phase`,
+/// for one read of the `reads` reads of the kind `read` that were timed:
+/// `missed` is the page versions the engine read from storage meanwhile,
+/// each offered to its buffer pool by a load, and `asked` is those and
+/// the asks its pool answered from memory. None for an engine that counts
+/// neither, and none where no read was timed. The counts are the
+/// engine's own, so what its background threads read and asked for
+/// meanwhile is in them: the rows are measured, and no counts.
 fn page_rows(read: &str, phase: &str, counted: &Counters, reads: u64) -> Vec<Row> {
     let (Some(read_in), Some(held)) = (counted.page_reads, counted.cache_hits) else {
         return Vec::new();
@@ -1049,12 +1138,13 @@ fn page_rows(read: &str, phase: &str, counted: &Counters, reads: u64) -> Vec<Row
         row(
             "asked",
             read_in + held,
-            "engine: pages the buffer pool was asked for over the timed reads, held or not",
+            "engine: page versions read from storage and asks the buffer pool answered from \
+             memory, over the timed reads",
         ),
         row(
             "missed",
             read_in,
-            "engine: pages the buffer pool was asked for and did not hold, over the timed reads",
+            "engine: page versions read from storage over the timed reads, each in full for a load",
         ),
     ]
 }
@@ -1074,9 +1164,10 @@ pub const SETTLED: &str = "settled";
 /// warm-up reads, then the timed point gets, point proofs and proofs of 100
 /// references with the proof sizes. The first proof of each kind is
 /// checked against `root_hash`. For an engine that counts them, each
-/// kind of read of which a read was timed has two rows more: how often
-/// its buffer pool was asked for a page over the timed reads, and how
-/// often it did not hold the page, for one read ([`page_rows`]).
+/// kind of read of which a read was timed has two rows more, for one
+/// read: the page versions it read from storage over the timed reads,
+/// and those together with the asks its buffer pool answered from memory
+/// ([`page_rows`]).
 fn warm_rows<E: Engine>(
     engine: &mut E,
     reads: &mut Reads,
@@ -1092,16 +1183,25 @@ fn warm_rows<E: Engine>(
     let mut get_meter = Meter::new(settings, &format!("{phase}-get"));
     let mut get_us = Vec::new();
     let before = engine.counters()?;
+    let reads_before = StorageReads::now();
     for _ in 0..settings.point_reads {
         let (elapsed, _) =
             ReadKind::Get.read(engine, reads, loaded, grove_version, &mut get_meter)?;
         get_us.push(Unit::Micros.of(elapsed));
     }
+    let storage_reads = StorageReads::now().since(&reads_before);
     let counted = engine.counters()?.since(&before);
     rows.extend(page_rows(
         "point_get",
         phase,
         &counted,
+        u64::from(settings.point_reads),
+    ));
+    rows.extend(storage_read_rows(
+        "point_get_",
+        "",
+        phase,
+        &storage_reads,
         u64::from(settings.point_reads),
     ));
     rows.push(time_row(
@@ -1139,13 +1239,22 @@ fn warm_rows<E: Engine>(
         let mut times = Vec::new();
         let mut sizes = Vec::new();
         let before = engine.counters()?;
+        let reads_before = StorageReads::now();
         for _ in 0..count {
             let (elapsed, size) = kind.read(engine, reads, loaded, grove_version, &mut meter)?;
             times.push(Unit::Micros.of(elapsed));
             sizes.push(size.unwrap_or(0) as f64);
         }
+        let storage_reads = StorageReads::now().since(&reads_before);
         let counted = engine.counters()?.since(&before);
         rows.extend(page_rows(kind.id(), phase, &counted, u64::from(count)));
+        rows.extend(storage_read_rows(
+            &format!("{}_", kind.id()),
+            "",
+            phase,
+            &storage_reads,
+            u64::from(count),
+        ));
         rows.push(time_row(
             kind.id(),
             phase,
@@ -1191,13 +1300,7 @@ pub fn read_engine<E: Engine>(
     settings: &Settings,
     grove_version: &GroveVersion,
 ) -> Result<EngineReport, BenchError> {
-    let dir = settings.scratch.join(E::NAME);
-    if !dir.is_dir() {
-        return Err(BenchError::Check(format!(
-            "no kept database at {}: `run --keep` leaves one",
-            dir.display()
-        )));
-    }
+    let dir = kept_database::<E>(settings)?;
     let mut reads = Reads::settled(settings)?;
     let mut engine = E::open_with(&dir, &settings.engine)?;
     engine.settle()?;
@@ -1219,6 +1322,168 @@ pub fn read_engine<E: Engine>(
         root_hash_at_end: hex::encode(engine.root_hash(grove_version)?),
         rows,
         phases: Vec::new(),
+        disk_after_load: None,
+        disk_after_flush: None,
+    })
+}
+
+/// The database of `E` that an earlier run kept in
+/// `settings.scratch/<engine>` (`run --keep`).
+fn kept_database<E: Engine>(settings: &Settings) -> Result<PathBuf, BenchError> {
+    let dir = settings.scratch.join(E::NAME);
+    if !dir.is_dir() {
+        return Err(BenchError::Check(format!(
+            "no kept database at {}: `run --keep` leaves one",
+            dir.display()
+        )));
+    }
+    Ok(dir)
+}
+
+/// The writes at size: `measured_creates` creates, then `updates`
+/// replacements and `deletes` deletions, as `stream` gives them, with the
+/// rows and the totals of every phase that applies a transition.
+fn writes_at_size<E: Engine>(
+    engine: &mut E,
+    stream: &mut Stream,
+    settings: &Settings,
+    grove_version: &GroveVersion,
+    rows: &mut Vec<Row>,
+    phases: &mut Vec<PhaseTotals>,
+) -> Result<(), BenchError> {
+    for (phase, transitions) in [
+        ("create", settings.measured_creates),
+        ("update", settings.updates),
+        ("delete", settings.deletes),
+    ] {
+        if transitions == 0 {
+            continue;
+        }
+        let run = write_phase(engine, stream, phase, transitions, settings, grove_version)?;
+        rows.extend(count_rows(&run, E::NAME));
+        phases.push(run.totals.clone());
+        rows.extend(window_time_rows(run));
+    }
+    Ok(())
+}
+
+/// Measures the writes at size alone, over a copy of the `E` database
+/// that an earlier run kept in `settings.scratch/<engine>`: a run with
+/// `keep` and with no creates, updates or deletes after its load, as
+/// [`read_engine`] takes it. The copy is `settings.scratch/<engine>-writes`.
+/// Every call makes it anew and removes it at its end, unless
+/// `settings.keep` is set. The kept database is read and never written,
+/// so every call starts from the same state.
+///
+/// The copy is opened with the engine settings of this call, the
+/// background work of the opened engine is waited for, and the untimed
+/// warm-up reads are made, so that the engine's cache holds what reads of
+/// the loaded state left in it. Then the creates, updates and deletes of
+/// the settings are applied as a whole run applies them after its load:
+/// the stream is that run's, with the blocks of the set-up and of the
+/// load passed over. With the seed, the documents, the owners and the
+/// three numbers of writes of a whole run, the root hash at the end is
+/// that run's.
+///
+/// The report has the rows of the write phases, and no size on disk.
+pub fn write_engine<E: Engine>(
+    settings: &Settings,
+    grove_version: &GroveVersion,
+) -> Result<EngineReport, BenchError> {
+    settings.check()?;
+    let kept = kept_database::<E>(settings)?;
+    let dir = settings.scratch.join(format!("{}-writes", E::NAME));
+    // Held until this call's copy is measured and removed.
+    let _lock = lock_copy(&settings.scratch, E::NAME)?;
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|error| BenchError::io("removing an earlier copy", error))?;
+    }
+    machine::copy_tree(&kept, &dir)
+        .map_err(|error| BenchError::io("copying the kept database", error))?;
+    let result = measure_writes::<E>(settings, &dir, grove_version);
+    if settings.keep {
+        return result;
+    }
+    // A copy that cannot be removed is said, and fails a call that
+    // measured: the next call would find it and may not remove it either.
+    match (result, std::fs::remove_dir_all(&dir)) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(BenchError::io(
+            format!("removing the copy {}", dir.display()),
+            error,
+        )),
+        (Err(first), Err(error)) => {
+            eprintln!(
+                "lignin-bench: the copy {} could not be removed: {error}",
+                dir.display()
+            );
+            Err(first)
+        }
+    }
+}
+
+/// The lock of the copy that `writes` measures over: the file
+/// `<engine>-writes.lock` in the scratch directory, locked for as long as
+/// the handle this returns is open. A second call for the same engine and
+/// scratch directory would remove the copy under the first, and is
+/// refused while the first has the lock. The file stays, empty, and a
+/// call that was killed leaves no lock behind: the system lets go of it
+/// with the process.
+fn lock_copy(scratch: &Path, engine: &str) -> Result<std::fs::File, BenchError> {
+    let path = scratch.join(format!("{engine}-writes.lock"));
+    let lock = std::fs::File::create(&path)
+        .map_err(|error| BenchError::io("creating the lock of the copy", error))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => Err(BenchError::Check(format!(
+            "another `writes` call is measuring over the copy of {engine} in {}:              one call at a time for an engine and a scratch directory",
+            scratch.display()
+        ))),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(BenchError::io("locking the copy", error))
+        }
+    }
+}
+
+fn measure_writes<E: Engine>(
+    settings: &Settings,
+    dir: &Path,
+    grove_version: &GroveVersion,
+) -> Result<EngineReport, BenchError> {
+    let mut reads = Reads::new(settings)?;
+    let mut stream = settings.workload().stream(settings.seed);
+    // The set-up block and the load are in the kept database.
+    next_block(&mut stream);
+    let mut loaded = 0;
+    while loaded < settings.documents {
+        let block = next_block(&mut stream);
+        if block.is_empty() {
+            break;
+        }
+        loaded += block.iter().filter(|op| is_transition(op)).count() as u64;
+    }
+    let mut engine = E::open_with(dir, &settings.engine)?;
+    engine.settle()?;
+    engine.wait_for_background()?;
+    let root_hash_after_load = engine.root_hash(grove_version)?;
+    warm_up(&engine, &mut reads, settings, grove_version)?;
+    let (mut rows, mut phases) = (Vec::new(), Vec::new());
+    writes_at_size(
+        &mut engine,
+        &mut stream,
+        settings,
+        grove_version,
+        &mut rows,
+        &mut phases,
+    )?;
+    let root_hash_at_end = engine.root_hash(grove_version)?;
+    Ok(EngineReport {
+        engine: E::NAME.to_string(),
+        root_hash_after_load: hex::encode(root_hash_after_load),
+        root_hash_at_end: hex::encode(root_hash_at_end),
+        rows,
+        phases,
         disk_after_load: None,
         disk_after_flush: None,
     })
@@ -1444,26 +1709,14 @@ fn measure<E: Engine>(
 
     rewarm(&engine, &mut reads, settings, grove_version)?;
 
-    for (phase, transitions) in [
-        ("create", settings.measured_creates),
-        ("update", settings.updates),
-        ("delete", settings.deletes),
-    ] {
-        if transitions == 0 {
-            continue;
-        }
-        let run = write_phase(
-            &mut engine,
-            &mut stream,
-            phase,
-            transitions,
-            settings,
-            grove_version,
-        )?;
-        rows.extend(count_rows(&run, E::NAME));
-        phases.push(run.totals.clone());
-        rows.extend(window_time_rows(run));
-    }
+    writes_at_size(
+        &mut engine,
+        &mut stream,
+        settings,
+        grove_version,
+        &mut rows,
+        &mut phases,
+    )?;
     let root_hash_at_end = engine.root_hash(grove_version)?;
 
     Ok(EngineReport {
@@ -1633,6 +1886,8 @@ mod tests {
             ("compaction_bytes_per_transition", 400.0),
             ("keyed_lookups_per_transition", 6.0),
             ("engine_hashes_per_transition", 55.0),
+            ("page_reads_per_transition", 4.5),
+            ("pages_asked_per_transition", 49.5),
         ] {
             let (found, source) = value(id);
             assert_eq!(found, per_transition, "{id}");
@@ -1648,7 +1903,15 @@ mod tests {
         let mut run = run;
         run.totals.counters.keyed_lookups = None;
         run.totals.counters.hashes = None;
+        run.totals.counters.page_reads = None;
+        run.totals.storage_reads.device_reads = Some(7);
         let rows = count_rows(&run, "rocksdb");
+        assert!(!rows.iter().any(|row| row.id.starts_with("page")));
+        let reads = rows
+            .iter()
+            .find(|row| row.id == "device_reads_per_transition")
+            .expect("the row");
+        assert_eq!((reads.value, reads.kind), (3.5, RowKind::Measured));
         let lookups = rows
             .iter()
             .find(|row| row.id == "keyed_lookups_per_transition")
@@ -1657,6 +1920,59 @@ mod tests {
         assert!(!rows
             .iter()
             .any(|row| row.id == "engine_hashes_per_transition"));
+    }
+
+    /// What the system counted of the process's reads is a row for one
+    /// unit of work for each count it gave, and none for the others.
+    #[test]
+    fn the_storage_read_rows_are_the_systems_counts_for_one_unit_of_work() {
+        let reads = StorageReads {
+            process_bytes: Some(8_192),
+            process_calls: Some(6),
+            device_reads: Some(3),
+            device_bytes: None,
+        };
+        let rows = storage_read_rows("point_get_", "", "settled", &reads, 2);
+        let found: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.id.as_str(),
+                    row.phase.as_str(),
+                    row.value,
+                    row.unit.as_str(),
+                    row.kind,
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "point_get_process_read_bytes",
+                    "settled",
+                    4_096.0,
+                    "B",
+                    RowKind::Measured
+                ),
+                (
+                    "point_get_process_read_calls",
+                    "settled",
+                    3.0,
+                    "calls",
+                    RowKind::Measured
+                ),
+                (
+                    "point_get_device_reads",
+                    "settled",
+                    1.5,
+                    "requests",
+                    RowKind::Measured
+                ),
+            ]
+        );
+        assert!(storage_read_rows("", "_per_transition", "load", &reads, 0).is_empty());
+        assert!(storage_read_rows("", "", "load", &StorageReads::default(), 1).is_empty());
     }
 
     /// The details of a phase are what the engine counted more at its end

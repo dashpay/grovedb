@@ -243,6 +243,22 @@ pub fn reads(options: &RunOptions) -> Result<Report, BenchError> {
     on_the_benchmark_thread(options, Rows::WarmReads)
 }
 
+/// Measures the writes at size alone, for every engine of `options`, over
+/// a copy of the databases that a run with `keep` left in the scratch
+/// directory ([`run::write_engine`]). The settings are that run's seed,
+/// documents and owners; it applied no creates, updates or deletes after
+/// its load. The creates, updates and deletes of the settings are applied
+/// to the copy, which is opened with the settings of the engine that this
+/// call names, so one kept database is measured under any number of them.
+/// The report holds the rows of the write phases and nothing else,
+/// states that nothing was read for a time, read cold, checkpointed or
+/// reopened, and no size on disk, and reads back and compares as any
+/// other.
+pub fn writes(options: &RunOptions) -> Result<Report, BenchError> {
+    options.check_engine_settings()?;
+    on_the_benchmark_thread(options, Rows::Writes)
+}
+
 /// Which rows a call measures.
 #[derive(Clone, Copy)]
 enum Rows {
@@ -250,6 +266,8 @@ enum Rows {
     All,
     /// The warm reads, over a kept database.
     WarmReads,
+    /// The writes at size, over a copy of a kept database.
+    Writes,
 }
 
 fn on_the_benchmark_thread(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
@@ -296,14 +314,25 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
         reopens: 0,
         ..options.settings.clone()
     };
+    // A measurement of the writes at size alone times no read, reads
+    // nothing cold, and times no checkpoint and no reopen.
+    let writes_only = Settings {
+        point_reads: 0,
+        reference_reads: 0,
+        cold_reads: 0,
+        checkpoints: 0,
+        reopens: 0,
+        ..options.settings.clone()
+    };
     let settings = match rows {
         Rows::All => &options.settings,
         Rows::WarmReads => &warm_only,
+        Rows::Writes => &writes_only,
     };
     counts_instructions(settings.perf, || machine::Perf::works(&settings.scratch))?;
     let cold_method = match rows {
         Rows::All => ColdMethod::detect(&settings.scratch),
-        Rows::WarmReads => ColdMethod::Reopen,
+        Rows::WarmReads | Rows::Writes => ColdMethod::Reopen,
     };
     let commit = options
         .commit
@@ -330,6 +359,9 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
             (EngineChoice::RocksDb, Rows::WarmReads) => {
                 run::read_engine::<RocksDbEngine>(settings, grove_version)?
             }
+            (EngineChoice::RocksDb, Rows::Writes) => {
+                run::write_engine::<RocksDbEngine>(settings, grove_version)?
+            }
             #[cfg(grovedb_engine_seam)]
             (EngineChoice::LigninDb, Rows::All) => {
                 run::run_engine::<LigninDbEngine>(settings, cold_method, grove_version)?
@@ -337,6 +369,10 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
             #[cfg(grovedb_engine_seam)]
             (EngineChoice::LigninDb, Rows::WarmReads) => {
                 run::read_engine::<LigninDbEngine>(settings, grove_version)?
+            }
+            #[cfg(grovedb_engine_seam)]
+            (EngineChoice::LigninDb, Rows::Writes) => {
+                run::write_engine::<LigninDbEngine>(settings, grove_version)?
             }
         });
     }

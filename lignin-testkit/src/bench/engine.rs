@@ -21,7 +21,7 @@
 //! | `other_records`, `other_record_bytes` | every other log entry | changes of flat pages |
 //! | `flush_bytes` | SST bytes written by flushes | bytes written by write-back: blocks, values, table checkpoints |
 //! | `compaction_bytes` | SST bytes written by compactions | bytes of the copies the cleaner has counted the outcome of: `bench/lignindb.rs` takes them from the cleaner's own counts, not from this mapping |
-//! | `page_reads`, `cache_hits` | not available | buffer pool misses and hits |
+//! | `page_reads`, `cache_hits` | not available | page versions read from storage for a load, and asks the buffer pool answered from memory |
 //! | `keyed_lookups` | not available | searches by key that went on below the root of a Merk |
 //! | `hashes` | not available | hashes the tree counted |
 //!
@@ -261,6 +261,8 @@ impl From<&StoreStats> for Counters {
             keyed_lookups,
             value_reads: _,
             value_read_bytes: _,
+            block_reads: _,
+            block_read_bytes: _,
             watch: _,
             log: _,
             flush: _,
