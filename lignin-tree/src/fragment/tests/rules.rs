@@ -1259,6 +1259,103 @@ fn a_walk_names_a_missing_cell_when_it_comes_to_it() {
 }
 
 #[test]
+fn a_pointer_back_to_a_cell_above_is_refused_with_that_cells_address() {
+    // One page: `m` over `c` and `x`, `c` over `d` and `y`, and the left
+    // link of `d` names `m`. The write names `m` and nothing in it points
+    // at `m`, so the plan knows no parent of `m` when it comes to `d`.
+    let layout = Layout::proposed(SIZE);
+    let mut mem = Mem::new(SIZE);
+    let page = mem.create().expect("a page");
+    // A cell takes the lowest free slot of its page: `m` is put fifth.
+    let above = CellAddress::new(page, slot(5));
+    let d = stored_cell(&mut mem, page, b"d", 11, [Some(above), None], false);
+    let y = stored_cell(&mut mem, page, b"y", 3000, [None, None], false);
+    let c = stored_cell(&mut mem, page, b"c", 47, [Some(d), Some(y)], false);
+    let x = stored_cell(&mut mem, page, b"x", 3000, [None, None], false);
+    let m = stored_cell(&mut mem, page, b"m", 5, [Some(c), Some(x)], true);
+    assert_eq!(m, above);
+    let mut nodes = Vec::new();
+    let write = kept(m, b"m", &mut nodes);
+    let refused = |counted: Result<(usize, Vec<CellAddress>), FragmentError>| {
+        let FragmentError::Write(error) = counted.expect_err("the cells lead in a circle") else {
+            panic!("the write is what is refused");
+        };
+        error
+    };
+
+    // A count that ends before `d` does not meet the link.
+    let limit = taken(&mem, &[m, x, c, y]);
+    let (bytes, cells) = counted(&layout, &mut mem, &write, m, limit).expect("a count");
+    assert_eq!((bytes, cells), (limit, vec![m, x, c, y]));
+
+    // A count that comes to `d` is refused with the address of `m`, in
+    // the step that read `d`: with a limit that a second count of `m`
+    // would reach, and with no limit, where a walk that took the link
+    // would not end.
+    for limit in [taken(&mem, &[m, x, c, y, d]) + 1, usize::MAX] {
+        mem.touched.clear();
+        let error = refused(counted(&layout, &mut mem, &write, m, limit));
+        assert_eq!(error, WriteError::TwoPointers { address: Some(m) });
+        assert_eq!(mem.touched, [page, page]);
+    }
+
+    // So is a write that counts the fragment in full: one that leaves the
+    // page above its capacity, which is then settled (section 6.2).
+    let longer = vec![b'm'; layout.capacity() - mem.used(page) + 64];
+    let nodes = [NodeWrite {
+        left: link(Target::Kept),
+        right: link(Target::Kept),
+        value: ValueWrite::Inline(&longer),
+        ..node(Some(m), b"m")
+    }];
+    let write = Write {
+        nodes: &nodes,
+        ..Write::default()
+    };
+    let (mut fragments, mut log) = (Fragments::new(layout), Log::default());
+    let from = mem.shadow.records.len();
+    let applied = fragments.apply(&mut mem, &mut log, &write);
+    let FragmentError::Write(error) = applied.expect_err("the cells lead in a circle") else {
+        panic!("the write is what is refused");
+    };
+    assert_eq!(error, WriteError::TwoPointers { address: Some(m) });
+    assert_eq!(mem.shadow.records.len(), from, "no page was changed");
+}
+
+#[test]
+fn a_cell_that_leads_to_a_written_node_is_taken_as_its_parent() {
+    // One page: `g` over `p`, `p` over `a`, `a` over `l`. The write names
+    // `g` and `a`, and no node of it points at `a`. A count from `g`
+    // reads `p`, whose link names `a`: a cell the plan knows, which points
+    // at `l` and is not above `p`. That is how the plan comes to know the
+    // parent of a node like `a`, and it is not a pointer back.
+    let layout = Layout::proposed(SIZE);
+    let mut mem = Mem::new(SIZE);
+    let page = mem.create().expect("a page");
+    let l = stored_cell(&mut mem, page, b"l", 11, [None, None], false);
+    let a = stored_cell(&mut mem, page, b"a", 23, [Some(l), None], false);
+    let p = stored_cell(&mut mem, page, b"p", 47, [Some(a), None], false);
+    let g = stored_cell(&mut mem, page, b"g", 5, [Some(p), None], true);
+    let keeps_left = |at: CellAddress, key: &'static [u8]| NodeWrite {
+        left: link(Target::Kept),
+        ..node(Some(at), key)
+    };
+    let nodes = [keeps_left(g, b"g"), keeps_left(a, b"a")];
+    let write = Write {
+        nodes: &nodes,
+        ..Write::default()
+    };
+
+    // The plan read `g` and `a` for the write, a step each, and the walk
+    // reads `p` and `l` in one.
+    mem.touched.clear();
+    let (bytes, cells) = counted(&layout, &mut mem, &write, g, usize::MAX).expect("a count");
+    assert_eq!(cells, [g, p, a, l]);
+    assert_eq!(bytes, taken(&mem, &[g, p, a, l]));
+    assert_eq!(mem.touched, [page, page, page]);
+}
+
+#[test]
 fn a_walk_leaves_its_step_at_a_host() {
     // One page: `m` over `h` and `x`, where `h` hosts a Merk whose root
     // `r` is in the page.

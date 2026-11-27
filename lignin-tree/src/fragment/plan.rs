@@ -413,14 +413,47 @@ impl Plan<'_> {
         for (side, child) in Side::BOTH.into_iter().zip(stored.links) {
             if let Some(child) = child {
                 let kid = self.existing(child)?;
+                self.below(cell, kid)?;
                 self.adopt(cell, kid, Via::Link(side))?;
             }
         }
         for (position, root) in stored.roots.iter().enumerate() {
             if let Some(root) = root.filter(|root| !dropped.contains(root)) {
                 let kid = self.existing(root)?;
+                self.below(cell, kid)?;
                 self.adopt(cell, kid, Via::Hosted(position as u8))?;
             }
+        }
+        Ok(())
+    }
+
+    /// Refuses a pointer that `cell` stores to `kid` if `kid` is above
+    /// `cell`: one of the cells that lead to it, parent by parent.
+    ///
+    /// [`Self::adopt`] refuses a pointer to a cell that has a parent, and
+    /// one of a cell to itself. A cell above that has none, a node of the
+    /// write that nothing in the write points at, it would take, and the
+    /// cells would then lead to each other in a circle that no walk comes
+    /// out of. The circle of [`WriteError::Cycle`] is of the nodes a write
+    /// states, and is looked for before a cell the write does not write is
+    /// read.
+    ///
+    /// Only a cell that points at something is above another, and a cell
+    /// that is first met by this pointer points at nothing yet: the cells
+    /// that lead to `cell` are gone through for no other. They end, since
+    /// every pointer that could have closed a circle of them was refused
+    /// here or by the write's own check.
+    fn below(&self, cell: usize, kid: usize) -> Result<(), FragmentError> {
+        if self.cells[kid].kids.is_empty() {
+            return Ok(());
+        }
+        let mut above = self.cells[cell].parent;
+        while let Some(at) = above {
+            if at == kid {
+                let address = self.cells[kid].origin;
+                return Err(WriteError::TwoPointers { address }.into());
+            }
+            above = self.cells[at].parent;
         }
         Ok(())
     }
