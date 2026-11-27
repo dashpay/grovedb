@@ -746,8 +746,8 @@ fn not_looked_beside<T>(refused: Result<T, impl Into<Error>>, target: &Path) {
     let expected = format!(
         "no checkpoint was made at {}: the LigninDB engine was built on a database that its \
          caller opened, so the file system it builds on is not known here and the directory \
-         beside the path, which LigninDB empties, was not looked at; open the database with \
-         GroveDB's own open of the engine to make checkpoints through it",
+         beside the path, in which LigninDB builds the checkpoint, was not looked at; open the \
+         database with GroveDB's own open of the engine to make checkpoints through it",
         target.display()
     );
     assert_eq!(words, expected);
@@ -2030,8 +2030,9 @@ fn beside_a_database_of_rocksdb<T>(refused: Result<T, impl Into<Error>>, target:
         "the directory {beside} beside the checkpoint path {} has an entry of RocksDB's (`",
         target.display()
     );
-    let after = "`); LigninDB empties a directory of that name for a checkpoint at the path, so \
-                 LigninDB was not called and nothing was changed";
+    let after = "`); LigninDB builds a checkpoint at the path in a directory of that name and \
+                 leaves it alone if it lists a RocksDB entry, so LigninDB was not called and \
+                 nothing was changed";
     let entry = (words.strip_prefix(&before))
         .and_then(|rest| rest.strip_suffix(after))
         .unwrap_or_else(|| panic!("{words}"));
