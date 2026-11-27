@@ -30,9 +30,12 @@
 //! weights, the same order and the same rounding, and a layer of items is
 //! counted the same whether it is given as items or as a `Mix` of them. (A
 //! `Mix` takes the flags of a tree without the bytes of their length, as
-//! v2 does, so a layer of trees with flags is a byte a node apart.) A kind
-//! that a `Mix` gives no weight is not sized. Nothing is added to the cost
-//! where anything is refused.
+//! v2 does, so in a layer of trees with flags each node replaces that many
+//! bytes fewer than in the layer given as trees: one for flags under 128
+//! bytes, two from there to 16,383. What a node loads has them in
+//! neither.) A kind that a `Mix` gives no weight is not sized; its sizes
+//! are checked with those of the other kinds all the same. Nothing is added
+//! to the cost where anything is refused.
 //!
 //! v2 is what grove versions 3 to 5 select, so it cannot change under this.
 

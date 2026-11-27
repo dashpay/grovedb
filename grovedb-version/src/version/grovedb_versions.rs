@@ -897,6 +897,19 @@ pub struct GroveDBOperationsAverageCaseVersions {
     /// version on which no finalize exists
     /// (`MerkCostModelVersions::propagation` 0).
     pub average_case_finalize: FeatureVersion,
+    /// `GroveDb::average_case_indexed_secondary_mirror`, the estimate of the
+    /// rows an indexed tree keeps in its secondaries, which are keyed by the
+    /// keys of its primary.
+    ///
+    /// - `0` (V1..V5): in a primary that is described as a layer of several
+    ///   kinds, the keys are the longest of its trees, items and references,
+    ///   with a weight or without. A primary of items with a sum, or of
+    ///   references with one, has keys of no length there, and its rows are
+    ///   estimated shorter than they are written.
+    /// - `1` (V6): the keys are the longest of the five kinds the layer gives
+    ///   a weight, as the estimate of a finalize takes them. A refusal has no
+    ///   cost.
+    pub average_case_indexed_secondary_mirror: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

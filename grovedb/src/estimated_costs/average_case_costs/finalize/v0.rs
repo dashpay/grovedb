@@ -13,7 +13,7 @@ use grovedb_costs::{storage_cost::StorageCost, CostResult, CostsExt, OperationCo
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
     estimated_costs::average_case_costs::{
-        add_average_case_merk_finalize, EstimatedLayerInformation, EstimatedLayerSizes,
+        add_average_case_merk_finalize, EstimatedLayerInformation,
     },
     tree_type::{CostSize, TreeType},
 };
@@ -23,43 +23,13 @@ use integer_encoding::VarInt;
 use crate::{
     batch::KeyInfoPath,
     estimated_costs::{
-        add_in_full, hash_blocks, hash_calls, indexed_tree_hash_calls, marked_count, marked_hosts,
-        missing_layer, serialized_length_len, MOST_AXES_OF_AN_INDEXED_TREE,
+        add_in_full, average_case_costs::layer_key_size, hash_blocks, hash_calls,
+        indexed_tree_hash_calls, marked_count, marked_hosts, missing_layer, serialized_length_len,
+        MOST_AXES_OF_AN_INDEXED_TREE,
     },
     operations::indexed_tree::axis_sort_key_len,
     Error, GroveDb,
 };
-
-/// The keys of a layer at their longest, whatever the layer holds. A kind
-/// that a layer of several kinds gives no weight holds no element there.
-fn layer_key_size(sizes: &EstimatedLayerSizes) -> u32 {
-    match sizes {
-        EstimatedLayerSizes::AllSubtrees(key, ..)
-        | EstimatedLayerSizes::AllItems(key, ..)
-        | EstimatedLayerSizes::AllReference(key, ..)
-        | EstimatedLayerSizes::AllItemsWithSumItem(key, ..)
-        | EstimatedLayerSizes::AllReferencesWithSumItem(key, ..) => u32::from(*key),
-        EstimatedLayerSizes::Mix {
-            subtrees_size,
-            items_size,
-            references_size,
-            items_with_sum_item_size,
-            references_with_sum_item_size,
-        } => [
-            subtrees_size.map(|(key, .., weight)| (key, weight)),
-            items_size.map(|(key, .., weight)| (key, weight)),
-            references_size.map(|(key, .., weight)| (key, weight)),
-            items_with_sum_item_size.map(|(key, .., weight)| (key, weight)),
-            references_with_sum_item_size.map(|(key, .., weight)| (key, weight)),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|(_, weight)| *weight > 0)
-        .map(|(key, _)| key)
-        .max()
-        .map_or(0, u32::from),
-    }
-}
 
 /// The axes whose secondaries an indexed tree can name: its one axis, and
 /// for a tree that names its axes the three it may have.

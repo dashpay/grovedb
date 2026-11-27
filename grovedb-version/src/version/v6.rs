@@ -63,6 +63,14 @@
 //!   estimate cannot count, where V1..V5 add the flags of the layer in 32
 //!   bits unchecked. Gated because the estimate is the admission bound.
 //!
+//! - `operations.average_case.average_case_indexed_secondary_mirror: 1`: the
+//!   estimate of the rows of an indexed tree takes the keys of its primary
+//!   at the longest of the five kinds its layer gives a weight. V1..V5 look
+//!   at trees, items and references alone in a layer of several kinds, so a
+//!   primary of items with a sum has keys of no length and its rows are
+//!   estimated shorter than they are written. Gated because the estimate is
+//!   the admission bound.
+//!
 //! `GroveDb::average_case_finalize`, `GroveDb::worst_case_finalize` and
 //! Merk's `add_average_case_merk_finalize` and `add_worst_case_merk_finalize`
 //! are served from this version on: they refuse a version whose
@@ -100,6 +108,8 @@ pub const GROVE_V6: GroveVersion = GroveVersion {
                 average_case_merk_patch_element: 1,
                 // changed: sizes it cannot count are refused
                 average_case_merk_delete_tree: 1,
+                // changed: the keys of a primary, by any kind its layer names
+                average_case_indexed_secondary_mirror: 1,
                 ..GROVE_V5.grovedb_versions.operations.average_case
             },
             worst_case: GroveDBOperationsWorstCaseVersions {

@@ -65,6 +65,12 @@ impl GroveDb {
         biggest_element: u32,
         grove_version: &GroveVersion,
     ) -> Result<OperationCost, Error> {
+        // A finalize that finds no mark does nothing, whatever its caller
+        // says an element can be: the bound is not looked at.
+        let hosts = marked_hosts(stop_points);
+        if hosts.is_empty() {
+            return Ok(OperationCost::default());
+        }
         // The value of a node as its cost counts it is longer than the
         // element by what a cost counts over an element's bytes.
         let biggest_value = biggest_element
@@ -73,7 +79,7 @@ impl GroveDb {
                 "overflow for the longest value of a finalize",
             ))?;
         let mut cost = OperationCost::default();
-        for (host_path, keys) in marked_hosts(stop_points) {
+        for (host_path, keys) in hosts {
             let layer = paths
                 .get(&host_path)
                 .ok_or_else(|| missing_layer("worst case finalize", &host_path))?;

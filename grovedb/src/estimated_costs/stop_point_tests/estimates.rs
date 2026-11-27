@@ -4046,53 +4046,68 @@ fn es3_a_layer_of_several_kinds_sizes_the_flags_of_a_tree_without_their_length()
     // Where ES3 stops: the bytes of a node above a marked element are those
     // the estimate of a level gives a node, and for a layer of several
     // kinds that estimate is the one of grove versions 3 to 5, which sizes
-    // the flags of a tree without the byte of their length.
-    let flagged = Element::empty_tree_with_flags(Some(vec![1]));
-    let mut shape = Shape::default();
-    let host = shape.tree(path(&[b"host"]), &Element::empty_tree());
-    let trees: Vec<Path> = (0..3u8)
-        .map(|number| shape.tree(child(&host, &[b'h', number]), &flagged))
-        .collect();
-    let db = shape.build();
-    let tx = db.start_transaction();
-    let mut grove = Grove::new(&db, &tx, &GROVE_V6);
-    grove.stopped(&trees[0], None);
-    let applied = grove.finalize();
-    let estimate = |sizes| {
-        let layer = |count, sizes| EstimatedLayerInformation {
-            tree_type: TreeType::NormalTree,
-            estimated_layer_count: ApproximateElements(count),
-            estimated_layer_sizes: sizes,
+    // the flags of a tree without the bytes of their length. The cost of a
+    // node has that length as a varint: one byte for flags under 128 bytes,
+    // and two from there to 16,383.
+    for (flags_len, bytes_of_the_length) in [(1u32, 1), (127, 1), (128, 2)] {
+        let flagged = Element::empty_tree_with_flags(Some(vec![1; flags_len as usize]));
+        let mut shape = Shape::default();
+        let host = shape.tree(path(&[b"host"]), &Element::empty_tree());
+        let trees: Vec<Path> = (0..3u8)
+            .map(|number| shape.tree(child(&host, &[b'h', number]), &flagged))
+            .collect();
+        let db = shape.build();
+        let tx = db.start_transaction();
+        let mut grove = Grove::new(&db, &tx, &GROVE_V6);
+        grove.stopped(&trees[0], None);
+        let applied = grove.finalize();
+        let estimate = |sizes| {
+            let layer = |count, sizes| EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: ApproximateElements(count),
+                estimated_layer_sizes: sizes,
+            };
+            let paths: HashMap<_, _> = [
+                (
+                    known(&[]),
+                    layer(1, AllSubtrees(4, EstimatedSumTrees::NoSumTrees, None)),
+                ),
+                (known(&host), layer(3, sizes)),
+                (known(&trees[0]), layer(0, AllItems(2, 1, None))),
+            ]
+            .into_iter()
+            .collect();
+            GroveDb::average_case_finalize(&[known(&trees[0])], &HashSet::new(), &paths, &GROVE_V6)
+                .cost_as_result()
+                .expect("the finalize is estimated")
         };
-        let paths: HashMap<_, _> = [
-            (
-                known(&[]),
-                layer(1, AllSubtrees(4, EstimatedSumTrees::NoSumTrees, None)),
-            ),
-            (known(&host), layer(3, sizes)),
-            (known(&trees[0]), layer(0, AllItems(2, 1, None))),
-        ]
-        .into_iter()
-        .collect();
-        GroveDb::average_case_finalize(&[known(&trees[0])], &HashSet::new(), &paths, &GROVE_V6)
-            .cost_as_result()
-            .expect("the finalize is estimated")
-    };
-    let of_one_kind = estimate(AllSubtrees(2, EstimatedSumTrees::NoSumTrees, Some(1)));
-    let of_several = estimate(Mix {
-        subtrees_size: Some((2, EstimatedSumTrees::NoSumTrees, Some(1), 1)),
-        items_size: None,
-        references_size: None,
-        items_with_sum_item_size: None,
-        references_with_sum_item_size: None,
-    });
-    assert_eq!(of_one_kind.storage_cost, applied.storage_cost);
-    assert_eq!(
-        of_several.storage_cost.replaced_bytes + 1,
-        applied.storage_cost.replaced_bytes
-    );
-    assert_eq!(of_several.seek_count, applied.seek_count);
-    assert_eq!(of_several.hash_node_calls, applied.hash_node_calls);
+        let of_one_kind = estimate(AllSubtrees(
+            2,
+            EstimatedSumTrees::NoSumTrees,
+            Some(flags_len),
+        ));
+        let of_several = estimate(Mix {
+            subtrees_size: Some((2, EstimatedSumTrees::NoSumTrees, Some(flags_len), 1)),
+            items_size: None,
+            references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
+        });
+        assert_eq!(
+            of_one_kind.storage_cost, applied.storage_cost,
+            "{flags_len}"
+        );
+        assert_eq!(
+            of_several.storage_cost.replaced_bytes + bytes_of_the_length,
+            applied.storage_cost.replaced_bytes,
+            "{flags_len}"
+        );
+        assert_eq!(of_several.seek_count, applied.seek_count, "{flags_len}");
+        assert_eq!(
+            of_several.hash_node_calls, applied.hash_node_calls,
+            "{flags_len}"
+        );
+    }
 }
 
 #[test]
@@ -4137,6 +4152,7 @@ fn es2_an_indexed_tree_that_names_more_axes_than_one_can_is_refused() {
 #[test]
 fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_they_cost() {
     use grovedb_element::indexed::IndexAxis;
+    use grovedb_merk::estimated_costs::average_case_costs::EstimatedLayerSizes::AllItemsWithSumItem;
 
     use crate::{batch::QualifiedGroveDbOp as Op, tests::make_empty_grovedb};
     // A write under an indexed tree is charged every level up to the
@@ -4146,12 +4162,18 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
     // each of the five kinds, and into the tree of that kind with no
     // secondaries. The difference is of two whole batches. It has the rows
     // (the open of each secondary, the row that goes and the row that
-    // comes, their levels), the reads of the touched entry before and
-    // after, and what the carry of an indexed tree into its host costs over
-    // that of the plain one: the read of the host for the roots of the
-    // secondaries, a hash of the host that takes them in, and the digest of
-    // the roots of several axes. That carry is the finalize's under SP5, so
-    // the difference is no less than the rows and does not isolate them.
+    // comes, their levels) and the reads of the touched entry before and
+    // after. It has the read by which grove version 5 opens the
+    // secondaries: it opens the Merk that hosts the tree and reads the
+    // indexed tree there, for its axes and the root keys of its secondaries
+    // (`open_indexed_secondaries_for_batch`). That is the open of a Merk and
+    // no carry: SP2 takes it away on grove version 6, where a secondary is
+    // opened by its own path and root. And it has what the carry of an
+    // indexed tree into its host costs over that of the plain one: a hash
+    // of the host that takes in the roots of the secondaries, and the
+    // digest of the roots of several axes. That carry is the finalize's
+    // under SP5. So the difference is no less than the rows and does not
+    // isolate them.
     // The estimate of the rows on grove version 6
     // (`average_case_indexed_secondary_mirror`) is no less than the whole
     // difference in any field, in a primary of one entry and of seven.
@@ -4200,8 +4222,15 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
         assert!(tree_type.is_indexed_primary());
         seen.insert(tree_type.to_string());
         // The insert of an entry under `ix`, a tree of `top` with `entries`
-        // entries, on grove version 5.
-        let applied = |top: &Element, entries: u8| {
+        // entries under keys of `key_len` bytes, on grove version 5.
+        let keyed = |number: u8, key_len: usize| {
+            if key_len == 2 {
+                key(number)
+            } else {
+                vec![number; key_len]
+            }
+        };
+        let applied = |top: &Element, entries: u8, key_len: usize| {
             let db = make_empty_grovedb();
             db.insert(
                 grovedb_path::SubtreePath::empty(),
@@ -4218,7 +4247,7 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
                 db.apply_batch(
                     vec![Op::insert_or_replace_op(
                         ix.clone(),
-                        key(number),
+                        keyed(number, key_len),
                         entry.clone(),
                     )],
                     None,
@@ -4229,7 +4258,11 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
                 .expect("an entry");
             }
             db.apply_batch(
-                vec![Op::insert_or_replace_op(ix, key(200), entry.clone())],
+                vec![Op::insert_or_replace_op(
+                    ix,
+                    keyed(200, key_len),
+                    entry.clone(),
+                )],
                 None,
                 None,
                 &GROVE_V5,
@@ -4237,24 +4270,29 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
             .cost_as_result()
             .expect("the insert of an entry")
         };
-        let rows_of = |entries: u8| {
-            let (with_rows, without) = (applied(&indexed, entries), applied(&plain, entries));
+        let estimate = |entries: u8, sizes, version: &GroveVersion| {
             let layer = EstimatedLayerInformation {
                 tree_type,
                 estimated_layer_count: ApproximateElements(u32::from(entries)),
-                estimated_layer_sizes: AllItems(2, size_in_a_layer(&entry), None),
+                estimated_layer_sizes: sizes,
             };
-            let estimated = GroveDb::average_case_indexed_secondary_mirror(
+            GroveDb::average_case_indexed_secondary_mirror(
                 &known(&path(&[b"ix"])),
                 &layer,
                 &axes,
-                &GROVE_V6,
+                version,
             )
             .cost_as_result()
-            .expect("the rows are estimated");
+            .expect("the rows are estimated")
+        };
+        let added_by_the_rows = |entries: u8, key_len: usize| {
+            let (with_rows, without) = (
+                applied(&indexed, entries, key_len),
+                applied(&plain, entries, key_len),
+            );
             // The rows remove nothing, and neither estimate has a removal.
             assert_eq!(with_rows.storage_cost.removed_bytes, NoStorageRemoval);
-            let added_by_the_rows = OperationCost {
+            OperationCost {
                 seek_count: with_rows.seek_count - without.seek_count,
                 storage_cost: grovedb_costs::storage_cost::StorageCost {
                     added_bytes: with_rows.storage_cost.added_bytes
@@ -4266,9 +4304,77 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
                 storage_loaded_bytes: with_rows.storage_loaded_bytes - without.storage_loaded_bytes,
                 hash_node_calls: with_rows.hash_node_calls - without.hash_node_calls,
                 sinsemilla_hash_calls: 0,
-            };
-            (added_by_the_rows, estimated)
+            }
         };
+        let rows_of = |entries: u8| {
+            (
+                added_by_the_rows(entries, 2),
+                estimate(
+                    entries,
+                    AllItems(2, size_in_a_layer(&entry), None),
+                    &GROVE_V6,
+                ),
+            )
+        };
+        // The same primary under keys of 80 bytes, described as a layer of
+        // several kinds: the kind of its entries with all the weight, and
+        // references of no weight under keys of 200 bytes. The rows are
+        // keyed by the keys of the primary and name them, and on grove
+        // version 6 their estimate has those keys at the longest of the
+        // kinds with a weight: it is the estimate of the layer of that one
+        // kind, and no less than the rows cost. The versions before look at
+        // trees, items and references alone, with a weight or without.
+        let entry_with_a_sum = matches!(entry, Element::ItemWithSumItem(..));
+        let of_the_entries = Some((80, size_in_a_layer(&entry), None, 1));
+        let several = Mix {
+            subtrees_size: None,
+            items_size: of_the_entries.filter(|_| !entry_with_a_sum),
+            references_size: Some((200, 40, None, 0)),
+            items_with_sum_item_size: of_the_entries.filter(|_| entry_with_a_sum),
+            references_with_sum_item_size: None,
+        };
+        let of_one_kind = if entry_with_a_sum {
+            AllItemsWithSumItem(80, size_in_a_layer(&entry), None)
+        } else {
+            AllItems(80, size_in_a_layer(&entry), None)
+        };
+        for entries in [1u8, 7] {
+            let applied = added_by_the_rows(entries, 80);
+            let estimated = estimate(entries, several, &GROVE_V6);
+            assert_eq!(
+                estimated,
+                estimate(entries, of_one_kind, &GROVE_V6),
+                "{tree_type}"
+            );
+            assert!(
+                estimated.worse_or_eq_than(&applied),
+                "{tree_type}, {entries} entries under keys of 80 bytes: estimated {estimated:?}, \
+                 applied {applied:?}"
+            );
+            // Grove version 5 takes the keys of the kind of no weight, 200
+            // bytes, for this layer. Without that kind it has the keys of
+            // items, and none for items with a sum: rows shorter than those
+            // the batch writes, and fewer added bytes than it adds.
+            let several_of_weight = Mix {
+                subtrees_size: None,
+                items_size: of_the_entries.filter(|_| !entry_with_a_sum),
+                references_size: None,
+                items_with_sum_item_size: of_the_entries.filter(|_| entry_with_a_sum),
+                references_with_sum_item_size: None,
+            };
+            assert_eq!(
+                estimate(entries, several_of_weight, &GROVE_V6),
+                estimated,
+                "{tree_type}"
+            );
+            let before = estimate(entries, several_of_weight, &GROVE_V5);
+            assert_eq!(
+                before.storage_cost.added_bytes < applied.storage_cost.added_bytes,
+                entry_with_a_sum,
+                "{tree_type}, {entries} entries: grove version 5 has {before:?}, applied \
+                 {applied:?}"
+            );
+        }
         for entries in [1u8, 7] {
             let (applied, estimated) = rows_of(entries);
             assert!(
@@ -4296,4 +4402,166 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
         assert!(applied.storage_loaded_bytes > 0, "{tree_type}");
     }
     assert_eq!(seen.len(), 5, "the five kinds of indexed tree");
+}
+
+#[test]
+fn es2_the_rows_of_an_indexed_tree_are_keyed_by_any_kind_its_primary_names() {
+    use grovedb_element::indexed::IndexAxis;
+    use grovedb_merk::estimated_costs::average_case_costs::{
+        EstimatedLayerCount::EstimatedLevel,
+        EstimatedLayerSizes::{self, AllItemsWithSumItem, AllReference, AllReferencesWithSumItem},
+    };
+    // The rows of an indexed tree are keyed by the keys of its primary and
+    // name them, so their estimate takes the length of those keys from the
+    // layer of the primary, and nothing else of its sizes. On grove version
+    // 6 that is the longest of the five kinds the layer gives a weight: a
+    // primary is estimated the same described as a layer of one kind and as
+    // a layer of several with that kind alone. Grove versions 1 to 5 look
+    // at trees, items and references in a layer of several, with a weight
+    // or without.
+    let rows = |count, sizes: EstimatedLayerSizes, version: &GroveVersion| {
+        let layer = EstimatedLayerInformation {
+            tree_type: TreeType::ProvableCountProvableSumIndexedTree,
+            estimated_layer_count: count,
+            estimated_layer_sizes: sizes,
+        };
+        GroveDb::average_case_indexed_secondary_mirror(
+            &known(&path(&[b"ix"])),
+            &layer,
+            &[IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg],
+            version,
+        )
+    };
+    let estimated = |sizes, version: &GroveVersion| {
+        rows(ApproximateElements(7), sizes, version)
+            .cost_as_result()
+            .expect("the rows are estimated")
+    };
+    let trees = EstimatedSumTrees::NoSumTrees;
+    type Kind = Option<(u8, u32, Option<u32>, u8)>;
+    let several = |subtrees: Option<u8>, kinds: [Kind; 4]| Mix {
+        subtrees_size: subtrees.map(|weight| (80, trees, None, weight)),
+        items_size: kinds[0],
+        references_size: kinds[1],
+        items_with_sum_item_size: kinds[2],
+        references_with_sum_item_size: kinds[3],
+    };
+    let keys_of = |key| estimated(AllItems(key, 9, None), &GROVE_V6);
+    let of = |key, weight| Some((key, 9, None, weight));
+    // Each kind by itself, and as the one kind of a layer of several: the
+    // three the versions before look at, and the two they do not.
+    let of_one_kind = [
+        (
+            AllSubtrees(80, trees, None),
+            several(Some(1), [None; 4]),
+            true,
+        ),
+        (
+            AllItems(80, 9, None),
+            several(None, [of(80, 1), None, None, None]),
+            true,
+        ),
+        (
+            AllReference(80, 9, None),
+            several(None, [None, of(80, 1), None, None]),
+            true,
+        ),
+        (
+            AllItemsWithSumItem(80, 9, None),
+            several(None, [None, None, of(80, 1), None]),
+            false,
+        ),
+        (
+            AllReferencesWithSumItem(80, 9, None),
+            several(None, [None, None, None, of(80, 1)]),
+            false,
+        ),
+    ];
+    for (number, (alone, among_several, seen_before)) in of_one_kind.into_iter().enumerate() {
+        assert_eq!(estimated(alone, &GROVE_V6), keys_of(80), "{number}");
+        assert_eq!(estimated(among_several, &GROVE_V6), keys_of(80), "{number}");
+        // On the version before, keys of no length for the two kinds with
+        // a sum, and rows that add fewer bytes.
+        let before = estimated(among_several, &GROVE_V5);
+        let alone_before = estimated(alone, &GROVE_V5);
+        if seen_before {
+            assert_eq!(before, alone_before, "{number}");
+        } else {
+            assert_eq!(
+                before,
+                estimated(AllItems(0, 9, None), &GROVE_V5),
+                "{number}"
+            );
+            assert!(
+                before.storage_cost.added_bytes < alone_before.storage_cost.added_bytes,
+                "{number}"
+            );
+        }
+    }
+    // The longest of the kinds with a weight, whichever kind it is.
+    assert_eq!(
+        estimated(
+            several(Some(1), [of(40, 1), of(60, 2), of(90, 3), of(70, 1)]),
+            &GROVE_V6
+        ),
+        keys_of(90)
+    );
+    assert_ne!(keys_of(90), keys_of(80));
+    // A kind of no weight holds no entry, and its keys are no key of the
+    // primary. The versions before take them.
+    let with_a_kind_of_no_weight = several(None, [None, of(200, 0), of(80, 1), None]);
+    assert_eq!(estimated(with_a_kind_of_no_weight, &GROVE_V6), keys_of(80));
+    assert_eq!(
+        estimated(with_a_kind_of_no_weight, &GROVE_V5),
+        estimated(AllItems(200, 9, None), &GROVE_V5)
+    );
+    // No kind with a weight: keys of no length.
+    assert_eq!(
+        estimated(several(Some(0), [of(200, 0), None, None, None]), &GROVE_V6),
+        keys_of(0)
+    );
+    // A primary an estimate cannot count, of more levels than a Merk has,
+    // is refused on grove version 6 with no cost: the open of a secondary,
+    // which is estimated before its levels are, leaves nothing behind.
+    let refused = rows(
+        EstimatedLevel(200, false),
+        AllItemsWithSumItem(80, 9, None),
+        &GROVE_V6,
+    );
+    assert!(refused.value.is_err());
+    assert_eq!(refused.cost, OperationCost::default());
+}
+
+#[test]
+fn es3_a_finalize_that_finds_no_mark_is_estimated_at_no_cost_whatever_it_is_told() {
+    // With no stop point, or with one at the root Merk, which has no host,
+    // a finalize finds no mark and does nothing. Both estimates are of no
+    // cost. The worst case does not look at the bound it is given then:
+    // the longest there is, which it refuses where there is a mark, is no
+    // cost here as any other.
+    let mut shape = Shape::default();
+    let host = shape.tree(vec![vec![7]], &Element::empty_tree());
+    for stop_points in [vec![], vec![known(&[])]] {
+        assert!(marked_hosts(&stop_points).is_empty());
+        for told in [0, MERK_BIGGEST_VALUE_SIZE, u32::MAX - 65_536 - 63, u32::MAX] {
+            for paths in [worst_layers(&shape), HashMap::new()] {
+                let worst = GroveDb::worst_case_finalize(&stop_points, &paths, told, &GROVE_V6);
+                assert!(worst.value.is_ok(), "told {told}: {:?}", worst.value);
+                assert_eq!(worst.cost, OperationCost::default(), "told {told}");
+            }
+        }
+        let average = GroveDb::average_case_finalize(
+            &stop_points,
+            &HashSet::new(),
+            &layers(&shape),
+            &GROVE_V6,
+        );
+        assert!(average.value.is_ok());
+        assert_eq!(average.cost, OperationCost::default());
+    }
+    // Where there is a mark the same bound is refused.
+    let refused =
+        GroveDb::worst_case_finalize(&[known(&host)], &worst_layers(&shape), u32::MAX, &GROVE_V6);
+    assert!(refused.value.is_err());
+    assert_eq!(refused.cost, OperationCost::default());
 }
