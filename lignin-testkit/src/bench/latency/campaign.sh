@@ -308,20 +308,30 @@ failed() {
 # not the device's, so a loop device of another number is the same. It is
 # read from the device itself: what findmnt says of it is the system's
 # record of its devices, which can be without the id of a file system that
-# was just made and have it at a later call. A mount that is of no device
-# has no id, and is held to its kind and its options.
+# was just made and have it at a later call. A mount that is of no block
+# device has no id, and is held to its kind and its options; a block device
+# whose id cannot be read refuses the call, since a run on it could be held
+# to no file system.
 mounted_from() { # mounted_from DIRECTORY
-  local source id
-  source=$(findmnt -no SOURCE -T "$1")
-  id=$(sudo blkid -p -o value -s UUID "${source%%\[*}" 2> /dev/null || true)
+  local source id=""
+  source=$(findmnt --nofsroot -no SOURCE -T "$1")
+  if [ -b "$source" ]; then
+    id=$(sudo blkid -p -o value -s UUID "$source" 2> /dev/null) || id=""
+    [ -n "$id" ] ||
+      refuse "the id of the file system on $source, which $1 is on, could not be read: a run cannot be held to its mount"
+  fi
   echo "$(findmnt -no FSTYPE,OPTIONS -T "$1") $id"
 }
 mount_of() { # mount_of DIRECTORY
-  local of
-  of=$(mounted_from "$1")
+  local of under
+  of=$(mounted_from "$1") || return 1
   # A file system the campaign keeps in a file is also of the mount its
   # file is on: its syncs end in syncs of that file.
-  case "$1" in "$out/mnt/"*) of="$of, in a file on $(mounted_from "$out/fs")" ;; esac
+  case "$1" in "$out/mnt/"*)
+    under=$(mounted_from "$out/fs") || return 1
+    of="$of, in a file on $under"
+    ;;
+  esac
   echo "$of"
 }
 
@@ -331,8 +341,10 @@ mount_of() { # mount_of DIRECTORY
 made_by() { # made_by FILE BUILD DIRECTORY
   [ "$(cat "$1.build" 2> /dev/null)" = "$(cat "$BUILDS/$2/sha256")" ] ||
     refuse "$1 was made by another build than $BUILDS/$2: a campaign is of one set of builds"
-  [ "$(cat "$1.mount" 2> /dev/null)" = "$(mount_of "$3")" ] ||
-    refuse "$1 was made on $(cat "$1.mount" 2> /dev/null), and $3 is now $(mount_of "$3"): a campaign is of one mount of each file system"
+  local now
+  now=$(mount_of "$3") || exit 1
+  [ "$(cat "$1.mount" 2> /dev/null)" = "$now" ] ||
+    refuse "$1 was made on $(cat "$1.mount" 2> /dev/null), and $3 is now $now: a campaign is of one mount of each file system"
 }
 
 # One run: run FILE BUILD ENGINES DIRECTORY BACKGROUND LABEL SETTINGS
@@ -344,7 +356,7 @@ run() {
   fi
   for engine in $engines; do flags="$flags --engine $engine"; done
   rm -rf "$dir/scratch"
-  mount_of "$dir" > "$file.mount"
+  mount_of "$dir" > "$file.mount" || exit 1
   # shellcheck disable=SC2086
   env $settings "$BUILDS/$build/lignin-bench" latency --scratch "$dir/scratch" $flags \
     --background "$background" --blocks "$blocks" --label "$label" \
@@ -476,7 +488,7 @@ traced() {
   fi
   [ "$engine" = lignindb ] && watch="--watch-files"
   rm -rf "$dir/scratch"
-  mount_of "$dir" > "$file.mount"
+  mount_of "$dir" > "$file.mount" || exit 1
   # shellcheck disable=SC2086
   env $settings BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
     "$dir/scratch" --engine "$engine" --background "$background" --blocks "$trace_blocks" \
