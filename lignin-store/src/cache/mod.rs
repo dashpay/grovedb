@@ -103,8 +103,8 @@
 //! The list is a help and no rule. A spent version that has a pin when its
 //! turn comes, or that the list's bound dropped (4,096 are listed at most),
 //! is left to the clock, like any written page version. And until a
-//! later version of its page is written, a superseded written version is
-//! not spent: it can be the page that write-back applies the next run to
+//! later version of its page is written or its page is freed, a
+//! superseded written version is not spent: it can be the page that write-back applies the next run to
 //! before the run is written. Nothing keeps it for that. It is an
 //! evictable frame, and if the clock takes it first, write-back reads the
 //! page from the blocks of its chain instead.
