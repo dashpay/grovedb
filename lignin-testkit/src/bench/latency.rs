@@ -693,7 +693,14 @@ pub struct Watch {
     /// since the last reset: how many, their time in all and the longest,
     /// in nanoseconds.
     appends: [AtomicU64; 3],
+    /// How often a count found a sync still listed as under way that began
+    /// by its time, and waited.
+    waited: AtomicU64,
 }
+
+/// How long a count of the syncs waits for one that began by its time to be
+/// listed as ended.
+const SETTLE: Duration = Duration::from_secs(120);
 
 thread_local! {
     /// Whether the thread is the one whose appends to the log are timed.
@@ -719,9 +726,20 @@ impl Watch {
     }
 
     fn sync<T>(&self, of: &'static str, sync: impl FnOnce() -> T) -> T {
+        /// A sync that is left by a panic has not ended: it is taken off
+        /// the list of those under way, and is none that ended.
+        struct Listed<'a>(&'a Watch, u64);
+        impl Drop for Listed<'_> {
+            fn drop(&mut self) {
+                let number = self.1;
+                (self.0.seen().under_way).retain(|(other, ..)| *other != number);
+            }
+        }
         let (number, began) = self.begun(of);
+        let listed = Listed(self, number);
         let synced = sync();
         self.ended(number, began, monotonic(), of);
+        drop(listed);
         synced
     }
 
@@ -747,14 +765,29 @@ impl Watch {
     }
 
     /// What was seen, once no sync that began at `to` or before it is
-    /// listed as under way: each of them has ended and is listed so.
-    fn settled(&self, to: u64) -> std::sync::MutexGuard<'_, Seen> {
+    /// listed as under way: each of them has ended and is listed so. A sync
+    /// that is still under way after `at_most` fails the count: a run whose
+    /// sync does not end has no count of its syncs.
+    fn settled(
+        &self,
+        to: u64,
+        at_most: Duration,
+    ) -> Result<std::sync::MutexGuard<'_, Seen>, BenchError> {
+        let asked = Instant::now();
         loop {
             let seen = self.seen();
-            if seen.under_way.iter().all(|(_, began, _)| *began > to) {
-                return seen;
+            let Some((_, _, of)) = seen.under_way.iter().find(|(_, began, _)| *began <= to) else {
+                return Ok(seen);
+            };
+            if asked.elapsed() >= at_most {
+                return Err(BenchError::Check(format!(
+                    "a sync of {of} that began inside the measured blocks has not ended {} s \
+                     after them: the run has no count of its syncs",
+                    at_most.as_secs()
+                )));
             }
             drop(seen);
+            self.waited.fetch_add(1, Ordering::Relaxed);
             std::thread::sleep(Duration::from_micros(200));
         }
     }
@@ -770,14 +803,20 @@ impl Watch {
     /// `to`, once every sync that began before `to` has ended. It is asked
     /// after the measured blocks and not between two of them: the wait for
     /// a sync to end is no part of a run's pace.
-    fn beside(&self, from: u64, to: u64) -> Vec<(String, u64)> {
-        let seen = self.settled(to);
+    fn beside(
+        &self,
+        from: u64,
+        to: u64,
+        at_most: Duration,
+    ) -> Result<Vec<(String, u64)>, BenchError> {
+        let seen = self.settled(to, at_most)?;
         let over = seen
             .ended
             .iter()
             .filter(|(began, ended, _)| *began < to && *ended > from);
-        over.map(|(began, ended, of)| (of.to_string(), ended.saturating_sub(*began)))
-            .collect()
+        Ok(over
+            .map(|(began, ended, of)| (of.to_string(), ended.saturating_sub(*began)))
+            .collect())
     }
 
     /// Forgets the append calls of the measuring thread.
@@ -800,16 +839,21 @@ impl Watch {
     /// they are of: how many, and their time in nanoseconds. It waits for
     /// every sync that began by `to` to be listed as ended, as
     /// [`Self::beside`] does, and is asked after the measured blocks.
-    fn counted(&self, from: u64, to: u64) -> BTreeMap<String, (u64, u64)> {
+    fn counted(
+        &self,
+        from: u64,
+        to: u64,
+        at_most: Duration,
+    ) -> Result<BTreeMap<String, (u64, u64)>, BenchError> {
         let mut counted: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-        for (began, ended, of) in &self.settled(to).ended {
+        for (began, ended, of) in &self.settled(to, at_most)?.ended {
             if *ended > from && *ended <= to {
                 let of = counted.entry(of.to_string()).or_default();
                 of.0 += 1;
                 of.1 += ended.saturating_sub(*began);
             }
         }
-        counted
+        Ok(counted)
     }
 }
 
@@ -1336,7 +1380,10 @@ fn measure_in<E: Subject>(
     // What the helpers did after the last commit, and what the engine
     // synced while they were waited for, is after the measured blocks.
     let (from, to) = measured_from_to;
-    let syncs = watch.map_or_else(BTreeMap::new, |watch| watch.counted(from, to));
+    let syncs = match watch {
+        Some(watch) => watch.counted(from, to, SETTLE)?,
+        None => BTreeMap::new(),
+    };
     let _ = std::fs::remove_file(&neighbour_file);
     // A run whose background work failed is no measurement.
     engine.wait_for_background()?;
@@ -1346,11 +1393,11 @@ fn measure_in<E: Subject>(
     let slowest = (slowest.into_iter())
         .map(|(mut slow, from, to)| {
             if let Some(watch) = watch {
-                slow.syncs_beside = watch.beside(from, to);
+                slow.syncs_beside = watch.beside(from, to, SETTLE)?;
             }
-            slow
+            Ok(slow)
         })
-        .collect();
+        .collect::<Result<_, BenchError>>()?;
 
     Ok(EngineLatency {
         engine: E::NAME.to_string(),
@@ -2965,8 +3012,9 @@ mod tests {
         // A sync that ends after the measured blocks is not of them, and
         // neither is one that ended before them.
         log.sync_data().unwrap();
-        assert_eq!(watch.counted(to, to), BTreeMap::new());
-        assert!(watch.counted(0, from).is_empty());
+        let soon = Duration::from_secs(30);
+        assert_eq!(watch.counted(to, to, soon).unwrap(), BTreeMap::new());
+        assert!(watch.counted(0, from, soon).unwrap().is_empty());
 
         // A sync that has ended and is not listed so yet, as where its
         // thread was taken off a processor between the two, is waited for:
@@ -2974,12 +3022,24 @@ mod tests {
         let (number, began) = watch.begun("a segment");
         let ended = monotonic();
         let later = monotonic();
+        // A count that is given no time for it fails, and says of what.
+        let stuck = (watch.counted(to, later, Duration::ZERO).unwrap_err()).to_string();
+        assert!(stuck.contains("a sync of a segment"), "{stuck}");
+        let waited = watch.waited.load(Ordering::Relaxed);
         std::thread::scope(|scope| {
-            let counting = scope.spawn(|| watch.counted(to, later));
-            std::thread::sleep(Duration::from_millis(50));
-            assert!(!counting.is_finished());
+            let counting = scope.spawn(|| watch.counted(to, later, soon));
+            // The sync is listed as ended only once the count has found it
+            // under way and waits for it.
+            let asked = Instant::now();
+            while watch.waited.load(Ordering::Relaxed) == waited {
+                assert!(
+                    !counting.is_finished() && asked.elapsed() < soon,
+                    "the count did not wait for the sync"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
             watch.ended(number, began, ended, "a segment");
-            let counted = counting.join().unwrap();
+            let counted = counting.join().unwrap().unwrap();
             let counts: Vec<(&str, u64)> = (counted.iter())
                 .map(|(of, (count, _))| (of.as_str(), *count))
                 .collect();
@@ -2988,9 +3048,18 @@ mod tests {
         // One that is listed with its end after that time is not counted.
         let (number, began) = watch.begun("a table checkpoint");
         watch.ended(number, began, later + 1, "a table checkpoint");
-        assert!(!watch.counted(to, later).contains_key("a table checkpoint"));
+        let after = watch.counted(to, later, soon).unwrap();
+        assert!(!after.contains_key("a table checkpoint"));
+        // A sync that panics is none that ended, and none that a count
+        // waits for.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            watch.sync("a segment", || panic!("a sync that fails"))
+        }));
+        assert!(panicked.is_err());
+        let since = watch.counted(to, monotonic(), Duration::ZERO).unwrap();
+        assert_eq!(since["a segment"].0, 1);
 
-        let counted = watch.counted(from, to);
+        let counted = watch.counted(from, to, soon).unwrap();
         let counts: Vec<(&str, u64)> = counted
             .iter()
             .map(|(of, (count, _))| (of.as_str(), *count))
@@ -3023,14 +3092,17 @@ mod tests {
         // Every sync that was made between two readings of the clock had a
         // moment in common with the time between them, and none that ended
         // before the first reading has.
-        let beside: Vec<String> = (watch.beside(from, to).into_iter())
+        let beside: Vec<String> = (watch.beside(from, to, soon).unwrap().into_iter())
             .map(|(of, _)| of)
             .collect();
         assert_eq!(beside.len(), 8, "{beside:?}");
         assert_eq!(beside[0], "a value-log file");
         assert_eq!(beside[7], "the names of wal/");
         let later = monotonic();
-        assert!(watch.beside(later, later + 1_000_000).is_empty());
+        assert!(watch
+            .beside(later, later + 1_000_000, soon)
+            .unwrap()
+            .is_empty());
     }
 
     fn small(scratch: &Path) -> LatencyOptions {
