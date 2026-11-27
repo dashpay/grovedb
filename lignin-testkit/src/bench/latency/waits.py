@@ -2,14 +2,22 @@
 """What the measuring thread of `lignin-bench latency` waited for, from a trace
 of `trace.bt` beside the run.
 
-    waits.py [--marked] TRACE [MIN_US]
+    waits.py [--marked] [--stacks] TRACE [MIN_US]
 
 MIN_US is the shortest wait that is counted, 1000 by default. With
 `--marked`, as a campaign's tables are made, a trace is refused that has no
 line for the beginning and the end of the measured blocks or for its
-blocks, that did not run to its end, that says it lost events, or in which
-the user stacks of a fifth or more of the waits inside a block are cut
-short.
+blocks, that did not run to its end, that says it lost events, or whose
+user stacks are cut short.
+
+**Whether the user stacks are whole** is asked of every wait inside a block
+that the trace has, of whatever length: a stack is whole where it reaches
+the harness's own loop. Twenty such waits are wanted to say anything. With
+twenty or more, a trace in which a fifth or more are cut short is refused
+with `--marked`; with fewer the trace says that it is inconclusive, and is
+refused only with `--stacks` as well, by which a campaign asks before its
+runs whether a tracer on this machine reads user stacks at all (the script
+then ends with 4).
 
 **Which waits are counted.** A wait is one OFFCPU record of the measuring
 thread: the thread left a processor and was back after the time the record
@@ -50,10 +58,12 @@ Printed:
 2. Every counted wait, by where it was and by what the thread waited for: the
    system call it was in and the place in the kernel it left a processor at,
    or the lock of the process it asked for.
-3. For the waits inside the kernel during a write to a file of the engine's
-   log, or an allocation for one, by a frame of the user stack that says so
-   (LigninDB's `lignin_store::wal`, RocksDB's `log::Writer` and
-   `WriteToWAL`), two things that are not the same. First, the syncs of the process
+3. The waits inside the kernel during a write or an allocation, by the file
+   the call was on: the tracer records the file's directory and name with
+   the wait, and no frame of a user stack is asked. A wait of a trace that
+   does not name the file is counted as such, apart. Then, for the waits on
+   a file of the engine's log (LigninDB's `wal/`, RocksDB's `*.log`), two
+   things that are not the same. First, the syncs of the process
    that had a moment in common with the wait, by what they are of: that is
    an overlap in time, and a wait can have several. Beside it is what chance
    gives: how many of the waits would have had a sync beside them had each
@@ -78,11 +88,18 @@ Printed:
    `do_get_write_access` for the lock of the block, or for memory, is for
    neither, and is linked to nothing.
 4. With a trace that follows every thread (`THREADS=all traced.sh`): for the
-   waits for a lock of the process, the thread that woke the measuring
-   thread and what that thread was off a processor for meanwhile. The thread
-   that wakes is the one that gave the lock up last; the table does not say
-   who held the lock. Where the trace has no waking for a wait, the row says
-   that it was not recorded.
+   waits for a lock of the process, the waking thread and what that thread
+   was off a processor for meanwhile. The waking thread is the one that
+   made the measuring thread runnable again; the trace does not say that it
+   held the lock, or who did. Where the trace has no waking for a wait, the
+   row says that it was not recorded.
+
+**What a wait in a futex was for** is said only by a frame that says it.
+The first frame of the user stack that is not of a lock's own code names
+whose it is: a frame of an engine, of the harness's file layer, which is the
+harness's and no engine's, or of the harness. The C library's allocator is
+named where the frame above `__lll_lock_wait_private` is one of its calls.
+A stack that names none of these is counted as unresolved.
 
 A trace of an earlier form of the tracer has no line for the measured blocks.
 Its waits are then taken by their user stack: the measured blocks are applied
@@ -110,8 +127,19 @@ WATCHING = ("latency8watching", "latency::watching")
 # and what the tracepoint reports for a preempted thread (TASK_REPORT_MAX).
 RUNNABLE = ("0", "256")
 ALLOCATOR = "the lock of the C library's allocator"
-ENGINE = "a lock of the engine"
+ENGINE = "a lock of the engine, or a condition it waits on"
 CONDITION = "a condition variable of the engine"
+# The calls of the C library's allocator that take its lock.
+ALLOCATING = re.compile(r"^(__libc_|__GI___libc_|_int_)?(malloc|free|realloc|calloc|memalign|"
+                        r"posix_memalign|aligned_alloc|valloc|pvalloc|cfree)$")
+# Frames of a lock's or a condition's own code, under whose first other frame
+# the owner is looked for.
+PRIMITIVE = re.compile(r"^(syscall|__lll_\w+|_?_?futex\w*|_{0,3}pthread_\w+|__GI_\w+|__syscall_cancel\w*|"
+                       r"std::(mutex|condition_variable|__\w+)::.*|__gthread_\w+)$")
+RUST_PRIMITIVE = ("3std3sys", "std::sys", "3std4sync", "std::sync", "parking_lot", "11parking_lot")
+ENGINES = ("lignin_store", "lignindb", "lignin_tree", "lignin_io", "rocksdb::", "rocksdb_", "grovedb")
+# How many waits inside a block say whether user stacks are whole.
+EVIDENCE = 20
 
 
 def field(line, name):
@@ -169,10 +197,13 @@ class Trace:
         # ran to its end.
         self.lost, self.ended = 0, False
         record, part = None, None
+        # The call a wait was in and its file, by the wait's thread and
+        # beginning: the tracer says it in a record before the wait's.
+        in_call = {}
         for line in open(path, errors="replace"):
             line = line.rstrip("\n")
             if line.startswith("OFFCPU"):
-                thread = re.search(r"thread=(.*)/(\d+) woken_by=(.*)/(\d+)$", line)
+                thread = re.search(r"thread=(.*)/(\d+) (?:waking|woken_by)=(.*)/(\d+)$", line)
                 # An earlier form of the tracer followed the measuring thread
                 # alone and did not name it.
                 waker = thread or re.search(r"()()woken_by=(.*)/(\d+)$", line)
@@ -183,6 +214,9 @@ class Trace:
                               woken=[])
                 self.waits.append(record)
                 part = None
+            elif line.startswith("INCALL"):
+                in_call[(int(field(line, "tid")), int(field(line, "begin")))] = (
+                    field(line, "call"), field(line, "file"))
             elif record is not None and line.startswith(" left at:"):
                 part = "kernel"
             elif record is not None and line.startswith(" called from:"):
@@ -216,6 +250,7 @@ class Trace:
         for wait in self.waits:
             wait["kernel"], wait["user"] = frames(wait["kernel"]), frames(wait["user"])
             wait["woken"] = frames(wait["woken"])
+            wait["call"], wait["file"] = in_call.get((wait["tid"], wait["begin"]), (None, None))
         begins = [(at, tid) for at, tid, what in self.marks if what.startswith("measured begin")]
         ends = [at for at, _, what in self.marks if what.startswith("measured end")]
         # One engine a trace: its measured blocks are one stretch.
@@ -295,11 +330,28 @@ def of_the_harness(wait):
                for frame in wait["user"] for mark in HARNESS)
 
 
-def in_the_log(wait):
-    """A call on a file of the engine's log, by a frame that says so:
-    LigninDB's log store, and RocksDB's writer of its log."""
-    return any("lignin_store3wal" in frame or "lignin_store::wal" in frame
-               or frame.startswith("rocksdb::log::Writer::") or "::WriteToWAL" in frame for frame in wait["user"])
+LOG_FILES = ("a log file", "a log file of RocksDB")
+
+
+def in_a_file_call(wait):
+    """Whether the thread left the processor inside a write or an allocation."""
+    return wait["state"] not in RUNNABLE and any(frame in wait["kernel"] for frame in ("vfs_write", "vfs_fallocate"))
+
+
+def owner(wait):
+    """Whose lock or condition a futex wait is for: the first frame of the
+    user stack that is not of a lock's own code."""
+    for frame in wait["user"]:
+        if PRIMITIVE.match(frame) or any(mark in frame for mark in RUST_PRIMITIVE):
+            continue
+        if any(layer in frame for layer in WATCHING):
+            return "the file layer"
+        if any(mark in frame for mark in ENGINES) and not any(mark in frame for mark in HARNESS):
+            return "an engine"
+        if any(mark in frame for mark in HARNESS):
+            return "the harness"
+        return None
+    return None
 
 
 def journal(wait):
@@ -348,13 +400,23 @@ def what(wait):
     if call in SLEPT:
         return "a sleep that the engine asked for"
     if any("futex" in frame for frame in kernel):
-        if any(frame.startswith("__lll_lock_wait_private") for frame in user[:2]):
-            return ALLOCATOR
+        private = next((at for at, frame in enumerate(user[:2]) if frame.startswith("__lll_lock_wait_private")), None)
+        if private is not None:
+            if len(user) > private + 1 and ALLOCATING.match(user[private + 1]):
+                return ALLOCATOR
+            return "a lock inside the C library, which the stack does not name"
         if any("wait_for_room" in frame or "wait_for_turn" in frame for frame in user):
             return "a turn of write-back, for room"
-        if any("pthread_cond_" in frame or "CondVar" in frame or "Condvar" in frame for frame in user):
-            return CONDITION
-        return ENGINE
+        whose = owner(wait)
+        if whose == "the file layer":
+            return "a lock of the harness's file layer, which is no engine's"
+        if whose == "the harness":
+            return "a lock of the harness"
+        if whose == "an engine":
+            conditioned = any("pthread_cond_" in frame or "CondVar" in frame or "Condvar" in frame
+                              or "condition_variable" in frame for frame in user)
+            return CONDITION if conditioned else ENGINE
+        return "a futex whose user stack does not say whose it is"
     if "file_modified" in kernel or "kiocb_modified" in kernel or "touch_atime" in kernel:
         asked = "the file's times"
     elif "ext4_da_write_end" in kernel or "ext4_write_end" in kernel:
@@ -371,7 +433,7 @@ def what(wait):
 
 
 def of(path):
-    """What a synced file is, by its directory."""
+    """What a file is, by its directory and its name."""
     directory, _, name = path.partition("/")
     if name == "MANIFEST.tmp":
         return "the manifest's temporary file"
@@ -385,14 +447,16 @@ def of(path):
     if name == "rocksdb":
         return "the names of RocksDB's directory"
     kinds = {"wal": "a log file", "val": "a value-log file", "seg": "a segment", "table": "a table checkpoint"}
+    if directory == "wal" and name.endswith(".tmp"):
+        return "a log file written again"
     if directory in kinds:
         return kinds[directory]
     return "the names of %s/" % name if name in kinds else "the names of the database directory"
 
 
 def main():
-    arguments = [argument for argument in sys.argv[1:] if argument != "--marked"]
-    marked = len(arguments) < len(sys.argv) - 1
+    arguments = [argument for argument in sys.argv[1:] if argument not in ("--marked", "--stacks")]
+    marked, stacks = "--marked" in sys.argv[1:], "--stacks" in sys.argv[1:]
     if not arguments:
         sys.exit(__doc__)
     floor = int(arguments[1]) if len(arguments) > 1 else 1000
@@ -444,12 +508,30 @@ def main():
                   "where it reads the engine's counts. Neither is in a row below." % (
                       len(cut), sum(wait["us"] for wait in cut) / 1e3,
                       len(between), sum(wait["us"] for wait in between) / 1e3))
-        # A wait between two blocks says nothing of the stacks inside a
-        # block: the share is of the waits that are not between blocks.
-        elsewhere = len(inside) - len(between)
-        if marked and len(cut) >= 10 and 5 * len(cut) >= elsewhere:
-            sys.exit("waits.py: of the %d waits of %s that are not between two blocks, %d have a user stack that "
-                     "is cut short: the build has to keep its frame pointers" % (elsewhere, arguments[0], len(cut)))
+        if trace.blocks:
+            # Whether user stacks are whole is asked of every wait inside a
+            # block that the trace has, of whatever length: a wait between
+            # two blocks says nothing of the stacks inside one.
+            evidence = [wait for wait in trace.waits
+                        if trace.of_the_measuring_thread(wait) and trace.in_the_measured_blocks(wait)
+                        and not trace.the_pause(wait) and trace.phase(wait) in (COMMIT, OPERATIONS)]
+            whole = sum(1 for wait in evidence if of_the_harness(wait))
+            if len(evidence) < EVIDENCE:
+                verdict = "too few to say whether user stacks are whole here: inconclusive"
+            elif 5 * (len(evidence) - whole) >= len(evidence):
+                verdict = "the stacks are cut short"
+            else:
+                verdict = "the stacks are whole"
+            print("User stacks: the trace has %d waits of any length inside a block, and %d of them reach the "
+                  "harness: %s." % (len(evidence), whole, verdict))
+            if marked and verdict == "the stacks are cut short":
+                sys.exit("waits.py: of the %d waits of %s inside a block, %d have a user stack that is cut short: "
+                         "the build has to keep its frame pointers" % (
+                             len(evidence), arguments[0], len(evidence) - whole))
+            if stacks and len(evidence) < EVIDENCE:
+                print("waits.py: %s has %d waits inside a block, and %d are wanted to say whether user stacks are "
+                      "whole: inconclusive" % (arguments[0], len(evidence), EVIDENCE), file=sys.stderr)
+                sys.exit(4)
         for dev in sorted({dev for dev, _ in trace.starts}):
             took = [trace.ends[key] - at for key, at in trace.starts.items()
                     if key[0] == dev and key in trace.ends and trace.measured[0] <= at <= trace.measured[1]]
@@ -479,14 +561,26 @@ def main():
     for key, us in sorted(total.items(), key=lambda item: (item[0][0], -item[1], item[0])):
         print("| %s | %s | %d | %.1f | %.1f |" % (key[0], key[1], count[key], us / 1e3, longest[key] / 1e3))
 
-    appends = [wait for wait in mine if in_the_log(wait) and wait["state"] not in RUNNABLE
-               and any(frame in wait["kernel"] for frame in ("vfs_write", "vfs_fallocate"))]
-    cut_ms = [wait["us"] for wait in cut] if trace.measured else []
+    # The waits inside a write or an allocation, by the file the tracer
+    # recorded for the call: no frame of a user stack is asked.
+    in_calls = [wait for wait in mine if in_a_file_call(wait)]
+    by_file, by_file_us = collections.Counter(), collections.Counter()
+    for wait in in_calls:
+        kind = of(wait["file"]) if wait["file"] else "a file that the trace does not name"
+        by_file[kind] += 1
+        by_file_us[kind] += wait["us"]
+    if in_calls:
+        print("\n| A wait inside the kernel during a write or an allocation, on | Waits | In all, ms |")
+        print("| --- | --- | --- |")
+        for kind, us in sorted(by_file_us.items(), key=lambda item: (-item[1], item[0])):
+            print("| %s | %d | %.1f |" % (kind, by_file[kind], us / 1e3))
+    unnamed = sum(1 for wait in in_calls if not wait["file"])
+    appends = [wait for wait in in_calls if wait["file"] and of(wait["file"]) in LOG_FILES]
     print("\n%d waits inside the kernel during a write to a file of the engine's log, or an allocation for one, "
-          "%.1f ms in all.%s" % (len(appends), sum(wait["us"] for wait in appends) / 1e3,
-                                " The %d waits whose user stack is cut short (%.1f ms) are not among them, and "
-                                "any of them can be such a wait." % (len(cut_ms), sum(cut_ms) / 1e3)
-                                if cut_ms else ""))
+          "%.1f ms in all, by the file the tracer recorded for the call.%s" % (
+              len(appends), sum(wait["us"] for wait in appends) / 1e3,
+              " Of %d waits inside such a call the trace does not name the file: they are not among them, and "
+              "any of them can be such a wait." % unnamed if unnamed else ""))
     beside_kind, with_none, longest_beside = collections.Counter(), 0, []
     for wait in appends:
         beside = [sync for sync in trace.syncs if sync["end"] > wait["begin"] and sync["begin"] < wait["end"]]
@@ -583,7 +677,8 @@ def main():
         key = (asked, wait["waker"] or "not recorded", doing if wait["waker"] else "not recorded")
         woke[key] += 1
         woke_us[key] += wait["us"]
-    print("\n| The thread waited for | Woken by | What that thread was off a processor for meanwhile | Waits | In all, ms |")
+    print("\n| The thread waited for | The waking thread | What that thread was off a processor for meanwhile "
+          "| Waits | In all, ms |")
     print("| --- | --- | --- | --- | --- |")
     for key, us in sorted(woke_us.items(), key=lambda item: (item[0][0], -item[1], item[0])):
         print("| %s | %s | %s | %d | %.1f |" % (key[0], key[1], key[2], woke[key], us / 1e3))

@@ -8,11 +8,15 @@
 // is the measuring thread. The harness is run with `--mark-blocks`. Lines:
 //
 //   OFFCPU  a followed thread was off a processor for OFF_US or more: when,
-//           its state when it left, the file
-//           system of the file it was writing or allocating for (0,0 outside
-//           such a call), which thread woke it, the kernel stack and the
-//           user stack it left with, and the kernel stack of the waking.
+//           its state when it left, the file system of the file it was
+//           writing or allocating for (0,0 outside such a call), the waking
+//           thread, which is the one that made it runnable again and need
+//           not be one that held what it waited for, the kernel stack and
+//           the user stack it left with, and the kernel stack of the waking.
 //           The user stack is read by frame pointers: `build.sh` keeps them.
+//   INCALL  before an OFFCPU record of a thread that was inside a write or
+//           an allocation: the wait's thread and beginning, which call, and
+//           the file. A wait without one was in neither.
 //           Left out: on the measuring thread the pause of the harness,
 //           which is the first sleep the thread asks for after the line of
 //           a commit and before the line of the next block; on any other
@@ -88,7 +92,15 @@ tracepoint:sched:sched_switch
   $d = (nsecs(monotonic) - @off[$t]) / 1000;
   if ($d >= $3) {
     // One record, so that the lines of two threads' waits cannot mix.
-    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d woken_by=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
+    // The file of the call the thread was in, in a record of its own with
+    // the wait's thread and beginning: one record cannot hold it as well.
+    if (@w[$t]) {
+      printf("INCALL begin=%llu tid=%d call=write file=%s/%s\n", @off[$t], $t, @wdir[$t], @wname[$t]);
+    }
+    if (@adev[$t]) {
+      printf("INCALL begin=%llu tid=%d call=allocate file=%s/%s\n", @off[$t], $t, @adir[$t], @aname[$t]);
+    }
+    printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
            @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
            (@wdev[$t] | @adev[$t]) & 0xfffff,
            @offcomm[$t], $t, @wcomm[$t], @wtid[$t], @offk[$t], @offu[$t], @wk[$t]);
@@ -132,17 +144,19 @@ kretprobe:vfs_write
   delete(@w[tid]); delete(@wlen[tid]); delete(@wname[tid]); delete(@wdir[tid]); delete(@wdev[tid]);
 }
 
-// The file system of an allocation, for the waits inside it.
+// The file of an allocation and its file system, for the waits inside it.
 kprobe:vfs_fallocate
 /pid == $1 && ($4 == 0 || tid == $4)/
 {
   $f = (struct file *)arg0;
   @adev[tid] = $f->f_inode->i_sb->s_dev;
+  @aname[tid] = str($f->f_path.dentry->d_name.name);
+  @adir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
 }
 
 kretprobe:vfs_fallocate
 /@adev[tid]/
-{ delete(@adev[tid]); }
+{ delete(@adev[tid]); delete(@aname[tid]); delete(@adir[tid]); }
 
 kprobe:vfs_fsync_range
 /pid == $1/
@@ -208,6 +222,7 @@ END
   clear(@wcomm); clear(@wtid); clear(@wk);
   clear(@w); clear(@wlen); clear(@wname); clear(@wdir); clear(@wdev);
   clear(@s); clear(@sname); clear(@sdir); clear(@sdev); clear(@stx); clear(@sasked); clear(@adev); clear(@rq);
+  clear(@aname); clear(@adir);
   clear(@paused);
   printf("trace ended\n");
 }
