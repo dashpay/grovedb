@@ -719,18 +719,44 @@ impl Watch {
     }
 
     fn sync<T>(&self, of: &'static str, sync: impl FnOnce() -> T) -> T {
+        let (number, began) = self.begun(of);
+        let synced = sync();
+        self.ended(number, began, monotonic(), of);
+        synced
+    }
+
+    /// Lists a sync as under way from now, and gives its number and when it
+    /// began.
+    fn begun(&self, of: &'static str) -> (u64, u64) {
         let mut seen = self.seen();
         let number = seen.next;
         seen.next += 1;
         let began = monotonic();
         seen.under_way.push((number, began, of));
-        drop(seen);
-        let synced = sync();
-        let ended = monotonic();
+        (number, began)
+    }
+
+    /// Lists the sync of that number as ended at `ended`. Its thread read
+    /// that time before it came here, so a sync can have ended and still be
+    /// listed as under way: who counts the syncs up to a time waits for
+    /// those that began by then ([`Self::settled`]).
+    fn ended(&self, number: u64, began: u64, ended: u64, of: &'static str) {
         let mut seen = self.seen();
         seen.under_way.retain(|(other, ..)| *other != number);
         seen.ended.push((began, ended, of));
-        synced
+    }
+
+    /// What was seen, once no sync that began at `to` or before it is
+    /// listed as under way: each of them has ended and is listed so.
+    fn settled(&self, to: u64) -> std::sync::MutexGuard<'_, Seen> {
+        loop {
+            let seen = self.seen();
+            if seen.under_way.iter().all(|(_, began, _)| *began > to) {
+                return seen;
+            }
+            drop(seen);
+            std::thread::sleep(Duration::from_micros(200));
+        }
     }
 
     /// Begins the measured blocks on the calling thread: what was counted
@@ -745,14 +771,7 @@ impl Watch {
     /// after the measured blocks and not between two of them: the wait for
     /// a sync to end is no part of a run's pace.
     fn beside(&self, from: u64, to: u64) -> Vec<(String, u64)> {
-        let seen = loop {
-            let seen = self.seen();
-            if seen.under_way.iter().all(|(_, began, _)| *began >= to) {
-                break seen;
-            }
-            drop(seen);
-            std::thread::sleep(Duration::from_micros(200));
-        };
+        let seen = self.settled(to);
         let over = seen
             .ended
             .iter()
@@ -778,10 +797,12 @@ impl Watch {
     }
 
     /// The syncs that ended after `from` and no later than `to`, by what
-    /// they are of: how many, and their time in nanoseconds.
+    /// they are of: how many, and their time in nanoseconds. It waits for
+    /// every sync that began by `to` to be listed as ended, as
+    /// [`Self::beside`] does, and is asked after the measured blocks.
     fn counted(&self, from: u64, to: u64) -> BTreeMap<String, (u64, u64)> {
         let mut counted: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-        for (began, ended, of) in &self.seen().ended {
+        for (began, ended, of) in &self.settled(to).ended {
             if *ended > from && *ended <= to {
                 let of = counted.entry(of.to_string()).or_default();
                 of.0 += 1;
@@ -1360,8 +1381,11 @@ pub const HOLD: Duration = Duration::from_secs(120);
 /// process's id and the thread's, and waits until `file` is there: for
 /// [`HOLD`] at most, after which the run fails.
 fn held(file: &Path, at_most: Duration) -> Result<(), BenchError> {
-    let ready = PathBuf::from(format!("{}.ready", file.display()));
-    let part = PathBuf::from(format!("{}.part", ready.display()));
+    let mut ready = file.as_os_str().to_os_string();
+    ready.push(".ready");
+    let mut part = ready.clone();
+    part.push(".part");
+    let (ready, part) = (PathBuf::from(ready), PathBuf::from(part));
     let ids = format!(
         "{} {}\n",
         std::process::id(),
@@ -2561,7 +2585,13 @@ mod tests {
         // It begins once the file is there, and not before it has said so.
         std::thread::scope(|scope| {
             let waiting = scope.spawn(|| held(&file, Duration::from_secs(60)));
+            let asked = Instant::now();
             while !ready.exists() {
+                // A run that ended without saying so ends the test.
+                assert!(
+                    !waiting.is_finished() && asked.elapsed() < Duration::from_secs(30),
+                    "the run did not say that it was ready"
+                );
                 std::thread::sleep(Duration::from_millis(1));
             }
             assert!(!waiting.is_finished());
@@ -2937,6 +2967,28 @@ mod tests {
         log.sync_data().unwrap();
         assert_eq!(watch.counted(to, to), BTreeMap::new());
         assert!(watch.counted(0, from).is_empty());
+
+        // A sync that has ended and is not listed so yet, as where its
+        // thread was taken off a processor between the two, is waited for:
+        // it ended inside the measured blocks and is counted.
+        let (number, began) = watch.begun("a segment");
+        let ended = monotonic();
+        let later = monotonic();
+        std::thread::scope(|scope| {
+            let counting = scope.spawn(|| watch.counted(to, later));
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!counting.is_finished());
+            watch.ended(number, began, ended, "a segment");
+            let counted = counting.join().unwrap();
+            let counts: Vec<(&str, u64)> = (counted.iter())
+                .map(|(of, (count, _))| (of.as_str(), *count))
+                .collect();
+            assert_eq!(counts, [("a log file", 1), ("a segment", 1)]);
+        });
+        // One that is listed with its end after that time is not counted.
+        let (number, began) = watch.begun("a table checkpoint");
+        watch.ended(number, began, later + 1, "a table checkpoint");
+        assert!(!watch.counted(to, later).contains_key("a table checkpoint"));
 
         let counted = watch.counted(from, to);
         let counts: Vec<(&str, u64)> = counted
