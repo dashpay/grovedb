@@ -28,7 +28,7 @@ mod tests;
 
 use std::{
     cell::Cell,
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     fmt,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -57,44 +57,17 @@ pub use lignindb;
 /// When a commit of LigninDB makes its log durable: the type of
 /// [`lignindb::Options::sync`].
 pub use lignindb::options::SyncPolicy;
-use lignindb::{
-    checkpoint::{CREATING_SUFFIX, DELETING_FILE_NAME},
-    Options,
-};
+use lignindb::{checkpoint::CREATING_SUFFIX, Options};
 
+pub use super::entries::EngineKind;
+#[cfg(test)]
+use super::entries::{engine_of_entry, LIGNIN_DIRECTORIES};
 use super::{
+    entries::{held_among, look, unlisted},
     lignin::{LigninTransaction, LigninWriteScope},
     Engine, EngineBatch, LigninEngine, RocksDbEngine, SubtreeCursor, SubtreeHandle, SubtreeMove,
     WriteGroup,
 };
-
-/// Which of the two engines.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum EngineKind {
-    /// The RocksDB engine, [`RocksDbEngine`].
-    RocksDb,
-    /// The LigninDB engine, [`LigninEngine`].
-    Lignin,
-}
-
-impl EngineKind {
-    /// The other engine.
-    pub fn other(self) -> Self {
-        match self {
-            EngineKind::RocksDb => EngineKind::Lignin,
-            EngineKind::Lignin => EngineKind::RocksDb,
-        }
-    }
-}
-
-impl fmt::Display for EngineKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            EngineKind::RocksDb => "RocksDB",
-            EngineKind::Lignin => "LigninDB",
-        })
-    }
-}
 
 /// The engine a database is opened on, with that engine's own options.
 #[derive(Clone)]
@@ -584,78 +557,6 @@ const WHERE_NONE_IS_SAID: EngineKind = match cfg!(all(test, grovedb_test_engine 
     true => EngineKind::Lignin,
     false => EngineKind::RocksDb,
 };
-
-/// The engine whose database an entry of this name belongs to, if the
-/// name is one that only that engine gives an entry of its database
-/// directory.
-fn engine_of_entry(name: &OsStr) -> Option<EngineKind> {
-    let name = name.to_str()?;
-    let rocksdb = matches!(name, "CURRENT" | "IDENTITY")
-        || name.starts_with("MANIFEST-")
-        || name.starts_with("OPTIONS-")
-        || name.ends_with(".sst");
-    let lignin =
-        name == "MANIFEST" || name == DELETING_FILE_NAME || LIGNIN_DIRECTORIES.contains(&name);
-    match (rocksdb, lignin) {
-        (true, _) => Some(EngineKind::RocksDb),
-        (false, true) => Some(EngineKind::Lignin),
-        (false, false) => None,
-    }
-}
-
-/// The directories LigninDB keeps its files in, inside its database
-/// directory: the log, the segments, the value log and the page table.
-const LIGNIN_DIRECTORIES: [&str; 4] = ["wal", "seg", "val", "table"];
-
-/// What the entries of a directory say it holds: an engine, with the first
-/// entry that says so.
-fn held_among(
-    dir: &Path,
-    entries: impl IntoIterator<Item = OsString>,
-) -> Result<Option<(EngineKind, OsString)>, Error> {
-    let mut found: Option<(EngineKind, OsString)> = None;
-    for entry in entries {
-        let Some(kind) = engine_of_entry(&entry) else {
-            continue;
-        };
-        let Some((first, of_first)) = &found else {
-            found = Some((kind, entry));
-            continue;
-        };
-        if kind != *first {
-            return Err(Error::NotSupported(format!(
-                "the directory {} holds entries of both engines (`{}` is {first}'s and `{}` is \
-                 {kind}'s): it is opened as neither",
-                dir.display(),
-                of_first.to_string_lossy(),
-                entry.to_string_lossy(),
-            )));
-        }
-    }
-    Ok(found)
-}
-
-fn unlisted(dir: &Path, error: std::io::Error) -> Error {
-    Error::StorageError(format!(
-        "the directory {} could not be listed to see which engine's database it holds: {error}",
-        dir.display()
-    ))
-}
-
-/// Lists `dir` on the file system of the process and says what it holds.
-fn look(dir: &Path) -> Result<Option<(EngineKind, OsString)>, Error> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(unlisted(dir, error)),
-    };
-    let mut names = entries
-        .map(|entry| entry.map(|entry| entry.file_name()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| unlisted(dir, error))?;
-    names.sort();
-    held_among(dir, names)
-}
 
 /// Lists `dir` on the file system `vfs` of a LigninDB engine and says what
 /// it holds.

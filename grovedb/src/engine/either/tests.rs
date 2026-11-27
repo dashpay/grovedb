@@ -1496,8 +1496,8 @@ fn rocksdb_opens_for_the_caller_and_checkpoint_creation_refuse_reserved_names() 
                 // LigninDB refuses the name itself, and the error is its
                 // own.
                 EngineKind::Lignin => {
-                    let by_the_type = unnamed.err().expect("a name of LigninDB's");
-                    let by_lignin = LigninEngine::open(&path).err().expect("the same name");
+                    let by_the_type = unnamed.expect_err("a name of LigninDB's");
+                    let by_lignin = LigninEngine::open(&path).expect_err("the same name");
                     assert!(matches!(by_the_type, StorageError::StorageError(_)));
                     assert_eq!(by_the_type.to_string(), by_lignin.to_string());
                 }

@@ -23,6 +23,8 @@
 
 #[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
 pub mod either;
+#[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
+mod entries;
 #[cfg(feature = "lignin_storage")]
 pub mod lignin;
 #[cfg(feature = "rocksdb_storage")]
@@ -49,7 +51,9 @@ use grovedb_storage::{
 };
 
 #[cfg(all(feature = "rocksdb_storage", feature = "lignin_storage"))]
-pub use self::either::{EitherEngine, EngineChoice, EngineKind};
+pub use self::either::{EitherEngine, EngineChoice};
+#[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
+pub use self::entries::{look as look_at_entries, EngineKind};
 #[cfg(feature = "lignin_storage")]
 pub use self::lignin::LigninEngine;
 #[cfg(feature = "rocksdb_storage")]

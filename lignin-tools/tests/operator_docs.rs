@@ -250,8 +250,8 @@ const GROVEDB_FUNCTIONS: [(&str, &str); 14] = [
         "grovedb-element/src/element/serialize.rs",
         "pub fn deserialize(",
     ),
-    ("grovedb/src/engine/either.rs", "fn held_among("),
-    ("grovedb/src/engine/either.rs", "fn unlisted("),
+    ("grovedb/src/engine/entries.rs", "fn held_among("),
+    ("grovedb/src/engine/entries.rs", "fn unlisted("),
     ("grovedb/src/engine/either.rs", "fn refuse_a_reserved_name("),
     ("grovedb/src/engine/either.rs", "fn no_checkpoint("),
     ("grovedb/src/engine/either.rs", "fn refuse_the_other("),
@@ -2293,16 +2293,20 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
             "step 11, {case}"
         );
     }
+    // A source with an entry of LigninDB's is refused by the survey
+    // itself, and the block keeps no list of its own.
     let lignin_entry = "an entry that only a LigninDB database makes";
+    let of_lignindb = format!("{}\n", lignindb_refusal("/src", "MANIFEST"));
     let (passed, last) = run_block(
         "survey-again.txt",
         &[("survey.txt", base.clone())],
-        &base,
+        &of_lignindb,
         &[("SOURCE", "MANIFEST")],
     );
-    assert!(
-        !passed && last.contains(lignin_entry),
-        "step 11, a SOURCE with MANIFEST: {last}"
+    assert_eq!(
+        (passed, last.as_str()),
+        (false, untold),
+        "step 11, a SOURCE with MANIFEST that the survey refuses"
     );
     let back = |dirs: &[(&str, &str)]| {
         run_block(
@@ -2316,13 +2320,18 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
     assert!(passed, "the way back to a RocksDB SOURCE: {last}");
     let (passed, last) = back(&[("SOURCE", "MANIFEST")]);
     assert!(
-        !passed && last.contains(lignin_entry),
-        "the way back to a SOURCE with MANIFEST: {last}"
+        passed,
+        "the way back to SOURCE leaves its survey to the block after: {last}"
     );
-    let (passed, last) = back(&[("SOURCE", ""), ("BACK", "wal")]);
+    let (passed, last) = run_block(
+        r#"real_dir "${BACK:-$SOURCE}""#,
+        &[],
+        &lignindb_refusal("/back", "wal"),
+        &[("SOURCE", ""), ("BACK", "wal")],
+    );
     assert!(
         !passed && last.contains(lignin_entry),
-        "the way back to a BACK with wal: {last}"
+        "the way back to a BACK with wal that the survey refuses: {last}"
     );
     let (passed, last) = back(&[("SOURCE", "MANIFEST"), ("BACK", "")]);
     assert_eq!(
@@ -2376,8 +2385,27 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
     );
 }
 
+/// The refusal of `lignin migrate` for a source with an entry of a LigninDB
+/// database, as the tool words it (`lignin-tools/src/migrate/source.rs`).
+fn lignindb_refusal(source: &str, entry: &str) -> String {
+    let words = literal_patterns(&read(
+        &repository().join("lignin-tools/src/migrate/source.rs"),
+    ));
+    let pattern = (words.into_iter())
+        .find(|words| words.starts_with("it holds `…`, an entry that only a LigninDB database"))
+        .expect("the refusal in the source");
+    format!(
+        "lignin: the migration: the source {source}: {}",
+        pattern.replacen('…', entry, 1)
+    )
+}
+
+/// The runbook keeps no list of the entries of a LigninDB database: step 4
+/// takes a source with such an entry and cites the refusal of
+/// `lignin migrate` for it, no block lists those entries, and
+/// `runbook.sh` holds a survey of a LigninDB database to the tool's words.
 #[test]
-fn step_4_refuses_a_source_that_holds_an_entry_of_lignindb() {
+fn the_runbook_leaves_a_source_of_lignindb_to_the_tools_refusal() {
     let text = read(&operator_dir().join("migration.md"));
     let fences = parse(&text).fences;
     let block = |mark: &str| -> String {
@@ -2413,25 +2441,41 @@ fn step_4_refuses_a_source_that_holds_an_entry_of_lignindb() {
         let printed = String::from_utf8_lossy(&output.stdout).into_owned();
         (output.status.success(), printed)
     };
-    let (passed, printed) = run(&["CURRENT", "IDENTITY"]);
-    assert!(
-        passed && printed.contains("RESTORE "),
-        "a RocksDB source: {printed}"
-    );
-    for entry in [
-        "MANIFEST",
-        "MANIFEST.deleting",
-        "wal",
-        "seg",
-        "val",
-        "table",
+    for entries in [
+        &["CURRENT", "IDENTITY"][..],
+        &["CURRENT", "MANIFEST"],
+        &["wal"],
     ] {
-        let (passed, printed) = run(&["CURRENT", entry]);
+        let (passed, printed) = run(entries);
         assert!(
-            !passed && printed.contains("an entry that only a LigninDB database makes"),
-            "a source with {entry}: {printed}"
+            passed && printed.contains("RESTORE "),
+            "step 4 with {entries:?}: {printed}"
         );
     }
+    let refusal = lignindb_refusal("…", "…");
+    let refusal = refusal.split_once("the source …: ").expect("the words").1;
+    assert!(
+        text.contains(&format!("``{refusal}``")),
+        "migration.md quotes {refusal:?}"
+    );
+    for (name, document) in documents() {
+        for fence in parse(&document).fences {
+            for line in fence.body.iter().filter(|_| fence.info == "sh") {
+                assert!(
+                    !line.contains("wal seg val table") && !line.contains("only a LigninDB"),
+                    "{name}: a block lists the entries of a LigninDB database: {line}"
+                );
+            }
+        }
+    }
+    let script = read(&operator_dir().join("runbook.sh"));
+    let (_, held) = refusal.split_once('`').expect("the entry");
+    let held = held.split_once('`').expect("its end").1;
+    let held = &held[..held.find("Find out").expect("the advice")];
+    assert!(
+        script.contains(&format!("*\"{held}\"*")),
+        "runbook.sh holds the survey to {held:?}"
+    );
 }
 
 #[test]
