@@ -537,6 +537,14 @@ jobs:
       - name: Prepare a persistent runner
         if: runner.environment == 'self-hosted'
         uses: ./.github/actions/persistent-runner
+      # The second step's build of the test kit needs libclang.
+      - name: Install clang
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v clang >/dev/null || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang libclang-dev
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         if: runner.environment == 'github-hosted'
