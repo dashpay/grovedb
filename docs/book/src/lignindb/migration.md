@@ -901,15 +901,31 @@ no entry that only a LigninDB database makes**, as step 4 does for
 there, and not the LigninDB one. Set `BACK` to that directory where it
 is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
 directory); the block takes `SOURCE` where `BACK` is not set. It also
-refuses a `BACK` whose name ends in `.creating` (in any case), which the
-open that chooses the engine (`EitherEngine`) refuses for RocksDB; it
-takes the name after it has written the path again with every link
-followed, so a path that ends in `/.` is judged by the directory's
-name.
+refuses a `BACK` whose name ends in `.creating` (in any case). LigninDB
+takes a directory of such a name, beside the path of a checkpoint, for
+what a creation of that checkpoint left: a creation there empties it and
+a deletion removes it
+([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)).
+The open that chooses the engine (`EitherEngine`) hands a directory of
+such a name to RocksDB only where it already holds an entry of a name
+that RocksDB gives its files, and refuses the path where the directory
+holds none or is not there. What becomes of a directory it hands over
+is RocksDB's to answer, as under any other name: its open of a database
+makes one where it finds none to be there, and fails where it refuses
+what it finds, and its open of a checkpoint makes none. The block is
+stricter: it refuses the name whatever the directory holds, so that the
+node's database is not kept under a name that LigninDB removes. Its
+rule is wider than LigninDB's on purpose. LigninDB takes a directory
+only where it is listed under the path's name with `.creating` added,
+letter for letter: the cleanup of a checkpoint at `backup` leaves a
+`backup.CREATING` that is there alone. The block refuses every case of
+the letters all the same. It takes the name after it has written the path again
+with every link followed, so a path that ends in `/.` is judged by the
+directory's name.
 
 ```sh
 BACK=$(real_dir "${BACK:-$SOURCE}")
-case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, which GroveDB's open with the engine chosen refuses for RocksDB: move the database to a name of its own before the node goes back to it"; false ;; esac
+case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, a name under which LigninDB builds a checkpoint and removes what it finds: move the database to a name of its own before the node goes back to it"; false ;; esac
 for entry in MANIFEST MANIFEST.deleting wal seg val table; do
   if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
 done
