@@ -90,9 +90,10 @@ const TIME_ROWS: [&str; 8] = [
 
 /// The rows whose values follow the schedule: where a log file starts,
 /// when background work ran, what the rest of the process wrote.
-const MEASURED_ROWS: [&str; 12] = [
+const MEASURED_ROWS: [&str; 13] = [
     "bytes_logged_per_transition",
     "physical_bytes_per_transition",
+    "physical_bytes_to_flushed",
     "flush_bytes_per_transition",
     "compaction_bytes_per_transition",
     "process_write_bytes_per_transition",
@@ -139,6 +140,7 @@ fn is_detail(id: &str) -> bool {
     GAUGE_IDS.contains(&id)
         || id
             .strip_suffix("_per_transition")
+            .or_else(|| id.strip_suffix("_to_flushed"))
             .is_some_and(|detail| DETAIL_IDS.contains(&detail))
 }
 
@@ -288,6 +290,12 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         for row in &report.engines[0].rows {
             assert_eq!(row.kind, kind_of(&row.id), "{} in {}", row.id, row.phase);
         }
+        let flushed = |id: &str| {
+            let rows = &report.engines[0].rows;
+            rows.iter()
+                .any(|row| row.id == id && row.phase == "flushed")
+        };
+        assert!(flushed("physical_bytes_to_flushed"));
     }
     let counted = count_rows(&first);
     assert_eq!(
