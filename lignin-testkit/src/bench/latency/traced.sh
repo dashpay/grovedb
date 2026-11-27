@@ -132,10 +132,14 @@ grep -q "^trace ended$" "$out.trace" ||
 lost=$(grep -hE "^Lost [0-9]+ events" "$out.trace" "$out.trace.err" | head -3 | tr '\n' ' ' || true)
 [ -z "$lost" ] || refuse "the tracer lost events, so the trace has too few lines: $lost"
 rm -f "$out.go" "$out.go.ready"
-# What a table would be made of is read here, before the run counts as made.
-python3 "$here/waits.py" --marked "$out.trace" > "$out.waits.md" 2> "$out.waits.err" ||
+# What a table would be made of is read here, before the run counts as made:
+# the waits of a millisecond or more, or from the tracer's own bound where
+# that is higher, since it wrote none below it.
+floor=${OFF_US:-200}
+[ "$floor" -gt 1000 ] || floor=1000
+python3 "$here/waits.py" --marked "$out.trace" "$floor" > "$out.waits.md" 2> "$out.waits.err" ||
   refuse "the trace cannot be read: $(tail -1 "$out.waits.err")"
-marked=$(sed -n '1s/.*and \([0-9]*\) of them are marked.*/\1/p' "$out.waits.md")
+marked=$(sed -n 's/.*and \([0-9]*\) of them are marked.*/\1/p' "$out.waits.md" | head -1)
 blocks=$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))["engines"][0]["commit_ns"]))' "$out.json")
 [ "${marked:-0}" = "$blocks" ] ||
   refuse "the trace has the lines of ${marked:-no} blocks, and the run was of $blocks"

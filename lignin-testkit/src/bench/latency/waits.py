@@ -4,7 +4,10 @@ of `trace.bt` beside the run.
 
     waits.py [--marked] [--stacks] TRACE [MIN_US]
 
-MIN_US is the shortest wait that is counted, 1000 by default. With
+MIN_US is the shortest wait that is counted, 1000 by default. A trace has
+the waits from a length that its first line says (`OFF_US` of `traced.sh`),
+and a MIN_US below that is refused: the trace has not the waits to count.
+With
 `--marked`, as a campaign's tables are made, a trace is refused that has no
 line for the beginning and the end of the measured blocks or for its
 blocks, that did not run to its end, that says it lost events, or whose
@@ -196,6 +199,9 @@ class Trace:
         # What the tracer says of itself: the events it lost, and that it
         # ran to its end.
         self.lost, self.ended = 0, False
+        # From which length the tracer wrote a sync, a write or a request,
+        # and from which a wait, in microseconds: its first line says.
+        self.long_us, self.off_us = None, None
         record, part = None, None
         # The call a wait was in and its file, by the wait's thread and
         # beginning: the tracer says it in a record before the wait's.
@@ -223,6 +229,10 @@ class Trace:
                 part = "user"
             elif record is not None and line.startswith(" woken at:"):
                 part = "woken"
+            elif line.startswith("tracing pid "):
+                bounds = re.search(r"from (\d+) us, off a processor from (\d+) us", line)
+                if bounds:
+                    self.long_us, self.off_us = int(bounds.group(1)), int(bounds.group(2))
             elif line.startswith("Lost "):
                 found = re.match(r"Lost (\d+) events", line)
                 self.lost += int(found.group(1)) if found else 1
@@ -461,6 +471,9 @@ def main():
         sys.exit(__doc__)
     floor = int(arguments[1]) if len(arguments) > 1 else 1000
     trace = Trace(arguments[0])
+    if trace.off_us is not None and floor < trace.off_us:
+        sys.exit("waits.py: %s has the waits of %d µs or more, and none shorter to count from %d µs: the tracer "
+                 "was given that bound (OFF_US)" % (arguments[0], trace.off_us, floor))
     if marked:
         refused = None
         if not trace.measured:
@@ -491,6 +504,10 @@ def main():
         [wait for wait in inside if where[id(wait)] == UNPLACED]
     if trace.measured:
         seconds = (trace.measured[1] - trace.measured[0]) / 1e9
+        if trace.off_us is not None:
+            print("The tracer wrote every wait of %s ms or more, and the syncs, writes and requests to a device "
+                  "of %s ms or more: a listed sync below is one of that length, or one that waited for a commit "
+                  "of a journal.\n" % (trace.off_us / 1e3, trace.long_us / 1e3))
         print("The measured blocks took %.0f s in the trace%s. Waits of the measuring thread of %.1f ms or more: "
               "%d in the measured blocks and %d before or after them, which are not counted." % (
                   seconds, ", and %d of them are marked" % len(trace.blocks) if trace.blocks else "",

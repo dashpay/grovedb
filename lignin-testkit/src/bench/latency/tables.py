@@ -140,6 +140,8 @@ def read(directory):
 
 PACE = ("seed", "documents", "owners", "warm_blocks", "pause_us", "flush_blocks", "neighbour_ms", "mark_us",
         "slowest", "grove_protocol_version", "machine")
+# The bounds a campaign's tracer is given (`LONG_US`, `OFF_US`), in µs.
+BOUNDS = ("1000", "200")
 EXPERIMENTS = {"allocated": ["LIGNIN_LOG_ALLOCATE=fallocate"], "covered": ["LIGNIN_COVER_BYTES=1048576"]}
 
 
@@ -417,6 +419,15 @@ def main():
         thread = open(stem + ".pid").read().split()[-1] if os.path.exists(stem + ".pid") else None
         begun = next((re.search(r"tid=(\d+)", line).group(1) for line in open(trace, errors="replace")
                       if line.startswith("MARK") and "measured begin" in line), None)
+        # The bounds from which the tracer wrote a wait and a sync are the
+        # campaign's for every traced run: its first line says them.
+        bounds = next((re.search(r"from (\d+) us, off a processor from (\d+) us", line)
+                       for line in open(trace, errors="replace") if line.startswith("tracing pid ")), None)
+        if asked and (not bounds or bounds.groups() != BOUNDS):
+            refused.append((trace, "its tracer wrote the syncs and the waits from %s µs, and a campaign's from %s "
+                                   "and %s" % (" and ".join(bounds.groups()) if bounds else "bounds it does not say",
+                                               *BOUNDS)))
+            continue
         told = report["engines"][0]
         if thread is None or thread != begun or str(told.get("thread_id")) != thread \
                 or not name.startswith({"lignindb": ("lignindb", "allocated", "covered"),

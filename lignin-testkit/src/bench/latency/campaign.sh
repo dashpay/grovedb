@@ -288,11 +288,13 @@ built() { # built NAME [PATCH]
 }
 if has builds; then
   mkdir -p "$BUILDS"
-  built base || REPO=$repo "$here/build.sh" base "$commit"
+  # The lock of the builds is this script's already, and its builds are
+  # made under it.
+  built base || BUILDS_LOCK_HELD=1 REPO=$repo "$here/build.sh" base "$commit"
   built exp1 "$here/log-allocated-ahead.patch" ||
-    REPO=$repo "$here/build.sh" exp1 "$commit" "$here/log-allocated-ahead.patch"
+    BUILDS_LOCK_HELD=1 REPO=$repo "$here/build.sh" exp1 "$commit" "$here/log-allocated-ahead.patch"
   built exp2 "$here/fewer-syncs.patch" ||
-    REPO=$repo "$here/build.sh" exp2 "$commit" "$here/fewer-syncs.patch"
+    BUILDS_LOCK_HELD=1 REPO=$repo "$here/build.sh" exp2 "$commit" "$here/fewer-syncs.patch"
 fi
 
 # The builds a campaign's runs are made by are said in its directory, by the
@@ -344,12 +346,25 @@ own() { # own DIRECTORY
   esac
 }
 
+# Removes the scratch directory under a directory of the campaign: only
+# where the directory is the campaign's own, and never across a mount. What
+# is mounted at the scratch directory or below it is another's, and a
+# removal would go into it.
+emptied() { # emptied DIRECTORY
+  local dir=${1:?} at
+  own "$dir"
+  at=$(realpath -m "$dir/scratch")
+  if findmnt -rn -o TARGET | awk -v at="$at" '$0 == at || index($0, at "/") == 1 { found = 1 } END { exit !found }'; then
+    refuse "something is mounted at $at or below it: nothing is removed across a mount"
+  fi
+  rm -rf "$dir/scratch"
+}
+
 # Removes a run's database, and gives what it took of a file system of part 3
 # back to the file that holds it.
 cleared() {
   local dir=${1:?}
-  own "$dir"
-  rm -rf "$dir/scratch"
+  emptied "$dir"
   case "$dir" in
     "$out/mnt/"*)
       # What was freed can be given back once the file system has written
@@ -445,8 +460,7 @@ run() {
     return 0
   fi
   for engine in $engines; do flags="$flags --engine $engine"; done
-  own "$dir"
-  rm -rf "$dir/scratch"
+  emptied "$dir"
   mount_of "$dir" > "$file.mount" || exit 1
   cp "$out/host-id.txt" "$file.host"
   # shellcheck disable=SC2086
@@ -477,11 +491,11 @@ preflight() { # preflight ENGINE
   for blocks in 1000 6000; do
     off=20
     [ "$blocks" = 1000 ] || off=5
-    rm -rf "$out/native/scratch"
-    OFF_US=$off BIN="$BUILDS/base/lignin-bench" "$here/traced.sh" "$file" "$out/native/scratch" \
+    emptied "$out/native"
+    LONG_US=1000 OFF_US=$off THREADS="" BIN="$BUILDS/base/lignin-bench" "$here/traced.sh" "$file" "$out/native/scratch" \
       --engine "$1" --background heavy --blocks "$blocks" --label preflight \
       --commit "$commit" 2> "$file.err" || failed "$file"
-    rm -rf "$out/native/scratch"
+    emptied "$out/native"
     status=0
     python3 "$here/waits.py" --marked --stacks "$file.trace" "$off" > "$file.waits.md" 2> "$file.waits.err" ||
       status=$?
@@ -631,16 +645,18 @@ traced() {
     return 0
   fi
   [ "$engine" = lignindb ] && watch="--watch-files"
-  own "$dir"
-  rm -rf "$dir/scratch"
+  emptied "$dir"
   # What the run is of is written before it: the file that says it was made
   # is the last, and is `traced.sh`'s, after the trace has been read.
   rm -f "$file.ok"
   mount_of "$dir" > "$file.mount" || exit 1
   cp "$out/host-id.txt" "$file.host"
   cp "$BUILDS/$build/sha256" "$file.build"
+  # The bounds from which the tracer writes a wait, and a sync, a write or
+  # a request, are the campaign's and not the caller's: the tables hold
+  # every trace to them.
   # shellcheck disable=SC2086
-  env $settings BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
+  env $settings LONG_US=1000 OFF_US=200 BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
     "$dir/scratch" --engine "$engine" --background "$background" --blocks "$trace_blocks" \
     $watch --parts --label "$(basename "$file")" --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} \
     2> "$file.err" || status=$?
