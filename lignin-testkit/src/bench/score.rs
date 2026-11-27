@@ -297,20 +297,38 @@ pub struct Scored<'a> {
 pub fn not_reference(report: &Report) -> Option<String> {
     let reference = Documents::reference();
     let workload = &report.workload;
-    let same = workload.seed == 1
-        && workload.documents == reference.documents
-        && workload.owners == reference.owners
-        && workload.document_size == reference.document_size
-        && workload.transitions_per_block == reference.transitions_per_block;
-    (!same).then(|| {
+    let fields = [
+        ("workload", workload.name.clone(), "documents".to_string()),
+        ("seed", workload.seed.to_string(), "1".to_string()),
+        (
+            "documents",
+            workload.documents.to_string(),
+            reference.documents.to_string(),
+        ),
+        (
+            "owners",
+            workload.owners.to_string(),
+            reference.owners.to_string(),
+        ),
+        (
+            "document size",
+            workload.document_size.to_string(),
+            reference.document_size.to_string(),
+        ),
+        (
+            "transitions a block",
+            workload.transitions_per_block.to_string(),
+            reference.transitions_per_block.to_string(),
+        ),
+    ];
+    let differ: Vec<String> = (fields.iter())
+        .filter(|(_, found, plan)| found != plan)
+        .map(|(name, found, plan)| format!("{name} {found} where the plan's is {plan}"))
+        .collect();
+    (!differ.is_empty()).then(|| {
         format!(
-            "not the reference workload ({} documents over {} owners, seed {}, where the plan's \
-             is {} over {}, seed 1): no row is scored",
-            workload.documents,
-            workload.owners,
-            workload.seed,
-            reference.documents,
-            reference.owners
+            "not the reference workload ({}): no row is scored",
+            differ.join(", ")
         )
     })
 }
@@ -323,6 +341,20 @@ fn steady(report: &Report, engine: &str, phase: &str) -> bool {
         .and_then(|one| one.phases.iter().find(|totals| totals.phase == phase))
         .map_or(0, |totals| totals.transitions);
     report.workload.churn > 0 && transitions >= STEADY_TRANSITIONS
+}
+
+/// Whether RocksDB's phase `phase` of `report` is as long as LigninDB's:
+/// a ratio divides rows of phases of the same length. A report the
+/// harness made has them so by construction; one put together by hand may
+/// not.
+fn same_length(report: &Report, phase: &str) -> bool {
+    let length = |engine: &str| {
+        (report.engines.iter())
+            .find(|one| one.engine == engine)
+            .and_then(|one| one.phases.iter().find(|totals| totals.phase == phase))
+            .map(|totals| totals.transitions)
+    };
+    length(ROCKSDB) == length(LIGNINDB)
 }
 
 /// A time row with no sample was not measured: a run that asked for none
@@ -356,7 +388,7 @@ pub fn scored(report: &Report) -> Vec<Scored<'_>> {
             let rocksdb = rocksdb.and_then(|engine| {
                 (engine.rows.iter())
                     .find(|other| other.id == row.id && other.phase == row.phase)
-                    .filter(|other| measured(other))
+                    .filter(|other| measured(other) && same_length(report, &other.phase))
             });
             let value = match target.rocksdb {
                 Some(_) => rocksdb
@@ -499,10 +531,13 @@ pub fn score(report: &Report) -> String {
             let why = match (target.rows.is_empty(), target.steady) {
                 (true, _) => target.note,
                 (false, true) => {
-                    "scored at steady state: a `writes` report with a churn, in phases of \
-                     100,000 transitions or more"
+                    "scored at steady state: a `writes` or `run` report with a churn, in \
+                     phases at size of 100,000 transitions or more"
                 }
-                (false, false) => "measured by another kind of report (`run` or `reads`)",
+                (false, false) => {
+                    "no LigninDB row of its phases with samples in this report (a `run` or \
+                     `reads` report has it)"
+                }
             };
             let _ = writeln!(out, "- {}: {why}", target.measure);
         }
@@ -832,7 +867,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("- Bulk load of 1M transitions: the bulk loader's test"));
-        assert!(text.contains("- Reopen: measured by another kind of report"));
+        assert!(text.contains("- Reopen: no LigninDB row of its phases with samples"));
         assert!(!text.contains("- Point get:"));
         assert!(!text.contains("not the reference workload"));
     }
@@ -863,7 +898,24 @@ mod tests {
     fn only_the_reference_workload_is_scored() {
         let small = report(engines());
         assert!(scored(&small).is_empty());
-        assert!(score(&small).starts_with("not the reference workload (1 documents over 1 owners"));
+        assert!(score(&small).starts_with(
+            "not the reference workload (documents 1 where the plan's is 1000000, owners 1 where"
+        ));
+        let mut renamed = reference(100_000, 200_000, engines());
+        renamed.workload.name = "adversarial".to_string();
+        assert!(scored(&renamed).is_empty());
+        assert!(score(&renamed).starts_with(
+            "not the reference workload (workload adversarial where the plan's is documents): "
+        ));
+        // A RocksDB phase of another length than LigninDB's gives no ratio.
+        let mut uneven = reference(100_000, 200_000, engines());
+        uneven.engines[0].phases[1].transitions = 100_000;
+        let rows = scored(&uneven);
+        let wall = rows
+            .iter()
+            .find(|one| one.row.id == "wall_per_transition")
+            .expect("the row is scored");
+        assert_eq!((wall.rocksdb, wall.scored), (None, None));
         let alone = reference(
             0,
             0,
@@ -877,6 +929,6 @@ mod tests {
             vec![engine("rocksdb", vec![row("point_get", "warm", 1.0)])],
         );
         assert!(scored(&rocksdb_alone).is_empty());
-        assert!(score(&rocksdb_alone).contains("- Point get: measured by another kind"));
+        assert!(score(&rocksdb_alone).contains("- Point get: no LigninDB row of its phases"));
     }
 }
