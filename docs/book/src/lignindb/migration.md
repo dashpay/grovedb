@@ -902,10 +902,14 @@ there, and not the LigninDB one. Set `BACK` to that directory where it
 is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
 directory); the block takes `SOURCE` where `BACK` is not set. It also
 refuses a `BACK` whose name ends in `.creating` (in any case). LigninDB
-takes a directory of such a name, beside the path of a checkpoint, for
-what a creation of that checkpoint left: a creation there empties it and
-a deletion removes it
+builds a checkpoint in a directory of such a name, beside the path of
+the checkpoint, and takes one that is there for what a creation of that
+checkpoint left where it holds nothing but what a creation puts there,
+an empty `LOCK` and a directory `checkpoint.creating`: a creation there
+removes what was built in it, and a deletion removes it
 ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)).
+If the literal sibling `p.creating` of a checkpoint's path `p` holds any
+other entry, LigninDB leaves it alone and refuses creation at `p`.
 The open that chooses the engine (`EitherEngine`) hands a directory of
 such a name to RocksDB only where it already holds an entry of a name
 that RocksDB gives its files, and refuses the path where the directory
@@ -914,8 +918,8 @@ is RocksDB's to answer, as under any other name: its open of a database
 makes one where it finds none to be there, and fails where it refuses
 what it finds, and its open of a checkpoint makes none. The block is
 stricter: it refuses the name whatever the directory holds, so that the
-node's database is not kept under a name that LigninDB removes. Its
-rule is wider than LigninDB's on purpose. LigninDB takes a directory
+node's database is not kept under a name that LigninDB builds
+checkpoints under. Its rule is wider than LigninDB's on purpose. LigninDB takes a directory
 only where it is listed under the path's name with `.creating` added,
 letter for letter: the cleanup of a checkpoint at `backup` leaves a
 `backup.CREATING` that is there alone. The block refuses every case of
@@ -925,7 +929,7 @@ directory's name.
 
 ```sh
 BACK=$(real_dir "${BACK:-$SOURCE}")
-case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, a name under which LigninDB builds a checkpoint and removes what it finds: move the database to a name of its own before the node goes back to it"; false ;; esac
+case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, in some spelling of its ASCII letters: this check reserves every such spelling, since LigninDB builds checkpoints under that name: move the database to a name of its own before the node goes back to it"; false ;; esac
 for entry in MANIFEST MANIFEST.deleting wal seg val table; do
   if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
 done

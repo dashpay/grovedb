@@ -168,15 +168,22 @@ the database at one committed version, in a directory of its own
 1. In one step under the commit lock, the creation records the version,
    the live files and the length of each. The files are synced up to
    those lengths, so the version is durable in the live database too.
-2. The checkpoint is built in `path.creating`: a hard link to each of
+2. The checkpoint is built in `path.creating/checkpoint.creating`, a
+   directory of its own inside the creation's staging directory
+   `path.creating`: a hard link to each of
    those files, or a copy of one that the file system does not link
    (another file system, or one with no hard links), and a manifest of
    its own that names them with the recorded lengths. Files are only ever appended to, so neither database
    changes a byte the other has; what the live database appends behind a
    recorded length is no part of the checkpoint.
 3. When everything in it is durable, the directory is given the name
-   `path`. A creation that is cut short leaves nothing at `path`, or the
-   whole checkpoint.
+   `path`, and the staging directory is removed. A creation that is cut
+   short leaves nothing at `path`, or the whole checkpoint. A directory
+   that is there under the name `path.creating` is built in only where it
+   holds nothing but what a creation puts there, an empty `LOCK` and
+   `checkpoint.creating`: a database or anything else under that name
+   refuses the creation, which builds nothing in it and removes nothing
+   from it.
 
 Commits go on while it is built. The recording step holds the commit
 lock for that step. A commit waits for the checkpoint's sync where its
