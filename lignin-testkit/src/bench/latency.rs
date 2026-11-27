@@ -134,7 +134,7 @@ use super::{
 use crate::workload::{drive::Documents, Op, Stream};
 
 /// The schema of a [`LatencyReport`].
-pub const SCHEMA: &str = "lignin-bench-latency/2";
+pub const SCHEMA: &str = "lignin-bench-latency/3";
 
 /// The name of the measuring thread, by which a trace finds it.
 pub const THREAD_NAME: &str = "lignin-commit";
@@ -339,6 +339,11 @@ pub struct LatencyReport {
     pub flush_blocks: u64,
     /// How often the neighbour synced its file, in milliseconds.
     pub neighbour_ms: Option<u64>,
+    /// The scratch directory the databases were in, as the system names it.
+    pub scratch: String,
+    /// The device of the file system the scratch directory is on, as the
+    /// system numbers it, where it does.
+    pub scratch_device: Option<u64>,
     /// Whether LigninDB was opened on the file layer that times its calls.
     pub watch_files: bool,
     /// Whether every block was marked for a trace.
@@ -1320,6 +1325,21 @@ pub fn run(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
         .map_err(|_| BenchError::Check("the measuring thread panicked".to_string()))?
 }
 
+/// The device of the file system that `path` is on, as the system numbers
+/// it.
+fn device_of(path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|of| of.dev())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
     let commit = options
         .commit
@@ -1342,6 +1362,11 @@ fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
         background: options.background,
         flush_blocks: options.flush_blocks,
         neighbour_ms: options.neighbour.map(|every| every.as_millis() as u64),
+        scratch: (std::fs::canonicalize(&options.scratch))
+            .unwrap_or_else(|_| options.scratch.clone())
+            .display()
+            .to_string(),
+        scratch_device: device_of(&options.scratch),
         watch_files: options.watch_files,
         mark_blocks: options.mark_blocks,
         mark_us: options.mark.as_micros() as u64,
@@ -1410,12 +1435,43 @@ const HEAD: &str = "| Build | Engine | Background | Blocks | Median, µs | 99%, 
 /// The group a row belongs to in a table of several runs. Its first three
 /// fields are what a table shows: the build, by its name and the beginning
 /// of its commit, the engine, and what it did beside the commits. The last
-/// is everything the run was asked, the commit whole, the machine it was
-/// made on and the engines it measured in their order: two runs are of one
-/// group, and repeats of one another, only where all of it is the same.
+/// is what the run was ([`what_a_run_was`]): two runs are of one group, and
+/// repeats of one another, only where all of it is the same.
 type Group = (String, String, String, String);
 
-fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
+/// What a run was, for the engine at `at` of it: the whole report with what
+/// it measured taken out. Everything a report says of how it was made is in
+/// it, whatever is added to a report later: the commit whole, the workload,
+/// the pause, the settings, what the harness did beside the commits, the
+/// machine, the scratch directory and its device, and the engines of the
+/// run in their order with the place of this one among them.
+fn what_a_run_was(report: &LatencyReport, at: usize) -> String {
+    let mut was = serde_json::to_value(report).expect("a latency report serializes");
+    if let Some(fields) = was.as_object_mut() {
+        // When it ran and what else the machine did then are of one run.
+        for measured in [
+            "started_at_unix",
+            "load_average_before",
+            "load_average_after",
+        ] {
+            fields.remove(measured);
+        }
+        let engines: Vec<serde_json::Value> = (report.engines.iter())
+            .map(|engine| {
+                serde_json::json!({
+                    "engine": engine.engine,
+                    "settings": engine.settings,
+                    "blocks": engine.commit_ns.len(),
+                })
+            })
+            .collect();
+        fields.insert("engines".to_string(), engines.into());
+        fields.insert("the row is of engine".to_string(), at.into());
+    }
+    was.to_string()
+}
+
+fn group_of(report: &LatencyReport, at: usize) -> Group {
     let mut background = report.background.name().to_string();
     if let Some(every) = report.neighbour_ms {
         let _ = write!(background, ", a neighbour's sync every {every} ms");
@@ -1424,42 +1480,8 @@ fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
     if let Some(commit) = &report.commit {
         let _ = write!(build, " ({commit:.8})");
     }
-    let asked = format!(
-        "commit {}, GroveVersion {}, seed {}, {} documents of {} owners, {} warm and {} measured \
-         blocks, a pause of {} µs, a flush every {} blocks, settings [{}], the file layer {}, \
-         blocks {}, commits marked from {} µs, the engine's counts {}, the {} slowest commits \
-         kept, the engines of the run [{}], on {:?}",
-        report.commit.as_deref().unwrap_or("unknown"),
-        report.grove_protocol_version,
-        report.seed,
-        report.documents,
-        report.owners,
-        report.warm_blocks,
-        engine.commit_ns.len(),
-        report.pause_us,
-        report.flush_blocks,
-        engine.settings.join(" "),
-        match report.watch_files {
-            true => "watched",
-            false => "not watched",
-        },
-        match report.mark_blocks {
-            true => "marked",
-            false => "not marked",
-        },
-        report.mark_us,
-        match report.parts {
-            true => "read after each commit",
-            false => "read before and after the blocks",
-        },
-        report.slowest,
-        (report.engines.iter())
-            .map(|engine| engine.engine.as_str())
-            .collect::<Vec<_>>()
-            .join(" "),
-        report.machine,
-    );
-    (build, engine.engine.clone(), background, asked)
+    let engine = report.engines[at].engine.clone();
+    (build, engine, background, what_a_run_was(report, at))
 }
 
 /// One report as text: its row for each engine, and what is told of the
@@ -1477,9 +1499,9 @@ pub fn table(report: &LatencyReport) -> String {
         report.load_average_before,
         report.load_average_after,
     );
-    for engine in &report.engines {
+    for (at, engine) in report.engines.iter().enumerate() {
         // One report is of one build, whose commit the line above names.
-        let (_, name, background, _) = group_of(report, engine);
+        let (_, name, background, _) = group_of(report, at);
         let build = report.label.as_deref().unwrap_or("-");
         let [median, p99, p999, longest] = quantiles(&engine.commit_ns).map(micros);
         let _ = writeln!(
@@ -1636,9 +1658,9 @@ struct RunRow {
 fn run_rows(reports: &[LatencyReport]) -> Vec<RunRow> {
     let mut rows = Vec::new();
     for report in reports {
-        for engine in &report.engines {
+        for (at, engine) in report.engines.iter().enumerate() {
             rows.push(RunRow {
-                group: group_of(report, engine),
+                group: group_of(report, at),
                 blocks: engine.commit_ns.len(),
                 commit: quantiles(&engine.commit_ns),
                 off: quantiles(&engine.off_ns()),
@@ -2210,6 +2232,8 @@ mod tests {
             background: options.background,
             flush_blocks: options.flush_blocks,
             neighbour_ms: None,
+            scratch: options.scratch.display().to_string(),
+            scratch_device: Some(7),
             watch_files: options.watch_files,
             mark_blocks: options.mark_blocks,
             mark_us: options.mark.as_micros() as u64,
@@ -2351,6 +2375,15 @@ mod tests {
             },
             ..one.clone()
         };
+        // In another scratch directory, and on another device.
+        let moved = LatencyReport {
+            scratch: "/another".to_string(),
+            ..one.clone()
+        };
+        let mounted = LatencyReport {
+            scratch_device: Some(8),
+            ..one.clone()
+        };
         for other in [
             paused,
             flushed,
@@ -2362,6 +2395,8 @@ mod tests {
             marked_from,
             kept,
             elsewhere,
+            moved,
+            mounted,
         ] {
             let apart = runs_table(&[one.clone(), other.clone()]);
             assert!(!apart.contains("The median of the runs' values"), "{apart}");
@@ -2376,7 +2411,7 @@ mod tests {
                 both.contains("| head (fedcba98) [2] | rocksdb | default | 2 |"),
                 "{both}"
             );
-            assert!(both.contains("- [2] commit fedcba9876543210"), "{both}");
+            assert!(both.contains("- [2] {"), "{both}");
         }
         // RocksDB measured after LigninDB in a run is no repeat of RocksDB
         // measured alone: the two are two rows of two runs each, with a
@@ -2389,6 +2424,33 @@ mod tests {
         assert!(
             after.contains("| head (fedcba98) [3] | rocksdb | default | 2 |"),
             "{after}"
+        );
+        // One engine measured twice in a run is two rows, of its first place
+        // and of its second, and neither is a repeat of the other.
+        let twice = LatencyReport {
+            engines: vec![one.engines[0].clone(), one.engines[0].clone()],
+            ..one.clone()
+        };
+        let places = runs_table(&[twice.clone(), twice]);
+        assert!(
+            places.contains("| head (fedcba98) [1] | rocksdb | default | 2 |"),
+            "{places}"
+        );
+        assert!(
+            places.contains("| head (fedcba98) [2] | rocksdb | default | 2 |"),
+            "{places}"
+        );
+        // When a run was made and what the machine's load was are of one
+        // run, and make no other group of it.
+        let later = LatencyReport {
+            started_at_unix: 9,
+            load_average_before: Some([1.0, 2.0, 3.0]),
+            ..one.clone()
+        };
+        let again = runs_table(&[one.clone(), later]);
+        assert!(
+            again.contains("| head (fedcba98) | rocksdb | default | 2 |"),
+            "{again}"
         );
         let same = runs_table(&[one.clone(), one]);
         assert!(
@@ -2593,9 +2655,14 @@ mod tests {
         // the schema before this one in particular: it has not every field.
         let other = LatencyReport::from_json(&report.to_json().replace(SCHEMA, "other/1"));
         assert!(other.unwrap_err().to_string().contains("has the schema"));
-        let earlier = r#"{"schema":"lignin-bench-latency/1","engines":[]}"#;
-        let refused = LatencyReport::from_json(earlier).unwrap_err().to_string();
-        assert!(refused.contains("lignin-bench-latency/1"), "{refused}");
+        for earlier in ["lignin-bench-latency/1", "lignin-bench-latency/2"] {
+            let report = format!(r#"{{"schema":"{earlier}","engines":[]}}"#);
+            let refused = LatencyReport::from_json(&report).unwrap_err().to_string();
+            assert!(
+                refused.contains("has the schema") && refused.contains(earlier),
+                "{refused}"
+            );
+        }
     }
 
     #[cfg(grovedb_engine_seam)]
