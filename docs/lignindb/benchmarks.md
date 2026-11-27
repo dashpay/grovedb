@@ -644,3 +644,78 @@ How well the runs agree, within 10%:
 
 In a run of RocksDB alone every ratio to RocksDB in the same run is 1. The
 ratio is computed for every engine a run measures after RocksDB.
+
+## Where the state is larger than the memory
+
+LigninDB task PERF-06 ([plan](https://github.com/dashpay/grovedb/issues/1052)).
+What a transition and a read make the engine read from storage when the
+pool holds a part of the state, measured on a rented machine of the class
+that is used for disk results (`so-8vcpu-64gb-intel`, 8 dedicated CPUs,
+its own NVMe, ext4, kernel 6.8), with `lignin-bench writes` and `reads`
+over one kept reference state (the load of a whole run with the default
+sizes, 0.9 GB on disk). A page read is a page version that was read from
+its segments for a load (`page_reads_per_transition`); "paced" is one turn
+of write-back a block (`--set pace=block`), as where blocks come seconds
+apart.
+
+**How long a phase is decides what such a row holds.** For the first
+20,000 to 40,000 transitions after the kept state is opened the value
+cleaner moves nothing; from then on it moves some 10 to 100 values a
+transition, each by a page step on the page that owns the value, which is
+loaded if the pool does not hold it and is written again by write-back.
+Every table below says how long its phases were.
+
+### The pool's size
+
+Paced, the page cache free, 100,000 transitions a phase (create, update,
+delete, in that order), then the reads over the kept state with each
+pool; the commit `a31331d78`:
+
+| Pool (`Options::cache_size`) | Pages read a transition: create / update / delete | Values the value cleaner moved a transition | Physical bytes a transition | Pages read a point get | a point proof | a proof of 100 references |
+| --- | --- | --- | --- | --- | --- | --- |
+| 128 MiB | 3.03 / 3.38 / 3.53 | 10 / 14 / 10 | 46 / 48 / 45 KB | 0.49 | 0.64 | 51 |
+| 162 MiB | 3.36 / 4.00 / 6.25 | 22 / 25 / 86 | 60 / 61 / 128 KB | 0.35 | 0.46 | 38 |
+| 162 MiB, the value cleaner held off (`cleaner_value_target=100`) | 2.11 / 2.13 / 2.15 | 0 | 36 / 36 / 36 KB | | | |
+| 256 MiB (the default) | 2.33 / 3.49 / 3.57 | 31 / 84 / 107 | 69 / 127 / 151 KB | 0.06 | 0.06 | 5.2 |
+| 512 MiB | 0.59 / 0.67 / 0.66 | 10 / 14 / 9 | 46 / 49 / 44 KB | 0.006 | 0.004 | 1.1 |
+
+The rows of a transition follow the value cleaner more than the pool: the
+pool of 256 MiB read more pages than that of 128 MiB in two phases of
+these runs, in which the cleaner moved six to ten times as many values.
+The row with the cleaner held off is what the transitions themselves and
+write-back read. One run of each; how much the cleaner moves differs from
+run to run of one setting.
+
+The same with phases of 20,000 transitions, in which the value cleaner
+moved nothing in create and update and 10 values a transition in delete
+(an earlier commit, `a630ea831`, which counted the pool's misses; they
+differ from the pages read by a few in a hundred): 128 MiB 2.51 / 2.26 /
+2.72; 162 MiB 2.22 / 2.08 / 2.47; 256 MiB 1.68 / 1.61 / 1.85; 512 MiB
+0.58 / 0.50 / 0.54, with 30 to 46 KB of physical bytes a transition.
+
+### The chain threshold
+
+`FlushConfig::max_chain_deltas` at 4, 8 (the default) and 16, each on a
+reference state that was loaded with it; pool 162 MiB, paced, phases of
+20,000 transitions, the commit `934c766b5`. The rows "under the limit" are
+of runs whose cgroup had 233 MiB (`MemoryMax`), 32 MiB more than the
+process's own memory, so that the page cache held little; the reads there
+are over the kept state with the page cache emptied first.
+
+| | 4 | 8 | 16 |
+| --- | --- | --- | --- |
+| physical bytes a transition, create / update / delete (page cache free) | 48 / 54 / 58 KB | 32 / 43 / 41 KB | 24 / 22 / 35 KB |
+| the database after the load | 869 MB | 902 MB | 978 MB |
+| under the limit: wall time a transition | 1,875 / 1,827 / 1,976 µs | 1,941 / 1,832 / 1,987 µs | 1,976 / 1,915 / 2,088 µs |
+| the cgroup's read I/Os a transition (`device_reads`) | 9.6 / 10.6 / 11.0 | 11.4 / 12.7 / 15.8 | 16.5 / 20.9 / 24.9 |
+| the cgroup's bytes read a transition | 117 / 140 / 151 KB | 113 / 134 / 187 KB | 132 / 175 / 226 KB |
+| under the limit, mean time: a point get / a point proof / a proof of 100 references | 203 µs / 330 µs / 20.0 ms | 200 µs / 328 µs / 21.6 ms | 197 µs / 307 µs / 20.9 ms |
+| the cgroup's read I/Os a get / a proof of 100 references | 1.4 / 147 | 1.6 / 167 | 1.9 / 200 |
+
+A longer chain is fewer bytes written, more blocks to read for a page
+that is not in the pool, and a larger database. Since the blocks of a
+chain are named to the file layer before they are read
+(`VfsFile::will_read`), the reads under the limit took no longer with 16
+than with 4. It is one round, with no second run of any setting, and
+without the cold rows of a whole run: an operator's choice on those
+numbers, and the default stays 8.
