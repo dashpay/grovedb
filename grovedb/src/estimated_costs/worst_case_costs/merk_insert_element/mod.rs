@@ -22,16 +22,21 @@
 //!   the layered tree the apply writes (v1 prices it as an item), with its
 //!   existence check and the two hashes of its empty root.
 //!
+//! * **[v3]** — `GROVE_V6` (`worst_case_merk_insert_element: 2`). v2, with
+//!   the hash calls of the put counted from the bytes of the element.
+//!
 //! The estimate is the admission bound historical blocks are replayed
 //! against, so the released versions keep their sizing.
 //!
 //! [v0]: self::v0
 //! [v1]: self::v1
 //! [v2]: self::v2
+//! [v3]: self::v3
 
 mod v0;
 mod v1;
 mod v2;
+mod v3;
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
@@ -39,7 +44,9 @@ use grovedb_merk::{
 };
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
-use crate::{batch::key_info::KeyInfo, Element, Error, GroveDb};
+use crate::{
+    batch::key_info::KeyInfo, estimated_costs::in_full_or_refused, Element, Error, GroveDb,
+};
 
 impl GroveDb {
     /// Add worst case for insertion into merk
@@ -68,11 +75,20 @@ impl GroveDb {
                     grove_version,
                 )
             }
+            2 => {
+                return in_full_or_refused(Self::worst_case_merk_insert_element_v3(
+                    key,
+                    value,
+                    in_parent_tree_type,
+                    propagate_for_level,
+                    grove_version,
+                ))
+            }
             version => {
                 return Err(Error::VersionError(
                     GroveVersionError::UnknownVersionMismatch {
                         method: "worst_case_merk_insert_element".to_string(),
-                        known_versions: vec![0, 1],
+                        known_versions: vec![0, 1, 2],
                         received: version,
                     },
                 ))

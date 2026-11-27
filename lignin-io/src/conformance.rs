@@ -58,6 +58,7 @@ macro_rules! conformance_tests {
             append_starts_at_the_end_of_an_existing_file,
             concurrent_appends_land_whole,
             reads_run_alongside_appends,
+            a_hint_of_a_read_changes_nothing,
             handles_refuse_operations_outside_their_mode,
             an_append_handle_is_the_only_writer,
             set_len_shrinks_and_grows,
@@ -420,6 +421,49 @@ pub(crate) fn concurrent_appends_land_whole(vfs: &dyn Vfs, root: &Path) {
         end += record.len() as u64;
     }
     assert_eq!(file.len().unwrap(), end);
+}
+
+/// A hint of a read is advice: whatever range it names, through a handle
+/// of any mode, the file keeps its bytes and its length, and what is read
+/// and written after it is what would be without it.
+pub(crate) fn a_hint_of_a_read_changes_nothing(vfs: &dyn Vfs, root: &Path) {
+    let path = root.join("file");
+    let mut content = bytes(10_000, 7);
+    write_new(vfs, &path, &content);
+    let ranges = [
+        (0, 10_000),
+        (4_096, 100),
+        (9_999, 1),
+        (0, 0),
+        (10_000, 5),
+        (9_000, 1 << 20),
+        (1 << 40, 1 << 20),
+        (u64::MAX, u64::MAX),
+    ];
+    let reader = open(vfs, &path, OpenMode::Read);
+    for (offset, len) in ranges {
+        reader.will_read(offset, len);
+        assert_eq!(reader.len().unwrap(), 10_000);
+    }
+    assert_eq!(read_all(&*reader), content);
+
+    let writer = open(vfs, &path, OpenMode::Write(Create::Never));
+    for (offset, len) in ranges {
+        writer.will_read(offset, len);
+    }
+    writer.write_at(b"written", 100).unwrap();
+    content[100..107].copy_from_slice(b"written");
+    writer.will_read(0, 10_000);
+    assert_eq!(read_all(&*writer), content);
+    drop(writer);
+
+    let appender = open(vfs, &path, OpenMode::Append(Create::Never));
+    for (offset, len) in ranges {
+        appender.will_read(offset, len);
+    }
+    assert_eq!(appender.append(b"more").unwrap(), 10_000);
+    content.extend_from_slice(b"more");
+    assert_eq!(read_all(&*reader), content);
 }
 
 pub(crate) fn reads_run_alongside_appends(vfs: &dyn Vfs, root: &Path) {

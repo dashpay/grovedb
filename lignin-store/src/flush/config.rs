@@ -172,6 +172,20 @@ pub struct FlushStats {
     /// The page was written as a base image. Not zero means that a commit
     /// or a page step did not tell write-back what it did.
     pub runs_refused: u64,
+    /// Pages that write-back built from the blocks of their chains: the
+    /// page under a run that is about to be written, where the pool does
+    /// not hold it as a version of its own (it was evicted, or the run is
+    /// a page step's on a version that a segment already holds, so that
+    /// the frame in the pool is the one that is owed); and a page whose
+    /// chain is consolidated ([`WriteBack::consolidate`]). A chain that
+    /// could not be read to its end is not counted.
+    ///
+    /// [`WriteBack::consolidate`]: super::WriteBack::consolidate
+    pub chains_read: u64,
+    /// The blocks write-back read for those pages, and for the chains it
+    /// could not read to their end: a base image and the runs after it,
+    /// each counted when its segment gave it.
+    pub chain_blocks_read: u64,
     /// Values appended to the value log for a pending value.
     pub values_appended: u64,
     /// The bytes of those values.
@@ -302,6 +316,8 @@ pub(super) struct Counters {
     pub(super) flat_blocks: AtomicU64,
     pub(super) flat_stored_bytes: AtomicU64,
     pub(super) runs_refused: AtomicU64,
+    pub(super) chains_read: AtomicU64,
+    pub(super) chain_blocks_read: AtomicU64,
     pub(super) values_appended: AtomicU64,
     pub(super) value_bytes: AtomicU64,
     pub(super) values_placed: AtomicU64,
@@ -356,6 +372,8 @@ impl Counters {
             flat_blocks: read(&self.flat_blocks),
             flat_stored_bytes: read(&self.flat_stored_bytes),
             runs_refused: read(&self.runs_refused),
+            chains_read: read(&self.chains_read),
+            chain_blocks_read: read(&self.chain_blocks_read),
             values_appended: read(&self.values_appended),
             value_bytes: read(&self.value_bytes),
             values_placed: read(&self.values_placed),

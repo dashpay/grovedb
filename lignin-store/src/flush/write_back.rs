@@ -1338,6 +1338,10 @@ impl<'s> WriteBack<'s> {
             scratch.clear();
             scratch.resize(size.get(), 0);
             result = page::materialize(segments, size, page, readable, scratch, chain).map(Some);
+            count(&self.state.counters.chain_blocks_read, chain.read());
+            if result.is_ok() {
+                count(&self.state.counters.chains_read, 1);
+            }
         });
         result
     }

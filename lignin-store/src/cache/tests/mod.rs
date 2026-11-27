@@ -252,6 +252,11 @@ fn free_frames(pool: &BufferPool) -> usize {
     lock(&pool.turnover.free).len()
 }
 
+/// How many spent page versions the pool has listed.
+fn spent_listed(pool: &BufferPool) -> usize {
+    lock(&pool.turnover.unwritten).spent.len()
+}
+
 /// One page step on `page`, whose current version is in the pool: its
 /// frame is replaced by one that holds the page one revision on.
 fn step_once(pool: &BufferPool, page: u32) {

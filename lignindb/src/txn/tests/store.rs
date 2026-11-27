@@ -858,6 +858,19 @@ impl Db {
         })
     }
 
+    /// Commits `txn` with `rules`, which are not those of these tests, and
+    /// counts what the commit did: `None` for a commit that took no
+    /// version.
+    pub fn commit_by<R: HashRules>(
+        &self,
+        versions: &Versions,
+        txn: &WriteTxn<'_>,
+        rules: &mut R,
+    ) -> Result<Option<Box<Published>>, CommitError> {
+        let committer = self.committer(versions);
+        self.counted(&committer, |_| committer.commit(txn, rules))
+    }
+
     /// Writes `batch` through `committer` with no transaction (RD7), and
     /// counts what its commit did.
     pub fn write_as(

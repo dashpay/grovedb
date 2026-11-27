@@ -459,6 +459,22 @@ pub trait VfsFile: Any + fmt::Debug + Send + Sync {
         }
     }
 
+    /// Tells the file layer that the `len` bytes from `offset` are about
+    /// to be read through this handle, so that it can begin to bring them
+    /// in before a read asks for them. A caller that is about to read
+    /// several ranges, of one file or of several, names all of them first
+    /// and reads them then: a file layer that acts on the hint can bring
+    /// them in at the same time.
+    ///
+    /// It is a hint and no more. It changes no byte and no length, it
+    /// reports nothing, and a read gives what it gives without it. A file
+    /// layer need not act on it, and neither need the system it passes it
+    /// to: one that has no such call, or that reads past the system's
+    /// cache, does nothing, as this default does.
+    fn will_read(&self, offset: u64, len: u64) {
+        let _ = (offset, len);
+    }
+
     /// Writes all of `buf` at `offset`. The file grows if the write ends past
     /// its length, and a gap this leaves reads as zeros.
     ///

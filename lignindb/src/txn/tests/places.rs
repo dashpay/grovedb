@@ -1137,6 +1137,7 @@ fn every_answer_of_the_table_is_held_to_the_search_from_the_root() {
             kept: 1,
             absent: 1,
             told: 0,
+            evaluated: 0,
         };
         assert_eq!(compared, expected, "{framed}");
         assert_eq!(searches(&world), before, "{framed}");

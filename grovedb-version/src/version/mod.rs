@@ -9,6 +9,7 @@ pub mod v2;
 pub mod v3;
 pub mod v4;
 pub mod v5;
+pub mod v6;
 
 pub use versioned_feature_core::*;
 
@@ -47,4 +48,9 @@ impl GroveVersion {
     }
 }
 
+/// The grove versions that are in force somewhere, oldest first.
+///
+/// [`GROVE_V6`](v6::GROVE_V6) is defined and is not listed: it charges a
+/// write as one that stops at a stop point, and no write stops at one yet
+/// (`v6.rs`).
 pub const GROVE_VERSIONS: &[GroveVersion] = &[GROVE_V1, GROVE_V2, GROVE_V3, GROVE_V4, GROVE_V5];

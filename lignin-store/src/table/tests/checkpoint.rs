@@ -3,8 +3,13 @@
 
 use std::{
     collections::BTreeMap,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    io,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
+    time::Duration,
 };
 
 use lignin_format::{
@@ -12,7 +17,7 @@ use lignin_format::{
     segment::{BlockContent, Compression},
     table as format, FileKind, FormatError, PageSize,
 };
-use lignin_io::{sim::SimConfig, Create, OpenMode};
+use lignin_io::{sim::SimConfig, Create, DirEntry, OpenMode, VfsFile, VfsLock};
 
 use super::*;
 use crate::segment::{tests::sim::sim_fs, FileNames, ManifestChange, SegmentWriter};
@@ -905,84 +910,199 @@ impl Drop for Stop<'_> {
     }
 }
 
+/// A file layer that holds each checkpoint file at its append number
+/// `hold_at`, counted from 0 for the header, until it is told to go on.
+#[derive(Debug)]
+struct Pausing {
+    inner: SimVfs,
+    hold_at: u64,
+    reached: mpsc::Sender<()>,
+    resume: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+#[derive(Debug)]
+struct PausedFile {
+    inner: Box<dyn VfsFile>,
+    appends: AtomicU64,
+    hold_at: u64,
+    reached: mpsc::Sender<()>,
+    resume: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl Vfs for Pausing {
+    fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
+        let inner = self.inner.open(path, mode)?;
+        if mode != OpenMode::Append(Create::New) || !path.starts_with(table_dir()) {
+            return Ok(inner);
+        }
+        Ok(Box::new(PausedFile {
+            inner,
+            appends: AtomicU64::new(0),
+            hold_at: self.hold_at,
+            reached: self.reached.clone(),
+            resume: self.resume.clone(),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
+        self.inner.hard_link(original, link)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.inner.remove_file(path)
+    }
+
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        self.inner.create_dir(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        self.inner.remove_dir(path)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        self.inner.read_dir(path)
+    }
+
+    fn sync_dir(&self, path: &Path) -> io::Result<()> {
+        self.inner.sync_dir(path)
+    }
+
+    fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.inner.lock(path)
+    }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.inner.lock_existing(path)
+    }
+}
+
+impl VfsFile for PausedFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        self.inner.read_at(buf, offset)
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
+        self.inner.write_at(buf, offset)
+    }
+
+    fn append(&self, buf: &[u8]) -> io::Result<u64> {
+        if self.appends.fetch_add(1, Ordering::Relaxed) == self.hold_at {
+            self.reached.send(()).expect("the test waits");
+            let resume = self.resume.lock().expect("the test goes on");
+            resume.recv().expect("the test goes on");
+        }
+        self.inner.append(buf)
+    }
+
+    fn sync_data(&self) -> io::Result<()> {
+        self.inner.sync_data()
+    }
+
+    fn sync_all(&self) -> io::Result<()> {
+        self.inner.sync_all()
+    }
+
+    fn len(&self) -> io::Result<u64> {
+        self.inner.len()
+    }
+
+    fn set_len(&self, len: u64) -> io::Result<()> {
+        self.inner.set_len(len)
+    }
+}
+
+/// Lets the checkpoint writer go on when it is dropped, also when the test
+/// fails while the writer is held.
+struct Release<'a>(&'a mpsc::Sender<()>);
+
+impl Drop for Release<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
 /// Pages are freed and trimmed out of the table from the highest id down,
-/// commit after commit, while checkpoints are written. A checkpoint that has
+/// a run of commits while each checkpoint is written. A checkpoint that has
 /// no link of a page lost it to a trim that came before the page's chain
 /// was copied, and must say so, also when the trim came after the write
-/// began.
+/// began: here every trim is made while the writer is held after it has
+/// copied every run of page ids but the last, which holds the pages freed.
 #[test]
 fn a_checkpoint_written_while_freed_pages_are_trimmed_says_which_free_links_it_lost() {
     const PER_WRITE: u64 = 300;
+    const RUNS: u64 = 6;
+    let (reached, was_reached) = mpsc::channel();
+    let (resume, resumed) = mpsc::channel();
     let fs = sim_fs(SimConfig::new(6));
-    let db = Db::create(&fs);
+    // A run of page ids is as many as a record holds links, and each page
+    // has one link: the header and a record for each run before the last.
+    let pausing = Pausing {
+        inner: fs.clone(),
+        hold_at: RUNS - 1,
+        reached,
+        resume: Arc::new(Mutex::new(resumed)),
+    };
+    let manifest = ManifestStore::create(Arc::new(pausing), db_dir(), empty_manifest())
+        .expect("the manifest is created");
+    let db = Db::with(manifest).expect("the directory opens");
     let table = PageTable::new();
-    let pages = 6 * format::LINKS_PER_RECORD as u64;
+    let pages = RUNS * format::LINKS_PER_RECORD as u64;
     let image = |raw_page: u64| at(1, 20 + raw_page * 64);
     for raw_page in 1..=pages {
         table
             .push(page(raw_page as u32), base(0, image(raw_page)))
             .unwrap();
     }
-    // Commit `n` frees page `pages + 1 - n`. `allowed` is how many commits
-    // may have run, and `freed` how many have.
-    let allowed = AtomicU64::new(0);
-    let freed = AtomicU64::new(0);
-    let done = AtomicBool::new(false);
-    let (mut during, mut rounds) = (0, 0);
-    thread::scope(|scope| {
-        scope.spawn(|| {
-            let _stop = Stop(&done);
-            let mut removed = Vec::new();
-            let mut commit = 0;
-            while !done.load(Ordering::Acquire) {
-                if commit == allowed.load(Ordering::Acquire) {
-                    thread::yield_now();
-                    continue;
-                }
+    // Commit `n` frees page `pages + 1 - n`, in the last run of page ids.
+    const ROUNDS: u64 = 3;
+    assert!(ROUNDS * PER_WRITE < format::LINKS_PER_RECORD as u64);
+    let mut removed = Vec::new();
+    let mut commit = 0;
+    for _ in 0..ROUNDS {
+        let before = commit;
+        assert_eq!(
+            table.trimmed_free(),
+            CommitVersion::new(before).filter(|_| before > 0)
+        );
+        let written = thread::scope(|scope| {
+            let writing = scope.spawn(|| {
+                db.checkpoints
+                    .write(&table, version(0), &CountSample::default(), no_log)
+            });
+            while was_reached.recv_timeout(Duration::from_millis(10)).is_err() {
+                assert!(!writing.is_finished(), "the writer was not held");
+            }
+            let release = Release(&resume);
+            for _ in 0..PER_WRITE {
                 commit += 1;
                 let raw_page = (pages + 1 - commit) as u32;
                 table.push(page(raw_page), free(commit)).unwrap();
                 assert!(table.trim(page(raw_page), version(commit), &mut removed));
-                freed.store(commit, Ordering::Release);
             }
+            drop(release);
+            writing.join().expect("the writer ran").unwrap()
         });
-        let _stop = Stop(&done);
-        while during == 0 && rounds < 60 {
-            rounds += 1;
-            let before = freed.load(Ordering::Acquire);
-            assert_eq!(
-                table.trimmed_free(),
-                CommitVersion::new(before).filter(|_| before > 0)
-            );
-            allowed.fetch_add(PER_WRITE, Ordering::AcqRel);
-            let written = db
-                .checkpoints
-                .write(&table, version(0), &CountSample::default(), no_log)
-                .unwrap();
-            let after = freed.load(Ordering::Acquire);
 
-            let manifest = manifest_naming(written.named(), &[(1, u64::MAX)]);
-            let (loaded, _) = PageTable::load(&fs, db_dir(), &manifest).unwrap();
-            let lowest_lost = (1..=pages)
-                .find(|raw_page| loaded.newest(page(*raw_page as u32)).is_none())
-                .expect("a page that was trimmed");
-            let lost = pages + 1 - lowest_lost;
-            assert!(
-                written.trimmed_free() >= Some(version(lost)),
-                "{:?}, and the commit {lost} is lost",
-                written.trimmed_free()
-            );
-            assert!(written.trimmed_free() <= Some(version(after)).max(table.trimmed_free()));
-            assert_eq!(written.log_needed(), written.trimmed_free().unwrap());
-            during += usize::from(lost > before);
-            while freed.load(Ordering::Acquire) < allowed.load(Ordering::Acquire) {
-                assert!(!done.load(Ordering::Acquire), "the other thread stopped");
-                thread::yield_now();
-            }
-        }
-    });
-    println!("{during} checkpoints lost a free link while they were written, of {rounds}");
-    assert!(during > 0);
+        let manifest = manifest_naming(written.named(), &[(1, u64::MAX)]);
+        let (loaded, _) = PageTable::load(&fs, db_dir(), &manifest).unwrap();
+        let lowest_lost = (1..=pages)
+            .find(|raw_page| loaded.newest(page(*raw_page as u32)).is_none())
+            .expect("a page that was trimmed");
+        let lost = pages + 1 - lowest_lost;
+        assert_eq!(lost, commit, "every page freed during the write is lost");
+        assert!(lost > before);
+        assert_eq!(
+            written.trimmed_free(),
+            Some(version(lost)),
+            "the commit {lost} is lost"
+        );
+        assert_eq!(written.log_needed(), version(lost));
+    }
 }
 
 /// A page that was freed and trimmed away, and whose id names a new page

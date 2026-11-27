@@ -7,7 +7,7 @@ use super::{
     error::CacheError,
     frame::{flag, kind, NO_VERSION},
     guard::PageRef,
-    pool::{published, BufferPool, Held},
+    pool::{evictable, published, BufferPool, Held},
     sync::lock,
 };
 use crate::alloc::Pins;
@@ -52,6 +52,13 @@ impl BufferPool {
     /// Records that the content of `frame` is in a segment and that the page
     /// table has its link. The page version leaves the unwritten lists, and
     /// the frame can be evicted once it has no pin.
+    ///
+    /// Of the versions of the page that are in the pool and that a segment
+    /// holds, the one with the greatest birth before this one's, if there
+    /// is one, is listed as spent: a later version of its page is in a
+    /// segment now. [`Self::reclaim`] takes a version out that is still
+    /// listed when no reader can ask for it any more, if it has no pin
+    /// then.
     ///
     /// The link is pushed before this is called: a reader that misses the
     /// page afterwards reads the page table, and has to find it there.
@@ -108,6 +115,27 @@ impl BufferPool {
         }
         let kept = if hold { flag::HELD } else { 0 };
         header.set_flags((flags & !flag::UNWRITTEN) | kept);
+        // Where this version is written (and not held for readers), at
+        // most one version is listed: the one with the greatest birth
+        // before this one's among those of the page that are in the pool
+        // and that a segment holds, if there is one. It is a superseded
+        // version with a later one in a segment. Any other such version
+        // stays what it is, a frame that can be evicted, whether a listing
+        // of it is still there or not.
+        let spent = (!hold)
+            .then(|| {
+                published(&chain, page)
+                    .map(|entry| entry.frame())
+                    .filter(|before| before.born() < born.get() && before.flags() == 0)
+                    .max_by_key(|before| before.born())
+            })
+            .flatten()
+            .map(|before| Held {
+                page,
+                born: before.born(),
+                superseded: before.superseded(),
+                epoch: None,
+            });
         drop(chain);
         let mut unwritten = lock(&self.turnover.unwritten);
         unwritten.remove(born.get(), page);
@@ -119,11 +147,15 @@ impl BufferPool {
                 epoch: None,
             });
         }
+        unwritten.spend(spent);
         Ok(())
     }
 
     /// Drops the page versions that are held for readers and that no reader
-    /// can ask for any more, and returns how many went.
+    /// can ask for any more, and returns how many went. It also takes out
+    /// the spent page versions that no reader can ask for any more
+    /// ([`PoolStats::releases`](super::PoolStats::releases)), which the
+    /// number it returns does not count.
     ///
     /// A held page version that was superseded at version *w* goes once no
     /// version pin is below *w*, and once every operation that was running
@@ -132,28 +164,75 @@ impl BufferPool {
     /// allocator does, and never waits: a page version that does not pass
     /// stays until a later call.
     ///
+    /// A spent page version is one that is superseded and in a segment,
+    /// of a page whose later version is in a segment too
+    /// ([`Self::mark_written`]) or that was freed ([`Self::free`]). The
+    /// pool keeps it for no one but the readers on a version before the
+    /// one that superseded it, so a listed one is asked the same three
+    /// questions and then leaves its frame to the next page that needs
+    /// one, where it would otherwise wait for the clock, which cannot tell
+    /// it from a page that is read. It is taken out as an eviction takes a
+    /// frame out: only with no pin on it. One that has a pin at that
+    /// moment is listed no more and is the clock's from there on. A reader
+    /// that asks for a version that was taken out all the same reads it
+    /// from its segments, as after an eviction.
+    ///
     /// Call it where the allocator's reclaim is called: after a commit is
-    /// published and after the oldest pin is dropped. With nothing held it
-    /// asks nothing.
+    /// published and after the oldest pin is dropped. With nothing held and
+    /// nothing spent it asks nothing.
     pub fn reclaim<P: Pins + ?Sized>(&self, pins: &P) -> usize {
-        if lock(&self.turnover.unwritten).held.is_empty() {
-            return 0;
-        }
+        let mut gone = {
+            let mut unwritten = lock(&self.turnover.unwritten);
+            if unwritten.held.is_empty() && unwritten.spent.is_empty() {
+                return 0;
+            }
+            std::mem::take(&mut unwritten.gone)
+        };
         let oldest = pins.oldest_pin().get();
         let epoch = pins.next_epoch();
         let guard = pins.oldest_guard();
+        let behind = |version: &mut Held| {
+            version.superseded <= oldest && *version.epoch.get_or_insert(epoch) <= guard
+        };
 
-        let mut gone = Vec::new();
-        lock(&self.turnover.unwritten).held.retain_mut(|held| {
-            if held.superseded > oldest {
-                return true;
+        gone.clear();
+        let mut unwritten = lock(&self.turnover.unwritten);
+        unwritten.held.retain_mut(|held| {
+            let goes = behind(held);
+            if goes {
+                gone.push((held.page, held.born));
             }
-            if *held.epoch.get_or_insert(epoch) > guard {
-                return true;
-            }
-            gone.push((held.page, held.born));
-            false
+            !goes
         });
+        let held = gone.len();
+        unwritten.spent.retain_mut(|spent| {
+            let goes = behind(spent);
+            if goes {
+                gone.push((spent.page, spent.born));
+            }
+            !goes
+        });
+        drop(unwritten);
+
+        for &(page, born) in &gone[held..] {
+            let mut chain = self.bucket(page.get()).chain.write();
+            // The frame may be gone, by the clock, or not be spent any
+            // more: the listing is a hint.
+            let spent = published(&chain, page)
+                .find(|entry| {
+                    let frame = entry.frame();
+                    frame.born() == born && frame.superseded() != NO_VERSION && evictable(frame)
+                })
+                .map(|entry| entry.pointer());
+            let freed =
+                spent.and_then(|pointer| chain.take_unpinned(&self.arena, pointer, evictable));
+            drop(chain);
+            if let Some(frame) = freed {
+                self.turnover.releases.add(1);
+                self.release(frame);
+            }
+        }
+        gone.truncate(held);
 
         for &(page, born) in &gone {
             let bucket = self.bucket(page.get());
@@ -169,6 +248,8 @@ impl BufferPool {
                 self.release(frame);
             }
         }
-        gone.len()
+        let held = gone.len();
+        lock(&self.turnover.unwritten).gone = gone;
+        held
     }
 }

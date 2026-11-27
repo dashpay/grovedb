@@ -638,6 +638,36 @@ impl<'s> WriteTxn<'s> {
         self.claim_read(state, &guard, at, who, unit)
     }
 
+    /// Whether the scope `id` would be granted a write claim on each of
+    /// `units` (SC3), as [`Self::claim_batch`] is asked for the claims of a
+    /// batch that only writes nodes of those Merks. It is refused as that
+    /// is, and nothing is taken.
+    pub(super) fn check_writes(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        id: ScopeId,
+        units: &[Unit],
+    ) -> Result<(), TxnError> {
+        let mut hosts = Hosts {
+            path: &self.path,
+            entering: &[],
+            last: HashMap::new(),
+            leaving: &[],
+            noted: &state.above,
+            laid: None,
+            set: &state.set,
+            frames: &mut state.frames,
+            directory: &mut state.directory,
+            guard: &op.guard,
+            at: op.at,
+        };
+        match (state.scopes).write_refused(id, units, &[], &[], &mut hosts)? {
+            Some(unit) => Err(TxnError::ScopeOverlap { unit }),
+            None => Ok(()),
+        }
+    }
+
     /// Takes the claims of `batch` for the scope `id` (SC3): all of them,
     /// or none.
     ///

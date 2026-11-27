@@ -15,7 +15,7 @@ use lignin_format::{
 use super::{config::max_run_len, error::FlushError};
 use crate::{
     load::FRAME_FORMAT,
-    segment::SegmentStore,
+    segment::{BlockLocation, SegmentStore},
     table::{Link, LinkKind},
 };
 
@@ -160,6 +160,16 @@ pub(super) fn readable(links: &[Link], through: usize) -> Option<&[Link]> {
 pub(super) struct ChainBuffers {
     block: Vec<u8>,
     run: Vec<u8>,
+    locations: Vec<BlockLocation>,
+    read: u64,
+}
+
+impl ChainBuffers {
+    /// How many blocks the last [`materialize`] read from their segments,
+    /// whether it then built the page or not.
+    pub(super) fn read(&self) -> u64 {
+        self.read
+    }
 }
 
 /// Builds the page `page` in `frame` from the blocks of `links`: a base
@@ -180,6 +190,12 @@ pub(super) fn materialize(
         found,
         expected: page,
     };
+    buffers.read = 0;
+    // As a loader does: the file layer is told of every block of the
+    // chain before the first is read.
+    buffers.locations.clear();
+    (buffers.locations).extend(links.iter().filter_map(Link::location));
+    segments.will_read(&buffers.locations);
     let mut kind = None;
     for link in links {
         let Some(location) = link.location() else {
@@ -189,6 +205,7 @@ pub(super) fn materialize(
         match (kind, link.kind) {
             (None, LinkKind::Base(_)) => {
                 let block = segments.read(location, size.image_capacity(), &mut buffers.block)?;
+                buffers.read += 1;
                 if block.content() != BlockContent::Base {
                     return Err(refused(DeltaError::MissingBase.into()));
                 }
@@ -214,6 +231,7 @@ pub(super) fn materialize(
             }
             (Some(PageKind::Tree), LinkKind::Delta(_)) => {
                 let block = segments.read(location, max_run_len(size), &mut buffers.block)?;
+                buffers.read += 1;
                 if block.content() != BlockContent::Delta {
                     return Err(refused(DeltaError::MissingBase.into()));
                 }

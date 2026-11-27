@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     engine::{Counters, Engine, NodeAnatomy},
-    machine::Machine,
+    machine::{Machine, StorageReads},
     BenchError,
 };
 
@@ -158,6 +158,11 @@ pub struct PhaseTotals {
     /// Bytes the operating system counted as written by the process
     /// (`/proc/self/io` `write_bytes`), where it counts them.
     pub process_write_bytes: Option<u64>,
+    /// What the operating system counted of the process's reads over the
+    /// phase, where it counts them. A report from before the field reads
+    /// back with no count.
+    #[serde(default)]
+    pub storage_reads: StorageReads,
 }
 
 /// Files under a database directory, in its subdirectories too.

@@ -123,6 +123,26 @@ fn committed_value(
     found.then_some(out)
 }
 
+/// Sets `done` if the thread that holds it panics, so that the others stop
+/// waiting for it.
+struct Failed<'a>(&'a AtomicBool);
+
+impl Drop for Failed<'_> {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Yields until `until` holds. Panics once another thread has failed.
+fn wait_until(done: &AtomicBool, until: impl Fn() -> bool) {
+    while !until() {
+        assert!(!done.load(Ordering::Relaxed), "another thread failed");
+        thread::yield_now();
+    }
+}
+
 #[test]
 fn transactions_on_several_threads_commit_past_each_other() {
     const WRITERS: u8 = 4;
@@ -130,14 +150,19 @@ fn transactions_on_several_threads_commit_past_each_other() {
     let (db, versions) = Db::new(96);
     let path = db.path(&versions);
     let done = AtomicBool::new(false);
-    let rebuilds = AtomicU64::new(0);
-    let checked = AtomicU64::new(0);
+    // Writer 0 holds the first half of its first round until writer 1 has
+    // committed and a reader has checked a version with that commit.
+    let applied = AtomicBool::new(false);
+    let first_commit = AtomicU64::new(0);
+    let checked_at = AtomicU64::new(0);
     thread::scope(|threads| {
         let (db, versions, done) = (&*db, &versions, &done);
-        let (rebuilds, checked) = (&rebuilds, &checked);
+        let (applied, first_commit, checked_at) = (&applied, &first_commit, &checked_at);
+        let _failed = Failed(done);
         let writers: Vec<_> = (0..WRITERS)
             .map(|writer| {
                 threads.spawn(move || {
+                    let _failed = Failed(done);
                     // Each writer has a Merk and a counter of its own. A
                     // commit adds one node to the Merk and one to the
                     // counter, so the two agree at every version.
@@ -174,6 +199,12 @@ fn transactions_on_several_threads_commit_past_each_other() {
                         (first.through(&scope))
                             .with(|batch| scope.apply(batch))
                             .expect("a write");
+                        if (writer, round) == (0, 1) {
+                            applied.store(true, Ordering::Release);
+                            wait_until(done, || first_commit.load(Ordering::Acquire) > 0);
+                            let committed = first_commit.load(Ordering::Acquire);
+                            wait_until(done, || checked_at.load(Ordering::Acquire) >= committed);
+                        }
                         thread::yield_now();
                         // It reads its own counter as committed, and the
                         // others' as they are committed now.
@@ -185,10 +216,20 @@ fn transactions_on_several_threads_commit_past_each_other() {
                         );
                         second.with(|batch| scope.apply(batch)).expect("a write");
                         scope.merge();
-                        rebuilds.fetch_add(txn.stats().rebuilds, Ordering::Relaxed);
+                        if (writer, round) == (0, 1) {
+                            assert!(txn.stats().rebuilds > 0, "the transaction was not rebased");
+                        }
+                        if (writer, round) == (1, 1) {
+                            wait_until(done, || applied.load(Ordering::Acquire));
+                        }
                         // No other writer writes these keys: no conflict.
-                        let outcome = db.commit(versions, &txn).expect("a commit");
-                        assert!(matches!(outcome, Outcome::Committed(_)), "{outcome:?}");
+                        let version = match db.commit(versions, &txn).expect("a commit") {
+                            Outcome::Committed(version) => version,
+                            outcome => panic!("{outcome:?}"),
+                        };
+                        if (writer, round) == (1, 1) {
+                            first_commit.store(version.get(), Ordering::Release);
+                        }
                         for write in batch.writes() {
                             if let Write::Put(of, key, value) = write
                                 && of == unit
@@ -202,14 +243,20 @@ fn transactions_on_several_threads_commit_past_each_other() {
             .collect();
         for _ in 0..2 {
             threads.spawn(move || {
+                let _failed = Failed(done);
                 let reads = db.reads(versions);
                 let aux_tree = db.keyspaces().aux;
                 while !done.load(Ordering::Relaxed) {
                     // At a pinned version every writer's Merk has as many
                     // nodes as its counter says: no part of a commit is
                     // seen without the rest, and nothing uncommitted.
+                    let published = first_commit.load(Ordering::Acquire);
                     let snapshot = reads.snapshot();
                     let at = snapshot.version();
+                    assert!(
+                        at.get() >= published,
+                        "a snapshot at {at} before {published}"
+                    );
                     let keys = db.check_trees(versions, at);
                     for writer in 0..WRITERS {
                         let counter = committed_value(db, versions, aux_tree, at, aux(), &[writer]);
@@ -219,7 +266,7 @@ fn transactions_on_several_threads_commit_past_each_other() {
                         let nodes = keys.get(&model::subtree(10 + writer)).map_or(0, Vec::len);
                         assert_eq!(nodes, rounds as usize, "writer {writer} at {at}");
                     }
-                    checked.fetch_add(1, Ordering::Relaxed);
+                    checked_at.fetch_max(at.get(), Ordering::Release);
                 }
             });
         }
@@ -234,11 +281,6 @@ fn transactions_on_several_threads_commit_past_each_other() {
     let commits = db.counts.commits.load(Ordering::Relaxed);
     assert_eq!(commits, u64::from(WRITERS) * u64::from(ROUNDS));
     assert_eq!(db.counts.conflicts.load(Ordering::Relaxed), 0);
-    assert!(checked.load(Ordering::Relaxed) > 0);
-    assert!(
-        rebuilds.load(Ordering::Relaxed) > 0 || cfg!(miri),
-        "no transaction was rebased"
-    );
     let keys = db.check_trees(&versions, versions.latest());
     for writer in 0..WRITERS {
         assert_eq!(keys[&model::subtree(10 + writer)].len(), ROUNDS as usize);

@@ -812,9 +812,26 @@ pub struct GroveDBOperationsQueryVersions {
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsAverageCaseVersions {
+    /// The estimate of the open of a Merk that a write changes.
+    ///
+    /// - `0` (V1..V5): the open reads the host: a seek and the loaded bytes
+    ///   of that read, a seek for the root of a Merk that is not expected to
+    ///   be empty, and the prefix of the path.
+    /// - `1` (V6): the open is by the Merk's own path and root
+    ///   (`MerkCostModelVersions::propagation` 1): the seek and the bytes of
+    ///   the host's read are gone. The root Merk, which has no host, is
+    ///   opened by its root key record: its estimate has the bytes of that
+    ///   record with the seek of its read, which version 0 does not.
     pub add_average_case_get_merk_at_path: FeatureVersion,
     pub average_case_merk_replace_tree: FeatureVersion,
     pub average_case_merk_insert_tree: FeatureVersion,
+    /// `GroveDb::average_case_merk_delete_tree`, the estimate of the removal
+    /// of a tree.
+    ///
+    /// - `0` (V1..V5): the flags of the layer and the bytes of their length
+    ///   are added in 32 bits, unchecked.
+    /// - `1` (V6): the sizes of the layer that an estimate cannot count are
+    ///   refused first, and a refusal has no cost.
     pub average_case_merk_delete_tree: FeatureVersion,
     pub average_case_merk_insert_element: FeatureVersion,
     pub average_case_merk_replace_element: FeatureVersion,
@@ -875,10 +892,32 @@ pub struct GroveDBOperationsAverageCaseVersions {
     ///   historical admission decisions.
     /// - `1` (V4+): both size it by the specialized cost the apply uses.
     pub average_case_sum_item_cost_size: FeatureVersion,
+    /// `GroveDb::average_case_finalize`: the estimate of a finalize, from
+    /// the stop points of the writes before it. The function refuses a grove
+    /// version on which no finalize exists
+    /// (`MerkCostModelVersions::propagation` 0).
+    pub average_case_finalize: FeatureVersion,
+    /// `GroveDb::average_case_indexed_secondary_mirror`, the estimate of the
+    /// rows an indexed tree keeps in its secondaries, which are keyed by the
+    /// keys of its primary.
+    ///
+    /// - `0` (V1..V5): in a primary that is described as a layer of several
+    ///   kinds, the keys are the longest of its trees, items and references,
+    ///   with a weight or without. A primary of items with a sum, or of
+    ///   references with one, has keys of no length there, and its rows are
+    ///   estimated shorter than they are written.
+    /// - `1` (V6): the keys are the longest of the five kinds the layer gives
+    ///   a weight, as the estimate of a finalize takes them. A refusal has no
+    ///   cost.
+    pub average_case_indexed_secondary_mirror: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct GroveDBOperationsWorstCaseVersions {
+    /// The worst-case twin of
+    /// `GroveDBOperationsAverageCaseVersions::add_average_case_get_merk_at_path`:
+    /// `1` (V6) leaves out the seek and the loaded bytes of the host's read,
+    /// and has the bytes of the root key record of the root Merk.
     pub add_worst_case_get_merk_at_path: FeatureVersion,
     pub worst_case_merk_replace_tree: FeatureVersion,
     pub worst_case_merk_insert_tree: FeatureVersion,
@@ -919,6 +958,9 @@ pub struct GroveDBOperationsWorstCaseVersions {
     ///   upper bound. Preserved for replay of historical admission decisions.
     /// - `1` (V4+): both size it by the specialized cost the apply uses.
     pub worst_case_sum_item_cost_size: FeatureVersion,
+    /// `GroveDb::worst_case_finalize`, the worst-case twin of
+    /// `GroveDBOperationsAverageCaseVersions::average_case_finalize`.
+    pub worst_case_finalize: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]

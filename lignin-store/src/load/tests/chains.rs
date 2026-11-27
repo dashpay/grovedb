@@ -365,6 +365,105 @@ fn a_loaded_frame_is_the_image_and_zeros_behind_it() {
     assert_eq!(pool.overflow_frames(), 0);
 }
 
+/// The blocks of a chain were written at different times and lie apart,
+/// so the file layer is told of all of them before the first is read:
+/// each block by its place and its length, in the order of the chain. A
+/// page version that is one block is read with no hint.
+#[test]
+fn the_blocks_of_a_chain_are_named_to_the_file_layer_before_the_first_is_read() {
+    let mut db = Db::new(PageSize::MIN);
+    let mut written = Written::filled(db.size, page(7), 3, 10);
+    let base = db.base(page(7), 1, Compression::Raw, &written.image());
+    let run = written.change(&[Delta::Remove { slot: slot(2) }]);
+    let first = db.delta(page(7), 3, Compression::Raw, &run);
+    let run = written.change(&[Delta::Hash {
+        slot: slot(1),
+        field: HashField::Value,
+        hash: &[9; 32],
+    }]);
+    let second = db.delta(page(7), 4, Compression::Raw, &run);
+    let alone = Written::filled(db.size, page(8), 1, 3).image();
+    db.base(page(8), 1, Compression::Raw, &alone);
+
+    let pool = db.pool(4);
+    let loader = db.loader(&pool);
+    let mut buffers = LoadBuffers::new();
+    db.vfs.take_calls();
+
+    // A page of one block, and a version of the other page that is its
+    // base image alone: a read each, and no hint.
+    drop(loader.get(page(8), version(1), &mut buffers).unwrap());
+    drop(loader.get(page(7), version(2), &mut buffers).unwrap());
+    assert_eq!(db.vfs.take_hints(), []);
+    assert_eq!(db.vfs.take_calls().len(), 2);
+
+    // The version of three blocks: three hints, and then the three reads.
+    let whole = loader.get(page(7), version(4), &mut buffers).unwrap();
+    assert_eq!(tree_image(&whole), written.image());
+    let named = |location: BlockLocation| Hint {
+        after_calls: 0,
+        name: SEGMENT.to_owned(),
+        offset: location.offset,
+        len: u64::from(location.len),
+    };
+    assert_eq!(
+        db.vfs.take_hints(),
+        [named(base), named(first), named(second)]
+    );
+    let read = (Op::Read, SEGMENT.to_owned());
+    assert_eq!(db.vfs.take_calls(), [read.clone(), read.clone(), read]);
+
+    // What a hint names must lie in the blocks of a segment of the store:
+    // a location of no segment, and one past the end of its segment, are
+    // passed over, and one block alone is not named.
+    let nowhere = BlockLocation {
+        file: FileId::new(9).expect("an id"),
+        ..base
+    };
+    let past = BlockLocation {
+        offset: u64::MAX - 5,
+        ..second
+    };
+    db.segments.will_read(&[nowhere, base, past]);
+    db.segments.will_read(&[first]);
+    assert_eq!(db.vfs.take_hints(), [named(base)]);
+}
+
+/// A page version that is read from its segments is one load, whoever
+/// asked for it. A writer's first copy of a page that the pool does not
+/// hold asks the pool for a copy and not for the page, so the pool counts
+/// no miss for it, and the load is counted all the same. An ask for a
+/// page that no segment holds is a miss, and nothing is read for it.
+#[test]
+fn a_page_that_is_read_is_counted_as_a_load_whoever_asked() {
+    let mut db = Db::new(PageSize::MIN);
+    let image = Written::filled(db.size, page(7), 1, 3).image();
+    db.base(page(7), 1, Compression::Raw, &image);
+    let pool = db.pool(4);
+    let loader = db.loader(&pool);
+    let mut buffers = LoadBuffers::new();
+    let owner = OwnerId::new(2);
+    let counted = || {
+        let stats = pool.stats();
+        (stats.misses, stats.loads)
+    };
+
+    let miss = pool
+        .make_private(owner, page(7), version(1))
+        .expect_err("not in the pool");
+    assert_eq!(counted(), (0, 0));
+    let loaded = loader.load(miss, &mut buffers).expect("a load");
+    let copy = pool
+        .make_private(owner, page(7), version(1))
+        .expect("the page is in the pool");
+    assert_eq!(counted(), (0, 1));
+    drop((loaded, copy));
+
+    let refused = loader.get(page(9), version(1), &mut buffers);
+    assert!(matches!(refused, Err(LoadError::NoPage { .. })));
+    assert_eq!(counted(), (1, 1));
+}
+
 #[test]
 fn a_loaded_page_stands_for_the_versions_up_to_the_next_link() {
     let mut db = Db::new(PageSize::MIN);

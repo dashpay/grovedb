@@ -1343,17 +1343,20 @@ impl OwnedBatch {
     /// Calls `run` with the batch, in which the change sets of the Merks
     /// `whole` say that they are the whole Merk (`MerkWrite::whole`).
     pub fn loading<R>(&self, whole: &[Subtree], run: impl FnOnce(&Batch<'_>) -> R) -> R {
-        fn link(link: &Option<LinkRec>) -> Option<LinkPut<'_>> {
+        // A hash that the writer leaves stale is stated as any bytes.
+        fn link(link: &Option<LinkRec>, stale: bool) -> Option<LinkPut<'_>> {
             link.as_ref().map(|link| LinkPut {
                 key: &link.key,
-                hash: &link.hash,
+                hash: match stale {
+                    true => &UNMADE,
+                    false => &link.hash,
+                },
                 heights: link.heights,
                 aggregate: &link.aggregate,
             })
         }
         fn put<'a>(merk: &'a OwnedMerk, node: &'a (Vec<u8>, NodeRec, bool)) -> NodePut<'a> {
             let (key, node, stated) = node;
-            // A hash that the writer leaves stale is stated as any bytes.
             let stale = merk.stale.get(key).copied().unwrap_or(Stale::NONE);
             let stated_hash = |field, hash| match stale.has(field) {
                 true => &UNMADE,
@@ -1364,8 +1367,8 @@ impl OwnedBatch {
                 feature: &node.feature,
                 value_hash: stated_hash(HashField::Value, &node.value_hash),
                 kv_hash: stated_hash(HashField::KeyValue, &node.kv_hash),
-                left: link(&node.left),
-                right: link(&node.right),
+                left: link(&node.left, stale.has(HashField::Child(Side::Left))),
+                right: link(&node.right, stale.has(HashField::Child(Side::Right))),
                 hosted: match merk.hosted.get(key) {
                     Some(hosted) => Hosted::Set(hosted),
                     None => Hosted::Keep,

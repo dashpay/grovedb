@@ -118,7 +118,10 @@ fn a_miss_is_loaded_and_then_hit() {
             hits: 2,
             misses: 3,
             evictions: 0,
-            overflows: 0
+            overflows: 0,
+            releases: 0,
+            overtaken: 0,
+            loads: 1
         }
     );
     let census = pool.census();
@@ -268,6 +271,7 @@ fn a_load_that_a_commit_overtook_is_made_again() {
     let Loaded::Again(blank) = again else {
         panic!("a load that a commit overtook was installed");
     };
+    assert_eq!(pool.stats().overtaken, 1);
     assert_eq!(
         Content::read(&blank),
         content(1, 3, 0),

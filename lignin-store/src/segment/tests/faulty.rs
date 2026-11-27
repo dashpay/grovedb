@@ -31,6 +31,16 @@ pub(crate) enum Op {
     SetLen,
 }
 
+/// A hint of a read that a file was given ([`VfsFile::will_read`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Hint {
+    /// How many calls [`FaultyVfs`] had recorded when it came.
+    pub(crate) after_calls: usize,
+    pub(crate) name: String,
+    pub(crate) offset: u64,
+    pub(crate) len: u64,
+}
+
 /// The `op` on `name` that follows `skip` more of them.
 #[derive(Debug)]
 struct Call {
@@ -100,6 +110,10 @@ impl Drop for Stopped {
 #[derive(Debug, Default)]
 struct Script {
     calls: Vec<(Op, String)>,
+    /// The hints of a read, each with how many calls were recorded before
+    /// it. They are not among the calls: nothing can be told to fail or
+    /// stop at one.
+    hints: Vec<Hint>,
     faults: Vec<Call>,
     stops: Vec<Stop>,
     skip_syncs: bool,
@@ -197,6 +211,13 @@ impl FaultyVfs {
             reached: was_reached,
             go_on,
         }
+    }
+
+    /// The hints of a read since the last call of this, with the calls
+    /// that were recorded before each counted from the last
+    /// [`Self::take_calls`].
+    pub(crate) fn take_hints(&self) -> Vec<Hint> {
+        std::mem::take(&mut self.script.lock().unwrap().hints)
     }
 
     /// The calls made since the last time this was asked.
@@ -309,6 +330,19 @@ impl VfsFile for FaultyFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         self.enter(Op::Read)?;
         self.inner.read_at(buf, offset)
+    }
+
+    fn will_read(&self, offset: u64, len: u64) {
+        let mut script = self.script.lock().unwrap();
+        let after_calls = script.calls.len();
+        script.hints.push(Hint {
+            after_calls,
+            name: self.name.clone(),
+            offset,
+            len,
+        });
+        drop(script);
+        self.inner.will_read(offset, len);
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {

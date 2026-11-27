@@ -1,21 +1,20 @@
 //! Worst case costs
 //! Implements worst case cost functions in GroveDb
 
-use grovedb_costs::{cost_return_on_error_into_no_add, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::{
     cost_model::storage_cost_model,
     estimated_costs::{
-        add_cost_case_merk_insert_layered, add_cost_case_merk_patch,
+        add_cost_case_merk_insert_layered,
         worst_case_costs::{
             add_worst_case_get_merk_node, add_worst_case_merk_delete,
-            add_worst_case_merk_delete_layered, add_worst_case_merk_propagate,
+            add_worst_case_merk_delete_layered, add_worst_case_merk_propagate_versioned,
             add_worst_case_merk_replace_layered, WorstCaseLayerInformation,
             MERK_BIGGEST_VALUE_SIZE,
         },
     },
     tree::TreeNode,
     tree_type::{CostSize, TreeType},
-    HASH_LENGTH,
 };
 use grovedb_storage::{
     worst_case_costs::{get_storage_context_cost, WorstKeyLength},
@@ -26,10 +25,13 @@ use integer_encoding::VarInt;
 
 use crate::{
     batch::{key_info::KeyInfo, KeyInfoPath},
-    Element, ElementFlags, Error, GroveDb,
+    ElementFlags, Error, GroveDb,
 };
 
+mod finalize;
+mod get_merk_at_path;
 mod merk_insert_element;
+mod merk_patch_element;
 mod merk_replace_element;
 
 pub const WORST_CASE_FLAGS_LEN: u32 = 16386; // 2 bytes to represent this number for varint
@@ -45,37 +47,6 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> Result<(), Error> {
         Self::add_worst_case_get_merk_at_path_engine_free(cost, path, tree_type, grove_version)
-    }
-
-    /// Add worst case for getting a merk tree
-    pub fn add_worst_case_get_merk_at_path_engine_free(
-        cost: &mut OperationCost,
-        path: &KeyInfoPath,
-        tree_type: TreeType,
-        grove_version: &GroveVersion,
-    ) -> Result<(), Error> {
-        check_grovedb_v0!(
-            "add_worst_case_get_merk_at_path",
-            grove_version
-                .grovedb_versions
-                .operations
-                .worst_case
-                .add_worst_case_get_merk_at_path
-        );
-
-        cost.seek_count += 2;
-        match path.last() {
-            None => {}
-            Some(key) => {
-                cost.storage_loaded_bytes += TreeNode::worst_case_encoded_tree_size(
-                    key.max_length() as u32,
-                    HASH_LENGTH as u32,
-                    tree_type.inner_node_type(), // todo This is probably wrong
-                ) as u64;
-            }
-        }
-        *cost += get_storage_context_cost(storage_cost_model(grove_version), path.as_vec());
-        Ok(())
     }
 
     /// Add worst case for insertion into merk
@@ -107,8 +78,12 @@ impl GroveDb {
             in_parent_tree_type.inner_node_type(),
         );
         if propagate {
-            add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
-                .map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(
+                &mut cost,
+                worst_case_layer_information,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -146,7 +121,8 @@ impl GroveDb {
         let value_len = tree_cost + flags_len + wrapper_overhead;
         add_cost_case_merk_insert_layered(&mut cost, key_len, value_len, in_parent_tree_type);
         if let Some(input) = propagate_if_input {
-            add_worst_case_merk_propagate(&mut cost, input).map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(&mut cost, input, grove_version)
+                .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -176,62 +152,12 @@ impl GroveDb {
         let layer_extra_size = tree_cost + WORST_CASE_FLAGS_LEN;
         add_worst_case_merk_delete_layered(&mut cost, key_len, layer_extra_size);
         if propagate {
-            add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
-                .map_err(Error::MerkError)
-        } else {
-            Ok(())
-        }
-        .wrap_with_cost(cost)
-    }
-
-    /// Add worst case for patch in merk
-    /// This only propagates on 1 level
-    /// As higher level propagation is done in batching
-    pub fn worst_case_merk_patch_element(
-        key: &KeyInfo,
-        value: &Element,
-        change_in_bytes: i32,
-        in_parent_tree_type: TreeType,
-        propagate_for_level: Option<&WorstCaseLayerInformation>,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        check_grovedb_v0_with_cost!(
-            "worst_case_merk_patch_element",
-            grove_version
-                .grovedb_versions
-                .operations
-                .worst_case
-                .worst_case_merk_patch_element
-        );
-
-        let mut cost = OperationCost::default();
-        let key_len = key.max_length() as u32;
-        match value {
-            Element::Item(_, flags) => {
-                let flags_len = flags.as_ref().map_or(0, |flags| {
-                    let flags_len = flags.len() as u32;
-                    flags_len + flags_len.required_space() as u32
-                });
-                // Items need to be always the same serialized size for this to work
-                let sum_item_cost_size =
-                    cost_return_on_error_into_no_add!(cost, value.serialized_size(grove_version))
-                        as u32;
-                let value_len = sum_item_cost_size + flags_len;
-                add_cost_case_merk_patch(
-                    &mut cost,
-                    key_len,
-                    value_len,
-                    change_in_bytes,
-                    in_parent_tree_type,
-                )
-            }
-            _ => {
-                return Err(Error::InvalidParameter("patching can only be on Items"))
-                    .wrap_with_cost(cost);
-            }
-        };
-        if let Some(level) = propagate_for_level {
-            add_worst_case_merk_propagate(&mut cost, level).map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(
+                &mut cost,
+                worst_case_layer_information,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
         } else {
             Ok(())
         }
@@ -258,8 +184,12 @@ impl GroveDb {
         let key_len = key.max_length() as u32;
         add_worst_case_merk_delete(&mut cost, key_len, MERK_BIGGEST_VALUE_SIZE);
         if propagate {
-            add_worst_case_merk_propagate(&mut cost, worst_case_layer_information)
-                .map_err(Error::MerkError)
+            add_worst_case_merk_propagate_versioned(
+                &mut cost,
+                worst_case_layer_information,
+                grove_version,
+            )
+            .map_err(Error::MerkError)
         } else {
             Ok(())
         }

@@ -117,8 +117,10 @@ fn a_commit_is_counted_by_its_records_and_its_bytes() {
     assert_eq!((told.values_logged, told.value_logged_bytes), (1, 900));
 }
 
-/// Reads of the pool are counted as hits and as reads from storage, and
-/// the counts the layers above keep are read as they were counted.
+/// Asks that the pool answers are counted as hits, and a page version
+/// that is read and offered to it as a read from storage: an ask that it
+/// does not answer is no read by itself. The counts the layers above keep
+/// are read as they were counted.
 #[test]
 fn reads_hashes_lookups_and_cleaning_are_counted() {
     let db = Db::new();
@@ -129,7 +131,16 @@ fn reads_hashes_lookups_and_cleaning_are_counted() {
     for _ in 0..3 {
         drop(db.pool.get(page(1), at).expect("in the pool"));
     }
-    assert!(db.pool.get(page(2), at).is_err());
+    let miss = db.pool.get(page(2), at).expect_err("not in the pool");
+    let asked = read(&db, &stats);
+    assert_eq!(asked.cache_hits - before.cache_hits, 3);
+    assert_eq!(asked.page_reads, before.page_reads);
+    let blank = db.pool.blank();
+    drop(
+        db.pool
+            .install_loaded(blank, miss, at, None)
+            .expect("a load"),
+    );
     stats.count_hashes(5);
     stats.count_keyed_lookups(2);
     stats.count_cleaner_bytes(4096);

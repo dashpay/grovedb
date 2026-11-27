@@ -8,7 +8,7 @@ use lignin_store::{
 };
 use lignin_tree::{
     cursor::CursorError, directory::DirectoryError, flat::FlatError, fragment::FragmentError,
-    node::NodeError, value::ValueError,
+    hash::HashError, node::NodeError, value::ValueError,
 };
 
 use super::key::{Subtree, Unit};
@@ -523,6 +523,18 @@ pub enum BatchError {
         /// The subtree whose data column the batch writes.
         subtree: Subtree,
     },
+    /// The transaction serves its records by key because a commit outside
+    /// it met one of its writes (WT7b), and the stale hashes of a Merk
+    /// are asked to be made ([`Scope::evaluate`](super::Scope::evaluate)):
+    /// the hashes are made in the cells of its pages, and it has none.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]): the transaction's
+    /// commit fails with one while the met writes are among its writes.
+    /// No hash was made, and the transaction is still open.
+    EvaluatedByKey {
+        /// The subtree of the Merk.
+        subtree: Subtree,
+    },
     /// The tree type of an entered subtree is longer than the subtree
     /// directory keeps.
     TreeTypeTooLong {
@@ -792,6 +804,13 @@ impl fmt::Display for BatchError {
                      in a transaction that a commit has met"
                 )
             }
+            Self::EvaluatedByKey { subtree } => {
+                write!(
+                    f,
+                    "the stale hashes of the Merk {subtree} are asked to be made in a \
+                     transaction that a commit has met"
+                )
+            }
             Self::TreeTypeTooLong { subtree, len } => {
                 write!(f, "a tree type of {len} bytes for the subtree {subtree}")
             }
@@ -809,15 +828,16 @@ impl Error for BatchError {}
 
 impl BatchError {
     /// Whether the refusal is [`Self::ValueTaken`], [`Self::MovedByKey`],
-    /// [`Self::BothByKey`], [`Self::MerkTaken`], [`Self::EnteredSince`] or
-    /// [`Self::HostAbsent`]: those that a caller answers as it answers a
-    /// commit that fails with a conflict.
+    /// [`Self::BothByKey`], [`Self::EvaluatedByKey`], [`Self::MerkTaken`],
+    /// [`Self::EnteredSince`] or [`Self::HostAbsent`]: those that a caller
+    /// answers as it answers a commit that fails with a conflict.
     pub const fn is_conflict(&self) -> bool {
         matches!(
             self,
             Self::ValueTaken { .. }
                 | Self::MovedByKey { .. }
                 | Self::BothByKey { .. }
+                | Self::EvaluatedByKey { .. }
                 | Self::MerkTaken { .. }
                 | Self::EnteredSince { .. }
                 | Self::HostAbsent { .. }
@@ -852,6 +872,13 @@ pub enum TxnError {
     NotFinalized,
     /// The tree layer did not apply a write.
     Fragment(FragmentError),
+    /// A stale hash was not made
+    /// ([`Scope::evaluate`](super::Scope::evaluate)): a rule of the caller
+    /// refused it, a page or a value was not read, or the element of a
+    /// host is still to be written (`lignin_tree::hash`). The write set is
+    /// what it was before the call, and every hash that was stale is
+    /// stale.
+    Hash(HashError),
     /// A tree page was not read.
     Node(NodeError),
     /// The committed side of a cursor over the nodes of a Merk did not
@@ -903,6 +930,7 @@ impl fmt::Display for TxnError {
             }
             Self::NotFinalized => f.write_str("the transaction has a pending mark left"),
             Self::Fragment(error) => write!(f, "tree pages: {error}"),
+            Self::Hash(error) => write!(f, "a stale hash was not made: {error}"),
             Self::Node(error) => write!(f, "node: {error}"),
             Self::Cursor(error) => write!(f, "cursor: {error}"),
             Self::Flat(error) => write!(f, "flat keyspace: {error}"),
@@ -929,6 +957,7 @@ impl Error for TxnError {
         match self {
             Self::Batch(error) => Some(error),
             Self::Fragment(error) => Some(error),
+            Self::Hash(error) => Some(error),
             Self::Node(error) => Some(error),
             Self::Cursor(error) => Some(error),
             Self::Flat(error) => Some(error),
