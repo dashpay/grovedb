@@ -1004,3 +1004,45 @@ fn a_search_up_to_a_key_reads_no_leaf_beyond_it() {
     // follows is read, as a cursor reads it.
     assert!(first(&pages, &tree, b"b", None, b"").is_err());
 }
+
+/// The search is for keys that a page stores as they are: a bucket of
+/// long keys that it comes to is damage, and neither gone into nor
+/// passed. One that it does not come to, beyond the key it searches up
+/// to or under another prefix, is no error of it.
+#[test]
+fn a_search_reports_a_bucket_among_the_keys_it_searches() {
+    let (mut pages, tree) = Mem::tree(small());
+    let limit = tree.config().key_limit();
+    let long = [&b"b"[..], &vec![b'k'; limit + 9]].concat();
+    for key in [&b"aa"[..], &long, b"ca"] {
+        tree.put(&mut pages, key, b"was").expect("put");
+    }
+    pages.commit();
+    let first = |under: &[u8], end: Option<&[u8]>, pass: &[u8]| {
+        let mut value = Vec::new();
+        let found = tree.first_under(&pages, under, end, |key| key == pass, &mut value);
+        found.map(|key| key.map(|key| (key, value)))
+    };
+    let was = |key: &[u8]| Some((key.to_vec(), b"was".to_vec()));
+    // The bucket is under the prefix, or the search passes the record
+    // before it and comes to it.
+    for (under, pass) in [(&b"b"[..], &b""[..]), (b"", b"aa"), (b"bk", b"")] {
+        let found = first(under, None, pass);
+        assert!(
+            matches!(found, Err(FlatError::Damaged { what, .. }) if what.contains("bucket")),
+            "under {under:?}: {found:?}"
+        );
+    }
+    let found = first(b"", Some(b"c"), b"aa");
+    assert!(matches!(found, Err(FlatError::Damaged { .. })), "{found:?}");
+    // The search ends before it: at a record, at the key it goes up to,
+    // or under a prefix that the bucket is not of.
+    assert_eq!(first(b"", None, b"").unwrap(), was(b"aa"));
+    assert_eq!(first(b"", Some(b"b"), b"aa").unwrap(), None);
+    assert_eq!(first(b"a", None, b"aa").unwrap(), None);
+    assert_eq!(first(b"c", None, b"").unwrap(), was(b"ca"));
+    // The key is in the keyspace, in its bucket.
+    let mut value = Vec::new();
+    assert!(tree.get(&pages, &long, &mut value).expect("read"));
+    assert_eq!(value, b"was");
+}

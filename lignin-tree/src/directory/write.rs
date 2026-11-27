@@ -790,6 +790,9 @@ impl Directory {
     /// id, and no leaf is read whose key range begins at or after its
     /// key ([`FlatTree::first_under`](crate::flat::FlatTree)): the search
     /// reads the pages that a search reads once the records are settled.
+    /// A bucket of long keys that the search comes to under the id is
+    /// damage, and is reported: no key of a directory is that long, and
+    /// a record of a Merk below could not be told from it by passing it.
     fn child_record_in<P: FlatPages + ?Sized>(
         &self,
         pending: &Pending,

@@ -1558,3 +1558,89 @@ fn a_batch_reads_the_pages_of_its_records_and_no_leaf_beside_them() {
         assert_eq!(owner, Some(*prefix));
     }
 }
+
+/// A lookup of the first Merk below a Merk searches keys that a page
+/// stores as they are: no key of a directory is longer. A bucket of long
+/// keys under the id is damage that the lookup reports, with no pending
+/// record and with one behind it: it is not passed as if no Merk were
+/// below, so a Merk with no node is not dropped over it. With a pending
+/// record before it the lookup ends at that record, as it ends at the
+/// record once that is settled.
+#[test]
+fn a_lookup_of_the_merks_below_reports_a_bucket_among_their_records() {
+    use super::super::record::child_key;
+    let (mut pages, directory) = wide(2);
+    let (parent, other) = (below_top(1), below_top(0));
+    let entry = directory.open(&pages, &parent).expect("a lookup");
+    let id = entry.expect("entered").id();
+    let tree = *directory.tree();
+    let long = child_key(id, 7, &vec![b'k'; tree.config().key_limit()]);
+    tree.put(&mut pages, &long, b"no record").expect("a record");
+    let bucket = |error: &DirectoryError| {
+        matches!(
+            error,
+            DirectoryError::Flat(FlatError::Damaged { what, .. }) if what.contains("bucket")
+        )
+    };
+    let enter = |pending: &mut Pending, pages: &Pages, position| {
+        let host = Host {
+            parent: &parent,
+            key: b"z",
+            position,
+        };
+        let prefix = prefix_of(&[(parent.to_vec(), 1), (b"z".to_vec(), position)]);
+        directory
+            .add_in(pending, pages, &prefix, b"tree", Some(host))
+            .expect("entered");
+        prefix
+    };
+
+    // No pending record, and one behind the bucket.
+    let mut behind = Pending::new();
+    enter(&mut behind, &pages, 9);
+    for mut pending in [Pending::new(), behind] {
+        let records = pending.len();
+        let first = directory.first_child_in(&pending, &pages, id);
+        assert!(matches!(&first, Err(error) if bucket(error)), "{first:?}");
+        let has = directory.has_children_in(&pending, &pages, id);
+        assert!(matches!(&has, Err(error) if bucket(error)), "{has:?}");
+        let mut handle = directory.clone();
+        let dropped = handle.unlink_in(&mut pending, &pages, &parent);
+        assert!(
+            matches!(&dropped, Err(error) if bucket(error)),
+            "{dropped:?}"
+        );
+        assert_eq!(pending.len(), records, "a refusal puts no record");
+    }
+    // The Merk beside it has nothing under its id, and the search for it
+    // ends at the first key of another id.
+    let mut pending = Pending::new();
+    let entry = directory.open(&pages, &other).expect("a lookup");
+    let beside = entry.expect("entered").id();
+    let none = directory.first_child_in(&pending, &pages, beside);
+    assert!(none.expect("no bucket under the id").is_none());
+    (directory.clone())
+        .unlink_in(&mut pending, &pages, &other)
+        .expect("dropped");
+
+    // A pending record before the bucket: the lookup ends at it.
+    let mut pending = Pending::new();
+    let before = enter(&mut pending, &pages, 0);
+    let first = directory.first_child_in(&pending, &pages, id);
+    assert_eq!(
+        first.expect("the record").map(|child| child.prefix),
+        Some(before)
+    );
+    let dropped = (directory.clone()).unlink_in(&mut pending, &pages, &parent);
+    // Settled first, the same calls answer the same.
+    let (mut settled, mut same) = (pages.clone(), directory.clone());
+    let mut alone = Pending::new();
+    enter(&mut alone, &settled, 0);
+    same.settle(&mut settled, alone).expect("settled");
+    let single = same.unlink(&mut settled, &parent);
+    assert!(
+        matches!(single, Err(DirectoryError::NotEmpty { .. })),
+        "{single:?}"
+    );
+    assert_eq!(answer(&dropped), answer(&single));
+}

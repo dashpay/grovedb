@@ -445,8 +445,12 @@ impl FlatTree {
     /// the pages do not have yet is answered from the pages that a search
     /// would read if they had it.
     ///
-    /// It is for keys that a page stores as they are: a bucket of long
-    /// keys under `under` is passed, with the keys it holds.
+    /// **It is for a part of the keyspace that has no key longer than a
+    /// page stores.** A bucket of long keys that the search comes to,
+    /// under `under` and before `end`, is damage of its leaf
+    /// ([`FlatError::Damaged`]): it is not gone into, and it is not
+    /// passed, since a record could be in it. One at or after `end`, or
+    /// under another prefix, ends the search as any other key there does.
     pub(crate) fn first_under<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
@@ -487,7 +491,13 @@ impl FlatTree {
                 if !key.starts_with(under) || !before_end(&key) {
                     return Ok(None);
                 }
-                if self.config.is_bucket(key.len()) || pass(&key) {
+                if self.config.is_bucket(key.len()) {
+                    return Err(FlatError::Damaged {
+                        page,
+                        what: "a bucket of long keys where no key is long",
+                    });
+                }
+                if pass(&key) {
                     continue;
                 }
                 read_value(pages, &frame, page, slot, value, out)?;

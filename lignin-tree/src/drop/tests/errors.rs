@@ -299,9 +299,20 @@ fn a_drop_that_is_refused_changes_nothing() {
 
 /// A clear and a drop of a Merk with no node read the first Merk that
 /// the directory has below it, whole: a record of it that is damaged
-/// refuses both, and nothing is changed.
+/// refuses both, and nothing is changed. So does a bucket of long keys
+/// where its record would be, which no directory has: it is not passed as
+/// if no Merk were below.
 #[test]
 fn a_clear_of_a_merk_with_no_node_reads_the_merk_below_it_as_a_drop_does() {
+    for bucket in [false, true] {
+        a_merk_with_no_node_and_damage_below_it(bucket);
+    }
+}
+
+/// [`a_clear_of_a_merk_with_no_node_reads_the_merk_below_it_as_a_drop_does`]
+/// with the record of the Merk below damaged, or with a `bucket` of long
+/// keys under the id and no Merk below.
+fn a_merk_with_no_node_and_damage_below_it(bucket: bool) {
     let db = Db::new();
     let mut txn = db.begin();
     let mut grove = Grove::new(&db, &mut txn);
@@ -322,12 +333,19 @@ fn a_clear_of_a_merk_with_no_node_reads_the_merk_below_it_as_a_drop_does() {
         key: b"inside",
         position: 0,
     };
-    directory
-        .add(&mut txn.flat, &below, b"tree", Some(inside))
-        .expect("entered");
-    // The record of the host of the Merk below holds no prefix and id.
-    let key = crate::directory::record::child_key(id, 0, b"inside");
     let tree = *directory.tree();
+    let key = if bucket {
+        // A key under the id that is longer than a page stores, and so
+        // than any key of a directory.
+        let long = vec![b'k'; tree.config().key_limit()];
+        crate::directory::record::child_key(id, 0, &long)
+    } else {
+        directory
+            .add(&mut txn.flat, &below, b"tree", Some(inside))
+            .expect("entered");
+        // The record of the host of the Merk below holds no prefix and id.
+        crate::directory::record::child_key(id, 0, b"inside")
+    };
     tree.put(&mut txn.flat, &key, b"no record")
         .expect("a record");
     db.commit(txn);
@@ -352,13 +370,14 @@ fn a_clear_of_a_merk_with_no_node_reads_the_merk_below_it_as_a_drop_does() {
             &[leaving],
         )
         .expect_err("refused");
-        assert!(
-            matches!(
-                &error,
-                DropError::Directory(DirectoryError::Damaged { key: at, .. }) if *at == key
-            ),
-            "{error}"
-        );
+        let reported = match &error {
+            DropError::Directory(DirectoryError::Damaged { key: at, .. }) => !bucket && *at == key,
+            DropError::Directory(DirectoryError::Flat(FlatError::Damaged { what, .. })) => {
+                bucket && what.contains("bucket")
+            }
+            _ => false,
+        };
+        assert!(reported, "{error}");
         assert!(txn.tree.changed().is_empty());
         assert_eq!(txn.flat.written().count(), 0);
         db.roll_back(txn);

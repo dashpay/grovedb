@@ -125,7 +125,9 @@
 //!   address ([`RootChange::Carried`]).
 //!
 //! No key is longer than 265 bytes, so none is the bucket of a long key,
-//! on any page size.
+//! on any page size. A bucket in the keyspace is damage: the lookup of
+//! the first Merk below a Merk reports one that it comes to among the
+//! records it searches, and does not pass it.
 //!
 //! # Ids, and how a lookup tells a left-over entry
 //!
