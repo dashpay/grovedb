@@ -512,10 +512,10 @@ impl Target {
     /// nothing is emptied and nothing built
     /// ([`CheckpointError::Replaced`]); and what that directory lists
     /// then is read by the rule once more, so that one which was put
-    /// there, or filled, between the first look and the lock is neither
-    /// emptied nor built in ([`CheckpointError::NotStaging`]). Where it
-    /// lists the
-    /// directory an earlier creation built in, that one is removed with
+    /// there, or filled, between the first look and the lock, and which
+    /// the rule refuses, is neither emptied nor built in
+    /// ([`CheckpointError::NotStaging`]). Where it lists the directory
+    /// an earlier creation built in, that one is removed with
     /// what it holds ([`take_over`]), and nothing else is. A directory
     /// that this call has just made is read in the same way: it is empty
     /// until its lock file is in it, and somebody else can have been in
@@ -1489,7 +1489,7 @@ pub enum AtPath {
 /// with [`CREATING_SUFFIX`] added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Beside {
-    /// No directory at the call's last look.
+    /// Absent at last look, or unchecked.
     Nothing,
     /// The staging directory that a creation left, which is removed now,
     /// durably, with what was built in it.

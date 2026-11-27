@@ -435,10 +435,11 @@
 //!   directory above lists nothing under the name as it was given: then
 //!   every entry of it in which that lock file is found has to be a
 //!   directory. **And what the directory lists then is read by the rule
-//!   once more** ([`CheckpointError::NotStaging`]): with a directory
-//!   that came under the name, and with one that a file came into,
-//!   between the first look and the lock, the call goes no further. Only
-//!   then is anything built, or decided to be removed.
+//!   once more** ([`CheckpointError::NotStaging`]): where a directory
+//!   that came under the name, or a file that came into the directory,
+//!   between the first look and the lock gives a listing that the rule
+//!   refuses, the call goes no further. Only then is anything built, or
+//!   decided to be removed.
 //! - What an earlier creation built there is removed only after two
 //!   syncs, which take as long as the device takes (below). So the
 //!   staging directory is looked for, and read by the rule, a third time
