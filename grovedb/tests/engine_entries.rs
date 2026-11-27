@@ -1,5 +1,5 @@
 //! The look at a directory's entries that says which engine's database it
-//! holds and opens nothing (`grovedb::engine::entries::look`), in each build
+//! holds and opens nothing (`grovedb::engine::look_at_entries`), in each build
 //! that compiles it: with RocksDB alone, with LigninDB alone and with both.
 
 #![cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
@@ -10,7 +10,7 @@ use std::{
     time::SystemTime,
 };
 
-use grovedb::engine::{entries::look, EngineKind};
+use grovedb::engine::{look_at_entries as look, EngineKind};
 
 /// Every entry under `dir`, by its path: whether it is a directory, its
 /// bytes where it is a file, and when it was last modified.

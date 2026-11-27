@@ -60,7 +60,7 @@
 //!
 //! **A directory with an entry of LigninDB's is refused**, before anything
 //! of it is opened or locked: GroveDB's look at the names of its entries
-//! (`grovedb::engine::entries::look`), which the open that chooses the
+//! (`grovedb::engine::look_at_entries`), which the open that chooses the
 //! engine asks too, is to say RocksDB or nothing. A RocksDB open of a
 //! LigninDB directory makes a RocksDB database beside the LigninDB one,
 //! which would be read in place of the state the directory holds; the
@@ -89,7 +89,7 @@ use std::{
     time::SystemTime,
 };
 
-use grovedb::engine::{entries::look, EngineKind};
+use grovedb::engine::{look_at_entries, EngineKind};
 use grovedb_storage::Error as StorageError;
 use rocksdb::{ColumnFamily, DBRawIterator, Options, ReadOptions, DB};
 
@@ -156,7 +156,7 @@ fn source_error(dir: &Path, what: impl std::fmt::Display) -> ToolError {
 /// where it cannot list it. A directory that is not there, or in which no
 /// entry says an engine, is left to the open.
 fn of_rocksdb_alone(dir: &Path) -> Result<(), ToolError> {
-    let words = match look(dir) {
+    let words = match look_at_entries(dir) {
         Ok(None | Some((EngineKind::RocksDb, _))) => return Ok(()),
         Ok(Some((EngineKind::Lignin, entry))) => format!(
             "it holds `{}`, an entry that only a LigninDB database makes, and this command reads \
