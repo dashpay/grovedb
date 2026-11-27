@@ -213,7 +213,6 @@ impl FaultyVfs {
         }
     }
 
-    /// The calls made since the last time this was asked.
     /// The hints of a read since the last call of this, with the calls
     /// that were recorded before each counted from the last
     /// [`Self::take_calls`].
@@ -221,6 +220,7 @@ impl FaultyVfs {
         std::mem::take(&mut self.script.lock().unwrap().hints)
     }
 
+    /// The calls made since the last time this was asked.
     pub(crate) fn take_calls(&self) -> Vec<(Op, String)> {
         std::mem::take(&mut self.script.lock().unwrap().calls)
     }

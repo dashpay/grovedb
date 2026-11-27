@@ -172,13 +172,19 @@ pub struct FlushStats {
     /// The page was written as a base image. Not zero means that a commit
     /// or a page step did not tell write-back what it did.
     pub runs_refused: u64,
-    /// Pages that write-back built from the blocks of their chains, because
-    /// the pool no longer held the version of the newest link: to apply a
-    /// run to before it is written, and to give a value its place in a page
-    /// that a table checkpoint writes.
+    /// Pages that write-back built from the blocks of their chains: the
+    /// page under a run that is about to be written, where the pool does
+    /// not hold it as a version of its own (it was evicted, or the run is
+    /// a page step's on a version that a segment already holds, so that
+    /// the frame in the pool is the one that is owed); and a page whose
+    /// chain is consolidated ([`WriteBack::consolidate`]). A chain that
+    /// could not be read to its end is not counted.
+    ///
+    /// [`WriteBack::consolidate`]: super::WriteBack::consolidate
     pub chains_read: u64,
-    /// The blocks of those chains: a base image and the runs after it,
-    /// each a read of its segment.
+    /// The blocks write-back read for those pages, and for the chains it
+    /// could not read to their end: a base image and the runs after it,
+    /// each counted when its segment gave it.
     pub chain_blocks_read: u64,
     /// Values appended to the value log for a pending value.
     pub values_appended: u64,
