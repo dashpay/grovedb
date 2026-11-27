@@ -865,8 +865,8 @@ database: the engine's open refuses a path whose last name ends in
 `.creating`, in any case of its ASCII letters (`OpenError::Creating`). The
 staging directory is for a later creation at the same target to take over,
 or for `lignindb::checkpoint::delete` to remove: that module says when
-each does, and that neither touches a directory under that name which
-holds anything but what a creation puts there.
+each does, and that neither builds in nor empties a directory under that
+name which holds anything but what a creation puts there.
 
 One failure leaves the whole target instead. For a copy, the manifest was
 written, and then its name could not be made durable, and the manifest

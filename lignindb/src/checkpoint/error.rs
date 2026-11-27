@@ -67,9 +67,12 @@ pub enum CheckpointError {
     /// in the directory above, with the lock file it holds. Right before
     /// the rename, a creation looks for both directories, the one that
     /// was built in holding what the creation put into it and nothing
-    /// else. The call does not know why it was not found so. Nothing was
-    /// given the name of the target, and nothing was removed from what
-    /// was not found.
+    /// else. And right before the lock file of a staging directory goes,
+    /// whoever removes that directory looks for it with that lock file,
+    /// empty, and nothing else in it. The call does not know why it was
+    /// not found so, and went no further. Nothing was given the name of
+    /// the target. Where it is that last look which failed, what was
+    /// built in the staging directory can have been removed before it.
     Replaced {
         /// The path of the directory.
         dir: PathBuf,
@@ -89,7 +92,9 @@ pub enum CheckpointError {
     /// Or [`delete`](super::delete) or [`finish`](super::finish) was to
     /// take the lock of a database directory, and that directory lists
     /// something else than a file under the name of its lock file, such
-    /// as a link: the lock was not taken, and nothing was removed.
+    /// as a link, or lists nothing under it while the name leads to
+    /// something all the same: the call took no lock, and went no
+    /// further.
     NotALock {
         /// The path of the lock file.
         path: PathBuf,
@@ -102,11 +107,12 @@ pub enum CheckpointError {
     /// is of another kind, or a lock file that holds a byte. So it is not
     /// what a creation left, whatever it is: a creation at the target
     /// beside it does not build in it, and [`delete`](super::delete),
-    /// given the directory itself, does not remove it. Nothing in it was
-    /// removed. Where the first look found it so, no lock was taken in it
-    /// and no lock file was made in it either; one that came under the
-    /// name, or came to list the entry, after that look was refused by a
-    /// look under the lock (the [module documentation](super), "What the
+    /// given the directory itself, does not remove it. This is the error
+    /// of the looks that a call makes before it removes anything: the
+    /// call went no further once it read that listing. Where its first
+    /// look read it, the call had taken no lock in the directory and
+    /// made no lock file in it; what it can have done before a later
+    /// look read it is in the [module documentation](super) ("What the
     /// looks do not tell"). A [`delete`](super::delete) of the target
     /// beside it does not fail with this: it passes the directory over.
     ///
@@ -192,9 +198,10 @@ pub enum CheckpointError {
     /// or a file, or something else, such as a link to a directory, which
     /// is not followed. [`delete`](super::delete) was given the path, and
     /// where nothing is there at all, nothing that a creation left was
-    /// found beside it either: no directory, or one that no creation
-    /// left, which is as it was. Or it is the name of the staging
-    /// directory a creation was to make. Nothing was removed.
+    /// found beside it either: no directory, or one that a look before
+    /// any removal refused as none that a creation left. Or it is the
+    /// name of the staging directory a creation was to make. Nothing was
+    /// removed.
     NotADirectory {
         /// The path.
         dir: PathBuf,

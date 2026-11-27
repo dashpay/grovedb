@@ -184,7 +184,8 @@ the database at one committed version, in a directory of its own
    that is there under the name `path.creating` is built in only where it
    holds nothing but what a creation puts there, an empty `LOCK` and
    `checkpoint.creating`: a database or anything else under that name
-   refuses the creation and stays as it is.
+   refuses the creation, which builds nothing in it and removes nothing
+   from it.
 
 Commits go on while it is built. The recording step holds the commit
 lock for that step. A commit waits for the checkpoint's sync where its

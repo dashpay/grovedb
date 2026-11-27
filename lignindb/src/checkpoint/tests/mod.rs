@@ -553,6 +553,9 @@ pub(super) struct Meddling {
     /// is there: a name that the file system finds and does not list so.
     /// A test that holds it says which, and when.
     pub(super) unlisted: Arc<Mutex<Option<PathBuf>>>,
+    /// A file that cannot be opened, as one that the device fails to
+    /// read: [`Vfs::open`] of this path answers an error of the device.
+    pub(super) not_opened: Arc<Mutex<Option<PathBuf>>>,
     /// How many syncs each set had that was asked for
     /// ([`Vfs::sync_together`]).
     pub(super) sets: Mutex<Vec<usize>>,
@@ -577,6 +580,7 @@ impl Meddling {
             folds: None,
             made_read_only: None,
             unlisted: Arc::default(),
+            not_opened: Arc::default(),
             sets: Mutex::default(),
             set_dirs: Mutex::default(),
         }
@@ -733,6 +737,9 @@ impl Meddling {
 
 impl Vfs for Meddling {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
+        if self.not_opened.lock().expect("a path").as_deref() == Some(path) {
+            return Err(io::Error::other("the test's: the file is not read"));
+        }
         let file = self.inner.open(&self.kept(path), mode)?;
         let new = matches!(
             mode,

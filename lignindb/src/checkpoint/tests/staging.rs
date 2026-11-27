@@ -486,10 +486,12 @@ fn without(mut held: BTreeMap<PathBuf, Entry>, names: &[&str]) -> BTreeMap<PathB
 ///
 /// A creation and a deletion of the staging directory itself answer the
 /// look's error. A deletion of a checkpoint at the target deletes it and
-/// passes over what it finds under the staging name then, with no error;
-/// a deletion where nothing has the target's name finds nothing that a
-/// creation left; and [`checkpoint::finish`] leaves the checkpoint as it
-/// was and says that what is beside it is no creation's.
+/// passes over what it finds under the staging name then, with no error.
+/// A deletion where nothing has the target's name finds nothing that a
+/// creation left where the look read what no creation puts there, and
+/// answers the look's error otherwise. And [`checkpoint::finish`] leaves
+/// the checkpoint as it was and says that what is beside it is no
+/// creation's.
 #[test]
 fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
     let trap: Arc<Mutex<Option<Trap>>> = Arc::default();
@@ -615,8 +617,11 @@ fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
             _ => Look::NotStaging,
         };
         match call {
-            Call::Creation | Call::DeletionOfTheDirectory => {
+            Call::Creation | Call::DeletionOfTheDirectory | Call::DeletionWhereNothingIs => {
                 let said = match &look {
+                    Look::NotStaging if call == Call::DeletionWhereNothingIs => {
+                        is_no_directory(&done, &target)
+                    }
                     Look::NotStaging => is_not_staging(&done, &staged, found),
                     Look::NoLockFile => matches!(
                         &done,
@@ -631,9 +636,6 @@ fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
                 assert!(said, "{context}: {done:?}");
             }
             Call::DeletionOfTheCheckpoint => assert!(done.is_ok(), "{context}: {done:?}"),
-            Call::DeletionWhereNothingIs => {
-                assert!(is_no_directory(&done, &target), "{context}: {done:?}")
-            }
             Call::Finishing => {
                 let finished = finished.expect("it was asked");
                 assert!(
@@ -728,13 +730,15 @@ fn what_comes_between_the_first_look_and_the_takeover_is_preserved() {
 /// - A file of somebody's comes into the staging directory. A deletion
 ///   does not remove the lock file beside it: the directory stays, with
 ///   its lock file and their file, and a deletion that was given the
-///   directory is refused for the file. A creation builds in the
+///   directory, or the target where nothing has its name, answers that
+///   it did not find the directory as it has to be
+///   ([`CheckpointError::Replaced`]). A creation builds in the
 ///   directory, finds the file before it gives its checkpoint a name,
 ///   and takes away what it built and nothing else.
 /// - The staging directory is moved away, and a foreign directory is
-///   given its name. The removal finds nothing to remove there, and no
-///   lock file of the foreign directory is removed: it is as it was,
-///   entry for entry.
+///   given its name. The removal finds nothing to remove there, which is
+///   the error of each of those calls, and no lock file of the foreign
+///   directory is removed: it is as it was, entry for entry.
 ///
 /// A deletion of a checkpoint at the target has deleted the checkpoint by
 /// then, and returns no error for what it finds under the staging name.
@@ -812,20 +816,18 @@ fn what_comes_while_a_staging_directory_is_emptied_keeps_its_lock_file() {
                     matches!(&done, Err(CheckpointError::Replaced { dir }) if *dir == staged),
                     "{context}: {done:?}"
                 ),
-                (Call::DeletionOfTheDirectory, None) => {
-                    assert!(
-                        is_not_staging(&done, &staged, "theirs"),
-                        "{context}: {done:?}"
-                    )
-                }
-                (Call::Creation | Call::DeletionOfTheDirectory, Some(_)) => {
+                (Call::DeletionOfTheDirectory | Call::DeletionWhereNothingIs, None) => assert!(
+                    matches!(&done, Err(CheckpointError::Replaced { dir }) if *dir == staged),
+                    "{context}: {done:?}"
+                ),
+                (
+                    Call::Creation | Call::DeletionOfTheDirectory | Call::DeletionWhereNothingIs,
+                    Some(_),
+                ) => {
                     assert!(gone(&done), "{context}: {done:?}")
                 }
                 (Call::DeletionOfTheCheckpoint, _) => {
                     assert!(done.is_ok(), "{context}: {done:?}")
-                }
-                (Call::DeletionWhereNothingIs, _) => {
-                    assert!(is_no_directory(&done, &target), "{context}: {done:?}")
                 }
                 (Call::Finishing, _) => {
                     let finished = finished.expect("it was asked");
@@ -931,6 +933,97 @@ fn stage_of(state: &dyn Vfs, target: &Path, context: &str) -> Stage {
         (Some(_), Some(built)) if built.iter().any(|name| name == "MANIFEST") => Stage::Whole,
         (Some(_), Some(_)) => Stage::PartlyWritten,
     }
+}
+
+/// **What takes the place of a staging directory once its lock file has
+/// gone is not removed.** The lock file of what a creation left is
+/// removed, and then the directory, by a removal that fails where the
+/// directory is not empty. Here the emptied directory is moved away
+/// before that removal, and a foreign directory has its name: the removal
+/// answers that it is not empty, and the foreign directory is as it was,
+/// entry for entry. A deletion that has deleted the checkpoint at the
+/// target reads what is under the name then and returns no error, and
+/// [`checkpoint::finish`] says that what is beside the checkpoint is no
+/// creation's. A deletion of the staging directory itself, and one of
+/// the target where nothing has its name, answer the removal's error.
+#[test]
+fn what_takes_the_place_of_a_staging_directory_whose_lock_file_went_is_not_removed() {
+    let trap: Arc<Mutex<Option<Trap>>> = Arc::default();
+    let mut scene = Scene::on(files::store_on_meddling(|plain, _| Meddling {
+        before_remove_dir: hook(&trap, Boundary::TheRemoval),
+        ..Meddling::plain(plain)
+    }));
+    for call in [
+        Call::DeletionOfTheCheckpoint,
+        Call::DeletionWhereNothingIs,
+        Call::DeletionOfTheDirectory,
+        Call::Finishing,
+    ] {
+        let context = format!("{call:?}");
+        let target = scene.fresh("target");
+        let (staged, aside, away) = (staging(&target), scene.fresh("aside"), scene.fresh("away"));
+        files::leave_built(&staged, false);
+        if matches!(call, Call::DeletionOfTheCheckpoint | Call::Finishing) {
+            scene.place(&target);
+        }
+        scene.put(Foreign::NamesOfAnotherStore, &aside);
+        let theirs = exactly(&aside);
+        let (at, from, to) = (staged.clone(), aside.clone(), away.clone());
+        *trap.lock().expect("the trap") = Some(Trap {
+            boundary: Boundary::TheRemoval,
+            path: staged.clone(),
+            change: Box::new(move || {
+                std::fs::rename(&at, &to).expect("it is moved away");
+                std::fs::rename(&from, &at).expect("another is given its name");
+            }),
+        });
+        let finished = match call {
+            Call::Finishing => Some(checkpoint::finish(&*scene.db.vfs, &target)),
+            _ => None,
+        };
+        let done = match call {
+            Call::DeletionOfTheCheckpoint | Call::DeletionWhereNothingIs => scene.delete(&target),
+            Call::DeletionOfTheDirectory => scene.delete(&staged),
+            Call::Creation | Call::Finishing => Ok(()),
+        };
+        assert!(
+            trap.lock().expect("the trap").is_none(),
+            "{context}: {done:?}"
+        );
+
+        match call {
+            Call::DeletionOfTheCheckpoint => assert!(done.is_ok(), "{context}: {done:?}"),
+            Call::Finishing => {
+                let finished = finished.expect("it was asked");
+                assert!(
+                    matches!(
+                        finished,
+                        Ok(Finished {
+                            at: AtPath::Database,
+                            beside: Beside::NotStaging
+                        })
+                    ),
+                    "{context}: {finished:?}"
+                );
+            }
+            _ => assert!(
+                matches!(
+                    &done,
+                    Err(CheckpointError::Io { action: "remove the directory", path, source })
+                        if *path == staged && source.kind() == ErrorKind::DirectoryNotEmpty
+                ),
+                "{context}: {done:?}"
+            ),
+        }
+        assert_eq!(target.exists(), call == Call::Finishing, "{context}");
+        assert_eq!(exactly(&staged), theirs, "{context}");
+        // What a creation left is where it was moved to, and holds
+        // nothing any more.
+        let left: Vec<PathBuf> = exactly(&away).into_keys().collect();
+        assert_eq!(left, [PathBuf::from("")], "{context}");
+        scene.outside_is_as_it_was();
+    }
+    scene.the_store_is_as_it_was();
 }
 
 /// **Every stage at which a creation is cut is taken over by the next

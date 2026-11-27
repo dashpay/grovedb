@@ -362,9 +362,9 @@ engines unless the build sets it otherwise ([engine.md](../engine.md#the-default
 LigninDB's deletion can remove more than a checkpoint, the staging
 directory `path.creating` that a creation left beside it among what it
 removes: it is given the checkpoint's path and nothing else. A directory
-of that name that no creation left, which holds anything but an empty
-`LOCK` and a directory `checkpoint.creating`, it passes over and leaves
-as it is. It removes the database that is at
+of that name that holds anything but an empty `LOCK` and a directory
+`checkpoint.creating` it passes over: once it reads that, it does
+nothing more with the directory. It removes the database that is at
 that path when it runs, whatever made it: it cannot tell a checkpoint
 from another database, and nothing keeps the path from leading to
 another directory meanwhile. So the application makes its checkpoints
