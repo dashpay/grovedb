@@ -125,9 +125,10 @@ pub struct CleanerConfig {
 
 impl CleanerConfig {
     /// The defaults: work towards 14 dead bytes in a hundred in segments;
-    /// in the value log, clean files at least 40 in a hundred dead once 18
-    /// in a hundred of its bytes are, and the file most worth it whatever
-    /// its share while over 20; let at most 4 in a hundred wait for a table
+    /// in the value log, clean files at least 40 in a hundred dead once
+    /// more than 18 in a hundred of its bytes are, and the file most worth
+    /// it whatever its share while more than 20 are; let at most 4 in a
+    /// hundred wait for a table
     /// checkpoint; close a file that is being filled when it holds 1 in a
     /// hundred of the store, or when 2 in a hundred of the store are dead
     /// in it, and none before it holds 64 KiB; copy 8 MiB of blocks in a

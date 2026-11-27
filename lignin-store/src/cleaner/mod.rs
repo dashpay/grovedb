@@ -369,10 +369,10 @@
 //!    first, while their live bytes stay within
 //!    [`CleanerConfig::max_pass_bytes`].
 //! 4. A file whose cleaning moved nothing, because write transactions held
-//!    the pages of its values, is set aside: while it stays among the
-//!    closed files a cleaning can help, the seven passes after that one
-//!    pass it over, however many files are set aside; a file that leaves
-//!    that list and comes back is set aside no more.
+//!    the pages of its values, is set aside: the seven passes after that
+//!    one pass it over, however many files are set aside, unless one of
+//!    them finds it missing from the closed files a cleaning can help,
+//!    after which it is set aside no more.
 //!
 //! **The worst case of the value log's dead share:** with the ceiling at
 //! or above the target, a pass that finds the counted bytes over the
@@ -380,8 +380,9 @@
 //! not set aside, so once the cleaner has caught up they are at most the
 //! ceiling but for what no pass cleans: the files being filled, of which
 //! one shorter than [`CleanerConfig::min_segment_len`] is not closed
-//! however much of it is dead. Files that wait to be deleted, and those a
-//! pin or a checkpoint's hold keeps, are not counted and come on top.
+//! however much of it is dead. Files that wait to be deleted, and those
+//! that only a pin or a checkpoint's hold keeps, are not counted and come
+//! on top.
 //! Deaths spread evenly over the files, as regroupings spread them, can
 //! bring the log to the ceiling: no file need reach the floor before it.
 //! It is not a bound a pass keeps, and the log can come to rest well under
@@ -395,9 +396,9 @@
 //!
 //! A move is refused while a write transaction holds a private copy of
 //! the page (PV7), and the copy that was appended for it is dead. A file
-//! whose cleaning moved nothing for that reason is passed over by the
-//! seven passes after that one, however many files are set aside with it,
-//! and those passes are for the other files worth cleaning. Each try of a file
+//! whose cleaning moved nothing for that reason is set aside (step 4 of
+//! the rule above), and the passes it is set aside for are for the other
+//! files worth cleaning. Each try of a file
 //! that a long transaction keeps busy appends its live values again for
 //! nothing; a file is tried because the floor let the cleaner take it,
 //! so at least that share of it is dead, unless the log is over its
