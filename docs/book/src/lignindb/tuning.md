@@ -153,10 +153,12 @@ the dead space of a store stays below 20 in a hundred under a steady
 load of commits, as read after a pass of the cleaner (14 that the
 cleaner leaves, and at most 4 more that wait for a table checkpoint),
 for a store with no reader on an old version, no operation that runs for
-long, and blocks that are large against `min_segment_len`. The value log is
-held between 18 and 20 in a hundred dead, at 20 where its deaths are spread
-evenly over its files: of the files it can clean, the cleaner copies those
-at least 40 in a hundred dead, and files that are mostly live only over 20. What a burst
+long, and blocks that are large against `min_segment_len`. The value log
+comes to rest between 18 and 20 in a hundred dead once the cleaner has
+caught up, at 20 where its deaths are spread evenly over its files: of the
+files it can clean, the cleaner copies those at least 40 in a hundred dead,
+and files that are mostly live only while the log is over 20, one a pass.
+What the commits free faster than the passes clean shows on top. What a burst
 of commits frees faster than the cleaner moves shows until it has caught
 up. A snapshot that is kept holds what was freed after its version, and
 a checkpoint that is kept holds the files it links, whatever the

@@ -88,7 +88,9 @@ pub struct CleanerConfig {
     /// one pass over the segments copies, and one block more: a pass
     /// stops moving once it has written that many. With [`Self::idle`] it
     /// bounds the copies of blocks that the cleaner writes in a second. A
-    /// pass over the value log has its own measure, one file.
+    /// pass over the value log cleans its first file whole, and after it
+    /// the files that are nearly empty while their live bytes stay within
+    /// this.
     pub max_pass_bytes: u64,
     /// The length at which the segment that takes the moved blocks is
     /// sealed and the next one begun.
@@ -103,18 +105,20 @@ pub struct CleanerConfig {
     pub value_dead_percent: u8,
     /// The share of a value-log file's own bytes, in a hundred, that must
     /// be dead for a pass to clean it while the value log is above its
-    /// target and not over its ceiling. Each live value of a file costs a
-    /// copy and a page step, so a file that is mostly live is not worth
-    /// the space it gives back.
+    /// target and not over its ceiling; one byte in a hundred at least,
+    /// whatever is set here, unless the target is 0. Each live value of a
+    /// file costs a copy and a page step, so a file that is mostly live is
+    /// not worth the space it gives back.
     pub value_min_file_dead_percent: u8,
     /// The share of dead bytes of the value log, in a hundred, over which a
     /// pass cleans the file with the largest share of dead bytes whatever
-    /// that share is, from one byte in a hundred. Where the deaths are
-    /// spread over every file, no file may reach the floor, and this is
-    /// where the value log is held: its dead share stays at it, as read
-    /// after a pass, with what a burst of commits frees faster than the
-    /// cleaner cleans on top. Below [`Self::value_dead_percent`] it is
-    /// over whenever the target is.
+    /// that share is, from one byte in a hundred. It is not a bound a pass
+    /// keeps: a pass cleans one such file, and while it is over, each pass
+    /// takes the next. Where the deaths are spread over every file, no
+    /// file may reach the floor, and the value log comes to rest at this
+    /// share once the cleaner has caught up, with what the commits free
+    /// faster than the passes clean on top. Below
+    /// [`Self::value_dead_percent`] it is over whenever the target is.
     pub value_ceiling_dead_percent: u8,
     /// How long the background loop sleeps between two passes when nobody
     /// wakes it.
@@ -125,7 +129,7 @@ impl CleanerConfig {
     /// The defaults: work towards 14 dead bytes in a hundred in segments;
     /// in the value log, clean files at least 40 in a hundred dead once 18
     /// in a hundred of its bytes are, and the file most worth it whatever
-    /// its share over 20; let at most 4 in a hundred wait for a table
+    /// its share while over 20; let at most 4 in a hundred wait for a table
     /// checkpoint; close a file that is being filled when it holds 1 in a
     /// hundred of the store, or when 2 in a hundred of the store are dead
     /// in it, and none before it holds 64 KiB; copy 8 MiB of blocks in a
@@ -134,9 +138,10 @@ impl CleanerConfig {
     /// With these, the dead space of a store stays below 20 in a hundred
     /// under a steady load of commits, as read after a pass of the
     /// cleaner: in the segments, 14 that the cleaner leaves, and at most 4
-    /// more in what was emptied and waits to be deleted; in the value log,
-    /// 20, the ceiling, where its deaths are spread evenly over its files,
-    /// and less where they are not. That is for a store with no
+    /// more in what was emptied and waits to be deleted. The value log
+    /// comes to rest at 20, the ceiling, where its deaths are spread
+    /// evenly over its files, and between 18 and 20 where files reach the
+    /// floor before the log reaches the ceiling. That is for a store with no
     /// reader on an old version, no operation that runs for long, and
     /// blocks that are large against [`Self::min_segment_len`]. What a
     /// burst of commits kills faster than [`Self::max_pass_bytes`] and

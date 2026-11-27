@@ -35,10 +35,9 @@ const ASK_AGAIN_AFTER: u32 = 16;
 
 /// For how many passes a file is set aside after a cleaning that moved
 /// nothing, because write transactions held copies of the pages of its
-/// values. Each try appends the file's values again, and the copies are
-/// dead. The wait is the same however many files are set aside: a file
-/// that is set aside is one the floor lets the cleaner take, mostly dead,
-/// and the next look at it costs the few values it holds.
+/// values: it is looked at again this many passes later. Each try appends
+/// the file's live values again, and the copies are dead. The wait is the
+/// same however many files are set aside.
 pub(super) const BUSY_PASSES: u64 = 8;
 
 /// The share of a file's bytes, in a hundred, that are dead from which a

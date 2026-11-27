@@ -336,14 +336,14 @@ impl Db {
         self.pool.mark_written(frame).expect("written");
     }
 
-    /// The groups of the log, each as its values (owner and bytes), the
-    /// pages it has runs of, the pages it freed and the pointers released.
     /// What the group of each commit repeated for carried entries, in
     /// the order of the commits.
     pub(crate) fn carried(&self) -> Vec<CarriedValues> {
         self.state.borrow().carried.clone()
     }
 
+    /// The groups of the log, each as its values (owner and bytes), the
+    /// pages it has runs of, the pages it freed and the pointers released.
     pub(crate) fn groups(&self) -> Vec<Logged> {
         let state = self.state.borrow();
         let items = scan(&state.log).expect("a log");

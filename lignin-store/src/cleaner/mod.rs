@@ -355,19 +355,22 @@
 //!   of the reference workload at a target of 14, nine bytes in ten of
 //!   what it copied came from files less than a fifth dead.
 //! - Over [`CleanerConfig::value_ceiling_dead_percent`] (20 by default),
-//!   that file is cleaned whatever its share, from one byte in a hundred.
-//!   **This is the worst case of the value log's dead share:** where the
-//!   deaths are spread evenly over the files, as regroupings spread them,
-//!   no file need reach the floor, and the log is held at the ceiling, as
-//!   read after a pass. Where they are not, files reach the floor first,
-//!   and the log is held between the target and the ceiling.
+//!   that file is cleaned whatever its share, from one byte in a hundred,
+//!   one file a pass. **This is the worst case of the value log's dead
+//!   share:** where the deaths are spread evenly over the files, as
+//!   regroupings spread them, no file need reach the floor, and the log
+//!   comes to rest at the ceiling once the cleaner has caught up, with
+//!   what the commits free faster than the passes clean on top. Where
+//!   they are not, files reach the floor first, and the log comes to rest
+//!   between the target and the ceiling.
 //! - After it, the files that are at least 90 in a hundred dead are
 //!   cleaned in the same pass, most dead first, while their live bytes
 //!   stay within [`CleanerConfig::max_pass_bytes`]: a burst of deletes
 //!   empties files faster than one a pass.
 //! - A file whose cleaning moved nothing, because write transactions held
-//!   the pages of its values, is set aside for a fixed number of passes,
-//!   and is not replaced by a file under the floor.
+//!   the pages of its values, is set aside: it is looked at again eight
+//!   passes later, however many files are set aside, and no file under
+//!   the floor is taken in its place.
 //!
 //! With a target of nothing dead, any dead byte is enough, whatever the
 //! floor: that is how `lignin compact` asks for every byte back.
@@ -380,11 +383,13 @@
 //!
 //! A move is refused while a write transaction holds a private copy of
 //! the page (PV7), and the copy that was appended for it is dead. A file
-//! whose cleaning moved nothing for that reason is set aside, for longer
-//! the more files are set aside with it. So once each of the files that a
-//! long transaction keeps busy has been tried, about one pass in eight
-//! appends values again for nothing, however many those files are, and
-//! the passes between are for the files that can be cleaned.
+//! whose cleaning moved nothing for that reason is set aside for eight
+//! passes, however many files are set aside with it, and the passes
+//! between are for the other files worth cleaning. Each try of a file
+//! that a long transaction keeps busy appends its live values again for
+//! nothing; a file is tried because the floor let the cleaner take it,
+//! so at least that share of it is dead, unless the log is over its
+//! ceiling or the target is nothing dead.
 //!
 //! A cleaning rewrites pointers in the pool, and the pages it changed are
 //! unwritten until write-back's next pass. Until then the block that the

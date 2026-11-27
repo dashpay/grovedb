@@ -573,8 +573,7 @@ impl<'s> Cleaner<'s> {
         let mut classes: Vec<(DeadClass, bool)> = victims
             .iter()
             .map(|file| {
-                let found = space.segments.iter().find(|segment| segment.file == *file);
-                let (dead, len) = found.map_or((0, 0), |segment| {
+                let (dead, len) = space.segment(*file).map_or((0, 0), |segment| {
                     (segment.dead_bytes(), segment.block_bytes)
                 });
                 (DeadClass::of(dead, len), false)

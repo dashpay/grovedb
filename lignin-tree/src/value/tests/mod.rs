@@ -535,14 +535,14 @@ impl Db {
         assert_eq!(counted, expected);
     }
 
-    /// The groups of the log, each as its values (owner, name and bytes),
-    /// the pages it has runs of or freed, and the pointers it released.
     /// What the group of each commit repeated for carried cells, in the
     /// order of the commits.
     fn carried(&self) -> Vec<CarriedValues> {
         self.state.borrow().carried.clone()
     }
 
+    /// The groups of the log, each as its values (owner, name and bytes),
+    /// the pages it has runs of or freed, and the pointers it released.
     fn groups(&self) -> Vec<Logged> {
         let state = self.state.borrow();
         let mut groups = Vec::new();
