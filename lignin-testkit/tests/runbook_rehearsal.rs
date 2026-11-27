@@ -5,12 +5,18 @@
 //! keeps the RocksDB database it makes, which the steps after it migrate.
 //!
 //! `lignin-tools/tests/operator_docs.rs` holds the documents' other
-//! commands to the code. `runbook.sh` runs the blocks of the documents and
-//! keeps no command of the benchmark of its own.
+//! commands to the code, and reads a document as this test does
+//! (`document_text`). `runbook.sh` runs the blocks of the documents and
+//! runs no command of the benchmark of its own.
 
 use std::{fs, path::PathBuf};
 
 use lignin_testkit::bench::{cli::parse_run, BenchError, EngineChoice, RunOptions};
+
+#[path = "../../lignin-tools/tests/document_text/mod.rs"]
+mod document_text;
+
+use document_text::{code_spans, commands, parse, simple_commands, words};
 
 /// The operator documents.
 const DOCUMENTS: [&str; 5] = [
@@ -25,60 +31,58 @@ fn operator_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../docs/lignindb/operator")
 }
 
-/// The simple commands of `text` that run `lignin-bench`, by the document
-/// line they begin on: those of the blocks marked `sh`, with the lines a
-/// `\` continues joined, and the code spans of the prose that name a
+fn read(name: &str) -> String {
+    fs::read_to_string(operator_dir().join(name)).expect("the document")
+}
+
+/// A command of the benchmark in a document.
+struct Found {
+    /// The line it is on, or that its block begins on.
+    line: usize,
+    /// Whether a block marked `sh` holds it, which `runbook.sh` runs.
+    run: bool,
+    /// The words the shell gives the program.
+    words: Vec<String>,
+}
+
+/// Whether `words` run `lignin-bench`.
+fn is_bench(words: &[String]) -> bool {
+    words.first().is_some_and(|word| word == "lignin-bench")
+}
+
+/// The commands of `text` that run `lignin-bench`: the simple commands of
+/// its blocks marked `sh`, and the code spans of its prose that name a
 /// subcommand.
-fn bench_commands(text: &str) -> Vec<(usize, String)> {
+fn bench_commands(text: &str) -> Vec<Found> {
+    let parsed = parse(text);
     let mut found = Vec::new();
-    let mut fence: Option<String> = None;
-    let mut pending: Option<(usize, String)> = None;
-    for (at, line) in text.lines().enumerate().map(|(at, line)| (at + 1, line)) {
-        let marker = line.trim_start();
-        if let Some(info) = marker.strip_prefix("```") {
-            fence = match fence {
-                None => Some(info.trim().to_owned()),
-                Some(_) => None,
-            };
-            continue;
-        }
-        match fence.as_deref() {
-            Some("sh") => {
-                let (start, mut joined) = pending.take().unwrap_or((at, String::new()));
-                joined.push_str(line);
-                if let Some(open) = joined.strip_suffix('\\') {
-                    pending = Some((start, format!("{open} ")));
-                    continue;
-                }
-                let commands = joined.split(['|', ';', '&']).map(str::trim);
-                let commands = commands.filter(|command| command.starts_with("lignin-bench"));
-                found.extend(commands.map(|command| (start, command.to_owned())));
-            }
-            Some(_) => {}
-            None => {
-                let spans = line.split('`').skip(1).step_by(2);
-                let spans = spans.filter(|span| span.split_whitespace().count() > 1);
-                let spans = spans.filter(|span| span.starts_with("lignin-bench "));
-                found.extend(spans.map(|span| (at, span.to_owned())));
-            }
-        }
+    for fence in parsed.fences.iter().filter(|fence| fence.info == "sh") {
+        let lines = commands(fence);
+        let simple = lines.iter().flat_map(|line| simple_commands(line));
+        let blocks = simple
+            .map(|command| words(&command))
+            .filter(|w| is_bench(w));
+        found.extend(blocks.map(|words| Found {
+            line: fence.line,
+            run: true,
+            words,
+        }));
+    }
+    for (line, prose) in &parsed.prose {
+        let spans = code_spans(prose).into_iter().map(|span| words(&span));
+        let spans = spans.filter(|words| is_bench(words) && words.len() > 1);
+        found.extend(spans.map(|words| Found {
+            line: *line,
+            run: false,
+            words,
+        }));
     }
     found
 }
 
-/// The words of `command` as the shell gives them to the program: up to
-/// its first redirection, with the double quotes around a word taken off.
-fn words(command: &str) -> Vec<String> {
-    (command.split_whitespace())
-        .take_while(|word| !word.starts_with(['>', '<']))
-        .map(|word| word.trim_matches('"').to_owned())
-        .collect()
-}
-
-/// What `lignin-bench` makes of `command`: `run` and the options of
+/// What `lignin-bench` makes of `words`: `run` and the options of
 /// [`parse_run`].
-fn parsed(command: &str) -> Result<RunOptions, String> {
-    let words = words(command);
+fn parsed(words: &[String]) -> Result<RunOptions, String> {
     match words.get(1).map(String::as_str) {
         Some("run") => parse_run(&words[2..])
             .map(|(options, _)| options)
@@ -89,84 +93,119 @@ fn parsed(command: &str) -> Result<RunOptions, String> {
 
 #[test]
 fn every_command_of_the_benchmark_parses_as_written() {
-    let mut read = 0;
+    let mut read_commands = 0;
     let mut faults = Vec::new();
     for name in DOCUMENTS {
-        let text = fs::read_to_string(operator_dir().join(name)).expect("the document");
-        for (line, command) in bench_commands(&text) {
-            read += 1;
-            if let Err(fault) = parsed(&command) {
-                faults.push(format!("{name}:{line}: `{command}`: {fault}"));
+        for found in bench_commands(&read(name)) {
+            read_commands += 1;
+            if let Err(fault) = parsed(&found.words) {
+                let command = found.words.join(" ");
+                faults.push(format!("{name}:{}: `{command}`: {fault}", found.line));
             }
         }
     }
     assert!(faults.is_empty(), "{}", faults.join("\n"));
-    assert!(read >= 2, "only {read} commands of lignin-bench were read");
-    let script = fs::read_to_string(operator_dir().join("runbook.sh")).expect("runbook.sh");
     assert!(
-        !script.contains("lignin-bench "),
-        "runbook.sh runs a command of the benchmark of its own"
+        read_commands >= 2,
+        "only {read_commands} commands of lignin-bench were read"
+    );
+    let script = read("runbook.sh");
+    let own = (script.lines())
+        .flat_map(simple_commands)
+        .filter(|command| is_bench(&words(command)))
+        .collect::<Vec<_>>();
+    assert!(own.is_empty(), "runbook.sh runs {own:?} of its own");
+}
+
+/// The commands of the benchmark are read where a block puts them in a
+/// condition and where a span is set off by two backticks, and not in a
+/// comment.
+#[test]
+fn a_command_of_the_benchmark_is_read_in_every_place_it_can_be() {
+    let text = "Prose with ``lignin-bench run --in-a-span 1`` in it.\n\n\
+                ```sh\n\
+                if lignin-bench run --in-a-condition 1; then :; fi\n\
+                true && lignin-bench run --after-and 1 > \"$WORK/out\" --after-a-redirection 2\n\
+                true # lignin-bench run --in-a-comment 1\n\
+                ```\n";
+    let faults: Vec<(bool, String)> = (bench_commands(text).iter())
+        .map(|found| (found.run, parsed(&found.words).err().unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        faults,
+        [
+            (true, "unknown option --in-a-condition".to_owned()),
+            (true, "unknown option --after-and".to_owned()),
+            (false, "unknown option --in-a-span".to_owned()),
+        ]
+    );
+    let after = words("lignin-bench run --keep > \"$WORK/out\" --after-a-redirection 2");
+    assert_eq!(
+        parsed(&after).err().as_deref(),
+        Some("unknown option --after-a-redirection")
     );
 }
 
-/// The rehearsal of step 3 of `migration.md`: the one block's command of
-/// the benchmark, which keeps the RocksDB database it makes under its
-/// scratch directory, and only that engine's.
-fn rehearsal() -> String {
-    let text = fs::read_to_string(operator_dir().join("migration.md")).expect("migration.md");
-    let mut found = bench_commands(&text).into_iter();
-    let found = found.find(|(_, command)| command.contains("--scratch"));
-    found.expect("the rehearsal in migration.md").1
+/// The rehearsal of step 3 of `migration.md`: the one command of the
+/// benchmark of its blocks that names a scratch directory.
+fn rehearsal() -> Vec<String> {
+    let found = bench_commands(&read("migration.md"));
+    let mut run = found.into_iter().filter(|found| found.run);
+    let scratch = |found: &Found| found.words.iter().any(|word| word == "--scratch");
+    let mut rehearsals = run.by_ref().filter(scratch);
+    let rehearsal = rehearsals.next().expect("the rehearsal in migration.md");
+    assert!(rehearsals.next().is_none(), "one rehearsal in migration.md");
+    rehearsal.words
 }
 
 #[test]
 fn the_rehearsal_keeps_the_rocksdb_database_it_makes() {
-    let command = rehearsal();
-    let options = parsed(&command).unwrap_or_else(|fault| panic!("`{command}`: {fault}"));
-    assert!(options.settings.keep, "`{command}` keeps no database");
-    assert_eq!(options.engines, [EngineChoice::RocksDb], "`{command}`");
+    let words = rehearsal();
+    let options = parsed(&words).unwrap_or_else(|fault| panic!("{words:?}: {fault}"));
+    assert!(options.settings.keep, "{words:?} keeps no database");
+    assert_eq!(options.engines, [EngineChoice::RocksDb], "{words:?}");
     assert_eq!(
         options.settings.scratch,
         PathBuf::from("$WORK/rehearsal"),
-        "`{command}`"
+        "{words:?}"
     );
 }
 
 #[test]
 fn the_parser_refuses_what_the_rehearsal_must_not_say() {
-    let command = rehearsal();
-    let documents = words(&command)
-        .windows(2)
-        .find(|pair| pair[0] == "--documents")
-        .map(|pair| format!("--documents {}", pair[1]))
+    let rehearsal = rehearsal();
+    let changed = |change: &dyn Fn(&mut Vec<String>)| {
+        let mut words = rehearsal.clone();
+        change(&mut words);
+        words
+    };
+    let documents = (rehearsal.iter())
+        .position(|word| word == "--documents")
         .expect("the rehearsal's --documents");
-    for (case, changed, fault) in [
+    let push = |more: &[&str]| changed(&|words| words.extend(more.iter().map(|w| w.to_string())));
+    for (case, words, fault) in [
         (
             "a count in words",
-            command.replacen(&documents, "--documents twenty", 1),
+            changed(&|words| words[documents + 1] = "twenty".to_owned()),
             "--documents takes a number, not \"twenty\"",
         ),
         (
             "an unknown option",
-            command.replacen(" --keep ", " --keep --no-such-option 1 ", 1),
+            push(&["--no-such-option", "1"]),
             "unknown option --no-such-option",
         ),
         (
             "an option without its value",
-            format!(
-                "{} --owners",
-                command.split(" >").next().expect("the command")
-            ),
+            push(&["--owners"]),
             "--owners needs a value",
         ),
         (
             "another subcommand",
-            command.replacen("lignin-bench run ", "lignin-bench table ", 1),
+            changed(&|words| words[1] = "table".to_owned()),
             "lignin-bench is run here with `run` alone",
         ),
     ] {
-        assert_ne!(changed, command, "{case}: the rehearsal changed");
-        assert_eq!(parsed(&changed).err().as_deref(), Some(fault), "{case}");
+        assert_eq!(parsed(&words).err().as_deref(), Some(fault), "{case}");
     }
     let check = parse_run(&["--documents".to_owned(), "0".to_owned()]);
     assert!(
