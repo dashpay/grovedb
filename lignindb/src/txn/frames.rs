@@ -285,13 +285,30 @@ pub(crate) fn subtree_end(subtree: &Subtree) -> Option<Vec<u8>> {
 /// nothing is read. The base pin keeps the version from one operation to
 /// the next, which is what taking the flat pages along asks for.
 pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
+    /// Everything the frames hold that is bound to no guard
+    /// ([`Unbound`]), in a place of its own: binding the frames to
+    /// another guard ([`Self::under`]) then moves a pointer and the flat
+    /// pages. A [`Woken`] binds the frames a transaction keeps to the
+    /// guard of an operation when it is made, and binds those it still
+    /// holds to no operation when it is dropped.
+    ///
+    /// The frames give the fields of it as their own (`Deref`). Where
+    /// two of them are borrowed at once and one of them to be changed,
+    /// they are named through this field, which is a path the borrow
+    /// checker takes apart.
+    unbound: Box<Unbound<'s>>,
+    pub(crate) flat: FlatFrames<'s, 'g, G>,
+}
+
+/// What [`Frames`] hold whichever guard they are bound to: all of them but
+/// their flat pages.
+pub(crate) struct Unbound<'s> {
     base: CommitVersion,
     pub(crate) tree: TreePages<'s>,
     /// The values of the transaction's cells that are not in their cells,
     /// and where those are read from that are not in its memory.
     pub(crate) values: TreeValues,
     pub(crate) source: ValueSource<'s>,
-    pub(crate) flat: FlatFrames<'s, 'g, G>,
     /// The subtree directory as these pages have it: a copy of the handle
     /// that is kept for their version, taken when the frames are made
     /// ([`WritePath::directory_at`]), and told every root, every Merk that
@@ -302,7 +319,7 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// The tree types that keep flat records, as the batch that is
     /// applied was given them, or `None` for a batch that was given
     /// nothing: whoever applies a batch says it before
-    /// ([`Self::apply`]).
+    /// ([`Awake::apply`]).
     pub(crate) kinds: Option<FlatKinds>,
     /// The subtrees of whose Merk an operation that is laid out on these
     /// frames wrote a node or removed one (`noded`), and those into whose
@@ -312,19 +329,19 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// if it is entered (`SubtreeWrite::RemoveIfEntered`) is in neither:
     /// it is removed from whatever the subtree holds. A flat record of one of the first,
     /// and a change set of one of the second, is judged by the tree type
-    /// of the subtree ([`Self::apply`]). What is known of a Merk that a
+    /// of the subtree ([`Awake::apply`]). What is known of a Merk that a
     /// move takes goes with it to its new prefix.
     ///
     /// A subtree that went with one above it is not named by the batch
     /// that took it, and what is kept of it stays here. It refuses no
     /// batch while the subtree is not entered, and the batch that enters
-    /// a subtree under its prefix again is not asked ([`Self::apply`]).
+    /// a subtree under its prefix again is not asked ([`Awake::apply`]).
     /// The two are of these pages, so they are made again with them.
     noded: HashSet<Subtree>,
     recorded: HashSet<Subtree>,
     /// Whether the batch that was applied last was taken by the tree type
     /// of a subtree: the pages asked the tree type for a flat record or
-    /// for a change set of it ([`Self::apply`]). The write set is told of
+    /// for a change set of it ([`Awake::apply`]). The write set is told of
     /// an operation that is taken so when it is added
     /// (`WriteSet::tell_both`).
     pub(crate) both: bool,
@@ -360,8 +377,8 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     own: HashSet<Vec<u8>>,
     /// What the commit holds to its host: the subtrees whose entries an
     /// enter if absent under an element made in these frames
-    /// ([`Self::unhosted`]), and those that a clear applied to them
-    /// cleared ([`Self::pointed_at`]), each until a batch drops the
+    /// ([`Awake::unhosted`]), and those that a clear applied to them
+    /// cleared ([`Awake::pointed_at`]), each until a batch drops the
     /// subtree or makes its entry anew. A subtree that went with one
     /// above it stays here, and is passed while it is not entered. What
     /// is kept of a Merk that a move takes goes with it to its new
@@ -386,13 +403,27 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     took: Vec<Subtree>,
     /// Which of the subtrees that the write set has an entry under are
     /// asked whether they are below a Merk that a batch takes
-    /// ([`Self::below`], `super::below`). It is of the directory of these
+    /// ([`Awake::below`], `super::below`). It is of the directory of these
     /// frames, so it is made again with them, and starts empty.
     pub(crate) written_below: Below,
     /// Where the cells of the nodes are that a search of these frames
     /// found or that a write applied to them put, under the lease the
     /// frames are read under (`super::places`).
     pub(crate) seen: Places,
+}
+
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> std::ops::Deref for Frames<'s, 'g, G> {
+    type Target = Unbound<'s>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.unbound
+    }
+}
+
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> std::ops::DerefMut for Frames<'s, 'g, G> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.unbound
+    }
 }
 
 /// A batch as these frames lay it out ([`Frames::lay`]): with a plain drop
@@ -970,6 +1001,12 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
         !self.if_absent.is_empty() || !self.cleared.is_empty()
     }
 
+    /// Ends the frames: what they hold that is bound to no guard, and
+    /// their flat pages.
+    pub(crate) fn into_unbound(self) -> (Unbound<'s>, FlatFrames<'s, 'g, G>) {
+        (*self.unbound, self.flat)
+    }
+
     /// The same frames, with all they hold, bound to `guard`.
     fn under<'q, H>(self, guard: &'q H) -> Frames<'s, 'q, H>
     where
@@ -977,31 +1014,8 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
         H: lignin_tree::OperationGuard,
     {
         Frames {
-            kinds: self.kinds,
-            noded: self.noded,
-            recorded: self.recorded,
-            both: self.both,
-            base: self.base,
-            tree: self.tree,
-            values: self.values,
-            source: self.source,
+            unbound: self.unbound,
             flat: self.flat.under(guard),
-            directory: self.directory,
-            dropped: self.dropped,
-            hashes: self.hashes,
-            fragments: self.fragments,
-            key: self.key,
-            empty: self.empty,
-            unlinked: self.unlinked,
-            own: self.own,
-            if_absent: self.if_absent,
-            cleared: self.cleared,
-            left: self.left,
-            renewed: self.renewed,
-            stored: self.stored,
-            took: self.took,
-            written_below: self.written_below,
-            seen: self.seen,
         }
     }
 }
@@ -1028,7 +1042,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let owner = WritePath::next_owner();
         let size = path.layout.page_size();
         let flat = FlatWriter::new(path.committed(guard, at), path.pool, owner, path.ids);
-        Ok(Self {
+        let unbound = Unbound {
             tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size)
                 .counted_in(path.stats),
             values: TreeValues::new(path.inline),
@@ -1039,7 +1053,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             recorded: HashSet::new(),
             both: false,
             dropped: Vec::new(),
-            flat: FlatFrames(Some(flat)),
             hashes: Hashes::new(),
             fragments: Fragments::new(path.layout),
             key: Vec::new(),
@@ -1055,6 +1068,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             written_below: Below::default(),
             seen: Places::default(),
             base: at,
+        };
+        Ok(Self {
+            unbound: Box::new(unbound),
+            flat: FlatFrames(Some(flat)),
         })
     }
 
@@ -1922,12 +1939,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// The bytes of the value of the cell at `address`, wherever the value
     /// is.
     fn cell_value(&mut self, address: CellAddress) -> Result<Vec<u8>, TxnError> {
-        let Frames {
+        let Unbound {
             tree,
             values,
             source,
             ..
-        } = self;
+        } = &mut *self.unbound;
         let read = tree.shown(address.page(), |page, committed| {
             let node = page.node(address.slot())?;
             let mut buf = ValueBuf::new();
@@ -2080,7 +2097,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for left in view.leaving.iter().filter(|left| !left.dropped) {
             let prefix = left.subtree.as_bytes();
             (path.flat_drops)
-                .unlink_prefix(&mut *self.flat, &data, prefix, self.base)
+                .unlink_prefix(&mut *self.flat, &data, prefix, self.unbound.base)
                 .map_err(Refused::dropping)?;
             // The subtree is the one it was, with those records, under
             // whichever id the clear left it.
@@ -2088,7 +2105,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let cleared = cleared.map_err(Refused::dirty)?;
             let was = left.entry.id();
             if let Some(now) = cleared.map(|entry| entry.id()).filter(|now| *now != was) {
-                self.renewed.insert(now, self.before_clears(was));
+                self.unbound.renewed.insert(now, self.before_clears(was));
             }
         }
         // The unlinked records: those under the keys that the change sets
@@ -2174,8 +2191,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             }
             // And so does what is known of what the transaction wrote
             // into it, of either kind.
-            let hosted = [&mut self.if_absent, &mut self.cleared];
-            for written in [&mut self.noded, &mut self.recorded]
+            let hosted = [&mut self.unbound.if_absent, &mut self.unbound.cleared];
+            for written in [&mut self.unbound.noded, &mut self.unbound.recorded]
                 .into_iter()
                 .chain(hosted)
             {
@@ -2259,12 +2276,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         *holds = true;
                     }
                     stored_key(&mut self.key, &subtree, key);
-                    tree.put(&mut *self.flat, &self.key, value)
+                    tree.put(&mut *self.flat, &self.unbound.key, value)
                 }
                 RecordWrite::Delete { key, .. } => {
                     forget(&mut self.unlinked);
                     stored_key(&mut self.key, &subtree, key);
-                    tree.delete(&mut *self.flat, &self.key).map(|_| ())
+                    tree.delete(&mut *self.flat, &self.unbound.key).map(|_| ())
                 }
                 RecordWrite::DeleteRange { start, end, .. } => {
                     forget(&mut self.unlinked);
@@ -2277,7 +2294,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         }
                         None => subtree_end(&subtree),
                     };
-                    tree.delete_range(&mut *self.flat, &self.key, end.as_deref())
+                    tree.delete_range(&mut *self.flat, &self.unbound.key, end.as_deref())
                 }
             };
             done.map_err(Refused::dirty)?;
@@ -2535,12 +2552,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             pages: &mut *self.flat,
             columns: &columns,
             drops: &path.flat_drops,
-            at: self.base,
+            at: self.unbound.base,
         };
         let report = match (merks.is_empty(), view.leaving.is_empty()) {
             (true, true) => Ok(Report::default()),
-            (false, true) => (self.fragments)
-                .apply(&mut self.tree, &mut self.values, &write)
+            (false, true) => (self.unbound.fragments)
+                .apply(&mut self.unbound.tree, &mut self.unbound.values, &write)
                 .map_err(DropError::Fragment),
             // The drop: the one write to the tree pages, in which the root
             // of each Merk that leaves is named as dropped, the Merk's
@@ -2555,16 +2572,16 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     })
                     .collect();
                 drop::unlink(
-                    &mut self.fragments,
-                    &mut self.tree,
-                    &mut self.values,
-                    &mut self.directory,
+                    &mut self.unbound.fragments,
+                    &mut self.unbound.tree,
+                    &mut self.unbound.values,
+                    &mut self.unbound.directory,
                     &mut flats,
                     &write,
                     &leaving,
                 )
                 .map(|unlinked| {
-                    self.dropped.extend(unlinked.left);
+                    self.unbound.dropped.extend(unlinked.left);
                     unlinked.report
                 })
             }
@@ -2583,19 +2600,19 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             }
             Err(error) => return Err(Refused::dropping(error)),
         };
-        self.values.check().map_err(Refused::dirty)?;
+        self.unbound.values.check().map_err(Refused::dirty)?;
         // The marks follow the cells the write moved. Then each node of
         // the write has the marks its writer states, under the address the
         // report gives: a hash the writer made is stale no more. Where
         // nothing is or was stale, nothing is done.
-        self.hashes.follow(&write, &report);
-        let marks = !self.hashes.is_empty() || linked().any(|put| !put.stale.is_empty());
+        self.unbound.hashes.follow(&write, &report);
+        let marks = !self.unbound.hashes.is_empty() || linked().any(|put| !put.stale.is_empty());
         for (put, node) in linked().zip(&report.nodes).filter(|_| marks) {
             let stale = put.marked();
             for field in Stale::ALL.fields() {
                 match stale.has(field) {
-                    true => self.hashes.mark(node.address(), field),
-                    false => self.hashes.unmark(node.address(), field),
+                    true => self.unbound.hashes.mark(node.address(), field),
+                    false => self.unbound.hashes.unmark(node.address(), field),
                 }
             }
         }
@@ -2609,9 +2626,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // told below, under the prefixes the Merks have then.
         let rekeyed = match &view.rekey {
             Some(plan) => {
-                let left = drop::rekey(&mut self.directory, &mut flats, plan);
-                self.dropped.extend(left.map_err(Refused::dropping)?);
-                (self.left).extend(plan.left().iter().map(|prefix| Subtree::new(*prefix)));
+                let left = drop::rekey(&mut self.unbound.directory, &mut flats, plan);
+                self.unbound
+                    .dropped
+                    .extend(left.map_err(Refused::dropping)?);
+                (self.unbound.left).extend(plan.left().iter().map(|prefix| Subtree::new(*prefix)));
                 true
             }
             None => false,
@@ -2641,7 +2660,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             })
             .collect();
         if !restated.is_empty() {
-            match self.directory.restate(flats.pages, &restated) {
+            match self.unbound.directory.restate(flats.pages, &restated) {
                 Ok(()) => untouched = false,
                 Err(error) if untouched && refuses(&error) => return Err(Refused::clean(error)),
                 Err(error) => return Err(Refused::dirty(error)),
@@ -2655,7 +2674,13 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 position: host.position,
             });
             let prefix = enter.subtree.as_bytes();
-            match drop::enter(&self.directory, &mut flats, prefix, enter.tree_type, host) {
+            match drop::enter(
+                &self.unbound.directory,
+                &mut flats,
+                prefix,
+                enter.tree_type,
+                host,
+            ) {
                 Ok(_) => untouched = false,
                 Err(DropError::Directory(error)) if untouched && refuses(&error) => {
                     return Err(Refused::clean(error));
@@ -2692,7 +2717,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         #[cfg(all(test, not(loom)))]
         probe::count(&changes);
         if !changes.is_empty() {
-            (self.directory.set_roots(&mut *self.flat, &changes)).map_err(Refused::dirty)?;
+            (self.unbound.directory.set_roots(&mut *self.flat, &changes))
+                .map_err(Refused::dirty)?;
         }
         let unlinked = (0..total).filter(|node| !reach.linked[*node]).collect();
         // The handles in the order of the batch: those the write reports,
@@ -3102,7 +3128,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     None if view.ends_handles() => {
                         find(&mut self.tree, resolver.roots[merk], put.key)?
                     }
-                    None => resolver.cell(&mut self.tree, &self.seen, merk, put.key)?,
+                    None => {
+                        resolver.cell(&mut self.unbound.tree, &self.unbound.seen, merk, put.key)?
+                    }
                 });
             }
             linked.resize(offset + nodes.len(), false);
@@ -3349,7 +3377,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let merks = resolver.merks;
         let mut root_targets = Vec::with_capacity(merks.len());
         for merk in 0..merks.len() {
-            root_targets.push(resolver.root(&mut self.tree, &self.seen, merk)?);
+            root_targets.push(resolver.root(&mut self.unbound.tree, &self.unbound.seen, merk)?);
         }
         let mut nodes = Vec::with_capacity(reach.linked.len());
         let mut hosted: Vec<Vec<Option<Target>>> = Vec::new();
@@ -3394,7 +3422,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     Some(at) => linked_children(&mut self.tree, at)?,
                     None => [None, None],
                 });
-                let (tree, seen) = (&mut self.tree, &self.seen);
+                let (tree, seen) = (&mut self.unbound.tree, &self.unbound.seen);
                 let mut link = |side: Side, link: &Option<LinkPut<'a>>| {
                     let parent = at.map(|at| (at, side));
                     (link.as_ref())
@@ -3460,7 +3488,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             for key in write.removed {
                 // A delete of a key with no node is a write of the key and
                 // changes no page (ST5).
-                if let Some(at) = resolver.cell(&mut self.tree, &self.seen, merk, key)? {
+                if let Some(at) =
+                    resolver.cell(&mut self.unbound.tree, &self.unbound.seen, merk, key)?
+                {
                     below_removed.extend(linked_children(&mut self.tree, at)?);
                     removed.push(at);
                 }
@@ -3593,5 +3623,39 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             probe::lost(|lost| lost.held += 1);
         }
         left_out
+    }
+}
+
+#[cfg(test)]
+mod moved {
+    use std::mem::size_of;
+
+    use super::*;
+
+    /// Binding the frames to another guard moves them by value. A
+    /// [`Woken`] does that when it is made, and again when it is dropped
+    /// with frames it still holds. What moves is their flat pages and one
+    /// pointer: everything else they hold stays where it is ([`Unbound`]),
+    /// however much that comes to be. The frames parked and the frames
+    /// awake are as large as that pair, and the place a transaction keeps
+    /// them in is no larger.
+    #[test]
+    fn frames_move_as_their_flat_pages_and_a_pointer() {
+        type Kept = Box<Unbound<'static>>;
+        type FlatParked = FlatFrames<'static, 'static, Idle>;
+        type FlatAwake = FlatFrames<'static, 'static, OperationGuard<'static>>;
+        let (parked, awake) = (
+            size_of::<Parked<'static>>(),
+            size_of::<Awake<'static, 'static>>(),
+        );
+        assert_eq!(parked, size_of::<(FlatParked, Kept)>());
+        assert_eq!(awake, size_of::<(FlatAwake, Kept)>());
+        assert_eq!(size_of::<Option<Parked<'static>>>(), parked);
+        assert_eq!(size_of::<Kept>(), size_of::<usize>());
+        let flat = size_of::<FlatParked>();
+        println!(
+            "the frames move {parked} bytes, {flat} of them flat pages, and keep {} in place",
+            size_of::<Unbound<'static>>()
+        );
     }
 }
