@@ -285,12 +285,19 @@ pub(crate) fn subtree_end(subtree: &Subtree) -> Option<Vec<u8>> {
 /// nothing is read. The base pin keeps the version from one operation to
 /// the next, which is what taking the flat pages along asks for.
 pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
-    /// Everything the frames hold that is bound to no guard
+    /// The version the frames are built over: *B(T)*. It is kept here,
+    /// beside the flat pages that were made over it, and is not among
+    /// what the frames give as their own fields ([`Unbound`]): nothing
+    /// outside this module can set it, and nothing that changes what
+    /// the frames lend out changes it.
+    base: CommitVersion,
+    /// Everything else the frames hold that is bound to no guard
     /// ([`Unbound`]), in a place of its own: binding the frames to
-    /// another guard ([`Self::under`]) then moves a pointer and the flat
-    /// pages. A [`Woken`] binds the frames a transaction keeps to the
-    /// guard of an operation when it is made, and binds those it still
-    /// holds to no operation when it is dropped.
+    /// another guard ([`Self::under`]) then moves a pointer, the
+    /// version and the flat pages. A [`Woken`] binds the frames a
+    /// transaction keeps to the guard of an operation when it is made,
+    /// and binds those it still holds to no operation when it is
+    /// dropped.
     ///
     /// The frames give the fields of it as their own (`Deref`). Where
     /// two of them are borrowed at once and one of them to be changed,
@@ -300,10 +307,9 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     pub(crate) flat: FlatFrames<'s, 'g, G>,
 }
 
-/// What [`Frames`] hold whichever guard they are bound to: all of them but
-/// their flat pages.
+/// What [`Frames`] hold whichever guard they are bound to, but for their
+/// flat pages and the version they are built over.
 pub(crate) struct Unbound<'s> {
-    base: CommitVersion,
     pub(crate) tree: TreePages<'s>,
     /// The values of the transaction's cells that are not in their cells,
     /// and where those are read from that are not in its memory.
@@ -1001,8 +1007,8 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
         !self.if_absent.is_empty() || !self.cleared.is_empty()
     }
 
-    /// Ends the frames: what they hold that is bound to no guard, and
-    /// their flat pages.
+    /// Ends the frames: what they lend out as their own fields, and their
+    /// flat pages.
     pub(crate) fn into_unbound(self) -> (Unbound<'s>, FlatFrames<'s, 'g, G>) {
         (*self.unbound, self.flat)
     }
@@ -1014,6 +1020,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
         H: lignin_tree::OperationGuard,
     {
         Frames {
+            base: self.base,
             unbound: self.unbound,
             flat: self.flat.under(guard),
         }
@@ -1067,9 +1074,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             took: Vec::new(),
             written_below: Below::default(),
             seen: Places::default(),
-            base: at,
         };
         Ok(Self {
+            base: at,
             unbound: Box::new(unbound),
             flat: FlatFrames(Some(flat)),
         })
@@ -2097,7 +2104,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         for left in view.leaving.iter().filter(|left| !left.dropped) {
             let prefix = left.subtree.as_bytes();
             (path.flat_drops)
-                .unlink_prefix(&mut *self.flat, &data, prefix, self.unbound.base)
+                .unlink_prefix(&mut *self.flat, &data, prefix, self.base)
                 .map_err(Refused::dropping)?;
             // The subtree is the one it was, with those records, under
             // whichever id the clear left it.
@@ -2552,7 +2559,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             pages: &mut *self.flat,
             columns: &columns,
             drops: &path.flat_drops,
-            at: self.unbound.base,
+            at: self.base,
         };
         let report = match (merks.is_empty(), view.leaving.is_empty()) {
             (true, true) => Ok(Report::default()),
@@ -3634,13 +3641,13 @@ mod moved {
 
     /// Binding the frames to another guard moves them by value. A
     /// [`Woken`] does that when it is made, and again when it is dropped
-    /// with frames it still holds. What moves is their flat pages and one
-    /// pointer: everything else they hold stays where it is ([`Unbound`]),
-    /// however much that comes to be. The frames parked and the frames
-    /// awake are as large as that pair, and the place a transaction keeps
-    /// them in is no larger.
+    /// with frames it still holds. What moves is their flat pages, the
+    /// version those are over and one pointer: everything else they hold
+    /// stays where it is ([`Unbound`]), however much that comes to be.
+    /// The frames parked and the frames awake are as large as those
+    /// three, and the place a transaction keeps them in is no larger.
     #[test]
-    fn frames_move_as_their_flat_pages_and_a_pointer() {
+    fn frames_move_as_their_flat_pages_their_version_and_a_pointer() {
         type Kept = Box<Unbound<'static>>;
         type FlatParked = FlatFrames<'static, 'static, Idle>;
         type FlatAwake = FlatFrames<'static, 'static, OperationGuard<'static>>;
@@ -3648,8 +3655,8 @@ mod moved {
             size_of::<Parked<'static>>(),
             size_of::<Awake<'static, 'static>>(),
         );
-        assert_eq!(parked, size_of::<(FlatParked, Kept)>());
-        assert_eq!(awake, size_of::<(FlatAwake, Kept)>());
+        assert_eq!(parked, size_of::<(CommitVersion, Kept, FlatParked)>());
+        assert_eq!(awake, size_of::<(CommitVersion, Kept, FlatAwake)>());
         assert_eq!(size_of::<Option<Parked<'static>>>(), parked);
         assert_eq!(size_of::<Kept>(), size_of::<usize>());
         let flat = size_of::<FlatParked>();
