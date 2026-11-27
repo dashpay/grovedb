@@ -16,7 +16,7 @@ use lignin_testkit::bench::{cli::parse_run, BenchError, EngineChoice, RunOptions
 #[path = "../../lignin-tools/tests/document_text/mod.rs"]
 mod document_text;
 
-use document_text::{code_spans, commands, parse, simple_commands, words};
+use document_text::{code_of, code_spans, commands, parse, simple_commands, words};
 
 /// The operator documents.
 const DOCUMENTS: [&str; 5] = [
@@ -110,23 +110,25 @@ fn every_command_of_the_benchmark_parses_as_written() {
         "only {read_commands} commands of lignin-bench were read"
     );
     let script = read("runbook.sh");
-    let own = (script.lines())
-        .flat_map(simple_commands)
-        .filter(|command| is_bench(&words(command)))
-        .collect::<Vec<_>>();
-    assert!(own.is_empty(), "runbook.sh runs {own:?} of its own");
+    let own: Vec<&str> = (script.lines())
+        .filter(|line| code_of(line).contains("lignin-bench"))
+        .collect();
+    assert!(own.is_empty(), "runbook.sh names the benchmark: {own:?}");
 }
 
 /// The commands of the benchmark are read where a block puts them in a
-/// condition and where a span is set off by two backticks, and not in a
-/// comment.
+/// condition, after `&&`, after a comment that ends in `\`, and where a
+/// span is set off by two backticks; not in a comment; and with the words
+/// after a redirection.
 #[test]
 fn a_command_of_the_benchmark_is_read_in_every_place_it_can_be() {
     let text = "Prose with ``lignin-bench run --in-a-span 1`` in it.\n\n\
                 ```sh\n\
                 if lignin-bench run --in-a-condition 1; then :; fi\n\
-                true && lignin-bench run --after-and 1 > \"$WORK/out\" --after-a-redirection 2\n\
-                true # lignin-bench run --in-a-comment 1\n\
+                true && lignin-bench run --after-and 1\n\
+                true # ignored; lignin-bench run --in-a-comment 1\n\
+                # a comment that ends in a backslash \\\n\
+                lignin-bench run --after-a-comment 1\n\
                 ```\n";
     let faults: Vec<(bool, String)> = (bench_commands(text).iter())
         .map(|found| (found.run, parsed(&found.words).err().unwrap_or_default()))
@@ -136,14 +138,18 @@ fn a_command_of_the_benchmark_is_read_in_every_place_it_can_be() {
         [
             (true, "unknown option --in-a-condition".to_owned()),
             (true, "unknown option --after-and".to_owned()),
+            (true, "unknown option --after-a-comment".to_owned()),
             (false, "unknown option --in-a-span".to_owned()),
         ]
     );
-    let after = words("lignin-bench run --keep > \"$WORK/out\" --after-a-redirection 2");
-    assert_eq!(
-        parsed(&after).err().as_deref(),
-        Some("unknown option --after-a-redirection")
-    );
+    for redirection in ["> out", ">> out", "&> out", "&>> out", "2>&1 > out", "< in"] {
+        let line = format!("lignin-bench run --keep {redirection} --after-a-redirection 2");
+        assert_eq!(
+            parsed(&words(&line)).err().as_deref(),
+            Some("unknown option --after-a-redirection"),
+            "{line}"
+        );
+    }
 }
 
 /// The rehearsal of step 3 of `migration.md`: the one command of the

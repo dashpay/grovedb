@@ -111,12 +111,31 @@ pub fn spans_and_unclosed(line: &str) -> (Vec<String>, bool) {
     (spans, unclosed)
 }
 
+/// The part of a line of commands before its comment: before the first
+/// `#` that no quote or `\` holds and that begins a word.
+pub fn code_of(line: &str) -> &str {
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    let mut begins_word = true;
+    for (at, c) in line.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if !single => escaped = true,
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '#' if !single && !double && begins_word => return &line[..at],
+            _ => {}
+        }
+        begins_word = !single && !double && (c.is_whitespace() || ";&|()".contains(c));
+    }
+    line
+}
+
 /// The words a command line gives its program, as the shell splits them,
-/// up to the first character that ends a command (`|`, `;`, `&`): a
-/// redirection (`>`, `2>&1`, `< file`) is left out with the word it names,
-/// and the words after it are read on. A `#` that begins a word begins a
-/// comment, which gives the program nothing.
+/// up to its comment ([`code_of`]) and the first character that ends a
+/// command (`|`, `;`, `&`): a redirection (`>`, `2>&1`, `&>`, `< file`) is
+/// left out with the word it names, and the words after it are read on.
 pub fn words(line: &str) -> Vec<String> {
+    let line = code_of(line);
     let mut words = Vec::new();
     let mut word = String::new();
     let mut in_word = false;
@@ -142,7 +161,7 @@ pub fn words(line: &str) -> Vec<String> {
                     word.push(c);
                 }
             }
-            '>' | '<' => {
+            '>' | '<' | '&' if c != '&' || chars.peek() == Some(&'>') => {
                 // The number of a descriptor before it is no word either.
                 if in_word && !word.chars().all(|c| c.is_ascii_digit()) {
                     words.push(std::mem::take(&mut word));
@@ -155,7 +174,6 @@ pub fn words(line: &str) -> Vec<String> {
                 target = true;
             }
             '|' | ';' | '&' => break,
-            '#' if !in_word => break,
             c if c.is_whitespace() => {
                 if in_word {
                     let done = std::mem::take(&mut word);
@@ -178,13 +196,14 @@ pub fn words(line: &str) -> Vec<String> {
     words
 }
 
-/// The commands of a fenced block: its lines, with a line that ends in `\`
-/// joined to the next.
+/// The commands of a fenced block: its lines, with a line whose code ends
+/// in `\` (not its comment, [`code_of`]) joined to the next.
 pub fn commands(fence: &Fence) -> Vec<String> {
     let mut commands = Vec::new();
     let mut pending = String::new();
     for line in &fence.body {
-        match line.strip_suffix('\\') {
+        let continued = line.strip_suffix('\\').filter(|_| code_of(line) == line);
+        match continued {
             Some(start) => {
                 pending.push_str(start);
                 pending.push(' ');
@@ -202,9 +221,9 @@ pub fn commands(fence: &Fence) -> Vec<String> {
 /// `||` and `|` that no quote holds, without the words of the shell's grammar
 /// that begin them (`if`, `then`, `else`, `do`, `{`, `!` and the like), so
 /// that a command in a condition or a branch is checked as one on a line of
-/// its own. A comment, from a `#` that no quote holds and that begins a
-/// word, holds no command.
+/// its own. Its comment ([`code_of`]) holds no command.
 pub fn simple_commands(line: &str) -> Vec<String> {
+    let line = code_of(line);
     let mut parts = Vec::new();
     let mut part = String::new();
     let (mut single, mut double) = (false, false);
@@ -213,9 +232,6 @@ pub fn simple_commands(line: &str) -> Vec<String> {
         match c {
             '\'' if !double => single = !single,
             '"' if !single => double = !double,
-            '#' if !single && !double && part.chars().last().is_none_or(char::is_whitespace) => {
-                break;
-            }
             ';' if !single && !double => {
                 parts.push(std::mem::take(&mut part));
                 continue;

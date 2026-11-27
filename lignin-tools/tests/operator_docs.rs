@@ -43,7 +43,7 @@ use lignindb::Options;
 mod document_text;
 
 use document_text::{
-    code_spans, commands, parse, simple_commands, spans_and_unclosed, words, Fence,
+    code_of, code_spans, commands, parse, simple_commands, spans_and_unclosed, words, Fence,
 };
 
 /// The documents, in the order the book has them.
@@ -491,28 +491,44 @@ fn command_fault(line: &str, packages: &BTreeMap<String, (PathBuf, String)>) -> 
         // A `lignin-bench` line is held to the benchmark's parser by
         // `lignin-testkit/tests/runbook_rehearsal.rs`.
         Some("cargo") => {
-            let value = |option: &str| {
-                let at = words.iter().position(|word| *word == option)?;
-                words.get(at + 1).copied()
+            let line = cargo_line(&words)?;
+            let selected = (line.packages.iter())
+                .map(|package| packages.get(*package).map(|found| (*package, found)));
+            let selected: Vec<_> = match selected.collect::<Option<Vec<_>>>() {
+                Some(selected) if !selected.is_empty() => selected,
+                Some(_) => return None,
+                None => {
+                    let missing =
+                        (line.packages.iter()).find(|package| !packages.contains_key(**package));
+                    return missing.map(|package| format!("no package {package}"));
+                }
             };
-            let package = value("-p")?;
-            let Some((dir, text)) = packages.get(package) else {
-                return Some(format!("no package {package}"));
+            let names = || {
+                selected
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
-            let features = value("--features")
-                .into_iter()
-                .flat_map(|list| list.split(','));
-            for feature in features {
-                if !declares_feature(text, feature) {
-                    return Some(format!("{package} has no feature {feature}"));
+            for feature in line.features() {
+                let declared =
+                    (selected.iter()).any(|(name, (_, text))| match feature.split_once('/') {
+                        Some((package, feature)) => {
+                            package == *name && declares_feature(text, feature)
+                        }
+                        None => declares_feature(text, feature),
+                    });
+                if !declared {
+                    return Some(format!("{} has no feature {feature}", names()));
                 }
             }
-            match value("--bin") {
-                Some(bin) if !has_program(dir, text, bin) => {
-                    Some(format!("{package} has no program {bin}"))
-                }
-                _ => None,
-            }
+            (line.bins.iter())
+                .find(|bin| {
+                    !selected
+                        .iter()
+                        .any(|(_, (dir, text))| has_program(dir, text, bin))
+                })
+                .map(|bin| format!("{} has no program {bin}", names()))
         }
         _ => None,
     }
@@ -1156,40 +1172,56 @@ fn every_command_names_what_the_workspace_has() {
     assert!(faults.is_empty(), "{}", faults.join("\n"));
 }
 
-/// Whether the `cargo` command `command` builds or runs `lignin-tools`
-/// (`build`, `run` or `rustc` with it among the packages), and with that
-/// whether it enables the feature `migrate`: Cargo's own arguments alone,
-/// those before a `--`, read in every form Cargo takes a package and a
-/// feature in.
-fn builds_the_tool(command: &str) -> Option<bool> {
-    let words = words(command);
+/// What a `cargo` command asks of Cargo, read from Cargo's own arguments
+/// (those before a `--`) in every form Cargo takes a package, a feature
+/// and a program in.
+struct CargoLine<'a> {
+    subcommand: Option<&'a str>,
+    packages: Vec<&'a str>,
+    lists: Vec<&'a str>,
+    all_features: bool,
+    bins: Vec<&'a str>,
+}
+
+impl CargoLine<'_> {
+    /// The features it names, each list split.
+    fn features(&self) -> impl Iterator<Item = &str> {
+        (self.lists.iter())
+            .flat_map(|list| list.split([',', ' ']))
+            .filter(|feature| !feature.is_empty())
+    }
+}
+
+/// The arguments of Cargo in the words `words` of a `cargo` command.
+fn cargo_line<'a>(words: &[&'a str]) -> Option<CargoLine<'a>> {
     let (cargo, rest) = words.split_first()?;
-    let args: Vec<&str> = (rest.iter().map(String::as_str))
-        .take_while(|word| *word != "--")
-        .collect();
-    let builds = matches!(args.first(), Some(&("build" | "run" | "rustc")));
-    if cargo != "cargo" || !builds {
+    if *cargo != "cargo" {
         return None;
     }
-    let mut packages = Vec::new();
-    let mut features = Vec::new();
+    let args: Vec<&str> = (rest.iter().copied())
+        .take_while(|word| *word != "--")
+        .collect();
+    let mut line = CargoLine {
+        subcommand: args.first().copied().filter(|word| !word.starts_with('-')),
+        packages: Vec::new(),
+        lists: Vec::new(),
+        all_features: false,
+        bins: Vec::new(),
+    };
     for at in 0..args.len() {
-        packages.extend(option_value(&args, at, "--package", "-p"));
-        features.extend(option_value(&args, at, "--features", "-F"));
-        if args[at] == "--all-features" {
-            features.push("migrate");
-        }
+        line.packages
+            .extend(option_value(&args, at, "--package", "-p"));
+        line.lists
+            .extend(option_value(&args, at, "--features", "-F"));
+        line.bins.extend(option_value(&args, at, "--bin", "--bin"));
+        line.all_features |= args[at] == "--all-features";
     }
-    packages.contains(&"lignin-tools").then(|| {
-        (features.iter())
-            .flat_map(|list| list.split([',', ' ']))
-            .any(|feature| feature == "migrate")
-    })
+    Some(line)
 }
 
 /// The value that the word at `at` of `args` gives the option `long`, or
 /// its short form `short`: the next word, the rest of the word after `=`,
-/// or for the short form the rest of the word.
+/// or for a short form of one letter the rest of the word.
 fn option_value<'a>(args: &[&'a str], at: usize, long: &str, short: &str) -> Option<&'a str> {
     let word = args[at];
     if word == long || word == short {
@@ -1200,8 +1232,24 @@ fn option_value<'a>(args: &[&'a str], at: usize, long: &str, short: &str) -> Opt
     }
     let value = word
         .strip_prefix(short)
-        .filter(|_| !word.starts_with("--"))?;
+        .filter(|_| !short.starts_with("--"))?;
     Some(value.strip_prefix('=').unwrap_or(value))
+}
+
+/// Whether the `cargo` command `command` builds or runs `lignin-tools`
+/// (`build`, `run` or `rustc` with it among the packages), and with that
+/// whether it enables the feature `migrate`.
+fn builds_the_tool(command: &str) -> Option<bool> {
+    let words = words(command);
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let line = cargo_line(&words)?;
+    let builds = matches!(line.subcommand, Some("build" | "run" | "rustc"));
+    (builds && line.packages.contains(&"lignin-tools")).then(|| {
+        line.all_features
+            || line
+                .features()
+                .any(|feature| feature == "migrate" || feature == "lignin-tools/migrate")
+    })
 }
 
 /// The runbook builds the tool with the feature that `migrate` needs:
@@ -1301,6 +1349,66 @@ fn the_runbook_builds_the_tool_with_migrate() {
     ] {
         assert_eq!(builds_the_tool(command), migrates, "{command}");
     }
+    let packages = manifests();
+    for (command, fault) in [
+        (
+            "cargo build --release -p grovedb -p lignin-tools --features migrate",
+            None,
+        ),
+        (
+            "cargo build --release --package=lignin-tools --features=migrate",
+            None,
+        ),
+        (
+            "cargo build --release --package=lignin-tools --features=migrate,typo",
+            Some("lignin-tools has no feature typo"),
+        ),
+        (
+            "cargo build -p grovedb -plignin-tools -F grovedb/no-such",
+            Some("grovedb, lignin-tools has no feature grovedb/no-such"),
+        ),
+        (
+            "cargo build -p no-such-package",
+            Some("no package no-such-package"),
+        ),
+        (
+            "cargo build -p lignin-tools --bin=lignin-bench",
+            Some("lignin-tools has no program lignin-bench"),
+        ),
+        (
+            "cargo build -p lignin-tools --bin lignin # -p no-such-package",
+            None,
+        ),
+    ] {
+        assert_eq!(
+            command_fault(command, &packages).as_deref(),
+            fault,
+            "{command}"
+        );
+    }
+}
+
+/// A comment of a line of commands begins at a `#` that begins a word and
+/// that no quote or `\` holds.
+#[test]
+fn a_comment_begins_where_the_shell_begins_it() {
+    for (line, code) in [
+        ("cargo build # --features migrate", "cargo build "),
+        ("true;# lignin-bench run", "true;"),
+        ("echo $# ${#p[@]} a#b", "echo $# ${#p[@]} a#b"),
+        (
+            "echo '# not' \"# not\" \\# not",
+            "echo '# not' \"# not\" \\# not",
+        ),
+        ("echo \"it's\" # yes", "echo \"it's\" "),
+        ("# all of it", ""),
+    ] {
+        assert_eq!(code_of(line), code, "{line}");
+    }
+    assert_eq!(
+        words("lignin verify D &> out --cache 2"),
+        ["lignin", "verify", "D", "--cache", "2"]
+    );
 }
 
 #[test]
