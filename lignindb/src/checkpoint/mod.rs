@@ -7,7 +7,9 @@
 //! - [`Created`] says what a creation made, and [`CheckpointOptions`] how
 //!   much log it leaves for the checkpoint's first open to replay.
 //! - [`delete`] removes a checkpoint's directory, and
-//!   [`DELETING_FILE_NAME`] marks one that it is removing.
+//!   [`DELETING_FILE_NAME`] marks one that it is removing. [`finish`]
+//!   ends what a deletion or a creation left when it was cut short, and
+//!   begins no deletion ([`Finished`]).
 //! - [`CREATING_SUFFIX`] is what the name of a creation's staging
 //!   directory ends in, and [`BUILDING_DIR_NAME`] the name, inside it, of
 //!   the directory the checkpoint is built in.
@@ -659,6 +661,18 @@
 //!   and a deletion that is given the directory itself is refused
 //!   ([`CheckpointError::NotStaging`]).
 //!
+//! **[`finish`] is the call for what was cut short, where nothing whole is
+//! to go.** [`delete`] removes the database it is given, and a caller that
+//! only wants to clear away what a power cut left, at the paths of
+//! checkpoints that may be whole and open, cannot ask it to. [`finish`]
+//! does the last two of the three points above and never the first: it
+//! finishes a deletion whose mark is in the directory, removes an empty
+//! directory and one with an empty lock file alone, and removes the
+//! staging directory that a creation left beside the path. A database
+//! that no deletion has begun on is as it was, and its lock is not taken,
+//! so a handle can have it open meanwhile. [`Finished`] says which it
+//! found.
+//!
 //! Platform removes the directory of a checkpoint while a handle has it
 //! open. That handle goes on reading: its pages are in its pool, and the
 //! files it has open stay until it closes them. What it writes afterwards
@@ -697,6 +711,9 @@
 //!     errors of write-back and no more: it creates no directory, and it
 //!     is the one to see that nothing is written then (P-18). It shares
 //!     the name of the lock file with [`delete`], which is `LOCK`.
+//! - **Whoever clears away what a power cut left of checkpoints**
+//!   (OPS-03) has [`finish`] for it, on the file system of the database.
+//!   Nothing of GroveDB's engine types calls it yet.
 //! - **Whoever keeps a directory of checkpoints** (GROVE-08, OPS-03) finds
 //!   in it, after a creation that was cut short, a directory whose name
 //!   ends in [`CREATING_SUFFIX`]. It is no checkpoint and holds space
@@ -756,7 +773,10 @@ mod files;
 pub use create::{CheckpointOptions, Checkpointer, Created, DEFAULT_CATCH_UP_ABOVE};
 pub use error::CheckpointError;
 pub(crate) use files::is_reserved;
-pub use files::{delete, BUILDING_DIR_NAME, CREATING_SUFFIX, DELETING_FILE_NAME};
+pub use files::{
+    delete, finish, AtPath, Beside, Finished, BUILDING_DIR_NAME, CREATING_SUFFIX,
+    DELETING_FILE_NAME,
+};
 
 #[cfg(all(test, not(loom)))]
 mod tests;

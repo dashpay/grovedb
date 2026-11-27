@@ -28,8 +28,8 @@ use super::{
 };
 use crate::{
     checkpoint::{
-        self, create::Step, CheckpointError, CheckpointOptions, BUILDING_DIR_NAME, CREATING_SUFFIX,
-        DELETING_FILE_NAME,
+        self, create::Step, AtPath, Beside, CheckpointError, CheckpointOptions, Finished,
+        BUILDING_DIR_NAME, CREATING_SUFFIX, DELETING_FILE_NAME,
     },
     snapshot::Versions,
     txn::tests::{
@@ -578,7 +578,20 @@ impl Kept {
     /// deletion again there. A directory that has its manifest has every
     /// file it had, the ones beside the store's among them, and `opens`
     /// says whether it is also opened.
-    fn check_left(&self, left: &SimVfs, opens: bool, context: &str, seen: &mut LeftOf) {
+    ///
+    /// Where `finishes`, [`checkpoint::finish`] is asked first. It ends
+    /// what the deletion left, durably, where the mark of a deletion is
+    /// in the directory or no manifest is; and a directory that has its
+    /// manifest and no mark is as it was after it, with no deletion
+    /// begun: the deletion is then made again as otherwise.
+    fn check_left(
+        &self,
+        left: &SimVfs,
+        opens: bool,
+        finishes: bool,
+        context: &str,
+        seen: &mut LeftOf,
+    ) {
         if left.read_dir(&self.target).is_err() {
             seen.gone += 1;
             return;
@@ -601,7 +614,36 @@ impl Kept {
             assert!(marked || entries.is_empty(), "{context}: {entries:?}");
             seen.none += 1;
         }
-        checkpoint::delete(left, &self.target).unwrap_or_else(|error| panic!("{context}: {error}"));
+        let mut gone = false;
+        if finishes {
+            let named = |name: &str| entries.iter().any(|entry| entry.name == name);
+            let whole = named("MANIFEST") && !named(DELETING_FILE_NAME);
+            // As it is now: an open above has written into it.
+            let before = everything_in(left, &self.target);
+            let finished = checkpoint::finish(left, &self.target)
+                .unwrap_or_else(|error| panic!("{context}: {error}"));
+            let found = match whole {
+                true => AtPath::Database,
+                false => AtPath::Removed,
+            };
+            assert_eq!(finished.at, found, "{context}");
+            // The staging directory of the checkpoint's creation can be
+            // beside it in a state that a power cut left: its removal was
+            // not synced. It goes then.
+            assert!(
+                matches!(finished.beside, Beside::Nothing | Beside::Removed),
+                "{context}: {finished:?}"
+            );
+            assert!(left.read_dir(&staging(&self.target)).is_err(), "{context}");
+            match whole {
+                true => assert_eq!(everything_in(left, &self.target), before, "{context}"),
+                false => gone = true,
+            }
+        }
+        if !gone {
+            checkpoint::delete(left, &self.target)
+                .unwrap_or_else(|error| panic!("{context}: {error}"));
+        }
         assert!(left.read_dir(&self.target).is_err(), "{context}");
         // And durably: a power cut that loses every unsynced change does
         // not bring it back.
@@ -617,6 +659,9 @@ impl Kept {
 /// was cut short: never a database with something missing. The deletion
 /// can be made again, and is durable when it returns. The same holds for
 /// a checkpoint whose manifest has the name of a renamed one as well.
+/// After every second failure [`checkpoint::finish`] is asked first: it
+/// ends a deletion that had begun, and leaves the whole checkpoint as it
+/// was where none had.
 #[test]
 fn a_deletion_that_the_file_layer_fails_leaves_the_checkpoint_or_no_database() {
     for twice_named in [false, true] {
@@ -649,7 +694,7 @@ fn a_deletion_is_failed_at_every_operation(twice_named: bool) {
             assert!(kept.fs.read_dir(&kept.target).is_err(), "{context}");
             continue;
         }
-        kept.check_left(&kept.fs, true, &context, &mut seen);
+        kept.check_left(&kept.fs, true, at.is_multiple_of(2), &context, &mut seen);
     }
     assert!(seen.whole > 2 && seen.none > 4 && seen.gone > 0, "{seen:?}");
 }
@@ -664,7 +709,10 @@ fn a_deletion_is_failed_at_every_operation(twice_named: bool) {
 ///
 /// The states are those of both ends, of a file system that writes in
 /// order, of one change lost at a time, and eight drawn ones, for every
-/// cut. The first two of a cut are also opened.
+/// cut. The first two of a cut are also opened. In every second state
+/// [`checkpoint::finish`] is asked first: it ends, durably, a deletion
+/// whose mark is in the directory, and leaves the whole checkpoint as it
+/// was where there is none.
 #[test]
 fn a_deletion_that_the_power_cuts_leaves_the_checkpoint_or_no_database() {
     for twice_named in [false, true] {
@@ -704,7 +752,8 @@ fn a_deletion_is_cut_at_every_operation(twice_named: bool) {
             };
             let context = format!("cut {cut} of {ops}, crash plan {index}");
             let gone = seen.gone;
-            kept.check_left(&left, index < 2, &context, &mut seen);
+            let finishes = (cut as usize + index).is_multiple_of(2);
+            kept.check_left(&left, index < 2, finishes, &context, &mut seen);
             assert!(
                 deleted.is_err() || seen.gone > gone,
                 "{context}: the deletion came back"
@@ -2210,6 +2259,192 @@ fn a_file_that_comes_beside_a_lock_file_alone_is_not_removed() {
     );
     let left = BTreeMap::from([(PathBuf::from("data"), Some(b"put there meanwhile".to_vec()))]);
     assert_eq!(everything_in(&StdVfs, &theirs), left);
+}
+
+/// **[`checkpoint::finish`] ends what was cut short, and begins
+/// nothing.**
+///
+/// - A checkpoint that is whole is as it was after it, entry for entry,
+///   also while a handle has its lock, and the call says that it found a
+///   database. So is one beside a file that is only named as the mark of
+///   a deletion, which [`checkpoint::delete`] would remove.
+/// - What a deletion left is removed: a directory with the manifest
+///   under the name of the mark and whatever else, an empty directory,
+///   and one with an empty lock file alone. Where a handle has the lock
+///   of one, the call fails and removes nothing.
+/// - The staging directory that a creation left beside the path is
+///   removed, with a checkpoint at the path and with nothing there. One
+///   whose lock is held, and one that no creation left, is as it was,
+///   and the call says which.
+/// - Given the name of a staging directory, it removes what a creation
+///   left and refuses what no creation left.
+/// - A directory that holds files and no manifest, a file and a link at
+///   the path are refused, and nothing is there for a name that the
+///   directory above does not list.
+#[test]
+fn finishing_ends_what_was_cut_short_and_begins_nothing() {
+    let (db, versions) = store_with_log(24 << 10, 128);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(90);
+    for round in 0..3 {
+        block(&mut world, &mut rng, round * 20, 20);
+        turn(&db, &versions);
+    }
+    let checkpoints = checkpoints_in(&db);
+    let finish = |path: &Path| checkpoint::finish(&StdVfs, path);
+    let found = |at, beside| Finished { at, beside };
+    let a_manifest = std::fs::read(db.dir.join("MANIFEST")).expect("a manifest");
+
+    // A whole checkpoint, with what the caller keeps beside the store's
+    // files, and a handle that has it open.
+    let target = checkpoints.join("1");
+    let staged = staging(&target);
+    (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+    std::fs::write(target.join("platform_state.bin"), b"the caller's").expect("a file");
+    let whole = everything_in(&StdVfs, &target);
+    let held = StdVfs.lock(&target.join("LOCK")).expect("the lock");
+    let is_whole = |beside| {
+        let finished = finish(&target).expect("nothing is begun");
+        assert_eq!(finished, found(AtPath::Database, beside));
+        assert_eq!(everything_in(&StdVfs, &target), whole);
+    };
+    is_whole(Beside::Nothing);
+
+    // What a creation left beside it goes; what no creation left, and a
+    // staging directory whose lock is held, stays.
+    leave_built(&staged, false);
+    is_whole(Beside::Removed);
+    assert!(!staged.exists());
+    leave_built(&staged, false);
+    std::fs::write(staged.join("theirs"), b"somebody's").expect("a file");
+    let theirs = everything_in(&StdVfs, &staged);
+    is_whole(Beside::NotStaging);
+    assert_eq!(everything_in(&StdVfs, &staged), theirs);
+    let refused = finish(&staged);
+    assert!(
+        matches!(&refused, Err(CheckpointError::NotStaging { dir, found })
+            if *dir == staged && found == "theirs"),
+        "{refused:?}"
+    );
+    assert_eq!(everything_in(&StdVfs, &staged), theirs);
+    std::fs::remove_file(staged.join("theirs")).expect("their file is removed");
+    let building = StdVfs.lock(&staged.join("LOCK")).expect("the lock");
+    let left = everything_in(&StdVfs, &staged);
+    is_whole(Beside::BeingBuiltIn);
+    let refused = finish(&staged);
+    assert!(
+        matches!(&refused, Err(CheckpointError::Creating { dir }) if *dir == staged),
+        "{refused:?}"
+    );
+    assert_eq!(everything_in(&StdVfs, &staged), left);
+    drop(building);
+    // Given the staging directory itself, and with nothing at the path.
+    assert_eq!(
+        finish(&staged).expect("what a creation left is removed"),
+        found(AtPath::Removed, Beside::Nothing)
+    );
+    assert!(!staged.exists());
+    assert_eq!(
+        finish(&staged).expect("nothing is there"),
+        found(AtPath::Nothing, Beside::Nothing)
+    );
+    let second = checkpoints.join("2");
+    leave_built(&staging(&second), true);
+    assert_eq!(
+        finish(&second).expect("what a creation left is removed"),
+        found(AtPath::Nothing, Beside::Removed)
+    );
+    assert!(!staging(&second).exists() && !second.exists());
+    assert_eq!(
+        finish(&second).expect("nothing is there"),
+        found(AtPath::Nothing, Beside::Nothing)
+    );
+
+    // A file that is only named as the mark of a deletion, beside the
+    // manifest: no deletion has begun, and none is begun.
+    std::fs::write(target.join(DELETING_FILE_NAME), b"no manifest").expect("a file");
+    let marked_by_name = everything_in(&StdVfs, &target);
+    let finished = finish(&target).expect("nothing is begun");
+    assert_eq!(finished, found(AtPath::Database, Beside::Nothing));
+    assert_eq!(everything_in(&StdVfs, &target), marked_by_name);
+    std::fs::remove_file(target.join(DELETING_FILE_NAME)).expect("the file is removed");
+    drop(held);
+    is_whole(Beside::Nothing);
+
+    // What a deletion left.
+    let leftover = checkpoints.join("leftover");
+    let put = |files: &[(&str, &[u8])]| {
+        std::fs::create_dir(&leftover).expect("a directory");
+        for (name, bytes) in files {
+            let path = leftover.join(name);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("a directory");
+            std::fs::write(path, bytes).expect("a file");
+        }
+    };
+    let cut_short: [&[(&str, &[u8])]; 4] = [
+        &[
+            (DELETING_FILE_NAME, &a_manifest),
+            ("seg/00000001.seg", b"left"),
+            ("LOCK", b""),
+        ],
+        &[
+            (DELETING_FILE_NAME, &a_manifest),
+            ("MANIFEST", b"made since"),
+        ],
+        &[],
+        &[("LOCK", b"")],
+    ];
+    for (index, files) in cut_short.into_iter().enumerate() {
+        put(files);
+        if !files.is_empty() {
+            // A handle has its lock: nothing is removed.
+            let held = StdVfs.lock(&leftover.join("LOCK")).expect("the lock");
+            let kept = everything_in(&StdVfs, &leftover);
+            let refused = finish(&leftover);
+            assert!(
+                matches!(&refused, Err(CheckpointError::Open { dir }) if *dir == leftover),
+                "leftover {index}: {refused:?}"
+            );
+            assert_eq!(everything_in(&StdVfs, &leftover), kept, "leftover {index}");
+            drop(held);
+            if index == 1 {
+                // The lock made a lock file where there was none.
+                std::fs::remove_file(leftover.join("LOCK")).expect("the lock file is removed");
+            }
+        }
+        let finished = finish(&leftover).expect("the deletion is finished");
+        assert_eq!(
+            finished,
+            found(AtPath::Removed, Beside::Nothing),
+            "leftover {index}"
+        );
+        assert!(!leftover.exists(), "leftover {index}");
+    }
+
+    // What is no database and no deletion's: nothing of it is touched.
+    put(&[("theirs", b"as it was"), ("LOCK", b"")]);
+    let kept = everything_in(&StdVfs, &leftover);
+    let refused = finish(&leftover);
+    assert!(
+        matches!(&refused, Err(CheckpointError::NotADatabase { dir, .. }) if *dir == leftover),
+        "{refused:?}"
+    );
+    assert_eq!(everything_in(&StdVfs, &leftover), kept);
+    let (link, file) = (checkpoints.join("link"), checkpoints.join("file"));
+    std::os::unix::fs::symlink("1", &link).expect("a link");
+    std::fs::write(&file, b"a file").expect("a file");
+    for path in [&file, &link, Path::new("/"), Path::new("")] {
+        let refused = finish(path);
+        assert!(
+            matches!(&refused, Err(CheckpointError::NotADirectory { dir }) if dir == path),
+            "{}: {refused:?}",
+            path.display()
+        );
+    }
+    assert!(link.is_symlink() && file.exists());
+    is_whole(Beside::Nothing);
+    open(&db, &target).check(&world.model);
+    world.check_committed();
 }
 
 /// The directory above a path, as the file layer is given it.

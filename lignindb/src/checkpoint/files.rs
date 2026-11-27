@@ -1272,7 +1272,7 @@ pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     };
     match kind_of(vfs, parent, dir)? {
         Some(EntryKind::Dir) => {
-            delete_database(vfs, dir, parent)?;
+            delete_database(vfs, dir, parent, true)?;
             after_a_deletion()
         }
         Some(_) => Err(not_a_directory()),
@@ -1301,16 +1301,151 @@ pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     }
 }
 
+/// What [`finish`] found at a path, and did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Finished {
+    /// What was under the name it was given.
+    pub at: AtPath,
+    /// What was beside that name, under the name of a creation's staging
+    /// directory ([`CREATING_SUFFIX`]). [`Beside::Nothing`] where the
+    /// call was given a name of that kind itself.
+    pub beside: Beside,
+}
+
+/// What [`finish`] found under the name it was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtPath {
+    /// Nothing that the directory above lists under that name.
+    Nothing,
+    /// A database, whole: it has a manifest of this engine under the
+    /// manifest's name, and none under [`DELETING_FILE_NAME`]. Nothing of
+    /// it was touched, and its lock was not taken.
+    Database,
+    /// What a deletion or a creation that was cut short left, which is
+    /// removed now, durably: a directory with a manifest under
+    /// [`DELETING_FILE_NAME`], an empty directory, a directory with an
+    /// empty lock file alone, or, where the name is a staging
+    /// directory's, one that a creation left.
+    Removed,
+}
+
+/// What [`finish`] found beside the name it was given, under that name
+/// with [`CREATING_SUFFIX`] added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Beside {
+    /// No directory.
+    Nothing,
+    /// The staging directory that a creation left, which is removed now,
+    /// durably, with what was built in it.
+    Removed,
+    /// A staging directory whose lock is held, as by a creation that is
+    /// building in it. It is as it was.
+    BeingBuiltIn,
+    /// A directory that no creation left: it lists something that no
+    /// creation puts into its staging directory
+    /// ([`CheckpointError::NotStaging`]). It is as it was.
+    NotStaging,
+}
+
+/// Finishes what a deletion or a creation of a checkpoint in the
+/// directory `dir` of `vfs` left when it was cut short, **and begins
+/// nothing**: where `dir` is a database that no deletion has begun on, it
+/// is as it was when the call returns, with no lock of it taken, so the
+/// call can be made for a checkpoint that a handle has open.
+///
+/// It is [`delete`] without its first step. [`delete`] makes a directory
+/// stop being a database, by renaming its manifest to
+/// [`DELETING_FILE_NAME`], and then removes it; this call removes only
+/// what that step, or a creation, has left behind already:
+///
+/// - **A deletion that was cut short**: a directory that holds a manifest
+///   of this engine under [`DELETING_FILE_NAME`], whatever else it holds,
+///   a manifest under the manifest's own name among it, as [`delete`]
+///   has it. It is finished under the directory's lock, where the
+///   directory is read again: one that is a database then, and no
+///   deletion's, is left as it is. Where a handle has the lock,
+///   [`CheckpointError::Open`].
+/// - **What a deletion can leave beside that**: an empty directory, which
+///   is removed by a removal that fails if something has come into it,
+///   and a directory with an empty lock file alone, under its lock.
+/// - **What a creation left**: the staging directory beside `dir`
+///   ([`CREATING_SUFFIX`]), with what was built in it, by the rule and
+///   under the looks of [`delete`]. One whose lock is held, and one that
+///   no creation left, is as it was, and [`Finished::beside`] says which.
+///   Given a name of that kind as `dir`, the call removes that directory
+///   where a creation left it, and fails with
+///   [`CheckpointError::NotStaging`] where it lists what no creation puts
+///   there.
+///
+/// A directory that holds files and no manifest of this engine is
+/// refused, with nothing touched ([`CheckpointError::NotADatabase`]), and
+/// so is a name that the directory above lists as something else than a
+/// directory ([`CheckpointError::NotADirectory`]). A name that it does
+/// not list is [`AtPath::Nothing`]: unlike [`delete`], this call does not
+/// look for a directory under another spelling of the name.
+///
+/// When it returns `Ok`, what it removed is removed durably. It keeps no
+/// path from being given another meaning while it runs, as the [module
+/// documentation](super) says of everything that comes after a look
+/// ("Durability, and a creation that fails").
+pub fn finish(vfs: &dyn Vfs, dir: &Path) -> Result<Finished, CheckpointError> {
+    let (Some(parent), Some(_)) = (parent_of(dir), dir.file_name()) else {
+        return Err(CheckpointError::NotADirectory {
+            dir: dir.to_path_buf(),
+        });
+    };
+    if is_staging(dir) {
+        let at = match remove_leftover(vfs, parent, dir)? {
+            true => AtPath::Removed,
+            false => AtPath::Nothing,
+        };
+        return Ok(Finished {
+            at,
+            beside: Beside::Nothing,
+        });
+    }
+    let at = match kind_of(vfs, parent, dir)? {
+        Some(EntryKind::Dir) => match delete_database(vfs, dir, parent, false)? {
+            true => AtPath::Removed,
+            false => AtPath::Database,
+        },
+        Some(_) => {
+            return Err(CheckpointError::NotADirectory {
+                dir: dir.to_path_buf(),
+            });
+        }
+        None => AtPath::Nothing,
+    };
+    let beside = match staging_of(dir).map(|staging| remove_leftover(vfs, parent, &staging)) {
+        Some(Ok(true)) => Beside::Removed,
+        Some(Ok(false)) | None => Beside::Nothing,
+        Some(Err(CheckpointError::Creating { .. })) => Beside::BeingBuiltIn,
+        Some(Err(CheckpointError::NotStaging { .. })) => Beside::NotStaging,
+        Some(Err(error)) => return Err(error),
+    };
+    Ok(Finished { at, beside })
+}
+
 /// Deletes the database in `dir`, a directory of its own in the directory
-/// `parent`, as [`delete`] says.
-fn delete_database(vfs: &dyn Vfs, dir: &Path, parent: &Path) -> Result<(), CheckpointError> {
+/// `parent`, as [`delete`] says, and says whether the directory is gone.
+/// Where `begin` is not set, a database that no deletion has begun on is
+/// left as it is, with no lock taken, as [`finish`] says, and the answer
+/// is `false`.
+fn delete_database(
+    vfs: &dyn Vfs,
+    dir: &Path,
+    parent: &Path,
+    begin: bool,
+) -> Result<bool, CheckpointError> {
     let entries = vfs
         .read_dir(dir)
         .map_err(CheckpointError::io("list", dir))?;
     if !entries.is_empty() {
         // Nothing is changed, the lock file included, in a directory that
         // is neither a database nor what a deletion left.
-        Left::of(vfs, dir, &entries)?;
+        if Left::of(vfs, dir, &entries)? == Left::Database && !begin {
+            return Ok(false);
+        }
         let lock_path = dir.join(LOCK_FILE_NAME);
         let lock = vfs.lock(&lock_path).map_err(|source| match source.kind() {
             ErrorKind::WouldBlock => CheckpointError::Open {
@@ -1318,13 +1453,17 @@ fn delete_database(vfs: &dyn Vfs, dir: &Path, parent: &Path) -> Result<(), Check
             },
             _ => CheckpointError::io("lock", &lock_path)(source),
         })?;
-        empty(vfs, dir)?;
+        let emptied = empty(vfs, dir, begin)?;
         drop(lock);
+        if !emptied {
+            return Ok(false);
+        }
     }
     vfs.remove_dir(dir)
         .map_err(CheckpointError::io("remove the directory", dir))?;
     vfs.sync_dir(parent)
-        .map_err(CheckpointError::io("sync the directory", parent))
+        .map_err(CheckpointError::io("sync the directory", parent))?;
+    Ok(true)
 }
 
 /// What a directory that [`delete`] may empty is.
@@ -1400,8 +1539,10 @@ fn holds_manifest(vfs: &dyn Vfs, path: &Path) -> Result<bool, CheckpointError> {
 }
 
 /// Removes everything from the directory `dir`, whose lock the caller
-/// holds, the lock file included.
-fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
+/// holds, the lock file included, and says whether it did. Where `begin`
+/// is not set and the directory is a database that no deletion has begun
+/// on, nothing is removed, and the answer is `false`.
+fn empty(vfs: &dyn Vfs, dir: &Path, begin: bool) -> Result<bool, CheckpointError> {
     let list = || vfs.read_dir(dir).map_err(CheckpointError::io("list", dir));
     let sync = || {
         vfs.sync_dir(dir)
@@ -1420,7 +1561,8 @@ fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     match Left::of(vfs, dir, &list()?)? {
         // Nothing but the lock file is this call's to remove here. The
         // directory goes afterwards if nothing has come into it.
-        Left::LockAlone => return remove(LOCK_FILE_NAME),
+        Left::LockAlone => return remove(LOCK_FILE_NAME).map(|()| true),
+        Left::Database if !begin => return Ok(false),
         Left::Database => {
             let manifest = dir.join(ManifestStore::FILE_NAME);
             vfs.rename(&manifest, &dir.join(DELETING_FILE_NAME))
@@ -1446,5 +1588,6 @@ fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     // next call to remove.
     remove(LOCK_FILE_NAME)?;
     sync()?;
-    remove(DELETING_FILE_NAME)
+    remove(DELETING_FILE_NAME)?;
+    Ok(true)
 }
