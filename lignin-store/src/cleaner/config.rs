@@ -24,8 +24,8 @@ pub const DEFAULT_VALUE_DEAD_PERCENT: u8 = 18;
 pub const DEFAULT_VALUE_MIN_FILE_DEAD_PERCENT: u8 = 40;
 
 /// The share of dead bytes of the value log, in a hundred, over which the
-/// cleaner cleans the file most worth it whatever its own share, by
-/// default.
+/// cleaner cleans the most dead file it may take once one byte in a
+/// hundred of it is dead, by default.
 pub const DEFAULT_VALUE_CEILING_DEAD_PERCENT: u8 = 20;
 
 /// Five classes of the share of a file's bytes that are dead when a
@@ -126,8 +126,9 @@ pub struct CleanerConfig {
 impl CleanerConfig {
     /// The defaults: work towards 14 dead bytes in a hundred in segments;
     /// in the value log, clean files at least 40 in a hundred dead once
-    /// more than 18 in a hundred of its bytes are, and the file most worth
-    /// it whatever its share while more than 20 are; let at most 4 in a
+    /// more than 18 in a hundred of its bytes are, and the most dead file
+    /// once one byte in a hundred of it is while more than 20 are; let at
+    /// most 4 in a
     /// hundred wait for a table
     /// checkpoint; close a file that is being filled when it holds 1 in a
     /// hundred of the store, or when 2 in a hundred of the store are dead
