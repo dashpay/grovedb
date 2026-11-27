@@ -114,8 +114,12 @@ struct Walk {
     places: HashMap<Subtree, usize>,
     passed: HashSet<CellAddress>,
     /// The keys of the nodes of the Merk that is asked for whose cells
-    /// were passed.
+    /// were passed on the way down from its root: they are asked for once
+    /// that walk has ended, and none is kept afterwards.
     reached: HashSet<Vec<u8>>,
+    /// Whether the walk has gone on from cells beside the root's
+    /// ([`Self::start`]).
+    apart: bool,
     /// The cells to go to, each with its Merk.
     ahead: Vec<(usize, CellAddress)>,
     /// The Merks that hosts were found to host and that are not claimed.
@@ -168,6 +172,7 @@ impl Walk {
             places: HashMap::from([(subtree, 0)]),
             passed: HashSet::new(),
             reached: HashSet::new(),
+            apart: false,
             ahead: vec![(0, root)],
             found: Vec::new(),
             #[cfg(any(test, feature = "held_reads"))]
@@ -178,6 +183,7 @@ impl Walk {
     /// Has the walk go on from each of `apart`: cells of nodes of the
     /// Merk that is asked for.
     fn start(&mut self, apart: &[CellAddress]) {
+        self.apart = true;
         self.ahead.extend(apart.iter().rev().map(|at| (0, *at)));
     }
 
@@ -255,6 +261,7 @@ impl Walk {
             }
             self.plan.merks[merk].nodes.push(at);
             let hosts = stale.has(HashField::Value);
+            let reaches = merk == 0 && !self.apart;
             let read = frames.tree.page(at.page(), |page| {
                 let node = page.node(at.slot())?;
                 let children = Side::BOTH.map(|side| {
@@ -262,37 +269,39 @@ impl Walk {
                     link.filter(|_| stale.has(HashField::Child(side)))
                         .map(|link| link.child)
                 });
-                let key = (hosts || merk == 0).then(|| node.key().to_vec());
+                let key = (hosts || reaches).then(|| node.key().to_vec());
                 let pointers = hosts.then(|| node.hosted_roots().collect::<Vec<_>>());
                 Some((children, key, pointers))
             })?;
             let (children, key, pointers) = read.ok_or(NodeError::NoNode { address: at })?;
             self.ahead
                 .extend(children.into_iter().flatten().map(|child| (merk, child)));
-            if let (0, Some(key)) = (merk, &key) {
-                self.reached.insert(key.clone());
-            }
-            let (Some(key), Some(pointers)) = (key, pointers) else {
+            let Some(key) = key else {
                 continue;
             };
-            let (subtree, id) = (self.plan.merks[merk].subtree, self.plan.merks[merk].id);
-            if self.is_pending(scopes, who, subtree, &key) {
-                return Err(behind(at));
+            if let Some(pointers) = pointers {
+                let (subtree, id) = (self.plan.merks[merk].subtree, self.plan.merks[merk].id);
+                if self.is_pending(scopes, who, subtree, &key) {
+                    return Err(behind(at));
+                }
+                for (position, pointer) in pointers.into_iter().enumerate() {
+                    let Some(pointer) = pointer else {
+                        continue;
+                    };
+                    // Where no Merk is entered under the host there, the
+                    // one whose root the cell names was dropped, or moved
+                    // from under the host: the host is behind. Which Merk
+                    // has its root in a cell depends on what was laid
+                    // out, and is not asked.
+                    self.found.push(Found {
+                        host: at,
+                        pointer,
+                        subtree: hosted_at(frames, id, position, &key)?,
+                    });
+                }
             }
-            for (position, pointer) in pointers.into_iter().enumerate() {
-                let Some(pointer) = pointer else {
-                    continue;
-                };
-                // Where no Merk is entered under the host there, the one
-                // whose root the cell names was dropped, or moved from
-                // under the host: the host is behind. Which Merk has its
-                // root in a cell depends on what was laid out, and is
-                // not asked.
-                self.found.push(Found {
-                    host: at,
-                    pointer,
-                    subtree: hosted_at(frames, id, position, &key)?,
-                });
+            if reaches {
+                self.reached.insert(key);
             }
         }
         Ok(())
