@@ -367,9 +367,6 @@ for path in "$TARGET" "$BACKUP" "$RESTORE"; do
   if [ ! -d "$(dirname -- "$path")" ]; then echo "$(dirname -- "$path") is not there: make it first"; false; fi
 done
 SOURCE=$(real_dir "$SOURCE")
-for entry in MANIFEST MANIFEST.deleting wal seg val table; do
-  if [ -e "$SOURCE/$entry" ] || [ -L "$SOURCE/$entry" ]; then echo "$SOURCE holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before you go on"; false; fi
-done
 TARGET=$(real_new "$TARGET")
 BACKUP=$(real_new "$BACKUP")
 RESTORE=$(real_new "$RESTORE")
@@ -389,16 +386,23 @@ written into; step 2 has already refused one inside any directory that
 holds a database, before it writes anything. It also refuses a `TARGET` inside a directory that holds a `MANIFEST`
 or a `MANIFEST.deleting`, or a `CURRENT`, a LigninDB or RocksDB
 database or checkpoint whose deletion would remove it, or inside one
-whose name ends in `.creating`. And it refuses a `SOURCE` that holds an
-entry of a LigninDB database (`MANIFEST`, `MANIFEST.deleting`, `wal`,
-`seg`, `val` or `table`): RocksDB opened on a LigninDB directory, as an
-open with RocksDB as the build's default engine does, makes a RocksDB
-database beside the LigninDB one, empty at first and then holding what
-is written through it, which the survey reads and the migration
-carries in place of the LigninDB one's state. `lignin migrate` itself
-does not refuse such a directory: it reads the RocksDB database there,
-and this block is the refusal. Find out which of the two
-holds the node's state; where it is the LigninDB one, the messages
+whose name ends in `.creating`.
+
+A `SOURCE` that holds an entry of a LigninDB database is refused by
+`lignin migrate` itself, by the survey of step 5 and the migration of
+step 6 alike, before it opens or locks anything
+([messages](messages.md#lignin-migrate)): with
+``it holds `…`, an entry that only a LigninDB database makes, and this command reads a RocksDB database alone: nothing was opened or locked. Find out which database there holds the node's state``
+where its entries are LigninDB's alone, and with
+``the directory … holds entries of both engines (`…` is …'s and `…` is …'s): it is opened as neither``
+where RocksDB's are beside them. RocksDB opened on a LigninDB
+directory, as an open with RocksDB as the build's default engine does,
+makes a RocksDB database beside the LigninDB one, empty at first and
+then holding what is written through it, which a migration would
+otherwise carry in place of the LigninDB one's state. The command tells
+the entries apart by their names, as the open that chooses the engine
+(`EitherEngine`) does, with GroveDB's own rule. Find out which of the
+two holds the node's state; where it is the LigninDB one, the messages
 chapter says what to do (`… was written by another storage engine (…: …)`).
 Use the paths it prints from here on. A second mount of one directory
 is not seen. The migrator
@@ -431,9 +435,10 @@ Read its report before you go on:
   root hash of its state at the stop, or at the checkpoint where
   `SOURCE` is one, it is that one. The counts alone do not tell it: a
   RocksDB database that RocksDB made beside a LigninDB one, by an open
-  of that directory with RocksDB, holds what was written through it
-  there, which can be nothing (an empty grove) or a grove of its own,
-  and a checkpoint of that directory holds it alone; and a node's state
+  of that directory with RocksDB, is refused there (step 4), but a
+  checkpoint of that directory holds it alone, with what was written
+  through it, which can be nothing (an empty grove) or a grove of its
+  own; and a node's state
   can be in a grove with no Merk node, in records of the aux keyspace.
   Nor does the root hash tell all of it: it does not cover the aux,
   roots or meta records, so two databases with the same grove and
@@ -895,10 +900,11 @@ checkpoint. In the second case the node's own RocksDB directory can hold
 commits after the checkpoint, and it is that directory, and not the
 checkpoint, that the node goes back to.
 
-**Before the node goes back to a RocksDB directory, check that it holds
-no entry that only a LigninDB database makes**, as step 4 does for
-`SOURCE`: RocksDB opened on a LigninDB directory reads its own database
-there, and not the LigninDB one. Set `BACK` to that directory where it
+**Before the node goes back to a RocksDB directory, survey it**: the
+survey refuses a directory that holds an entry that only a LigninDB
+database makes, as it refuses such a `SOURCE` (step 4), and RocksDB
+opened on a LigninDB directory reads its own database there, and not
+the LigninDB one. Set `BACK` to that directory where it
 is not `SOURCE` (where `SOURCE` was a checkpoint, the node's own
 directory); the block takes `SOURCE` where `BACK` is not set. It also
 refuses a `BACK` whose name ends in `.creating` (in any case). LigninDB
@@ -930,14 +936,10 @@ directory's name.
 ```sh
 BACK=$(real_dir "${BACK:-$SOURCE}")
 case "$(basename -- "$BACK" | tr '[:upper:]' '[:lower:]')" in *.creating) echo "$BACK ends in .creating, in some spelling of its ASCII letters: this check reserves every such spelling, since LigninDB builds checkpoints under that name: move the database to a name of its own before the node goes back to it"; false ;; esac
-for entry in MANIFEST MANIFEST.deleting wal seg val table; do
-  if [ -e "$BACK/$entry" ] || [ -L "$BACK/$entry" ]; then echo "$BACK holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before the node goes back to it"; false; fi
-done
-echo "$BACK holds no entry of a LigninDB database"
 if [ "$BACK" != "$SOURCE" ]; then lignin migrate "$BACK" --survey 2>&1 | tee "$WORK/reports/survey-back.txt"; fi
 ```
 
-**Then survey it**, into a report of its own (step 5's block would
+**It is surveyed** into a report of its own (step 5's block would
 write over the survey of step 5, which the block below compares with):
 RocksDB's open makes a new, empty database where it finds none, and the
 survey only reads. The block above surveys `BACK` where it is not
@@ -1022,10 +1024,11 @@ survey of step 5, and has three answers:
   `--memory-limit`, give this one the same. Otherwise the application's
   own check decides.
 
-As step 4 does, the block first refuses a `SOURCE` that holds an entry
-that only a LigninDB database makes: RocksDB opened there beside a
-LigninDB database reads its own database, empty or with what was
-written through it, and not the LigninDB one. A refusal of the survey
+Its survey refuses a `SOURCE` that holds an entry that only a LigninDB
+database makes, as step 5's does (step 4), and the block then answers
+that the surveys do not tell: RocksDB opened there beside a LigninDB
+database reads its own database, empty or with what was written
+through it, and not the LigninDB one. A refusal of the survey
 does not stop the block, so the answer is given all the same; a report that cannot be written ends the shell, as any
 failure does, before an answer, and the block removes the report of an
 earlier way back first, so it never reads one. A match shows that the
@@ -1039,9 +1042,6 @@ was a checkpoint, the node's own directory has a state of its own,
 which the application identifies; this block is not for it.
 
 ```sh
-for entry in MANIFEST MANIFEST.deleting wal seg val table; do
-  if [ -e "$SOURCE/$entry" ] || [ -L "$SOURCE/$entry" ]; then echo "$SOURCE holds $entry, an entry that only a LigninDB database makes: find out which database there holds the node's state before you go on"; false; fi
-done
 rm -f "$WORK/reports/survey-again.txt"
 { lignin migrate "$SOURCE" --survey 2>&1 || true; } | tee "$WORK/reports/survey-again.txt"
 first_line() { sed -n '1s/^\(the source .*: RocksDB identity [^,]*, last write [0-9][0-9]*\); .*$/\1/p' "$1"; }

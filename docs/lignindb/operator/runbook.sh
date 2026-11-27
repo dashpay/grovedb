@@ -13,6 +13,11 @@
 # of a document is run before the block after it and printed after `# `:
 # the variables that the document asks its reader to set, for this run.
 #
+# Step 4 of migration.md keeps no list of the entries of a LigninDB database:
+# it cites the refusal of `lignin migrate` for a source that holds one. Once
+# every block has run, the script surveys the LigninDB database the runbook
+# made, at TARGET, and holds the survey to that refusal.
+#
 # For a run on a clean machine, start it with no Rust on the path and with
 # CARGO_HOME and RUSTUP_HOME naming empty directories: the runbook then
 # installs Rust itself, and every crate is fetched again.
@@ -189,6 +194,21 @@ for document in "${documents[@]}"; do
         exit 2
     fi
 done
+cat >>"$script" <<'REFUSAL'
+where='runbook.sh: the refusal that step 4 cites'
+printf '\n## %s\n$ lignin migrate "$TARGET" --survey\n' "$where"
+if refusal=$(lignin migrate "$TARGET" --survey 2>&1); then
+    printf '%s\n' "$refusal"
+    echo "runbook.sh: the survey took the LigninDB database at $TARGET" >&2
+    false
+fi
+printf '%s\n' "$refusal"
+case "$refusal" in *", an entry that only a LigninDB database makes, and this command reads a RocksDB database alone: nothing was opened or locked. "*) ;; *)
+    echo "runbook.sh: the survey of $TARGET was refused otherwise than step 4 says" >&2
+    false
+    ;;
+esac
+REFUSAL
 echo "printf '\\nrunbook.sh: every command ran\\n'" >>"$script"
 
 echo "runbook.sh: GROVEDB_REF=$GROVEDB_REF WORK=$work, $(uname -sm)"
