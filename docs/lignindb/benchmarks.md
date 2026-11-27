@@ -165,7 +165,7 @@ only.
 | `engine_hashes_per_transition` | calls | engine: hashes computed, where it counts them (LigninDB only) |
 | `node_record_*_share` | fraction | the node records in the log, decoded (RocksDB only) |
 | `size_on_disk` | B | file lengths under the database directory |
-| `physical_bytes_to_flushed` | B | engine: log plus flush plus compaction (cleaner) bytes from the end of the load to the `flushed` size, what the background work did after the last commit of the load included; a total, not per transition |
+| `physical_bytes_to_flushed` | B | engine: log plus flush plus compaction (cleaner) bytes from the end of the load to the `flushed` size, what the background work did after the last commit of the load included; a total, not per transition. Each detail of the engine (below) has a row `<detail>_to_flushed` of the same span |
 | `point_proof_bytes`, `references_proof_bytes` | B | proof lengths |
 | `wall_per_transition`, `block_commit`, `bulk_load` | µs, ms, s | `Instant` around apply and commit |
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |

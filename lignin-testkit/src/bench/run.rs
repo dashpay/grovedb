@@ -1578,6 +1578,7 @@ fn measure<E: Engine>(
 
     let root_hash_after_load = engine.root_hash(grove_version)?;
     let after_load = engine.counters()?;
+    let details_after_load = engine.details()?;
     let disk_after_load = disk_usage(dir)?;
     rows.push(measured_row(
         "size_on_disk",
@@ -1604,6 +1605,7 @@ fn measure<E: Engine>(
     engine.wait_for_background()?;
     let disk_after_flush = disk_usage(dir)?;
     let settling = engine.counters()?.since(&after_load);
+    let settling_details = details_since(engine.details()?, &details_after_load)?;
     rows.push(measured_row(
         "size_on_disk",
         "flushed",
@@ -1622,6 +1624,16 @@ fn measure<E: Engine>(
         "engine counters: log, flush and compaction bytes from the end of the load to the \
          size after the flush, what the background work did after the last commit included",
     ));
+    for detail in &settling_details {
+        rows.push(measured_row(
+            &format!("{}_to_flushed", detail.id),
+            "flushed",
+            detail.unit,
+            detail.total as f64,
+            1,
+            detail.source,
+        ));
+    }
     rows.push(checkpoints(&engine, settings, "flushed")?);
 
     let mut reopen_meter = Meter::new(settings, "reopen");
