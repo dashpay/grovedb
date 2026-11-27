@@ -427,8 +427,7 @@ pub(super) fn entered(
     view: LigninView<'_>,
     prefix: [u8; 32],
 ) -> Result<Option<LigninEntry>, Error> {
-    let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
-    handle.entry().map_err(merk_error)
+    view.entry(&prefix).map_err(merk_error)
 }
 
 /// What the group makes of the element `host`: the element as the last

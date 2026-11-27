@@ -152,8 +152,7 @@ impl LigninTestEngine {
     /// Enters `subtree` in the transaction of `view`, where the
     /// transaction shows no entry of it.
     fn enter(view: LigninView<'_>, subtree: &LigninSubtree) -> Result<(), crate::Error> {
-        let handle = LigninNodeStore::read_only(view, subtree.clone());
-        if handle.entry()?.is_some() {
+        if view.entry(&subtree.prefix)?.is_some() {
             return Ok(());
         }
         let nothing = LigninBatch::new().settle(view).value?;
