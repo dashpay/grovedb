@@ -35,7 +35,7 @@ use grovedb_version::version::GroveVersion;
 
 use super::{
     engine::{timed, Block, Counters, Detail, Engine, EngineSettings, Space},
-    machine::{self, ColdMethod, Perf, StorageReads},
+    machine::{self, ColdMethod, CpuClocks, Perf, StorageReads},
     report::{
         ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
         WorkloadSpec,
@@ -457,6 +457,10 @@ struct PhaseRun {
     /// The size of the database directory at the phase's end, once the
     /// background work the phase set off is idle.
     size_at_end: u64,
+    /// Nanoseconds the process's threads other than the measuring one ran
+    /// from the phase's first block to the end of the background work it
+    /// set off.
+    other_threads_cpu_ns: u64,
     /// The counters and the details as the reading that ended the phase
     /// gave them, from which a span that follows the phase is counted.
     ended: (Counters, Vec<Detail>),
@@ -518,6 +522,7 @@ fn write_phase<E: Engine>(
     let anatomy_before = engine.node_anatomy();
     let written_before = machine::process_io("write_bytes");
     let reads_before = StorageReads::now();
+    let cpu_before = CpuClocks::now();
     while totals.transitions < transitions {
         let block = next_block(stream);
         let Some((Op::Commit, ops)) = block.split_last() else {
@@ -562,6 +567,7 @@ fn write_phase<E: Engine>(
     }
     // Flushes and compactions the phase set off are counted in it.
     engine.wait_for_background()?;
+    let other_threads_cpu_ns = CpuClocks::now().others_since(&cpu_before);
     let ended = engine.counters()?;
     totals.counters = ended.since(&counters_before);
     let ended_details = engine.details()?;
@@ -588,6 +594,7 @@ fn write_phase<E: Engine>(
         gauges,
         space,
         size_at_end,
+        other_threads_cpu_ns,
         ended: (ended, ended_details),
     })
 }
@@ -750,6 +757,15 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             ));
         }
     }
+    rows.push(measured_row(
+        "other_threads_cpu_per_transition",
+        phase,
+        "us",
+        run.other_threads_cpu_ns as f64 / 1e3,
+        n,
+        "the process's CPU clock less the measuring thread's, from the phase's first block \
+         to the end of the background work it set off: the engine's background threads",
+    ));
     if let Some(written) = totals.process_write_bytes {
         rows.push(measured_row(
             "process_write_bytes_per_transition",
@@ -1983,9 +1999,19 @@ mod tests {
                 },
             )),
             size_at_end: 12_345,
+            other_threads_cpu_ns: 3_000,
             ended: (Counters::default(), Vec::new()),
         };
         let rows = count_rows(&run, "lignindb");
+        let others = rows
+            .iter()
+            .find(|row| row.id == "other_threads_cpu_per_transition")
+            .expect("the row of the other threads' CPU");
+        assert_eq!(
+            (others.value, others.unit.as_str(), others.kind),
+            (1.5, "us", RowKind::Measured)
+        );
+        assert!(others.source.contains("background threads"));
         let gauge = rows
             .iter()
             .find(|row| row.id == "log_held_max")

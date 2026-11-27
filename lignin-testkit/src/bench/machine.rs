@@ -1,9 +1,9 @@
 //! What the harness learns from the machine it runs on: its description,
 //! the commit, CPU counters beside wall time, and how to make a read cold.
 //!
-//! Everything here goes through files and commands, so the crate stays
-//! free of unsafe code. What a machine does not offer comes back as `None`
-//! and is reported as missing, not guessed.
+//! Everything here goes through files, commands and the safe calls of
+//! `rustix`, so the crate stays free of unsafe code. What a machine does
+//! not offer comes back as `None` and is reported as missing, not guessed.
 
 use std::{
     fs::{File, OpenOptions},
@@ -162,6 +162,40 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
 pub fn thread_cpu_ns() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/thread-self/schedstat").ok()?;
     text.split_whitespace().next()?.parse().ok()
+}
+
+/// The CPU clocks of the process and of the calling thread, read one after
+/// the other on that thread. Two readings on one thread give what the
+/// process's other threads ran between them ([`CpuClocks::others_since`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CpuClocks {
+    /// Nanoseconds the threads of the process have run on a CPU, those that
+    /// have ended among them, by the process's CPU clock.
+    pub process: u64,
+    /// Nanoseconds the calling thread has run on a CPU, by its own clock.
+    pub thread: u64,
+}
+
+impl CpuClocks {
+    /// Both clocks, now.
+    pub fn now() -> CpuClocks {
+        let nanos = |clock| {
+            let time = rustix::time::clock_gettime(clock);
+            (time.tv_sec as u64) * 1_000_000_000 + time.tv_nsec as u64
+        };
+        CpuClocks {
+            process: nanos(rustix::time::ClockId::ProcessCPUTime),
+            thread: nanos(rustix::time::ClockId::ThreadCPUTime),
+        }
+    }
+
+    /// Nanoseconds the process's threads other than the reading one ran
+    /// from `earlier` to `self`, both read on the same thread: the process's
+    /// time less that thread's.
+    pub fn others_since(&self, earlier: &CpuClocks) -> u64 {
+        let process = self.process.saturating_sub(earlier.process);
+        process.saturating_sub(self.thread.saturating_sub(earlier.thread))
+    }
 }
 
 /// The calling thread's id, from `/proc/thread-self` (Linux only).
@@ -997,6 +1031,44 @@ mod tests {
             assert!(thread_cpu_ns().is_some());
             assert!(thread_id().is_some());
         }
+    }
+
+    /// A thread that runs 20 ms of CPU and ends is counted among the
+    /// others. The reading thread's own run between the two clocks of one
+    /// reading is microseconds, so half of the 20 ms is a bound that only
+    /// a reading that missed the thread could fail.
+    #[test]
+    fn the_other_threads_cpu_is_what_they_ran() {
+        let before = CpuClocks::now();
+        let spun = std::thread::spawn(|| {
+            let start = CpuClocks::now().thread;
+            let mut ran = 0;
+            while ran < 20_000_000 {
+                ran = CpuClocks::now().thread - start;
+            }
+            ran
+        })
+        .join()
+        .expect("the spinning thread");
+        let after = CpuClocks::now();
+        assert!(spun >= 20_000_000);
+        assert!(after.others_since(&before) >= spun / 2);
+
+        let earlier = CpuClocks {
+            process: 1_000,
+            thread: 400,
+        };
+        let later = CpuClocks {
+            process: 1_900,
+            thread: 600,
+        };
+        assert_eq!(later.others_since(&earlier), 700);
+        assert_eq!(earlier.others_since(&later), 0);
+        let behind = CpuClocks {
+            process: 1_100,
+            thread: 900,
+        };
+        assert_eq!(behind.others_since(&earlier), 0);
     }
 
     #[test]
