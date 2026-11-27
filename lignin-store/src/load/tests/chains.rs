@@ -429,6 +429,41 @@ fn the_blocks_of_a_chain_are_named_to_the_file_layer_before_the_first_is_read() 
     assert_eq!(db.vfs.take_hints(), [named(base)]);
 }
 
+/// A page version that is read from its segments is one load, whoever
+/// asked for it. A writer's first copy of a page that the pool does not
+/// hold asks the pool for a copy and not for the page, so the pool counts
+/// no miss for it, and the load is counted all the same. An ask for a
+/// page that no segment holds is a miss, and nothing is read for it.
+#[test]
+fn a_page_that_is_read_is_counted_as_a_load_whoever_asked() {
+    let mut db = Db::new(PageSize::MIN);
+    let image = Written::filled(db.size, page(7), 1, 3).image();
+    db.base(page(7), 1, Compression::Raw, &image);
+    let pool = db.pool(4);
+    let loader = db.loader(&pool);
+    let mut buffers = LoadBuffers::new();
+    let owner = OwnerId::new(2);
+    let counted = || {
+        let stats = pool.stats();
+        (stats.misses, stats.loads)
+    };
+
+    let miss = pool
+        .make_private(owner, page(7), version(1))
+        .expect_err("not in the pool");
+    assert_eq!(counted(), (0, 0));
+    let loaded = loader.load(miss, &mut buffers).expect("a load");
+    let copy = pool
+        .make_private(owner, page(7), version(1))
+        .expect("the page is in the pool");
+    assert_eq!(counted(), (0, 1));
+    drop((loaded, copy));
+
+    let refused = loader.get(page(9), version(1), &mut buffers);
+    assert!(matches!(refused, Err(LoadError::NoPage { .. })));
+    assert_eq!(counted(), (1, 1));
+}
+
 #[test]
 fn a_loaded_page_stands_for_the_versions_up_to_the_next_link() {
     let mut db = Db::new(PageSize::MIN);
