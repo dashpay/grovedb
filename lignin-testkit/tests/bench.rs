@@ -700,6 +700,25 @@ fn the_writes_at_size_are_measured_over_a_copy_of_a_kept_database() {
         "--keep --creates 0 --updates 0 --deletes 0",
     );
     let ran = call("run", &whole, "whole.json", writes);
+
+    // While one call has the copy of an engine, a second is refused: it
+    // would remove the copy under the first.
+    let lock = std::fs::File::create(kept.join("rocksdb-writes.lock")).unwrap();
+    lock.try_lock().unwrap();
+    let args: Vec<String> = format!("writes --scratch {} {engines} {sizes}", kept.display())
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let refused = cli::main_with(&args).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("another `writes` call is measuring over the copy of rocksdb"),
+        "{refused}"
+    );
+    assert!(!kept.join("rocksdb-writes").exists());
+    drop(lock);
+
     let wrote = call("writes", &kept, "writes.json", writes);
     assert_eq!(wrote.engines.len(), ran.engines.len());
     for ((wrote, ran), loaded) in wrote.engines.iter().zip(&ran.engines).zip(&loaded.engines) {

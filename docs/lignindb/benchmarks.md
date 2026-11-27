@@ -72,7 +72,10 @@ run's, with the blocks of the set-up and of the load passed over, so with
 the three numbers of writes of a whole run the root hash at the end is that
 run's. The copy is removed at the end unless `--keep` is given, and the kept
 database is never written, so one kept database is measured under any
-number of settings, each from the same state. Its report holds the rows of
+number of settings, each from the same state, one call at a time: while a
+call has the copy of an engine it holds the lock file `<engine>-writes.lock`
+beside it, and a second call for that engine and scratch directory is
+refused. Its report holds the rows of
 the write phases only, says of its method that no read was timed and nothing
 was read cold, checkpointed or reopened, and has no size on disk.
 
@@ -165,8 +168,8 @@ only.
 | `point_proof_bytes`, `references_proof_bytes` | B | proof lengths |
 | `wall_per_transition`, `block_commit`, `bulk_load` | µs, ms, s | `Instant` around apply and commit |
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
-| `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: how often its buffer pool was asked for a page over the timed reads of one kind, and how often it did not hold the page, for one read (LigninDB only; measured, since the pool counts its background threads too; no row for a kind of which no read was timed) |
-| `page_reads_per_transition`, `pages_asked_per_transition` | pages | engine: the page versions its buffer pool did not hold and that were read from storage over a write phase, and the pages the pool was asked for, held or not, for one transition (LigninDB only; measured, since the pool counts its background threads too) |
+| `<read>_pages_asked`, `<read>_pages_missed` | pages | engine: the page versions that were read from storage over the timed reads of one kind (`_pages_missed`), and those together with the asks its buffer pool answered from memory (`_pages_asked`), for one read (LigninDB only; measured, since the engine counts its background threads too; no row for a kind of which no read was timed) |
+| `page_reads_per_transition`, `pages_asked_per_transition` | pages | engine: the page versions that were read from storage over a write phase, and those together with the asks its buffer pool answered from memory, for one transition. A page version that is read is a base image and the runs after it, read in full for a load; a writer's first copy of a page that the pool does not hold is one, and so is a load that found the page put there by another thread meanwhile. It is the loads that are counted and not the pool's misses (the detail `pool_misses`), which count an ask for a page that does not exist and miss the writer's copy (LigninDB only; measured, since the engine counts its background threads too) |
 | `process_read_bytes_per_transition`, `process_read_calls_per_transition`, `device_reads_per_transition`, `device_read_bytes_per_transition` | B, calls, requests, B | the operating system's counts of the process's reads over a write phase, for one transition ("The system's counts of reads" below; Linux only, measured) |
 | `<read>_process_read_bytes`, `<read>_process_read_calls`, `<read>_device_reads`, `<read>_device_read_bytes` | B, calls, requests, B | the same counts over the timed reads of one kind, for one read |
 | `checkpoint`, `reopen` | ms | `Instant` around one checkpoint or open |
@@ -204,19 +207,39 @@ readings (`bench::machine::StorageReads`), on Linux:
 | `device_reads` | `io.stat` of the process's cgroup, `rios`, every device | read requests that reached a device |
 | `device_read_bytes` | the same file, `rbytes` | the bytes of those requests |
 
-The two counts of the cgroup need cgroup v2 with the `io` controller on for
-the cgroup the process runs in, as a systemd unit with `IOAccounting=yes`
-has; a run outside one has no such row. They are of every process of that
-cgroup, and all four are of the whole process, its background threads
-included, so the rows are measured rows.
+The two counts of the cgroup are read from `io.stat` of the cgroup the
+process runs in, at `/sys/fs/cgroup` and the cgroup's path: cgroup v2,
+mounted whole there, with the `io` controller on for that cgroup. A
+systemd unit with `IOAccounting=yes` has it, and so has any cgroup whose
+`io.stat` can be read; where it cannot, as in a container that mounts a
+part of the hierarchy, a run has no such row. What the four counts are of:
+
+- The cgroup's counts are of **every process of that cgroup**, so a run
+  that is to be read by them runs in a cgroup of its own. A request is
+  what the block layer was handed, after its merging, on every device the
+  file names: a device that is stacked on another is counted on both.
+- The process's counts are of **the whole process**: the engine's
+  background threads, and the harness too. The harness reads files of
+  `/proc` between the phases, and for RocksDB it reads the end of the
+  write-ahead log after each commit and RocksDB's own `LOG` while it waits
+  for background work, so `process_read_calls` is not the engine's reads
+  alone, least of all over few reads.
+
+So the rows are measured rows, and they compare two runs that were made
+the same way.
 
 **What they say depends on the memory the kernel's page cache has.** With
-the page cache free, a file that was written or read before is read from
-memory, and only `process_read_calls` counts the read. Under a memory
-limit on the process's cgroup that leaves the page cache little room
-(`MemoryMax` of a systemd unit), the counts of the device say how often a
-read of either engine reached storage, which is the count the two engines
-can be compared by where the state is far larger than the memory.
+the page cache free, a file that was written or read before is as a rule
+read from memory, and only `process_read_calls` counts the read. Under a
+memory limit on the run's cgroup that leaves the page cache little room
+(`MemoryMax` of a systemd unit), the counts of the device say how often
+the reads of a run reached storage, which is the count the two engines
+can be compared by where the state is far larger than the memory. That
+holds for files whose pages the run itself brought in: a database that
+was written before the run, as the kept one of `reads`, lies in the page
+cache on another cgroup's account, and is read from memory until the
+page cache is emptied (`echo 3 > /proc/sys/vm/drop_caches`) before the
+run.
 
 ### RocksDB's counters
 
@@ -305,15 +328,15 @@ counters. They say where the logged and the background bytes went:
 | `cleaner_block_bytes`, `cleaner_value_bytes` | the compaction bytes, which for LigninDB are the sum of these two and not the store's own count of the cleaner's appends. The cleaner counts a block once it has pointed the page at the copy or found the link gone, and the values of a file once its pass over the file has ended. A copy that is appended and not counted so yet is in no row until it is, in however many readings |
 | `base_blocks`, `base_payload_bytes`, `delta_blocks`, `delta_payload_bytes`, `consolidations`, `runs_refused` | the blocks: base images and runs of deltas, before compression; how many images were written because a chain had reached a threshold, and how many because a run was refused |
 | `flat_blocks`, `flat_block_bytes` | the images among the base images that are of flat pages, and the bytes they take in their segments |
-| `chains_read`, `chain_blocks_read` | the pages write-back built from the blocks of their chains because the pool no longer held the version of the newest link (to apply a run to before it is written, and for a value that is given its place at a table checkpoint), and the blocks it read for them; they are among `block_reads` |
+| `chains_read`, `chain_blocks_read` | the pages write-back built from the blocks of their chains: the page under a run that is about to be written, where the pool does not hold it as a version of its own (it was evicted, or the run is a page step's on a version that a segment already holds), and a page whose chain is consolidated. And the blocks it read for them, each counted when its segment gave it, those of a chain it could not read to the end among them; they are among `block_reads` |
 | `versions_held_for_readers` | page versions that were kept in memory and got no block of their own: their changes go into the block of a later version of their page, or into none where the page is freed first |
 | `values_appended`, `value_payload_bytes`, `values_regrouped`, `regroup_copies_left`, `regroup_left_bytes`, `values_given_up` | the values: those appended for a commit and their bytes, those a regrouping moved, the copies of a regrouping that no cell had been given when it returned (a step is refused where the page is no longer the frame whose values were copied, because a commit superseded it, a write transaction holds a copy of it or a page step replaced it, and where the cell holds that value no more; after a refusal of the first kind the remaining steps are not tried) with the bytes of their values, and those given up. The two regroup counts are of regroupings that ended without an error. The bytes of every copy that was appended, moved or left, in a regrouping that failed or not, are in `regroup_bytes` |
 | `table_checkpoints`, `cleaner_checkpoints`, `log_files_dropped`, `room_waits` | table checkpoints in all and those the cleaner asked for, log files, and commits that waited for write-back |
 | `cleaner_blocks_moved`, `cleaner_values_moved`, `cleaner_bytes_trimmed`, `cleaner_bytes_dropped`, `cleaner_segments_dropped`, `cleaner_value_files_dropped` | what the cleaner moved and gave back |
 | `pages_freed`, `value_reads` | pages the reclaimer freed; values read from the value log |
-| `block_reads`, `block_read_bytes` | the blocks read from segments by their locations, and their bytes as stored: the base image and each delta run of a page that is loaded, and what write-back reads of a page it builds again. Each is one read of the file layer, so with `page_reads_per_transition` they say how many reads a page that the pool did not hold costs |
-| `pool_evictions`, `pool_overflows` | page versions the buffer pool took out to make room, and frames it allocated beside its fixed ones because none of those could be evicted |
-| `pool_releases`, `pool_loads_overtaken` | superseded page versions that a segment holds and that the pool gave up before the clock came to them, once no reader could ask for them; and loads whose blocks were read once more because a commit or a page step changed that part of the pool's table meanwhile |
+| `block_reads`, `block_read_bytes` | the blocks read from segments by their locations, and their bytes as stored, each one read of the file layer: the base image and each delta run of a page that is loaded, what write-back reads of a page it builds (`chain_blocks_read`), each block the cleaner moves (`cleaner_blocks_moved`), and what a verification reads. So the reads a loaded page costs are these less the cleaner's and write-back's, over the page versions read, in a run that verifies nothing |
+| `pool_evictions`, `pool_overflows` | page versions the buffer pool took out to make room, and frames it allocated beside its fixed ones because an eviction found none of those to take (none could be evicted, or, with evictions on several threads at once, its own steps did not come to one that could) |
+| `pool_releases`, `pool_loads_overtaken`, `pool_misses` | superseded page versions that a segment holds and that the pool gave up before the clock came to them, once no reader could ask for them; loads that the pool took nothing of because a commit or a page step changed that part of its table meanwhile (their blocks are read once more unless another thread's load put the page there first); and the asks the pool did not answer from memory, an ask for a page that does not exist among them |
 
 It also reports **gauges**, read once after every commit of a write phase and
 given as they are, not per transition: `log_held_mean` and `log_held_max`, the

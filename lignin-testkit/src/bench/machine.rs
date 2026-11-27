@@ -234,7 +234,10 @@ impl StorageReads {
     }
 }
 
-/// The `io.stat` file of the cgroup this process runs in (cgroup v2).
+/// The `io.stat` file of the cgroup this process runs in: cgroup v2,
+/// with the whole hierarchy mounted at `/sys/fs/cgroup`. Where a part of
+/// it is mounted there, as in some containers, the path this builds names
+/// no file, and there is no count.
 fn cgroup_io_stat() -> Option<String> {
     let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let group = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
@@ -371,15 +374,24 @@ pub fn files_under(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
 
 /// Copies the directory `from`, with every file and every directory under
 /// it, to `to`, which must not exist yet. What is neither a file nor a
-/// directory is left out.
+/// directory is left out. If the copy fails after `to` was made, what was
+/// copied is removed again: a copy is whole or is not there.
 pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir(to)?;
+    copy_into(from, to).inspect_err(|_| {
+        let _ = std::fs::remove_dir_all(to);
+    })
+}
+
+/// Copies what is in the directory `from` into the directory `to`.
+fn copy_into(from: &Path, to: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let target = to.join(entry.file_name());
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            copy_tree(&entry.path(), &target)?;
+            std::fs::create_dir(&target)?;
+            copy_into(&entry.path(), &target)?;
         } else if kind.is_file() {
             std::fs::copy(entry.path(), &target)?;
         }
@@ -542,6 +554,30 @@ fn parse_perf_csv(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copy_of_a_directory_is_whole_or_not_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        std::fs::create_dir_all(from.join("inner")).unwrap();
+        std::fs::write(from.join("a"), b"one").unwrap();
+        std::fs::write(from.join("inner").join("b"), b"two").unwrap();
+
+        let to = dir.path().join("to");
+        copy_tree(&from, &to).unwrap();
+        assert_eq!(std::fs::read(to.join("a")).unwrap(), b"one");
+        assert_eq!(std::fs::read(to.join("inner").join("b")).unwrap(), b"two");
+
+        // A copy onto what is there is refused, and what is there stays.
+        let refused = copy_tree(&from, &to).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(to.join("a")).unwrap(), b"one");
+
+        // A copy that fails after its directory was made leaves none.
+        let partial = dir.path().join("partial");
+        assert!(copy_tree(&dir.path().join("missing"), &partial).is_err());
+        assert!(!partial.exists());
+    }
 
     #[test]
     fn load_averages_parse_from_both_systems() {

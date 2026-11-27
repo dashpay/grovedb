@@ -724,8 +724,8 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             read_in as f64,
             n,
             &format!(
-                "{engine} engine counters: page versions the buffer pool did not hold and \
-                 that were read from storage, its background threads' among them"
+                "{engine} engine counters: page versions that were read from storage, \
+                 each in full for a load, its background threads' among them"
             ),
         ));
         rows.push(measured_row(
@@ -735,8 +735,8 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             (read_in + held) as f64,
             n,
             &format!(
-                "{engine} engine counters: pages the buffer pool was asked for, held or not, \
-                 its background threads' among them"
+                "{engine} engine counters: page versions read from storage and asks the \
+                 buffer pool answered from memory, its background threads' among them"
             ),
         ));
     }
@@ -1390,6 +1390,8 @@ pub fn write_engine<E: Engine>(
     settings.check()?;
     let kept = kept_database::<E>(settings)?;
     let dir = settings.scratch.join(format!("{}-writes", E::NAME));
+    // Held until this call's copy is measured and removed.
+    let _lock = lock_copy(&settings.scratch, E::NAME)?;
     if dir.exists() {
         std::fs::remove_dir_all(&dir)
             .map_err(|error| BenchError::io("removing an earlier copy", error))?;
@@ -1401,6 +1403,29 @@ pub fn write_engine<E: Engine>(
         let _ = std::fs::remove_dir_all(&dir);
     }
     result
+}
+
+/// The lock of the copy that `writes` measures over: the file
+/// `<engine>-writes.lock` in the scratch directory, locked for as long as
+/// the handle this returns is open. A second call for the same engine and
+/// scratch directory would remove the copy under the first, and is
+/// refused while the first has the lock. The file stays, empty, and a
+/// call that was killed leaves no lock behind: the system lets go of it
+/// with the process.
+fn lock_copy(scratch: &Path, engine: &str) -> Result<std::fs::File, BenchError> {
+    let path = scratch.join(format!("{engine}-writes.lock"));
+    let lock = std::fs::File::create(&path)
+        .map_err(|error| BenchError::io("creating the lock of the copy", error))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => Err(BenchError::Check(format!(
+            "another `writes` call is measuring over the copy of {engine} in {}:              one call at a time for an engine and a scratch directory",
+            scratch.display()
+        ))),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(BenchError::io("locking the copy", error))
+        }
+    }
 }
 
 fn measure_writes<E: Engine>(
