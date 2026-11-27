@@ -1293,7 +1293,7 @@ GroveDB's suite runs on the type twice, holding each engine ([`test-engines.md`]
 
 ### It goes with RocksDB
 
-The type is for the time in which a node runs on one engine or the other by its configuration. OPS-10 removes the RocksDB engine, and this type, `EngineChoice`, `EngineKind`, the cfg and the two suite engines with it: `GroveDb` with no engine named is then `GroveDb<LigninEngine>`, and an application that opened through `EitherEngine::open_with` opens with `LigninEngine::open_with`.
+The type is for the time in which a node runs on one engine or the other by its configuration. OPS-10 removes the RocksDB engine, and this type, `EngineChoice`, the cfg and the two suite engines with it: `GroveDb` with no engine named is then `GroveDb<LigninEngine>`, and an application that opened through `EitherEngine::open_with` opens with `LigninEngine::open_with`. `EngineKind` and the look at a directory's entries (`grovedb::engine::look_at_entries`) stay, since `lignin migrate` asks them of its source, until the migrator itself goes.
 
 ## What later tasks get
 
