@@ -4574,6 +4574,26 @@ mod tests {
         record(&mut set, covers);
         assert_eq!(set.unmade(subtree(6)).len(), 39);
 
+        // Range deletes between the puts: each put is compared with the
+        // ones after it, and with none of those before it. Five of them,
+        // each with a put after it and one put before them all: five
+        // comparisons for the first put, and one fewer for each put on.
+        let mut set = WriteSet::new();
+        let between = RecordWrite::DeleteRange {
+            unit: Unit::data(subtree(9)),
+            start: b"z",
+            end: None,
+        };
+        node(&mut set, 9, b"n0", value);
+        for index in 1..=5u8 {
+            record(&mut set, between);
+            node(&mut set, 9, &[b'n', index], value);
+        }
+        let mut puts = Vec::new();
+        counted::take();
+        set.list_unmade(subtree(9), &mut puts);
+        assert_eq!((puts.len(), counted::take()), (6, (0, 15)));
+
         // What is older than the oldest put that is listed is not looked
         // at for a drop or a clear: here two hundred range deletes and a
         // clear from before the one put. Nor is anything looked at for a
