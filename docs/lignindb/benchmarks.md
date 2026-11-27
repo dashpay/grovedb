@@ -41,6 +41,31 @@ a count: that the run counted none, or, where the report says that `perf` was
 counting, that `perf` gave none. A gate that compares instructions passes the
 option.
 
+A measurement that looks for where a row's time goes can have the same `perf`
+count more than the instructions. With `LIGNIN_BENCH_PERF_EVENTS` set to
+events as `perf stat -e` takes them
+(`cycles:u,cycles:k,cache-misses,dTLB-load-misses`), a run with `--perf` gives
+them to `perf` after `instructions:u`, and what a `perf` printed is written to
+standard error, after a line `# counter NAME`, where the `perf` is stopped and
+its output is read; a write that fails is not tried again. A run starts one
+`perf` for each part it times under `perf` (`perf-load-apply`,
+`perf-load-commit`, `perf-create-apply`, `perf-warm-get` and so on; the
+applies of the load are among them, whose row carries no count), and one
+before those to see whether `perf` counts here (`perf-probe`). A run of two
+engines writes each engine's counters in the order the engines were named.
+No row and no column of the report is of those events. A row's count is read
+from the line of `perf`'s output that holds the word `instructions`, so a
+list with that word in it is refused at the start of the run. While the
+variable names events, a row has a count only where exactly one line of what
+`perf` printed holds the word and that line's event is named `instructions:u`.
+It has none where `perf` prints the word in a second line, of whatever event,
+and none where the only line with the word is named otherwise, as `perf`
+names the event on a processor whose counting units it lists apart
+(`cpu_core/instructions:u/`); a probe with no count refuses the run. `perf` prints with each count the share of the
+time the event was counted, and it scales a count whose share is under 100%;
+with more events than the processor has counters that can be the
+instructions' count too.
+
 `--set KEY=VALUE` changes one setting of LigninDB, or the harness's pacing
 of it, for the run ("LigninDB's settings" below).
 
@@ -468,6 +493,82 @@ ones two runs of one commit with the same settings agree on exactly. A report fr
 measured kind still reads back, and against a newer report its rows are
 compared as the newer one classes them; a binary from before it cannot read
 a newer report.
+
+### What moves a time row between two builds
+
+Two things move a time row with no change of the code under test, and a
+difference between two builds is held against both before it is read as a
+difference of their code. Both were measured on the write rows of the
+reference workload, on four DigitalOcean `c-16-intel` droplets (16 dedicated
+vCPUs of a Xeon Platinum 8358, kernel 6.8.0, ext4) that ran nothing else:
+every build made from nothing in an empty tree by rustc 1.99.1 and linked by
+LLD 23.1.1, whole runs one after another. A percentage below is of a
+row's value in one of the four write phases: the wall time a transition, or
+the commit of a block.
+
+**One file, run twice.** Seven times a binary was run twice in one sitting
+(each second build of a commit from nothing that was made here is the same
+file as the first, byte for byte, and counts as that file).
+From the first run to the second, LigninDB's wall time a transition changed
+by -1.5 to +2.4% and its commit of a block by -3.2 to +4.6%, and RocksDB's
+rows, in the six of them that ran both engines, moved as far (-1.8 to +3.6%
+and -3.3 to +4.7%). In the one sitting of eight runs, both files that were
+run again, five and seven runs later, were slower on LigninDB the second
+time in every phase (the wall time a transition by 0.1 to 2.4%).
+
+**Where the functions of the binary stand.** The same libraries, linked into
+a binary whose functions stand at other addresses, run at another speed. Two
+links of `lignin-bench` that compile nothing anew, each made of both source
+trees of the case below; a row is the change from the usual link of the same
+tree:
+
+| The link | LigninDB, wall time a transition | LigninDB, commit of a block | RocksDB, wall time a transition | The ratio of the two wall times |
+| --- | --- | --- | --- | --- |
+| The sections of the text in a random order (two orders) | +3.1 to +8.5% | -2.6 to +5.6% | +4.7 to +8.3% | -2.3 to +2.4% |
+| The text in its order, with 32 bytes before its first function | +0.8 to +5.4% | +0.3 to +5.8% | -3.8 to +3.6% | -1.0 to +6.4% |
+
+- The random order is lld's `--shuffle-sections`, given to the link of the
+  binary alone:
+  `cargo rustc --release -p lignin-testkit --bin lignin-bench -- -C link-arg=-Wl,--shuffle-sections=.text*=SEED`.
+  With it, on LigninDB alone and with `perf` counting
+  (`LIGNIN_BENCH_PERF_EVENTS`), a transition's applies ran the same
+  instructions to within 1.0% (-1.0 to 0.0%) in 3.6 to 7.6% more user cycles,
+  with 46 to 59% more iTLB load misses, 7 to 21% more dTLB load misses and
+  2.5 to 5.2% more L1 data load misses. A random order is the far end of what a layout does: the
+  usual order keeps the functions of one object file together.
+- The 32 bytes are an object file of one function, `.fill 32,1,0x90` in a
+  section of its own, linked in with `-C link-arg=PAD.o`, kept with
+  `-C link-arg=-Wl,-u,NAME` and put first with
+  `-C link-arg=-Wl,--symbol-ordering-file=FILE`. In one of the two binaries
+  18,099 of the 28,569 named functions of the text then stand 32 bytes
+  later, the first 17 MB of its 27, and the others where they stood
+  (alignment in between takes the 32 bytes up); in the other 18,063 of
+  28,533. The two builds with the 32 bytes ran after the two without, in the
+  sitting whose later runs were the slower ones on LigninDB (above), so the
+  sitting may account for part of this row; these runs do not say how much.
+
+So a difference of a few percent in a time row between two builds, at equal
+instructions, is no finding by itself: it is within what a second run and
+another layout of the same code give. What separates it is each binary run
+twice in turned order, the same pair in a second layout, and the
+instructions a sample, which the random order left within 1.0%. The ratio to
+RocksDB in the same run is steadier than the times where a layout moves both
+engines, as the random order does, and no steadier where it does not.
+
+The case this was measured for: Merk's handle on LigninDB as one pointer to a
+block against the handle held in place (`node-store.md`, "Handles"). Two
+pairs of binaries were made of the same two trees of the engine. Between the
+pairs every workspace library is equal byte for byte but the harness's own:
+the second pair's source has the counting of more `perf` events, the first
+pair's does not, and the two builds of a pair have the same harness source.
+In four pairings of two runs
+each, the first pair's wall time a transition changed by -1.0 to +3.1% from
+the handle in place to the block (higher in 12 of 16 rows, +0.9% in the
+mean). In eleven pairings on three machines and in the layouts above (four
+of the eleven with `perf` counting), the second pair's changed by -3.6 to
++0.6% (lower in 38 of 44 rows, -1.2% in the mean). The commit of a block
+changed by -3.6 to +3.4% in the first pair (0.0% in the mean) and by -1.7 to
++3.9% in the second (higher in 31 of 44 rows, +1.3% in the mean).
 
 ## Large batches
 

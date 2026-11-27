@@ -58,7 +58,7 @@ fn elements_above<'b, B: AsRef<[u8]> + 'b>(
     let mut key = key.to_vec();
     loop {
         let own = build_prefix(merk.clone()).value;
-        let entry = LigninNodeStore::read_only(view, LigninSubtree::alone(own)).entry();
+        let entry = view.entry(&own);
         let root = entry.map_err(merk_error)?.and_then(|entry| entry.root_key);
         let is_root = root.as_deref() == Some(key.as_slice());
         let Some((upper, upper_key)) = merk.derive_parent().filter(|_| is_root) else {

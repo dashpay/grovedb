@@ -927,7 +927,7 @@ fn named_by_prefix(prefix: SubtreePrefix, view: Option<LigninView<'_>>) -> Ligni
     let Some(view) = view else {
         return alone;
     };
-    let entry = LigninNodeStore::read_only(view, alone.clone()).entry();
+    let entry = view.entry(&prefix);
     match entry.ok().flatten().and_then(|entry| entry.host) {
         // A subtree at a later position is one of several that its
         // element hosts, which a handle by prefix cannot name: it is

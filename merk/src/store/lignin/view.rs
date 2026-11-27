@@ -59,6 +59,21 @@ impl<'a> From<&'a LigninSnapshot<'_>> for LigninView<'a> {
     }
 }
 
+impl LigninView<'_> {
+    /// What the subtree directory holds of the subtree `prefix` as the
+    /// view shows it, or `None` if the subtree is not entered.
+    ///
+    /// It is the read of
+    /// [`LigninNodeStore::entry`](super::LigninNodeStore::entry) of a
+    /// handle of that subtree on this view, in any of the three modes,
+    /// with the same answer and the same refusal, and no handle is made
+    /// for it: a caller that asks only whether a subtree is entered, or
+    /// what hosts it, can ask the view.
+    pub fn entry(&self, prefix: &[u8; 32]) -> Result<Option<LigninEntry>, Error> {
+        self.0.subtree(prefix)
+    }
+}
+
 /// How many subtrees a thread remembers ([`LAST_OPENED`]).
 const REMEMBERED: usize = 32;
 
