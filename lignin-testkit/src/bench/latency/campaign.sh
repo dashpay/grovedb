@@ -308,18 +308,20 @@ failed() {
 # not the device's, so a loop device of another number is the same. It is
 # read from the device itself: what findmnt says of it is the system's
 # record of its devices, which can be without the id of a file system that
-# was just made and have it at a later call. A mount that is of no block
-# device has no id, and is held to its kind and its options; a block device
-# whose id cannot be read refuses the call, since a run on it could be held
-# to no file system.
+# was just made and have it at a later call. A mount that is of no device
+# (memory, a dataset, a share) has no id, and is held to its kind and its
+# options. A device whose id cannot be read refuses the call, one that is
+# not to be seen from here among them: a run on it could be held to no file
+# system.
 mounted_from() { # mounted_from DIRECTORY
   local source id=""
   source=$(findmnt --nofsroot -no SOURCE -T "$1")
-  if [ -b "$source" ]; then
+  case "$source" in /dev/*)
     id=$(sudo blkid -p -o value -s UUID "$source" 2> /dev/null) || id=""
     [ -n "$id" ] ||
       refuse "the id of the file system on $source, which $1 is on, could not be read: a run cannot be held to its mount"
-  fi
+    ;;
+  esac
   echo "$(findmnt -no FSTYPE,OPTIONS -T "$1") $id"
 }
 mount_of() { # mount_of DIRECTORY
