@@ -98,16 +98,44 @@ export BUILDS=${BUILDS:-$out/builds}
 export PATH=$PATH:/usr/sbin:/sbin
 ulimit -n 65536
 
-missing=""
-tools="git cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt fstrim"
-case " $parts " in *" traces "*) tools="$tools bpftrace" ;; esac
-for tool in $tools; do
-  command -v "$tool" > /dev/null || missing="$missing $tool"
-done
 refuse() {
   echo "campaign.sh: $*" >&2
   exit 1
 }
+# What the campaign is asked. Only git is wanted to say it, and it is said
+# before anything else is looked at.
+command -v git > /dev/null || refuse "not found: git"
+commit=$(git -C "$repo" rev-parse HEAD) || refuse "$repo is no checkout of GroveDB"
+asked="commit $commit
+blocks $blocks
+rounds $rounds
+backgrounds $backgrounds
+trace blocks $trace_blocks
+file systems of $loop_gb GiB
+further options ${LATENCY:-none}"
+# The parts the campaign is of are all that it was ever asked for. A call to
+# a campaign that is there adds its parts to them here, before anything that
+# can refuse the call: a call that is refused or stopped has said what it
+# set out to make, and the tables say which of the campaign's parts are not
+# made.
+plan() {
+  local part
+  for part in $parts; do
+    grep -qsw "$part" "$out/parts.txt" || echo "$part" >> "$out/parts.txt"
+  done
+}
+if [ -s "$out/campaign.txt" ]; then
+  [ "$(cat "$out/campaign.txt")" = "$asked" ] ||
+    refuse "$out holds another campaign; what it was asked is in $out/campaign.txt"
+  plan
+fi
+
+missing=""
+tools="cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt fstrim"
+case " $parts " in *" traces "*) tools="$tools bpftrace" ;; esac
+for tool in $tools; do
+  command -v "$tool" > /dev/null || missing="$missing $tool"
+done
 [ -z "$missing" ] || refuse "not found:$missing"
 # The script keeps lists of paths in words.
 case "$out$BUILDS" in *[[:space:]]*) refuse "OUT and BUILDS take a path without a space: $out, $BUILDS" ;; esac
@@ -119,23 +147,13 @@ done
 sudo -n true 2> /dev/null || refuse "sudo asks for a password"
 [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ] ||
   refuse "the checkout has changes, and the builds are of its commit"
-commit=$(git -C "$repo" rev-parse HEAD)
 for patch in log-allocated-ahead fewer-syncs; do
   git -C "$repo" apply --check "$here/$patch.patch" ||
     refuse "$patch.patch does not apply to this commit"
 done
 
-asked="commit $commit
-blocks $blocks
-rounds $rounds
-backgrounds $backgrounds
-trace blocks $trace_blocks
-file systems of $loop_gb GiB
-further options ${LATENCY:-none}"
-if [ -s "$out/campaign.txt" ]; then
-  [ "$(cat "$out/campaign.txt")" = "$asked" ] ||
-    refuse "$out holds another campaign; what it was asked is in $out/campaign.txt"
-else
+# A campaign that is not there yet begins here, where nothing has refused it.
+if [ ! -s "$out/campaign.txt" ]; then
   most=$((blocks > trace_blocks ? blocks : trace_blocks))
   case " $backgrounds " in
     *" quiet "*) wanted=$((most * 200 + 2097152)) ;;
@@ -149,20 +167,11 @@ else
   [ "$free" -ge "$wanted" ] ||
     refuse "$out has $((free / 1048576)) GiB free, and this campaign wants $((wanted / 1048576 + 1))"
   echo "$asked" > "$out/campaign.txt"
+  plan
 fi
-# The parts the campaign is of are all that it was ever asked for, and they
-# are written down before any of them is begun: a call that is stopped has
-# said what it set out to make, and the tables say which of the campaign's
-# parts are not made.
-for part in $parts; do
-  grep -qsw "$part" "$out/parts.txt" || echo "$part" >> "$out/parts.txt"
-done
 
 # The tracer stamps its lines with the monotonic clock by name, which
-# bpftrace has from 0.19 on. It is asked for here, before anything is built
-# and after the campaign's parts are written down: a campaign that was asked
-# for traces and cannot make them has said so, and its tables say that they
-# are missing.
+# bpftrace has from 0.19 on. It is asked for here, before anything is built.
 case " $parts " in *" traces "*)
   sudo bpftrace -e 'BEGIN { printf("%llu\n", nsecs(monotonic)); exit(); }' > /dev/null 2>&1 ||
     refuse "this bpftrace ($(bpftrace --version 2> /dev/null)) has no nsecs(monotonic): the traces want bpftrace 0.19 or later, and PARTS without traces makes the tables of the runs without one"
