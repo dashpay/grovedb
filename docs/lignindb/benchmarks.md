@@ -526,7 +526,10 @@ another workload than the reference (seed 1, a million documents over
 - the bytes logged and physical, the wall time, the commit of a block and
   the page reads a transition at steady state: in a write phase at size
   (`create`, `update`, `delete`) of 100,000 transitions or more of a
-  report with a churn, not in the load or the churn;
+  report with a churn, whose value log's dead share ends within a point
+  of where it began (a phase that moves further is treated as of two
+  regimes, the value cleaner behind and then catching up), not in the
+  load or the churn;
 - the keyed lookups, a count that no regime moves, in the load and every
   write phase at size;
 - the reads warm and settled, not cold;

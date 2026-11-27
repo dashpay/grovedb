@@ -13,7 +13,8 @@
 //!
 //! A row is scored only in the state the plan means: the reference
 //! workload; the write rows at steady state, in a write phase at size of
-//! at least [`STEADY_TRANSITIONS`] transitions after a churn; the reads
+//! at least [`STEADY_TRANSITIONS`] transitions after a churn, whose value
+//! log's dead share ends within [`ONE_REGIME`] of where it began; the reads
 //! warm and settled; the size, the checkpoint and the reopen after the
 //! flush. [`TARGETS`] holds every row of the table; for a row that no
 //! report of this harness measures, it says what does.
@@ -347,7 +348,9 @@ fn steady(report: &Report, engine: &str, phase: &str) -> bool {
             .map(|row| row.value)
     };
     let one_regime = match (share("start"), share("end")) {
-        (Some(start), Some(end)) => (end - start).abs() <= ONE_REGIME,
+        // A margin for the rounding of the two shares, so that a move of
+        // exactly a point is within the rule whatever its ends.
+        (Some(start), Some(end)) => (end - start).abs() <= ONE_REGIME + f64::EPSILON,
         _ => false,
     };
     report.workload.churn > 0 && transitions >= STEADY_TRANSITIONS && one_regime
@@ -355,9 +358,10 @@ fn steady(report: &Report, engine: &str, phase: &str) -> bool {
 
 /// How far the value log's dead share may move from a phase's start to
 /// its end for the phase to be taken as of one regime: a point in a
-/// hundred. A phase that moves further holds two, the value cleaner
-/// behind its target and then catching up, and its write rows are not
-/// scored.
+/// hundred, the bound included. A phase that moves further is treated as
+/// of two, the value cleaner behind its target and then catching up, and
+/// its write rows are not scored. The two ends are what is read, not the
+/// share between them.
 pub const ONE_REGIME: f64 = 0.01;
 
 /// Whether RocksDB's phase `phase` of `report` is as long as LigninDB's:
@@ -922,6 +926,25 @@ mod tests {
                 ("point_get", "warm", Some(0.5)),
             ]
         );
+        // A move of exactly a point is of one regime, whatever the rounding
+        // of its ends; a little more is not.
+        for (start, end, steady) in [
+            (0.18, 0.19, true),
+            (0.19, 0.18, true),
+            (0.18, 0.1901, false),
+        ] {
+            let mut edge = reference(100_000, 200_000, engines());
+            for row in &mut edge.engines[1].rows {
+                match row.id.as_str() {
+                    "value_log_dead_share_at_start" => row.value = start,
+                    "value_log_dead_share_at_end" => row.value = end,
+                    _ => {}
+                }
+            }
+            let rows = scored(&edge);
+            let wall = rows.iter().any(|one| one.row.id == "wall_per_transition");
+            assert_eq!(wall, steady, "{start} to {end}");
+        }
     }
 
     /// No row of a report of another workload is scored, and the score
