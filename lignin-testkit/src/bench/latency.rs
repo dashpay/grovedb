@@ -1419,8 +1419,13 @@ fn unescaped(field: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The executable that is running, by the BLAKE3 hash of its file.
+/// The executable that is running, by the BLAKE3 hash of its file. On Linux
+/// the file is read by the process's own link to it, which is the file that
+/// runs where another has been put at its path since.
 fn executable() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let bytes = std::fs::read("/proc/self/exe").ok()?;
+    #[cfg(not(target_os = "linux"))]
     let bytes = std::fs::read(std::env::current_exe().ok()?).ok()?;
     Some(blake3::hash(&bytes).to_hex().to_string())
 }
@@ -1838,8 +1843,17 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
     // What each run was, from what its report says of how it was made: once
     // a report, and with none of its samples read.
     let was: Vec<String> = reports.iter().map(what_a_run_was).collect();
-    // A group: what the run was, and the place of the row's engine in it.
-    let of = |row: &RunRow| (was[row.report].as_str(), row.place);
+    // A group: what the run was, and the place of the row's engine in it. A
+    // report that does not name its executable is of a build that no other
+    // report is known to be of, and its rows are in groups of their own.
+    let of = |row: &RunRow| {
+        let unnamed = reports[row.report].executable.is_none();
+        (
+            was[row.report].as_str(),
+            row.place,
+            unnamed.then_some(row.report),
+        )
+    };
     let mut groups: Vec<(&RunRow, Vec<&RunRow>)> = Vec::new();
     for row in &rows {
         let (build, engine, background) = &row.shown;
@@ -1873,9 +1887,10 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
     out.push_str(
         "\nThe median of the runs' values, and their range. Runs are taken for repeats of one \
          another where their reports say the same of how they were made: the build, by its \
-         name, its commit and the executable that ran, the workload, the pause, the settings, what the harness did beside the commits, the machine, the \
-         scratch directory with its device and its mount, and the place of the engine in the \
-         run. What a report does not say, the system's version and the device's settings among \
+         name, its commit and the executable that ran, the workload, the pause, the settings, \
+         what the harness did beside the commits, the machine, the scratch directory with its \
+         device and its mount, and the place of the engine in the run. A report that does not \
+         name its executable is a repeat of none. What a report does not say, the system's version and the device's settings among \
          it, is not held to be the same.\n\n| Build | Engine | Background | \
          Runs | Median, µs | 99%, µs | 99.9%, µs | Longest, µs | Off a processor: 99%, µs | \
          99.9%, µs | longest, µs |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | \
@@ -2658,6 +2673,14 @@ mod tests {
             again.contains("| head (fedcba98) | rocksdb | default | 2 |"),
             "{again}"
         );
+        // A report that could not read its executable does not say which
+        // build it is of, and two such are not taken for one build's.
+        let unnamed = LatencyReport {
+            executable: None,
+            ..one.clone()
+        };
+        let neither = runs_table(&[unnamed.clone(), unnamed]);
+        assert!(!neither.contains("Runs are taken for repeats"), "{neither}");
         let same = runs_table(&[one.clone(), one]);
         assert!(
             same.contains("| head (fedcba98) | rocksdb | default | 2 |"),
