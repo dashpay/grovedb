@@ -257,8 +257,8 @@ fn cgroup_io_stat() -> Option<String> {
 
 /// The path of the process's cgroup in the cgroup v2 hierarchy, from the
 /// text of `/proc/self/cgroup`: what follows `0::` in its line, to the
-/// line feed and no further, since a group's name may end in any other
-/// byte.
+/// line feed and no further, since a group's name can end in a carriage
+/// return.
 fn membership(groups: &str) -> Option<&str> {
     groups.split('\n').find_map(|line| line.strip_prefix("0::"))
 }

@@ -6,14 +6,19 @@ usage: read-split.py BPFTRACE-OUTPUT DIVISOR PAGE-BYTES
 BPFTRACE-OUTPUT holds lines `@calls[DIRECTORY, FILE]: N` and `@pages[DIRECTORY, FILE]: N`,
 `@attached: 1`, without which it is not the output of probes that ran to their end, and the
 sums `@all_calls: N` and `@all_pages: N`, which the lines by name must add up to: where they
-do not, names found no room in the probes' maps, and the output is refused.
+do not, the output is refused. Names that found no room in the probes' maps are one cause, a
+name that this cannot read back from a line (one with a line break in it) is another.
 A file is classed by the directory it is in, for the directories of a LigninDB database (`val`:
 the value log; `seg`: the segments, which hold page images and delta runs; `wal`: the log;
 `table`: the table checkpoints), and else by its suffix, for RocksDB (`sst`, `log`). Every other
 file is `other`, and one of those is named when it has more than a hundredth of the calls.
 
-A name is a directory's name and a file's: two files of one name in directories of one name
-are one name here, and any file on ext4 that is read meanwhile is classed by these rules.
+A name is a directory's name and a file's, as bpftrace prints them: two files of one name in
+directories of one name are one name here, so are two whose names begin with the same 64 bytes
+(bpftrace keeps that much of a string), and a name with `, ` in it is parted in the wrong place.
+The files of a LigninDB or a RocksDB database have short names with none of that; a file of
+another program that is read meanwhile can be classed wrongly by it. Any file on ext4 that is
+read meanwhile is classed by these rules.
 
 Prints, for each kind: how many names were read, the calls and the pages, and the calls and the
 bytes (pages of PAGE-BYTES, the system's page size) divided by DIVISOR. The counts are of the
@@ -70,7 +75,7 @@ def main():
         sys.exit(
             f"read-split.py: the counts by name in {output} are {all_calls} calls and "
             f"{all_pages} pages, where {counted['calls']} and {counted['pages']} were counted: "
-            "names are missing")
+            "the counts by name are not whole")
     print(f"divided by {operations}; pages of {page_bytes} bytes, a folio read alone as one")
     print("%-8s %7s %12s %12s %14s %14s %7s" % (
         "kind", "names", "calls", "pages", "calls/div", "bytes/div", "share"))
