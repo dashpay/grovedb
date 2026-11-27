@@ -29,6 +29,10 @@ set -uo pipefail
 out=$1 rounds=$2 slots=$3
 root=${BUILDS:-$HOME/builds}
 fs_a=${FS_A:?the first file system} fs_b=${FS_B:?the second file system}
+if [ ! -d "$fs_a" ] || [ ! -d "$fs_b" ]; then
+  echo "pairs.sh: FS_A ($fs_a) and FS_B ($fs_b) have both to be directories that are there" >&2
+  exit 1
+fi
 # The two runs of a pair each remove their scratch directory, and are held
 # against one another as runs on two file systems.
 if [ "$fs_a" -ef "$fs_b" ]; then

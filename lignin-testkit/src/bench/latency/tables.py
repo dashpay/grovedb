@@ -477,8 +477,10 @@ def main():
                                        report.get("label"), report["background"],
                                        len(report["engines"][0]["commit_ns"]), report["commit"], binary)))
             continue
+        # A traced run is held to what the runs before it have, and is added
+        # to that only once it is taken: one that is refused holds no other.
         made_by = report.get("executable")
-        if asked and (made_by is None or executables.setdefault(binary, made_by) != made_by):
+        if asked and (made_by is None or executables.get(binary, made_by) != made_by):
             refused.append((trace, "its report says it was made by the executable %s, and the campaign started "
                                    "the binary %s for it, whose other reports say %s" % (
                                        made_by, binary, executables.get(binary))))
@@ -487,9 +489,9 @@ def main():
         # were made on, where the campaign has such runs.
         target = next((fs for fs in ("ext4-lazytime", "ext4", "xfs") if name.endswith("-on-" + fs)), "main")
         mount = open(stem + ".mount").read().strip() if os.path.exists(stem + ".mount") else None
-        if asked and (mount is None or mounts.setdefault(target, {mount}) != {mount}):
+        if asked and (mount is None or mounts.get(target, {mount}) != {mount}):
             refused.append((trace, "it was made on %s, and the other runs on that file system on %s" % (
-                mount, "; ".join(sorted(str(other) for other in mounts[target])))))
+                mount, "; ".join(sorted(str(other) for other in mounts.get(target, ()))))))
             continue
         made = subprocess.run([sys.executable, os.path.join(HERE, "waits.py"), "--marked", trace],
                               capture_output=True, text=True)
@@ -507,6 +509,8 @@ def main():
         # to.
         if asked:
             tolds.append((name, told))
+            executables.setdefault(binary, made_by)
+            mounts.setdefault(target, {mount})
 
     print("# The tables of PERF-07-F1\n")
     for title, name in (("The machine", "host.txt"), ("The host and the file system the campaign is of", "host-id.txt"),

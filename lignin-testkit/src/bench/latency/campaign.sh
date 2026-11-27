@@ -479,8 +479,11 @@ case " $parts " in *" main "* | *" filesystems "* | *" traces "*)
       refuse "$out was begun on another host or another file system, which $out/host-id.txt names, and this one is: $(echo "$host" | tr '\n' ';'): a campaign is of one host; runs made elsewhere are another campaign, with its own controls"
   else
     echo "$host" > "$out/host-id.txt"
-    described
   fi
+  # The description is written by the first call that makes a run, and by a
+  # later one that finds none: a call that was stopped while it was written
+  # left none.
+  [ -s "$out/host.txt" ] || described
   ;;
 esac
 
