@@ -34,7 +34,7 @@ use grovedb_costs::OperationCost;
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    engine::{timed, Block, Counters, Detail, Engine, EngineSettings},
+    engine::{timed, Block, Counters, Detail, Engine, EngineSettings, Space},
     machine::{self, ColdMethod, Perf, StorageReads},
     report::{
         ratio, recorded, DiskUsage, EngineReport, Method, PhaseTotals, Row, RowKind, Summary,
@@ -56,6 +56,10 @@ pub struct Settings {
     pub documents: u64,
     /// Owners the documents are spread over.
     pub owners: u64,
+    /// Documents created after the load and before the measured creates,
+    /// as a write phase of its own (`churn`), so that the phases after it
+    /// begin on a state that writes have already churned.
+    pub churn: u64,
     /// Documents created after the load, timed per block.
     pub measured_creates: u64,
     /// Document replacements after those.
@@ -95,6 +99,7 @@ impl Settings {
             seed: 1,
             documents: reference.documents,
             owners: reference.owners,
+            churn: 0,
             measured_creates: 20_000,
             updates: 20_000,
             deletes: 20_000,
@@ -111,10 +116,19 @@ impl Settings {
         }
     }
 
+    /// The documents the workload creates: the load, the churn and the
+    /// measured creates. A sum past `u64::MAX` is refused by
+    /// [`Self::check`] and is `u64::MAX` here.
+    fn created(&self) -> u64 {
+        self.documents
+            .saturating_add(self.churn)
+            .saturating_add(self.measured_creates)
+    }
+
     /// The documents workload these settings apply.
     pub fn workload(&self) -> Documents {
         Documents {
-            documents: self.documents + self.measured_creates,
+            documents: self.created(),
             owners: self.owners,
             updates: self.updates,
             deletes: self.deletes,
@@ -132,6 +146,7 @@ impl Settings {
             owners: self.owners,
             document_size: workload.document_size,
             transitions_per_block: workload.transitions_per_block,
+            churn: self.churn,
             measured_creates: self.measured_creates,
             updates: self.updates,
             deletes: self.deletes,
@@ -160,6 +175,7 @@ impl Settings {
         let per_block = u64::from(Documents::reference().transitions_per_block);
         let phases = [
             ("documents", self.documents),
+            ("churn", self.churn),
             ("measured creates", self.measured_creates),
             ("updates", self.updates),
             ("deletes", self.deletes),
@@ -176,7 +192,18 @@ impl Settings {
                 "the run needs documents and owners".to_string(),
             ));
         }
-        if self.deletes > self.documents + self.measured_creates {
+        if self
+            .documents
+            .checked_add(self.churn)
+            .and_then(|sum| sum.checked_add(self.measured_creates))
+            .is_none()
+        {
+            return Err(BenchError::Check(
+                "the documents, the churn and the measured creates add up to more than a u64"
+                    .to_string(),
+            ));
+        }
+        if self.deletes > self.created() {
             return Err(BenchError::Check("more deletes than documents".to_string()));
         }
         Ok(())
@@ -424,6 +451,12 @@ struct PhaseRun {
     details: Vec<Detail>,
     /// The engine's gauges over the phase.
     gauges: Vec<Detail>,
+    /// What the engine's files held at the phase's start and at its end,
+    /// for an engine that counts it.
+    space: Option<(Space, Space)>,
+    /// The size of the database directory at the phase's end, once the
+    /// background work the phase set off is idle.
+    size_at_end: u64,
     /// The counters and the details as the reading that ended the phase
     /// gave them, from which a span that follows the phase is counted.
     ended: (Counters, Vec<Detail>),
@@ -481,6 +514,7 @@ fn write_phase<E: Engine>(
     let details_before = engine.details()?;
     // What was seen before the phase is not of it.
     engine.gauges()?;
+    let space_before = engine.space()?;
     let anatomy_before = engine.node_anatomy();
     let written_before = machine::process_io("write_bytes");
     let reads_before = StorageReads::now();
@@ -533,6 +567,8 @@ fn write_phase<E: Engine>(
     let ended_details = engine.details()?;
     let details = details_since(ended_details.clone(), &details_before)?;
     let gauges = engine.gauges()?;
+    let space = space_before.zip(engine.space()?);
+    let size_at_end = disk_usage(engine.dir())?.bytes;
     totals.node_anatomy = engine
         .node_anatomy()
         .zip(anatomy_before)
@@ -550,6 +586,8 @@ fn write_phase<E: Engine>(
         commit_meter: commit_meter.finish(),
         details,
         gauges,
+        space,
+        size_at_end,
         ended: (ended, ended_details),
     })
 }
@@ -772,6 +810,49 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             1,
             gauge.source,
         ));
+    }
+    rows.push(measured_row(
+        "size_on_disk_at_end",
+        phase,
+        "B",
+        run.size_at_end as f64,
+        1,
+        "lengths of the files in the database directory at the phase's end, once the \
+         background work it set off is idle",
+    ));
+    rows.extend(space_rows(run.space, phase, engine));
+    rows
+}
+
+/// The rows of what an engine's files held at a phase's start and end
+/// ([`Engine::space`]): the dead share of the segments and of the value
+/// log, and the bytes each share is of. None for an engine that does not
+/// count it.
+fn space_rows(space: Option<(Space, Space)>, phase: &str, engine: &str) -> Vec<Row> {
+    let Some((start, end)) = space else {
+        return Vec::new();
+    };
+    let source = format!(
+        "{engine} engine: the cleaner's accounting of the segments and the value log, read \
+         at the phase's start and at its end"
+    );
+    let mut rows = Vec::new();
+    for (at, space) in [("start", start), ("end", end)] {
+        for (id, unit, value) in [
+            ("segment_dead_share", "fraction", space.segment_dead_share()),
+            ("segments_size", "B", space.segment_bytes as f64),
+            ("value_log_dead_share", "fraction", space.value_dead_share()),
+            ("value_log_size", "B", space.value_bytes as f64),
+        ] {
+            rows.push(measured_row(
+                &format!("{id}_at_{at}"),
+                phase,
+                unit,
+                value,
+                1,
+                &source,
+            ));
+        }
     }
     rows
 }
@@ -1155,6 +1236,10 @@ fn page_rows(read: &str, phase: &str, counted: &Counters, reads: u64) -> Vec<Row
     ]
 }
 
+/// The write phase of the creates before the measured ones
+/// ([`Settings::churn`]).
+pub const CHURN: &str = "churn";
+
 /// The phase of the warm reads that are made right after the load, with
 /// whatever each engine's background work has not done yet: the state
 /// the plan's recorded values were taken in.
@@ -1358,6 +1443,7 @@ fn writes_at_size<E: Engine>(
     phases: &mut Vec<PhaseTotals>,
 ) -> Result<(), BenchError> {
     for (phase, transitions) in [
+        (CHURN, settings.churn),
         ("create", settings.measured_creates),
         ("update", settings.updates),
         ("delete", settings.deletes),
@@ -1388,10 +1474,12 @@ fn writes_at_size<E: Engine>(
 /// the settings are applied as a whole run applies them after its load:
 /// the stream is that run's, with the blocks of the set-up and of the
 /// load passed over. With the seed, the documents, the owners and the
-/// three numbers of writes of a whole run, the root hash at the end is
-/// that run's.
+/// three numbers of writes and the churn of a whole run, the root hash at
+/// the end is that run's.
 ///
-/// The report has the rows of the write phases, and no size on disk.
+/// The report has the rows of the write phases, each phase's size at its
+/// end among them, and no size of the database after the load or the
+/// flush.
 pub fn write_engine<E: Engine>(
     settings: &Settings,
     grove_version: &GroveVersion,
@@ -1880,6 +1968,21 @@ mod tests {
                 total: 4_000,
                 source: "lignindb engine: the log that no table checkpoint covers",
             }],
+            space: Some((
+                Space {
+                    segment_bytes: 1_000,
+                    segment_live_bytes: 800,
+                    value_bytes: 0,
+                    value_live_bytes: 0,
+                },
+                Space {
+                    segment_bytes: 2_000,
+                    segment_live_bytes: 1_500,
+                    value_bytes: 400,
+                    value_live_bytes: 100,
+                },
+            )),
+            size_at_end: 12_345,
             ended: (Counters::default(), Vec::new()),
         };
         let rows = count_rows(&run, "lignindb");
@@ -1929,6 +2032,24 @@ mod tests {
             );
         }
         assert_eq!(value("hashes_per_transition").0, 25.0);
+        assert_eq!(value("size_on_disk_at_end").0, 12_345.0, "as it is");
+        for (id, held) in [
+            ("segment_dead_share_at_start", 0.2),
+            ("segments_size_at_start", 1_000.0),
+            ("value_log_dead_share_at_start", 0.0),
+            ("value_log_size_at_start", 0.0),
+            ("segment_dead_share_at_end", 0.25),
+            ("segments_size_at_end", 2_000.0),
+            ("value_log_dead_share_at_end", 0.75),
+            ("value_log_size_at_end", 400.0),
+        ] {
+            let (found, source) = value(id);
+            assert_eq!(found, held, "{id}");
+            assert!(
+                source.contains("the cleaner's accounting"),
+                "{id}: {source}"
+            );
+        }
 
         // An engine that does not count lookups keeps the derivation from
         // the seeks GroveDB charges, and has no row of engine hashes.
@@ -1937,7 +2058,10 @@ mod tests {
         run.totals.counters.hashes = None;
         run.totals.counters.page_reads = None;
         run.totals.storage_reads.device_reads = Some(7);
+        run.space = None;
         let rows = count_rows(&run, "rocksdb");
+        assert!(!rows.iter().any(|row| row.id.contains("dead_share")));
+        assert!(rows.iter().any(|row| row.id == "size_on_disk_at_end"));
         assert!(!rows.iter().any(|row| row.id.starts_with("page")));
         let reads = rows
             .iter()

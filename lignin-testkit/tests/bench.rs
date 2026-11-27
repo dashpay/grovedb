@@ -50,6 +50,7 @@ fn small(scratch: std::path::PathBuf) -> Settings {
         seed: 3,
         documents: 2_000,
         owners: 10,
+        churn: 0,
         measured_creates: 200,
         updates: 100,
         deletes: 100,
@@ -114,6 +115,12 @@ fn is_system_read_count(id: &str) -> bool {
         .any(|count| id.contains(count))
 }
 
+/// Whether `id` is a row of what a write phase left on disk: the size at
+/// its end, and the dead shares of its start and end.
+fn is_space_of_a_phase(id: &str) -> bool {
+    id == "size_on_disk_at_end" || id.ends_with("_at_start") || id.ends_with("_at_end")
+}
+
 /// Whether `id` is a row of the pages a write phase asked its pool for.
 fn is_page_count_of_a_phase(id: &str) -> bool {
     ["page_reads_per_transition", "pages_asked_per_transition"].contains(&id)
@@ -126,6 +133,7 @@ fn kind_of(id: &str) -> RowKind {
         || is_detail(id)
         || is_system_read_count(id)
         || is_page_count_of_a_phase(id)
+        || is_space_of_a_phase(id)
     {
         RowKind::Measured
     } else {
@@ -830,6 +838,62 @@ fn the_writes_at_size_are_measured_over_a_copy_of_a_kept_database() {
             .collect();
         assert_eq!(phases, ["create"]);
         assert!(!kept.join(format!("{}-writes", third.engine)).exists());
+    }
+
+    // The churn is the first of the creates as a phase of its own: the
+    // same stream, so the same grove at the end. Each phase says the size
+    // at its end, and LigninDB's the dead shares at its start and end.
+    let churned = call(
+        "writes",
+        &kept,
+        "churned.json",
+        "--churn 20 --creates 20 --updates 20 --deletes 20",
+    );
+    assert_eq!(churned.workload.churn, 20);
+    let names = |report: &Report| -> Vec<String> {
+        report
+            .engines
+            .iter()
+            .map(|engine| engine.engine.clone())
+            .collect()
+    };
+    assert_eq!(names(&churned), names(&wrote));
+    for (churned, wrote) in churned.engines.iter().zip(&wrote.engines) {
+        assert_eq!(churned.root_hash_at_end, wrote.root_hash_at_end);
+        let phases: Vec<(&str, u64)> = (churned.phases.iter())
+            .map(|totals| (totals.phase.as_str(), totals.transitions))
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                ("churn", 20),
+                ("create", 20),
+                ("update", 20),
+                ("delete", 20)
+            ]
+        );
+        for (phase, _) in phases {
+            let size = churned.row("size_on_disk_at_end", phase).unwrap();
+            assert!(size.value > 0.0, "{phase}");
+            for at in ["start", "end"] {
+                let value = |id: &str| {
+                    churned
+                        .row(&format!("{id}_at_{at}"), phase)
+                        .map(|row| row.value)
+                };
+                match churned.engine.as_str() {
+                    "rocksdb" => assert_eq!(value("value_log_dead_share"), None),
+                    _ => {
+                        for share in ["segment_dead_share", "value_log_dead_share"] {
+                            let share = value(share).unwrap();
+                            assert!((0.0..=1.0).contains(&share), "{phase} {at}");
+                        }
+                        assert!(value("segments_size").unwrap() > 0.0, "{phase} {at}");
+                        assert!(value("value_log_size").unwrap() > 0.0, "{phase} {at}");
+                    }
+                }
+            }
+        }
     }
 }
 

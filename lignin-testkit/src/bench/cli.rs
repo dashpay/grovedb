@@ -8,6 +8,7 @@
 //! lignin-bench compare FIRST SECOND   how far two runs' rows are apart
 //! lignin-bench latency [options]      the commit of a block at a pace, on each engine
 //! lignin-bench latency-table REPORT.. the rows of latency reports, and their ranges
+//! lignin-bench score REPORT...        the rows of reports scored against the plan's table
 //! ```
 //!
 //! `run` options: `--out FILE` (default: standard output), `--scratch DIR`
@@ -16,7 +17,7 @@
 //! `--set KEY=VALUE` (repeatable; a setting of LigninDB, as
 //! `bench/lignindb.rs` lists them, in a run that measures it),
 //! `--label TEXT`, `--commit SHA`, `--perf`, `--keep`, and the
-//! sizes of [`Settings`]: `--seed`, `--documents`, `--owners`, `--creates`,
+//! sizes of [`Settings`]: `--seed`, `--documents`, `--owners`, `--churn`, `--creates`,
 //! `--updates`, `--deletes`, `--point-reads`, `--reference-reads`,
 //! `--warmup-reads`, `--cold-reads`, `--checkpoints`, `--reopens`.
 //! `reads` takes the options of `run` and measures the point gets, the
@@ -41,12 +42,12 @@ use super::{
     latency::{self, LatencyReport},
     reads,
     report::{self, ratio},
-    run, writes, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
+    run, score, writes, BenchError, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
 const USAGE: &str = "usage: lignin-bench run [options] | reads [options] | writes [options] | \
                      table REPORT | compare FIRST SECOND [--tolerance F] | latency [options] | \
-                     latency-table REPORT...";
+                     latency-table REPORT... | score REPORT...";
 
 /// Runs the command with `args` (the program name excluded) and returns
 /// what it prints.
@@ -76,6 +77,22 @@ pub fn main_with(args: &[String]) -> Result<String, BenchError> {
             [path] => Ok(table(&read_report(path)?)),
             _ => Err(usage()),
         },
+        "score" if !rest.is_empty() => {
+            let mut out = String::new();
+            for path in rest {
+                let report = read_report(path)?;
+                let _ = writeln!(
+                    out,
+                    "{path}: {} {}, commit {}\n",
+                    report.workload.name,
+                    report.workload.documents,
+                    report.commit.as_deref().unwrap_or("unknown"),
+                );
+                out.push_str(&score::score(&report));
+                out.push('\n');
+            }
+            Ok(out)
+        }
         "compare" => {
             let (paths, tolerance) = match rest {
                 [first, second] => ([first, second], 0.10),
@@ -163,6 +180,7 @@ pub fn parse_run(args: &[String]) -> Result<(RunOptions, Option<PathBuf>), Bench
                     "--seed" => settings.seed = parse_number(flag, value)?,
                     "--documents" => settings.documents = parse_number(flag, value)?,
                     "--owners" => settings.owners = parse_number(flag, value)?,
+                    "--churn" => settings.churn = parse_number(flag, value)?,
                     "--creates" => settings.measured_creates = parse_number(flag, value)?,
                     "--updates" => settings.updates = parse_number(flag, value)?,
                     "--deletes" => settings.deletes = parse_number(flag, value)?,
@@ -356,7 +374,8 @@ mod tests {
     fn run_options_parse() {
         let (options, out) = parse_run(&args(
             "--out r.json --scratch /s --label box --commit abc --engine rocksdb --perf --keep \
-             --seed 7 --documents 2000 --owners 20 --creates 40 --updates 60 --deletes 80 \
+             --seed 7 --documents 2000 --owners 20 --churn 100 --creates 40 --updates 60 \
+             --deletes 80 \
              --point-reads 1 --reference-reads 2 --warmup-reads 3 --cold-reads 4 \
              --checkpoints 5 --reopens 6",
         ))
@@ -373,11 +392,12 @@ mod tests {
                 settings.seed,
                 settings.documents,
                 settings.owners,
+                settings.churn,
                 settings.measured_creates,
                 settings.updates,
                 settings.deletes
             ),
-            (7, 2000, 20, 40, 60, 80)
+            (7, 2000, 20, 100, 40, 60, 80)
         );
         assert_eq!(
             (
@@ -462,10 +482,21 @@ mod tests {
         ] {
             assert_eq!(parse_run(&args(line)).unwrap_err().to_string(), message);
         }
-        for line in ["", "fly", "table", "compare a", "compare a b --tolerance"] {
+        for line in [
+            "",
+            "fly",
+            "table",
+            "score",
+            "compare a",
+            "compare a b --tolerance",
+        ] {
             assert_eq!(main_with(&args(line)).unwrap_err().to_string(), USAGE);
         }
         assert!(main_with(&args("table /nonexistent/report.json"))
+            .unwrap_err()
+            .to_string()
+            .starts_with("reading /nonexistent/report.json"));
+        assert!(main_with(&args("score /nonexistent/report.json"))
             .unwrap_err()
             .to_string()
             .starts_with("reading /nonexistent/report.json"));

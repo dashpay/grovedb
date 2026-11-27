@@ -87,6 +87,7 @@ pub mod machine;
 pub mod report;
 pub mod rocksdb;
 pub mod run;
+pub mod score;
 
 use std::path::PathBuf;
 
@@ -95,7 +96,7 @@ use grovedb_version::version::GroveVersion;
 #[cfg(grovedb_engine_seam)]
 pub use self::lignindb::LigninDbEngine;
 pub use self::{
-    engine::{Block, Counters, Detail, Engine, EngineSettings, NodeAnatomy},
+    engine::{Block, Counters, Detail, Engine, EngineSettings, NodeAnatomy, Space},
     machine::{ColdMethod, Machine},
     report::{compare, Agreement, Report, Row, RowKind},
     rocksdb::RocksDbEngine,
@@ -342,6 +343,7 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
     // whatever the settings name, and the machine is not probed for how
     // it reads cold.
     let warm_only = Settings {
+        churn: 0,
         measured_creates: 0,
         updates: 0,
         deletes: 0,

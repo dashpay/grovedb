@@ -130,11 +130,52 @@ pub trait Engine: Sized {
         Ok(Vec::new())
     }
 
+    /// What the engine's files hold now, live and in all, for an engine
+    /// that counts it: read at the start and at the end of a write phase,
+    /// outside every timed region.
+    fn space(&mut self) -> Result<Option<Space>, BenchError> {
+        Ok(None)
+    }
+
     /// How the Merk node records written since the engine was opened
     /// divide up, for an engine that writes whole node records. Read after
     /// [`Engine::counters`].
     fn node_anatomy(&self) -> Option<NodeAnatomy> {
         None
+    }
+}
+
+/// What an engine's files hold at one reading ([`Engine::space`]): the
+/// bytes of the blocks of its segments and of its value log, and those of
+/// them that the latest state points to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Space {
+    /// The bytes of the blocks of every segment.
+    pub segment_bytes: u64,
+    /// Those of them that a link of the page table points to.
+    pub segment_live_bytes: u64,
+    /// The bytes of the values of every value-log file.
+    pub value_bytes: u64,
+    /// Those of them that a cell of the latest version points to.
+    pub value_live_bytes: u64,
+}
+
+impl Space {
+    /// The share of the segments' bytes that is dead, 0 for none.
+    pub fn segment_dead_share(&self) -> f64 {
+        dead_share(self.segment_bytes, self.segment_live_bytes)
+    }
+
+    /// The share of the value log's bytes that is dead, 0 for none.
+    pub fn value_dead_share(&self) -> f64 {
+        dead_share(self.value_bytes, self.value_live_bytes)
+    }
+}
+
+fn dead_share(bytes: u64, live: u64) -> f64 {
+    match bytes {
+        0 => 0.0,
+        _ => bytes.saturating_sub(live) as f64 / bytes as f64,
     }
 }
 

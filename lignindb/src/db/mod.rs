@@ -592,7 +592,9 @@ use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
     alloc::Census,
-    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats, Pass, ValuePass},
+    cleaner::{
+        BothOwners, Cleaner, CleanerError, CleanerStats, Pass, Space, ValuePass, ValueSpace,
+    },
     flush::{FlushError, Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
@@ -1903,6 +1905,20 @@ impl Db {
             let values = cleaner.pass_values(owners).inspect_err(told);
             Ok((segments?, values?))
         })
+    }
+
+    /// What the segments and the value log hold now, as the cleaner counts
+    /// them ([`Cleaner::space`] and [`Cleaner::value_space`]): the two reads
+    /// a pass of the cleaner makes, one after the other, so the two are of
+    /// two moments, and they change nothing. The first reads the whole page
+    /// table under the cleaner's own lock, so it waits for a pass that is
+    /// under way and a pass waits for it; the second copies the value
+    /// log's counts of live bytes under the lock that a commit takes to
+    /// change them, for as long as the copy takes. A measurement that
+    /// states how much of the store is dead calls it.
+    pub fn space(&self) -> Result<(Space, ValueSpace), CleanerError> {
+        let cleaner = self.shared.cleaner();
+        Ok((cleaner.space()?, cleaner.value_space()?))
     }
 
     /// The entries of the database directory that are not the engine's,
