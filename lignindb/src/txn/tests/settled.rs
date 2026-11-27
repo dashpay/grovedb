@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use lignin_format::{flat_page::FlatPage, CommitVersion, PageId};
 use lignin_store::load::FRAME_FORMAT;
 use lignin_tree::{
-    directory::Settled,
-    flat::{leaf_images_written, FlatPages},
+    directory::{DirectoryError, Settled},
+    flat::{leaf_images_written, FlatError, FlatPages},
 };
 
 use super::{
@@ -415,4 +415,58 @@ fn a_rollback_leaves_the_directory_as_if_the_records_were_never_put() {
     assert!(plain.0 == rolled.0, "the records of the directory");
     assert_eq!(plain.1, rolled.1, "its leaves and their key ranges");
     assert!(plain.2 == rolled.2, "the images of its leaves");
+}
+
+/// A batch whose settling fails after it wrote a leaf of the directory
+/// leaves nothing of itself: the frames are made again from the writes
+/// that were taken before it, the batch goes through when it is applied
+/// again, and the transaction commits.
+#[test]
+fn a_settling_that_fails_after_a_leaf_leaves_nothing_of_its_batch() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    // A write that is taken before: Merks, and a record beside them.
+    let before = subtrees((30..36).map(|n| enter(ENTERED + n)).collect());
+    world.apply(&tx, &before).expect("entered");
+    world.write(
+        &tx,
+        vec![put(model::unit(Column::Aux, 3), b"kept", b"it is")],
+    );
+    world.check(&tx);
+
+    // The enters of this batch lie in two leaves of the directory, as
+    // `a_batch_of_enters_writes_each_leaf_of_the_directory_once` has
+    // them: the first is written, and the second is not.
+    let batch = subtrees(names(24).into_iter().map(enter).collect());
+    let images = leaf_images_written();
+    lignin_tree::flat::fail_leaf_image_after(1);
+    let failed = world.apply(&tx, &batch);
+    let flat =
+        |error: &DirectoryError| matches!(error, DirectoryError::Flat(FlatError::Damaged { .. }));
+    assert!(
+        matches!(&failed, Err(TxnError::Directory(error)) if flat(error)),
+        "{failed:?}"
+    );
+    // The fault is of the second image, so one leaf of the directory was
+    // written before it. The images since are that one and those of the
+    // frames, which were made again from the writes before the batch.
+    assert!(leaf_images_written() - images >= 1);
+
+    // What was taken before is there, and nothing of the batch is.
+    world.check(&tx);
+    let entered = |name: u8| {
+        let read = tx.txn.subtree(sub(name), |view| view.is_some());
+        read.expect("the directory is read")
+    };
+    assert!((30..36).all(|n| entered(ENTERED + n)));
+    assert!(names(24).into_iter().all(|name| !entered(name)));
+
+    // The same batch goes through afterwards, and the whole commits.
+    world.apply(&tx, &batch).expect("the batch goes through");
+    world.check(&tx);
+    assert!(names(24).into_iter().all(entered));
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
 }
