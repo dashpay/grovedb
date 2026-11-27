@@ -343,8 +343,13 @@ pub struct LatencyReport {
     pub watch_files: bool,
     /// Whether every block was marked for a trace.
     pub mark_blocks: bool,
+    /// The length from which a commit was marked for a trace, in
+    /// microseconds; none with zero.
+    pub mark_us: u64,
     /// Whether the engine's counts were read after each commit.
     pub parts: bool,
+    /// How many of the slowest commits the run was asked to keep.
+    pub slowest: u64,
     /// The engines, in the order they were measured.
     pub engines: Vec<EngineLatency>,
 }
@@ -939,11 +944,12 @@ fn monotonic() -> u64 {
 /// `now`, both by the monotonic clock in nanoseconds: how long to sleep, or
 /// by how much the pause has passed already.
 fn pause_left(ended: u64, pause: Duration, now: u64) -> Result<Duration, Duration> {
-    let until = ended + pause.as_nanos() as u64;
-    match until.checked_sub(now) {
-        Some(left) => Ok(Duration::from_nanos(left)),
-        None => Err(Duration::from_nanos(now - until)),
-    }
+    // What has passed since the commit is taken from the pause: the pause
+    // itself is not made a number of nanoseconds, which a long one is not.
+    let passed = Duration::from_nanos(now.saturating_sub(ended));
+    pause
+        .checked_sub(passed)
+        .ok_or_else(|| passed.saturating_sub(pause))
 }
 
 /// A block that was applied and committed.
@@ -1338,7 +1344,9 @@ fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
         neighbour_ms: options.neighbour.map(|every| every.as_millis() as u64),
         watch_files: options.watch_files,
         mark_blocks: options.mark_blocks,
+        mark_us: options.mark.as_micros() as u64,
         parts: options.parts,
+        slowest: options.slowest as u64,
         engines: Vec::new(),
     };
     for engine in &options.engines {
@@ -1402,7 +1410,8 @@ const HEAD: &str = "| Build | Engine | Background | Blocks | Median, µs | 99%, 
 /// The group a row belongs to in a table of several runs. Its first three
 /// fields are what a table shows: the build, by its name and the beginning
 /// of its commit, the engine, and what it did beside the commits. The last
-/// is everything the run was asked, the commit whole: two runs are of one
+/// is everything the run was asked, the commit whole, the machine it was
+/// made on and the engines it measured in their order: two runs are of one
 /// group, and repeats of one another, only where all of it is the same.
 type Group = (String, String, String, String);
 
@@ -1418,7 +1427,8 @@ fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
     let asked = format!(
         "commit {}, GroveVersion {}, seed {}, {} documents of {} owners, {} warm and {} measured \
          blocks, a pause of {} µs, a flush every {} blocks, settings [{}], the file layer {}, \
-         blocks {}, the engine's counts {}",
+         blocks {}, commits marked from {} µs, the engine's counts {}, the {} slowest commits \
+         kept, the engines of the run [{}], on {:?}",
         report.commit.as_deref().unwrap_or("unknown"),
         report.grove_protocol_version,
         report.seed,
@@ -1437,10 +1447,17 @@ fn group_of(report: &LatencyReport, engine: &EngineLatency) -> Group {
             true => "marked",
             false => "not marked",
         },
+        report.mark_us,
         match report.parts {
             true => "read after each commit",
             false => "read before and after the blocks",
         },
+        report.slowest,
+        (report.engines.iter())
+            .map(|engine| engine.engine.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+        report.machine,
     );
     (build, engine.engine.clone(), background, asked)
 }
@@ -2111,6 +2128,17 @@ mod tests {
             pause_left(ended, pause, after(9)),
             Err(Duration::from_millis(4))
         );
+        // A pause longer than a count of nanoseconds holds is the pause
+        // that was asked for, and no short one.
+        let long = Duration::from_micros(18_446_744_073_709_552);
+        assert_eq!(
+            pause_left(ended, long, after(2)),
+            Ok(long - Duration::from_millis(2))
+        );
+        assert_eq!(
+            pause_left(u64::MAX - 1, pause, u64::MAX),
+            Ok(pause - Duration::from_nanos(1))
+        );
 
         // A run that reads the engine's counts after each commit, where a
         // reading takes longer than the pause: every block begins late, and
@@ -2184,7 +2212,9 @@ mod tests {
             neighbour_ms: None,
             watch_files: options.watch_files,
             mark_blocks: options.mark_blocks,
+            mark_us: options.mark.as_micros() as u64,
             parts: options.parts,
+            slowest: options.slowest as u64,
             engines: Vec::new(),
         }
     }
@@ -2293,7 +2323,46 @@ mod tests {
             parts: true,
             ..one.clone()
         };
-        for other in [paused, flushed, set, dirty, watched, marked, read] {
+        // With commits marked from another length, another number of slow
+        // commits kept, another engine measured before this one in the
+        // run, and on another machine.
+        let marked_from = LatencyReport {
+            mark_us: 1,
+            ..one.clone()
+        };
+        let kept = LatencyReport {
+            slowest: 5,
+            ..one.clone()
+        };
+        let second = LatencyReport {
+            engines: vec![
+                EngineLatency {
+                    engine: "lignindb".to_string(),
+                    ..one.engines[0].clone()
+                },
+                one.engines[0].clone(),
+            ],
+            ..one.clone()
+        };
+        let elsewhere = LatencyReport {
+            machine: Machine {
+                logical_cpus: one.machine.logical_cpus + 1,
+                ..one.machine.clone()
+            },
+            ..one.clone()
+        };
+        for other in [
+            paused,
+            flushed,
+            set,
+            dirty,
+            watched,
+            marked,
+            read,
+            marked_from,
+            kept,
+            elsewhere,
+        ] {
             let apart = runs_table(&[one.clone(), other.clone()]);
             assert!(!apart.contains("The median of the runs' values"), "{apart}");
             // Two runs of each are two groups that a table shows alike,
@@ -2309,6 +2378,18 @@ mod tests {
             );
             assert!(both.contains("- [2] commit fedcba9876543210"), "{both}");
         }
+        // RocksDB measured after LigninDB in a run is no repeat of RocksDB
+        // measured alone: the two are two rows of two runs each, with a
+        // row of LigninDB's between them.
+        let after = runs_table(&[one.clone(), one.clone(), second.clone(), second]);
+        assert!(
+            after.contains("| head (fedcba98) [1] | rocksdb | default | 2 |"),
+            "{after}"
+        );
+        assert!(
+            after.contains("| head (fedcba98) [3] | rocksdb | default | 2 |"),
+            "{after}"
+        );
         let same = runs_table(&[one.clone(), one]);
         assert!(
             same.contains("| head (fedcba98) | rocksdb | default | 2 |"),
