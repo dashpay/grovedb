@@ -72,7 +72,10 @@
 //! attached to the thread and switched on only around the measured calls).
 //! A run that asks for it where `perf` counts nothing is refused at its
 //! start. A row during which `perf` fails later keeps its time and has no
-//! count, and a table says so where no row of it has one.
+//! count, and a table says so where no row of it has one. A measurement
+//! that looks for where time goes can have the same `perf` count more
+//! events and show what it printed ([`machine::MORE_EVENTS`]); nothing of
+//! them goes into a report.
 
 pub mod batches;
 pub mod cli;
@@ -271,13 +274,45 @@ const NO_PERF: &str = "--perf: `perf stat -e instructions:u` counts nothing for 
                        process here (is `perf` installed, and does `kernel.perf_event_paranoid` \
                        allow it?). Without --perf the run measures and counts no instructions";
 
-/// Refuses a run that asks for instruction counts where `perf` counts
-/// none (`works`, which is asked only then, before the run measures
-/// anything).
-fn counts_instructions(asked: bool, works: impl FnOnce() -> bool) -> Result<(), BenchError> {
-    match asked && !works() {
-        true => Err(BenchError::Check(NO_PERF.to_string())),
-        false => Ok(()),
+/// What such a run is told where it also asked for the events `more`
+/// ([`machine::MORE_EVENTS`]): the probe got no usable count of the
+/// instructions from a `perf` that was asked for those events too. `perf`
+/// gave none, or it did not answer a switch, or what it printed has not
+/// exactly one line with the word `instructions`, named
+/// `instructions:u` (`instructions_beside_more` in [`machine`]); what it
+/// counted of the other events says nothing of that.
+fn no_perf_with(more: &str) -> String {
+    format!(
+        "--perf: the probe with `perf stat -e {}` got no usable count of `instructions:u` \
+         for a thread of this process here (is `perf` installed, does \
+         `kernel.perf_event_paranoid` allow it, and does `perf` take the events that {} \
+         names?). Without --perf the run measures and counts no instructions",
+        machine::perf_events(Some(more)),
+        machine::MORE_EVENTS
+    )
+}
+
+/// Refuses a run that asks for instruction counts where the events it
+/// names beside them are not taken ([`machine::more_events_refused`]),
+/// and where the probe of `perf` fails (`works`, which is asked only of a
+/// run that asks for counts and is not refused for its events, before
+/// the run measures anything). `more` is what [`machine::MORE_EVENTS`]
+/// names.
+fn counts_instructions(
+    asked: bool,
+    more: Option<&str>,
+    works: impl FnOnce() -> bool,
+) -> Result<(), BenchError> {
+    if !asked {
+        return Ok(());
+    }
+    if let Some(why) = more.and_then(machine::more_events_refused) {
+        return Err(BenchError::Check(why));
+    }
+    match (works(), more) {
+        (true, _) => Ok(()),
+        (false, None) => Err(BenchError::Check(NO_PERF.to_string())),
+        (false, Some(more)) => Err(BenchError::Check(no_perf_with(more))),
     }
 }
 
@@ -300,7 +335,10 @@ fn run_here(options: &RunOptions, rows: Rows) -> Result<Report, BenchError> {
         Rows::All => &options.settings,
         Rows::WarmReads => &warm_only,
     };
-    counts_instructions(settings.perf, || machine::Perf::works(&settings.scratch))?;
+    let more = settings.perf.then(machine::more_events).flatten();
+    counts_instructions(settings.perf, more.as_deref(), || {
+        machine::Perf::works(&settings.scratch)
+    })?;
     let cold_method = match rows {
         Rows::All => ColdMethod::detect(&settings.scratch),
         Rows::WarmReads => ColdMethod::Reopen,
@@ -353,10 +391,34 @@ mod tests {
     fn a_run_that_asks_for_instructions_is_refused_where_perf_counts_none() {
         // A run that does not ask does not look for a counter.
         let unasked = || -> bool { panic!("a run without --perf looked for a counter") };
-        assert!(counts_instructions(false, unasked).is_ok());
-        assert!(counts_instructions(true, || true).is_ok());
-        match counts_instructions(true, || false) {
-            Err(BenchError::Check(why)) => assert!(why.starts_with("--perf: "), "{why}"),
+        assert!(counts_instructions(false, None, unasked).is_ok());
+        assert!(counts_instructions(false, Some("instructions:k"), unasked).is_ok());
+        assert!(counts_instructions(true, None, || true).is_ok());
+        assert!(counts_instructions(true, Some("cycles:u"), || true).is_ok());
+        match counts_instructions(true, None, || false) {
+            Err(BenchError::Check(why)) => assert_eq!(why, NO_PERF),
+            other => panic!("not refused: {other:?}"),
+        }
+        // With more events asked, the refusal names what `perf` was asked.
+        match counts_instructions(true, Some("cycles:u,no-such-event"), || false) {
+            Err(BenchError::Check(why)) => assert!(
+                why.starts_with(
+                    "--perf: the probe with `perf stat -e \
+                     instructions:u,cycles:u,no-such-event` got no usable count of \
+                     `instructions:u`"
+                ) && why.contains("LIGNIN_BENCH_PERF_EVENTS names?)"),
+                "{why}"
+            ),
+            other => panic!("not refused: {other:?}"),
+        }
+        // Events with the word `instructions` are refused before `perf`
+        // is looked for.
+        let unprobed = || -> bool { panic!("a refused list of events was given to `perf`") };
+        match counts_instructions(true, Some("cycles:u,instructions:k"), unprobed) {
+            Err(BenchError::Check(why)) => assert!(
+                why.starts_with("--perf: LIGNIN_BENCH_PERF_EVENTS names `cycles:u,instructions:k`"),
+                "{why}"
+            ),
             other => panic!("not refused: {other:?}"),
         }
     }

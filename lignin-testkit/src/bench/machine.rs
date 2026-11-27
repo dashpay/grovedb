@@ -305,6 +305,13 @@ pub fn drop_dir_cache(dir: &Path) -> bool {
 /// `perf` starts with counting off and is switched through its control
 /// FIFO, so only the measured sections count. Counts accumulate over every
 /// enabled section until [`Perf::finish`].
+///
+/// A measurement that looks for where time goes can name more events in
+/// the variable [`MORE_EVENTS`]. They are given to the same `perf` after
+/// the instructions, and what a `perf` printed is then written to
+/// standard error where it is stopped and its output is read
+/// (`counter_output`); a write that fails is not tried again. Nothing of
+/// the events goes into a report.
 pub struct Perf {
     child: Child,
     control: File,
@@ -314,6 +321,78 @@ pub struct Perf {
 }
 
 const PERF_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The variable of the environment that names more events for `perf` to
+/// count, as `perf stat -e` takes them
+/// (`cycles:u,cache-misses,dTLB-load-misses`). Unset, or with nothing
+/// but blanks in it, it changes nothing.
+pub const MORE_EVENTS: &str = "LIGNIN_BENCH_PERF_EVENTS";
+
+/// The events that [`MORE_EVENTS`] names in this process, if it names
+/// any.
+pub fn more_events() -> Option<String> {
+    named_events(std::env::var(MORE_EVENTS).ok().as_deref())
+}
+
+fn named_events(value: Option<&str>) -> Option<String> {
+    let named = value.map(str::trim).filter(|named| !named.is_empty());
+    named.map(str::to_owned)
+}
+
+/// The events `perf` is asked to count: the instructions, then `more`.
+pub fn perf_events(more: Option<&str>) -> String {
+    match more {
+        Some(more) => format!("instructions:u,{more}"),
+        None => "instructions:u".to_string(),
+    }
+}
+
+/// Why a run does not count the events `more` beside the instructions,
+/// if it does not: the word `instructions` is in them. The count of a
+/// row is read from the first line of what `perf` printed that holds that
+/// word and whose first field is a number (`parse_perf_csv`), and the
+/// line of an event that is named so could be taken for it. A second
+/// line with the word that `perf` prints where the list has none is met
+/// where the count is read (`instructions_beside_more`).
+pub fn more_events_refused(more: &str) -> Option<String> {
+    more.contains("instructions").then(|| {
+        format!(
+            "--perf: {MORE_EVENTS} names `{more}`, which has the word `instructions` in it: \
+             the instructions of a row are read from the line of `perf`'s output that holds \
+             that word. Name the other events alone; `instructions:u` is always asked for"
+        )
+    })
+}
+
+/// The instructions of what `perf` printed while it counted more events:
+/// the count that `parse_perf_csv` reads, where exactly one line of the
+/// output holds the word `instructions` and the third field of that
+/// line, the event's name, is `instructions:u`; and none otherwise.
+///
+/// So there is no count where `perf` prints the word in a second line,
+/// whatever event that line is of, and none where the only line with
+/// the word has another third field, whether it is the harness's own
+/// event under another name (`cpu_core/instructions:u/`, or with
+/// another modifier) or another event's line. The row then has no
+/// count, as where `perf` fails.
+fn instructions_beside_more(text: &str) -> Option<u64> {
+    let mut with_the_word = text.lines().filter(|line| line.contains("instructions"));
+    let line = with_the_word.next()?;
+    let alone = with_the_word.next().is_none();
+    let named = line.split(',').nth(2) == Some("instructions:u");
+    (alone && named).then(|| parse_perf_csv(text)).flatten()
+}
+
+/// What is written to standard error for a counter that finished while
+/// [`MORE_EVENTS`] names events: a line `# counter NAME`, where `NAME` is
+/// the name of the counter's directory (`perf-load-apply`, `perf-probe`),
+/// then `text`, which is what `perf stat -x ,` printed for it, ending in
+/// a line break.
+fn counter_output(dir: &Path, text: &str) -> String {
+    let name = dir.file_name().unwrap_or(dir.as_os_str()).to_string_lossy();
+    let end = if text.ends_with('\n') { "" } else { "\n" };
+    format!("# counter {name}\n{text}{end}")
+}
 
 impl Perf {
     /// Attaches `perf stat -e instructions:u` to thread `tid`, keeping its
@@ -343,7 +422,9 @@ impl Perf {
             .open(&ack_path)
             .ok()?;
         let child = Command::new("perf")
-            .args(["stat", "-x", ",", "-e", "instructions:u", "--delay=-1"])
+            .args(["stat", "-x", ",", "-e"])
+            .arg(perf_events(more_events().as_deref()))
+            .arg("--delay=-1")
             .arg(format!(
                 "--control=fifo:{},{}",
                 control_path.display(),
@@ -428,7 +509,13 @@ impl Perf {
         let _ = self.child.wait();
         let text = std::fs::read_to_string(&self.output).ok();
         let _ = std::fs::remove_dir_all(&self.dir);
-        parse_perf_csv(&text?)
+        let text = text?;
+        if more_events().is_none() {
+            return parse_perf_csv(&text);
+        }
+        let shown = counter_output(&self.dir, &text);
+        let _ = std::io::stderr().write_all(shown.as_bytes());
+        instructions_beside_more(&text)
     }
 
     fn abandon(&mut self) {
@@ -473,6 +560,110 @@ mod tests {
             None
         );
         assert_eq!(parse_perf_csv(""), None);
+        // More events follow the instructions, whose line is the count.
+        let more = "# started\n\n123,,instructions:u,5,100.00,0.5,insn per cycle\n\
+                    9,,cycles:u,5,100.00,,\n";
+        assert_eq!(parse_perf_csv(more), Some(123));
+    }
+
+    #[test]
+    fn more_events_are_those_the_variable_names_after_the_instructions() {
+        assert_eq!(named_events(None), None);
+        assert_eq!(named_events(Some("")), None);
+        assert_eq!(named_events(Some(" \n")), None);
+        let named = named_events(Some(" cycles:u,cache-misses\n"));
+        assert_eq!(named.as_deref(), Some("cycles:u,cache-misses"));
+        assert_eq!(perf_events(None), "instructions:u");
+        assert_eq!(
+            perf_events(named.as_deref()),
+            "instructions:u,cycles:u,cache-misses"
+        );
+        // The variable of this process is read through the same rule.
+        assert_eq!(
+            more_events(),
+            named_events(std::env::var(MORE_EVENTS).ok().as_deref())
+        );
+    }
+
+    #[test]
+    fn events_with_the_word_instructions_are_refused() {
+        assert_eq!(more_events_refused("cycles:u,cycles:k,cache-misses"), None);
+        for named in [
+            "instructions:k",
+            "cycles:u,instructions:u",
+            "cpu/event=0x3c,name=instructions:u/",
+        ] {
+            let why = more_events_refused(named).expect("refused");
+            assert!(
+                why.starts_with("--perf: LIGNIN_BENCH_PERF_EVENTS names `") && why.contains(named),
+                "{why}"
+            );
+        }
+        // What the rule is for: such a line would be read as the count.
+        let taken = "<not counted>,,instructions:u,0,0.00,,\n9,,instructions:k,5,100.00,,\n";
+        assert_eq!(parse_perf_csv(taken), Some(9));
+    }
+
+    #[test]
+    fn a_count_beside_more_events_is_of_the_one_line_with_the_word() {
+        let plain = "# started\n\n123,,instructions:u,5,100.00,0.5,insn per cycle\n\
+                     9,,cycles:u,5,100.00,,\n";
+        assert_eq!(instructions_beside_more(plain), Some(123));
+        let none = "<not counted>,,instructions:u,0,0.00,,\n9,,cycles:u,5,100.00,,\n";
+        assert_eq!(instructions_beside_more(none), None);
+        // A second line with the word, of whatever event and in either
+        // order, with a count of the instructions and without one: an
+        // event with the word in its name, one under the very name, and
+        // the line of one counting unit beside the plain line.
+        let others = [
+            "probe:instructions_done",
+            "instructions:u",
+            "instructions:k",
+            "cpu_core/instructions:u/",
+            "cycles:u,5,100.00,1.0,per instructions",
+        ];
+        for other in others {
+            for instructions in ["<not supported>", "123"] {
+                let own = format!("{instructions},,instructions:u,5,100.00,,\n");
+                let second = format!("9,,{other},5,100.00,,\n");
+                for text in [format!("{own}{second}"), format!("{second}{own}")] {
+                    assert_eq!(instructions_beside_more(&text), None, "{text}");
+                }
+            }
+        } // The lines of two counting units, with no plain line.
+        let units = "<not counted>,,cpu_atom/instructions:u/,0,0.00,,\n\
+                     55,,cpu_core/instructions:u/,5,100.00,,\n";
+        assert_eq!(parse_perf_csv(units), Some(55));
+        assert_eq!(instructions_beside_more(units), None);
+        // One line with the word that is not named `instructions:u`.
+        for name in [
+            "instructions:uH",
+            "instructions:k",
+            "cpu_core/instructions:u/",
+            "cpu_core/instructions/u",
+            "probe:instructions_done",
+        ] {
+            let text = format!("9,,{name},5,100.00,,\n7,,cycles:u,5,100.00,,\n");
+            assert_eq!(parse_perf_csv(&text), Some(9), "{name}");
+            assert_eq!(instructions_beside_more(&text), None, "{name}");
+        }
+        assert_eq!(instructions_beside_more("instructions\n"), None);
+        assert_eq!(instructions_beside_more("9,,cycles:u,5,100.00,,\n"), None);
+        assert_eq!(instructions_beside_more(""), None);
+    }
+
+    #[test]
+    fn what_perf_printed_is_shown_under_the_counters_name() {
+        let dir = Path::new("/scratch/perf-load-apply");
+        assert_eq!(
+            counter_output(dir, "1,,instructions:u,2,100.00,,\n"),
+            "# counter perf-load-apply\n1,,instructions:u,2,100.00,,\n"
+        );
+        assert_eq!(
+            counter_output(dir, "1,,cycles:u"),
+            "# counter perf-load-apply\n1,,cycles:u\n"
+        );
+        assert_eq!(counter_output(Path::new("/"), ""), "# counter /\n\n");
     }
 
     #[test]

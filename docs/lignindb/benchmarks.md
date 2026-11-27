@@ -40,6 +40,31 @@ a count: that the run counted none, or, where the report says that `perf` was
 counting, that `perf` gave none. A gate that compares instructions passes the
 option.
 
+A measurement that looks for where a row's time goes can have the same `perf`
+count more than the instructions. With `LIGNIN_BENCH_PERF_EVENTS` set to
+events as `perf stat -e` takes them
+(`cycles:u,cycles:k,cache-misses,dTLB-load-misses`), a run with `--perf` gives
+them to `perf` after `instructions:u`, and what a `perf` printed is written to
+standard error, after a line `# counter NAME`, where the `perf` is stopped and
+its output is read; a write that fails is not tried again. A run starts one
+`perf` for each part it times under `perf` (`perf-load-apply`,
+`perf-load-commit`, `perf-create-apply`, `perf-warm-get` and so on; the
+applies of the load are among them, whose row carries no count), and one
+before those to see whether `perf` counts here (`perf-probe`). A run of two
+engines writes each engine's counters in the order the engines were named.
+No row and no column of the report is of those events. A row's count is read
+from the line of `perf`'s output that holds the word `instructions`, so a
+list with that word in it is refused at the start of the run. While the
+variable names events, a row has a count only where exactly one line of what
+`perf` printed holds the word and that line's event is named `instructions:u`.
+It has none where `perf` prints the word in a second line, of whatever event,
+and none where the only line with the word is named otherwise, as `perf`
+names the event on a processor whose counting units it lists apart
+(`cpu_core/instructions:u/`); a probe with no count refuses the run. `perf` prints with each count the share of the
+time the event was counted, and it scales a count whose share is under 100%;
+with more events than the processor has counters that can be the
+instructions' count too.
+
 `--set KEY=VALUE` changes one setting of LigninDB, or the harness's pacing
 of it, for the run ("LigninDB's settings" below).
 
