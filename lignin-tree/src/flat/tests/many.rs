@@ -873,3 +873,29 @@ fn a_root_with_one_child_takes_what_the_leaf_holds_in_one_image() {
     let found = records(&pages, &tree).into_iter().map(|(key, _)| key);
     assert_eq!(found.collect::<Vec<_>>().concat(), b"ac");
 }
+
+/// A leaf that is the only child of a branch which is not the root has no
+/// neighbour to be merged with: it is written by itself, once, and the
+/// branch above it is then looked at, as after a delete.
+#[test]
+fn a_leaf_that_is_alone_below_a_branch_is_written_by_itself() {
+    let (mut pages, tree) = by_hand(vec![
+        branch_image(1, 2, 2, &[(b"m", 3)]),
+        branch_image(2, 1, 4, &[]),
+        branch_image(3, 1, 5, &[(b"t", 6)]),
+        leaf_image(4, &[b"a", b"b", b"c"]),
+        leaf_image(5, &[b"n", b"o"]),
+        leaf_image(6, &[b"t", b"u"]),
+    ]);
+    let from = pages.leaf_pages.len();
+    let changes: Changes = [(b"b".to_vec(), None)].into();
+    let written = write(&mut pages, &tree, &changes);
+    assert_eq!((written.leaves, written.leaf_writes), (1, 1));
+    assert_eq!(pages.leaf_pages[from..], [page_id(4)]);
+    // The branch with one child went into the branch beside it, and the
+    // root took what that one holds.
+    pages.commit();
+    assert_eq!((leaves(&pages), pages.image(tree.root()).level()), (3, 1));
+    let found = records(&pages, &tree).into_iter().map(|(key, _)| key);
+    assert_eq!(found.collect::<Vec<_>>().concat(), b"acnotu");
+}
