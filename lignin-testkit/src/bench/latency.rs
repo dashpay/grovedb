@@ -318,10 +318,13 @@ pub struct LatencyReport {
     pub load_average_after: Option<[f64; 3]>,
     /// The name given to the build that ran.
     pub label: Option<String>,
-    /// The commit the harness was built from.
+    /// The commit the harness was built from, as `--commit` says it, and
+    /// without it the commit its source tree is at when the run is made,
+    /// which a tree that has moved since the build says wrongly.
     pub commit: Option<String>,
     /// The executable that made the run, by the BLAKE3 hash of its file,
-    /// where it could be read: two builds of one commit are two executables.
+    /// where it could be read: two builds of one commit are two
+    /// executables, and so is a build that a moved source tree misnames.
     pub executable: Option<String>,
     /// The GroveVersion applied.
     pub grove_protocol_version: u32,
