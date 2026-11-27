@@ -215,11 +215,16 @@ impl Segment {
     }
 
     /// Tells the file layer that the block at `location` is about to be
-    /// read, if it lies inside the segment's blocks.
+    /// read, if the range lies in the segment's file: after its header and
+    /// before the end of what is written of it, as far as this handle
+    /// knows. For a sealed segment that end is the file's, past its
+    /// blocks; whether a location is a block is the read's to say.
     fn will_read(&self, location: BlockLocation) {
         let end = self.end.load(Ordering::Acquire);
         let len = u64::from(location.len);
-        if location.offset >= DATA_START && location.offset.saturating_add(len) <= end {
+        let inside = location.offset >= DATA_START
+            && (location.offset.checked_add(len)).is_some_and(|after| after <= end);
+        if inside {
             self.file.will_read(location.offset, len);
         }
     }
@@ -852,15 +857,17 @@ impl SegmentStore {
 
     /// Tells the file layer that the blocks at `locations` are about to be
     /// read, each with [`Self::read`]: the blocks of one page's chain, which
-    /// were written at different times and lie apart. The file layer can
-    /// then bring them in together ([`VfsFile::will_read`]), and the reads
-    /// that follow wait for the device about once where they would wait
-    /// once for each block.
+    /// were written at different times and so, as a rule, lie apart. A
+    /// file layer that acts on the hint ([`VfsFile::will_read`]) can bring
+    /// them in at the same time, where the reads that follow would
+    /// otherwise wait for the device once for each block that is not in
+    /// memory.
     ///
-    /// It is advice: nothing is checked and nothing is reported. A location
-    /// that names no segment of the store, or lies outside its blocks, is
-    /// passed over here and refused by its read. One block alone is not
-    /// worth a call, and none is made for it.
+    /// It is advice: nothing is checked and nothing is reported, and
+    /// neither the file layer nor the system need act on it. A location
+    /// that names no segment of the store, or does not lie in its
+    /// segment's file, is passed over here and refused by its read. One
+    /// block alone is not worth a call, and none is made for it.
     pub fn will_read(&self, locations: &[BlockLocation]) {
         if locations.len() < 2 {
             return;

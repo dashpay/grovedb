@@ -15,9 +15,9 @@ direct_io = ["rustix/io_uring", "rustix/mm"]
 
 [dependencies]
 
-# The std backend's two calls that `std` does not have: the plain `fsync` of
-# macOS, and the hint of a read (`posix_fadvise` on Linux, `fcntl(F_RDADVISE)`
-# on macOS).
+# The std backend's calls that `std` does not have: on macOS the plain
+# `fsync` and `fstatfs`, and the hint of a read (`posix_fadvise` on Linux,
+# `fcntl(F_RDADVISE)` on macOS).
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { version = "1", features = ["fs"] }
 

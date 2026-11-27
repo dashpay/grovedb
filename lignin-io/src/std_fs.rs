@@ -2,9 +2,11 @@
 //!
 //! It is compiled for Linux and macOS only, the platforms LigninDB supports.
 //! It holds no `unsafe` code. Its system calls are `std`'s, and `std` picks
-//! them for each platform, but for two that `std` does not have, which come
-//! from `rustix`: the plain `fsync` of macOS, which [`Vfs::sync_together`]
-//! needs there, and the hint of a read. What runs on each:
+//! them for each platform, but for three that `std` does not have, which
+//! come from `rustix`: on macOS the plain `fsync` and the `fstatfs` that
+//! says whether a file is on an APFS volume, both of which
+//! [`Vfs::sync_together`] needs there, and on both platforms the hint of a
+//! read. What runs on each:
 //!
 //! | Operation | Linux | macOS |
 //! | --- | --- | --- |

@@ -111,8 +111,9 @@
 //!    it.
 //!    Where the chain has more than one block, the file layer is told of
 //!    all of them before the first is read ([`SegmentStore::will_read`]):
-//!    they were written at different times and lie apart, and a system
-//!    that knows of them brings them in together.
+//!    they were written at different times and so, as a rule, lie apart,
+//!    and a file layer that acts on the hint can bring them in at the
+//!    same time. Nothing of the load depends on it.
 //! 3. The base image's block is read ([`SegmentStore::read`], which verifies
 //!    its checksum) and its payload is written to the start of a frame. The
 //!    rest of the frame is set to zero. The image is checked in full
@@ -405,8 +406,8 @@ impl<'s> PageLoader<'s> {
         buffers: &mut LoadBuffers,
     ) -> Result<(), LoadError> {
         let LoadBuffers { chain, block, run } = buffers;
-        // The blocks of a chain lie apart: the file layer is told of all of
-        // them before the first is read.
+        // As a rule the blocks of a chain lie apart: the file layer is told
+        // of all of them before the first is read.
         self.segments.will_read(chain);
         let mut filled = None;
         for &location in chain.iter() {
