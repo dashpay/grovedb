@@ -117,13 +117,6 @@ for flag in --engine --background --blocks --label --commit --out --scratch --wa
 done
 [ "$(uname -s)" = Linux ] || refuse "the traces and the file systems want Linux"
 sudo -n true 2> /dev/null || refuse "sudo asks for a password"
-# The tracer stamps its lines with the monotonic clock by name, which
-# bpftrace has from 0.19 on: asked here, before anything is built.
-case " $parts " in *" traces "*)
-  sudo bpftrace -e 'BEGIN { printf("%llu\n", nsecs(monotonic)); exit(); }' > /dev/null 2>&1 ||
-    refuse "this bpftrace ($(bpftrace --version 2> /dev/null)) has no nsecs(monotonic): the traces want bpftrace 0.19 or later, and PARTS without traces makes the tables of the runs without one"
-  ;;
-esac
 [ -z "$(git -C "$repo" status --porcelain --untracked-files=no)" ] ||
   refuse "the checkout has changes, and the builds are of its commit"
 commit=$(git -C "$repo" rev-parse HEAD)
@@ -164,6 +157,17 @@ fi
 for part in $parts; do
   grep -qsw "$part" "$out/parts.txt" || echo "$part" >> "$out/parts.txt"
 done
+
+# The tracer stamps its lines with the monotonic clock by name, which
+# bpftrace has from 0.19 on. It is asked for here, before anything is built
+# and after the campaign's parts are written down: a campaign that was asked
+# for traces and cannot make them has said so, and its tables say that they
+# are missing.
+case " $parts " in *" traces "*)
+  sudo bpftrace -e 'BEGIN { printf("%llu\n", nsecs(monotonic)); exit(); }' > /dev/null 2>&1 ||
+    refuse "this bpftrace ($(bpftrace --version 2> /dev/null)) has no nsecs(monotonic): the traces want bpftrace 0.19 or later, and PARTS without traces makes the tables of the runs without one"
+  ;;
+esac
 
 has() {
   case " $parts " in *" $1 "*) return 0 ;; *) return 1 ;; esac
