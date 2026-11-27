@@ -189,7 +189,7 @@ for tool in $tools; do
 done
 [ -z "$missing" ] || refuse "not found:$missing"
 # The script keeps lists of paths in words.
-case "$out$BUILDS" in *[[:space:]]*) refuse "OUT and BUILDS take a path without a space: $out, $BUILDS" ;; esac
+case "$out$BUILDS" in *[[:space:]\\]*) refuse "OUT and BUILDS take a path without a space or a backslash: $out, $BUILDS" ;; esac
 # What a run is of is the campaign's to say, and its tables go by it.
 for flag in --engine --background --blocks --label --commit --out --scratch --watch-files --mark-blocks --parts; do
   case " ${LATENCY:-} " in *" $flag "*) refuse "LATENCY cannot give $flag: the campaign does" ;; esac
@@ -323,7 +323,8 @@ if has builds || has main || has filesystems || has traces; then
   # every build writes the paths of its checkout the same way, so a crate
   # that the patch does not reach comes out the same.
   for build in exp1 exp2; do
-    changed=$(comm -3 "$BUILDS/base/libraries" "$BUILDS/$build/libraries" | awk '{ print $1 }' | sort -u | tr '\n' ' ')
+    changed=$(LC_ALL=C comm -3 "$BUILDS/base/libraries" "$BUILDS/$build/libraries" | awk '{ print $1 }' |
+      LC_ALL=C sort -u | tr '\n' ' ')
     echo "$build differs from base in the libraries: ${changed:-none}" >> "$out/builds.txt.now"
   done
   if [ -s "$out/builds.txt" ]; then
@@ -368,7 +369,10 @@ emptied() { # emptied DIRECTORY
   local dir=${1:?} at
   own "$dir"
   at=$(realpath -m "$dir/scratch")
-  if findmnt -rn -o TARGET | awk -v at="$at" '$0 == at || index($0, at "/") == 1 { found = 1 } END { exit !found }'; then
+  # The mount points are read as the system escapes them, and a path with
+  # a space or a backslash in it would not be found among them.
+  case "$at" in *[[:space:]\\]*) refuse "$at has a space or a backslash in it, and nothing is removed under such a path" ;; esac
+  if findmnt -rn -o TARGET | at="$at" awk '$0 == ENVIRON["at"] || index($0, ENVIRON["at"] "/") == 1 { found = 1 } END { exit !found }'; then
     refuse "something is mounted at $at or below it: nothing is removed across a mount"
   fi
   rm -rf "$dir/scratch"

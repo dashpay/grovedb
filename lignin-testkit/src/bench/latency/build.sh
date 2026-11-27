@@ -74,14 +74,17 @@ cmp "$builds/Cargo.lock" "$to/src/Cargo.lock"
 cp "$to/target/release/lignin-bench" "$to/lignin-bench"
 git -C "$to/src" rev-parse HEAD > "$to/commit"
 sha256sum "$to/lignin-bench" | cut -d' ' -f1 > "$to/sha256"
-# Wherever under the target directory this cargo keeps them.
+# Wherever under the target directory this cargo keeps them. The list is in
+# the order of bytes, whatever the caller's language, and has its name only
+# once it is whole.
 find "$to/target/release" -name 'lib*.rlib' | while read -r library; do
   echo "$(basename "$library" | sed -E 's/^lib(.*)-[0-9a-f]+\.rlib$/\1/') $(sha256sum "$library" | cut -d' ' -f1)"
-done | sort > "$to/libraries"
-[ -s "$to/libraries" ] || {
+done | LC_ALL=C sort > "$to/libraries.part"
+[ -s "$to/libraries.part" ] || {
   echo "build.sh: no library of the build was found under $to/target/release" >&2
   exit 1
 }
+mv "$to/libraries.part" "$to/libraries"
 line="$name: commit $(cat "$to/commit"), sha256 $(cat "$to/sha256")"
 if [ -n "$patch" ]; then
   line="$line, which is $commit with $(basename "$patch") (sha256 $(cat "$to/patch-sha256"))"

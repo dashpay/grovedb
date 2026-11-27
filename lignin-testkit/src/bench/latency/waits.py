@@ -19,7 +19,8 @@ output, which `traced.sh` keeps as `TRACE.err`. Where that file is there its
 lines are counted, and what is printed says how many stacks were dropped and
 how many waits inside a block have no user stack at all. With `--marked` a
 trace is refused in which more stacks were dropped than two in a hundred of
-its waits.
+its waits, and one that has not that file beside it: what a campaign tables
+is held to the count. Without `--marked` a trace is read without it.
 
 **Whether the user stacks are whole** is asked of every wait inside a block
 that the trace has, of whatever length: a stack is whole where it reaches
@@ -494,7 +495,10 @@ def main():
                  "was given that bound (OFF_US)" % (arguments[0], trace.off_us, floor))
     if marked:
         refused = None
-        if not trace.measured:
+        if trace.dropped is None:
+            refused = ("has not the tracer's error output beside it (%s.err), which says how many stacks the "
+                       "tracer dropped" % os.path.basename(arguments[0]))
+        elif not trace.measured:
             refused = "has no line for the beginning and the end of the measured blocks"
         elif not trace.blocks:
             refused = "has no line for its blocks: the harness is run with --mark-blocks for a trace"
