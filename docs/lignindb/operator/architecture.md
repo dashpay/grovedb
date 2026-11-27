@@ -198,6 +198,9 @@ its version, and able to take writes of its own that its source does not
 see. It keeps the files it shares with the live database, so their disk
 space comes back when it is deleted
 ([backup and full disk](backup-and-full-disk.md#back-up-a-running-node)).
+An open checkpoint holds a descriptor for each of its segments, value-log
+files and log files, as the live database does, so each one a node keeps open counts against the node's
+limit of open files ([tuning](tuning.md#open-files)).
 
 ## Recovery: every open
 

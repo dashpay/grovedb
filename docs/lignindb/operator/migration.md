@@ -851,6 +851,21 @@ or with `LigninEngine::open_with(path, &options)`
 ([engine.md](../engine.md#an-engine-chosen-at-the-open)); the options are
 those of [tuning](tuning.md).
 
+**Set the limit of open files first.** A LigninDB database holds a file
+open for each of its segments, value-log files and log files for as long
+as it is open, and so does each checkpoint the node opens. A node that
+keeps `k` checkpoints open needs about (k + 2) × (F + 30) descriptors
+beside its own, where `F` is the count on the line `live files: …` that
+the block below prints, and 30 is an estimate for an ordinary load: a
+database of 1 GB with three checkpoints kept open needs about 1,100,
+more than the soft limit a process starts with on many systems (1,024
+on most Linux systems, 256 on macOS), and the count grows with the
+database. Set the limit of the node's process, its service or its
+container, as [tuning](tuning.md#the-limit-to-set) says, before the
+first start. An open that meets the limit fails with an error that names
+the file or directory it could not open and the system's reason
+([messages](messages.md#at-the-limit-of-open-files)).
+
 **Before the start**, check, as the node's account, that the path the
 application's configuration names is the directory that step 7
 verified: set `NODE_DB` to that path (the block takes `TARGET` where it

@@ -578,6 +578,25 @@ defect to file with the survey. It is damage of the RocksDB database
 too, which the node is not to go back to before it is restored (the
 runbook's step 11).
 
+## At the limit of open files
+
+A database holds a descriptor for each of its segments, value-log files
+and log files while it is open ([tuning](tuning.md#open-files)), so a process that has too many open
+meets the system's limit. The system's words are then "Too many open
+files (os error 24)", on Linux and on macOS, at the end of the message of
+the file or the directory that could not be opened. A node logged:
+
+```text
+lignindb: recovery: the value log was not recovered: cannot open <path>/val/00021636.val: Too many open files (os error 24)
+```
+
+| Message | What it means | What to do | Code |
+| --- | --- | --- | --- |
+| `recovery: …` followed by `recovery could not go on: …`, `the value log was not recovered: …`, `the table checkpoint did not load: …` or `the log was not recovered: …`, and then `cannot … …: …` | an open of a database or of a checkpoint met the limit at the file or directory it names. Before its replay, the open opens the segments and value-log files its manifest names, which changes none of them nor the manifest; past them, as it replays the log and begins its own, it can have written a new manifest and segments of what it replayed, and left the session's first log file with its header alone, which the next open removes: a state the next open starts from, as after a crash. A database the process has open already is not touched | raise the limit of the node's process as [tuning](tuning.md#the-limit-to-set) says, restart it, and open again | `lignindb/src/db/error.rs`, `lignin-store/src/recovery/error.rs`, `lignin-store/src/segment/error.rs`, `lignin-store/src/values/error.rs`, `lignin-store/src/wal/error.rs` |
+| `cannot … …: …` with the path of the database's directory | the same, where the open met the limit as it listed the directory | as above | `lignindb/src/db/error.rs` |
+| `could not … …: …` | a creation of a checkpoint met the limit, and the live database goes on. Where it failed before it gave the checkpoint its name, nothing is at its path, and what was built can be left under `path.creating`, which the next creation takes over; where it failed in the syncs after that, the whole checkpoint can be at its path | raise the limit and restart the node; look at both names, as [At a checkpoint](#at-a-checkpoint) says, before you make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
+| `write-back: …` | the last error of the background work in `Db::stats`: write-back met the limit as it made a segment, a value-log file, a log file, a table checkpoint or a manifest. It tries again, and the session takes writes, but it writes back only into the files it has open until descriptors are free | raise the limit and restart the node | `lignindb/src/db/store.rs`, `lignin-store/src/flush/error.rs` |
+
 ## What this chapter leaves out
 
 - Errors that GroveDB's operations give for what a caller asked (a path
