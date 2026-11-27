@@ -142,13 +142,21 @@ fn a_command_of_the_benchmark_is_read_in_every_place_it_can_be() {
             (false, "unknown option --in-a-span".to_owned()),
         ]
     );
-    for redirection in ["> out", ">> out", "&> out", "&>> out", "2>&1 > out", "< in"] {
-        let line = format!("lignin-bench run --keep {redirection} --after-a-redirection 2");
-        assert_eq!(
-            parsed(&words(&line)).err().as_deref(),
-            Some("unknown option --after-a-redirection"),
-            "{line}"
-        );
+    for line in [
+        "lignin-bench run --keep > out --after-a-redirection 2",
+        "lignin-bench run --keep >> out --after-a-redirection 2",
+        "lignin-bench run --keep &> out --after-a-redirection 2",
+        "lignin-bench run --keep &>> out --after-a-redirection 2",
+        "lignin-bench run --keep 2>&1 > out --after-a-redirection 2",
+        "lignin-bench run --keep < in --after-a-redirection 2",
+        "lignin-bench run --reopens 1&>out --after-a-redirection 2",
+    ] {
+        let found = bench_commands(&format!("```sh\n{line}\n```\n"));
+        let faults: Vec<_> = (found.iter())
+            .map(|found| (found.run, parsed(&found.words).err()))
+            .collect();
+        let fault = "unknown option --after-a-redirection".to_owned();
+        assert_eq!(faults, [(true, Some(fault))], "{line}");
     }
 }
 

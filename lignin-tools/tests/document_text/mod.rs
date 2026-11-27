@@ -118,7 +118,11 @@ pub fn code_of(line: &str) -> &str {
     let mut begins_word = true;
     for (at, c) in line.char_indices() {
         match c {
-            _ if escaped => escaped = false,
+            _ if escaped => {
+                escaped = false;
+                begins_word = false;
+                continue;
+            }
             '\\' if !single => escaped = true,
             '\'' if !double => single = !single,
             '"' if !single => double = !double,
@@ -162,8 +166,9 @@ pub fn words(line: &str) -> Vec<String> {
                 }
             }
             '>' | '<' | '&' if c != '&' || chars.peek() == Some(&'>') => {
-                // The number of a descriptor before it is no word either.
-                if in_word && !word.chars().all(|c| c.is_ascii_digit()) {
+                // The number of a descriptor before it is no word either;
+                // `&>` takes none, so a number before it is a word.
+                if in_word && (c == '&' || !word.chars().all(|c| c.is_ascii_digit())) {
                     words.push(std::mem::take(&mut word));
                 }
                 word.clear();

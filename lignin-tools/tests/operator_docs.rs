@@ -1402,6 +1402,7 @@ fn a_comment_begins_where_the_shell_begins_it() {
         ),
         ("echo \"it's\" # yes", "echo \"it's\" "),
         ("# all of it", ""),
+        ("echo report\\ #1 && true", "echo report\\ #1 && true"),
     ] {
         assert_eq!(code_of(line), code, "{line}");
     }
