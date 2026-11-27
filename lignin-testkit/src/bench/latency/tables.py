@@ -49,7 +49,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The schema of a report of `lignin-bench latency` as it paces a run now.
-SCHEMA = "lignin-bench-latency/3"
+SCHEMA = "lignin-bench-latency/4"
 PARTS = ("its wait for the commit lock", "its wait for the lock on the counts of values",
          "its append to the log", "placing values after it", "reclaiming versions after it",
          "its wait for room in write-back")
