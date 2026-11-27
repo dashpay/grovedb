@@ -52,7 +52,21 @@
 # Before part 2, where traces are asked for, a traced run of 1,000 blocks of
 # each engine is made and read, so that a tracer that cannot attach here, or
 # user stacks that come out cut short, end the campaign in its first minutes
-# and not after its runs.
+# and not after its runs. That the stacks are whole wants twenty waits inside
+# the blocks to show it; where the short run has fewer, one of 6,000 blocks
+# is made, and where that has too few as well the script says that the
+# question is open on this machine, and goes on.
+#
+# **What the script touches.** One call at a time has OUT, and one a
+# directory of builds: each is locked for as long as the script runs. A
+# campaign is of one host and of one file system under OUT (`host-id.txt`):
+# a call from another is refused, and so is a report made elsewhere by the
+# tables. Under OUT/mnt the script removes and trims only on a file system
+# it has verified to be its own: mounted at that very directory, of the kind
+# it makes there, from a loop device over its own file under OUT/fs. What a
+# stopped call left mounted is verified the same way, used, and unmounted
+# when the script ends; a mount it does not know is refused and left alone.
+# `build.sh` replaces only a directory that it made.
 #
 # The tables that an experiment is held by are of parts 2 and 3 and need no
 # trace. Where a traced run fails, or its waits cannot be placed, the script
@@ -89,21 +103,34 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(git -C "$here" rev-parse --show-toplevel)
 out=${1:-$PWD/perf07f1}
-mkdir -p "$out"
-out=$(cd "$out" && pwd)
-blocks=${BLOCKS:-100000} rounds=${ROUNDS:-2} backgrounds=${BACKGROUNDS:-quiet heavy}
-trace_blocks=${TRACE_BLOCKS:-30000} loop_gb=${LOOP_GB:-64}
-parts=${PARTS:-builds main filesystems traces tables}
-
 refuse() {
   echo "campaign.sh: $*" >&2
   exit 1
 }
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+# One call at a time has a campaign's directory: the lock is taken before
+# anything in it is read, written or removed, and goes with the script.
+command -v flock > /dev/null || refuse "not found: flock"
+exec 9> "$out/campaign.lock"
+flock -n 9 || refuse "another call of campaign.sh has $out: a campaign's directory is one call's at a time"
+blocks=${BLOCKS:-100000} rounds=${ROUNDS:-2} backgrounds=${BACKGROUNDS:-quiet heavy}
+trace_blocks=${TRACE_BLOCKS:-30000} loop_gb=${LOOP_GB:-64}
+parts=${PARTS:-builds main filesystems traces tables}
+[ -n "${parts// /}" ] || refuse "PARTS names no part"
+for part in $parts; do
+  case "$part" in
+    builds | main | filesystems | traces | tables) ;;
+    *) refuse "PARTS names $part, and the parts are builds, main, filesystems, traces and tables" ;;
+  esac
+done
+
 # What the campaign is asked. It is said before anything else is looked at
 # or set: up to here the script has found its checkout, which wants git, and
-# made OUT, without which there is no campaign to speak of, and nothing more.
+# made OUT and taken its lock, and nothing more.
 commit=$(git -C "$repo" rev-parse HEAD) || refuse "$repo is no checkout of GroveDB"
-asked="commit $commit
+asked="directory $out
+commit $commit
 blocks $blocks
 rounds $rounds
 backgrounds $backgrounds
@@ -134,8 +161,21 @@ export PATH=$PATH:/usr/sbin:/sbin
 ulimit -n 65536 2> /dev/null ||
   refuse "the limit of open files is $(ulimit -n) and cannot be raised to 65536, which the engines want"
 
+# A directory of builds is one call's at a time as well, whichever campaign
+# it serves.
+case " $parts " in *" builds "* | *" main "* | *" filesystems "* | *" traces "*)
+  mkdir -p "$BUILDS"
+  exec 8> "$BUILDS/builds.lock"
+  flock -n 8 || refuse "another call of campaign.sh has the builds under $BUILDS"
+  ;;
+esac
+# The switches of the experiments are the campaign's to set: a run under one
+# that the caller's environment has would be another run.
+switches=$(env | grep -E '^LIGNIN_[A-Za-z0-9_]*=' | cut -d= -f1 | tr '\n' ' ' || true)
+[ -z "$switches" ] || refuse "the environment has $switches, and the campaign sets the switches of its experiments itself: unset them"
+
 missing=""
-tools="cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt blkid fstrim"
+tools="cargo python3 sha256sum sudo mkfs.xfs mkfs.ext4 losetup findmnt blkid fstrim nproc"
 case " $parts " in *" traces "*) tools="$tools bpftrace" ;; esac
 for tool in $tools; do
   command -v "$tool" > /dev/null || missing="$missing $tool"
@@ -281,10 +321,34 @@ if has builds || has main || has filesystems || has traces; then
   fi
 fi
 
+# The file systems of parts 3 and 4, in files under OUT: those this call has
+# verified to be the campaign's or has mounted itself, and their loop
+# devices. What is in the lists is unmounted and freed when the script ends.
+mounted="" devices=""
+unmount() {
+  local dir device
+  for dir in $mounted; do sudo umount "$dir" 2> /dev/null || true; done
+  for device in $devices; do sudo losetup -d "$device" 2> /dev/null || true; done
+}
+trap unmount EXIT
+# Nothing is removed or trimmed under a directory for a file system that this
+# call has not verified.
+own() { # own DIRECTORY
+  case "$1" in
+    "$out/mnt/"*)
+      case " $mounted " in
+        *" $1 "*) ;;
+        *) refuse "$1 was not verified to be a file system of this campaign: nothing is removed under it" ;;
+      esac
+      ;;
+  esac
+}
+
 # Removes a run's database, and gives what it took of a file system of part 3
 # back to the file that holds it.
 cleared() {
   local dir=${1:?}
+  own "$dir"
   rm -rf "$dir/scratch"
   case "$dir" in
     "$out/mnt/"*)
@@ -337,6 +401,30 @@ mount_of() { # mount_of DIRECTORY
   echo "$of"
 }
 
+# The host a campaign is of, and the file system its runs are on: a campaign
+# is of one of each. The first call that makes a run writes it down, a later
+# call that makes one is held to it, and every run says it beside its report,
+# for the tables to hold each to the campaign's.
+host_now() {
+  local under
+  under=$(mount_of "$out") || return 1
+  echo "kernel $(uname -srm)"
+  echo "machine $(sha256sum /etc/machine-id 2> /dev/null | cut -c1-16)"
+  echo "processors $(nproc)"
+  echo "memory $(awk '/^MemTotal/ { print $2, $3 }' /proc/meminfo)"
+  echo "the file system of the runs: $under"
+}
+case " $parts " in *" main "* | *" filesystems "* | *" traces "*)
+  host=$(host_now) || exit 1
+  if [ -s "$out/host-id.txt" ]; then
+    [ "$(cat "$out/host-id.txt")" = "$host" ] ||
+      refuse "$out was begun on another host or another file system, which $out/host-id.txt names, and this one is: $(echo "$host" | tr '\n' ';'): a campaign is of one host; runs made elsewhere are another campaign, with its own controls"
+  else
+    echo "$host" > "$out/host-id.txt"
+  fi
+  ;;
+esac
+
 # Whether a run that is there was made by the build that would make it now
 # and on the mount that is there now: a campaign is of one set of builds and
 # of one mount of each file system, and a run says which made it.
@@ -357,8 +445,10 @@ run() {
     return 0
   fi
   for engine in $engines; do flags="$flags --engine $engine"; done
+  own "$dir"
   rm -rf "$dir/scratch"
   mount_of "$dir" > "$file.mount" || exit 1
+  cp "$out/host-id.txt" "$file.host"
   # shellcheck disable=SC2086
   env $settings "$BUILDS/$build/lignin-bench" latency --scratch "$dir/scratch" $flags \
     --background "$background" --blocks "$blocks" --label "$label" \
@@ -370,27 +460,43 @@ run() {
   say "$(basename "$file"): $(grep -E '^\| [^B-]' "$file.txt" | tr '\n' ' ')"
 }
 
-# Before the runs: that a traced run can be made here and its waits placed.
-# Every time a thread is off a processor for 20 µs counts, so that a short
-# run has enough of them to say.
+# Before the runs: that a traced run can be made here, that its waits can be
+# placed, and that its user stacks are whole. The last wants waits inside the
+# blocks to show it, twenty of them (`waits.py --stacks`): a short run is
+# made first, in which every time the thread is off a processor for 20 µs
+# counts, and where that has too few, a longer one in which 5 µs count. A
+# trace whose stacks are cut short ends the campaign here. Only a run that
+# showed whole stacks leaves the file by which a later call skips this; where
+# both runs have too few waits to say, the script says that it is
+# inconclusive and goes on, and every traced run says of its own stacks what
+# it has.
 preflight() { # preflight ENGINE
-  local file=$out/preflight/$1 waits
+  local file=$out/preflight/$1 blocks off status said
   [ -e "$file.read" ] && return 0
   mkdir -p "$out/preflight" "$out/native"
-  rm -rf "$out/native/scratch"
-  OFF_US=20 BIN="$BUILDS/base/lignin-bench" "$here/traced.sh" "$file" "$out/native/scratch" \
-    --engine "$1" --background heavy --blocks 1000 --label preflight \
-    --commit "$commit" 2> "$file.err" || failed "$file"
-  rm -rf "$out/native/scratch"
-  python3 "$here/waits.py" --marked "$file.trace" 20 > "$file.waits.md" ||
-    refuse "the trace of a short run of $1 cannot be read, so no traced run would be: $file.trace"
-  touch "$file.read"
-  waits=$(sed -n '1s/.*: \([0-9]*\) in the measured blocks.*/\1/p' "$file.waits.md")
-  if [ "${waits:-0}" -ge 10 ]; then
-    say "a traced run of $1 can be made here, and its $waits waits can be placed"
-  else
-    say "a traced run of $1 can be made here; it had ${waits:-0} waits, too few to say whether stacks are whole"
-  fi
+  for blocks in 1000 6000; do
+    off=20
+    [ "$blocks" = 1000 ] || off=5
+    rm -rf "$out/native/scratch"
+    OFF_US=$off BIN="$BUILDS/base/lignin-bench" "$here/traced.sh" "$file" "$out/native/scratch" \
+      --engine "$1" --background heavy --blocks "$blocks" --label preflight \
+      --commit "$commit" 2> "$file.err" || failed "$file"
+    rm -rf "$out/native/scratch"
+    status=0
+    python3 "$here/waits.py" --marked --stacks "$file.trace" "$off" > "$file.waits.md" 2> "$file.waits.err" ||
+      status=$?
+    said=$(grep -m1 "^User stacks:" "$file.waits.md" || true)
+    case "$status" in
+      0)
+        touch "$file.read"
+        say "a traced run of $1 can be made here, and its waits can be placed. $said"
+        return 0
+        ;;
+      4) say "a traced run of $1 of $blocks blocks does not say whether user stacks are whole. $said" ;;
+      *) refuse "the trace of a short run of $1 cannot be used, so no traced run would be: $(tail -1 "$file.waits.err")" ;;
+    esac
+  done
+  say "whether user stacks are whole for $1 on this machine is inconclusive: the traced runs are made all the same, and each says of its own stacks what it has"
 }
 if has traces && { has main || has filesystems; }; then
   preflight lignindb
@@ -432,34 +538,70 @@ if has main; then
     "covered|exp2|$out/native|$covered"
 fi
 
-# The file systems of parts 3 and 4, in files under OUT. What this run of the
-# script mounted, it unmounts, and it frees the loop devices it took.
-mounted="" devices=""
-unmount() {
-  local dir device
-  for dir in $mounted; do sudo umount "$dir" 2> /dev/null || true; done
-  for device in $devices; do sudo losetup -d "$device" 2> /dev/null || true; done
+# What is mounted at a directory of the campaign is used only where it is the
+# campaign's own: one file system, at that very directory, of the kind the
+# campaign makes there, from a loop device over the campaign's own file,
+# which the campaign made. Anything else is another's: the script refuses
+# it, and neither removes anything under it nor trims it. Prints the loop
+# device; returns 2 where nothing is mounted there.
+own_mount() { # own_mount NAME KIND
+  local dir=$out/mnt/$1 image=$out/fs/$1.img found source kind back
+  found=$(findmnt -rn -o SOURCE,FSTYPE --mountpoint "$dir") || return 2
+  [ "$(echo "$found" | wc -l)" -eq 1 ] ||
+    refuse "more than one file system is mounted at $dir: unmount them, or give the campaign another directory"
+  read -r source kind <<< "$found"
+  [ "$kind" = "$2" ] ||
+    refuse "$dir holds a file system of the kind $kind, where the campaign makes $2: it is not the campaign's, and is left as it is"
+  case "$source" in
+    /dev/loop*) ;;
+    *) refuse "$dir is mounted from $source and not from a file of the campaign: it is left as it is" ;;
+  esac
+  back=$(sudo losetup -n -O BACK-FILE "$source" 2> /dev/null) || back=""
+  [ -f "$image.made" ] && [ -n "$back" ] && [ "$back" -ef "$image" ] ||
+    refuse "$dir is mounted from $source, which is over ${back:-no file} and not over $image as the campaign made it: it is left as it is"
+  echo "$source"
 }
-trap unmount EXIT
 filesystem() { # filesystem NAME MKFS MOUNT-OPTIONS
-  local dir=$out/mnt/$1 image=$out/fs/$1.img device
+  local dir=$out/mnt/$1 image=$out/fs/$1.img kind=ext4 device stale status=0 option
+  [ "$1" != xfs ] || kind=xfs
   mkdir -p "$dir" "$out/fs"
-  if ! findmnt -n "$dir" > /dev/null; then
-    # The file system is made on the loop device and not in the file: with
-    # direct I/O the device has the sectors of the disk under OUT, and a
-    # file system made for other sectors is refused at its mount.
-    [ -f "$image.made" ] || { rm -f "$image" && truncate -s "${loop_gb}G" "$image"; }
-    device=$(sudo losetup --find --show --direct-io=on "$image")
-    devices="$devices $device"
-    if [ ! -f "$image.made" ]; then
-      # shellcheck disable=SC2086
-      sudo $2 "$device" > /dev/null 2>&1 || refuse "$2 failed for $1"
-      touch "$image.made"
-    fi
-    sudo mount ${3:+-o "$3"} "$device" "$dir" || refuse "$1 could not be mounted"
-    mounted="$mounted $dir"
-    sudo chown "$(id -u):$(id -g)" "$dir"
-  fi
+  device=$(own_mount "$1" "$kind") || status=$?
+  case "$status" in
+    0)
+      # Left mounted by a call that was stopped, and the campaign's own: it
+      # is used, and unmounted and freed with the rest when this call ends.
+      mounted="$mounted $dir" devices="$devices $device"
+      ;;
+    2)
+      # A loop device that a stopped call left over the campaign's file is
+      # freed before another is taken.
+      for stale in $(sudo losetup -n -O NAME -j "$image" 2> /dev/null); do
+        sudo losetup -d "$stale" 2> /dev/null || true
+      done
+      # The file system is made on the loop device and not in the file: with
+      # direct I/O the device has the sectors of the disk under OUT, and a
+      # file system made for other sectors is refused at its mount.
+      [ -f "$image.made" ] || { rm -f "$image" && truncate -s "${loop_gb}G" "$image"; }
+      device=$(sudo losetup --find --show --direct-io=on "$image")
+      devices="$devices $device"
+      if [ ! -f "$image.made" ]; then
+        # shellcheck disable=SC2086
+        sudo $2 "$device" > /dev/null 2>&1 || refuse "$2 failed for $1"
+        touch "$image.made"
+      fi
+      sudo mount ${3:+-o "$3"} "$device" "$dir" || refuse "$1 could not be mounted"
+      mounted="$mounted $dir"
+      own_mount "$1" "$kind" > /dev/null || refuse "$dir is not what the campaign has just mounted there"
+      ;;
+    *) exit 1 ;;
+  esac
+  for option in ${3//,/ }; do
+    case ",$(findmnt -rn -o OPTIONS --mountpoint "$dir")," in
+      *",$option,"*) ;;
+      *) refuse "$dir is mounted without $option, with which the campaign mounts it" ;;
+    esac
+  done
+  sudo chown "$(id -u):$(id -g)" "$dir"
   grep -q "^$1: " "$out/host.txt" || describe "$1" "$dir"
 }
 # ext4 is made with its inode tables and its journal written out: left to
@@ -489,14 +631,19 @@ traced() {
     return 0
   fi
   [ "$engine" = lignindb ] && watch="--watch-files"
+  own "$dir"
   rm -rf "$dir/scratch"
+  # What the run is of is written before it: the file that says it was made
+  # is the last, and is `traced.sh`'s, after the trace has been read.
+  rm -f "$file.ok"
   mount_of "$dir" > "$file.mount" || exit 1
+  cp "$out/host-id.txt" "$file.host"
+  cp "$BUILDS/$build/sha256" "$file.build"
   # shellcheck disable=SC2086
   env $settings BIN="$BUILDS/$build/lignin-bench" THREADS="$threads" "$here/traced.sh" "$file" \
     "$dir/scratch" --engine "$engine" --background "$background" --blocks "$trace_blocks" \
     $watch --parts --label "$(basename "$file")" --commit "$(cat "$BUILDS/$build/commit")" ${LATENCY:-} \
     2> "$file.err" || status=$?
-  cp "$BUILDS/$build/sha256" "$file.build"
   cleared "$dir"
   # The runs that the experiments are held by are made: a traced run that
   # failed is said, the others are made, and the tables say which has none.
@@ -537,4 +684,8 @@ if has tables; then
     refuse "the tables that could be made are in $out/tables.md, and it says there what is missing and why${traces_failed:+; these traced runs failed:$traces_failed}"
 fi
 [ -z "$traces_failed" ] || refuse "these traced runs failed:$traces_failed"
-echo "finished: the tables are in $out/tables.md"
+if has tables; then
+  echo "finished the parts $parts: the tables are in $out/tables.md"
+else
+  echo "finished the parts $parts: this call was asked for no tables, which PARTS=tables makes of what is there"
+fi

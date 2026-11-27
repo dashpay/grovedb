@@ -13,6 +13,10 @@
 # C and C++: the trace of `trace.bt` reads a user stack by them, and on a
 # target that leaves them out by default a stack ends at its first frame.
 #
+# A build that is there is replaced only if this script made it: it leaves
+# `made-by-build.sh` in a directory it makes, and refuses to remove one that
+# is not empty and has not that file.
+#
 # The first build of a $BUILDS leaves its lock file there and every later
 # one is made with it, so that two builds differ in the crates their commits
 # changed and in nothing that was resolved anew between them.
@@ -23,8 +27,13 @@ builds=${BUILDS:-$HOME/builds}
 [ -z "$patch" ] || patch=$(cd "$(dirname "$patch")" && pwd)/$(basename "$patch")
 to=${builds:?}/${name:?}
 mkdir -p "$builds"
+if [ -e "$to" ] && [ ! -f "$to/made-by-build.sh" ] && [ -n "$(ls -A "$to" 2> /dev/null)" ]; then
+  echo "build.sh: $to is there and this script did not make it: it is left as it is" >&2
+  exit 1
+fi
 rm -rf "$to"
 mkdir -p "$to"
+touch "$to/made-by-build.sh"
 git clone -q --no-hardlinks "$repo" "$to/src"
 git -C "$to/src" checkout -q --detach "$commit"
 if [ -n "$patch" ]; then
