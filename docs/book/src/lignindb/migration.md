@@ -913,9 +913,13 @@ holds none or is not there. What becomes of a directory it hands over
 is RocksDB's to answer, as under any other name: its open of a database
 makes one where it finds none to be there, and fails where it refuses
 what it finds, and its open of a checkpoint makes none. The block is
-stricter: it refuses the name whatever the directory
-holds, so that the node's database is not kept under a name that
-LigninDB removes. It takes the name after it has written the path again
+stricter: it refuses the name whatever the directory holds, so that the
+node's database is not kept under a name that LigninDB removes. Its
+rule is wider than LigninDB's on purpose. LigninDB takes a directory
+only where it is listed under the path's name with `.creating` added,
+letter for letter: the cleanup of a checkpoint at `backup` leaves a
+`backup.CREATING` that is there alone. The block refuses every case of
+the letters all the same. It takes the name after it has written the path again
 with every link followed, so a path that ends in `/.` is judged by the
 directory's name.
 
