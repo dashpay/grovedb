@@ -715,6 +715,26 @@ fn a_choice_of_lignindb_looks_at_the_file_system_of_its_options() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "CURRENT");
     assert!(sim.read_dir(&target).is_err());
+
+    // So is a listing of that directory itself that fails once, after the
+    // one of the directory above.
+    let listing = OpSet::of(&[OpKind::ReadDir]);
+    sim.add_rule(FaultRule::new(Fault::Eio).on(listing).skip(1));
+    match db.create_checkpoint(&target) {
+        Err(Error::StorageError(StorageError::StorageError(words))) => {
+            let beside = beside.display().to_string();
+            assert!(
+                words.contains(&format!("the directory {beside} could not be listed")),
+                "{words}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    sim.clear_rules();
+    let listed = sim.read_dir(&beside).expect("a listing");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "CURRENT");
+    assert!(sim.read_dir(&target).is_err());
 }
 
 /// Asserts that a creation of a checkpoint at `target` was refused because
@@ -2042,6 +2062,24 @@ fn lignindb_makes_and_removes_no_checkpoint_beside_a_database_of_rocksdb() {
         EitherEngine::delete_checkpoint_of(EngineKind::Lignin, &target)
             .expect("a removal by LigninDB");
         assert!(!beside.exists());
+    }
+
+    // A checkpoint under a name that ends in `.creating` in another
+    // spelling than the one LigninDB builds under. LigninDB removes it as
+    // a database, and takes what is beside it under that name with
+    // `.creating` added: a database of RocksDB there refuses each removal,
+    // and both are as they were.
+    let dir = tempfile::tempdir().expect("a directory");
+    let (live, target) = (dir.path().join("live"), dir.path().join(RESERVED[1]));
+    let beside = dir.path().join(format!("{}.creating", RESERVED[1]));
+    filled(&live, EngineKind::Lignin, v);
+    placed(&open(&live, EngineKind::Lignin), &target);
+    filled_by_rocksdb_itself(&beside, v);
+    let (at_the_target, before) = (files(&target), files(&beside));
+    for (which, remove) in removals {
+        beside_a_database_of_rocksdb(remove(&target), &target);
+        assert_eq!(files(&target), at_the_target, "{which}");
+        assert_eq!(files(&beside), before, "{which}");
     }
 }
 
