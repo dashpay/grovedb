@@ -440,6 +440,7 @@ pub(super) mod written {
         static LEAVES: Cell<u64> = const { Cell::new(0) };
         static PIECES: Cell<u64> = const { Cell::new(0) };
         static FAIL_AFTER: Cell<Option<u64>> = const { Cell::new(None) };
+        static FAILED_AT: Cell<Option<u64>> = const { Cell::new(None) };
     }
 
     pub(super) fn count() {
@@ -453,12 +454,21 @@ pub(super) mod written {
         FAIL_AFTER.set(Some(images));
     }
 
+    /// What [`leaf_images_written`] said when the fault that a test armed
+    /// ([`fail_leaf_image_after`]) was last made on this thread, taken
+    /// once: how many images the thread had written before the one that
+    /// failed. `None` where no fault was made since it was last taken.
+    pub fn leaf_images_at_the_fault() -> Option<u64> {
+        FAILED_AT.take()
+    }
+
     /// Whether the image that is about to be written is the one a test
     /// has fail.
     pub(super) fn fails() -> bool {
         match FAIL_AFTER.get() {
             Some(0) => {
                 FAIL_AFTER.set(None);
+                FAILED_AT.set(Some(LEAVES.get()));
                 true
             }
             Some(left) => {

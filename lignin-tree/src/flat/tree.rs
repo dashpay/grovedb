@@ -975,24 +975,27 @@ impl FlatTree {
         // one of them alone costs none. A key that gets a value is judged
         // by the image that is taken: until then a step of background
         // work can take its record out.
-        let absent = {
+        // The leaf is read for that only where no change is a put: one
+        // that is takes the leaf whatever it holds.
+        let deletes = changes.iter().all(|(_, value)| value.is_none());
+        let absent = deletes && {
             let frame = pages.page(page)?;
             let leaf = leaf(&frame, page)?;
-            let absent = |key| leaf.search(key).is_err();
-            (changes.iter()).all(|&(key, value)| value.is_none() && absent(key))
+            (changes.iter()).all(|&(key, _)| leaf.search(key).is_err())
         };
         if absent {
             return Ok(false);
         }
         let old = pages.take(page)?;
         let leaf = leaf(&old, page)?;
-        let entries = leaf_entries(&leaf);
-        let mut now = Vec::with_capacity(entries.len() + changes.len());
+        // The entries of the leaf as it was taken and as it is written,
+        // which are made at the first change that changes something: a
+        // leaf that no change changes is taken, and nothing is built of it.
+        let mut built: Option<(Vec<LeafEntry<'_>>, Vec<LeafEntry<'_>>)> = None;
         // Where the entries that are not yet in `now` begin, the positions
         // in `now` of the first and the last entry that are new, whether
         // two new ones stand apart, and whether an entry left.
         let (mut from, mut added, mut apart, mut removed) = (0, None, false, false);
-        let mut changed = false;
         for &(key, value) in changes {
             // What the leaf holds is read from the image that was taken:
             // a step of background work can have taken entries out since
@@ -1013,12 +1016,16 @@ impl FlatTree {
             if same {
                 continue;
             }
+            let (entries, now) = built.get_or_insert_with(|| {
+                let entries = leaf_entries(&leaf);
+                let now = Vec::with_capacity(entries.len() + changes.len());
+                (entries, now)
+            });
             now.extend_from_slice(entries.get(from..slot).unwrap_or_default());
             from = slot + usize::from(found);
             if let Some(entry) = entries.get(slot).filter(|_| found) {
                 drop_held(pages, page, entry.value)?;
             }
-            changed = true;
             let Some(value) = value else {
                 removed = true;
                 continue;
@@ -1043,10 +1050,10 @@ impl FlatTree {
             let key = KeyRef::Whole(key);
             now.push(LeafEntry { key, value });
         }
-        now.extend_from_slice(entries.get(from..).unwrap_or_default());
-        if !changed {
+        let Some((entries, mut now)) = built else {
             return Ok(false);
-        }
+        };
+        now.extend_from_slice(entries.get(from..).unwrap_or_default());
 
         let capacity = self.config.capacity();
         let layout = Layout::of(&now);

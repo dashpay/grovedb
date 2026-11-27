@@ -448,10 +448,13 @@ fn a_settling_that_fails_after_a_leaf_leaves_nothing_of_its_batch() {
         matches!(&failed, Err(TxnError::Directory(error)) if flat(error)),
         "{failed:?}"
     );
-    // The fault is of the second image, so one leaf of the directory was
-    // written before it. The images since are that one and those of the
-    // frames, which were made again from the writes before the batch.
-    assert!(leaf_images_written() - images >= 1);
+    // The fault was made after one image, of a leaf of the directory: the
+    // count is taken where the write fails, before the frames are made
+    // again from the writes before the batch.
+    let at_the_fault = lignin_tree::flat::leaf_images_at_the_fault();
+    assert_eq!(at_the_fault, Some(images + 1), "one leaf was written");
+    let text = failed.expect_err("the batch fails").to_string();
+    assert!(text.contains("whose write a test has fail"), "{text}");
 
     // What was taken before is there, and nothing of the batch is.
     world.check(&tx);
