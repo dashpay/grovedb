@@ -865,9 +865,10 @@ impl SegmentStore {
         if locations.len() < 2 {
             return;
         }
-        let segments = self.segments();
+        // As a read does, each call of the file layer is made with no lock
+        // of the store held.
         for &location in locations {
-            if let Some(segment) = segments.live.get(&location.file) {
+            if let Ok(segment) = self.segment(location.file) {
                 segment.will_read(location);
             }
         }
