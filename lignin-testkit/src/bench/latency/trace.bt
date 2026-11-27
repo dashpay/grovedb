@@ -40,6 +40,11 @@
 //
 // A file is named by its directory and its own name, and a file system by
 // its device, major and minor.
+//
+// Every time is `nsecs(monotonic)`, the system's monotonic clock, which the
+// harness times a commit by and writes into the commit's line. The plain
+// `nsecs` of bpftrace is the clock that goes on while the machine is
+// suspended, where the kernel has it, and is another clock after a suspend.
 
 BEGIN { printf("tracing pid %d thread %d from %d us, off a processor from %d us\n", $1, $4, $2, $3); }
 
@@ -61,7 +66,7 @@ tracepoint:syscalls:sys_exit_nanosleep
 tracepoint:sched:sched_switch
 /pid == $1 && ($4 == 0 || tid == $4) && !@pausing[tid]/
 {
-  @off[tid] = nsecs;
+  @off[tid] = nsecs(monotonic);
   @offk[tid] = kstack(perf, 40);
   @offu[tid] = ustack(perf, 127);
   @offstate[tid] = args->prev_state;
@@ -80,11 +85,11 @@ tracepoint:sched:sched_switch
 /@off[args->next_pid]/
 {
   $t = args->next_pid;
-  $d = (nsecs - @off[$t]) / 1000;
+  $d = (nsecs(monotonic) - @off[$t]) / 1000;
   if ($d >= $3) {
     // One record, so that the lines of two threads' waits cannot mix.
     printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d woken_by=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
-           @off[$t], nsecs, $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
+           @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
            (@wdev[$t] | @adev[$t]) & 0xfffff,
            @offcomm[$t], $t, @wcomm[$t], @wtid[$t], @offk[$t], @offu[$t], @wk[$t]);
   }
@@ -96,14 +101,14 @@ kprobe:vfs_write
 /pid == $1 && ($4 == 0 || tid == $4)/
 {
   $f = (struct file *)arg0;
-  @w[tid] = nsecs;
+  @w[tid] = nsecs(monotonic);
   @wlen[tid] = arg2;
   @wname[tid] = str($f->f_path.dentry->d_name.name);
   @wdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
   @wdev[tid] = $f->f_inode->i_sb->s_dev;
   if (@wname[tid] == "null") {
     $line = str(uptr(arg1), arg2);
-    printf("MARK at=%llu tid=%d %s", nsecs, tid, $line);
+    printf("MARK at=%llu tid=%d %s", nsecs(monotonic), tid, $line);
     // After the line of a commit the harness pauses, and with the line of
     // the next block the pause is over, made or not.
     if (strncmp($line, "lignin-mark commit", 18) == 0) {
@@ -118,10 +123,10 @@ kprobe:vfs_write
 kretprobe:vfs_write
 /@w[tid]/
 {
-  $d = (nsecs - @w[tid]) / 1000;
+  $d = (nsecs(monotonic) - @w[tid]) / 1000;
   if ($d >= $2) {
     printf("WRITE begin=%llu end=%llu us=%llu len=%llu by=%s/%d dev=%d,%d file=%s/%s\n",
-           @w[tid], nsecs, $d, @wlen[tid], comm, tid, @wdev[tid] >> 20, @wdev[tid] & 0xfffff,
+           @w[tid], nsecs(monotonic), $d, @wlen[tid], comm, tid, @wdev[tid] >> 20, @wdev[tid] & 0xfffff,
            @wdir[tid], @wname[tid]);
   }
   delete(@w[tid]); delete(@wlen[tid]); delete(@wname[tid]); delete(@wdir[tid]); delete(@wdev[tid]);
@@ -143,7 +148,7 @@ kprobe:vfs_fsync_range
 /pid == $1/
 {
   $f = (struct file *)arg0;
-  @s[tid] = nsecs;
+  @s[tid] = nsecs(monotonic);
   @sname[tid] = str($f->f_path.dentry->d_name.name);
   @sdir[tid] = str($f->f_path.dentry->d_parent->d_name.name);
   @sdev[tid] = $f->f_inode->i_sb->s_dev;
@@ -154,17 +159,17 @@ kprobe:vfs_fsync_range
 // The transaction of the journal that a sync waits for the commit of.
 kprobe:jbd2_log_wait_commit
 /@s[tid]/
-{ @stx[tid] = arg1; @sasked[tid] = nsecs; }
+{ @stx[tid] = arg1; @sasked[tid] = nsecs(monotonic); }
 
 kretprobe:vfs_fsync_range
 /@s[tid]/
 {
-  $d = (nsecs - @s[tid]) / 1000;
+  $d = (nsecs(monotonic) - @s[tid]) / 1000;
   @syncs[@sdir[tid]] = count();
   @sync_us[@sdir[tid]] = hist($d);
   if ($d >= $2 || @stx[tid] != 0) {
     printf("SYNC begin=%llu end=%llu us=%llu by=%s/%d dev=%d,%d transaction=%d asked=%llu file=%s/%s\n",
-           @s[tid], nsecs, $d, comm, tid, @sdev[tid] >> 20, @sdev[tid] & 0xfffff, @stx[tid],
+           @s[tid], nsecs(monotonic), $d, comm, tid, @sdev[tid] >> 20, @sdev[tid] & 0xfffff, @stx[tid],
            @sasked[tid], @sdir[tid], @sname[tid]);
   }
   delete(@s[tid]); delete(@sname[tid]); delete(@sdir[tid]); delete(@sdev[tid]); delete(@stx[tid]);
@@ -174,24 +179,24 @@ kretprobe:vfs_fsync_range
 tracepoint:jbd2:jbd2_start_commit
 {
   printf("JSTART at=%llu dev=%d,%d transaction=%d\n",
-         nsecs, args->dev >> 20, args->dev & 0xfffff, args->transaction);
+         nsecs(monotonic), args->dev >> 20, args->dev & 0xfffff, args->transaction);
 }
 
 tracepoint:jbd2:jbd2_end_commit
 {
   printf("JEND at=%llu dev=%d,%d transaction=%d\n",
-         nsecs, args->dev >> 20, args->dev & 0xfffff, args->transaction);
+         nsecs(monotonic), args->dev >> 20, args->dev & 0xfffff, args->transaction);
 }
 
-tracepoint:block:block_rq_issue { @rq[args->dev, args->sector] = nsecs; }
+tracepoint:block:block_rq_issue { @rq[args->dev, args->sector] = nsecs(monotonic); }
 
 tracepoint:block:block_rq_complete
 /@rq[args->dev, args->sector]/
 {
-  $d = (nsecs - @rq[args->dev, args->sector]) / 1000;
+  $d = (nsecs(monotonic) - @rq[args->dev, args->sector]) / 1000;
   if ($d >= $2) {
     printf("BLK begin=%llu end=%llu us=%llu dev=%d,%d %s sector=%llu sectors=%u\n",
-           @rq[args->dev, args->sector], nsecs, $d, args->dev >> 20, args->dev & 0xfffff,
+           @rq[args->dev, args->sector], nsecs(monotonic), $d, args->dev >> 20, args->dev & 0xfffff,
            args->rwbs, args->sector, args->nr_sector);
   }
   delete(@rq[args->dev, args->sector]);

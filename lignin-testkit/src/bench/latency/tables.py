@@ -48,6 +48,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The schema of a report of `lignin-bench latency` as it paces a run now.
+SCHEMA = "lignin-bench-latency/2"
 PARTS = ("its wait for the commit lock", "its wait for the lock on the counts of values",
          "its append to the log", "placing values after it", "reclaiming versions after it",
          "its wait for room in write-back")
@@ -89,6 +91,9 @@ def read(directory):
         if not named:
             continue
         report = json.load(open(path))
+        if report.get("schema") != SCHEMA:
+            sys.exit("tables.py: %s has the schema %s, not %s: it is of another form of the harness" % (
+                path, report.get("schema"), SCHEMA))
         if (report.get("label"), report["background"]) != (named.group(1), named.group(2)):
             sys.exit("tables.py: %s says of itself that it is %s under %s" % (
                 path, report.get("label"), report["background"]))
@@ -117,7 +122,7 @@ def read(directory):
 def runs(rows):
     print("| Rows | Engine | Background | Round | Blocks | Median, µs | 99%, µs | 99.9%, µs | Longest, µs "
           "| Off a processor: 99%, µs | 99.9%, µs | longest, µs | Sleeps late by 1 ms or more | by 5 ms "
-          "| Blocks that began late |")
+          "| Pauses that had passed |")
     print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     order = lambda row: (row["background"], row["label"], row["engine"], row["round"])
     for row in sorted(rows, key=order):
@@ -125,9 +130,10 @@ def runs(rows):
             row["label"], row["engine"], row["background"], row["round"], row["blocks"],
             *map(us, row["commit"]), *map(us, row["off"][1:]),
             100 * row["late"][1], 100 * row["late"][2], row["outlasted"]))
-    print("\nA block begins a pause after the commit before it ended. It began late where what followed that "
-          "commit took longer than the pause: the machine keeping the thread off a processor, and in a traced run "
-          "the harness's reading of the engine's counts.")
+    print("\nA block begins a pause after the commit before it ended. The last column counts the pauses that had "
+          "passed before the harness came to sleep, so that the next block began without one: what followed the "
+          "commit took longer than the pause. It does not say what that was, and a sleep that ended late is not "
+          "in it.")
     groups = collections.OrderedDict()
     for row in sorted(rows, key=order):
         groups.setdefault((row["label"], row["engine"], row["background"]), []).append(row)
@@ -284,6 +290,9 @@ def main():
                                    "the file .ok that `traced.sh` leaves last are not all there"))
             continue
         report = json.load(open(stem + ".json"))
+        if report.get("schema") != SCHEMA:
+            refused.append((trace, "its report has the schema %s, not %s" % (report.get("schema"), SCHEMA)))
+            continue
         binary = open(stem + ".build").read().strip() if os.path.exists(stem + ".build") else None
         # The measuring thread that `traced.sh` found for the run is the
         # one whose line begins the measured blocks in the trace.
@@ -376,8 +385,8 @@ def main():
             if engine.get("parts_ns"):
                 parts = engine["parts_ns"]
                 print("Its append to the log, as the engine counts it at each commit, µs: 99%% %s, 99.9%% %s, "
-                      "longest %s; %d commits waited for room in write-back; %d blocks began late, where the "
-                      "reading of those counts took longer than the pause.\n" % (
+                      "longest %s; %d commits waited for room in write-back. The counts are read after each "
+                      "commit in this run; %d pauses had passed before the harness came to sleep.\n" % (
                           *map(us, four([part[2] for part in parts])[1:]),
                           sum(1 for part in parts if part[5] > 0), engine.get("pauses_outlasted", 0)))
             if engine.get("syncs"):

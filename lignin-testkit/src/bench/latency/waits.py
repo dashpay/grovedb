@@ -27,7 +27,9 @@ stamps a wait with. A wait that began after the block's line and ended
 before the commit began is of the block's operations, one inside the
 commit's own time is of the commit, and one after the commit ended is
 between two blocks, where the harness writes its line, reads the engine's
-counts if it was asked to, and pauses. When the commit's line was written
+counts if it was asked to, and pauses. The two clocks are held to be one:
+with `--marked` a trace is refused in which a commit does not lie between
+the line of its block and its own line. When the commit's line was written
 plays no part: a thread that is taken off its processor between the end of
 a commit and that line is between two blocks. The
 stacks say what a wait was for; where a user stack does not reach the
@@ -234,12 +236,17 @@ class Trace:
             if words[0] == "block":
                 began[int(words[1])] = at
             elif words[0] == "commit" and len(words) > 3 and words[2].isdigit() and words[3].isdigit():
-                committed[int(words[1])] = (int(words[3]), int(words[3]) + int(words[2]))
+                committed[int(words[1])] = (int(words[3]), int(words[3]) + int(words[2]), at)
             elif words[0] == "commit" and len(words) > 2 and words[2].isdigit():
-                committed[int(words[1])] = (at - int(words[2]), at)
+                committed[int(words[1])] = (at - int(words[2]), at, at)
                 self.commits_as_written += 1
         self.blocks = sorted((began[block], *committed[block]) for block in began if block in committed)
         self.block_begins = [block[0] for block in self.blocks]
+        # The harness reads the commit's times from its own clock and the
+        # tracer stamps the lines with its own: they are one clock only if
+        # every commit lies between the line of its block and its own line.
+        self.out_of_place = sum(1 for at, commit_began, commit_ended, written in self.blocks
+                                if not at <= commit_began <= commit_ended <= written)
 
     def of_the_measuring_thread(self, wait):
         return not self.measuring or not wait["tid"] or wait["tid"] == self.measuring
@@ -398,6 +405,9 @@ def main():
             refused = "has no line for its blocks: the harness is run with --mark-blocks for a trace"
         elif trace.commits_as_written:
             refused = "has lines of commits that do not say when the commit began: it is of an earlier form of the harness"
+        elif trace.out_of_place:
+            refused = ("has %d commits that do not lie between the line of their block and their own line: the "
+                       "harness's clock and the tracer's are not one clock" % trace.out_of_place)
         elif not trace.ended:
             refused = "did not run to its end: the tracer was ended before it had written what it held"
         elif trace.lost:

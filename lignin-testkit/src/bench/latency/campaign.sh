@@ -224,8 +224,11 @@ if has builds; then
     REPO=$repo "$here/build.sh" exp2 "$commit" "$here/fewer-syncs.patch"
 fi
 
-# The builds a campaign's runs are made by are said in its directory, by
-# whichever call finds them there: a call that makes no build as well.
+# The builds a campaign's runs are made by are said in its directory, by the
+# first call that finds them there, a call that makes no build as well. A
+# later call is held to them: builds of the same commit made anew can be
+# other binaries, and a campaign is of one set. What the directory says is
+# not changed by a call that is refused.
 if has builds || has main || has filesystems || has traces; then
   { built base && built exp1 "$here/log-allocated-ahead.patch" && built exp2 "$here/fewer-syncs.patch"; } ||
     refuse "the builds under $BUILDS are not those of this commit and these patches: make the part builds"
@@ -235,7 +238,16 @@ if has builds || has main || has filesystems || has traces; then
       line="$line, which is $commit with a patch of sha256 $(cat "$BUILDS/$build/patch-sha256")"
     fi
     echo "$line"
-  done > "$out/builds.txt"
+  done > "$out/builds.txt.now"
+  if [ -s "$out/builds.txt" ]; then
+    cmp -s "$out/builds.txt" "$out/builds.txt.now" || {
+      rm -f "$out/builds.txt.now"
+      refuse "the builds under $BUILDS are not the binaries this campaign was made with, which $out/builds.txt names: a campaign is of one set of builds"
+    }
+    rm -f "$out/builds.txt.now"
+  else
+    mv "$out/builds.txt.now" "$out/builds.txt"
+  fi
 fi
 
 # Removes a run's database, and gives what it took of a file system of part 3
