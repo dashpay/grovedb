@@ -95,13 +95,12 @@ pub struct CleanerConfig {
     /// The length at which the segment that takes the moved blocks is
     /// sealed and the next one begun.
     pub segment_len: u64,
-    /// The share of dead bytes among the bytes of all values in the value
-    /// log, in a hundred, above which a pass cleans value-log files: the
-    /// one with the largest share of dead bytes, if that share is at least
-    /// [`Self::value_min_file_dead_percent`] (or one byte in a hundred over
-    /// [`Self::value_ceiling_dead_percent`]), and after it the files that
-    /// are nearly empty, within [`Self::max_pass_bytes`]. With 0 here, a
-    /// file is cleaned for any dead byte.
+    /// The share of dead bytes of the value log, in a hundred, above which
+    /// a pass cleans value-log files: the most dead of those at least the
+    /// floor dead, and after it those nearly empty, within
+    /// [`Self::max_pass_bytes`]. The shares and the floor are as the
+    /// [module documentation](super#which-files-a-pass-cleans) states them.
+    /// With 0 here, a file is cleaned for any dead byte.
     pub value_dead_percent: u8,
     /// The share of a value-log file's own bytes, in a hundred, that must
     /// be dead for a pass to clean it while the value log is above its
@@ -112,11 +111,11 @@ pub struct CleanerConfig {
     pub value_min_file_dead_percent: u8,
     /// The share of dead bytes of the value log, in a hundred, over which a
     /// pass cleans the file with the largest share of dead bytes whatever
-    /// that share is, from one byte in a hundred. Once the cleaner has
-    /// caught up, the value log's dead share is at most this: the worst
-    /// case, which a log whose deaths are spread evenly over its files
-    /// reaches. It is not a bound a pass keeps, and the log can come to rest
-    /// well under its target, a pass giving back whole files. Below
+    /// that share is, from one byte in a hundred. It is the worst case of
+    /// the value log's dead share, with the conditions the
+    /// [module documentation](super#which-files-a-pass-cleans) states: once
+    /// the cleaner has caught up, at most this, but for the files being
+    /// filled and those that wait or are kept. Below
     /// [`Self::value_dead_percent`] it is over whenever the target is.
     pub value_ceiling_dead_percent: u8,
     /// How long the background loop sleeps between two passes when nobody
@@ -138,8 +137,9 @@ impl CleanerConfig {
     /// under a steady load of commits, as read after a pass of the
     /// cleaner: in the segments, 14 that the cleaner leaves, and at most 4
     /// more in what was emptied and waits to be deleted. In the value log,
-    /// at most 20, the ceiling, once the cleaner has caught up: the worst
-    /// case, for deaths spread evenly over its files. That is for a store with no
+    /// at most 20, the ceiling, once the cleaner has caught up, but for the
+    /// files being filled: the worst case, which deaths spread evenly over
+    /// the files can reach. That is for a store with no
     /// reader on an old version, no operation that runs for long, and
     /// blocks that are large against [`Self::min_segment_len`]. What a
     /// burst of commits kills faster than [`Self::max_pass_bytes`] and

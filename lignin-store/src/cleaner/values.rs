@@ -35,10 +35,10 @@ const ASK_AGAIN_AFTER: u32 = 16;
 
 /// For how many passes a file is set aside after a cleaning that moved
 /// nothing, because write transactions held copies of the pages of its
-/// values: set aside by pass n, it is passed over until pass n plus this,
-/// from which it may be taken again. Each try appends the file's live
-/// values again, and the copies are dead. The wait is the same however
-/// many files are set aside.
+/// values: set aside by pass n, it is passed over until pass n plus this
+/// while it stays among the files a cleaning can help. Each try appends
+/// the file's live values again, and the copies are dead. The wait is the
+/// same however many files are set aside.
 pub(super) const BUSY_PASSES: u64 = 8;
 
 /// The share of a file's bytes, in a hundred, that are dead from which a
@@ -67,7 +67,7 @@ pub struct ValuePass {
     /// worth it.
     pub cleaned: Option<(FileId, Cleaned)>,
     /// The files that were cleaned after it in the same pass, each at
-    /// least [`SWEEP_DEAD_PERCENT`] dead, in the order they were cleaned.
+    /// least 90 in a hundred dead, in the order they were cleaned.
     pub swept: Vec<(FileId, Cleaned)>,
     /// The files that were taken out of the store.
     pub dropped: Vec<FileId>,
@@ -111,7 +111,8 @@ impl<'s> Cleaner<'s> {
     ///    it is dead.
     /// 2. If the dead space of the value log is above its target, the
     ///    closed file with the largest share of dead bytes is cleaned, if
-    ///    it is worth it ([`Self::value_files_to_clean`]), and after it the
+    ///    it is worth it (the [module documentation](super#which-files-a-pass-cleans)
+    ///    has the rule), and after it the
     ///    files that are nearly empty: their live values are copied to the
     ///    cleaner's own file, the copies are
     ///    made durable and a manifest covers them, and `owners` gives each
@@ -269,22 +270,13 @@ impl<'s> Cleaner<'s> {
     /// counted, they would have file after file cleaned for nothing while
     /// a pin keeps them.
     ///
-    /// The first is the file with the largest share of dead bytes, if that
-    /// share is at least the floor
-    /// ([`CleanerConfig::value_min_file_dead_percent`]): a file that is
-    /// mostly live costs many copies for little space; one byte in a
-    /// hundred at least, whatever the floor is set to. Over the ceiling
-    /// ([`CleanerConfig::value_ceiling_dead_percent`]) one byte in a
-    /// hundred is enough, so that a log whose deaths are spread over every
-    /// file is brought back under it. With a target of nothing dead, any
-    /// dead byte is enough. After the first, the files that are
-    /// at least [`SWEEP_DEAD_PERCENT`] dead follow, most dead first, as
-    /// long as their live bytes stay within
-    /// [`CleanerConfig::max_pass_bytes`].
-    ///
-    /// A file whose last cleaning moved nothing, because write
-    /// transactions held copies of the pages of its values, is passed
-    /// over until [`BUSY_PASSES`] passes after the one that set it aside.
+    /// Of the files at least the floor dead and not set aside, the first is
+    /// the one with the largest share of dead bytes, and after it those at
+    /// least [`SWEEP_DEAD_PERCENT`] dead follow, most dead first, as long as
+    /// their live bytes stay within [`CleanerConfig::max_pass_bytes`]. The
+    /// floor, the ceiling and the wait of a file set aside
+    /// ([`BUSY_PASSES`]) are as the
+    /// [module documentation](super#which-files-a-pass-cleans) states them.
     ///
     /// [`CleanerConfig::value_dead_percent`]: super::CleanerConfig::value_dead_percent
     /// [`CleanerConfig::value_min_file_dead_percent`]: super::CleanerConfig::value_min_file_dead_percent

@@ -343,40 +343,49 @@
 //! the files, and gives it back before it asks: a guard of its own over
 //! the whole pass would keep the file it has just emptied.
 //!
-//! **Which files a pass cleans.** Each live value of a file costs a copy,
+//! ## Which files a pass cleans
+//!
+//! Each live value of a file costs a copy,
 //! and a page step that loads the page of its owner and has write-back
 //! write it again, so a file is worth cleaning for the share of it that
-//! is dead:
+//! is dead. A target alone has the cleaner copy files that are mostly
+//! live: under a churn of the reference workload at a target of 14, nine
+//! bytes in ten of what it copied came from files less than a fifth dead.
+//! The rule, over the closed files that a cleaning can help
+//! ([`ValueStore::cleanable`](crate::values::ValueStore::cleanable)) and
+//! the files being filled, which together
+//! are the counted bytes:
 //!
-//! - Above [`CleanerConfig::value_dead_percent`] (18 by default), the
-//!   file with the largest share of dead bytes is cleaned if at least
-//!   [`CleanerConfig::value_min_file_dead_percent`] of it is dead (40 in a
-//!   hundred by default). The shares are of the files that a cleaning can
-//!   help and of those being filled. A target alone, with files of which a little is
-//!   dead, has the cleaner copy files that are mostly live: under a churn
-//!   of the reference workload at a target of 14, nine bytes in ten of
-//!   what it copied came from files less than a fifth dead.
-//! - Over [`CleanerConfig::value_ceiling_dead_percent`] (20 by default),
-//!   that file is cleaned whatever its share, from one byte in a hundred.
-//!   **The worst case of the value log's dead share:** once the cleaner
-//!   has caught up, it is at most the ceiling. It is not a bound a pass
-//!   keeps, and the log can come to rest well under its target, a pass
-//!   giving back whole files. Where deaths are spread evenly over the
-//!   files, as regroupings spread them, no file need reach the floor, and
-//!   the log rises to the ceiling before files that are mostly live are
-//!   copied.
-//! - After it, the files that are at least 90 in a hundred dead are
-//!   cleaned in the same pass, most dead first, while their live bytes
-//!   stay within [`CleanerConfig::max_pass_bytes`]: a burst of deletes
-//!   empties files faster than one a pass.
-//! - A file whose cleaning moved nothing, because write transactions held
-//!   the pages of its values, is set aside: the seven passes after that
-//!   one pass it over, and from the eighth on it may be taken again,
-//!   however many files are set aside. No file under the floor is taken
-//!   in its place.
+//! 1. A pass cleans nothing unless the dead share of the counted bytes is
+//!    over [`CleanerConfig::value_dead_percent`].
+//! 2. The floor is [`CleanerConfig::value_min_file_dead_percent`], and
+//!    at least one byte in a hundred, while that share is at most
+//!    [`CleanerConfig::value_ceiling_dead_percent`]; one byte in a hundred
+//!    over it; and any dead byte with a target of 0, which is how
+//!    `lignin compact` asks for every byte back.
+//! 3. Of the closed files that are at least the floor dead and not set
+//!    aside, the one with the largest dead share is cleaned whole, and
+//!    after it those of them at least 90 in a hundred dead, most dead
+//!    first, while their live bytes stay within
+//!    [`CleanerConfig::max_pass_bytes`].
+//! 4. A file whose cleaning moved nothing, because write transactions held
+//!    the pages of its values, is set aside: while it stays among the
+//!    closed files a cleaning can help, the seven passes after that one
+//!    pass it over, however many files are set aside; a file that leaves
+//!    that list and comes back is set aside no more.
 //!
-//! With a target of nothing dead, any dead byte is enough, whatever the
-//! floor: that is how `lignin compact` asks for every byte back.
+//! **The worst case of the value log's dead share:** with the ceiling at
+//! or above the target, a pass that finds the counted bytes over the
+//! ceiling cleans a file, if one is at least a byte in a hundred dead and
+//! not set aside, so once the cleaner has caught up they are at most the
+//! ceiling but for what no pass cleans: the files being filled, of which
+//! one shorter than [`CleanerConfig::min_segment_len`] is not closed
+//! however much of it is dead. Files that wait to be deleted, and those a
+//! pin or a checkpoint's hold keeps, are not counted and come on top.
+//! Deaths spread evenly over the files, as regroupings spread them, can
+//! bring the log to the ceiling: no file need reach the floor before it.
+//! It is not a bound a pass keeps, and the log can come to rest well under
+//! the target, a cleaning giving back whole files.
 //!
 //! A file that is empty and waits to be deleted, for a pin on a version
 //! that still points into it or for a checkpoint's hold, is dead space
