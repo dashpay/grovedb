@@ -717,6 +717,104 @@ fn a_choice_of_lignindb_looks_at_the_file_system_of_its_options() {
     assert!(sim.read_dir(&target).is_err());
 }
 
+/// Asserts that a creation of a checkpoint at `target` was refused because
+/// the type does not know the file system of the engine it holds, word
+/// for word.
+fn not_looked_beside<T>(refused: Result<T, impl Into<Error>>, target: &Path) {
+    let words = refusal(refused);
+    let expected = format!(
+        "no checkpoint was made at {}: the LigninDB engine was opened by its caller, so the file \
+         system it builds on is not known here and the directory beside the path, which LigninDB \
+         empties, was not looked at; open the database with the engine chosen at the open to \
+         make checkpoints through it",
+        target.display()
+    );
+    assert_eq!(words, expected);
+}
+
+#[test]
+fn a_lignindb_engine_that_its_caller_opened_makes_no_checkpoint_through_the_type() {
+    let v = GroveVersion::latest();
+    let host = tempfile::tempdir().expect("a directory");
+    let sim = sim_with(host.path(), 7);
+    let on_sim = Options {
+        vfs: Arc::new(sim.clone()),
+        ..Options::default()
+    };
+    // An engine of LigninDB on another file system than the process's,
+    // which its caller opened and handed to the type. The type does not
+    // know that file system, and looks at neither for it.
+    let opened = LigninEngine::open_with(host.path().join("grove"), &on_sim);
+    let db = GroveDb::from_engine(EitherEngine::from(opened.expect("a database")));
+    assert_eq!(db.engine().kind(), EngineKind::Lignin);
+
+    // A directory beside the path on the engine's file system, with an
+    // entry of RocksDB's, which LigninDB would empty: the creation is
+    // refused, and the directory has that entry afterwards.
+    let (target, beside) = (
+        host.path().join("checkpoint"),
+        host.path().join("checkpoint.creating"),
+    );
+    sim.create_dir(&beside).expect("a directory");
+    let made = sim.open(&beside.join("CURRENT"), OpenMode::Write(Create::New));
+    drop(made.expect("a file"));
+    not_looked_beside(db.create_checkpoint(&target), &target);
+    let listed = sim.read_dir(&beside).expect("a listing");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name, "CURRENT");
+    assert!(sim.read_dir(&target).is_err());
+
+    // A database of RocksDB beside another path on the file system of the
+    // process, where the engine builds nothing: the creation is refused in
+    // the same words, and not for that database, which is as it was.
+    let (another, beside) = (
+        host.path().join("another"),
+        host.path().join("another.creating"),
+    );
+    filled_by_rocksdb_itself(&beside, v);
+    let before = files(&beside);
+    not_looked_beside(db.create_checkpoint(&another), &another);
+    assert_eq!(files(&beside), before);
+    assert!(sim.read_dir(&another).is_err() && sim.read_dir(&beside).is_err());
+    assert!(!another.exists());
+    drop(db);
+
+    // So is the creation by an engine that its caller opened on the file
+    // system of the process, with nothing beside the path.
+    let live = host.path().join("live");
+    filled(&live, EngineKind::Lignin, v);
+    let opened = LigninEngine::open(&live).expect("a database");
+    let db = GroveDb::from_engine(EitherEngine::from(opened));
+    let third = host.path().join("third");
+    not_looked_beside(db.create_checkpoint(&third), &third);
+    assert!(!third.exists());
+    drop(db);
+
+    // An engine that the type opened by an open that names no engine is on
+    // the file system of the default options: it makes its checkpoints,
+    // after the open of a database and after the open of a checkpoint, and
+    // is refused one beside the database of RocksDB.
+    let opened = EitherEngine::open(&live).expect("a database of LigninDB");
+    assert_eq!(opened.kind(), EngineKind::Lignin);
+    let db = GroveDb::from_engine(opened);
+    let first = host.path().join("first");
+    db.create_checkpoint(&first).expect("a checkpoint");
+    beside_a_database_of_rocksdb(db.create_checkpoint(&another), &another);
+    drop(db);
+    let opened = EitherEngine::open_checkpoint(&first).expect("a checkpoint of LigninDB");
+    assert_eq!(opened.kind(), EngineKind::Lignin);
+    let of_the_checkpoint = GroveDb::from_engine(opened);
+    assert!(holds_the_item(&of_the_checkpoint, v));
+    let second = host.path().join("second");
+    (of_the_checkpoint.create_checkpoint(&second)).expect("a checkpoint of a checkpoint");
+    beside_a_database_of_rocksdb(of_the_checkpoint.create_checkpoint(&another), &another);
+    drop(of_the_checkpoint);
+    assert_eq!(files(&beside), before);
+    assert!(!another.exists());
+    let opened = Either::open_checkpoint_with_engine(&second).expect("a checkpoint");
+    assert!(holds_the_item(&opened, v));
+}
+
 #[test]
 fn an_open_of_lignindb_is_given_the_options_of_the_choice() {
     let dir = tempfile::tempdir().expect("a directory");

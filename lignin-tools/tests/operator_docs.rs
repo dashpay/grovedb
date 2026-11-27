@@ -238,7 +238,7 @@ const REASONS: [(&str, &str, &str); 46] = [
 /// engine, by file and the words their definition begins with: every message they build
 /// (`Error::…(…)`) is quoted in a row that names the file. Errors that
 /// answer an application's misuse of the API are elsewhere, and left out.
-const GROVEDB_FUNCTIONS: [(&str, &str); 13] = [
+const GROVEDB_FUNCTIONS: [(&str, &str); 14] = [
     (
         "grovedb/src/lib.rs",
         "pub fn open_with_cidx_integrity_check<",
@@ -256,6 +256,7 @@ const GROVEDB_FUNCTIONS: [(&str, &str); 13] = [
     ("grovedb/src/engine/either.rs", "fn no_checkpoint("),
     ("grovedb/src/engine/either.rs", "fn refuse_the_other("),
     ("grovedb/src/engine/either.rs", "fn keep_from_lignindb("),
+    ("grovedb/src/engine/either.rs", "fn not_looked_beside("),
     (
         "grovedb/src/engine/either.rs",
         "pub fn delete_checkpoint_of<",
