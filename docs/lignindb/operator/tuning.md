@@ -135,14 +135,14 @@ is `CleanerConfig::new`.
 | Option | Default | What it is | When to change it |
 | --- | --- | --- | --- |
 | `CleanerConfig::target_dead_percent` | 14 % | the share of dead bytes of the segments that the cleaner works towards | lower to take less disk, at the price of more bytes written for each byte given back; higher for fewer writes and more disk |
-| `CleanerConfig::value_dead_percent` | 18 % | the same for the value log: above it, a pass cleans the closed file with the largest share of dead bytes among those worth it (the next two rows), and after it those of them at least 90 % dead, within `max_pass_bytes`. A file whose last cleaning moved nothing, because write transactions held its pages, is passed over by the seven passes after that one while it stays cleanable | as above |
+| `CleanerConfig::value_dead_percent` | 18 % | the same for the value log: above it, a pass cleans the closed file with the largest share of dead bytes among those worth it (the next two rows), and after it those of them at least 90 % dead, within `max_pass_bytes`. A move refused because a commit changed its page first, or a write transaction held it, is tried again up to three times. A file whose cleaning moved nothing because its steps were refused at every try may not be taken again before 8 passes later while it stays cleanable, and each further such cleaning in a row doubles that delay, up to 256 passes; a pass whose files all moved nothing goes on to the next files worth cleaning while its budget lasts, as the `max_pass_bytes` row says | as above |
 | `CleanerConfig::value_min_file_dead_percent` | 40 % | the floor: the share of a value-log file's own bytes that must be dead for a pass to clean it, the first file or a nearly empty one, while the value log is not over its ceiling, and one byte in a hundred at least; over the ceiling one byte in a hundred is enough, and with `value_dead_percent` at 0 any dead byte is. Each live value of a file costs a copy and a page step that has its page read and written again | lower to keep the value log smaller, at the price of copying files that are mostly live; leave it |
-| `CleanerConfig::value_ceiling_dead_percent` | 20 % | over this share of dead bytes in the value log, a pass cleans the most dead file it may take once one byte in a hundred of it is dead. **It is the worst case of the value log's dead space**: once the cleaner has caught up, the share is at most this, but for the files being filled and those that wait to be deleted or that a pin or a checkpoint keeps; a log whose deaths are spread evenly over its files, so that no file reaches the floor, can rise to it | with `value_dead_percent`; keep it at or above it |
+| `CleanerConfig::value_ceiling_dead_percent` | 20 % | over this share of dead bytes in the value log, a pass cleans the most dead file it may take once one byte in a hundred of it is dead. **It is the worst case of the value log's dead space**: once the cleaner has caught up, the share is at most this, but for the files being filled, those that wait to be deleted or that a pin or a checkpoint keeps, and those set aside after cleanings that moved nothing, as files whose pages most commits change can be while commits come back to back; a log whose deaths are spread evenly over its files, so that no file reaches the floor, can rise to it | with `value_dead_percent`; keep it at or above it |
 | `CleanerConfig::checkpoint_dead_percent` | 4 % | the most bytes of segment blocks, as a share of the bytes of all segment blocks, that may wait for a table checkpoint to be deleted, before the cleaner asks for one | leave it |
 | `CleanerConfig::seal_dead_percent` | 2 % | a file that is being filled is closed for cleaning when its dead bytes are this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::max_segment_percent` | 1 % | a file that is being filled is closed when it holds this share of the bytes of its kind (the blocks of the segments, or the values of the value log), not of the database | leave it |
 | `CleanerConfig::min_segment_len` | 64 KiB | no file is closed for the cleaner before it holds this much | leave it |
-| `CleanerConfig::max_pass_bytes` | 8 MiB | the bytes of blocks after which a pass over the segments stops copying: it looks before each block, so the last block it copies can take it past that many. A pass over the value log cleans one file whole, and after it nearly empty files whose live bytes stay within this. With `idle` it bounds how fast the cleaner copies blocks | lower where the cleaner's writes compete with the node's; higher where dead space grows faster than the cleaner gives it back |
+| `CleanerConfig::max_pass_bytes` | 8 MiB | the bytes of blocks after which a pass over the segments stops copying: it looks before each block, so the last block it copies can take it past that many. A pass over the value log cleans one file whole, and after it nearly empty files whose live bytes stay within this; if none of those moved anything, it goes on to the next files worth cleaning while that sum is at most this, so the last can take it past. With `idle` it bounds how fast the cleaner copies blocks | lower where the cleaner's writes compete with the node's; higher where dead space grows faster than the cleaner gives it back |
 | `CleanerConfig::segment_len` | 64 MiB | the length of the segments the cleaner moves blocks into | leave it |
 | `CleanerConfig::idle` | 100 ms | how long the cleaner sleeps between passes when nobody wakes it | with `max_pass_bytes` |
 
@@ -153,12 +153,24 @@ cleaner leaves, and at most 4 more that wait for a table checkpoint),
 for a store with no reader on an old version, no operation that runs for
 long, and blocks that are large against `min_segment_len`. The value log
 is at most 20 in a hundred dead once the cleaner has caught up, but for
-the files being filled and those that wait or are kept, and deaths spread
+the files being filled, those that wait or are kept, and those set aside
+after cleanings that moved nothing, and deaths spread
 evenly over its files can bring it there: while it is over 18, the cleaner
 copies files at least 40 in a hundred dead, and over 20 the most dead file
 once one byte in a hundred of it is. It can come to rest well under 18, a cleaning giving
 back whole files. The cleaner's module documentation (`lignin_store::cleaner`,
-"Which files a pass cleans") has the rule whole. What a burst
+"Which files a pass cleans") has the rule whole.
+
+Under commits back to back, as in a resync or a bulk load of large values,
+the value log is not held there: a file whose last live values belong to
+pages that a write transaction holds at nearly every try can stay until
+the load pauses, because only the commit that holds such a page
+could move its values. Under updates of the reference workload back to
+back on a 16-processor machine (DigitalOcean `so-16vcpu-128gb-intel`), the
+value log grew while the load lasted, to 62 to 69 in a hundred dead at
+worst, and the store to 1.6 to 1.9 GB where a paced churn holds it under
+1 GB; it came back when the load ended. Leave room on the device for twice
+the store during a resync or a bulk load of large values. What a burst
 of commits frees faster than the cleaner moves shows until it has caught
 up. A snapshot that is kept holds what was freed after its version, and
 a checkpoint that is kept holds the files it links, whatever the

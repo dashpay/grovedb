@@ -6,7 +6,10 @@
 use std::collections::BTreeSet;
 
 use super::{values::value_files, *};
-use crate::{cleaner::values::SWEEP_DEAD_PERCENT, values::ValueStore};
+use crate::{
+    cleaner::values::{BUSY_PASSES, MAX_BUSY_DOUBLINGS, SWEEP_DEAD_PERCENT},
+    values::ValueStore,
+};
 
 /// The values of a page.
 const VALUES: u16 = 10;
@@ -195,4 +198,100 @@ fn deaths_spread_evenly_over_the_files_are_held_at_the_ceiling() {
     assert!(under_the_floor > 0, "{did:?}");
     let (unheld, _) = run(100);
     assert!(unheld > 40.0, "{unheld:.1}% dead with no ceiling");
+}
+
+/// A file whose cleaning moved nothing, because a write transaction held
+/// the page of its values, may not be taken again before [`BUSY_PASSES`]
+/// passes later, and the delay doubles after each further such cleaning in
+/// a row, up to 256 passes: the only file worth cleaning here, it is tried
+/// in passes 1, 9, 25, 57, 121, 249, 505 and 761. Once the
+/// page is free, a try moves the values.
+#[test]
+fn a_file_refused_again_waits_twice_as_long() {
+    assert_eq!((BUSY_PASSES, MAX_BUSY_DOUBLINGS), (8, 5));
+    // The second page's file is the one being filled.
+    let db = files(2);
+    kill(&db, 1, 1..=6);
+    let file = file_of(&db, 1);
+    let state = CleanerState::new(choosing(1, 40, 100));
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let mut txn = db.begin();
+    txn.copy(page(1));
+    let mut tried = Vec::new();
+    for at in 1..=800u64 {
+        let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+        if let Some((taken, cleaned)) = pass.cleaned {
+            assert_eq!((taken, cleaned.moved), (file, 0), "{pass:?}");
+            tried.push(at);
+        }
+    }
+    assert_eq!(tried, [1, 9, 25, 57, 121, 249, 505, 761]);
+    txn.roll_back();
+    for _ in 0..BUSY_PASSES << MAX_BUSY_DOUBLINGS {
+        cleaner.pass_values(&Cells(&db)).expect("a pass");
+    }
+    settle_values(&cleaner, &Cells(&db));
+    assert!(!value_files(&db).contains(&file));
+    db.check_warm();
+}
+
+/// **Files whose owners are busy at every try** take no pass from the
+/// files that can be cleaned, with a budget that does not run out first.
+/// Ten files are 60 in a hundred dead, and a write transaction holds the
+/// pages of their values, as the pages that most commits change are held
+/// while commits come back to back; ten more are 50 in a hundred dead and
+/// free. The busy files are the most dead: the first pass tries all ten,
+/// for nothing, and goes on to a free file, which it cleans. They are then
+/// set aside, and every pass moves values: in ten passes the ten free
+/// files are cleaned, and the log is at most its ceiling of 20 but for the
+/// dead bytes of the files set aside, the worst case the module
+/// documentation states.
+#[test]
+fn files_whose_owners_are_always_busy_take_no_pass_from_the_others() {
+    // The file of page 21 is the one being filled.
+    let db = files(21);
+    let busy: Vec<u32> = (1..=10).collect();
+    let free: Vec<u32> = (11..=20).collect();
+    for &id in &busy {
+        kill(&db, id, 1..=6);
+    }
+    for &id in &free {
+        kill(&db, id, 1..=5);
+    }
+    let held: BTreeSet<FileId> = busy.iter().map(|&id| file_of(&db, id)).collect();
+    let cleanable: BTreeSet<FileId> = free.iter().map(|&id| file_of(&db, id)).collect();
+    let mut txn = db.begin();
+    for &id in &busy {
+        txn.copy(page(id));
+    }
+    let state = CleanerState::new(choosing(5, 40, 20));
+    let cleaner = Cleaner::new(db.wb(), &state);
+    for at in 1..=10 {
+        let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+        let moved: u64 = pass
+            .cleaned
+            .iter()
+            .chain(&pass.swept)
+            .map(|(_, cleaned)| cleaned.moved)
+            .sum();
+        assert!(moved > 0, "pass {at} moved nothing: {pass:?}");
+    }
+    for &id in &free {
+        assert!(!cleanable.contains(&file_of(&db, id)), "page {id}");
+    }
+    let space = cleaner.value_space().expect("the space");
+    let counted = space.bytes - space.waiting_bytes;
+    let dead_not_aside: u64 = db
+        .values
+        .cleanable(0)
+        .iter()
+        .filter(|file| !held.contains(&file.file))
+        .map(|file| file.len - file.live_bytes)
+        .sum();
+    assert!(
+        dead_not_aside * 100 <= 20 * counted,
+        "{dead_not_aside} dead bytes outside the files set aside, of {counted}"
+    );
+    txn.roll_back();
+    db.check_warm();
 }

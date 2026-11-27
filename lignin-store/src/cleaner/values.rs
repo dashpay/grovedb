@@ -34,12 +34,23 @@ const MAX_TOKENS: usize = 8;
 const ASK_AGAIN_AFTER: u32 = 16;
 
 /// For how many passes a file is set aside after a cleaning that moved
-/// nothing, because write transactions held copies of the pages of its
-/// values: set aside by pass n, it is passed over until pass n plus this
-/// while it stays among the files a cleaning can help. Each try appends
-/// the file's live values again, and the copies are dead. The wait is the
-/// same however many files are set aside.
+/// nothing, because the page steps of its values were refused (a commit
+/// had superseded the page, or a write transaction held a private copy of
+/// it): set aside by pass n, it is passed over until pass n plus this
+/// while it stays among the files a cleaning can help. Each further
+/// cleaning of it in a row that moves nothing and ends with a step still
+/// refused as busy doubles that delay, up to [`MAX_BUSY_DOUBLINGS`] times;
+/// a cleaning whose result reports a move, or no step still refused as
+/// busy, clears it. Each try appends the file's live values
+/// again, and the copies are dead. The wait is the same however many files
+/// are set aside.
 pub(super) const BUSY_PASSES: u64 = 8;
+
+/// How many times the wait of a file set aside is doubled: up to 256
+/// passes. A file whose owners' pages are busy at every try, as the pages
+/// that most commits change are while commits come back to back, is tried
+/// in ever fewer passes.
+pub(super) const MAX_BUSY_DOUBLINGS: u32 = 5;
 
 /// The share of a file's bytes, in a hundred, that are dead from which a
 /// file is cleaned in the same pass as the file most worth it, while the
@@ -48,6 +59,18 @@ pub(super) const BUSY_PASSES: u64 = 8;
 /// Such a file costs little to clean, and files that a burst of commits
 /// empties come faster than one a pass.
 pub(super) const SWEEP_DEAD_PERCENT: u8 = 90;
+
+/// The files a pass over the value log cleans
+/// ([`Cleaner::value_files_to_clean`]).
+#[derive(Debug, Default)]
+struct Choice {
+    /// The files it cleans: the one most worth it, and the nearly empty
+    /// ones within the pass's budget.
+    taken: Vec<Cleanable>,
+    /// The other files worth cleaning and not set aside, most dead first:
+    /// the pass goes on to them while every file it cleaned moved nothing.
+    more: Vec<Cleanable>,
+}
 
 /// The bytes of the values of a value-log file: what follows its header.
 fn value_bytes(file: &LiveFile) -> u64 {
@@ -66,8 +89,11 @@ pub struct ValuePass {
     /// dead space of the value log was above its target and a file was
     /// worth it.
     pub cleaned: Option<(FileId, Cleaned)>,
-    /// The files that were cleaned after it in the same pass, each at
-    /// least 90 in a hundred dead, in the order they were cleaned.
+    /// The files that were cleaned after it in the same pass, in the
+    /// order they were cleaned: those at least 90 in a hundred dead, and
+    /// where none of the pass's files moved anything, the next files worth
+    /// cleaning (the [module documentation](super#which-files-a-pass-cleans)
+    /// has the rule).
     pub swept: Vec<(FileId, Cleaned)>,
     /// The files that were taken out of the store.
     pub dropped: Vec<FileId>,
@@ -157,54 +183,39 @@ impl<'s> Cleaner<'s> {
         owners: &O,
         pass: &mut ValuePass,
     ) -> Result<(), CleanerError> {
-        let versions = self.stores().versions;
-        let counters = &self.state.counters;
         work.value_passes += 1;
         self.drop_values(work, pass)?;
         self.close_dead_files(work)?;
 
+        let choice = self.value_files_to_clean(work)?;
         let mut failed = None;
-        for taken in self.value_files_to_clean(work)? {
-            let file = taken.file;
-            let mut cleaned = None;
-            versions.guarded(&mut || cleaned = Some(self.clean_file(work, file, owners)));
-            let cleaned = match cleaned {
-                Some(Ok(cleaned)) => cleaned,
-                // The values that were moved stand, and so does the count
-                // of the file: the pass goes on to what can be dropped.
-                Some(Err(
-                    error @ CleanerError::Values(ValueStoreError::OwnersNotFound {
-                        cleaned, ..
-                    }),
-                )) => {
-                    failed = Some(error);
-                    cleaned
-                }
-                Some(Err(error)) => return Err(error),
-                None => continue,
-            };
-            count(&counters.value_files_cleaned, 1);
-            count(&counters.values_moved, cleaned.moved);
-            count(&counters.values_left, cleaned.gone + cleaned.busy);
-            count(&counters.value_bytes_copied, cleaned.copied_bytes);
-            let class = DeadClass::of(taken.len.saturating_sub(taken.live_bytes), taken.len);
-            count(&counters.value_files_by_dead[class.index()], 1);
-            count(
-                &counters.value_bytes_by_dead[class.index()],
-                cleaned.copied_bytes,
-            );
-            self.wrote(cleaned.copied_bytes);
-            work.busy_files.remove(&file);
-            if cleaned.moved == 0 && cleaned.busy != 0 {
-                work.busy_files
-                    .insert(file, work.value_passes + BUSY_PASSES);
-            }
-            match pass.cleaned {
-                None => pass.cleaned = Some((file, cleaned)),
-                Some(_) => pass.swept.push((file, cleaned)),
+        let mut moved = false;
+        for taken in &choice.taken {
+            if let Some(cleaned) = self.clean_taken(work, taken, owners, pass, &mut failed)? {
+                moved |= cleaned.moved != 0;
             }
             if failed.is_some() {
                 break;
+            }
+        }
+        // While the files it cleaned moved nothing, the pass goes on, one
+        // file at a time, until one moves something or the live bytes of
+        // the files after the first are over the budget: it looks before
+        // each file, so refused files can spend the budget, and the last
+        // file can take it past.
+        let mut copies: u64 = choice
+            .taken
+            .iter()
+            .skip(1)
+            .map(|file| file.live_bytes)
+            .sum();
+        for taken in &choice.more {
+            if moved || failed.is_some() || copies > self.state.config.max_pass_bytes {
+                break;
+            }
+            copies += taken.live_bytes;
+            if let Some(cleaned) = self.clean_taken(work, taken, owners, pass, &mut failed)? {
+                moved |= cleaned.moved != 0;
             }
         }
 
@@ -213,6 +224,65 @@ impl<'s> Cleaner<'s> {
         // again while its count stands.
         let dropped = self.drop_emptied(work, pass);
         failed.map_or(dropped, Err)
+    }
+
+    /// Cleans the file `taken`, counts what the cleaning did, and sets the
+    /// file aside if the cleaning moved nothing because its page steps
+    /// were refused. `None` if no cleaning was made. A cleaning that left
+    /// values whose owners it did not find is counted, and its error is put
+    /// in `failed`.
+    fn clean_taken<O: ValueOwners + ?Sized>(
+        &self,
+        work: &mut Work,
+        taken: &Cleanable,
+        owners: &O,
+        pass: &mut ValuePass,
+        failed: &mut Option<CleanerError>,
+    ) -> Result<Option<Cleaned>, CleanerError> {
+        let versions = self.stores().versions;
+        let counters = &self.state.counters;
+        let file = taken.file;
+        let mut cleaned = None;
+        versions.guarded(&mut || cleaned = Some(self.clean_file(work, file, owners)));
+        let cleaned = match cleaned {
+            Some(Ok(cleaned)) => cleaned,
+            // The values that were moved stand, and so does the count of
+            // the file: the pass goes on to what can be dropped.
+            Some(Err(
+                error @ CleanerError::Values(ValueStoreError::OwnersNotFound { cleaned, .. }),
+            )) => {
+                *failed = Some(error);
+                cleaned
+            }
+            Some(Err(error)) => return Err(error),
+            None => return Ok(None),
+        };
+        count(&counters.value_files_cleaned, 1);
+        count(&counters.values_moved, cleaned.moved);
+        count(&counters.values_left, cleaned.gone + cleaned.busy);
+        count(&counters.value_bytes_copied, cleaned.copied_bytes);
+        let class = DeadClass::of(taken.len.saturating_sub(taken.live_bytes), taken.len);
+        count(&counters.value_files_by_dead[class.index()], 1);
+        count(
+            &counters.value_bytes_by_dead[class.index()],
+            cleaned.copied_bytes,
+        );
+        self.wrote(cleaned.copied_bytes);
+        let refused = work
+            .busy_files
+            .remove(&file)
+            .map_or(0, |(_, refused)| refused);
+        if cleaned.moved == 0 && cleaned.busy != 0 {
+            let wait = BUSY_PASSES << refused.min(MAX_BUSY_DOUBLINGS);
+            let refused = (refused + 1).min(MAX_BUSY_DOUBLINGS);
+            work.busy_files
+                .insert(file, (work.value_passes + wait, refused));
+        }
+        match pass.cleaned {
+            None => pass.cleaned = Some((file, cleaned)),
+            Some(_) => pass.swept.push((file, cleaned)),
+        }
+        Ok(Some(cleaned))
     }
 
     /// Step 3 of [`Self::pass_values`].
@@ -273,16 +343,17 @@ impl<'s> Cleaner<'s> {
     /// Of the files at least the floor dead and not set aside, the first is
     /// the one with the largest share of dead bytes, and after it those at
     /// least [`SWEEP_DEAD_PERCENT`] dead follow, most dead first, as long as
-    /// their live bytes stay within [`CleanerConfig::max_pass_bytes`]. The
-    /// floor, the ceiling and the wait of a file set aside
-    /// ([`BUSY_PASSES`]) are as the
+    /// their live bytes stay within [`CleanerConfig::max_pass_bytes`]: those
+    /// are [`Choice::taken`], and the rest of them, in the same order, are
+    /// [`Choice::more`]. The floor, the ceiling and the wait of a file set
+    /// aside ([`BUSY_PASSES`]) are as the
     /// [module documentation](super#which-files-a-pass-cleans) states them.
     ///
     /// [`CleanerConfig::value_dead_percent`]: super::CleanerConfig::value_dead_percent
     /// [`CleanerConfig::value_min_file_dead_percent`]: super::CleanerConfig::value_min_file_dead_percent
     /// [`CleanerConfig::value_ceiling_dead_percent`]: super::CleanerConfig::value_ceiling_dead_percent
     /// [`CleanerConfig::max_pass_bytes`]: super::CleanerConfig::max_pass_bytes
-    fn value_files_to_clean(&self, work: &mut Work) -> Result<Vec<Cleanable>, CleanerError> {
+    fn value_files_to_clean(&self, work: &mut Work) -> Result<Choice, CleanerError> {
         let values = self.stores().values;
         let cleanable = values.cleanable(0);
         let dead_of = |len: u64, live: u64| len.saturating_sub(live);
@@ -302,7 +373,7 @@ impl<'s> Cleaner<'s> {
             .retain(|file, _| cleanable.iter().any(|held| held.file == *file));
         let config = &self.state.config;
         if !is_over(dead, all, config.value_dead_percent) {
-            return Ok(Vec::new());
+            return Ok(Choice::default());
         }
         let floor = match config.value_dead_percent {
             0 => 0,
@@ -322,26 +393,32 @@ impl<'s> Cleaner<'s> {
             .filter(|held| {
                 work.busy_files
                     .get(&held.file)
-                    .is_none_or(|from| *from <= now)
+                    .is_none_or(|(from, _)| *from <= now)
             })
             .collect();
         if free.is_empty() && !worth.is_empty() {
             count(&self.state.counters.value_passes_all_busy, 1);
         }
-        let Some(first) = free.first() else {
-            return Ok(Vec::new());
+        let Some((first, rest)) = free.split_first() else {
+            return Ok(Choice::default());
         };
-        let mut taken = vec![**first];
+        let mut choice = Choice {
+            taken: vec![**first],
+            more: Vec::new(),
+        };
         let mut copies = 0u64;
-        for file in &free[1..] {
-            let nearly_empty = is_at_least(dead_in(file), file.len, SWEEP_DEAD_PERCENT);
-            if !nearly_empty || copies + file.live_bytes > config.max_pass_bytes {
-                break;
+        for file in rest {
+            let sweeps = choice.more.is_empty()
+                && is_at_least(dead_in(file), file.len, SWEEP_DEAD_PERCENT)
+                && copies + file.live_bytes <= config.max_pass_bytes;
+            if sweeps {
+                copies += file.live_bytes;
+                choice.taken.push(**file);
+            } else {
+                choice.more.push(**file);
             }
-            copies += file.live_bytes;
-            taken.push(**file);
         }
-        Ok(taken)
+        Ok(choice)
     }
 
     /// Closes the value-log files that are being filled, by write-back or

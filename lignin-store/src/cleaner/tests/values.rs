@@ -5,8 +5,10 @@ use std::collections::BTreeSet;
 
 use super::*;
 use crate::{
-    cleaner::values::BUSY_PASSES,
-    values::{Cleaned, ValueStore, ValueStoreError},
+    cleaner::values::{BUSY_PASSES, MAX_BUSY_DOUBLINGS},
+    values::{
+        Cleaned, OwnersError, PointerRewrite, Rewrite, ValueOwners, ValueStore, ValueStoreError,
+    },
 };
 
 /// A store whose value-log files are full after two values of 400 bytes.
@@ -546,9 +548,9 @@ fn a_move_under_a_private_copy_is_put_off_and_made_later() {
 
     // While the copy is held, the file is set aside for a few passes:
     // each try appends the value again. Then it is tried, for nothing,
-    // and set aside again.
-    let set_aside = |tries: u64| {
-        for _ in 1..BUSY_PASSES {
+    // and set aside again, for twice the delay.
+    let set_aside = |tries: u64, wait: u64| {
+        for _ in 1..wait {
             let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
             assert!(pass.cleaned.is_none(), "{pass:?}");
         }
@@ -556,26 +558,36 @@ fn a_move_under_a_private_copy_is_put_off_and_made_later() {
         assert_eq!(did.value_bytes_copied, tries * cleaned.copied_bytes);
         assert_eq!((did.value_files_cleaned, did.values_left), (tries, tries));
     };
-    set_aside(1);
+    set_aside(1, BUSY_PASSES);
     let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
     assert_eq!(pass.cleaned, Some((file, cleaned)));
-    set_aside(2);
+    set_aside(2, 2 * BUSY_PASSES);
 
     txn.roll_back();
+    let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+    let (tried, again) = pass.cleaned.expect("the file's wait is over");
+    assert_eq!((tried, again.moved), (file, 1));
     // The file goes, and so does the one that took the copy nobody
     // points to.
     let (moved, dropped) = settle_values(&cleaner, &Cells(&db));
-    assert_eq!(moved, 1);
-    assert!(dropped.contains(&file), "{dropped:?}");
+    assert_eq!(moved, 0);
+    assert!(
+        pass.dropped
+            .iter()
+            .chain(&dropped)
+            .any(|gone| *gone == file),
+        "{dropped:?}"
+    );
     assert_ne!(db.pointer(page(1), slot(1)), old);
     db.check_warm();
 }
 
 /// Files whose values cannot be moved, because a write transaction holds
 /// copies of their pages, take no pass from a file that can be cleaned.
-/// Each of them is set aside when it was tried, for [`BUSY_PASSES`] passes
-/// however many are set aside with it, and a pass in which every file is
-/// set aside is counted.
+/// Each of them is set aside when it was tried, not to be taken again
+/// before [`BUSY_PASSES`] passes later, and twice that delay after each
+/// further try in vain, however many are set aside with it, and a pass in
+/// which every file is set aside is counted.
 #[test]
 fn files_with_busy_pages_keep_no_other_file_from_being_cleaned() {
     const PAGES: u8 = 6;
@@ -604,47 +616,55 @@ fn files_with_busy_pages_keep_no_other_file_from_being_cleaned() {
         txn.copy(page(u32::from(id)));
     }
 
-    // The file that a pass tried for nothing, if it tried one.
-    let tried_in_vain = || {
+    // The files that a pass tried for nothing.
+    let tried_in_vain = || -> Vec<FileId> {
         let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
-        let in_vain = |(_, cleaned): &(FileId, Cleaned)| cleaned.moved == 0 && cleaned.busy != 0;
-        pass.cleaned.filter(in_vain).map(|(file, _)| file)
+        let in_vain = |(_, cleaned): &&(FileId, Cleaned)| cleaned.moved == 0 && cleaned.busy != 0;
+        let cleaned = pass.cleaned.iter().chain(&pass.swept);
+        cleaned.filter(in_vain).map(|(file, _)| *file).collect()
     };
 
     // Each file is tried once: five for nothing, and the one whose page
-    // nobody holds is cleaned.
-    let set_aside: BTreeSet<FileId> = (0..PAGES).filter_map(|_| tried_in_vain()).collect();
+    // nobody holds is cleaned, in the same pass as they are if it comes
+    // after them.
+    let set_aside: BTreeSet<FileId> = (0..PAGES).flat_map(|_| tried_in_vain()).collect();
     assert_eq!(set_aside.len() as u64, busy, "{set_aside:?}");
     let did = state.stats();
-    assert_eq!((did.values_moved, did.values_left), (1, busy), "{did:?}");
+    // The value of the free page is moved, and with the passes going on
+    // past the files tried for nothing, the copy of a cleaning before may
+    // be moved again in them.
+    assert_eq!(did.values_left, busy, "{did:?}");
+    assert!(did.values_moved >= 1, "{did:?}");
     assert_eq!(unmoved(), [true, true, true, true, true, false]);
 
-    // From then on each of the five is tried again once in every
-    // BUSY_PASSES passes, and a pass in which none is due tries none of
-    // them and is counted. The others clean the files that the tries
-    // filled with copies nothing points to.
+    // From then on each of the five is tried again after BUSY_PASSES
+    // passes, then twice and four times that: three times in the next 80
+    // passes. A pass in which none is due tries none of them and is
+    // counted. The others clean the files that the tries filled with
+    // copies nothing points to.
     let passes = 10 * BUSY_PASSES;
     let all_busy = state.stats().value_passes_all_busy;
     let mut again = BTreeMap::new();
-    for file in (0..passes).filter_map(|_| tried_in_vain()) {
-        *again.entry(file).or_insert(0u64) += 1;
+    let mut trying = 0u64;
+    for _ in 0..passes {
+        let tried = tried_in_vain();
+        trying += u64::from(!tried.is_empty());
+        for file in tried {
+            *again.entry(file).or_insert(0u64) += 1;
+        }
     }
-    let tried: u64 = again.values().sum();
     let idle = state.stats().value_passes_all_busy - all_busy;
     assert!(
-        idle > 0 && tried + idle <= passes,
-        "{tried} tries and {idle} idle passes"
+        idle > 0 && trying + idle <= passes,
+        "{trying} passes that tried and {idle} idle passes"
     );
     assert!(again.keys().eq(set_aside.iter()), "{again:?}");
-    assert!(
-        again.values().all(|tries| (9..=11).contains(tries)),
-        "{again:?}"
-    );
+    assert!(again.values().all(|tries| *tries == 3), "{again:?}");
     assert_eq!(unmoved(), [true, true, true, true, true, false]);
 
     // Each of the five is tried again when its time has come, and moved.
     txn.roll_back();
-    for _ in 0..BUSY_PASSES * u64::from(PAGES) {
+    for _ in 0..BUSY_PASSES << MAX_BUSY_DOUBLINGS {
         cleaner.pass_values(&Cells(&db)).expect("a pass");
     }
     settle_values(&cleaner, &Cells(&db));
@@ -926,4 +946,119 @@ fn owners_that_were_not_found_are_not_replaced_by_a_later_failure() {
         }
         other => panic!("the pass ended with: {other}"),
     }
+}
+
+/// Owners that, around the looks at one value, have a commit to its page
+/// made on another thread and wait for it to end: once after the look the
+/// cleaner makes before its copies, so that the page it steps on has been
+/// superseded, and once in the look of its first try again.
+struct Hot<'d> {
+    cells: Cells<'d>,
+    target: ValuePointer,
+    looks: std::cell::Cell<u32>,
+    commits: std::cell::Cell<u8>,
+}
+
+impl Hot<'_> {
+    /// A commit to the target's page on another thread, which must end
+    /// while this thread waits inside a look of the cleaner.
+    fn commit_beside(&self) {
+        let db = self.cells.0;
+        let page = self.target_page();
+        let round = self.commits.get() + 1;
+        let (sent, ended) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                db.commit(&[Op::Hash {
+                    page,
+                    slot: slot(2),
+                    byte: round,
+                }]);
+                let _ = sent.send(());
+            });
+            if ended
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .is_err()
+            {
+                eprintln!("a commit to the page was held up by the cleaner's look");
+                std::process::abort();
+            }
+        });
+        self.commits.set(round);
+    }
+
+    fn target_page(&self) -> PageId {
+        page(1)
+    }
+}
+
+impl ValueOwners for Hot<'_> {
+    type Found = <Cells<'static> as ValueOwners>::Found;
+
+    fn find(&self, id: PageId, pointer: ValuePointer) -> Result<Option<Self::Found>, OwnersError> {
+        if pointer != self.target {
+            return self.cells.find(id, pointer);
+        }
+        let look = self.looks.get() + 1;
+        self.looks.set(look);
+        match look {
+            1 => {
+                let found = self.cells.find(id, pointer);
+                self.commit_beside();
+                found
+            }
+            2 => {
+                self.commit_beside();
+                self.cells.find(id, pointer)
+            }
+            _ => self.cells.find(id, pointer),
+        }
+    }
+
+    fn rewrite(
+        &self,
+        step: PointerRewrite<'_>,
+        found: Self::Found,
+    ) -> Result<Rewrite, OwnersError> {
+        self.cells.rewrite(step, found)
+    }
+}
+
+/// A page that a commit supersedes between the cleaner's look and its
+/// step, as the pages that most commits change are while commits come
+/// back to back: the step is refused, and tried again with a fresh look
+/// ([`crate::values::BUSY_RETRIES`]), which moves the value. The look of
+/// the try again holds no lock of the store that a commit takes: a commit
+/// to the same page, made on another thread from inside that look, ends
+/// while the cleaner waits for it.
+#[test]
+fn a_commit_to_a_page_the_cleaner_tries_again_is_not_held_up() {
+    let db = filled();
+    db.commit(&[set((1, 2), long(81, 300))]);
+    db.wb().pass().expect("a pass");
+    let old = db.pointer(page(1), slot(1));
+    let state = CleanerState::new(eager());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let owners = Hot {
+        cells: Cells(&db),
+        target: old,
+        looks: 0.into(),
+        commits: 0.into(),
+    };
+    let pass = cleaner.pass_values(&owners).expect("a pass");
+    assert_eq!(
+        (owners.looks.get(), owners.commits.get()),
+        (2, 2),
+        "{pass:?}"
+    );
+    let busy: u64 = pass
+        .cleaned
+        .iter()
+        .chain(&pass.swept)
+        .map(|(_, cleaned)| cleaned.busy)
+        .sum();
+    assert_eq!(busy, 0, "{pass:?}");
+    let now = db.pointer(page(1), slot(1));
+    assert_ne!(now.file(), old.file(), "the value moved on the try again");
+    db.check_warm();
 }

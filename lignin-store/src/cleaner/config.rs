@@ -90,7 +90,10 @@ pub struct CleanerConfig {
     /// bounds the copies of blocks that the cleaner writes in a second. A
     /// pass over the value log cleans its first file whole, and after it
     /// the files that are nearly empty while their live bytes stay within
-    /// this.
+    /// this; if none of those moved anything, it goes on to the next files
+    /// worth cleaning while the live bytes of the files after the first
+    /// are at most this, so the last can take it past
+    /// ([module documentation](super#which-files-a-pass-cleans)).
     pub max_pass_bytes: u64,
     /// The length at which the segment that takes the moved blocks is
     /// sealed and the next one begun.
@@ -115,7 +118,8 @@ pub struct CleanerConfig {
     /// the value log's dead share, with the conditions the
     /// [module documentation](super#which-files-a-pass-cleans) states: once
     /// the cleaner has caught up, at most this, but for the files being
-    /// filled and those that wait or are kept. Below
+    /// filled, those that wait or are kept, and those set aside after
+    /// cleanings that moved nothing. Below
     /// [`Self::value_dead_percent`] it is over whenever the target is.
     pub value_ceiling_dead_percent: u8,
     /// How long the background loop sleeps between two passes when nobody
@@ -140,8 +144,8 @@ impl CleanerConfig {
     /// cleaner: in the segments, 14 that the cleaner leaves, and at most 4
     /// more in what was emptied and waits to be deleted. In the value log,
     /// at most 20, the ceiling, once the cleaner has caught up, but for the
-    /// files being filled: the worst case, which deaths spread evenly over
-    /// the files can reach. That is for a store with no
+    /// files being filled and those set aside: the worst case, which deaths
+    /// spread evenly over the files can reach. That is for a store with no
     /// reader on an old version, no operation that runs for long, and
     /// blocks that are large against [`Self::min_segment_len`]. What a
     /// burst of commits kills faster than [`Self::max_pass_bytes`] and

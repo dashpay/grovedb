@@ -367,12 +367,24 @@
 //!    aside, the one with the largest dead share is cleaned whole, and
 //!    after it those of them at least 90 in a hundred dead, most dead
 //!    first, while their live bytes stay within
-//!    [`CleanerConfig::max_pass_bytes`].
-//! 4. A file whose cleaning moved nothing, because write transactions held
-//!    the pages of its values, is set aside: the seven passes after that
-//!    one pass it over, however many files are set aside, unless one of
-//!    them finds it missing from the closed files a cleaning can help,
-//!    after which it is set aside no more.
+//!    [`CleanerConfig::max_pass_bytes`]. If none of those cleanings moved
+//!    anything, the pass goes on to the next of those files, most dead
+//!    first, one at a time, until one moves something or the live bytes
+//!    of the files after the first are over
+//!    [`CleanerConfig::max_pass_bytes`]: it looks before each file, so the
+//!    last can take it past.
+//! 4. A page step that was refused, because a commit had superseded the
+//!    page since the cleaner looked or a write transaction held a private
+//!    copy of it, is tried again with a fresh look, up to three times, and
+//!    a try that is taken installs the copy already made
+//!    ([`ValueStore::install`](crate::values::ValueStore::install)). A file
+//!    whose cleaning moved nothing, with a step still refused as busy
+//!    after its last try, is set aside: no pass takes it before 8 passes
+//!    after that one, and each further such cleaning in a row doubles that
+//!    delay, to 16, 32 and at most 256 passes, however many files are set
+//!    aside, unless a pass
+//!    finds it missing from the closed files a cleaning can help, after
+//!    which it is set aside no more.
 //!
 //! **The worst case of the value log's dead share:** with the ceiling at
 //! or above the target, a pass that finds the counted bytes over the
@@ -382,11 +394,27 @@
 //! one shorter than [`CleanerConfig::min_segment_len`] is not closed
 //! however much of it is dead. Files that wait to be deleted, and those
 //! that only a pin or a checkpoint's hold keeps, are not counted and come
-//! on top.
+//! on top. So do the dead bytes of the files set aside (step 4), which are
+//! counted and which no pass cleans while they wait: under commits back to
+//! back, a file whose owners lie in the pages that most commits change can
+//! be refused at every try, and it stays until a try finds those pages
+//! free.
 //! Deaths spread evenly over the files, as regroupings spread them, can
 //! bring the log to the ceiling: no file need reach the floor before it.
 //! It is not a bound a pass keeps, and the log can come to rest well under
 //! the target, a cleaning giving back whole files.
+//!
+//! **Under commits back to back** the log is not held there. A file whose
+//! last live values belong to pages that a write transaction holds at
+//! nearly every try can stay until the load pauses: a step from the
+//! cleaner's thread loses to the private copy, and only the commit that
+//! holds the page could move such a value. Under updates of the reference
+//! workload back to back on a DigitalOcean `so-16vcpu-128gb-intel`
+//! droplet, the refusals fell on 376 pages, most of them for a private
+//! copy; the value log's dead share grew while the load lasted, to 62 to
+//! 69 in a hundred at worst, and the store to 1.6 to 1.9 GB where a paced
+//! churn holds it under 1 GB. It came back when the load ended, to 534 to
+//! 556 MB of values.
 //!
 //! A file that is empty and waits to be deleted, for a pin on a version
 //! that still points into it or for a checkpoint's hold, is dead space
@@ -395,10 +423,15 @@
 //! that waits is.
 //!
 //! A move is refused while a write transaction holds a private copy of
-//! the page (PV7), and the copy that was appended for it is dead. A file
-//! whose cleaning moved nothing for that reason is set aside (step 4 of
-//! the rule above), and the passes it is set aside for are for the other
-//! files worth cleaning. Each try of a file
+//! the page (PV7), or when a commit superseded the page after the cleaner
+//! looked; after the last try the copy that was appended for it is dead.
+//! A file whose cleaning moved nothing for that reason is set aside (step
+//! 4 of the rule above), and a pass whose files all moved nothing goes on
+//! to the next file worth cleaning while its budget lasts (step 3). The
+//! budget is counted in live bytes, so files refused at every try that
+//! hold many live values can spend it before the pass comes to a file
+//! that moves; each delay before they may be taken again is then twice
+//! the one before, up to 256 passes. Each try of a file
 //! that a long transaction keeps busy appends its live values again for
 //! nothing; a file is tried because the floor let the cleaner take it,
 //! so at least that share of it is dead, unless the log is over its
