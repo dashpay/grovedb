@@ -512,7 +512,11 @@ same row in the same report, against the target and the accept over the
 plan's RocksDB value: for the wall time a transition, 50 / 298 = 0.168
 and 80 / 298 = 0.268. A row whose RocksDB value the plan estimated or did
 not measure (the page reads a transition, the crash recovery) is scored
-by its value. A row is "target met" at or under the target, "accept met"
+by its value. A row is scored in the phases of the state the plan means:
+the write rows in the load and the writes at size, not in the churn; the
+page reads a transition and the size at a phase's end in the writes at
+size; the reads warm and settled, not cold; the size flushed; the
+checkpoints at size and flushed; the reopen flushed. A row is "target met" at or under the target, "accept met"
 at or under the accept, and "missed" above it. A ratio row of a report
 without RocksDB, or whose RocksDB row is 0, has no score. The score lists
 the rows of the table that the report does not measure, and for those

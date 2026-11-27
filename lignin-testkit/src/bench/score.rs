@@ -23,9 +23,11 @@ use super::{Engine, Report, Row};
 pub struct Target {
     /// The plan's words for the row.
     pub measure: &'static str,
-    /// The ids of the report rows that measure it; none for a row this
-    /// harness does not measure.
-    pub rows: &'static [&'static str],
+    /// The report rows that measure it, each an id with the phases it is
+    /// scored in; none for a row this harness does not measure. The other
+    /// phases of the id are not the plan's state: the cold reads, the
+    /// churn, the page reads of a load that a cache still holds.
+    pub rows: &'static [(&'static str, &'static [&'static str])],
     /// The plan's RocksDB value, where it measured one: the row is scored
     /// as a ratio to RocksDB in the same run. `None` scores the value.
     pub rocksdb: Option<f64>,
@@ -87,11 +89,19 @@ impl std::fmt::Display for Verdict {
 
 const NOT_HERE: &str = "";
 
+/// The write phases a write row is scored in: the load and the writes at
+/// size, and not the churn before them.
+const WRITES: &[&str] = &["load", "create", "update", "delete"];
+/// The write phases at size.
+const AT_SIZE: &[&str] = &["create", "update", "delete"];
+/// The warm reads: right after the load, and settled.
+const READS: &[&str] = &["warm", "settled"];
+
 /// The plan's prediction table, row by row, in its order.
 pub const TARGETS: &[Target] = &[
     Target {
         measure: "Bytes logged per transition",
-        rows: &["bytes_logged_per_transition"],
+        rows: &[("bytes_logged_per_transition", WRITES)],
         rocksdb: Some(23_900.0),
         target: 2_400.0,
         accept: 3_200.0,
@@ -99,7 +109,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Physical bytes written per transition",
-        rows: &["physical_bytes_per_transition"],
+        rows: &[("physical_bytes_per_transition", WRITES)],
         rocksdb: Some(56_000.0),
         target: 5_000.0,
         accept: 8_000.0,
@@ -107,7 +117,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Wall time per transition",
-        rows: &["wall_per_transition"],
+        rows: &[("wall_per_transition", WRITES)],
         rocksdb: Some(298.0),
         target: 50.0,
         accept: 80.0,
@@ -115,7 +125,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Keyed lookups per transition",
-        rows: &["keyed_lookups_per_transition"],
+        rows: &[("keyed_lookups_per_transition", WRITES)],
         rocksdb: Some(70.0),
         target: 0.0,
         accept: 0.0,
@@ -131,7 +141,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Commit of a 20-transition block",
-        rows: &["block_commit"],
+        rows: &[("block_commit", WRITES)],
         rocksdb: Some(1.0),
         target: 0.2,
         accept: 0.5,
@@ -147,7 +157,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Bulk load of 1M transitions",
-        rows: &["bulk_load"],
+        rows: &[("bulk_load", &["load"])],
         rocksdb: Some(144.5),
         target: 25.0,
         accept: 50.0,
@@ -155,7 +165,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Point get",
-        rows: &["point_get"],
+        rows: &[("point_get", READS)],
         rocksdb: Some(8.9),
         target: 2.0,
         accept: 5.0,
@@ -163,7 +173,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Point query with proof",
-        rows: &["point_query_proof"],
+        rows: &[("point_query_proof", READS)],
         rocksdb: Some(73.6),
         target: 10.0,
         accept: 20.0,
@@ -171,7 +181,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "100 references to documents, with proof",
-        rows: &["references_proof"],
+        rows: &[("references_proof", READS)],
         rocksdb: Some(1_262.0),
         target: 450.0,
         accept: 750.0,
@@ -179,7 +189,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Page reads per transition, state far larger than cache",
-        rows: &["page_reads_per_transition"],
+        rows: &[("page_reads_per_transition", AT_SIZE)],
         rocksdb: None,
         target: 2.0,
         accept: 3.0,
@@ -187,7 +197,10 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Size after 1M transitions, random documents",
-        rows: &["size_on_disk", "size_on_disk_at_end"],
+        rows: &[
+            ("size_on_disk", &["flushed"]),
+            ("size_on_disk_at_end", AT_SIZE),
+        ],
         rocksdb: Some(1_010_000_000.0),
         target: 850_000_000.0,
         accept: 1_000_000_000.0,
@@ -195,7 +208,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Checkpoint",
-        rows: &["checkpoint"],
+        rows: &[("checkpoint", &["at-size", "flushed"])],
         rocksdb: Some(10.0),
         target: 15.0,
         accept: 40.0,
@@ -203,7 +216,7 @@ pub const TARGETS: &[Target] = &[
     },
     Target {
         measure: "Reopen",
-        rows: &["reopen"],
+        rows: &[("reopen", &["flushed"])],
         rocksdb: Some(31.0),
         target: 20.0,
         accept: 60.0,
@@ -245,8 +258,8 @@ pub struct Scored<'a> {
 }
 
 /// The rows of `report` that the plan's table scores: every LigninDB row
-/// whose id a [`Target`] names, in the table's order and then the
-/// report's.
+/// whose id and phase a [`Target`] names, in the table's order and then
+/// the report's.
 pub fn scored(report: &Report) -> Vec<Scored<'_>> {
     let engine = |name: &str| report.engines.iter().find(|engine| engine.engine == name);
     let Some(lignindb) = engine(super::LigninDbEngine::NAME) else {
@@ -255,11 +268,11 @@ pub fn scored(report: &Report) -> Vec<Scored<'_>> {
     let rocksdb = engine(super::RocksDbEngine::NAME);
     let mut scored = Vec::new();
     for target in TARGETS {
-        for row in lignindb
-            .rows
-            .iter()
-            .filter(|row| target.rows.contains(&row.id.as_str()))
-        {
+        let of_target = |row: &&Row| {
+            (target.rows.iter())
+                .any(|(id, phases)| *id == row.id && phases.contains(&row.phase.as_str()))
+        };
+        for row in lignindb.rows.iter().filter(of_target) {
             let rocksdb = rocksdb.and_then(|engine| {
                 engine
                     .rows
@@ -436,6 +449,9 @@ mod tests {
                     row("keyed_lookups_per_transition", "create", 0.0),
                     row("bytes_logged_per_transition", "create", 4_500.0),
                     row("page_reads_per_transition", "create", 2.8),
+                    row("page_reads_per_transition", "load", 0.0),
+                    row("point_get", "cold", 900.0),
+                    row("wall_per_transition", "churn", 1_000.0),
                     row("hashes_per_transition", "create", 159.0),
                 ],
             ),
