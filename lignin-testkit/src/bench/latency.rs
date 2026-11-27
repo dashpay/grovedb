@@ -134,7 +134,7 @@ use super::{
 use crate::workload::{drive::Documents, Op, Stream};
 
 /// The schema of a [`LatencyReport`].
-pub const SCHEMA: &str = "lignin-bench-latency/1";
+pub const SCHEMA: &str = "lignin-bench-latency/2";
 
 /// The name of the measuring thread, by which a trace finds it.
 pub const THREAD_NAME: &str = "lignin-commit";
@@ -340,13 +340,10 @@ pub struct LatencyReport {
     /// How often the neighbour synced its file, in milliseconds.
     pub neighbour_ms: Option<u64>,
     /// Whether LigninDB was opened on the file layer that times its calls.
-    #[serde(default)]
     pub watch_files: bool,
     /// Whether every block was marked for a trace.
-    #[serde(default)]
     pub mark_blocks: bool,
     /// Whether the engine's counts were read after each commit.
-    #[serde(default)]
     pub parts: bool,
     /// The engines, in the order they were measured.
     pub engines: Vec<EngineLatency>,
@@ -378,7 +375,6 @@ pub struct EngineLatency {
     pub parts_ns: Option<Vec<[u64; 6]>>,
     /// The same parts over all the measured blocks, read once before them
     /// and once after.
-    #[serde(default)]
     pub parts_total: Option<[u64; 6]>,
     /// The turns of the engine's write-back that ended over the measured
     /// blocks, where it has such turns.
@@ -390,13 +386,13 @@ pub struct EngineLatency {
     /// What the thread that only sleeps saw beside the commits.
     #[serde(default)]
     pub clock: ClockProbe,
-    /// The blocks that began late: what followed the commit before them, a
-    /// reading of the engine's counts or the machine keeping the thread off
-    /// a processor, took longer than the pause.
-    #[serde(default)]
+    /// The pauses between two blocks that had passed before the harness
+    /// came to sleep: what followed the commit, a reading of the engine's
+    /// counts or the machine keeping the thread off a processor, took
+    /// longer than the pause, and the next block began without one. It is
+    /// counted before the sleep: a sleep that ended late is not in it.
     pub pauses_outlasted: u64,
-    /// The longest a block began late by, in nanoseconds.
-    #[serde(default)]
+    /// The longest such a pause had passed by, in nanoseconds.
     pub outlasted_ns: u64,
     /// The syncs the engine made through the watching file layer over the
     /// measured blocks, by what they are of: how many, and their time in
@@ -658,11 +654,12 @@ thread_local! {
 
 #[derive(Debug, Default)]
 struct Seen {
-    /// The syncs under way: a number, when each began, of what.
-    under_way: Vec<(u64, Instant, &'static str)>,
+    /// The syncs under way: a number, when each began by the monotonic
+    /// clock in nanoseconds, of what.
+    under_way: Vec<(u64, u64, &'static str)>,
     /// The syncs that ended since the measured blocks began: when each
     /// began and ended, of what.
-    ended: Vec<(Instant, Instant, &'static str)>,
+    ended: Vec<(u64, u64, &'static str)>,
     /// How many syncs ended, and their time in nanoseconds, by what they
     /// are of.
     counted: BTreeMap<&'static str, (u64, u64)>,
@@ -680,17 +677,17 @@ impl Watch {
         let mut seen = self.seen();
         let number = seen.next;
         seen.next += 1;
-        let began = Instant::now();
+        let began = monotonic();
         seen.under_way.push((number, began, of));
         drop(seen);
         let synced = sync();
-        let ended = Instant::now();
+        let ended = monotonic();
         let mut seen = self.seen();
         seen.under_way.retain(|(other, ..)| *other != number);
         seen.ended.push((began, ended, of));
         let counted = seen.counted.entry(of).or_default();
         counted.0 += 1;
-        counted.1 += (ended - began).as_nanos() as u64;
+        counted.1 += ended.saturating_sub(began);
         synced
     }
 
@@ -707,7 +704,7 @@ impl Watch {
     /// `to`, once every sync that began before `to` has ended. It is asked
     /// after the measured blocks and not between two of them: the wait for
     /// a sync to end is no part of a run's pace.
-    fn beside(&self, from: Instant, to: Instant) -> Vec<(String, u64)> {
+    fn beside(&self, from: u64, to: u64) -> Vec<(String, u64)> {
         let seen = loop {
             let seen = self.seen();
             if seen.under_way.iter().all(|(_, began, _)| *began >= to) {
@@ -720,7 +717,7 @@ impl Watch {
             .ended
             .iter()
             .filter(|(began, ended, _)| *began < to && *ended > from);
-        over.map(|(began, ended, of)| (of.to_string(), (*ended - *began).as_nanos() as u64))
+        over.map(|(began, ended, of)| (of.to_string(), ended.saturating_sub(*began)))
             .collect()
     }
 
@@ -939,12 +936,14 @@ fn monotonic() -> u64 {
 }
 
 /// What is left of the pause after a commit that ended at `ended`, at
-/// `now`: how long to sleep, or by how much the next block is late.
-fn pause_left(ended: Instant, pause: Duration, now: Instant) -> Result<Duration, Duration> {
-    let until = ended + pause;
-    until
-        .checked_duration_since(now)
-        .ok_or_else(|| now.saturating_duration_since(until))
+/// `now`, both by the monotonic clock in nanoseconds: how long to sleep, or
+/// by how much the pause has passed already.
+fn pause_left(ended: u64, pause: Duration, now: u64) -> Result<Duration, Duration> {
+    let until = ended + pause.as_nanos() as u64;
+    match until.checked_sub(now) {
+        Some(left) => Ok(Duration::from_nanos(left)),
+        None => Err(Duration::from_nanos(now - until)),
+    }
 }
 
 /// A block that was applied and committed.
@@ -953,10 +952,10 @@ struct Committed {
     applied: Duration,
     /// How long its commit took, by the monotonic clock.
     took: Duration,
-    /// When the commit began, by the monotonic clock in nanoseconds.
+    /// When the commit began, by the monotonic clock in nanoseconds: its
+    /// end is that and its length, and the pause after it, its line for a
+    /// trace and the syncs beside it all go by the two.
     began: u64,
-    /// A moment just before the commit began.
-    from: Instant,
     /// How long the thread ran on a processor during the commit.
     ran: u64,
 }
@@ -992,7 +991,6 @@ fn block<E: Engine>(
         watch.reset_appends();
     }
     let ran = thread_clock();
-    let from = Instant::now();
     let began = monotonic();
     let committed = transaction.commit();
     let ended = monotonic();
@@ -1002,7 +1000,6 @@ fn block<E: Engine>(
         applied,
         took: Duration::from_nanos(ended.saturating_sub(began)),
         began,
-        from,
         ran,
     })
 }
@@ -1117,7 +1114,7 @@ fn measure_in<E: Subject>(
     let first = engine.look();
     let mut parts_ns = (first.filter(|_| options.parts)).map(|_| Vec::with_capacity(blocks));
     // The slowest commits, each with when it began and ended.
-    let mut slowest: Vec<(SlowCommit, Instant, Instant)> = Vec::new();
+    let mut slowest: Vec<(SlowCommit, u64, u64)> = Vec::new();
     let mut marker = Marker::new(options.mark, options.mark_blocks);
     let committed = AtomicU64::new(0);
     let stop = AtomicBool::new(false);
@@ -1175,12 +1172,11 @@ fn measure_in<E: Subject>(
                 let Committed {
                     applied,
                     took,
-                    began,
-                    from,
+                    began: from,
                     ran,
                 } = block(engine, &mut stream, grove_version, watch)?;
-                let to = from + took;
-                marker.mark(number, took, began);
+                let to = from + took.as_nanos() as u64;
+                marker.mark(number, took, from);
                 // From here to the next block is the pause, which is counted
                 // from the commit's end: what the harness does in it moves
                 // the next block only where it takes longer than the pause,
@@ -1219,11 +1215,15 @@ fn measure_in<E: Subject>(
                     slowest.truncate(options.slowest);
                 }
                 committed.fetch_add(1, Ordering::AcqRel);
-                match pause_left(to, options.pause, Instant::now()) {
+                // No block comes after the last, and no pause.
+                if number + 1 == options.blocks {
+                    break;
+                }
+                match pause_left(to, options.pause, monotonic()) {
                     Ok(left) => std::thread::sleep(left),
-                    Err(late) => {
+                    Err(passed) => {
                         pauses_outlasted += 1;
-                        outlasted = outlasted.max(late);
+                        outlasted = outlasted.max(passed);
                     }
                 }
             }
@@ -1372,15 +1372,19 @@ impl LatencyReport {
 
     /// Reads a report from JSON, refusing another schema.
     pub fn from_json(text: &str) -> Result<Self, BenchError> {
-        let report: LatencyReport = serde_json::from_str(text)
-            .map_err(|error| BenchError::Check(format!("not a latency report: {error}")))?;
-        match report.schema == SCHEMA {
-            true => Ok(report),
-            false => Err(BenchError::Check(format!(
-                "the report has the schema {:?}, not {SCHEMA:?}",
-                report.schema
-            ))),
+        // The schema first: a report of an earlier schema has not every
+        // field, and is to be refused for what it is. Such a report was
+        // made at another pace and does not say all that it was asked, so
+        // it is read by nothing that holds runs against one another.
+        let failed = |error| BenchError::Check(format!("not a latency report: {error}"));
+        let value: serde_json::Value = serde_json::from_str(text).map_err(failed)?;
+        let schema = value.get("schema").and_then(|schema| schema.as_str());
+        if schema != Some(SCHEMA) {
+            return Err(BenchError::Check(format!(
+                "the report has the schema {schema:?}, not {SCHEMA:?}"
+            )));
         }
+        serde_json::from_value(value).map_err(failed)
     }
 }
 
@@ -1509,8 +1513,8 @@ pub fn table(report: &LatencyReport) -> String {
         );
         let _ = write!(
             out,
-            "\n- the pause after a commit is from the commit's end: {} blocks began late, by {} µs at \
-             the most, where what followed the commit outlasted it{}",
+            "\n- the pause after a commit is from the commit's end: {} pauses had passed before the \
+             harness came to sleep, by {} µs at the most, and the next block began without one{}",
             engine.pauses_outlasted,
             micros(engine.outlasted_ns),
             match report.parts {
@@ -1530,6 +1534,15 @@ pub fn table(report: &LatencyReport) -> String {
             "- the commit, off a processor, µs: median {median}, 99% {p99}, 99.9% {p999}, \
              longest {longest}"
         );
+        if let (None, Some(total)) = (&engine.parts_ns, engine.parts_total) {
+            for (name, nanos) in PARTS.iter().zip(total) {
+                let _ = writeln!(
+                    out,
+                    "- {name}, as the engine counts it, over the measured blocks: {:.1} ms in all",
+                    nanos as f64 / 1e6
+                );
+            }
+        }
         for (part, name) in PARTS.iter().enumerate() {
             let Some(parts) = &engine.parts_ns else {
                 break;
@@ -2085,9 +2098,9 @@ mod tests {
     fn the_pause_is_from_the_commits_end_and_what_outlasts_it_is_counted() {
         // What is left of a pause is counted from the commit's end, whatever
         // was done since: by moments that are given, and no clock.
-        let ended = Instant::now();
+        let ended = 7_000_000_000;
         let pause = Duration::from_millis(5);
-        let after = |millis| ended + Duration::from_millis(millis);
+        let after = |millis: u64| ended + millis * 1_000_000;
         assert_eq!(pause_left(ended, pause, ended), Ok(pause));
         assert_eq!(
             pause_left(ended, pause, after(2)),
@@ -2112,7 +2125,8 @@ mod tests {
         LOOK.set(Duration::from_millis(9));
         LOOKS.set(0);
         let late = measure_in::<Noting>(&options, dir.path()).unwrap();
-        assert_eq!(late.pauses_outlasted, 12);
+        // Twelve blocks have eleven pauses between them: none follows the last.
+        assert_eq!(late.pauses_outlasted, 11);
         assert!(late.outlasted_ns >= 4_000_000, "{}", late.outlasted_ns);
         // The counts were read before the blocks, after each commit and
         // after the blocks, and each commit has its own.
@@ -2124,7 +2138,10 @@ mod tests {
             parts: true,
             ..report_of(&options)
         });
-        assert!(text.contains("12 blocks began late"), "{text}");
+        assert!(
+            text.contains("11 pauses had passed before the harness came to sleep"),
+            "{text}"
+        );
         assert!(
             text.contains("the engine's counts were read after each commit"),
             "{text}"
@@ -2366,7 +2383,7 @@ mod tests {
         log.sync_data().unwrap();
         watch.begin();
 
-        let from = Instant::now();
+        let from = monotonic();
         log.append(b"a group").unwrap();
         log.append(b"a record").unwrap();
         value.append(b"a value").unwrap();
@@ -2378,7 +2395,7 @@ mod tests {
         table.sync_data().unwrap();
         log.sync_data().unwrap();
         layer.sync_dir(&db.join("wal")).unwrap();
-        let to = Instant::now();
+        let to = monotonic();
 
         let counted = watch.counted();
         let counts: Vec<(&str, u64)> = counted
@@ -2419,10 +2436,8 @@ mod tests {
         assert_eq!(beside.len(), 8, "{beside:?}");
         assert_eq!(beside[0], "a value-log file");
         assert_eq!(beside[7], "the names of wal/");
-        let later = Instant::now();
-        assert!(watch
-            .beside(later, later + Duration::from_millis(1))
-            .is_empty());
+        let later = monotonic();
+        assert!(watch.beside(later, later + 1_000_000).is_empty());
     }
 
     fn small(scratch: &Path) -> LatencyOptions {
@@ -2493,7 +2508,13 @@ mod tests {
         assert_eq!(read, report);
         let text = table(&report);
         assert!(text.contains("| - | rocksdb | heavy, a neighbour's sync every 1 ms | 12 |"));
-        assert!(LatencyReport::from_json(&report.to_json().replace(SCHEMA, "other/1")).is_err());
+        // A report of another schema is refused for its schema, and one of
+        // the schema before this one in particular: it has not every field.
+        let other = LatencyReport::from_json(&report.to_json().replace(SCHEMA, "other/1"));
+        assert!(other.unwrap_err().to_string().contains("has the schema"));
+        let earlier = r#"{"schema":"lignin-bench-latency/1","engines":[]}"#;
+        let refused = LatencyReport::from_json(earlier).unwrap_err().to_string();
+        assert!(refused.contains("lignin-bench-latency/1"), "{refused}");
     }
 
     #[cfg(grovedb_engine_seam)]
