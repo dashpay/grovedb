@@ -2306,6 +2306,71 @@ mod tests {
         }
     }
 
+    #[test]
+    fn es2_a_kind_of_no_weight_in_a_layer_of_several_is_not_sized() {
+        // A `Mix` can name a kind and give it no weight: it adds nothing to
+        // the average. Trees whose kinds all have no weight cannot be sized
+        // at all (their aggregates are an average over those weights), and
+        // a layer that names them so, with no weight, is the layer without
+        // them: one level is a seek and two hash calls, and no bytes, as
+        // on the version before.
+        let trees_of_no_kind = EstimatedSumTrees::SomeSumTrees {
+            sum_trees_weight: 0,
+            big_sum_trees_weight: 0,
+            count_trees_weight: 0,
+            count_sum_trees_weight: 0,
+            non_sum_trees_weight: 0,
+            provable_sum_trees_weight: 0,
+            provable_count_trees_weight: 0,
+            provable_count_sum_trees_weight: 0,
+            provable_count_provable_sum_trees_weight: 0,
+            provable_count_provable_big_sum_trees_weight: 0,
+            count_big_sum_trees_weight: 0,
+            provable_big_sum_trees_weight: 0,
+        };
+        assert!(matches!(
+            trees_of_no_kind.estimated_size(&GROVE_V6),
+            Err(Error::DivideByZero(_))
+        ));
+        let level = |sizes, version: &GroveVersion| {
+            let info = EstimatedLayerInformation {
+                tree_type: TreeType::NormalTree,
+                estimated_layer_count: EstimatedLayerCount::EstimatedLevel(1, false),
+                estimated_layer_sizes: sizes,
+            };
+            let mut cost = OperationCost::default();
+            add_average_case_merk_propagate(&mut cost, &info, version).map(|()| cost)
+        };
+        let mix = |subtrees_size, items_size| EstimatedLayerSizes::Mix {
+            subtrees_size,
+            items_size,
+            references_size: None,
+            items_with_sum_item_size: None,
+            references_with_sum_item_size: None,
+        };
+        let unweighed = Some((8, trees_of_no_kind, None, 0));
+        let nothing = OperationCost {
+            seek_count: 1,
+            hash_node_calls: 2,
+            ..Default::default()
+        };
+        for version in [&GROVE_V5, &GROVE_V6] {
+            assert_eq!(level(mix(unweighed, None), version).unwrap(), nothing);
+            assert_eq!(level(mix(None, None), version).unwrap(), nothing);
+        }
+        // Beside a kind that has a weight, grove version 6 leaves the one
+        // without out, and the version before sizes it and fails.
+        let items = Some((3, 10, None, 2));
+        assert_eq!(
+            level(mix(unweighed, items), &GROVE_V6).unwrap(),
+            level(mix(None, items), &GROVE_V6).unwrap()
+        );
+        assert!(matches!(
+            level(mix(unweighed, items), &GROVE_V5),
+            Err(Error::DivideByZero(_))
+        ));
+    }
+
     fn finalize_of(levels: u32, marked: u32, version: &GroveVersion) -> OperationCost {
         let info = EstimatedLayerInformation {
             tree_type: TreeType::NormalTree,

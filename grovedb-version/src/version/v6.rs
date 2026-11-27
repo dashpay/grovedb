@@ -50,9 +50,13 @@
 //!   patch is sized from the bytes of the item and refuses a growth of more
 //!   bytes than the item has. The worst case of a replacement has, for every
 //!   kind of element, all of the node's bytes as replaced and all of the
-//!   value's as added, where V1..V5 have no added bytes for a tree or a sum
-//!   item. Each refuses an element too long for a node to be sized by its
-//!   bytes in 32 bits. Gated because the estimate is the admission bound.
+//!   value's as added. V1..V5 have no added bytes for the elements they
+//!   take to be put where one of their size was (a sum item, a tree with
+//!   no aggregate or with a sum, and the three kinds of tree with a sum of
+//!   128 bits that they size as trees), and added bytes for the others,
+//!   which they size as items that may grow. Each refuses an element too
+//!   long for a node to be sized by its bytes in 32 bits. Gated because the
+//!   estimate is the admission bound.
 //!
 //! - `operations.average_case.average_case_merk_delete_tree: 1`: the
 //!   estimate of the removal of a tree refuses the sizes of a layer that an

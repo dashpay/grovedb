@@ -27,9 +27,12 @@
 //! by the nodes and divides by the weights, in 64 bits, and refuses a total
 //! beyond 32 for the loaded bytes as for the replaced ones. The loaded bytes
 //! of a cost are 64 bits wide, so here they are kept in them: the same
-//! weights, the same order and the same rounding, and a layer of one kind
-//! is counted the same whether it is given as that kind or as a `Mix` of
-//! it. Nothing is added to the cost where anything is refused.
+//! weights, the same order and the same rounding, and a layer of items is
+//! counted the same whether it is given as items or as a `Mix` of them. (A
+//! `Mix` takes the flags of a tree without the bytes of their length, as
+//! v2 does, so a layer of trees with flags is a byte a node apart.) A kind
+//! that a `Mix` gives no weight is not sized. Nothing is added to the cost
+//! where anything is refused.
 //!
 //! v2 is what grove versions 3 to 5 select, so it cannot change under this.
 
@@ -68,12 +71,14 @@ fn weighed_nodes_of_a_mix(
     };
     let node_type = tree_type.inner_node_type();
     let mut kinds = Vec::new();
-    if let Some((key, sum_trees, flags, weight)) = subtrees_size {
+    // A kind of no weight adds nothing to the sum, and is not sized: v2 sizes
+    // none where every weight is nothing.
+    if let Some((key, sum_trees, flags, weight)) = subtrees_size.filter(|kind| kind.3 > 0) {
         let value_len = LAYER_COST_SIZE + flags.unwrap_or(0);
         let aggregates = sum_trees.estimated_size(grove_version)?;
-        let key = u32::from(*key);
+        let key = u32::from(key);
         kinds.push((
-            u64::from(*weight),
+            u64::from(weight),
             u64::from(
                 KV::layered_value_byte_cost_size_for_key_and_value_lengths(
                     key, value_len, node_type,
@@ -93,11 +98,11 @@ fn weighed_nodes_of_a_mix(
         (items_with_sum_item_size, 10),
         (references_with_sum_item_size, 10),
     ] {
-        if let Some((key, value, flags, weight)) = kind {
+        if let Some((key, value, flags, weight)) = kind.filter(|kind| kind.3 > 0) {
             let value_len = value + flags.unwrap_or(0) + with_a_sum;
-            let key = u32::from(*key);
+            let key = u32::from(key);
             kinds.push((
-                u64::from(*weight),
+                u64::from(weight),
                 u64::from(KV::value_byte_cost_size_for_key_and_raw_value_lengths(
                     key, value_len, node_type,
                 )),

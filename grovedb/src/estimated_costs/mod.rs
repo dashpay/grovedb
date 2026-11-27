@@ -197,12 +197,19 @@ pub(crate) const MOST_BYTES_OF_A_SIZED_ELEMENT: u32 = u32::MAX - 65_536;
 
 /// `len`, the bytes an element serializes to, as an estimate of grove
 /// version 6 takes them: refused where the arithmetic that sizes a node
-/// from them would not hold them. The estimates of the grove versions
-/// before take any length, and wrap or panic near the end of 32 bits.
-pub(crate) fn sized_for_a_node(len: usize) -> Result<u32, Error> {
+/// from them would not hold them. `flags_len` is the bytes of the element's
+/// flags, which are among `len`: some estimates of the versions before add
+/// the flags of an item to its bytes once more, so the two together are
+/// held to the limit. The estimates of the grove versions before take any
+/// length, and wrap or panic near the end of 32 bits.
+pub(crate) fn sized_for_a_node(len: usize, flags_len: usize) -> Result<u32, Error> {
+    let with_its_flags_once_more = len.checked_add(flags_len);
     u32::try_from(len)
         .ok()
-        .filter(|len| *len <= MOST_BYTES_OF_A_SIZED_ELEMENT)
+        .filter(|_| {
+            with_its_flags_once_more
+                .is_some_and(|both| both <= MOST_BYTES_OF_A_SIZED_ELEMENT as usize)
+        })
         .ok_or(Error::Overflow(
             "an element longer than an estimate can size a node by",
         ))
@@ -216,7 +223,10 @@ pub(crate) fn element_len_for_an_estimate(
     value: &Element,
     grove_version: &GroveVersion,
 ) -> Result<u32, Error> {
-    sized_for_a_node(value.serialized_size(grove_version)?)
+    sized_for_a_node(
+        value.serialized_size(grove_version)?,
+        value.get_flags().as_ref().map_or(0, Vec::len),
+    )
 }
 
 /// The hash calls of the put of `value` under a key of `key_len` bytes,

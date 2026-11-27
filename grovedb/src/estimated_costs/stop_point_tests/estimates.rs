@@ -3102,28 +3102,62 @@ fn es2_an_element_too_long_for_a_node_to_be_sized_by_is_refused() {
     // within 65,536 bytes of what 32 bits hold, as the sizes of a layer are
     // refused (`EstimatedLayerSizes::check_sizes`).
     assert_eq!(MOST_BYTES_OF_A_SIZED_ELEMENT, u32::MAX - 65_536);
-    for fits in [0usize, 1, 65_535, 1 << 31, (u32::MAX - 65_536) as usize] {
+    let most = MOST_BYTES_OF_A_SIZED_ELEMENT as usize;
+    for fits in [0usize, 1, 65_535, 1 << 31, most] {
         assert_eq!(
-            sized_for_a_node(fits).expect("a length that fits"),
+            sized_for_a_node(fits, 0).expect("a length that fits"),
             fits as u32
         );
     }
     for too_long in [
-        (u32::MAX - 65_535) as usize,
+        most + 1,
         (u32::MAX - 64) as usize,
         u32::MAX as usize,
-        u32::MAX as usize + 1,
         usize::MAX,
     ] {
         assert!(matches!(
-            sized_for_a_node(too_long),
+            sized_for_a_node(too_long, 0),
             Err(Error::Overflow(_))
         ));
     }
+    // A length beyond 32 bits, where a `usize` holds one.
+    if let Some(too_long) = (u32::MAX as usize).checked_add(1) {
+        assert!(matches!(
+            sized_for_a_node(too_long, 0),
+            Err(Error::Overflow(_))
+        ));
+    }
+    // The estimate of a replacement on the versions before adds the flags
+    // of an item to its bytes, which have them: an item with flags of two
+    // thousand million bytes is sized by its bytes and those flags once
+    // more. The two together are held to the limit.
+    let half = 1usize << 31;
+    assert_eq!(
+        sized_for_a_node(half + 8, half - 65_536 - 9).expect("both fit"),
+        (half + 8) as u32
+    );
+    for (len, flags) in [
+        (half + 8, half - 65_536 - 8),
+        (half + 8, half),
+        (most, 1),
+        (1, most),
+        (most, usize::MAX),
+    ] {
+        assert!(
+            matches!(sized_for_a_node(len, flags), Err(Error::Overflow(_))),
+            "{len} and {flags}"
+        );
+    }
     // And the node of the longest element that is sized is counted in 32
     // bits with room to spare: in the node type that costs the most, under
-    // the longest key.
-    let node = u64::from(MOST_BYTES_OF_A_SIZED_ELEMENT) + 64 + 25 + 5 + (32 + 255 + 2) + (255 + 60);
+    // the longest key, with the length of its flags and a wrapper.
+    let node = u64::from(MOST_BYTES_OF_A_SIZED_ELEMENT)
+        + (5 + 1)
+        + 64
+        + 25
+        + 5
+        + (32 + 255 + 2)
+        + (255 + 60);
     assert!(node < u64::from(u32::MAX));
 }
 
@@ -4107,17 +4141,23 @@ fn es2_the_rows_of_a_write_under_an_indexed_tree_are_estimated_to_no_less_than_t
     use crate::{batch::QualifiedGroveDbOp as Op, tests::make_empty_grovedb};
     // A write under an indexed tree is charged every level up to the
     // primary as on grove version 5 (SP5), and the rows of its secondaries
-    // are part of that. What an indexed tree adds to a write is measured on
+    // are part of that. What an indexed tree adds to a batch is measured on
     // grove version 5: the same insert of an entry into an indexed tree of
     // each of the five kinds, and into the tree of that kind with no
-    // secondaries. The difference is the rows: the open of each secondary,
-    // the row that goes and the row that comes, their levels, and the reads
-    // of the touched entry before and after. The estimate of the rows on
-    // grove version 6 (`average_case_indexed_secondary_mirror`) is no less
-    // than that in any field, in a primary of one entry and of seven.
+    // secondaries. The difference is of two whole batches. It has the rows
+    // (the open of each secondary, the row that goes and the row that
+    // comes, their levels), the reads of the touched entry before and
+    // after, and what the carry of an indexed tree into its host costs over
+    // that of the plain one: the read of the host for the roots of the
+    // secondaries, a hash of the host that takes them in, and the digest of
+    // the roots of several axes. That carry is the finalize's under SP5, so
+    // the difference is no less than the rows and does not isolate them.
+    // The estimate of the rows on grove version 6
+    // (`average_case_indexed_secondary_mirror`) is no less than the whole
+    // difference in any field, in a primary of one entry and of seven.
     //
     // Into a primary with no entry it is short in seeks and in loaded
-    // bytes: it has an open and a put for each axis, and the write also
+    // bytes: it has an open and a put for each axis, and the batch also
     // reads the entry before and after, which a batch's estimate adds to
     // this one and `grovedb::estimated_costs` does not have.
     let kinds: Vec<(Element, Element, Element, Vec<IndexAxis>)> = vec![

@@ -3,11 +3,13 @@
 //! [`super::v1`], with two things it does not have.
 //!
 //! The storage of a replacement that may be of anything by anything. v1
-//! takes a tree and a sum item to be put where one of the same size was,
-//! and has no added bytes for them: a sum item that gains flags and a tree
-//! put where an item was add bytes it does not have. And it takes any other
-//! element to be put where nothing of its value was, and has the key's
-//! bytes alone as replaced. This version has, for every element, all of the
+//! takes some elements to be put where one of the same size was (a sum
+//! item, a tree with no aggregate or with a sum, and the three kinds of
+//! tree with a sum of 128 bits that it sizes as trees), and has no added
+//! bytes for them: a sum item that gains flags and a tree put where an
+//! item was add bytes it does not have. And it takes any other element,
+//! the other kinds of tree among them, to be put where nothing of its
+//! value was, and has the key's bytes alone as replaced. This version has, for every element, all of the
 //! node's bytes as replaced, which is the replacement of an element as long
 //! or longer, and all of the value's as added, which is the replacement of
 //! one with no value: each field is a bound, and the two are of different

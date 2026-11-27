@@ -304,8 +304,13 @@ pub fn node_record_len_from_sizes(
 /// bits is 16 bytes, so the longest are those of the kind that has both.
 ///
 /// It is what a worst case takes a read of a node to load, for a caller
-/// that says how long a value can be.
-pub fn longest_node_record_len(model: StorageCostModel, value_len: usize) -> Result<usize, Error> {
+/// that says how long a value can be. The lengths are added unchecked: the
+/// worst case of a finalize, which is its one caller, refuses a value too
+/// long to size before it asks.
+pub(crate) fn longest_node_record_len(
+    model: StorageCostModel,
+    value_len: usize,
+) -> Result<usize, Error> {
     let feature = TreeFeatureType::ProvableCountedAndProvableBigSummedMerkNode(u64::MAX, i128::MIN);
     let child = || Some((u8::MAX, AggregateData::from(feature)));
     node_record_len_from_sizes(model, value_len, &feature, child(), child())
