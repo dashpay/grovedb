@@ -4,8 +4,7 @@
 //! - every `lignin` command in them parses, and every option they name is
 //!   one the subcommand takes;
 //! - every `cargo` line names a package, a feature and a program the
-//!   workspace has, and every `lignin-bench` line options that its parser
-//!   reads;
+//!   workspace has;
 //! - every message they quote is in the code: in the file that the
 //!   messages chapter names for it, and anywhere in the engine's crates for
 //!   a message quoted elsewhere;
@@ -13,6 +12,8 @@
 //! - the comparisons of steps 7 and 11 of the runbook answer as it says,
 //!   run on reports made for each case, and steps 4 and 11 refuse a
 //!   directory that holds an entry of LigninDB;
+//! - with `migrate`, steps 5 to 7 and 11 run the tool this build made on a
+//!   GroveDB on RocksDB and take the reports it writes;
 //! - the chapters of the book are the documents.
 //!
 //! `docs/lignindb/operator/runbook.sh` runs the commands themselves.
@@ -38,6 +39,12 @@ use lignin_tools::args::{
     DEFAULT_MIGRATE_PROGRESS,
 };
 use lignindb::Options;
+
+mod document_text;
+
+use document_text::{
+    code_of, code_spans, commands, parse, simple_commands, spans_and_unclosed, words, Fence,
+};
 
 /// The documents, in the order the book has them.
 const CHAPTERS: [&str; 5] = [
@@ -325,113 +332,6 @@ fn documents() -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// A fenced block of a document.
-struct Fence {
-    info: String,
-    line: usize,
-    body: Vec<String>,
-}
-
-/// What a document holds: its fenced blocks, and its other lines with
-/// their numbers.
-struct Parsed {
-    fences: Vec<Fence>,
-    prose: Vec<(usize, String)>,
-}
-
-fn parse(text: &str) -> Parsed {
-    let mut parsed = Parsed {
-        fences: Vec::new(),
-        prose: Vec::new(),
-    };
-    let mut open: Option<(usize, Fence)> = None;
-    for (at, line) in text.lines().enumerate() {
-        let trimmed = line.trim_start();
-        let indent = line.len() - trimmed.len();
-        match open.as_mut() {
-            None => match trimmed.strip_prefix("```") {
-                Some(info) => {
-                    let fence = Fence {
-                        info: info.trim().to_owned(),
-                        line: at + 1,
-                        body: Vec::new(),
-                    };
-                    open = Some((indent, fence));
-                }
-                None => parsed.prose.push((at + 1, line.to_owned())),
-            },
-            Some((_, _)) if trimmed == "```" => {
-                let (_, fence) = open.take().expect("open");
-                parsed.fences.push(fence);
-            }
-            Some((fence_indent, fence)) => {
-                let body = line.get(*fence_indent..).unwrap_or(trimmed);
-                fence.body.push(body.to_owned());
-            }
-        }
-    }
-    assert!(open.is_none(), "a fence that is not closed");
-    parsed
-}
-
-/// The code spans of a line of prose, as CommonMark reads them.
-fn code_spans(line: &str) -> Vec<String> {
-    spans_and_unclosed(line).0
-}
-
-/// The code spans of a line, and whether a run of backticks in it opens a
-/// span that the line does not close: a span over two lines, which the
-/// tests would not read whole.
-fn spans_and_unclosed(line: &str) -> (Vec<String>, bool) {
-    let chars: Vec<char> = line.chars().collect();
-    let run = |from: usize| chars[from..].iter().take_while(|c| **c == '`').count();
-    let mut spans = Vec::new();
-    let mut unclosed = false;
-    let mut at = 0;
-    while at < chars.len() {
-        if chars[at] == '\\' {
-            at += 2;
-            continue;
-        }
-        if chars[at] != '`' {
-            at += 1;
-            continue;
-        }
-        let opening = run(at);
-        let start = at + opening;
-        let mut end = start;
-        let mut closed = None;
-        while end < chars.len() {
-            if chars[end] == '`' {
-                let closing = run(end);
-                if closing == opening {
-                    closed = Some(end);
-                    break;
-                }
-                end += closing;
-            } else {
-                end += 1;
-            }
-        }
-        match closed {
-            Some(end) => {
-                let mut span: String = chars[start..end].iter().collect();
-                let padded = span.len() >= 2 && span.starts_with(' ') && span.ends_with(' ');
-                if padded && !span.trim().is_empty() {
-                    span = span[1..span.len() - 1].to_owned();
-                }
-                spans.push(span);
-                at = end + opening;
-            }
-            None => {
-                unclosed = true;
-                at = start;
-            }
-        }
-    }
-    (spans, unclosed)
-}
-
 /// The cells of a row of a table, or `None` for a line that is no row.
 fn cells(line: &str) -> Option<Vec<String>> {
     let inner = line.trim().strip_prefix('|')?.strip_suffix('|')?;
@@ -488,145 +388,6 @@ fn tables(prose: &[(usize, String)]) -> Vec<Table> {
     }
     tables.extend(current);
     tables
-}
-
-/// The words a command line gives its program, as the shell splits them,
-/// up to the first character that ends a command (`|`, `;`, `&`): a
-/// redirection (`>`, `2>&1`, `< file`) is left out with the word it names,
-/// and the words after it are read on.
-fn words(line: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
-    // Whether the word being read is the one a redirection names.
-    let mut target = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' => {
-                in_word = true;
-                word.extend(chars.by_ref().take_while(|c| *c != '\''));
-            }
-            '"' => {
-                in_word = true;
-                let mut depth = 0;
-                for c in chars.by_ref() {
-                    match c {
-                        '(' => depth += 1,
-                        ')' => depth -= 1,
-                        '"' if depth == 0 => break,
-                        _ => {}
-                    }
-                    word.push(c);
-                }
-            }
-            '>' | '<' => {
-                // The number of a descriptor before it is no word either.
-                if in_word && !word.chars().all(|c| c.is_ascii_digit()) {
-                    words.push(std::mem::take(&mut word));
-                }
-                word.clear();
-                in_word = false;
-                while matches!(chars.peek(), Some('>' | '<' | '&' | '|')) {
-                    chars.next();
-                }
-                target = true;
-            }
-            '|' | ';' | '&' => break,
-            c if c.is_whitespace() => {
-                if in_word {
-                    let done = std::mem::take(&mut word);
-                    match std::mem::take(&mut target) {
-                        true => {}
-                        false => words.push(done),
-                    }
-                    in_word = false;
-                }
-            }
-            c => {
-                in_word = true;
-                word.push(c);
-            }
-        }
-    }
-    if in_word && !target {
-        words.push(word);
-    }
-    words
-}
-
-/// The commands of a fenced block: its lines, with a line that ends in `\`
-/// joined to the next.
-fn commands(fence: &Fence) -> Vec<String> {
-    let mut commands = Vec::new();
-    let mut pending = String::new();
-    for line in &fence.body {
-        match line.strip_suffix('\\') {
-            Some(start) => {
-                pending.push_str(start);
-                pending.push(' ');
-            }
-            None => {
-                pending.push_str(line);
-                commands.push(std::mem::take(&mut pending));
-            }
-        }
-    }
-    commands
-}
-
-/// The simple commands of a command line: its parts between the `;`, `&&`,
-/// `||` and `|` that no quote holds, without the words of the shell's grammar
-/// that begin them (`if`, `then`, `else`, `do`, `{`, `!` and the like), so
-/// that a command in a condition or a branch is checked as one on a line of
-/// its own.
-fn simple_commands(line: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut part = String::new();
-    let (mut single, mut double) = (false, false);
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' if !double => single = !single,
-            '"' if !single => double = !double,
-            ';' if !single && !double => {
-                parts.push(std::mem::take(&mut part));
-                continue;
-            }
-            '&' | '|' if !single && !double && chars.peek() == Some(&c) => {
-                chars.next();
-                parts.push(std::mem::take(&mut part));
-                continue;
-            }
-            // Each command of a pipeline is one of its own; `>|` is a
-            // redirection and no pipe.
-            '|' if !single && !double && !part.ends_with('>') => {
-                parts.push(std::mem::take(&mut part));
-                continue;
-            }
-            _ => {}
-        }
-        part.push(c);
-    }
-    parts.push(part);
-    const GRAMMAR: [&str; 10] = [
-        "if", "then", "else", "elif", "do", "while", "until", "!", "{", "(",
-    ];
-    parts
-        .into_iter()
-        .map(|part| {
-            let mut rest = part.trim();
-            while let Some(word) = rest
-                .split_whitespace()
-                .next()
-                .filter(|word| GRAMMAR.contains(word))
-            {
-                rest = rest[word.len()..].trim_start();
-            }
-            rest.to_owned()
-        })
-        .filter(|part| !part.is_empty())
-        .collect()
 }
 
 fn os(words: &[&str]) -> Vec<OsString> {
@@ -727,41 +488,47 @@ fn command_fault(line: &str, packages: &BTreeMap<String, (PathBuf, String)>) -> 
         Some("lignin") => args::parse(&os(&words[1..]))
             .err()
             .map(|error| format!("does not parse: {error}")),
-        Some("lignin-bench") => {
-            let cli = read(&repository().join("lignin-testkit/src/bench/cli.rs"));
-            if words.get(1) != Some(&"run") {
-                return Some("lignin-bench is run here with `run` alone".to_owned());
-            }
-            let body = function_body(&cli, "pub fn parse_run(");
-            let unknown: Vec<&str> = (words[2..].iter().copied())
-                .filter(|word| word.starts_with("--"))
-                .filter(|word| !body.contains(&format!("\"{word}\"")))
-                .collect();
-            (!unknown.is_empty()).then(|| format!("lignin-bench run does not read {unknown:?}"))
-        }
+        // A `lignin-bench` line is held to the benchmark's parser by
+        // `lignin-testkit/tests/runbook_rehearsal.rs`.
         Some("cargo") => {
-            let value = |option: &str| {
-                let at = words.iter().position(|word| *word == option)?;
-                words.get(at + 1).copied()
+            let line = cargo_line(&words)?;
+            let selected = (line.packages.iter())
+                .map(|package| packages.get(*package).map(|found| (*package, found)));
+            let selected: Vec<_> = match selected.collect::<Option<Vec<_>>>() {
+                Some(selected) if !selected.is_empty() => selected,
+                Some(_) => return None,
+                None => {
+                    let missing =
+                        (line.packages.iter()).find(|package| !packages.contains_key(**package));
+                    return missing.map(|package| format!("no package {package}"));
+                }
             };
-            let package = value("-p")?;
-            let Some((dir, text)) = packages.get(package) else {
-                return Some(format!("no package {package}"));
+            let names = || {
+                selected
+                    .iter()
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
-            let features = value("--features")
-                .into_iter()
-                .flat_map(|list| list.split(','));
-            for feature in features {
-                if !declares_feature(text, feature) {
-                    return Some(format!("{package} has no feature {feature}"));
+            for feature in line.features() {
+                let declared =
+                    (selected.iter()).any(|(name, (_, text))| match feature.split_once('/') {
+                        Some((package, feature)) => {
+                            package == *name && declares_feature(text, feature)
+                        }
+                        None => declares_feature(text, feature),
+                    });
+                if !declared {
+                    return Some(format!("{} has no feature {feature}", names()));
                 }
             }
-            match value("--bin") {
-                Some(bin) if !has_program(dir, text, bin) => {
-                    Some(format!("{package} has no program {bin}"))
-                }
-                _ => None,
-            }
+            (line.bins.iter())
+                .find(|bin| {
+                    !selected
+                        .iter()
+                        .any(|(_, (dir, text))| has_program(dir, text, bin))
+                })
+                .map(|bin| format!("{} has no program {bin}", names()))
         }
         _ => None,
     }
@@ -1356,7 +1123,6 @@ fn every_command_names_what_the_workspace_has() {
             for span in code_spans(prose) {
                 let tokens: Vec<&str> = span.split_whitespace().collect();
                 let fault = match tokens.as_slice() {
-                    ["lignin-bench", _, ..] => command_fault(&span, &packages),
                     // The tool takes `lignin SUBCOMMAND DIR [OPTIONS]`: no
                     // option before its subcommand.
                     ["lignin", first, more @ ..] if first.starts_with("--") && !more.is_empty() => {
@@ -1401,35 +1167,249 @@ fn every_command_names_what_the_workspace_has() {
             }
         }
     }
-    // The runbook builds the tool with the feature that `migrate` needs:
-    // `args::parse` takes the subcommand without it, and the binary does not.
-    let builds_migrate = (parse(&read(&operator_dir().join("migration.md")))
-        .fences
-        .iter())
-    .filter(|fence| fence.info == "sh")
-    .flat_map(commands)
-    .flat_map(|line| simple_commands(&line))
-    .any(|command| {
-        let words = words(&command);
-        let at = |option: &str| words.iter().position(|word| word == option);
-        words.first().is_some_and(|word| word == "cargo")
-            && words.get(1).is_some_and(|word| word == "build")
-            && words.iter().any(|word| word == "--release")
-            && at("-p")
-                .and_then(|at| words.get(at + 1))
-                .is_some_and(|p| p == "lignin-tools")
-            && (at("--features").and_then(|at| words.get(at + 1)))
-                .is_some_and(|list| list.split(',').any(|feature| feature == "migrate"))
-    });
-    if !builds_migrate {
+    println!("{checked} commands and code spans read");
+    assert!(checked > 100, "only {checked} commands and spans were read");
+    assert!(faults.is_empty(), "{}", faults.join("\n"));
+}
+
+/// What a `cargo` command asks of Cargo, read from Cargo's own arguments
+/// (those before a `--`) in every form Cargo takes a package, a feature
+/// and a program in.
+struct CargoLine<'a> {
+    subcommand: Option<&'a str>,
+    packages: Vec<&'a str>,
+    lists: Vec<&'a str>,
+    all_features: bool,
+    bins: Vec<&'a str>,
+}
+
+impl CargoLine<'_> {
+    /// The features it names, each list split.
+    fn features(&self) -> impl Iterator<Item = &str> {
+        (self.lists.iter())
+            .flat_map(|list| list.split([',', ' ']))
+            .filter(|feature| !feature.is_empty())
+    }
+}
+
+/// The arguments of Cargo in the words `words` of a `cargo` command.
+fn cargo_line<'a>(words: &[&'a str]) -> Option<CargoLine<'a>> {
+    let (cargo, rest) = words.split_first()?;
+    if *cargo != "cargo" {
+        return None;
+    }
+    let args: Vec<&str> = (rest.iter().copied())
+        .take_while(|word| *word != "--")
+        .collect();
+    let mut line = CargoLine {
+        subcommand: args.first().copied().filter(|word| !word.starts_with('-')),
+        packages: Vec::new(),
+        lists: Vec::new(),
+        all_features: false,
+        bins: Vec::new(),
+    };
+    for at in 0..args.len() {
+        line.packages
+            .extend(option_value(&args, at, "--package", "-p"));
+        line.lists
+            .extend(option_value(&args, at, "--features", "-F"));
+        line.bins.extend(option_value(&args, at, "--bin", "--bin"));
+        line.all_features |= args[at] == "--all-features";
+    }
+    Some(line)
+}
+
+/// The value that the word at `at` of `args` gives the option `long`, or
+/// its short form `short`: the next word, the rest of the word after `=`,
+/// or for a short form of one letter the rest of the word.
+fn option_value<'a>(args: &[&'a str], at: usize, long: &str, short: &str) -> Option<&'a str> {
+    let word = args[at];
+    if word == long || word == short {
+        return args.get(at + 1).copied();
+    }
+    if let Some(value) = word.strip_prefix(long) {
+        return value.strip_prefix('=');
+    }
+    let value = word
+        .strip_prefix(short)
+        .filter(|_| !short.starts_with("--"))?;
+    Some(value.strip_prefix('=').unwrap_or(value))
+}
+
+/// Whether the `cargo` command `command` builds or runs `lignin-tools`
+/// (`build`, `run` or `rustc` with it among the packages), and with that
+/// whether it enables the feature `migrate`.
+fn builds_the_tool(command: &str) -> Option<bool> {
+    let words = words(command);
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let line = cargo_line(&words)?;
+    let builds = matches!(line.subcommand, Some("build" | "run" | "rustc"));
+    (builds && line.packages.contains(&"lignin-tools")).then(|| {
+        line.all_features
+            || line
+                .features()
+                .any(|feature| feature == "migrate" || feature == "lignin-tools/migrate")
+    })
+}
+
+/// The runbook builds the tool with the feature that `migrate` needs:
+/// `args::parse` takes the subcommand without it, and the binary does not
+/// (`migrate_is_in_a_build_with_its_feature`). `migration.md` builds it for
+/// release, and no block of a document builds or runs it without the
+/// feature.
+#[test]
+fn the_runbook_builds_the_tool_with_migrate() {
+    let mut faults = Vec::new();
+    let mut release = false;
+    for (name, text) in documents() {
+        for fence in parse(&text)
+            .fences
+            .iter()
+            .filter(|fence| fence.info == "sh")
+        {
+            for command in commands(fence)
+                .iter()
+                .flat_map(|line| simple_commands(line))
+            {
+                let words = words(&command);
+                match builds_the_tool(&command) {
+                    Some(false) => faults.push(format!(
+                        "{name}:{}: `{command}` builds lignin-tools without the feature migrate",
+                        fence.line
+                    )),
+                    Some(true) => {
+                        release |= name == "migration.md"
+                            && words.get(1).is_some_and(|word| word == "build")
+                            && words.iter().any(|word| word == "--release");
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    if !release {
         faults.push(
             "no block of migration.md builds lignin-tools for release with the feature migrate"
                 .to_owned(),
         );
     }
-    println!("{checked} commands and code spans read");
-    assert!(checked > 100, "only {checked} commands and spans were read");
     assert!(faults.is_empty(), "{}", faults.join("\n"));
+    for (command, migrates) in [
+        (
+            "cargo build --release -p lignin-tools --features migrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p lignin-tools --features=grovedb,migrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p lignin-tools -F migrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p lignin-tools -Fmigrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release --package=lignin-tools --features \"x migrate\"",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p grovedb -p lignin-tools --features migrate",
+            Some(true),
+        ),
+        (
+            "cargo build --release -p lignin-tools --all-features",
+            Some(true),
+        ),
+        ("cargo build --release -p lignin-tools", Some(false)),
+        ("cargo build --release -plignin-tools", Some(false)),
+        ("cargo build --release --package=lignin-tools", Some(false)),
+        (
+            "cargo build --release -p lignin-tools --features grovedb",
+            Some(false),
+        ),
+        (
+            "cargo build --release -p lignin-tools --features migrated",
+            Some(false),
+        ),
+        (
+            "cargo build --release -p lignin-tools # --features migrate",
+            Some(false),
+        ),
+        ("cargo run -p lignin-tools -- --all-features", Some(false)),
+        ("cargo run --package lignin-tools -- help", Some(false)),
+        (
+            "cargo build --release -p lignin-testkit --features migrate",
+            None,
+        ),
+        ("cargo clean -p lignin-tools", None),
+        ("lignin migrate S T", None),
+    ] {
+        assert_eq!(builds_the_tool(command), migrates, "{command}");
+    }
+    let packages = manifests();
+    for (command, fault) in [
+        (
+            "cargo build --release -p grovedb -p lignin-tools --features migrate",
+            None,
+        ),
+        (
+            "cargo build --release --package=lignin-tools --features=migrate",
+            None,
+        ),
+        (
+            "cargo build --release --package=lignin-tools --features=migrate,typo",
+            Some("lignin-tools has no feature typo"),
+        ),
+        (
+            "cargo build -p grovedb -plignin-tools -F grovedb/no-such",
+            Some("grovedb, lignin-tools has no feature grovedb/no-such"),
+        ),
+        (
+            "cargo build -p no-such-package",
+            Some("no package no-such-package"),
+        ),
+        (
+            "cargo build -p lignin-tools --bin=lignin-bench",
+            Some("lignin-tools has no program lignin-bench"),
+        ),
+        (
+            "cargo build -p lignin-tools --bin lignin # -p no-such-package",
+            None,
+        ),
+    ] {
+        assert_eq!(
+            command_fault(command, &packages).as_deref(),
+            fault,
+            "{command}"
+        );
+    }
+}
+
+/// A comment of a line of commands begins at a `#` that begins a word and
+/// that no quote or `\` holds.
+#[test]
+fn a_comment_begins_where_the_shell_begins_it() {
+    for (line, code) in [
+        ("cargo build # --features migrate", "cargo build "),
+        ("true;# lignin-bench run", "true;"),
+        ("echo $# ${#p[@]} a#b", "echo $# ${#p[@]} a#b"),
+        (
+            "echo '# not' \"# not\" \\# not",
+            "echo '# not' \"# not\" \\# not",
+        ),
+        ("echo \"it's\" # yes", "echo \"it's\" "),
+        ("# all of it", ""),
+        ("echo report\\ #1 && true", "echo report\\ #1 && true"),
+    ] {
+        assert_eq!(code_of(line), code, "{line}");
+    }
+    assert_eq!(
+        words("lignin verify D &> out --cache 2"),
+        ["lignin", "verify", "D", "--cache", "2"]
+    );
 }
 
 #[test]
@@ -2382,6 +2362,179 @@ fn the_comparisons_of_steps_7_and_11_answer_as_written() {
         (passed, last.as_str()),
         (false, untold),
         "step 11, two refusals alike"
+    );
+}
+
+/// The root Merk of a GroveDB on RocksDB that holds `count` items, built and
+/// hashed by Merk's own tree code, written into a new RocksDB database at
+/// `dir` under the keys GroveDB's RocksDB storage gives them: each node
+/// under the prefix of the empty path and its key, encoded as Merk encodes
+/// it; the root key under that prefix and `r` in `roots`; and one record in
+/// `aux`. Returns the root hash Merk gives the tree.
+#[cfg(feature = "migrate")]
+fn rocksdb_grove(dir: &Path, count: usize) -> [u8; 32] {
+    use grovedb_merk::{
+        tree::{NoopCommit, TreeNode},
+        TreeFeatureType::BasicMerkNode,
+    };
+    use grovedb_version::version::GroveVersion;
+
+    fn build(items: &[(Vec<u8>, Vec<u8>)]) -> Option<TreeNode> {
+        let (left, rest) = items.split_at(items.len() / 2);
+        let ((key, value), right) = rest.split_first()?;
+        let node = TreeNode::new(key.clone(), value.clone(), None, BasicMerkNode).unwrap();
+        let node = node.attach(true, build(left)).expect("the left child");
+        Some(node.attach(false, build(right)).expect("the right child"))
+    }
+    fn nodes(node: &TreeNode, found: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+        found.push((node.key().to_vec(), node.encode()));
+        for left in [true, false] {
+            if let Some(child) = node.child(left) {
+                nodes(child, found);
+            }
+        }
+    }
+
+    let version = GroveVersion::latest();
+    let items: Vec<(Vec<u8>, Vec<u8>)> = (0..count)
+        .map(|i| {
+            let item = grovedb_element::Element::new_item(format!("document {i}").into_bytes());
+            let value = item.serialize(version).expect("an item");
+            (format!("document-{i:04}").into_bytes(), value)
+        })
+        .collect();
+    let mut root = build(&items).expect("a tree");
+    (root.commit(&mut NoopCommit {}, &|_, _| Ok(0)).unwrap()).expect("the hashes");
+    let mut found = Vec::new();
+    nodes(&root, &mut found);
+    assert_eq!(found.len(), count);
+
+    let prefix = [0u8; 32];
+    let mut options = rocksdb::Options::default();
+    options.create_if_missing(true);
+    options.create_missing_column_families(true);
+    let families = [rocksdb::DEFAULT_COLUMN_FAMILY_NAME, "aux", "roots", "meta"];
+    let db = rocksdb::DB::open_cf(&options, dir, families).expect("a RocksDB database");
+    let family = |name| db.cf_handle(name).expect("the family");
+    for (key, node) in found {
+        db.put([prefix.as_slice(), &key].concat(), node)
+            .expect("a node");
+    }
+    let roots = [prefix.as_slice(), b"r"].concat();
+    db.put_cf(family("roots"), roots, root.key())
+        .expect("the root key");
+    let aux = [prefix.as_slice(), b"last owner"].concat();
+    db.put_cf(family("aux"), aux, b"owner-7")
+        .expect("an aux record");
+    db.flush().expect("a flush");
+    root.hash().unwrap()
+}
+
+/// A migration of a GroveDB on RocksDB as the runbook makes it: the blocks
+/// of steps 5 and 6 run the `lignin` this build made (with `migrate`) on a
+/// grove of a few hundred items, and the blocks of steps 7 and 11 take the
+/// survey, the migration's report and the way back's survey that it writes.
+/// The survey and the comparison report the root hash and the number of
+/// nodes that Merk gave the grove.
+#[cfg(feature = "migrate")]
+#[test]
+fn the_runbook_takes_the_reports_of_a_real_migration() {
+    let documents = 300;
+    let scratch = tempfile::tempdir().expect("a directory");
+    let root = fs::canonicalize(scratch.path()).expect("its path");
+    let source = root.join("rocksdb");
+    let root_hash = rocksdb_grove(&source, documents);
+    let root_hash: String = root_hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    fs::create_dir(root.join("lignindb")).expect("the target's directory");
+    let target = root.join("lignindb/database");
+    let work = root.join("work");
+    fs::create_dir_all(work.join("reports")).expect("WORK");
+
+    let text = read(&operator_dir().join("migration.md"));
+    let fences = parse(&text).fences;
+    let block = |mark: &str| -> String {
+        let found: Vec<&Fence> = (fences.iter())
+            .filter(|fence| fence.info == "sh" && fence.body.iter().any(|line| line.contains(mark)))
+            .collect();
+        assert_eq!(found.len(), 1, "one block of migration.md holds {mark:?}");
+        found[0].body.join("\n")
+    };
+    // The functions of step 1, without its lines that install Cargo.
+    let step_1 = block("apart() {");
+    let functions = &step_1[step_1.find("plain_path() {").expect("plain_path")..];
+    let lignin = Path::new(env!("CARGO_BIN_EXE_lignin"));
+    let path = std::env::join_paths(
+        std::iter::once(lignin.parent().expect("its directory").to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ),
+    )
+    .expect("a PATH");
+    let run = |step: &str, blocks: &[&str]| -> String {
+        let script = (blocks.iter()).map(|mark| block(mark)).collect::<Vec<_>>();
+        let output = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(format!(
+                "set -euo pipefail\n{functions}\n{}\n",
+                script.join("\n")
+            ))
+            .env("SOURCE", &source)
+            .env("TARGET", &target)
+            .env("WORK", &work)
+            .env("PATH", &path)
+            .env_remove("BACK")
+            .output()
+            .expect("bash");
+        let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(
+            output.status.success(),
+            "{step} refuses the reports of a real migration: {printed}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        printed
+    };
+    let report = |name: &str| read(&work.join("reports").join(name));
+
+    run(
+        "step 5",
+        &[r#"--survey 2>&1 | tee "$WORK/reports/survey.txt""#],
+    );
+    run(
+        "step 6",
+        &[r#""$TARGET" 2>&1 | tee "$WORK/reports/migrate.txt""#],
+    );
+    let verified = run("step 7", &["THE COUNTS OF THE SOURCE CHANGED"]);
+    assert!(
+        verified.contains(&format!("the same root hash: {root_hash}\n")),
+        "step 7: {verified}"
+    );
+    let back = run(
+        "step 11",
+        &[r#"real_dir "${BACK:-$SOURCE}""#, "survey-again.txt"],
+    );
+    assert_eq!(
+        back.lines().last(),
+        Some("SOURCE is as step 5 surveyed it"),
+        "step 11: {back}"
+    );
+
+    let survey = report("survey.txt");
+    assert!(
+        survey.contains(&format!("\n  root hash: {root_hash}\n")),
+        "{survey}"
+    );
+    assert!(
+        survey.contains(&format!("\n  Merk nodes: {documents}\n"))
+            && survey.contains(&format!("\nmigrate: survey subtrees=1 nodes={documents} ")),
+        "{survey}"
+    );
+    assert!(
+        survey.ends_with("\nthe source can be migrated\n"),
+        "{survey}"
+    );
+    let migration = report("migrate.txt");
+    assert!(
+        migration.contains(&format!(" differing=0 root_hash={root_hash} ")),
+        "{migration}"
     );
 }
 
