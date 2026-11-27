@@ -334,14 +334,31 @@ pub fn not_reference(report: &Report) -> Option<String> {
 }
 
 /// Whether a row of `phase` of `report` is at steady state: a write phase
-/// at size of at least [`STEADY_TRANSITIONS`] transitions, after a churn.
+/// at size of at least [`STEADY_TRANSITIONS`] transitions, after a churn,
+/// of one regime ([`ONE_REGIME`]).
 fn steady(report: &Report, engine: &str, phase: &str) -> bool {
-    let transitions = (report.engines.iter())
-        .find(|one| one.engine == engine)
+    let of_engine = report.engines.iter().find(|one| one.engine == engine);
+    let transitions = of_engine
         .and_then(|one| one.phases.iter().find(|totals| totals.phase == phase))
         .map_or(0, |totals| totals.transitions);
-    report.workload.churn > 0 && transitions >= STEADY_TRANSITIONS
+    let share = |at: &str| {
+        of_engine
+            .and_then(|one| one.row(&format!("value_log_dead_share_at_{at}"), phase))
+            .map(|row| row.value)
+    };
+    let one_regime = match (share("start"), share("end")) {
+        (Some(start), Some(end)) => (end - start).abs() <= ONE_REGIME,
+        _ => false,
+    };
+    report.workload.churn > 0 && transitions >= STEADY_TRANSITIONS && one_regime
 }
+
+/// How far the value log's dead share may move from a phase's start to
+/// its end for the phase to be taken as of one regime: a point in a
+/// hundred. A phase that moves further holds two, the value cleaner
+/// behind its target and then catching up, and its write rows are not
+/// scored.
+pub const ONE_REGIME: f64 = 0.01;
 
 /// Whether RocksDB's phase `phase` of `report` is as long as LigninDB's:
 /// a ratio divides rows of phases of the same length. A report the
@@ -532,7 +549,7 @@ pub fn score(report: &Report) -> String {
                 (true, _) => target.note,
                 (false, true) => {
                     "scored at steady state: a `writes` or `run` report with a churn, in \
-                     phases at size of 100,000 transitions or more"
+                     phases at size of 100,000 transitions or more and of one regime"
                 }
                 (false, false) => {
                     "no LigninDB row of its phases with samples in this report (a `run` or \
@@ -890,6 +907,21 @@ mod tests {
             );
             assert!(score(&unsteady).contains("- Wall time per transition: scored at steady state"));
         }
+        // A phase whose value log moved more than a point holds two
+        // regimes: its write rows are not scored.
+        let mut mixed = reference(100_000, 200_000, engines());
+        let lignindb = &mut mixed.engines[1];
+        let end = (lignindb.rows.iter_mut())
+            .find(|row| row.id == "value_log_dead_share_at_end")
+            .expect("the row");
+        end.value = 0.11;
+        assert_eq!(
+            ids(&scored(&mixed)),
+            vec![
+                ("keyed_lookups_per_transition", "load", Some(0.06)),
+                ("point_get", "warm", Some(0.5)),
+            ]
+        );
     }
 
     /// No row of a report of another workload is scored, and the score
