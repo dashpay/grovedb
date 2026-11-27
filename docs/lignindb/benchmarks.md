@@ -232,13 +232,13 @@ the same way.
 of pages that the page cache holds is answered from memory, and only
 `process_read_calls` counts it. Under a memory limit on the run's cgroup
 that leaves the page cache little room (`MemoryMax` of a systemd unit),
-most reads that the engine's own cache does not answer reach storage,
-and the counts of the cgroup then say how often: the count the two
-engines can be compared by where the state is far larger than the
-memory. A database that was written before the run, as the kept one of
-`reads`, may lie in the page cache whatever the run's limit is; to have
-such a run read it from storage, the page cache is emptied before the run
-(`echo 3 > /proc/sys/vm/drop_caches`).
+the cgroup's counts are how the storage I/O of the two engines can be
+compared where the state is far larger than the memory. They are the
+kernel's count of I/Os, not of the engine's reads: one I/O can answer
+several of those. A database that was written before the run, as the
+kept one of `reads`, may lie in the page cache whatever the run's limit
+is; to have such a run read it from storage, the page cache is emptied
+before the run (`echo 3 > /proc/sys/vm/drop_caches`).
 
 ### The device reads by kind of file
 
@@ -255,8 +255,9 @@ checkpoints; for RocksDB its table files and logs.
 ```bash
 # The creates at size over a kept reference state, pool 162 MiB, under the memory
 # limit of the engine (its peak anonymous memory plus 32 MiB). The kept database is
-# read into the page cache first, so that the copy `writes` makes of it reads no device.
-cat /data/ref/lignindb/*/* /data/ref/lignindb/* > /dev/null 2>&1
+# read once first: what of it the page cache still holds when `writes` copies it is
+# copied from memory.
+find /data/ref/lignindb -type f -exec cat {} + > /dev/null
 sudo lignin-testkit/bench/read-split.sh 233M 50000 /tmp/split-create -- \
   "$PWD/target/release/lignin-bench" writes --engine lignindb --scratch /data/ref \
   --out /tmp/split-create.json --creates 50000 --updates 0 --deletes 0 --set cache_mb=162
@@ -267,15 +268,17 @@ sudo DROP_PAGE_CACHE=1 lignin-testkit/bench/read-split.sh 233M 1 /tmp/split-read
   --out /tmp/split-reads.json --creates 0 --updates 0 --deletes 0 --set cache_mb=162
 ```
 
-The counts are of the whole call, from its start to its end, and of every
-process of the machine: it needs a machine at rest, and a divisor that
-fits what the call did. Of a `writes` call with one phase, whose copy was
-read from memory, that is the phase's transitions, with the open and the
-warm-up reads in the sum. A call and its pages are what ext4 was asked
-for, not what reached the device: the cgroup's `device_reads` of the same
-run is the count of that. It needs root, Linux with systemd and cgroup
-v2, bpftrace and a database on ext4. The times of a run under the probes
-are no result.
+The counts are of the time the probes are in place, from before the call
+is started until after it has ended, and of the whole machine: the call
+from its open to its close, the programs that start it, and whatever
+else reads files meanwhile. So it needs a machine at rest, and a divisor
+that fits what the call did: of a `writes` call with one phase, whose
+copy was read from memory, the phase's transitions, with the open and the
+warm-up reads in the sum. What is counted is what ext4 was asked for by
+those two operations, a call and the pages of its window. It is not the
+kernel's count of I/Os, which the cgroup's `device_reads` of the same run
+is. It needs root, Linux with systemd and cgroup v2, bpftrace and a
+database on ext4. The times of a run under the probes are no result.
 
 ### RocksDB's counters
 

@@ -806,15 +806,15 @@ fn storage_read_rows(
             "device_reads",
             "requests",
             reads.device_reads,
-            "io.stat rios of the process's cgroup, every device: read requests that reached \
-             a device",
+            "io.stat rios of the process's cgroup, summed over its devices: the read I/Os \
+             the kernel counted for the cgroup",
         ),
         (
             "device_read_bytes",
             "B",
             reads.device_bytes,
-            "io.stat rbytes of the process's cgroup, every device: the bytes of the read \
-             requests that reached a device",
+            "io.stat rbytes of the process's cgroup, summed over its devices: the bytes the \
+             kernel counted as read for the cgroup",
         ),
     ]
     .into_iter()
@@ -1115,13 +1115,14 @@ fn warm_up<E: Engine>(
     Ok(())
 }
 
-/// The rows `<read>_pages_asked` and `<read>_pages_missed` of `phase`:
-/// how often the engine's buffer pool was asked for a page while `reads`
-/// reads of the kind `read` were timed, and how often it did not hold the
-/// page it was asked for, for one read. None for an engine that counts
-/// neither, and none where no read was timed. The counts are the pool's
-/// own, so what the engine's background threads asked for meanwhile is in
-/// them: the rows are measured, and no counts.
+/// The rows `<read>_pages_asked` and `<read>_pages_missed` of `phase`,
+/// for one read of the `reads` reads of the kind `read` that were timed:
+/// `missed` is the page versions the engine read from storage meanwhile,
+/// each offered to its buffer pool by a load, and `asked` is those and
+/// the asks its pool answered from memory. None for an engine that counts
+/// neither, and none where no read was timed. The counts are the
+/// engine's own, so what its background threads read and asked for
+/// meanwhile is in them: the rows are measured, and no counts.
 fn page_rows(read: &str, phase: &str, counted: &Counters, reads: u64) -> Vec<Row> {
     let (Some(read_in), Some(held)) = (counted.page_reads, counted.cache_hits) else {
         return Vec::new();
@@ -1163,9 +1164,10 @@ pub const SETTLED: &str = "settled";
 /// warm-up reads, then the timed point gets, point proofs and proofs of 100
 /// references with the proof sizes. The first proof of each kind is
 /// checked against `root_hash`. For an engine that counts them, each
-/// kind of read of which a read was timed has two rows more: how often
-/// its buffer pool was asked for a page over the timed reads, and how
-/// often it did not hold the page, for one read ([`page_rows`]).
+/// kind of read of which a read was timed has two rows more, for one
+/// read: the page versions it read from storage over the timed reads,
+/// and those together with the asks its buffer pool answered from memory
+/// ([`page_rows`]).
 fn warm_rows<E: Engine>(
     engine: &mut E,
     reads: &mut Reads,

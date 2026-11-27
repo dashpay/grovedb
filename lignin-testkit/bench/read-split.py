@@ -55,7 +55,7 @@ def main():
         sys.exit(f"read-split.py: {output} is not the output of probes that ran to their end")
     all_calls = sum(row[0] for row in totals.values())
     all_pages = sum(row[1] for row in totals.values())
-    print(f"divided by {operations}; pages of {page_bytes} bytes")
+    print(f"divided by {operations}; pages of {page_bytes} bytes, a folio read alone as one")
     print("%-8s %7s %12s %12s %14s %14s %7s" % (
         "kind", "files", "calls", "pages", "calls/div", "bytes/div", "share"))
     for kind in sorted(totals, key=lambda kind: -totals[kind][0]):
