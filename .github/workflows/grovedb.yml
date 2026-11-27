@@ -542,12 +542,15 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           cache-on-failure: "false"
-      # Without the migrator's feature: the test is the same with it, and
-      # this build compiles no RocksDB.
+      # Without the migrator's feature, so this build compiles no RocksDB:
+      # the case that migrates a GroveDB on RocksDB is left to the shards,
+      # which build every feature.
       - name: Hold the operator's documents to the code
         run: cargo test -p lignin-tools --test operator_docs
       # The documents' commands of the benchmark, held to its own parser.
-      # lignin-testkit builds GroveDB on RocksDB.
+      # It builds lignin-testkit, and with it GroveDB on RocksDB, which costs
+      # minutes on a runner without a kept target; it is here all the same
+      # because a change to a document alone runs no other job that would.
       - name: Hold the benchmark's commands to its parser
         run: cargo test -p lignin-testkit --test runbook_rehearsal
 
