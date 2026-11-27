@@ -96,6 +96,10 @@
 //!   applies the same way, are told from what is measured; and after a
 //!   commit of `--mark-us` microseconds or more,
 //!   `lignin-mark commit <block> <nanoseconds>`.
+//! - With `--hold FILE` the measuring thread, before it does anything,
+//!   writes the process's id and its own to `FILE.ready` and begins when
+//!   `FILE` is there, or fails after two minutes: a tracer is attached in
+//!   between, and has the run from its first block.
 //! - For LigninDB the parts of a commit that the engine counts apart
 //!   ([`PARTS`]) are read around every commit: its waits for the commit
 //!   lock and for the lock on the counts of values, its append to the log,
@@ -134,7 +138,7 @@ use super::{
 use crate::workload::{drive::Documents, Op, Stream};
 
 /// The schema of a [`LatencyReport`].
-pub const SCHEMA: &str = "lignin-bench-latency/5";
+pub const SCHEMA: &str = "lignin-bench-latency/6";
 
 /// The name of the measuring thread, by which a trace finds it.
 pub const THREAD_NAME: &str = "lignin-commit";
@@ -232,6 +236,13 @@ pub struct LatencyOptions {
     pub label: Option<String>,
     /// The commit to report; found with `git` when not given.
     pub commit: Option<String>,
+    /// A file the run waits for before it does anything, for a tracer to be
+    /// attached first: the measuring thread writes the process's id and its
+    /// own to `<file>.ready` and begins when the file is there, or fails
+    /// after [`HOLD`].
+    pub hold: Option<PathBuf>,
+    /// The words the run was started with, where it was started by words.
+    pub arguments: Vec<String>,
     /// Keep the databases when the run has ended. The next run on the same
     /// scratch directory begins by removing them: a run measures a fresh
     /// database.
@@ -265,6 +276,8 @@ impl LatencyOptions {
             slowest: 12,
             label: None,
             commit: None,
+            hold: None,
+            arguments: Vec::new(),
             keep: false,
             grove_version: GroveVersion::latest(),
         }
@@ -326,6 +339,16 @@ pub struct LatencyReport {
     /// where it could be read: two builds of one commit are two
     /// executables, and so is a build that a moved source tree misnames.
     pub executable: Option<String>,
+    /// The switches of the environment the run was made under: every
+    /// variable whose name begins with `LIGNIN_`, as `NAME=VALUE`, in the
+    /// order of their names. An experiment's build reads its mode from one,
+    /// so the executable and these say which experiment ran, and how.
+    pub switches: Vec<String>,
+    /// The words the run was started with after `latency`, where it was
+    /// started by words: what a campaign holds a report to. They are no
+    /// part of what a run was, which the other fields say: the file the
+    /// report went to is among them.
+    pub arguments: Vec<String>,
     /// The GroveVersion applied.
     pub grove_protocol_version: u32,
     /// The workload's seed.
@@ -362,6 +385,8 @@ pub struct LatencyReport {
     pub mark_us: u64,
     /// Whether the engine's counts were read after each commit.
     pub parts: bool,
+    /// Whether the run waited for a file before it began (`--hold`).
+    pub hold: bool,
     /// How many of the slowest commits the run was asked to keep.
     pub slowest: u64,
     /// The engines, in the order they were measured.
@@ -413,9 +438,13 @@ pub struct EngineLatency {
     pub pauses_outlasted: u64,
     /// The longest such a pause had passed by, in nanoseconds.
     pub outlasted_ns: u64,
-    /// The syncs the engine made through the watching file layer over the
-    /// measured blocks, by what they are of: how many, and their time in
-    /// nanoseconds. Empty where the layer was not asked for.
+    /// The syncs the engine made through the watching file layer that ended
+    /// inside the measured blocks, by what they are of: how many, and their
+    /// time in nanoseconds. A sync is inside if it ended after the first
+    /// measured block began and no later than the last commit ended: one
+    /// that was under way when the last commit ended is not counted, and
+    /// one that began before the first block and ended after it is. Empty
+    /// where the layer was not asked for.
     pub syncs: BTreeMap<String, (u64, u64)>,
     /// The slowest commits, slowest first.
     pub slowest: Vec<SlowCommit>,
@@ -679,9 +708,6 @@ struct Seen {
     /// The syncs that ended since the measured blocks began: when each
     /// began and ended, of what.
     ended: Vec<(u64, u64, &'static str)>,
-    /// How many syncs ended, and their time in nanoseconds, by what they
-    /// are of.
-    counted: BTreeMap<&'static str, (u64, u64)>,
     next: u64,
 }
 
@@ -704,9 +730,6 @@ impl Watch {
         let mut seen = self.seen();
         seen.under_way.retain(|(other, ..)| *other != number);
         seen.ended.push((began, ended, of));
-        let counted = seen.counted.entry(of).or_default();
-        counted.0 += 1;
-        counted.1 += ended.saturating_sub(began);
         synced
     }
 
@@ -714,9 +737,7 @@ impl Watch {
     /// before is forgotten.
     fn begin(&self) {
         MEASURING.set(true);
-        let mut seen = self.seen();
-        seen.ended.clear();
-        seen.counted.clear();
+        self.seen().ended.clear();
     }
 
     /// The syncs that had a moment in common with the time from `from` to
@@ -756,12 +777,18 @@ impl Watch {
         )
     }
 
-    fn counted(&self) -> BTreeMap<String, (u64, u64)> {
-        let counted = &self.seen().counted;
+    /// The syncs that ended after `from` and no later than `to`, by what
+    /// they are of: how many, and their time in nanoseconds.
+    fn counted(&self, from: u64, to: u64) -> BTreeMap<String, (u64, u64)> {
+        let mut counted: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        for (began, ended, of) in &self.seen().ended {
+            if *ended > from && *ended <= to {
+                let of = counted.entry(of.to_string()).or_default();
+                of.0 += 1;
+                of.1 += ended.saturating_sub(*began);
+            }
+        }
         counted
-            .iter()
-            .map(|(of, count)| (of.to_string(), *count))
-            .collect()
     }
 }
 
@@ -1145,6 +1172,9 @@ fn measure_in<E: Subject>(
     }
     let mut seen = first;
     let (mut pauses_outlasted, mut outlasted) = (0, Duration::ZERO);
+    // The measured blocks, by the monotonic clock: from before the first
+    // block to the end of the last commit.
+    let mut measured_from_to = (0, 0);
     let began = Instant::now();
 
     /// Has the helpers end, however the measured blocks are left.
@@ -1186,6 +1216,7 @@ fn measure_in<E: Subject>(
         };
 
         let mut measure = || -> Result<(), BenchError> {
+            measured_from_to.0 = monotonic();
             marker.line(MARK_BEGIN);
             for number in 0..options.blocks {
                 marker.block(number);
@@ -1196,6 +1227,7 @@ fn measure_in<E: Subject>(
                     ran,
                 } = block(engine, &mut stream, grove_version, watch)?;
                 let to = from + took.as_nanos() as u64;
+                measured_from_to.1 = to;
                 marker.mark(number, took, from);
                 // From here to the next block is the pause, which is counted
                 // from the commit's end: what the harness does in it moves
@@ -1280,7 +1312,10 @@ fn measure_in<E: Subject>(
     let parts_total = first.zip(last).map(|((before, _), (after, _))| {
         std::array::from_fn(|part| after[part].saturating_sub(before[part]))
     });
-    let syncs = watch.map_or_else(BTreeMap::new, Watch::counted);
+    // What the helpers did after the last commit, and what the engine
+    // synced while they were waited for, is after the measured blocks.
+    let (from, to) = measured_from_to;
+    let syncs = watch.map_or_else(BTreeMap::new, |watch| watch.counted(from, to));
     let _ = std::fs::remove_file(&neighbour_file);
     // A run whose background work failed is no measurement.
     engine.wait_for_background()?;
@@ -1316,6 +1351,54 @@ fn measure_in<E: Subject>(
         syncs,
         slowest,
     })
+}
+
+/// How long a run waits for the file of `--hold`.
+pub const HOLD: Duration = Duration::from_secs(120);
+
+/// Says that the calling thread is ready, in `<file>.ready` with the
+/// process's id and the thread's, and waits until `file` is there: for
+/// [`HOLD`] at most, after which the run fails.
+fn held(file: &Path, at_most: Duration) -> Result<(), BenchError> {
+    let ready = PathBuf::from(format!("{}.ready", file.display()));
+    let part = PathBuf::from(format!("{}.part", ready.display()));
+    let ids = format!(
+        "{} {}\n",
+        std::process::id(),
+        machine::thread_id().unwrap_or(0)
+    );
+    let failed = |error| BenchError::io("saying that the run is ready", error);
+    std::fs::write(&part, ids).map_err(failed)?;
+    std::fs::rename(&part, &ready).map_err(failed)?;
+    let asked = Instant::now();
+    while !file.exists() {
+        if asked.elapsed() >= at_most {
+            return Err(BenchError::Check(format!(
+                "{} was not there after {} s: nothing let the run begin",
+                file.display(),
+                at_most.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+/// The switches of the environment: every variable whose name begins with
+/// `LIGNIN_`, as `NAME=VALUE`, in the order of their names.
+fn switches() -> Vec<String> {
+    let mut switches: Vec<String> = std::env::vars_os()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .filter(|(name, _)| name.starts_with("LIGNIN_"))
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    switches.sort();
+    switches
 }
 
 /// Measures every engine of `options` on a thread named [`THREAD_NAME`]
@@ -1431,6 +1514,9 @@ fn executable() -> Option<String> {
 }
 
 fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
+    if let Some(file) = &options.hold {
+        held(file, HOLD)?;
+    }
     let commit = options
         .commit
         .clone()
@@ -1444,6 +1530,8 @@ fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
         label: options.label.clone(),
         commit,
         executable: executable(),
+        switches: switches(),
+        arguments: options.arguments.clone(),
         grove_protocol_version: options.grove_version.protocol_version,
         seed: options.seed,
         documents: options.documents,
@@ -1463,6 +1551,7 @@ fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
         mark_blocks: options.mark_blocks,
         mark_us: options.mark.as_micros() as u64,
         parts: options.parts,
+        hold: options.hold.is_some(),
         slowest: options.slowest as u64,
         engines: Vec::new(),
     };
@@ -1558,6 +1647,8 @@ fn what_a_run_was(report: &LatencyReport) -> String {
         label,
         commit,
         executable,
+        switches,
+        arguments: _,
         grove_protocol_version,
         seed,
         documents,
@@ -1574,6 +1665,7 @@ fn what_a_run_was(report: &LatencyReport) -> String {
         mark_blocks,
         mark_us,
         parts,
+        hold,
         slowest,
         engines,
     } = report;
@@ -1592,6 +1684,7 @@ fn what_a_run_was(report: &LatencyReport) -> String {
         "label": label,
         "commit": commit,
         "executable": executable,
+        "switches": switches,
         "grove_protocol_version": grove_protocol_version,
         "seed": seed,
         "documents": documents,
@@ -1608,6 +1701,7 @@ fn what_a_run_was(report: &LatencyReport) -> String {
         "mark_blocks": mark_blocks,
         "mark_us": mark_us,
         "parts": parts,
+        "hold": hold,
         "slowest": slowest,
         "engines": engines,
     })
@@ -1880,6 +1974,17 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
             None => groups.push((row, vec![row])),
         }
     }
+    let unnamed = reports
+        .iter()
+        .filter(|report| report.executable.is_none())
+        .count();
+    if unnamed > 0 {
+        let _ = writeln!(
+            out,
+            "\n{unnamed} of the reports do not name the executable that made them: their rows \
+             are above, each by itself, and none of them is taken for a repeat of another."
+        );
+    }
     groups.retain(|(_, runs)| runs.len() > 1);
     if groups.is_empty() {
         return out;
@@ -1887,8 +1992,8 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
     out.push_str(
         "\nThe median of the runs' values, and their range. Runs are taken for repeats of one \
          another where their reports say the same of how they were made: the build, by its \
-         name, its commit and the executable that ran, the workload, the pause, the settings, \
-         what the harness did beside the commits, the machine, the scratch directory with its \
+         name, its commit, the executable that ran and the switches of its environment, the \
+         workload, the pause, the settings, what the harness did beside the commits, the machine, the scratch directory with its \
          device and its mount, and the place of the engine in the run. A report that does not \
          name its executable is a repeat of none. What a report does not say, the system's version and the device's settings among \
          it, is not held to be the same.\n\n| Build | Engine | Background | \
@@ -1952,6 +2057,7 @@ fn parse<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, BenchError>
 /// to.
 pub fn parse_options(args: &[String]) -> Result<(LatencyOptions, Option<PathBuf>), BenchError> {
     let mut options = LatencyOptions::new(std::env::temp_dir().join("lignin-bench-latency"));
+    options.arguments = args.to_vec();
     let mut out = None;
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -1969,6 +2075,7 @@ pub fn parse_options(args: &[String]) -> Result<(LatencyOptions, Option<PathBuf>
                     "--scratch" => options.scratch = PathBuf::from(value),
                     "--label" => options.label = Some(value.clone()),
                     "--commit" => options.commit = Some(value.clone()),
+                    "--hold" => options.hold = Some(PathBuf::from(value)),
                     "--engine" => options.engines.push(
                         EngineChoice::named(value)
                             .ok_or_else(|| BenchError::Check(format!("no engine {value:?}")))?,
@@ -2076,8 +2183,14 @@ mod tests {
         assert_eq!(options.neighbour, Some(Duration::from_millis(4)));
         assert!(options.watch_files && options.mark_blocks && options.keep);
 
+        // The words a run was started with are kept as they were given.
+        let held = parse_options(&args("--hold /t/go --blocks 9")).unwrap().0;
+        assert_eq!(held.hold, Some(PathBuf::from("/t/go")));
+        assert_eq!(held.arguments, args("--hold /t/go --blocks 9"));
+
         let (defaults, out) = parse_options(&[]).unwrap();
         assert_eq!(out, None);
+        assert_eq!(defaults.hold, None);
         assert_eq!(defaults.engines, vec![EngineChoice::RocksDb]);
         assert_eq!((defaults.blocks, defaults.documents), (100_000, 100_000));
         assert_eq!(defaults.background, Background::Default);
@@ -2385,6 +2498,8 @@ mod tests {
             label: options.label.clone(),
             commit: options.commit.clone(),
             executable: Some("0a".repeat(32)),
+            switches: Vec::new(),
+            arguments: options.arguments.clone(),
             grove_protocol_version: options.grove_version.protocol_version,
             seed: options.seed,
             documents: options.documents,
@@ -2401,6 +2516,7 @@ mod tests {
             mark_blocks: options.mark_blocks,
             mark_us: options.mark.as_micros() as u64,
             parts: options.parts,
+            hold: options.hold.is_some(),
             slowest: options.slowest as u64,
             engines: Vec::new(),
         }
@@ -2422,6 +2538,36 @@ mod tests {
         // probe for ever.
         let panicked = wait.recv_timeout(Duration::from_secs(60));
         assert_eq!(panicked, Ok(true), "the run did not end");
+    }
+
+    #[test]
+    fn a_held_run_says_it_is_ready_and_begins_when_its_file_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("go");
+        let ready = dir.path().join("go.ready");
+        // Nothing lets it begin: it fails, having said that it was ready.
+        let refused = held(&file, Duration::from_millis(30)).unwrap_err();
+        assert!(
+            refused.to_string().contains("nothing let the run begin"),
+            "{refused}"
+        );
+        let said = std::fs::read_to_string(&ready).unwrap();
+        let ids: Vec<u32> = (said.split_whitespace())
+            .map(|id| id.parse().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], std::process::id());
+        std::fs::remove_file(&ready).unwrap();
+        // It begins once the file is there, and not before it has said so.
+        std::thread::scope(|scope| {
+            let waiting = scope.spawn(|| held(&file, Duration::from_secs(60)));
+            while !ready.exists() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!waiting.is_finished());
+            std::fs::write(&file, b"").unwrap();
+            waiting.join().unwrap().unwrap();
+        });
     }
 
     #[test]
@@ -2600,6 +2746,16 @@ mod tests {
             executable: Some("0b".repeat(32)),
             ..one.clone()
         };
+        // By the same executable with an experiment's switch set.
+        let switched = LatencyReport {
+            switches: vec!["LIGNIN_LOG_ALLOCATE=fallocate".to_string()],
+            ..one.clone()
+        };
+        // After a wait for a tracer.
+        let waited = LatencyReport {
+            hold: true,
+            ..one.clone()
+        };
         for other in [
             paused,
             flushed,
@@ -2615,6 +2771,8 @@ mod tests {
             mounted,
             remounted,
             rebuilt,
+            switched,
+            waited,
         ] {
             let apart = runs_table(&[one.clone(), other.clone()]);
             assert!(!apart.contains("The median of the runs' values"), "{apart}");
@@ -2666,6 +2824,7 @@ mod tests {
         let later = LatencyReport {
             started_at_unix: 9,
             load_average_before: Some([1.0, 2.0, 3.0]),
+            arguments: vec!["--out".to_string(), "another.json".to_string()],
             ..one.clone()
         };
         let again = runs_table(&[one.clone(), later]);
@@ -2681,6 +2840,11 @@ mod tests {
         };
         let neither = runs_table(&[unnamed.clone(), unnamed]);
         assert!(!neither.contains("Runs are taken for repeats"), "{neither}");
+        assert!(
+            neither.contains("2 of the reports do not name the executable"),
+            "{neither}"
+        );
+        assert_eq!(neither.matches("| head (fedcba98) | rocksdb |").count(), 2);
         let same = runs_table(&[one.clone(), one]);
         assert!(
             same.contains("| head (fedcba98) | rocksdb | default | 2 |"),
@@ -2768,8 +2932,13 @@ mod tests {
         log.sync_data().unwrap();
         layer.sync_dir(&db.join("wal")).unwrap();
         let to = monotonic();
+        // A sync that ends after the measured blocks is not of them, and
+        // neither is one that ended before them.
+        log.sync_data().unwrap();
+        assert_eq!(watch.counted(to, to), BTreeMap::new());
+        assert!(watch.counted(0, from).is_empty());
 
-        let counted = watch.counted();
+        let counted = watch.counted(from, to);
         let counts: Vec<(&str, u64)> = counted
             .iter()
             .map(|(of, (count, _))| (of.as_str(), *count))
@@ -2892,6 +3061,7 @@ mod tests {
             "lignin-bench-latency/2",
             "lignin-bench-latency/3",
             "lignin-bench-latency/4",
+            "lignin-bench-latency/5",
         ] {
             let report = format!(r#"{{"schema":"{earlier}","engines":[]}}"#);
             let refused = LatencyReport::from_json(&report).unwrap_err().to_string();
