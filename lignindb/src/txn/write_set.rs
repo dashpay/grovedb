@@ -4598,21 +4598,30 @@ mod tests {
         // ones after it, and with none of those before it. Five of them,
         // each with a put after it and one put before them all: five
         // comparisons for the first put, and one fewer for each put on.
+        // The first of them holds the key that is put after it, and no
+        // other key: that put is given, as one that it does not cover.
         let mut set = WriteSet::new();
+        let data = Unit::data(subtree(9));
+        let first = RecordWrite::DeleteRange {
+            unit: data,
+            start: b"n\x01",
+            end: Some(b"n\x02"),
+        };
         let between = RecordWrite::DeleteRange {
-            unit: Unit::data(subtree(9)),
+            unit: data,
             start: b"z",
             end: None,
         };
         node(&mut set, 9, b"n0", value);
         for index in 1..=5u8 {
-            record(&mut set, between);
+            record(&mut set, if index == 1 { first } else { between });
             node(&mut set, 9, &[b'n', index], value);
         }
         let mut puts = Vec::new();
         counted::take();
         set.list_unmade(subtree(9), &mut puts);
         assert_eq!((puts.len(), counted::take()), (6, (0, 15)));
+        assert!(puts.iter().any(|&(_, key)| key == b"n\x01"));
 
         // What is older than the oldest put that is listed is not looked
         // at for a drop or a clear: here two hundred range deletes and a
