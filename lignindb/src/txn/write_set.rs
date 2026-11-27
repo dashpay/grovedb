@@ -1373,6 +1373,23 @@ impl WriteSet {
             let Some(index) = self.units.get(&Unit::data(stretch.subtree)) else {
                 continue;
             };
+            // The puts that the stretch lists, oldest first.
+            let low = match stretch.after {
+                Some(id) => Bound::Excluded(id),
+                None => Bound::Unbounded,
+            };
+            let listed = index.stale.range((low, Bound::Unbounded));
+            let listed = listed.take_while(|id| stretch.before.is_none_or(|before| **id < before));
+            let mut listed = listed.copied().peekable();
+            // After the last stretch nothing older is asked for. So what
+            // is older than the oldest put it lists is not looked at: a
+            // drop or a clear from before a put did not take it, and a
+            // range delete from before it does not cover it.
+            let oldest = match (at + 1 == stretches.len(), listed.peek()) {
+                (true, None) => break,
+                (true, Some(oldest)) => Some(*oldest),
+                (false, _) => None,
+            };
             // The ranges that the stretch holds. They are in the order of
             // their ids, and no move is among them: a move under the
             // prefix is where a stretch ends.
@@ -1381,19 +1398,18 @@ impl WriteSet {
             let from = stretch
                 .after
                 .map_or(0, |after| older(after.saturating_add(1)));
+            let from = oldest.map_or(from, |oldest| from.max(older(oldest)));
             let to = stretch.before.map_or(ranges.len(), older);
             let held = ranges.get(from..to).unwrap_or(&[]);
-            let whole =
-                |id: &EntryId| matches!(self.entry(*id).kind, Kind::Dropped | Kind::Cleared);
+            let whole = |id: &EntryId| {
+                #[cfg(test)]
+                counted::cut();
+                matches!(self.entry(*id).kind, Kind::Dropped | Kind::Cleared)
+            };
             let cut = held.iter().rposition(whole);
             let deletes = &held[cut.map_or(0, |cut| cut + 1)..];
-            let low = match cut.map(|cut| held[cut]).or(stretch.after) {
-                Some(id) => Bound::Excluded(id),
-                None => Bound::Unbounded,
-            };
-            let listed = index.stale.range((low, Bound::Unbounded));
-            let held = listed.take_while(|id| stretch.before.is_none_or(|before| **id < before));
-            for id in held.copied() {
+            let taken = cut.map(|cut| held[cut]);
+            for id in listed.skip_while(|id| taken.is_some_and(|taken| *id < taken)) {
                 let key = self.key(id);
                 let newer = &deletes[deletes.partition_point(|range| *range < id)..];
                 let mut newer = newer.iter().chain(&later);
@@ -3301,6 +3317,18 @@ mod counted {
         static STRETCHES: Cell<u64> = const { Cell::new(0) };
         static RANGES: Cell<u64> = const { Cell::new(0) };
         static MOVES: Cell<u64> = const { Cell::new(0) };
+        static CUTS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// An entry was asked whether it is a drop or a clear, to find the
+    /// newest that took the puts before it.
+    pub(super) fn cut() {
+        CUTS.with(|count| count.set(count.get() + 1));
+    }
+
+    /// How many entries were asked that since the count was last taken.
+    pub(super) fn take_cut() -> u64 {
+        CUTS.with(|count| count.replace(0))
     }
 
     /// A move was compared with an entry, to find the newest before it.
@@ -4545,6 +4573,54 @@ mod tests {
         };
         record(&mut set, covers);
         assert_eq!(set.unmade(subtree(6)).len(), 39);
+
+        // What is older than the oldest put that is listed is not looked
+        // at for a drop or a clear: here two hundred range deletes and a
+        // clear from before the one put. Nor is anything looked at for a
+        // Merk that lists no put.
+        let mut set = WriteSet::new();
+        let data = Unit::data(subtree(7));
+        let outside = RecordWrite::DeleteRange {
+            unit: data,
+            start: b"z",
+            end: None,
+        };
+        for _ in 0..100 {
+            record(&mut set, outside);
+        }
+        let clear = [SubtreeWrite::Clear {
+            subtree: subtree(7),
+        }];
+        let cleared = Batch {
+            subtrees: &clear,
+            ..Batch::default()
+        };
+        set.add(&cleared, version(1), &[], &[], &[], &[], &[]);
+        for _ in 0..100 {
+            record(&mut set, outside);
+        }
+        node(&mut set, 8, b"elsewhere", value);
+        counted::take_cut();
+        assert_eq!(set.unmade(subtree(7)).len(), 0);
+        assert_eq!(counted::take_cut(), 0, "no put is listed in the Merk");
+        node(&mut set, 7, b"s", value);
+        counted::take();
+        assert_eq!(set.unmade(subtree(7)).len(), 1);
+        assert_eq!((counted::take_cut(), counted::take().1), (0, 0));
+        // A range delete and a clear that are newer are looked at.
+        record(&mut set, outside);
+        assert_eq!(set.unmade(subtree(7)).len(), 1);
+        assert_eq!((counted::take_cut(), counted::take().1), (1, 1));
+        set.add(&cleared, version(1), &[], &[], &[], &[], &[]);
+        node(&mut set, 7, b"t", value);
+        record(&mut set, outside);
+        let after: Vec<&[u8]> = (set.unmade(subtree(7)).iter())
+            .map(|(_, key)| *key)
+            .collect();
+        assert_eq!(after, [&b"t"[..]]);
+        // From the newest entry back to the clear: the range delete
+        // after it, and the clear.
+        assert_eq!(counted::take_cut(), 2);
     }
 
     /// A rollback to a mark in a set whose writers made every hash looks
