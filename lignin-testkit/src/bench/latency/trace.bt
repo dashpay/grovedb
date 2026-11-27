@@ -91,13 +91,20 @@ tracepoint:sched:sched_switch
   @offin[tid] = @measured;
 }
 
+// The waking thread is noted for every wait, and its stack is taken only
+// for one with a moment of the measured blocks so far: the stacks of the
+// wakings of the load and the warm blocks would take places in the map
+// from those that are written.
 tracepoint:sched:sched_waking
 /@off[args->pid]/
 {
   @woken[args->pid] = 1;
   @wcomm[args->pid] = comm;
   @wtid[args->pid] = tid;
-  @wk[args->pid] = kstack(perf, 30);
+  if (@measured || @offin[args->pid]) {
+    @woken[args->pid] = 2;
+    @wk[args->pid] = kstack(perf, 30);
+  }
 }
 
 // It is back on a processor. The kernel calls this in the thread that comes
@@ -123,18 +130,20 @@ kprobe:finish_task_switch*
       printf("INCALL begin=%llu tid=%d call=allocate file=%s/%s\n", @off[$t], $t, @adir[$t], @aname[$t]);
     }
     // A thread that was taken off its processor while it could run is put
-    // back with no waking: the record then has no stack of one, and the
-    // tracer is not asked for a stack it never took.
-    if (@woken[$t]) {
+    // back with no waking, and one that was woken before the measured
+    // blocks began has a waking whose stack was not taken: the record then
+    // has no stack of one, and the tracer is not asked for a stack it never
+    // took.
+    if (@woken[$t] == 2) {
       printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n%s\n",
              @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
              (@wdev[$t] | @adev[$t]) & 0xfffff,
              comm, $t, @wcomm[$t], @wtid[$t], kstack(perf, 40), ustack(perf, 127), @wk[$t]);
     } else {
-      printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=/0\n left at:\n%s called from:\n%s woken at:\n\n",
+      printf("OFFCPU begin=%llu end=%llu us=%llu state=%lld dev=%d,%d thread=%s/%d waking=%s/%d\n left at:\n%s called from:\n%s woken at:\n\n",
              @off[$t], nsecs(monotonic), $d, @offstate[$t], (@wdev[$t] | @adev[$t]) >> 20,
              (@wdev[$t] | @adev[$t]) & 0xfffff,
-             comm, $t, kstack(perf, 40), ustack(perf, 127));
+             comm, $t, @wcomm[$t], @wtid[$t], kstack(perf, 40), ustack(perf, 127));
     }
   }
   delete(@off[$t]); delete(@offstate[$t]); delete(@offin[$t]);
