@@ -97,6 +97,8 @@
 //! | `flush_idle_ms` | [`FlushConfig::idle`] |
 //! | `cleaner_target` | [`CleanerConfig::target_dead_percent`] |
 //! | `cleaner_value_target` | [`CleanerConfig::value_dead_percent`] |
+//! | `cleaner_value_floor` | [`CleanerConfig::value_min_file_dead_percent`] |
+//! | `cleaner_value_ceiling` | [`CleanerConfig::value_ceiling_dead_percent`] |
 //! | `cleaner_checkpoint_dead` | [`CleanerConfig::checkpoint_dead_percent`] |
 //! | `cleaner_seal_dead` | [`CleanerConfig::seal_dead_percent`] |
 //! | `cleaner_max_segment` | [`CleanerConfig::max_segment_percent`] |
@@ -327,6 +329,8 @@ impl Tuning {
                 }
                 "cleaner_target"
                 | "cleaner_value_target"
+                | "cleaner_value_floor"
+                | "cleaner_value_ceiling"
                 | "cleaner_checkpoint_dead"
                 | "cleaner_seal_dead"
                 | "cleaner_max_segment"
@@ -338,6 +342,12 @@ impl Tuning {
                     match key {
                         "cleaner_target" => cleaner.target_dead_percent = percent(key, value)?,
                         "cleaner_value_target" => cleaner.value_dead_percent = percent(key, value)?,
+                        "cleaner_value_floor" => {
+                            cleaner.value_min_file_dead_percent = percent(key, value)?
+                        }
+                        "cleaner_value_ceiling" => {
+                            cleaner.value_ceiling_dead_percent = percent(key, value)?
+                        }
                         "cleaner_checkpoint_dead" => {
                             cleaner.checkpoint_dead_percent = percent(key, value)?
                         }
@@ -954,6 +964,8 @@ mod settings_tests {
             "flush_idle_ms=23",
             "cleaner_target=29",
             "cleaner_value_target=0",
+            "cleaner_value_floor=31",
+            "cleaner_value_ceiling=43",
             "cleaner_checkpoint_dead=37",
             "cleaner_seal_dead=41",
             "cleaner_max_segment=100",
@@ -988,6 +1000,8 @@ mod settings_tests {
             Some(CleanerConfig {
                 target_dead_percent: 29,
                 value_dead_percent: 0,
+                value_min_file_dead_percent: 31,
+                value_ceiling_dead_percent: 43,
                 checkpoint_dead_percent: 37,
                 seal_dead_percent: 41,
                 max_segment_percent: 100,
