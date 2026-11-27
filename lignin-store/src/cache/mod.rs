@@ -90,8 +90,8 @@
 //! | written | A segment holds its content, and the page table has its link. | yes, once it has no pin |
 //!
 //! **A written page version that is superseded need not wait for the
-//! clock.** Once the version after it is in a segment as well, or its page
-//! is freed, nothing in the pool needs it: write-back checks a run against
+//! clock.** Once a later version of its page is in a segment as well, or
+//! its page is freed, nothing in the pool needs it: write-back checks a run against
 //! the newest version of the page that a segment holds, and a reader of the
 //! latest version reads the current one. It is *spent*: the pool lists it,
 //! and [`BufferPool::reclaim`] takes a listed one out once no reader can
@@ -318,9 +318,9 @@
 //! are not every frame. It
 //! never refuses a page for lack of room. Such a frame is freed the moment
 //! it could be evicted: when its last pin goes, if nothing else keeps it.
-//! So **what the pool has allocated never exceeds the configured size plus
-//! the frames that cannot be evicted**, with their attached values
-//! ([`BufferPool::memory`], [`Census`]). The plan says "plus pinned
+//! So **what [`BufferPool::memory`] counts never exceeds the configured
+//! size plus the frames that cannot be evicted**, with their attached
+//! values ([`Census`]). The plan says "plus pinned
 //! frames": a pin is one thing that keeps a frame, and a private copy and a
 //! page version that no segment holds are the others. How many frames are
 //! unwritten is write-back's to bound (FL5), and how many are private is

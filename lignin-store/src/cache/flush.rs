@@ -53,10 +53,12 @@ impl BufferPool {
     /// table has its link. The page version leaves the unwritten lists, and
     /// the frame can be evicted once it has no pin.
     ///
-    /// The version of the page before it that a segment holds, the newest
-    /// such in the pool, is spent from here on: write-back checks no run
-    /// against it any more. It is listed, and [`Self::reclaim`] takes it
-    /// out once no reader can ask for it, if it has no pin then.
+    /// Of the versions of the page that are in the pool and that a segment
+    /// holds, the one with the greatest birth before this one's, if there
+    /// is one, is listed as spent: a later version of its page is in a
+    /// segment now. [`Self::reclaim`] takes a version out that is still
+    /// listed when no reader can ask for it any more, if it has no pin
+    /// then.
     ///
     /// The link is pushed before this is called: a reader that misses the
     /// page afterwards reads the page table, and has to find it there.
@@ -113,12 +115,11 @@ impl BufferPool {
         }
         let kept = if hold { flag::HELD } else { 0 };
         header.set_flags((flags & !flag::UNWRITTEN) | kept);
-        // Of the versions of the page that are in the pool, the newest
-        // before this one that a segment holds was the page under this
-        // one's run, and no run is checked against it any more. It alone
-        // is listed here. An older one that is in the pool stays what it
-        // is, a frame that can be evicted: one that was listed earlier is
-        // still listed, and one that was not is the clock's.
+        // Listed is the version with the greatest birth before this one's
+        // among those of the page that are in the pool and that a segment
+        // holds: a superseded version with a later one in a segment. Any
+        // other such version stays what it is, a frame that can be
+        // evicted, whether a listing of it is still there or not.
         let spent = (!hold)
             .then(|| {
                 published(&chain, page)

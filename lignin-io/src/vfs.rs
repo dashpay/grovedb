@@ -464,8 +464,7 @@ pub trait VfsFile: Any + fmt::Debug + Send + Sync {
     /// in before a read asks for them. A caller that is about to read
     /// several ranges, of one file or of several, names all of them first
     /// and reads them then: a file layer that acts on the hint can bring
-    /// them in at the same time, where reads in turn bring them in one
-    /// after the other.
+    /// them in at the same time.
     ///
     /// It is a hint and no more. It changes no byte and no length, it
     /// reports nothing, and a read gives what it gives without it. A file

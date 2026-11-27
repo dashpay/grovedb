@@ -859,8 +859,7 @@ impl SegmentStore {
     /// read, each with [`Self::read`]: the blocks of one page's chain, which
     /// were written at different times and so, as a rule, lie apart. A
     /// file layer that acts on the hint ([`VfsFile::will_read`]) can bring
-    /// them in at the same time, where the reads that follow would
-    /// otherwise bring them in one after the other.
+    /// them in at the same time.
     ///
     /// It is advice: nothing is checked and nothing is reported, and
     /// neither the file layer nor the system need act on it. A location
