@@ -4275,22 +4275,24 @@ macro_rules! reads {
         /// after it, the rollback of the scope that made the call does,
         /// and frames that are made again have them again.
         ///
-        /// Through a scope it claims a read of `subtree`, as a read of
-        /// its entry does, then a read of each Merk it comes to through
-        /// the pointer of a host, before it reads anything of that Merk,
-        /// and at the end, together or not at all, a write of each Merk
-        /// it makes a hash in (SC3). The writes are claimed after every
-        /// host and every read that can refuse the call; a rule that
-        /// refuses a hash comes after them, and the scope then holds
-        /// them. The Merk under a host is the one that the subtree
-        /// directory has entered there, and one that another open scope
-        /// holds refuses the call as a host that is behind does, so the
-        /// answer is the same whether the writes of the scopes beside
-        /// the caller are laid out or not, once the caller's own writes
-        /// are laid out. A scope that keeps its writes in the write set
-        /// has them laid out first ([`Scope::lay_out`]), also where the
-        /// call is then refused, and is refused as there where they
-        /// cannot be laid out beside what another scope laid out before.
+        /// Through a scope it claims a read of `subtree`, as a read of its
+        /// entry does, then a read of each Merk it comes to through the pointer
+        /// of a host, before it reads anything of that Merk, and a write of
+        /// each Merk it makes a hash in, together or not at all (SC3). The
+        /// writes are asked for after every host and every read that can refuse
+        /// the call, and before a hash is made: a Merk that another open scope
+        /// has read refuses the call there. They are taken once every hash is
+        /// made. So a call that ends at its rules, with their error or with a
+        /// panic, leaves the scope the reads it was granted and no write, as a
+        /// call that is refused does. The Merk under a host is the one that the
+        /// subtree directory has entered there, and one that another open scope
+        /// writes refuses the call as a host that is behind does, so the answer
+        /// is the same whether the writes of the scopes beside the caller are
+        /// laid out or not, once the caller's own writes are laid out. A scope
+        /// that keeps its writes in the write set has them laid out first
+        /// ([`Scope::lay_out`]), also where the call is then refused, and is
+        /// refused as there where they cannot be laid out beside what another
+        /// scope laid out before.
         /// Through the transaction,
         /// a stale hash is made only while no scope is open
         /// ([`TxnError::ScopeOpen`]): a write goes through a scope (SC1).
@@ -4300,9 +4302,9 @@ macro_rules! reads {
         /// writes.
         ///
         /// It is refused before a hash is made, with no page and no
-        /// write of the transaction changed. What a scope was granted
-        /// before the refusal stays with it, as the claims of a batch
-        /// that is refused for what it says do:
+        /// write of the transaction changed. The reads that a scope was
+        /// granted before the refusal stay with it, as the claims of a
+        /// batch that is refused for what it says do:
         ///
         /// - for a subtree that is not entered
         ///   ([`BatchError::NotEntered`]);
@@ -4310,31 +4312,48 @@ macro_rules! reads {
         ///   the transaction ([`BatchError::EvaluatedByKey`]), and with
         ///   the refusal of the layout where its writes cannot be laid
         ///   out;
-        /// - for `subtree`, or a Merk it would make a hash in, that
-        ///   another open scope holds ([`TxnError::ScopeOverlap`]);
-        /// - where a host with a stale value hash is behind the Merks
-        ///   it hosts: it is marked pending as the caller is shown the
-        ///   marks ([`Scope::is_pending`]), it points elsewhere than at
-        ///   the root of a Merk that is entered under it there, as after
-        ///   a clear or a drop, or another open scope holds that Merk
-        ///   ([`TxnError::Hash`] of
-        ///   [`HostBehind`](lignin_tree::hash::HashError::HostBehind)).
+        /// - with [`TxnError::ScopeOverlap`], which names the unit that
+        ///   stands against the call. At the read of `subtree`, which is
+        ///   the first thing claimed: its data unit where another open
+        ///   scope writes it, or that of a Merk above it which another
+        ///   open scope dropped or cleared. And when the writes are asked
+        ///   for, after the walk: the data unit of a Merk that the call
+        ///   would make a hash in, `subtree` or one under a host, which
+        ///   another open scope has read;
+        /// - with [`TxnError::Hash`] of
+        ///   [`HostBehind`](lignin_tree::hash::HashError::HostBehind),
+        ///   which names the cell of a host with a stale value hash that
+        ///   is behind the Merks it hosts, when the walk comes to that
+        ///   host. The host is marked pending as the caller is shown the
+        ///   marks ([`Scope::is_pending`]). Or it points elsewhere than
+        ///   at the root of a Merk that is entered under it there, as
+        ///   after a clear or a drop. Or the read of the data unit of
+        ///   the Merk under it is refused: another open scope writes
+        ///   that Merk, or dropped or cleared one above it. A scope that
+        ///   has only read the Merk under a host lets the walk go on,
+        ///   and stands against the call later, as above, if a hash is
+        ///   to be made in that Merk.
         ///
-        /// Where a rule refuses a hash, or the evaluation does not read
-        /// a page or a value, the error is [`TxnError::Hash`]. A page or
-        /// a record of the subtree directory that is not read outside
-        /// the evaluation is told as any read tells it
-        /// ([`TxnError::Node`], [`TxnError::Directory`]): while the call
-        /// finds what it comes to, before a hash is made, or while it
-        /// reads the nodes it made a hash of, afterwards. In each case
-        /// the write set is what it was, and every hash that was stale
-        /// is stale. If a hash was stored before the error, which is so
-        /// of every error after the evaluation, the frames are made
-        /// again from the write set, and every node handle read through
-        /// the transaction has ended (PN8).
+        /// Where a rule refuses a hash, or the evaluation does not read a page
+        /// or a value, the error is [`TxnError::Hash`]. A page or a record of
+        /// the subtree directory that is not read outside the evaluation is
+        /// told as any read tells it ([`TxnError::Node`],
+        /// [`TxnError::Directory`]): while the call finds what it comes to,
+        /// before a hash is made, or while it reads the nodes it made a hash
+        /// of, afterwards. In each case the write set is what it was, and every
+        /// hash that was stale is stale: a call that fails adds no entry to the
+        /// write set. Of claims it leaves the reads its scope was granted. If
+        /// a hash was stored before the error, which is so of every error
+        /// after the evaluation, the frames are made again from the write set,
+        /// and every node handle read through the transaction has ended (PN8).
         ///
-        /// `rules` are called inside the operation: they must not call
-        /// the transaction.
+        /// `rules` are called inside the operation, under the
+        /// transaction's lock. A rule computes from what it is given:
+        /// it must not call the transaction, nor enter any operation of
+        /// the database that takes a lock. One that commits another
+        /// transaction of the same database waits for the commit lock
+        /// while this transaction's lock is held, and a commit that
+        /// holds that lock can be waiting for this transaction.
         pub fn evaluate<R: lignin_tree::hash::HashRules>(
             &self,
             subtree: Subtree,

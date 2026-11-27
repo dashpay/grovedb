@@ -482,17 +482,19 @@
 //! | the subtree is cleared or dropped | go with the nodes: the entry of the clear or the drop covers them. A subtree that is entered again under the prefix is another Merk |
 //! | the transaction is rolled back, or is ended by its commit | go with the write set |
 //!
-//! **The puts that left a hash stale.** An entry of a node keeps the
-//! hashes that its put left stale as the pages mark them: the hash of a
-//! child that the node does not have is none, and the key-value hash is
-//! stale with the value hash. So a node that is shown from its entry
-//! ([`NodeView::is_record`]) shows the stale hashes that its cell has.
+//! **The puts that left a hash stale.** An entry of a node keeps the hashes
+//! that its put left stale as the writer stated them, and a node that is
+//! shown from its entry ([`NodeView::is_record`]) shows those, as it does
+//! where no call is ever made. The pages mark them otherwise for two kinds
+//! of put: the hash of a child that the node does not have is none, and the
+//! key-value hash is stale with the value hash. The list goes by the pages.
 //! The write set lists, in each unit, the puts of nodes that left a hash
-//! stale and that are the newest write of their record. The list is derived from the
-//! entries, as the index by key is, and the transaction keeps nothing
-//! else for the call. A transaction whose writers make every hash, as on
-//! existing GroveVersions, lists nothing: an entry that it adds or takes
-//! out is tested for what it could list or pass, and no list is asked.
+//! stale on the pages and that are the newest write of their record. The
+//! list is derived from the entries, as the index by key is, and the
+//! transaction keeps nothing else for the call. A transaction whose writers
+//! make every hash, as on existing GroveVersions, lists nothing: an entry
+//! that it adds or takes out is tested for what it could list or pass, and
+//! no list is asked.
 //!
 //! | When | The list |
 //! | --- | --- |
@@ -526,13 +528,19 @@
 //! a cell of it is read, and keeps it as it keeps any read. Each is
 //! claimed and its entry read before the next is claimed, so a call that
 //! a host refuses holds no Merk that it did not open. The writes
-//! are claimed together or not at all, as those of a batch with a
-//! change set of each such Merk: after every host and every read that
-//! can refuse the call, and before a hash is made. So a call that a host
-//! refuses holds reads and no write. A rule that refuses a hash, and a
-//! page or a value that the evaluation does not read, come after them:
-//! the scope then holds the writes it claimed, as a batch that fails
-//! holds its claims.
+//! are those of a batch with a change set of each such Merk, granted
+//! together or not at all. They are asked for after every host and
+//! every read that can refuse the call, and before a hash is made: a
+//! Merk that another open scope has read refuses the call there, by its
+//! name, and nothing is taken. They are taken once every hash is made,
+//! with the entries of the call. The transaction's lock is held from
+//! the one to the other, and the rules are not to call the transaction,
+//! so what was granted when it was asked for is granted when it is
+//! taken. So a call that does not make its hashes leaves its scope the
+//! reads it was granted and no write, however it ends: refused by a
+//! host or by a claim, by a rule that refuses a hash or panics, or at a
+//! page or a value that the evaluation does not read. Another scope
+//! reads those Merks afterwards, to which the caller added no write.
 //!
 //! **Which Merk a host points into** is not read from another scope's
 //! writes (SC4). The host's cell is of the Merk the caller holds, and
