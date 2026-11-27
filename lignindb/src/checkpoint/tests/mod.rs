@@ -9,6 +9,7 @@ mod files;
 mod opener;
 mod races;
 mod reference;
+mod staging;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -40,7 +41,7 @@ use lignin_store::{
 };
 use lignin_tree::node::{Lease, NodePage};
 
-use super::{files::building_of, CheckpointOptions, Checkpointer};
+use super::{files::staging_of, CheckpointOptions, Checkpointer, BUILDING_DIR_NAME};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -219,10 +220,23 @@ pub(super) fn checkpoints_in(db: &Db) -> PathBuf {
     dir
 }
 
-/// The directory that a checkpoint at `target` is built in.
-pub(super) fn building(target: &Path) -> PathBuf {
-    building_of(target).expect("a target with a name")
+/// The staging directory of a creation at `target`.
+pub(super) fn staging(target: &Path) -> PathBuf {
+    staging_of(target).expect("a target with a name")
 }
+
+/// The directory that a checkpoint at `target` is built in, inside the
+/// staging directory of its creation.
+pub(super) fn built_in(target: &Path) -> PathBuf {
+    staging(target).join(BUILDING_DIR_NAME)
+}
+
+/// How many operations a creation asks of the file layer once its
+/// checkpoint is durable at the target, to remove its staging directory:
+/// the listing of the directory above and of the staging directory, and
+/// the removal of its lock file and of the directory itself. A creation
+/// that the power cuts at any of them has returned its checkpoint.
+pub(super) const TIDYING_OPS: u64 = 4;
 
 /// Whether nothing has the name `path` in `vfs`.
 pub(super) fn gone(vfs: &dyn Vfs, path: &Path) -> bool {
@@ -511,6 +525,9 @@ pub(super) struct Meddling {
     pub(super) before_list: Option<Before>,
     /// Before a directory is made.
     pub(super) before_create_dir: Option<Before>,
+    /// Before a directory is synced by a call of its own
+    /// ([`Vfs::sync_dir`]).
+    pub(super) before_sync_dir: Option<Before>,
     /// Under this directory the file system keeps a name in another
     /// spelling than it is given in, as HFS+ does: a name that is given
     /// with [`ONE_LETTER`] is listed with [`TWO_LETTERS`], and either
@@ -531,7 +548,8 @@ pub(super) struct Meddling {
     pub(super) made_read_only: Option<Mutex<BTreeSet<PathBuf>>>,
     /// What the listing of the directory above it leaves out, though it
     /// is there: a name that the file system finds and does not list so.
-    pub(super) unlisted: Option<PathBuf>,
+    /// A test that holds it says which, and when.
+    pub(super) unlisted: Arc<Mutex<Option<PathBuf>>>,
     /// How many syncs each set had that was asked for
     /// ([`Vfs::sync_together`]).
     pub(super) sets: Mutex<Vec<usize>>,
@@ -547,11 +565,12 @@ impl Meddling {
             before_remove: None,
             before_list: None,
             before_create_dir: None,
+            before_sync_dir: None,
             respelled: None,
             respelling: Arc::new(AtomicBool::new(true)),
             folds: None,
             made_read_only: None,
-            unlisted: None,
+            unlisted: Arc::default(),
             sets: Mutex::default(),
         }
     }
@@ -578,7 +597,7 @@ impl Meddling {
     /// above it.
     pub(super) fn not_listing(inner: Arc<dyn Vfs>, path: PathBuf) -> Self {
         Self {
-            unlisted: Some(path),
+            unlisted: Arc::new(Mutex::new(Some(path))),
             ..Self::plain(inner)
         }
     }
@@ -755,7 +774,7 @@ impl Vfs for Meddling {
             before(path)?;
         }
         let mut entries = self.inner.read_dir(&self.kept(path))?;
-        if let Some(unlisted) = &self.unlisted
+        if let Some(unlisted) = &*self.unlisted.lock().expect("a path")
             && unlisted.parent() == Some(path)
         {
             entries.retain(|entry| Some(&*entry.name) != unlisted.file_name());
@@ -773,6 +792,9 @@ impl Vfs for Meddling {
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
+        if let Some(before) = &self.before_sync_dir {
+            before(path)?;
+        }
         self.inner.sync_dir(&self.kept(path))
     }
 

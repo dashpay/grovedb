@@ -104,7 +104,7 @@ whose cause was the file layer's "no space left".
 | `Db::flush` | `DbError::Flush` | takes no write any more (`Reopen::NotDurable`): after a sync that failed the log makes nothing durable in this session |
 | `Db::snapshot`, `Db::read`, every read through a transaction | what it reads at any other time | as before |
 | `Db::rollback` | `Ok`: a rollback writes to no file | as before |
-| `Db::checkpoint`, which is `Checkpointer::create` on an open database | `CheckpointError`, with nothing put at the target, or the whole target (section 6.4). A part of a checkpoint that could not be taken away is beside the target, under its name with `.creating` added. What a creation leaves of the live database is said in `lignindb::checkpoint` ("Durability, and a creation that fails"). A creation has a manifest in doubt settled before it makes a directory: where the settling it asks for after the catch-up answers an error, it fails with `CheckpointError::Settle`, and where the manifest is in doubt again when the creation reads it, with `CheckpointError::Manifest`. Either can be made again (DF8a). | goes on, unless a sync of the log or of a segment was refused, the log's own (`CheckpointError::Sync`) or one of write-back's catch-up: then it has ended (DF8) |
+| `Db::checkpoint`, which is `Checkpointer::create` on an open database | `CheckpointError`, with nothing put at the target, or the whole target (section 6.4). A part of a checkpoint that could not be taken away is beside the target, in the creation's staging directory, which has the target's name with `.creating` added. What a creation leaves of the live database is said in `lignindb::checkpoint` ("Durability, and a creation that fails"). A creation has a manifest in doubt settled before it makes a directory: where the settling it asks for after the catch-up answers an error, it fails with `CheckpointError::Settle`, and where the manifest is in doubt again when the creation reads it, with `CheckpointError::Manifest`. Either can be made again (DF8a). | goes on, unless a sync of the log or of a segment was refused, the log's own (`CheckpointError::Sync`) or one of write-back's catch-up: then it has ended (DF8) |
 | `Backup::copy` | `BackupError`, with nothing left of the target, or a target without a manifest, or the whole target (section 6.4). The source is as it was. | no session is involved |
 | `Db::close` | `DbError`. The handle is closed all the same, and the next open replays what the close did not cover. | has ended |
 | the background work: write-back, the reclaiming of what drops left, the cleaner | nothing is answered to anyone. The turn that was refused is counted, its error is kept as text (`DbStats::background`), and it is made again at the next turn. A session that keeps a reserve releases it (DF13). | goes on, unless what was refused was a sync of the log or of a segment: then it has ended (DF8) |
@@ -853,17 +853,20 @@ that fails and cannot take away what it made can leave a target without a
 manifest as well.
 
 A creation of a checkpoint leaves no such target. It builds the checkpoint
-beside the target, in a directory of the target's name with `.creating`
-added, and gives that directory the name of the target only once
+beside the target, in a directory `checkpoint.creating` inside its staging
+directory, which has the target's name with `.creating` added, and gives
+the directory it built in the name of the target only once
 everything in it is durable (`lignindb::checkpoint`, "Durability, and a
 creation that fails"). So a creation that the power cuts leaves nothing at
 the target, or the whole checkpoint. A part of a checkpoint that a creation leaves, when
 it is cut short or when it fails and cannot take away what it made, is
-under that other name. A directory of that name is not to be opened as a
+in that staging directory. Neither directory is to be opened as a
 database: the engine's open refuses a path whose last name ends in
-`.creating`, in any case of its ASCII letters (`OpenError::Creating`). It
-is for a later creation at the same target to take over, or for
-`lignindb::checkpoint::delete` to remove: that module says when each does.
+`.creating`, in any case of its ASCII letters (`OpenError::Creating`). The
+staging directory is for a later creation at the same target to take over,
+or for `lignindb::checkpoint::delete` to remove: that module says when
+each does, and that neither touches a directory under that name which
+holds anything but what a creation puts there.
 
 One failure leaves the whole target instead. For a copy, the manifest was
 written, and then its name could not be made durable, and the manifest

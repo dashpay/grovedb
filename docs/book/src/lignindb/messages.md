@@ -415,8 +415,13 @@ the deletion of the engine the node runs
 LigninDB these are `Db::checkpoint` and `lignindb::checkpoint::delete`.
 A creation that fails can leave nothing at `path`, or the whole
 checkpoint there where its last steps could not be made durable nor
-undone, and a part of one in `path.creating`: look at both before you
-make it again, since a creation refuses a `path` that is there. Through
+undone, and a part of one in `path.creating/checkpoint.creating`: look
+at both before you make it again, since a creation refuses a `path` that
+is there. `path.creating` is the creation's staging directory. A creation
+puts nothing into it but an empty `LOCK` and the directory
+`checkpoint.creating`, in which the checkpoint is built, and takes a
+directory of that name for what an earlier creation left only where it
+holds nothing else. Through
 GroveDB the words follow `lignindb: `; a refusal for the name is
 `not supported: `.
 
@@ -426,8 +431,9 @@ GroveDB the words follow `lignindb: `; a refusal for the name is
 | `… has no directory above it to make the checkpoint in, or no name there` | the path has no directory above it, as `/`, or no name of its own, as one that ends in `..`; a directory above that is missing is answered by `could not … …: …` instead | give the path of a new directory, with its name, in a directory that is there | `lignindb/src/checkpoint/error.rs` |
 | `… has a name that checkpoints are built under, and none is made there` | the path ends in `.creating` | give another name | `lignindb/src/checkpoint/error.rs` |
 | `… is locked, as a directory that a checkpoint is being built in` | another creation at the same path is running | wait for it | `lignindb/src/checkpoint/error.rs` |
-| `… was not found to be the directory whose lock is held, with what was put into it, and nothing was given the name of the target` | the build directory `….creating` is not what the creation locked and filled: it was replaced, holds an entry the creation did not make, or lacks one it made | find out what changed it before anything else; make the checkpoint again only where you can account for what that directory holds ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)), since a creation takes over what it finds there | `lignindb/src/checkpoint/error.rs` |
-| `… is not listed as a file, and none was made there: the lock of its directory was not taken` | the entry `LOCK` of the build directory `….creating` is no file: something other than a creation made that directory, or put that entry there | remove nothing, and do not make the checkpoint at that path again until you can account for what the directory holds ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)): a creation takes over what it finds there | `lignindb/src/checkpoint/error.rs` |
+| `… holds …, which no creation of a checkpoint puts into its staging directory: the directory is not taken for what a creation left, and nothing in it was removed` | the directory `….creating` beside the checkpoint's path holds the entry that is named, which no creation makes there. So it is not what a creation left: it is a database, or something else that was put or restored under that name, or what a creation of an earlier build left, which built the checkpoint directly in `….creating`. The creation did not build in it, and a deletion that was given this directory removed nothing | look at what the directory holds. Where it is a database or anything you want to keep, move it to a name that does not end in `.creating`, and make the call again. Where you know it for what an interrupted creation of an earlier build left at that path (a part of a checkpoint: `MANIFEST`, `wal`, `seg`, `val`, `table`), and no creation is running, remove the directory and make the call again. A deletion of the checkpoint at the path itself does not answer this: it deletes the checkpoint and leaves such a directory as it is | `lignindb/src/checkpoint/error.rs` |
+| `… was not found to be the directory whose lock is held, with what was put into it, and nothing was given the name of the target` | the staging directory `….creating`, or the directory `checkpoint.creating` in it, is not what the call locked, or not what the creation filled: it was replaced, holds an entry the creation did not make, or lacks one it made. Nothing was removed from what was not found | find out what changed it before anything else; make the checkpoint again only where you can account for what that directory holds ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)), since a creation removes what it finds built in a staging directory | `lignindb/src/checkpoint/error.rs` |
+| `… is not listed as a file, and none was made there: the lock of its directory was not taken` | the staging directory `….creating` lists no `LOCK`, and that name leads to something all the same, as on a file system that takes several spellings for one name; or its `LOCK` stopped being a file while the call looked. Something other than a creation put that entry there | remove nothing, and do not make the checkpoint at that path again until you can account for what the directory holds ([backup](backup-and-full-disk.md#what-a-cut-short-copy-or-checkpoint-leaves)) | `lignindb/src/checkpoint/error.rs` |
 | `the session takes no commit, and no checkpoint is made of it: …` | the session has ended ([When a session ends](#when-a-session-ends)); through GroveDB it ends `…: no checkpoint is made before the database is opened again` | open again | `lignindb/src/checkpoint/error.rs` |
 | `…: no checkpoint is made before the database is opened again` | GroveDB's end of the two refusals that need an open | open again | `grovedb/src/engine/lignin/checkpoint.rs` |
 | `the log could not be made durable: …` | the creation's sync of the log failed: the session has ended | open again | `lignindb/src/checkpoint/error.rs` |
@@ -440,10 +446,17 @@ GroveDB the words follow `lignindb: `; a refusal for the name is
 | `the log: …` | the log refused to be held for the checkpoint, or to say what its files are; the log's words follow | as those words say; then make the checkpoint again | `lignindb/src/checkpoint/error.rs` |
 | `… is not the plain name of a file in the database directory` | a file that the application asked a checkpoint to carry beside the store's is named otherwise than by one plain name | the application's | `lignindb/src/checkpoint/error.rs` |
 | `the manifest of the checkpoint could not be written: …` | the checkpoint's manifest could not be encoded | report it | `lignindb/src/checkpoint/error.rs` |
-| `could not … …: …` | the file layer refused an operation of the creation or the removal: the action (the row below), the path and the system's words | fix what the system says. Where a creation met it, make the checkpoint again. Where a deletion met it, delete again once the system's words are dealt with, and make no checkpoint for it: a deletion finishes what one cut short left, a `….creating` directory beside the path among it, and where nothing is left at the path it answers `… is not a directory of its own, and nothing was removed` | `lignindb/src/checkpoint/error.rs` |
-| `append to`, `create`, `create the directory`, `link`, `list`, `lock`, `look at`, `look for`, `look for the lock file in`, `make durable what is in`, `measure`, `open`, `read`, `remove`, `remove the directory`, `rename`, `sync the directory`, `write` | the action that follows `could not` in `could not … …: …`: what the creation or the removal asked of the file layer | as for `could not … …: …` | `lignindb/src/checkpoint/files.rs` |
+| `could not … …: …` | the file layer refused an operation of the creation or the removal: the action (the row below), the path and the system's words | fix what the system says. Where a creation met it, make the checkpoint again. Where a deletion met it, delete again once the system's words are dealt with, and make no checkpoint for it: a deletion finishes what one cut short left, a staging directory `….creating` that a creation left beside the path among it, and where nothing is left at the path it answers `… is not a directory of its own, and nothing was removed` | `lignindb/src/checkpoint/error.rs` |
+| `append to`, `create`, `create the directory`, `link`, `list`, `lock`, `look at`, `look for`, `look for the lock file in`, `make durable the name of`, `make durable what is in`, `measure`, `open`, `read`, `remove`, `remove the directory`, `rename`, `sync the directory`, `write` | the action that follows `could not` in `could not … …: …`: what the creation or the removal asked of the file layer | as for `could not … …: …` | `lignindb/src/checkpoint/files.rs` |
 
-The deletion of a checkpoint refuses, and removes nothing, with:
+The deletion of a checkpoint refuses, and removes nothing, with the rows
+below. Given a path that ends in `.creating`, it removes that directory
+where a creation left it, and refuses any other with the message of the
+table above for a directory that holds what no creation puts into its
+staging directory. Given a checkpoint's own path, it removes the
+checkpoint and then the staging directory `path.creating` that a creation
+left beside it; a directory of that name that no creation left is passed
+over without an error and stays as it is.
 
 | Message | What it means | What to do | Code |
 | --- | --- | --- | --- |
