@@ -134,7 +134,7 @@ use super::{
 use crate::workload::{drive::Documents, Op, Stream};
 
 /// The schema of a [`LatencyReport`].
-pub const SCHEMA: &str = "lignin-bench-latency/4";
+pub const SCHEMA: &str = "lignin-bench-latency/5";
 
 /// The name of the measuring thread, by which a trace finds it.
 pub const THREAD_NAME: &str = "lignin-commit";
@@ -320,6 +320,9 @@ pub struct LatencyReport {
     pub label: Option<String>,
     /// The commit the harness was built from.
     pub commit: Option<String>,
+    /// The executable that made the run, by the BLAKE3 hash of its file,
+    /// where it could be read: two builds of one commit are two executables.
+    pub executable: Option<String>,
     /// The GroveVersion applied.
     pub grove_protocol_version: u32,
     /// The workload's seed.
@@ -1413,6 +1416,12 @@ fn unescaped(field: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The executable that is running, by the BLAKE3 hash of its file.
+fn executable() -> Option<String> {
+    let bytes = std::fs::read(std::env::current_exe().ok()?).ok()?;
+    Some(blake3::hash(&bytes).to_hex().to_string())
+}
+
 fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
     let commit = options
         .commit
@@ -1426,6 +1435,7 @@ fn run_here(options: &LatencyOptions) -> Result<LatencyReport, BenchError> {
         load_average_after: None,
         label: options.label.clone(),
         commit,
+        executable: executable(),
         grove_protocol_version: options.grove_version.protocol_version,
         seed: options.seed,
         documents: options.documents,
@@ -1539,6 +1549,7 @@ fn what_a_run_was(report: &LatencyReport) -> String {
         load_average_after: _,
         label,
         commit,
+        executable,
         grove_protocol_version,
         seed,
         documents,
@@ -1572,6 +1583,7 @@ fn what_a_run_was(report: &LatencyReport) -> String {
         "machine": machine,
         "label": label,
         "commit": commit,
+        "executable": executable,
         "grove_protocol_version": grove_protocol_version,
         "seed": seed,
         "documents": documents,
@@ -1857,8 +1869,8 @@ pub fn runs_table(reports: &[LatencyReport]) -> String {
     }
     out.push_str(
         "\nThe median of the runs' values, and their range. Runs are taken for repeats of one \
-         another where their reports say the same of how they were made: the build, the workload, \
-         the pause, the settings, what the harness did beside the commits, the machine, the \
+         another where their reports say the same of how they were made: the build, by its \
+         name, its commit and the executable that ran, the workload, the pause, the settings, what the harness did beside the commits, the machine, the \
          scratch directory with its device and its mount, and the place of the engine in the \
          run. What a report does not say, the system's version and the device's settings among \
          it, is not held to be the same.\n\n| Build | Engine | Background | \
@@ -2354,6 +2366,7 @@ mod tests {
             load_average_after: None,
             label: options.label.clone(),
             commit: options.commit.clone(),
+            executable: Some("0a".repeat(32)),
             grove_protocol_version: options.grove_version.protocol_version,
             seed: options.seed,
             documents: options.documents,
@@ -2564,6 +2577,11 @@ mod tests {
             scratch_mount: Some("ext4 from /dev/a: rw,noatime; rw".to_string()),
             ..one.clone()
         };
+        // By another executable of the same commit under the same name.
+        let rebuilt = LatencyReport {
+            executable: Some("0b".repeat(32)),
+            ..one.clone()
+        };
         for other in [
             paused,
             flushed,
@@ -2578,6 +2596,7 @@ mod tests {
             moved,
             mounted,
             remounted,
+            rebuilt,
         ] {
             let apart = runs_table(&[one.clone(), other.clone()]);
             assert!(!apart.contains("The median of the runs' values"), "{apart}");
@@ -2833,6 +2852,9 @@ mod tests {
 
         let read = LatencyReport::from_json(&report.to_json()).unwrap();
         assert_eq!(read, report);
+        // The report names the executable that made it, which is this test's.
+        let made_by = report.executable.as_deref().unwrap();
+        assert!(made_by.len() == 64 && made_by.bytes().all(|byte| byte.is_ascii_hexdigit()));
         let text = table(&report);
         assert!(text.contains("| - | rocksdb | heavy, a neighbour's sync every 1 ms | 12 |"));
         // A report of another schema is refused for its schema, and one of
@@ -2843,6 +2865,7 @@ mod tests {
             "lignin-bench-latency/1",
             "lignin-bench-latency/2",
             "lignin-bench-latency/3",
+            "lignin-bench-latency/4",
         ] {
             let report = format!(r#"{{"schema":"{earlier}","engines":[]}}"#);
             let refused = LatencyReport::from_json(&report).unwrap_err().to_string();

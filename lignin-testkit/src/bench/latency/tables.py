@@ -49,7 +49,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The schema of a report of `lignin-bench latency` as it paces a run now.
-SCHEMA = "lignin-bench-latency/4"
+SCHEMA = "lignin-bench-latency/5"
 PARTS = ("its wait for the commit lock", "its wait for the lock on the counts of values",
          "its append to the log", "placing values after it", "reclaiming versions after it",
          "its wait for room in write-back")
@@ -113,6 +113,7 @@ def read(directory):
                 turns=engine.get("turns"), total=engine.get("parts_total"),
                 late=[clock["late"][at] / max(clock["sleeps"], 1) for at in range(4)],
                 root=engine["root_hash"], build=report["commit"], binary=binary, mount=mount,
+                executable=report.get("executable"),
                 outlasted=engine.get("pauses_outlasted", 0),
                 stream=(report["seed"], report["documents"], report["owners"],
                         report["warm_blocks"], len(engine["commit_ns"]))))
@@ -262,6 +263,15 @@ def main():
                      "campaign's build %s is %s and %s" % (
                          row["label"], row["background"], row["round"], row["build"], row["binary"],
                          of_build[row["label"]], *builds[of_build[row["label"]]]))
+    # A report names the executable that made it, and the campaign the binary
+    # it started: the reports of one binary are all of one executable.
+    executables = {}
+    for row in main_rows + other_rows if builds else []:
+        if row["executable"] is None or executables.setdefault(row["binary"], row["executable"]) != row["executable"]:
+            sys.exit("tables.py: the report %s-%s-r%d says it was made by the executable %s, and the campaign "
+                     "started the binary %s for it, whose other reports say %s" % (
+                         row["label"], row["background"], row["round"], row["executable"], row["binary"],
+                         executables.get(row["binary"])))
     streams = collections.defaultdict(set)
     for row in main_rows + other_rows:
         streams[row["stream"]].add(row["root"])
@@ -315,6 +325,12 @@ def main():
                                    "%d blocks, commit %s, binary %s" % (
                                        report.get("label"), report["background"],
                                        len(report["engines"][0]["commit_ns"]), report["commit"], binary)))
+            continue
+        made_by = report.get("executable")
+        if asked and (made_by is None or executables.setdefault(binary, made_by) != made_by):
+            refused.append((trace, "its report says it was made by the executable %s, and the campaign started "
+                                   "the binary %s for it, whose other reports say %s" % (
+                                       made_by, binary, executables.get(binary))))
             continue
         # The mount it was made on is the one the runs of its file system
         # were made on, where the campaign has such runs.
