@@ -20,7 +20,8 @@
 # to read from storage a database that was written before it (`reads`): what of such files
 # lies in the page cache is read from memory. Whatever else is then read into the page cache
 # from a file on ext4 while the probes are in place, as the programs that start the call may
-# be, is in the counts too, under the kind `other`.
+# be, is in the counts too, under the kind that its directory's name or its suffix gives it
+# (`other` unless it has one of the names read-split.py knows).
 #
 # It runs the call as a transient systemd unit with memory and I/O accounting on, and
 # `read-split.bt` beside it for as long as the call runs. It needs root (bpftrace, systemd-run),

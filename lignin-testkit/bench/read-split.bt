@@ -16,7 +16,10 @@
  * splits, and a hole in a file is filled with no read.
  *
  * The maps are printed when the script is ended (SIGINT); `@attached` is among them, so that an
- * output with no read in it can be told from no output. read-split.py puts kinds to the names.
+ * output with no read in it can be told from no output. `@all_calls` and `@all_pages` count the
+ * same events with no name: a map by name holds a bounded number of names, and a name that
+ * found no room is missing from it, which the sums then show. read-split.py puts kinds to the
+ * names and compares the sums.
  * The probes are of every process of the machine, so the machine is otherwise at rest.
  */
 BEGIN
@@ -39,6 +42,8 @@ kprobe:ext4_readahead
 	$d = $rac->file->f_path.dentry;
 	@calls[str($d->d_parent->d_name.name), str($d->d_name.name)] = count();
 	@pages[str($d->d_parent->d_name.name), str($d->d_name.name)] = sum($rac->_nr_pages);
+	@all_calls = count();
+	@all_pages = sum($rac->_nr_pages);
 }
 
 kprobe:ext4_read_folio
@@ -47,4 +52,6 @@ kprobe:ext4_read_folio
 	$d = $file->f_path.dentry;
 	@calls[str($d->d_parent->d_name.name), str($d->d_name.name)] = count();
 	@pages[str($d->d_parent->d_name.name), str($d->d_name.name)] = sum(1);
+	@all_calls = count();
+	@all_pages = sum(1);
 }

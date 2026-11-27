@@ -235,27 +235,58 @@ impl StorageReads {
 }
 
 /// The `io.stat` file of the cgroup this process runs in (cgroup v2), or
-/// nothing where the cgroup's directory is not known or the file cannot be
-/// read.
+/// nothing where the cgroup's directory is not known, the file cannot be
+/// read, or the file that was opened is not on the mount the mount table
+/// named: a mount that covers a directory above that one gives a file of
+/// the same path that is another's.
 fn cgroup_io_stat() -> Option<String> {
+    use std::{io::Read, os::fd::AsRawFd};
+
     let groups = std::fs::read_to_string("/proc/self/cgroup").ok()?;
-    let group = groups.lines().find_map(|line| line.strip_prefix("0::"))?;
     let mounts = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
-    std::fs::read_to_string(cgroup_dir(&mounts, group)?.join("io.stat")).ok()
+    let (mount, dir) = cgroup_dir(&mounts, membership(&groups)?)?;
+    let mut file = std::fs::File::open(dir.join("io.stat")).ok()?;
+    let opened = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).ok()?;
+    if mount_of(&opened)? != mount {
+        return None;
+    }
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// The path of the process's cgroup in the cgroup v2 hierarchy, from the
+/// text of `/proc/self/cgroup`: what follows `0::` in its line, to the
+/// line feed and no further, since a group's name may end in any other
+/// byte.
+fn membership(groups: &str) -> Option<&str> {
+    groups.split('\n').find_map(|line| line.strip_prefix("0::"))
+}
+
+/// The id of the mount an open file is on, from the text of its file in
+/// `/proc/self/fdinfo`.
+fn mount_of(fdinfo: &str) -> Option<u64> {
+    let id = fdinfo
+        .split('\n')
+        .find_map(|line| line.strip_prefix("mnt_id:"))?;
+    id.trim().parse().ok()
 }
 
 /// The directory of the cgroup `group` (its path in `/proc/self/cgroup`)
-/// by `mountinfo` (the text of `/proc/self/mountinfo`), in the one layout
-/// this reads: the cgroup v2 hierarchy mounted whole, once, at
-/// `/sys/fs/cgroup`, with nothing else mounted there or under it. The
-/// directory is then that one and the group's path.
+/// by `mountinfo` (the text of `/proc/self/mountinfo`), with the id of
+/// the mount it is on, in the one layout this reads: the cgroup v2
+/// hierarchy mounted whole, once, at `/sys/fs/cgroup`, with nothing else
+/// mounted there or under it. The directory is then that one and the
+/// group's path.
 ///
 /// In every other layout there is none, and a run has no counts of its
 /// cgroup: a part of the hierarchy mounted there, a second mount over it,
 /// a mount of anything under it, the hierarchy mounted elsewhere only, a
 /// table this cannot read, or a group whose path climbs (`..`). A path
-/// built in one of those could be another group's.
-fn cgroup_dir(mountinfo: &str, group: &str) -> Option<PathBuf> {
+/// built in one of those could be another group's. A mount that covers a
+/// directory above `/sys/fs/cgroup` is not seen here: the caller checks
+/// the mount of the file it opens against the id.
+fn cgroup_dir(mountinfo: &str, group: &str) -> Option<(u64, PathBuf)> {
     const AT: &str = "/sys/fs/cgroup";
     let climbs = Path::new(group)
         .components()
@@ -263,12 +294,14 @@ fn cgroup_dir(mountinfo: &str, group: &str) -> Option<PathBuf> {
     if !group.starts_with('/') || climbs {
         return None;
     }
-    let mut found = false;
-    for line in mountinfo.lines() {
+    let mut found = None;
+    for line in mountinfo.split('\n').filter(|line| !line.is_empty()) {
         // The fields of a line are parted by one space each, and a space
         // in a path is written as an escape.
         let (mount, filesystem) = line.split_once(" - ")?;
-        let mut fields = mount.split(' ').skip(3);
+        let mut fields = mount.split(' ');
+        let id = fields.next()?.parse::<u64>().ok()?;
+        let mut fields = fields.skip(2);
         let (mount_root, mount_point) = (fields.next()?, fields.next()?);
         let under = mount_point
             .strip_prefix(AT)
@@ -279,12 +312,12 @@ fn cgroup_dir(mountinfo: &str, group: &str) -> Option<PathBuf> {
         let whole = mount_point == AT
             && mount_root == "/"
             && filesystem.split(' ').next() == Some("cgroup2");
-        if !whole || found {
+        if !whole || found.is_some() {
             return None;
         }
-        found = true;
+        found = Some(id);
     }
-    found.then(|| Path::new(AT).join(group.trim_start_matches('/')))
+    Some((found?, Path::new(AT).join(group.trim_start_matches('/'))))
 }
 
 /// The read requests and the bytes read of every device in the text of
@@ -631,10 +664,25 @@ mod tests {
     }
 
     #[test]
+    fn the_cgroup_of_the_process_and_the_mount_of_a_file_are_read_to_the_line_feed() {
+        // A group's name can end in a carriage return, which is no end of
+        // a line here: the group beside it without one is another group.
+        assert_eq!(membership("1:name=x:/y\n0::/run\r\n"), Some("/run\r"));
+        assert_eq!(membership("0::/run\n"), Some("/run"));
+        assert_eq!(membership("1:cpu:/run\n"), None);
+        assert_eq!(
+            mount_of("pos:\t0\nflags:\t0100000\nmnt_id:\t35\nino:\t77\n"),
+            Some(35)
+        );
+        assert_eq!(mount_of("pos:\t0\n"), None);
+        assert_eq!(mount_of("mnt_id:\tnone\n"), None);
+    }
+
+    #[test]
     fn the_directory_of_a_cgroup_is_known_in_one_layout_of_the_mounts() {
         let dir = |mountinfo: &str, group: &str| {
             cgroup_dir(mountinfo, group)
-                .map(|dir| dir.to_string_lossy().trim_end_matches('/').to_owned())
+                .map(|(_, dir)| dir.to_string_lossy().trim_end_matches('/').to_owned())
         };
         let found = |path: &str| Some(path.to_owned());
         let sys = "24 30 0:22 / /sys rw,nosuid - sysfs sysfs rw\n";
@@ -645,6 +693,9 @@ mod tests {
             found("/sys/fs/cgroup/system.slice/run.service")
         );
         assert_eq!(dir(&usual, "/"), found("/sys/fs/cgroup"));
+        // With the id of the mount, which the opened file is checked by.
+        assert_eq!(cgroup_dir(&usual, "/run").map(|(mount, _)| mount), Some(35));
+        assert_eq!(dir(&usual, "/run\r"), found("/sys/fs/cgroup/run\r"));
         // A path that climbs, or that is none, names no directory.
         assert_eq!(dir(&usual, "/../sibling"), None);
         assert_eq!(dir(&usual, "/a/../../b"), None);
