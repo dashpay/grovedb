@@ -1218,7 +1218,7 @@ impl Engine for EitherEngine {
                 let Some(vfs) = engine.file_system() else {
                     return Err(not_looked_beside(path));
                 };
-                keep_from_lignindb(&**vfs, path, OfLignin::Creation)?;
+                keep_from_lignindb(vfs, path, OfLignin::Creation)?;
                 engine.create_checkpoint(path)
             }
         }

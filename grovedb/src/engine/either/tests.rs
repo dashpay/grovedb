@@ -793,6 +793,28 @@ fn a_lignindb_engine_that_its_caller_hands_over_is_guarded_where_it_says_its_fil
         assert!(!another.exists());
     };
 
+    // An engine that was built on a database its caller opened does not
+    // say which file system it is on. The type looks at neither: the
+    // creation beside the entry of RocksDB's on the engine's file system,
+    // and the one beside the database of RocksDB on the process's, are
+    // each refused for that, in the same words and not for what is beside
+    // the path, and nothing is made or changed on either.
+    let of_the_caller = lignindb::Db::open(&grove, &on_sim).expect("a database");
+    let built = LigninEngine::new(of_the_caller).expect("an engine");
+    let db = GroveDb::from_engine(EitherEngine::from(built));
+    assert_eq!(db.engine().kind(), EngineKind::Lignin);
+    not_looked_beside(db.create_checkpoint(&target), &target);
+    as_they_were();
+    not_looked_beside(db.create_checkpoint(&another), &another);
+    assert!(sim.read_dir(&another).is_err());
+    as_they_were();
+    // So is one at a path with nothing beside it on either.
+    let yet_another = host.path().join("yet another");
+    not_looked_beside(db.create_checkpoint(&yet_another), &yet_another);
+    assert!(sim.read_dir(&yet_another).is_err() && !yet_another.exists());
+    as_they_were();
+    drop(db);
+
     // An engine that `LigninEngine` opened, on another file system than
     // the process's, and that its caller handed to the type. It keeps the
     // file system it is on, and the type looks there: the creation beside
@@ -800,7 +822,6 @@ fn a_lignindb_engine_that_its_caller_hands_over_is_guarded_where_it_says_its_fil
     // database on the file system of the process is made.
     let opened = LigninEngine::open_with(&grove, &on_sim).expect("a database");
     let db = GroveDb::from_engine(EitherEngine::from(opened));
-    assert_eq!(db.engine().kind(), EngineKind::Lignin);
     let words = refusal(db.create_checkpoint(&target));
     assert!(
         words.contains("has an entry of RocksDB's (`CURRENT`)"),
@@ -811,20 +832,6 @@ fn a_lignindb_engine_that_its_caller_hands_over_is_guarded_where_it_says_its_fil
     assert!(sim
         .read_dir(&another)
         .is_ok_and(|listed| !listed.is_empty()));
-    as_they_were();
-    drop(db);
-
-    // An engine that was built on a database its caller opened does not
-    // say which file system it is on. The type looks at neither: each
-    // creation is refused for that, in the same words, and nothing is
-    // changed.
-    let of_the_caller = lignindb::Db::open(&grove, &on_sim).expect("a database");
-    let built = LigninEngine::new(of_the_caller).expect("an engine");
-    let db = GroveDb::from_engine(EitherEngine::from(built));
-    not_looked_beside(db.create_checkpoint(&target), &target);
-    let yet_another = host.path().join("yet another");
-    not_looked_beside(db.create_checkpoint(&yet_another), &yet_another);
-    assert!(sim.read_dir(&yet_another).is_err() && !yet_another.exists());
     as_they_were();
     drop(db);
 

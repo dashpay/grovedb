@@ -203,8 +203,12 @@ impl LigninEngine {
     /// type opened it: by [`Self::open_with`], or by an open of
     /// [`Engine`]. `None` for an engine on a database that its caller
     /// opened ([`Self::new`]).
-    pub fn file_system(&self) -> Option<&Arc<dyn Vfs>> {
-        self.vfs.as_ref()
+    ///
+    /// The type that holds either engine asks for it, and that type is
+    /// compiled only where both engines are.
+    #[cfg_attr(not(feature = "rocksdb_storage"), allow(dead_code))]
+    pub(crate) fn file_system(&self) -> Option<&dyn Vfs> {
+        self.vfs.as_deref()
     }
 
     /// The LigninDB database underneath.
